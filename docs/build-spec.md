@@ -18,7 +18,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Spending cap | Required at sign-up (default $10). At the cap the drive goes read-only; nothing is deleted | spec.md |
 | Platforms | macOS and Linux. No Windows in v1 | spec.md |
 | Headline price | "About $20 per TB a month" as the one big number, with "2¢ per GB, billed by the minute, pay only for what you store" under it | Nish, 2026-09-29 |
-| Bill ceiling ("never pay more than the plan") | Billed by the minute, but each month the bill is capped at **$15 per whole TB of peak storage** (1 TB $15, 2 TB $30, 5 TB $75). Whichever is lower wins, automatically, no plan switch. The cap starts to bite at 750 GB of a TB. $15 equals the 1.5¢ floor and matches Space ($15 for 1 TB); cost is about $5/TB on iDrive, so margin stays about 60% before fees. Headline becomes "2¢ per GB, billed by the minute. Never more than $15 a TB." | Nish, 2026-09-29 (idea); $15 is my pick, pending his OK |
+| Bill ceiling ("never pay more than the plan") | Billed by the minute, but each TB has its own ceiling: the **first TB never costs more than $15**, and **each extra TB never more than $12** (Space charges $12 per extra TB). Inside each TB you pay 2¢/GB until its ceiling. Examples: 800 GB = $15 (not $16); 1.6 TB = $15 + $12 = $27 (the extra 600 GB hits $12 exactly); 1.3 TB = $15 + $6 = $21. Automatic, no plan switch. Cost is about $5/TB on iDrive, so margin is about 67% on the first TB and 58% on extra TBs before fees. Extra TBs at $12 go below the 1.5¢ floor (1.2¢); Nish set that. Headline: "2¢ per GB, billed by the minute. Never more than $15 a TB." | Nish, 2026-09-29 ($15 first TB, then $12 per extra TB, his correction) |
 | Company tier | "Business": same storage price, plus single sign-on, SOC 2 report, one company bill split by team, and priority support. On the pricing page from day one as "Talk to us"; built after v1 | Nish, 2026-09-29 |
 | Never do | Confusing credit units, balances that expire, "unlimited" plans | Nish, 2026-09-29 (Higgsfield research). Any prepaid top-up never expires |
 | Encryption | B2 server-side encryption (SSE-B2) on. Not end-to-end in v1 | My default |
@@ -75,7 +75,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 |---|---|
 | Sign in | Email one-time code, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
-| Usage | "You saved $X" line: what the $15-per-TB ceiling for your peak would have cost, against what you paid. Shown only when it's a real saving. Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
+| Usage | "You saved $X" line: what the ceiling for your peak ($15 first TB, $12 each extra) would have cost, against what you paid. Shown only when it's a real saving. Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
@@ -117,7 +117,7 @@ Each tool also gets a short skill note: where the drive is, that deletes can be 
 - Monthly cost = total GB-minutes ÷ 43,800 (minutes in an average month) × 2¢.
 - Downloads: bytes counted by the dl Worker. Anything above 3x the average stored GB that month is billed at 1¢/GB.
 - The free $1 comes off each month. Without a card, writes stop at $1 of usage (the account's cap is $1 until a card is added).
-- The monthly invoice and usage page show "You saved $X": the ceiling for the peak stored size ($15 per whole TB), minus the actual bill. Hidden when zero or less. The bill itself is min(metered, ceiling); the ceiling is applied at invoice time, so Dodo gets the capped amount.
+- The monthly invoice and usage page show "You saved $X": the ceiling for the peak stored size ($15 for the first TB, $12 per extra TB), minus the actual bill. Hidden when zero or less. The bill itself is min(metered, ceiling); the ceiling is applied at invoice time, so Dodo gets the capped amount.
 - The meter pushes each hour's total to Dodo, keyed by account and hour, so a repeat push is ignored.
 
 ## Keys and safety
@@ -145,7 +145,7 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
 | Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
-| $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute, never more than $15 a TB | **Beat** | Step 6 |
+| $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute, never more than $15 for the first TB and $12 per extra TB (Space charges $15 + $12 flat, even when part-full) | **Beat** | Step 6 |
 
 **Speed test (in step 2's "done when"):** from a Mac over home broadband, open a 5 GB video and a 2 GB Blender file straight off the drive. The first frame or viewport must show within 3 s, scrubbing must not stall, and a 1 GB save must reach storage within 10 s. Run the same files on a Space trial side by side if a free trial exists (no card). Otherwise compare against Space's own words, "open instantly" and "in seconds". Record the times in the issue.
 
