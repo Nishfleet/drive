@@ -4,7 +4,7 @@ Written 2026-09-29. Replaces the published doc "SpaceFS-style Drive: Pressure Te
 
 ## Status
 
-**Parked. No build work until Nish says go.** The pressure test on 2026-09-29 was a no-go, and the standing rule is no spend before 0509 passes $2k revenue. This spec is the shape to build if the revisit triggers below fire, so nobody has to re-research it.
+**Building since 2026-09-29** (Nish: "lets go then"). The 2026-09-29 pressure test said no-go and the old rule was no spend before 0509 passes $2k; Nish overrode that. Spending money still needs his yes.
 
 Revisit when both are true:
 - 0509 passes $2k revenue.
@@ -177,7 +177,7 @@ Left out of version 1: Windows, sharing links, search, phone app, Business tier,
 
 Full build spec (parts, commands, screens, data model, steps): `build-spec.md` next to this file.
 
-Status gate: **the project is still parked.** This plan is ready to hand to workers the day Nish says go; no issues are filed and nothing is queued until then.
+Status: **building since 2026-09-29** (Nish: "lets go then"). Work is queued as issues #2 to #15; anything that costs money waits for Nish.
 
 ### Parts, and the stock tool behind each
 

@@ -2,7 +2,7 @@
 
 Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the build plan in `spec.md` into what each part does, the commands and screens, the data model, and the steps in detail. `spec.md` still holds the why: prices, rivals and the pressure test.
 
-**Status: parked.** Nothing is built and no issues are filed until Nish says go (rule: no spend before 0509 passes $2k revenue).
+**Status: building since 2026-09-29** (Nish: "lets go then"). Issues #2 to #15 in this repo; spending money (storage accounts, Storage Box) still needs Nish.
 
 ## Decisions this spec uses
 
