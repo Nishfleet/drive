@@ -128,6 +128,27 @@ Each tool also gets a short skill note: where the drive is, that deletes can be 
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
+## Against Space, feature by feature (bar: match or beat)
+
+Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". Space's claims from https://spacefs.com, read 2026-09-29.
+
+| Space offers | Us | Verdict | Where |
+|---|---|---|---|
+| Mac and Linux; Windows "coming soon" | Mac and Linux; Windows later | Match | Steps 2, 3 |
+| "Files open instantly", streamed, "zero bytes on disk" | rclone VFS streaming with a local cache | Match, to prove with the speed test below | Step 2 |
+| Changes sync "in seconds" to every device | Upload about 5 s after save; other machines see it on the next listing | Match, to prove | Step 3 |
+| Works with any app, no plugins | Plain mounted folder | Match | Steps 2, 3 |
+| "Search 10x faster than Spotlight" | Nothing yet | **Gap** | Issue 18 |
+| Public file links and upload requests | Nothing yet | **Gap** | Issue 19 |
+| Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
+| Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
+| Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
+| Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
+| SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
+| $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute, never more than $15 a TB | **Beat** | Step 6 |
+
+**Speed test (in step 2's "done when"):** from a Mac over home broadband, open a 5 GB video and a 2 GB Blender file straight off the drive. The first frame or viewport must show within 3 s, scrubbing must not stall, and a 1 GB save must reach storage within 10 s. Run the same files on a Space trial side by side if a free trial exists (no card). Otherwise compare against Space's own words, "open instantly" and "in seconds". Record the times in the issue.
+
 ## Build steps
 
 Every step is one issue, built by a queue worker and checked by a different model family, in a new product repo made at go time. Each step is done only when its check passes on real files, with the proof (paths, ids, timestamps) in the issue.
