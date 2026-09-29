@@ -1,0 +1,28 @@
+name: PR checks
+
+# This repo is wired to the canonical reusable PR-checks workflow by default.
+# The CI standard (timeout-minutes, concurrency+cancel, npm cache, batched CI +
+# gitleaks secret scan, docs-only fast path, 7-day SARIF retention) lives in
+# nish3451/shared-workflows and is applied here by construction. Updates on the
+# `v1` branch propagate automatically — no per-repo sync needed.
+#
+# To customize: change the inputs below. Do NOT copy the workflow body here.
+# See https://github.com/nish3451/shared-workflows for the full standard.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-checks:
+    uses: nish3451/shared-workflows/.github/workflows/pr-checks.yml@v1
+    with:
+      node-version: "24"
+      install-command: npm ci
+      verify-command: npm test
+    secrets: inherit

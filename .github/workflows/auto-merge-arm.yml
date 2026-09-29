@@ -1,0 +1,96 @@
+name: Auto-merge arm
+
+# Agent-authored PRs land themselves (Nish, 2026-08-25 — vault
+# global-standing-rules.md "Agent-authored PRs land themselves"): every opened
+# PR is armed for auto-merge so it lands the moment required checks pass, no
+# matter which agent, tool, or human opened it. Required checks (and the merge
+# queue, where one exists) stay the only quality gate — this removes just the
+# human wait, and keeps working when any one agent is out of usage.
+#
+# Opt-outs (the ONLY ones): draft PRs, the `no-auto-merge` label at creation,
+# or `[no-merge]` in the title. Scheduled sweeps that must never self-merge
+# open DRAFT PRs.
+#
+# Arms under a nishfleet-worker App installation token, not GITHUB_TOKEN and
+# not a human PAT (fleet-ops#1469): a merge under GITHUB_TOKEN would not
+# trigger push workflows on main (deploy verification, auto-revert),
+# silently disarming the safety net; a merge under the old AUTO_REVERT_PAT
+# made Nish the triggering actor of every merge, so GitHub emailed him one
+# failure notice per red workflow per merge (30+ hand-deleted on 2026-08-28).
+# The App is a real actor (push workflows still fire) but not Nish, so the
+# failure emails stop reaching him.
+#
+# Graceful before the rollout completes (fleet-ops#4303): the App secrets
+# (NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY) are not yet
+# org-wide. On a repo where they are absent this check exits 0 with a notice
+# — the PR's own opener already armed it (worker/openers call
+# `gh pr merge --auto --squash`), so failing loud here would paint every PR
+# red over a non-blocker (fleet-ops#1081). Where the secrets ARE set the
+# App token is minted and the merge is armed under it; a configured-but-broken
+# App (bad key, not installed) fails LOUD so the PR waits for a human — the
+# correct fallback. This lets the canonical switch now, ahead of the
+# org-wide secret rollout, without breaking PAT-less repos. A human can
+# always arm or merge via the green button.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: auto-merge-arm-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  arm:
+    if: >-
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.title, '[no-merge]') &&
+      !contains(join(github.event.pull_request.labels.*.name, ','), 'no-auto-merge')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Graceful skip when the App secrets are not yet configured on this repo.
+      # Both secrets are read into env (never printed; GitHub auto-masks
+      # registered secrets in logs as a backstop) and tested for non-empty
+      # only. Exits 0 so the check stays green on PAT-less repos; the PR's
+      # opener arms it, or a human uses the button. Sets `present` so the
+      # mint/arm steps gate on the steps context (the secrets context is not
+      # allowed in step `if:` expressions).
+      - name: Check App secrets present
+        id: check
+        env:
+          APP_ID: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::notice::NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY are not configured on this repo — auto-merge not armed by this check; the PR's opener arms it, or a human uses the green button" && exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+      # Mints a <=1h installation token for the nishfleet-worker GitHub App
+      # (app id 4728578, org-wide install under Nishfleet). The App carries
+      # contents/pull-requests:write — enough to arm auto-merge — and is a
+      # real actor, so a merge under this token triggers push workflows on
+      # main (deploy verification, auto-revert), unlike GITHUB_TOKEN. No
+      # continue-on-error and no GITHUB_TOKEN fallback: a configured-but-broken
+      # App (bad key, not installed) must fail LOUD so the PR waits for a
+      # human rather than silently merging under a token that disarms the
+      # safety net (fleet-ops#1469). Same action pin as the fleet-ops
+      # auto-revert path.
+      - name: Mint nishfleet-worker App installation token
+        id: app-token
+        if: ${{ steps.check.outputs.present == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Arm auto-merge
+        if: ${{ steps.check.outputs.present == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"
