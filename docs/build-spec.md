@@ -18,6 +18,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Spending cap | Required at sign-up (default $10). At the cap the drive goes read-only; nothing is deleted | spec.md |
 | Platforms | macOS and Linux. No Windows in v1 | spec.md |
 | Headline price | "About $20 per TB a month" as the one big number, with "2¢ per GB, billed by the minute, pay only for what you store" under it | Nish, 2026-09-29 |
+| Bill ceiling ("never pay more than the plan") | Billed by the minute, but each month the bill is capped at **$15 per whole TB of peak storage** (1 TB $15, 2 TB $30, 5 TB $75). Whichever is lower wins, automatically, no plan switch. The cap starts to bite at 750 GB of a TB. $15 equals the 1.5¢ floor and matches Space ($15 for 1 TB); cost is about $5/TB on iDrive, so margin stays about 60% before fees. Headline becomes "2¢ per GB, billed by the minute. Never more than $15 a TB." | Nish, 2026-09-29 (idea); $15 is my pick, pending his OK |
 | Company tier | "Business": same storage price, plus single sign-on, SOC 2 report, one company bill split by team, and priority support. On the pricing page from day one as "Talk to us"; built after v1 | Nish, 2026-09-29 |
 | Never do | Confusing credit units, balances that expire, "unlimited" plans | Nish, 2026-09-29 (Higgsfield research). Any prepaid top-up never expires |
 | Encryption | B2 server-side encryption (SSE-B2) on. Not end-to-end in v1 | My default |
@@ -74,7 +75,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 |---|---|
 | Sign in | Email one-time code, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
-| Usage | "You saved $X" line: what a flat plan sized to your peak (whole TBs at $20) would have cost, against what you paid. Shown only when it's a real saving. Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
+| Usage | "You saved $X" line: what the $15-per-TB ceiling for your peak would have cost, against what you paid. Shown only when it's a real saving. Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
@@ -116,7 +117,7 @@ Each tool also gets a short skill note: where the drive is, that deletes can be 
 - Monthly cost = total GB-minutes ÷ 43,800 (minutes in an average month) × 2¢.
 - Downloads: bytes counted by the dl Worker. Anything above 3x the average stored GB that month is billed at 1¢/GB.
 - The free $1 comes off each month. Without a card, writes stop at $1 of usage (the account's cap is $1 until a card is added).
-- The monthly invoice and usage page show "You saved $X": the flat-plan price for the peak stored size, rounded up to whole TBs at $20, minus the actual bill. Hidden when zero or less.
+- The monthly invoice and usage page show "You saved $X": the ceiling for the peak stored size ($15 per whole TB), minus the actual bill. Hidden when zero or less. The bill itself is min(metered, ceiling); the ceiling is applied at invoice time, so Dodo gets the capped amount.
 - The meter pushes each hour's total to Dodo, keyed by account and hour, so a repeat push is ignored.
 
 ## Keys and safety
@@ -142,6 +143,7 @@ Every step is one issue, built by a queue worker and checked by a different mode
 | 7 | Branches | `branch`, `branches`, `diff`, `approve`, `discard`; server-side copy inside B2. | An agent's branch is approved into the original folder; a second is discarded with the original untouched; an approve where the original changed stops and lists the file. |
 | 8 | Backup and old versions | Nightly `rclone sync --backup-dir` to the Storage Box plus the 31-day purge, as one systemd timer; Hetzner restores in `drive restore`. | A file edited on day 1 and again on day 3 can be restored to its day-1 version from Hetzner on day 10 with a matching checksum; a file removed from B2 on purpose is restored from Hetzner; and a day-31 folder is gone. |
 | 9 | Pricing page and sign-up | Web pages above, pricing copy from spec.md. | A new person signs up, installs, stores a file and sees the right cost on the usage page, on a phone and a desktop. |
+| 11 | Connectors for agent sandboxes (after steps 3 and 4) | Two ways in, so the drive works inside boat.dev, E2B, Daytona, Vercel Sandbox, InstaCloud and similar: (a) a one-line install inside a sandbox that mounts the drive with a sandbox token (`drive init --token`), for sandboxes that allow FUSE; (b) a hosted MCP server on the api Worker, so any agent can use the drive with no mount at all. Then a listing or template on each platform that has one. | The same file is read and written from inside a real boat.dev sandbox (mount) and a real E2B sandbox (mount or hosted MCP), with the change visible on the Mac. |
 | 10 | Swift File Provider app (later) | Native Finder drive to replace `rclone nfsmount` on Mac. | It passes steps 2 to 4 unchanged. |
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
