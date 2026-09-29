@@ -109,6 +109,22 @@ async function readSignupRequest(request) {
 }
 
 /**
+ * Rejects a cross-site request outright. A cross-site form post can put an
+ * address in this waitlist that nobody typed, and browsers always send Origin
+ * on a cross-site POST; a same-origin fetch or our own no-JavaScript form
+ * post sends the page's own origin, so this is a real check rather than a
+ * token nobody could forge.
+ * @param {Request} request
+ */
+export function isSameOriginRequest(request) {
+  const origin = request.headers.get("origin");
+  if (origin === null) {
+    return true;
+  }
+  return origin === new URL(request.url).origin;
+}
+
+/**
  * Handles every method on /api/waitlist and always returns a Response.
  * @param {Request} request
  * @param {D1Database} db
@@ -119,6 +135,12 @@ export async function handleWaitlistRequest(request, db) {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
+  }
+  if (!isSameOriginRequest(request)) {
+    return json(
+      { error: "Sign-ups are only accepted from the drive page." },
+      403,
+    );
   }
   if (!db) {
     return json(

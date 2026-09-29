@@ -6,6 +6,7 @@ import {
   validateSignup,
   recordSignup,
   handleWaitlistRequest,
+  isSameOriginRequest,
   SOURCES,
 } from "../src/waitlist.js";
 
@@ -177,6 +178,45 @@ test("recordSignup throws loud on phantom conflict", async () => {
   await assert.rejects(
     recordSignup(db, { email: "gone@example.com", source: "pricing-page" }),
     /gone@example.com/,
+  );
+});
+
+test("handleWaitlistRequest returns 403 for a cross-site request", async () => {
+  const db = makeFakeDB();
+  const req = new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example" },
+    body: JSON.stringify({ email: "injected@example.com" }),
+  });
+  const res = await handleWaitlistRequest(req, db);
+  assert.equal(res.status, 403);
+  const data = await res.json();
+  assert.match(data.error, /only accepted from the drive page/);
+  assert.equal(db.waitlist.size, 0, "a cross-site request must not write a row");
+});
+
+test("isSameOriginRequest accepts our own origin and a request without Origin", () => {
+  assert.equal(
+    isSameOriginRequest(
+      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
+        headers: { origin: "https://drive-pricing.nishant345.workers.dev" },
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    isSameOriginRequest(
+      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist"),
+    ),
+    true,
+  );
+  assert.equal(
+    isSameOriginRequest(
+      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist", {
+        headers: { origin: "https://drive-pricing.nishant345.workers.dev.evil.example" },
+      }),
+    ),
+    false,
   );
 });
 

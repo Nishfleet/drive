@@ -124,10 +124,10 @@ with headless Chrome (Playwright, real network, `networkidle`).
 | Phone 390x844 | 200, `scrollWidth == clientWidth == 390`, 0 overflowing elements, 0 console errors |
 | Small phone 360x780 | 200, `scrollWidth == clientWidth == 360`, 0 overflowing elements, 0 console errors |
 | Contrast, WCAG AA normal text (>= 4.5) | body 15.13, free line 10.65, strip label 9.66, Talk to us 15.13, strip caption 7.29, eyebrow 4.99, field label 4.99, footer 7.29, form note 7.29 |
-| Links | one link (`#waitlist`); no dead href, no external request |
+| Links | one link (`#waitlist`); no dead href, no external request, no favicon 404 |
 | CTA | `Talk to us` tags the row `business`, scrolls the form into view and focuses `#email`; first Tab from the top reaches `#email` |
-| Transfer budget (40 KB) | 4,205 bytes of assets + one HTML document; no web fonts, no framework |
-| Timing | TTFB 76 ms, DOMContentLoaded 158 ms, load 158 ms |
+| External subresources | none. The stylesheet and the submit handler are inlined, so the page is one document: nothing to fetch, nothing to protect with SRI, and a data-URI favicon was dropped rather than kept behind a suppression |
+| Timing | TTFB 76 ms, DOMContentLoaded 158 ms, load 158 ms (measured before inlining; inlining removed two round trips) |
 | The real path | A browser at 390x844 typed an address and clicked the button; the live region read "You are on the list. One email when the drive is ready." with 0 console errors, and the row landed in D1 |
 
 The eyebrow heading failed AA at 3.48:1 on the first pass (`--ink-faint: #8a8377`);
@@ -139,11 +139,13 @@ Screenshots: `live-desktop.png`, `live-phone.png`, `live-phone-360.png`,
 ### Live waitlist rows (`drive-waitlist`, `93c9f523-159c-4261-8541-d4c059906df3`)
 
 ```
-id  email                  source        created_at (UTC)
-1   nish@0509.io           pricing-page  2026-09-29 17:15:22
-3   founder@example.com    pricing-page  2026-09-29 17:16:55
-5   team@acme.example      business      2026-09-29 17:18:37
+id  email                    source        created_at (UTC)
+1   nish@0509.io             pricing-page  2026-09-29 17:15:22
+3   founder@example.com      pricing-page  2026-09-29 17:16:55
+5   team@acme.example        business      2026-09-29 17:18:37
+6   phone-proof@example.com  pricing-page  2026-09-29 17:24:17
 ```
 
-Rows 3 and 5 are proof sign-ups typed into the live form (one per column); ids 2
-and 4 are the duplicate-insert attempts that correctly produced no second row.
+Rows 3, 5 and 6 are proof sign-ups typed into the live form (id 5 came through
+the Business column, so `source` is `business`); ids 2 and 4 are the duplicate
+attempts that correctly produced no second row.
