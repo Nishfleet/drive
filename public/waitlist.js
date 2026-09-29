@@ -15,10 +15,14 @@ function say(message, kind) {
 }
 
 // "Talk to us" is the same real action as the form, tagged so the waitlist row
-// records which column the person came from.
+// records which column the person came from. preventDefault is load-bearing:
+// without it the anchor's own fragment navigation to #waitlist moves focus
+// away from the field the handler just focused.
 for (const link of document.querySelectorAll("[data-waitlist-source]")) {
-  link.addEventListener("click", () => {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
     sourceInput.value = link.dataset.waitlistSource;
+    form.scrollIntoView({ block: "center" });
     emailInput.focus();
   });
 }

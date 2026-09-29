@@ -112,3 +112,38 @@ ledger tone that the buyer's comparison actually needs.
    web font files (system stacks only, so nothing blocks first paint). Total
    transfer under 40 KB. No client-side JavaScript except the form submit
    handler.
+
+## Audit (design-polish pass) and live proof
+
+Run against the deployed page, `https://drive-pricing.nishant345.workers.dev`,
+with headless Chrome (Playwright, real network, `networkidle`).
+
+| Check | Result |
+|---|---|
+| Desktop 1440x900 | 200, `scrollWidth == clientWidth == 1440`, no overflowing element, 0 console errors |
+| Phone 390x844 | 200, `scrollWidth == clientWidth == 390`, 0 overflowing elements, 0 console errors |
+| Small phone 360x780 | 200, `scrollWidth == clientWidth == 360`, 0 overflowing elements, 0 console errors |
+| Contrast, WCAG AA normal text (>= 4.5) | body 15.13, free line 10.65, strip label 9.66, Talk to us 15.13, strip caption 7.29, eyebrow 4.99, field label 4.99, footer 7.29, form note 7.29 |
+| Links | one link (`#waitlist`); no dead href, no external request |
+| CTA | `Talk to us` tags the row `business`, scrolls the form into view and focuses `#email`; first Tab from the top reaches `#email` |
+| Transfer budget (40 KB) | 4,205 bytes of assets + one HTML document; no web fonts, no framework |
+| Timing | TTFB 76 ms, DOMContentLoaded 158 ms, load 158 ms |
+| The real path | A browser at 390x844 typed an address and clicked the button; the live region read "You are on the list. One email when the drive is ready." with 0 console errors, and the row landed in D1 |
+
+The eyebrow heading failed AA at 3.48:1 on the first pass (`--ink-faint: #8a8377`);
+it is now `#6f6a5f` (4.99:1) and re-measured live.
+
+Screenshots: `live-desktop.png`, `live-phone.png`, `live-phone-360.png`,
+`live-phone-submitted.png` (the confirmed form state).
+
+### Live waitlist rows (`drive-waitlist`, `93c9f523-159c-4261-8541-d4c059906df3`)
+
+```
+id  email                  source        created_at (UTC)
+1   nish@0509.io           pricing-page  2026-09-29 17:15:22
+3   founder@example.com    pricing-page  2026-09-29 17:16:55
+5   team@acme.example      business      2026-09-29 17:18:37
+```
+
+Rows 3 and 5 are proof sign-ups typed into the live form (one per column); ids 2
+and 4 are the duplicate-insert attempts that correctly produced no second row.
