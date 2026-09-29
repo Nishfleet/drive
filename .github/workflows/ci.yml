@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Thin caller onto the fleet-ops reusable PR checks, the same as
+# siterep-public. The template's nish3451/shared-workflows caller cannot be
+# reached from the Nishfleet org (run 36598545237 failed on the workflow file).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main
+    with:
+      node-version: "24"
+      install-command: npm ci
+      verify-command: |
+        # No-glue gate: zero helper scripts.
+        test -z "$(git ls-files scripts bin tools ops "*.sh")"
+        npm test
+      scan-secrets: true
+      timeout-minutes: 5
