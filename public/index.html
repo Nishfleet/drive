@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — about $20 per TB a month</title>
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <meta property="og:title" content="Drive — about $20 per TB a month">
+  <meta property="og:description" content="2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23faf6ee'/%3E%3Crect x='6' y='9' width='20' height='14' rx='2' fill='none' stroke='%2321201c' stroke-width='2'/%3E%3Cpath d='M6 17h20' stroke='%2321201c' stroke-width='2'/%3E%3Ccircle cx='21' cy='20' r='1.6' fill='%231f3a5f'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <span class="wordmark">Drive</span>
+    <span class="tagline">A Finder drive for people and their agents</span>
+  </header>
+
+  <main>
+    <section class="price" aria-labelledby="price-heading">
+      <h1 id="price-heading">
+        <span class="qualifier">about</span>
+        <span class="amount">$20</span>
+        <span class="unit">per TB a&nbsp;month</span>
+      </h1>
+      <p class="sub">2¢ per GB, billed by the minute, pay only for what you store</p>
+      <p class="free">$1 free every month, no card needed</p>
+
+      <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
+        <label class="field-label" for="email">Email</label>
+        <div class="field-row">
+          <input id="email" name="email" type="email" required
+                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
+          <input type="hidden" name="source" value="pricing-page">
+          <button type="submit">Join the waitlist</button>
+        </div>
+        <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
+      </form>
+      <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
+    </section>
+
+    <section class="strip" aria-label="You pay only for what you store">
+      <div class="strip-bar" role="img"
+           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing">
+        <span class="strip-full">60% full &middot; $12</span>
+        <span class="strip-empty">empty &middot; $0</span>
+      </div>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into.</p>
+    </section>
+
+    <section class="examples" aria-labelledby="examples-heading">
+      <h2 id="examples-heading">Worked examples</h2>
+      <dl class="examples-list">
+        <div class="example">
+          <dt>500 GB for 3 days</dt>
+          <dd>about $1</dd>
+        </div>
+        <div class="example">
+          <dt>1 TB for half the month</dt>
+          <dd>about $10</dd>
+        </div>
+        <div class="example">
+          <dt>2 TB kept all month</dt>
+          <dd>about $40</dd>
+        </div>
+      </dl>
+      <p class="examples-note">Old versions are free to keep: today's saves stay a day, then one save a day for 30 days.</p>
+    </section>
+
+    <section class="columns" aria-label="What you get and what it costs">
+      <div class="column">
+        <h2>What you get</h2>
+        <ul>
+          <li>Your files in Finder, on macOS and Linux, streaming on demand</li>
+          <li>A folder your agents can read and write, where a delete can be undone</li>
+          <li>A safe copy of any folder for an agent to work in, which you approve or throw away</li>
+          <li>A spending cap you set; at the cap the drive goes read-only and nothing is deleted</li>
+        </ul>
+      </div>
+      <div class="column">
+        <h2>What it costs</h2>
+        <ul>
+          <li>2¢ per GB, billed by the minute, pay only for what you store</li>
+          <li>$1 free every month, no card needed</li>
+          <li>Downloads free up to 3&times; what you store, then 1¢ per GB</li>
+          <li>Version history free, no card to start</li>
+        </ul>
+      </div>
+      <div class="column business">
+        <h2>Business</h2>
+        <p>The same storage price, plus single sign-on, a SOC&nbsp;2 report, one company bill split by team, and priority support.</p>
+        <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>macOS and Linux. A drive folder, not a shared link. No card to start.</p>
+  </footer>
+
+  <script src="/waitlist.js" defer></script>
+</body>
+</html>
