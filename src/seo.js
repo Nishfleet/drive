@@ -77,6 +77,22 @@ export const PAGES = Object.freeze([
   Object.freeze({ path: "/usage.html", indexable: false }),
 ]);
 
+// The docs pages (drive issue #98), as the URLs a crawler reads. The docs are
+// built by VitePress from docs-site/, which owns their titles and their
+// metadata; this list is the one place the site-level files (the sitemap and
+// the root llms.txt) learn that they exist, and src/render-docs.js reads the
+// same list, so a page cannot be built without being listed here.
+export const DOC_PAGES = Object.freeze([
+  Object.freeze({ title: "Quickstart", path: "/docs/quickstart" }),
+  Object.freeze({ title: "How it works", path: "/docs/how-it-works" }),
+  Object.freeze({ title: "Agents", path: "/docs/agents" }),
+  Object.freeze({ title: "Pricing and your bill", path: "/docs/pricing" }),
+  Object.freeze({ title: "FAQ", path: "/docs/faq" }),
+  Object.freeze({ title: "Limits", path: "/docs/limits" }),
+  Object.freeze({ title: "Security", path: "/docs/security" }),
+  Object.freeze({ title: "Changelog", path: "/docs/changelog" }),
+]);
+
 /** The absolute URL of a public page, from its site-relative path. */
 export function pageUrl(page) {
   return absoluteUrl(page.path);
