@@ -141,10 +141,15 @@ main {
 }
 
 .price .sub,
+.price .ceiling,
 .price .free {
   margin: 0.7em 0 0;
   font-size: clamp(18px, 2.1vw, 22px);
   max-width: 34em;
+}
+
+.price .ceiling {
+  font-weight: 600;
 }
 
 .price .free {
@@ -473,6 +478,7 @@ main {
         <span class="unit">per TB a&nbsp;month</span>
       </h1>
       <p class="sub">2¢ per GB, billed by the minute. Never more than $15 a TB.</p>
+      <p class="ceiling">Extra TBs never more than $8 each.</p>
       <p class="free">$1 free every month, no card needed</p>
 
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
@@ -495,7 +501,7 @@ main {
         <span class="strip-full">60% full &middot; $12</span>
         <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into.</p>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, no bill passes $15 for the first TB or $8 for each TB after.</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
@@ -511,15 +517,11 @@ main {
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>about $23</dd>
-        </div>
-        <div class="example">
-          <dt>800 GB all month</dt>
-          <dd>$15, not $16</dd>
+          <dd>$23</dd>
         </div>
       </dl>
-      <p class="examples-note">Each extra TB never more than $8.</p>
-      <p class="examples-note">Old versions are free to keep: today's saves stay a day, then one save a day for 30 days.</p>
+      <p class="examples-note">Bills stop at the ceiling: the first TB never past $15, every extra TB never past $8 — so 2&nbsp;TB is $15 + $8 = $23.</p>
+      <p class="examples-note">Old versions stay free: today's saves a day, then one save a day for 30 days.</p>
     </section>
 
     <section class="columns" aria-label="What you get and what it costs">
