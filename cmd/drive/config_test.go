@@ -1,8 +1,10 @@
 package main
 
 import (
+	"html"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -76,9 +78,9 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	}
 }
 
-// The mount must carry the three VFS flags docs/build-spec.md names, on both
+// The mount must carry every VFS flag docs/build-spec.md names, on both
 // platforms, and use the platform's own rclone subcommand. --dir-cache-time is
-// one of them: S3 sends no change notifications, so without it a save from the
+// the fourth: S3 sends no change notifications, so without it a save from the
 // other machine waits out rclone's 5-minute default (issue #62).
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
@@ -97,6 +99,12 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
 			}
 		}
+		// The flag and its value are one pair: a plan that emitted
+		// --dir-cache-time with no value would still match the substring
+		// above, and rclone would take the next argument as the duration.
+		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
+			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
+		}
 		if !strings.Contains(line, "drive:drive-standin/u/1234") {
 			t.Errorf("%s: command line missing the device remote:\n%s", tc.goos, line)
 		}
@@ -112,16 +120,43 @@ func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
 		"<string>nfsmount</string>",
 		"<string>drive:drive-standin/u/1234</string>",
 		"<string>--vfs-cache-mode</string>",
-		"<string>--dir-cache-time</string>",
 		"<true/>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("launchd plist missing %q:\n%s", want, plist)
 		}
 	}
+	// ProgramArguments is an argv array: the flag and its value are two
+	// adjacent elements, and rclone would read the next element as the
+	// duration if the value were dropped.
+	args := plistProgramArguments(t, plist)
+	if !hasArgPair(args, "--dir-cache-time", "5s") {
+		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time 5s:\n%v", args)
+	}
 	if p := LaunchdPlistPath("/Users/test"); p != "/Users/test/Library/LaunchAgents/com.nishfleet.drive.plist" {
 		t.Errorf("LaunchdPlistPath = %q", p)
 	}
+}
+
+// plistProgramArguments returns the <string> elements of the plist's
+// ProgramArguments array, in order, as argv elements.
+func plistProgramArguments(t *testing.T, plist string) []string {
+	t.Helper()
+	start := strings.Index(plist, "<key>ProgramArguments</key>")
+	if start < 0 {
+		t.Fatal("plist has no ProgramArguments:" + plist)
+	}
+	open := strings.Index(plist[start:], "<array>")
+	closee := strings.Index(plist[start:], "</array>")
+	if open < 0 || closee < 0 {
+		t.Fatal("plist ProgramArguments is not an array:" + plist)
+	}
+	body := plist[start+open : start+closee]
+	var args []string
+	for _, m := range regexp.MustCompile(`<string>(.*?)</string>`).FindAllStringSubmatch(body, -1) {
+		args = append(args, html.UnescapeString(m[1]))
+	}
+	return args
 }
 
 func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
@@ -137,9 +172,23 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
+	// The flag and value must be adjacent on the ExecStart line (not in a comment).
+	execStart := extractExecStart(unit)
+	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", "5s") {
+		t.Errorf("ExecStart line missing adjacent --dir-cache-time 5s:\n%s", execStart)
+	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)
 	}
+}
+
+func extractExecStart(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
@@ -169,6 +218,18 @@ func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("temp files left behind: %v", entries)
 	}
+}
+
+// hasArgPair reports whether args carries flag immediately followed by value,
+// which is the shape rclone's flag parser requires: a flag whose value is a
+// separate argv element, not one string.
+func hasArgPair(args []string, flag, value string) bool {
+	for i, a := range args {
+		if a == flag {
+			return i+1 < len(args) && args[i+1] == value
+		}
+	}
+	return false
 }
 
 func TestRcloneConfigRedactedHidesBothKeys(t *testing.T) {

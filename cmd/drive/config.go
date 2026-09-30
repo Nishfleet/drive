@@ -25,6 +25,7 @@ const (
 	VFSFlagCacheMode     = "--vfs-cache-mode full"
 	VFSFlagWriteBack     = "--vfs-write-back 5s"
 	VFSFlagCacheMax      = "--vfs-cache-max-size 20G"
+	VFSFlagDirCacheTime  = "--dir-cache-time " + vfsDirCacheTimeValue
 	vfsCacheModeValue    = "full"
 	vfsWriteBackValue    = "5s"
 	vfsCacheMaxValue     = "20G"
