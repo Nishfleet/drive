@@ -387,7 +387,9 @@ func TestParseAPIBaseRefusesCredentialsInTheURL(t *testing.T) {
 }
 
 // The secret flag is the finding this issue opens with. It must be an error
-// that names the ways that are safe, not a silently ignored flag.
+// that names the ways that are safe, not a silently ignored flag — and because
+// the typed value is already in this process's argv, the refusal also has to say
+// that the key it exposed should be rolled.
 func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 	for _, args := range [][]string{
 		{"--secret-key", "SECRETVALUE", "--endpoint", "http://x", "--bucket", "b", "--access-key", "a"},
@@ -403,6 +405,14 @@ func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
 			}
+		}
+		// The refusal must not echo the value it refused, and must tell the
+		// person their key is exposed by having been typed.
+		if strings.Contains(err.Error(), "SECRETVALUE") {
+			t.Errorf("runMount(%q) error %q echoes the value it refused", args, err)
+		}
+		if !strings.Contains(err.Error(), "roll") {
+			t.Errorf("runMount(%q) error %q does not say to roll the key that was in argv", args, err)
 		}
 	}
 }

@@ -142,7 +142,11 @@ func runMount(args []string) error {
 		}
 	})
 	if refused {
-		return fmt.Errorf("--secret-key is not accepted: %s", secretWays(RcloneConfigPath(common.home)))
+		// The value did land in this process's command line before it was
+		// refused — the shell history and ps already hold it — so the refusal
+		// cannot unsay that. It says so, and it says to replace the key, because
+		// a value that has been through argv is a value that has been exposed.
+		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
 	}
 	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
 	if err != nil {
