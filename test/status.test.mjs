@@ -4,14 +4,16 @@
 //    state a device is in, its sync state, upload progress, and the words the
 //    page says for each. Every branch, including the "waiting for you" and
 //    "unreachable" ones the page must not confuse.
-// 2. The shipped page: public/get-started.html is a static asset and cannot
-//    import the module, so this reads the file and fails when its copy, its
-//    poll interval or its thresholds drift from src/status.js. Same gate
-//    src/pricing.js and test/pricing-copy.test.mjs use for the price.
+// 2. The first-run page's renderer, src/get-started.js: the page now renders
+//    from these modules through it (issue #70), so the copy the page shows is
+//    read by calling the builders rather than by grepping a shipped HTML file
+//    for a sentence. The old drift tests are gone with the second copy of the
+//    words they policed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -26,14 +28,32 @@ import {
   connectionStatus,
   formatBytes,
   handleFirstRunStatusRequest,
+  signedInAccount,
   syncStatus,
   uploadProgress,
 } from "../src/status.js";
+import {
+  ageMs,
+  connectionLine,
+  connectionStateForStatus,
+  connectionStates,
+  deviceSyncState,
+  emptyState,
+  installCommand,
+  isConnected,
+  lastSyncText,
+  pollIntervalMs,
+  stateCellText,
+  statusEndpoint,
+  stepLines,
+  syncErrorNotification,
+  uploadFragments,
+  uploadLine,
+} from "../src/get-started.js";
 
-const page = readFileSync(
-  new URL("../public/get-started.html", import.meta.url),
-  "utf8",
-);
+// The page's shell, read for the structure the module fills and the script tag
+// that loads it. Its copy is not read here: there is no copy in it to drift.
+const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const pricingPage = readFileSync(
   new URL("../public/index.html", import.meta.url),
   "utf8",
@@ -187,21 +207,60 @@ test("the desktop notification is one sentence each way", () => {
 });
 
 test("the status endpoint answers a signed-out account honestly", () => {
+  // The account gate (drive issue #45): without a signed-in account there is
+  // no device data to read, so the handler's own answer to a null account is
+  // the 401 below. With an account it answers `waiting` with no devices, the
+  // same shape the real store returns for an account with no devices yet.
   const response = handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status"),
+    null,
   );
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 401);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  // No device can have signed in before the device store lands (#22), so the
-  // true answer is waiting with no devices. The page reads exactly this shape.
+  // A cookie session, so the challenge names the scheme sign-in mints.
+  assert.equal(response.headers.get("www-authenticate"), "Cookie");
   return response.json().then((body) => {
-    assert.deepEqual(body, { state: "waiting", devices: [] });
+    assert.deepEqual(body, { error: failureMessage("unauthorized") });
+    assert.equal("devices" in body, false, "a signed-out poll must not read devices");
   });
+});
+
+test("a signed-in account reads waiting, and no device data leaks without one", async () => {
+  const account = { id: "1", name: "Your drive" };
+  const signedIn = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    account,
+  );
+  assert.equal(signedIn.status, 200);
+  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [] });
+
+  // The account is a required argument: a call that forgets it is the 401, not
+  // an open endpoint, so a future route cannot accidentally serve anonymous.
+  const forgot = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+  );
+  assert.equal(forgot.status, 401);
+});
+
+test("no request can prove an account until the sign-in flow lands", () => {
+  // Build step 4 (#5) owns the session; until then signedInAccount() is the
+  // one swap point and returns null for every request, signed-in cookie or
+  // not, so the endpoint is closed rather than open (north star: Safe).
+  assert.equal(signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
+  assert.equal(
+    signedInAccount(
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie: "drive_session=made-up" },
+      }),
+    ),
+    null,
+  );
 });
 
 test("the status endpoint names the one method it serves", () => {
   const response = handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status", { method: "POST" }),
+    { id: "1", name: "Your drive" },
   );
   assert.equal(response.status, 405);
   assert.equal(response.headers.get("allow"), "GET");
@@ -210,42 +269,20 @@ test("the status endpoint names the one method it serves", () => {
 test("the Worker routes the page's poll to the status handler", async () => {
   // The page's endpoint has to be reachable through the Worker, not only by
   // importing the module in a test: /api/* runs the Worker, so an unrouted
-  // path would fall through to the assets and 404 on every poll.
+  // path would fall through to the assets and 404 on every poll. With no
+  // sign-in flow yet the Worker's gate is closed, so the route answers 401.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
     const response = await worker.fetch(
       new Request(`https://drive.test${path}`),
       env,
     );
-    assert.equal(response.status, 200, `${path} must reach the handler`);
-    assert.deepEqual(await response.json(), { state: "waiting", devices: [] });
+    assert.equal(response.status, 401, `${path} must reach the handler`);
+    assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
   const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
-});
-
-test("the upload line is one set of words for the CLI and the page", () => {
-  // The page cannot import the module, so it carries the same fragments. A
-  // drift here would print a different line in `drive status` than on screen.
-  for (const [name, fragment] of Object.entries(UPLOAD_LABEL)) {
-    assert.ok(
-      page.includes(fragment),
-      `the page must carry the ${name} fragment "${fragment}"`,
-    );
-  }
-  assert.equal(
-    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
-    "Uploading 3 files: 300 MB of 1.2 GB (25%)",
-  );
-  assert.equal(
-    uploadProgress({ uploadedBytes: 0, totalBytes: 1, files: 1 }).label,
-    "Uploading 1 file: 0 B of 1 B (0%)",
-  );
-  assert.equal(
-    uploadProgress({ uploadedBytes: 5, totalBytes: 10 }).label,
-    "Uploading: 5 B of 10 B (50%)",
-  );
 });
 
 test("the pricing page links to the first-run page", () => {
@@ -261,135 +298,243 @@ test("the pricing page links to the first-run page", () => {
   );
 });
 
-test("the page's sync-state labels are the module's labels", () => {
-  // The page re-implements the state table (it cannot import the module), so
-  // every label it shows has to be one the module also produces: a state
-  // named two ways in two surfaces is the bug this gate catches.
-  const labels = new Set();
-  for (const nowValue of [
-    { syncError: "storage down" },
-    { pendingBytes: 3 },
-    {},
-    { lastSyncAt: iso(30 * 1000) },
-    { lastSyncAt: iso(60 * 60 * 1000) },
-  ]) {
-    const status = syncStatus(nowValue, now);
-    labels.add(status.label);
-    // `detail` is the device's own error text, except the one the module pins.
-    if (status.detail && !status.detail.includes("storage")) {
-      labels.add(status.detail);
-    }
-  }
-  assert.deepEqual(
-    [...labels].sort(),
-    ["No syncs yet", "Quiet for a while", "Sync error", "Synced", "Uploading"],
+test("the page's state cell shows the module's own sync state and words", () => {
+  // The renderer calls syncStatus itself (deviceSyncState), so the page and
+  // the CLI cannot name a state two ways. A fresh sync is "Synced"; an hour
+  // of quiet adds the module's detail; an error keeps the device's text.
+  assert.deepEqual(deviceSyncState({ syncError: "storage down" }), {
+    state: "error",
+    label: "Sync error",
+    detail: "storage down",
+  });
+  assert.deepEqual(deviceSyncState({ pendingBytes: 3 }), {
+    state: "syncing",
+    label: "Uploading",
+    detail: null,
+  });
+  assert.deepEqual(deviceSyncState({}), {
+    state: "never",
+    label: "No syncs yet",
+    detail: null,
+  });
+  assert.deepEqual(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() }), {
+    state: "synced",
+    label: "Synced",
+    detail: null,
+  });
+  assert.equal(
+    deviceSyncState({ lastSyncAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() }).detail,
+    "Quiet for a while",
   );
-  for (const label of labels) {
-    assert.ok(page.includes(label), `the page must show the "${label}" label`);
-  }
+  // The cell text is the module's label, and only the join is the page's.
+  assert.equal(
+    stateCellText(deviceSyncState({ syncError: "storage down" })),
+    "Sync error — storage down",
+  );
+  assert.equal(
+    stateCellText(deviceSyncState({ lastSyncAt: new Date(Date.now() - 30_000).toISOString() })),
+    "Synced",
+  );
+  assert.throws(() => stateCellText({ detail: "x" }), TypeError);
+});
+
+test("an unreadable device date is reported, never shown as a number", () => {
+  // The row's age helper: null for a date the page cannot read, so the caller
+  // reports the device rather than rendering NaN. A non-finite `now` is a
+  // programmer error and throws, like every other builder here.
+  assert.equal(ageMs("not-a-date", now), null);
+  assert.equal(ageMs(null, now), null);
+  assert.equal(ageMs(undefined, now), null);
+  assert.equal(ageMs(new Date(now - 5000), now), 5000);
+  assert.equal(ageMs(new Date(now - 5000).toISOString(), now), 5000);
+  assert.equal(ageMs(now - 5000, now), 5000);
+  assert.throws(() => ageMs("not-a-date", "nope"), TypeError);
 });
 
 test("the page's Devices table has a last-sync column and its empty states", () => {
-  assert.match(page, /<th scope="col">Last sync<\/th>/);
-  for (const id of ["devices", "devices-empty", "activity-empty", "activity-progress"]) {
-    assert.ok(page.includes(`id="${id}"`), `the page must carry #${id}`);
+  assert.match(shell, /<th scope="col">Last sync<\/th>/);
+  for (const id of ["devices", "devices-body", "devices-empty", "activity-empty", "activity-progress"]) {
+    assert.ok(shell.includes(`id="${id}"`), `the shell must carry #${id}`);
   }
-  // Both empty states start hidden-or-shown on purpose, never both visible:
-  // the page must be able to show one message per screen, not two.
-  assert.match(page, /id="devices-empty">/);
-  assert.match(page, /id="activity-empty">/);
 });
 
-test("the shipped page carries the install command and its copy button", () => {
-  assert.equal(page.includes(`id="install-command">${INSTALL_COMMAND}<`), true);
-  assert.match(page, /<button type="button" id="copy-command">Copy<\/button>/);
-  // The copy writes to the clipboard and says what happened either way.
-  assert.match(page, /clipboard\.writeText/);
-  assert.match(page, /Could not copy it for you/);
-});
-
-test("the shipped page carries the three steps, in order", () => {
-  for (const step of FIRST_RUN_STEPS) {
-    assert.ok(
-      page.includes(`<h3>${step.title}</h3>`),
-      `the page must carry the step titled ${step.title}`,
-    );
-    assert.ok(
-      page.includes(`<p>${step.body}</p>`),
-      `the page must carry the step text for ${step.title}`,
-    );
-  }
-  const order = FIRST_RUN_STEPS.map((step) => page.indexOf(`<h3>${step.title}</h3>`));
-  assert.deepEqual(order, [...order].sort((a, b) => a - b), "steps out of order");
-});
-
-test("the page's script reads the same words, endpoint and interval", () => {
-  // The page cannot import src/status.js, so these are the strings it must
-  // carry. Drifting copy fails here instead of shipping a page that disagrees
-  // with the module and its tests.
+test("the shell is structure only: the module's copy is not re-declared in it", () => {
+  // The old gate policed a second copy of every sentence; this one fails if a
+  // second copy is ever reintroduced. The shell carries structure and styles;
+  // every word the page shows comes from src/status.js through the renderer.
+  assert.ok(
+    !shell.includes(INSTALL_COMMAND),
+    "the shell must not carry the install command; the renderer writes it from the module",
+  );
   for (const entry of Object.values(CONNECTION_COPY)) {
-    assert.ok(
-      page.includes(entry.what),
-      `the page must carry "${entry.what}" verbatim`,
-    );
-    assert.ok(
-      page.includes(entry.next),
-      `the page must carry "${entry.next}" verbatim`,
-    );
+    assert.ok(!shell.includes(entry.what), `the shell must not carry "${entry.what}"`);
+    assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
   }
   for (const entry of Object.values(EMPTY_STATES)) {
-    assert.ok(page.includes(entry.what), `the page must carry "${entry.what}"`);
-    assert.ok(page.includes(entry.next), `the page must carry "${entry.next}"`);
+    assert.ok(!shell.includes(entry.what), `the shell must not carry "${entry.what}"`);
+    assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
+  }
+  for (const step of FIRST_RUN_STEPS) {
+    assert.ok(!shell.includes(step.body), `the shell must not carry the step text for "${step.title}"`);
+  }
+  for (const fragment of Object.values(UPLOAD_LABEL)) {
+    assert.ok(!shell.includes(fragment), `the shell must not carry the upload fragment "${fragment}"`);
   }
   assert.ok(
-    page.includes(`const COMMAND = "${INSTALL_COMMAND}";`),
-    "the page must copy the same one command",
+    !shell.includes(SYNC_ERROR_NOTIFICATION.title),
+    "the shell must not carry the notification title",
   );
+  // The signed-out words are the API's (issue #45); the page maps a 401 to
+  // its waiting line and never carries a copy of them.
   assert.ok(
-    page.includes(`const STATUS_ENDPOINT = "${STATUS_ENDPOINT}";`),
-    "the page must poll the endpoint the Worker routes",
-  );
-  assert.ok(
-    page.includes(`const POLL_INTERVAL_MS = ${POLL_INTERVAL_MS};`),
-    "the page must poll on the interval the module pins",
-  );
-  assert.ok(
-    page.includes(`const CONNECTED_WINDOW_MINUTES = ${CONNECTED_WINDOW_MS / 60000};`),
-    "the page must use the same connected window",
-  );
-  assert.ok(
-    page.includes(`const SYNCED_WINDOW_MINUTES = ${SYNCED_WINDOW_MS / 60000};`),
-    "the page must use the sync window the module pins",
+    !shell.includes(FAILURE_MESSAGES.unauthorized.what),
+    "the shell must not carry the API's signed-out words",
   );
 });
 
-test("the page stops asking once it is connected", () => {
-  // A page that keeps polling forever is a battery bug on the one screen a
-  // new person leaves open, so the connected state clears its own timer.
-  assert.match(page, /clearInterval\(timer\)/);
-  assert.match(page, /state === "connected"/);
+test("the shell loads the renderer as a module and carries the copy button", () => {
+  assert.match(shell, /<script type="module" src="\.\/src\/get-started\.js"><\/script>/);
+  assert.match(shell, /<button type="button" id="copy-command">Copy<\/button>/);
+  assert.match(shell, /<code id="install-command"><\/code>/);
+  assert.match(shell, /<ol class="steps" id="steps">/);
+});
+
+test("the renderer's wiring never lets a failed copy pass silently", () => {
+  // Read from the module, not the page: this is the one copy of these words.
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(source, /clipboard\.writeText/);
+  assert.match(source, /Could not copy it for you/);
+  assert.match(source, /Copied\. Paste it into your terminal\./);
+});
+
+test("the renderer shows the module's words: command, steps, states, fragments", () => {
+  // These are behavior assertions on the builders the page is built from, so
+  // a page sentence can only change by changing the module it comes from.
+  assert.equal(installCommand(), INSTALL_COMMAND);
+  assert.equal(statusEndpoint(), STATUS_ENDPOINT);
+  assert.equal(pollIntervalMs(), POLL_INTERVAL_MS);
+  assert.deepEqual(stepLines(), FIRST_RUN_STEPS.map((s) => ({ title: s.title, body: s.body })));
+  assert.deepEqual(emptyState("devices"), EMPTY_STATES.devices);
+  assert.deepEqual(emptyState("activity"), EMPTY_STATES.activity);
+  assert.deepEqual(syncErrorNotification(), SYNC_ERROR_NOTIFICATION);
+  assert.deepEqual(uploadFragments(), UPLOAD_LABEL);
+  for (const state of connectionStates()) {
+    assert.deepEqual(connectionLine(state), CONNECTION_COPY[state]);
+  }
+  assert.throws(() => connectionLine("no-such-state"), TypeError);
+  assert.throws(() => emptyState("no-such-screen"), TypeError);
+});
+
+test("the renderer's upload line is the module's line", () => {
+  assert.equal(
+    uploadLine({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }),
+    uploadProgress({ uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 }).label,
+  );
+  assert.equal(
+    uploadLine({ uploadedBytes: 0, totalBytes: 1, files: 1 }),
+    "Uploading 1 file: 0 B of 1 B (0%)",
+  );
+  assert.equal(uploadLine({ uploadedBytes: 5, totalBytes: 10 }), "Uploading: 5 B of 10 B (50%)");
+  assert.equal(uploadLine({ uploadedBytes: 0, totalBytes: 0 }), "Up to date");
+});
+
+test("a 401 is the waiting line, not an unreachable service", () => {
+  // The account gate (issue #45) answers 401 until the sign-in lands, and this
+  // page is where the sign-in lands, so a 401 IS the waiting state: the Mac
+  // has not signed in, and the waiting line names the real next step.
+  // Reporting it as "unreachable" would tell someone to wait on a service
+  // that is answering. The mapping is a pure function over the response
+  // status, and both arms are states the module's table defines, so a rename
+  // cannot leave the line blank.
+  assert.equal(connectionStateForStatus(401), "waiting");
+  assert.equal(connectionStateForStatus(403), "unreachable");
+  assert.equal(connectionStateForStatus(500), "unreachable");
+  assert.equal(connectionStateForStatus(503), "unreachable");
+  for (const status of [401, 403, 500, 503]) {
+    assert.ok(
+      connectionStates().includes(connectionStateForStatus(status)),
+      `the renderer must define a line for the state a ${status} maps to`,
+    );
+  }
+  assert.throws(() => connectionStateForStatus("401"), TypeError);
+  assert.throws(() => connectionStateForStatus(null), TypeError);
+});
+
+test("the Last-sync cell says so, never blank, for a device with no sync", () => {
+  // The row's date column, distinct from its state column: a device that has
+  // never synced takes the module's own "no syncs yet" label, the same words
+  // syncStatus reports for the `never` state. A blank cell would read as a
+  // missing value rather than a device that has not synced.
+  assert.equal(lastSyncText({}), "No syncs yet");
+  assert.equal(lastSyncText({ lastSyncAt: null }), "No syncs yet");
+  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), "No syncs yet");
+  // The words are the module's: the same label syncStatus produces, asserted
+  // against the module rather than a copy in the renderer.
+  assert.equal(lastSyncText({}), syncStatus({}, now).label);
+  // A real date renders as a local time, not the module's fallback.
+  const shown = lastSyncText({ lastSyncAt: new Date(now) });
+  assert.notEqual(shown, "No syncs yet");
+  assert.ok(shown.length > 0);
+});
+
+test("a signed-in Mac inside the window is connected, and the page stops asking", () => {
+  // The decision the page acts on to stop polling, pinned behaviourally, then
+  // the one thing about it that is wiring: the connected state clears its own
+  // timer, because polling forever is a battery bug on the one screen a new
+  // person leaves open.
+  const fresh = new Date(now - 1000).toISOString();
+  const stale = new Date(now - 60 * 60 * 1000).toISOString();
+  assert.equal(isConnected({ state: "waiting", devices: [] }, now), false);
+  assert.equal(
+    isConnected({ devices: [{ lastSeenAt: fresh }] }, now),
+    true,
+    "a device inside the connected window flips the page to connected",
+  );
+  assert.equal(
+    isConnected({ devices: [{ lastSeenAt: stale }] }, now),
+    false,
+    "a sign-in from an hour ago is not the sign-in the page is waiting for",
+  );
+  assert.equal(
+    isConnected({ state: "connected", devices: [] }, now),
+    true,
+    "the service's own connected state is connected",
+  );
+  // The window's edge belongs to connected, one millisecond past it does not.
+  assert.equal(
+    isConnected(
+      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() }] },
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    isConnected(
+      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() }] },
+      now,
+    ),
+    false,
+  );
+  assert.throws(() => isConnected(null), TypeError);
+
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(source, /clearInterval\(timer\)/);
+  assert.match(source, /isConnected\(payload\)/);
 });
 
 test("the page raises one desktop notification per sync error", () => {
-  assert.match(page, /Notification\.permission !== "granted"/);
-  assert.match(page, /notified\.has\(key\)/);
-  assert.match(page, /Notification\.requestPermission\(\)/);
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(source, /Notification\.permission !== "granted"/);
+  assert.match(source, /notified\.has\(key\)/);
   // The permission is asked for only after an error is on the page, never on
-  // load: a prompt is not the first thing a new person meets.
-  const askAt = page.indexOf("Notification.requestPermission()");
-  const onLoad = page.indexOf("poll();\ntimer = window.setInterval");
-  assert.ok(askAt < onLoad, "the request is a function, not a load-time prompt");
-  assert.equal(/^[^/]*Notification\.requestPermission/m.test(page.slice(0, askAt)), false);
-});
-
-test("the page's copy values match the notification table", () => {
-  const script = page.slice(page.indexOf("<script>"));
-  assert.ok(
-    script.includes(`title: "${SYNC_ERROR_NOTIFICATION.title}"`),
-    "the notification title must match the table",
-  );
-  assert.ok(
-    script.includes(`body: "${SYNC_ERROR_NOTIFICATION.body}"`),
-    "the notification body must match the table",
-  );
+  // load: every request sits inside the maybeAskToNotify function, none at
+  // the module's top level.
+  const functionStart = source.indexOf("function maybeAskToNotify");
+  assert.ok(functionStart > 0, "the renderer must gate its notification prompt");
+  for (const match of source.matchAll(/Notification\.requestPermission\(\)/g)) {
+    assert.ok(
+      match.index > functionStart,
+      "the prompt is a function, not a load-time prompt",
+    );
+  }
 });

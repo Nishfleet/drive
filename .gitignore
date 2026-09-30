@@ -1,7 +1,17 @@
 node_modules/
 dist/
+# The built drive CLI binary. `go build ./...` in the repo root writes ./drive;
+# it is a build artifact, never committed. The pattern is anchored to the repo
+# root: a bare `drive` also ignored the cmd/drive source directory, so a new
+# file there was added to the working tree and silently left out of the commit.
+/drive
 .env
 .env.*
 .dev.vars
 .wrangler/
 .cloudflare/
+
+# Go CLI
+/drive
+/cmd/drive/drive
+*.test

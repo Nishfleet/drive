@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Drive — your files</title>
+  <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
+  <meta name="robots" content="noindex">
+  <style>
+/* Web Files page (drive issue #31): the palette and type of the pricing and
+   first-run pages, so the product reads as one thing. Mobile first: every
+   action is a 44px tap target, the list is one column at 360px, and the viewer
+   fills the screen on a phone. System font stacks only: no web font files, so
+   nothing blocks first paint. */
+
+:root {
+  --paper: #faf6ee;
+  --paper-raised: #fffdf8;
+  --ink: #21201c;
+  --ink-soft: #56514a;
+  --ink-faint: #6f6a5f;
+  --rule: #ddd5c5;
+  --accent: #1f3a5f;
+  --accent-soft: #e6ecf3;
+  --good: #1d5c3a;
+  --bad: #8a2b2b;
+  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --tap: 44px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 8px;
+  top: 8px;
+  z-index: 30;
+  padding: 8px 12px;
+  background: var(--ink);
+  color: var(--paper);
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px clamp(14px, 4vw, 40px);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.account {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.crumbs {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 15px;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+
+.crumbs a,
+.crumbs button {
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 15px;
+  text-decoration: underline;
+  cursor: pointer;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbs .here {
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px clamp(14px, 4vw, 40px) 0;
+}
+
+.tabs button {
+  flex: 1 1 0;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 6px 6px 0 0;
+  border-bottom-color: transparent;
+  cursor: pointer;
+}
+
+.tabs button[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--paper-raised);
+  border-bottom-color: var(--paper-raised);
+}
+
+main {
+  padding: 0 clamp(14px, 4vw, 40px) 96px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.page-line {
+  margin: 16px 0;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.status {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+.status[data-kind="error"] {
+  color: var(--bad);
+  background: #fbeae7;
+  font-weight: 600;
+}
+
+.status[data-kind="done"] {
+  color: var(--good);
+  background: #e8f2ea;
+  font-weight: 600;
+}
+
+.status:empty {
+  display: none;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.row .icon {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.row .meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row .name {
+  display: block;
+  width: 100%;
+  padding: 6px 0;
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row .name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.row .sub {
+  margin: -2px 0 0;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+.row .actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row .actions a,
+.row .actions button {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.row .actions button.danger {
+  color: var(--bad);
+}
+
+.empty {
+  margin: 24px 0;
+  padding: 22px 18px;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.empty .what {
+  margin: 0;
+  font-weight: 600;
+}
+
+.empty .next {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+}
+
+.upload {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 15;
+}
+
+.upload button {
+  min-height: 52px;
+  padding: 0 26px;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--paper-raised);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 26px;
+  box-shadow: 0 6px 18px rgba(31, 58, 95, 0.22);
+  cursor: pointer;
+}
+
+.upload button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* The viewer fills a phone and sits as a card on a desktop. */
+dialog.viewer {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--paper-raised);
+}
+
+dialog.viewer::backdrop {
+  background: rgba(20, 20, 18, 0.55);
+}
+
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px clamp(14px, 4vw, 24px);
+  border-bottom: 1px solid var(--rule);
+}
+
+.viewer-head .title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 19px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-head button,
+.viewer-head a {
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.viewer-body {
+  display: grid;
+  place-items: center;
+  min-height: 60dvh;
+  padding: 16px;
+  overflow: auto;
+}
+
+.viewer-body img,
+.viewer-body video {
+  max-width: 100%;
+  max-height: 76dvh;
+  border-radius: 4px;
+}
+
+.viewer-body audio {
+  width: min(520px, 100%);
+}
+
+.viewer-body iframe {
+  width: 100%;
+  height: 76dvh;
+  border: 0;
+  border-radius: 4px;
+}
+
+.viewer-body pre {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  background: #f3efe5;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.viewer-body .no-preview {
+  max-width: 30em;
+  text-align: center;
+  color: var(--ink-soft);
+}
+
+@media (min-width: 720px) {
+  dialog.viewer {
+    width: min(880px, 92vw);
+    height: auto;
+    max-height: 88dvh;
+    margin: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#file-list-heading">Skip to your files</a>
+  <header class="topbar">
+    <span class="wordmark">Drive</span>
+    <span class="account" id="account">Your drive</span>
+    <span class="spacer"></span>
+    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
+  </header>
+
+  <nav class="tabs" aria-label="Views">
+    <button type="button" id="tab-files" aria-pressed="true">Files</button>
+    <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
+  </nav>
+
+  <main>
+    <h1 id="file-list-heading">Your files</h1>
+    <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <ul class="list" id="file-list" aria-labelledby="file-list-heading"></ul>
+    <div class="empty" id="empty" hidden>
+      <p class="what" id="empty-what"></p>
+      <p class="next" id="empty-next"></p>
+    </div>
+  </main>
+
+  <div class="upload">
+    <input type="file" id="file-input" multiple hidden>
+    <button type="button" id="upload-button">Upload</button>
+  </div>
+
+  <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
+    <div class="viewer-head">
+      <h2 class="title" id="viewer-title">File</h2>
+      <a id="viewer-download" href="#" download>Download</a>
+      <button type="button" id="viewer-close">Close</button>
+    </div>
+    <div class="viewer-body" id="viewer-body"></div>
+  </dialog>
+
+  <script>
+// Web Files page (drive issue #31). The words and the arithmetic live in
+// src/files.js; the page is a static asset and cannot import it, so
+// test/files.test.mjs reads this file and fails CI when a sentence, an
+// endpoint or the 30-day window drifts from that module.
+const FILES_ENDPOINT = "/api/files";
+const PREVIEW_ENDPOINT = "/api/files/preview";
+const DOWNLOAD_ENDPOINT = "/api/files/download";
+const UPLOAD_ENDPOINT = "/api/files/upload";
+const DELETE_ENDPOINT = "/api/files/delete";
+const RESTORE_ENDPOINT = "/api/files/restore";
+const RECENTLY_DELETED_DAYS = 30;
+const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
+
+// The page's copy for a preview, one entry per kind src/files.js names. A kind
+// with no viewer still says the one thing to do.
+const PREVIEW_COPY = {
+  image: { open: "Opens the picture in the page.", fallback: "" },
+  video: { open: "Plays the video in the page.", fallback: "" },
+  audio: { open: "Plays the sound in the page.", fallback: "" },
+  pdf: { open: "Opens the PDF in the page.", fallback: "" },
+  text: { open: "Shows the text in the page.", fallback: "" },
+  file: {
+    open: "",
+    fallback: "This kind of file has no preview. Download it to open it.",
+  },
+};
+
+const EMPTY_STATES = {
+  folder: {
+    what: "This folder is empty.",
+    next: "Upload a file, or open another folder.",
+  },
+  root: {
+    what: "Your drive is empty.",
+    next: "Upload your first file to see it here.",
+  },
+  trash: {
+    what: "Nothing has been deleted.",
+    next: "Files you delete land here for 30 days, ready to put back.",
+  },
+};
+
+const UPLOAD_COPY = {
+  empty: "Choose at least one file to upload.",
+  done: "Uploaded.",
+};
+const DELETE_COPY = {
+  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  done: "Moved to Recently deleted.",
+};
+const RESTORE_COPY = { done: "Put back." };
+
+const list = document.getElementById("file-list");
+const empty = document.getElementById("empty");
+const emptyWhat = document.getElementById("empty-what");
+const emptyNext = document.getElementById("empty-next");
+const statusLine = document.getElementById("status");
+const crumbs = document.getElementById("crumbs");
+const uploadButton = document.getElementById("upload-button");
+const fileInput = document.getElementById("file-input");
+const viewer = document.getElementById("viewer");
+const viewerTitle = document.getElementById("viewer-title");
+const viewerBody = document.getElementById("viewer-body");
+const viewerDownload = document.getElementById("viewer-download");
+const viewerClose = document.getElementById("viewer-close");
+const tabFiles = document.getElementById("tab-files");
+const tabDeleted = document.getElementById("tab-deleted");
+
+let path = "/";
+let view = "folder";
+
+function say(message, kind) {
+  statusLine.textContent = message;
+  statusLine.dataset.kind = kind || "";
+}
+
+function api(url, options) {
+  return fetch(url, options).then(async (response) => {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || "That did not work. Try again in a moment.");
+    }
+    return payload;
+  });
+}
+
+function crumbsForParts(parts) {
+  crumbs.textContent = "";
+  const root = document.createElement("button");
+  root.type = "button";
+  root.textContent = "Your drive";
+  root.addEventListener("click", () => {
+    path = "/";
+    refresh();
+  });
+  crumbs.append(root);
+  let walked = "";
+  parts.forEach((part, index) => {
+    const sep = document.createElement("span");
+    sep.textContent = "/";
+    sep.setAttribute("aria-hidden", "true");
+    crumbs.append(sep);
+    walked += "/" + part;
+    if (index === parts.length - 1) {
+      const here = document.createElement("span");
+      here.className = "here";
+      here.textContent = part;
+      crumbs.append(here);
+    } else {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.textContent = part;
+      const target = walked;
+      link.addEventListener("click", () => {
+        path = target;
+        refresh();
+      });
+      crumbs.append(link);
+    }
+  });
+}
+
+function iconFor(kind) {
+  return { folder: "Dir", image: "Img", video: "Vid", audio: "Aud", pdf: "PDF", text: "Txt", file: "Fil" }[kind] || "Fil";
+}
+
+function isPreviewable(kind) {
+  return kind !== "file" && kind !== "folder";
+}
+
+function typeLabel(kind) {
+  return { folder: "Folder", image: "Picture", video: "Video", audio: "Sound", pdf: "PDF", text: "Text", file: "File" }[kind] || "File";
+}
+
+function rowFor(row) {
+  const li = document.createElement("li");
+  li.className = "row";
+
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = iconFor(row.kind);
+  li.append(icon);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const name = document.createElement("button");
+  name.type = "button";
+  name.className = "name";
+  name.textContent = row.name;
+  name.addEventListener("click", () => {
+    if (row.kind === "folder") {
+      path = row.path;
+      view = "folder";
+      setTab();
+      refresh();
+    } else {
+      openViewer(row);
+    }
+  });
+  meta.append(name);
+  const sub = document.createElement("p");
+  sub.className = "sub";
+  sub.textContent = row.kind === "folder" ? "Folder" : [typeLabel(row.kind), row.sizeLabel, row.whenLabel].filter(Boolean).join(" · ");
+  meta.append(sub);
+  li.append(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (row.kind === "folder") {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "Open";
+    open.addEventListener("click", () => {
+      path = row.path;
+      view = "folder";
+      setTab();
+      refresh();
+    });
+    actions.append(open);
+  } else {
+    const download = document.createElement("a");
+    download.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    download.download = row.name;
+    download.textContent = "Download";
+    actions.append(download);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "danger";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => removeFile(row));
+    actions.append(del);
+  }
+  li.append(actions);
+  return li;
+}
+
+function trashRowFor(row) {
+  const li = document.createElement("li");
+  li.className = "row";
+
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = iconFor("file");
+  li.append(icon);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const name = document.createElement("button");
+  name.type = "button";
+  name.className = "name";
+  name.textContent = row.name;
+  name.addEventListener("click", () => {
+    viewerTitle.textContent = row.name;
+    viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    showBody(noPreview("This file is in Recently deleted. Restore it to preview it."));
+    viewer.showModal();
+  });
+  meta.append(name);
+  const sub = document.createElement("p");
+  sub.className = "sub";
+  sub.textContent = [row.sizeLabel, row.deletedLabel].filter(Boolean).join(" · ");
+  meta.append(sub);
+  if (row.goneLabel) {
+    const gone = document.createElement("p");
+    gone.className = "sub";
+    gone.textContent = row.goneLabel;
+    meta.append(gone);
+  } else {
+    const until = document.createElement("p");
+    until.className = "sub";
+    until.textContent = row.untilLabel;
+    meta.append(until);
+  }
+  li.append(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (row.restorable) {
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = row.restoreLabel;
+    restore.addEventListener("click", () => restoreFile(row));
+    actions.append(restore);
+  }
+  li.append(actions);
+  return li;
+}
+
+function renderRows(rows) {
+  list.textContent = "";
+  if (rows.length === 0) {
+    const state = view === "deleted" ? EMPTY_STATES.trash : path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder;
+    emptyWhat.textContent = state.what;
+    emptyNext.textContent = state.next;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const row of rows) {
+    list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
+  }
+}
+
+function showBody(node) {
+  viewerBody.textContent = "";
+  viewerBody.append(node);
+}
+
+function noPreview(message) {
+  const p = document.createElement("p");
+  p.className = "no-preview";
+  p.textContent = message;
+  return p;
+}
+
+function openViewer(row) {
+  viewerTitle.textContent = row.name;
+  viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  if (!isPreviewable(row.kind)) {
+    showBody(noPreview(PREVIEW_COPY.file.fallback));
+    viewer.showModal();
+    return;
+  }
+  const src = PREVIEW_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  if (row.kind === "image") {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = row.name;
+    showBody(img);
+  } else if (row.kind === "video") {
+    const video = document.createElement("video");
+    video.src = src;
+    video.controls = true;
+    video.playsInline = true;
+    showBody(video);
+  } else if (row.kind === "audio") {
+    const audio = document.createElement("audio");
+    audio.src = src;
+    audio.controls = true;
+    showBody(audio);
+  } else if (row.kind === "pdf") {
+    const frame = document.createElement("iframe");
+    frame.src = src;
+    frame.title = row.name;
+    showBody(frame);
+  } else {
+    const pre = document.createElement("pre");
+    pre.textContent = "Loading…";
+    showBody(pre);
+    fetch(src)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not read that file.");
+        }
+        return response.text();
+      })
+      .then((text) => {
+        pre.textContent = text;
+      })
+      .catch((error) => {
+        pre.textContent = error.message;
+      });
+  }
+  viewer.showModal();
+}
+
+viewerClose.addEventListener("click", () => viewer.close());
+
+// `keepStatus` is for the actions that just reported a result: the list reloads
+// under them, but the line that says what happened stays put instead of being
+// wiped a frame after it appeared.
+async function refresh(keepStatus) {
+  if (!keepStatus) {
+    say("");
+  }
+  const url =
+    view === "deleted"
+      ? FILES_ENDPOINT + "?view=deleted"
+      : FILES_ENDPOINT + "?path=" + encodeURIComponent(path);
+  try {
+    const payload = await api(url);
+    renderRows(payload.rows || []);
+    if (view === "folder") {
+      crumbsForParts(path === "/" ? [] : path.slice(1).split("/"));
+    } else {
+      crumbs.textContent = "";
+    }
+  } catch (error) {
+    say(error.message, "error");
+  }
+}
+
+async function uploadFiles(files) {
+  if (files.length === 0) {
+    say(UPLOAD_COPY.empty, "error");
+    return;
+  }
+  uploadButton.disabled = true;
+  say("Uploading…");
+  let uploaded = 0;
+  try {
+    for (const file of files) {
+      const url =
+        UPLOAD_ENDPOINT +
+        "?path=" +
+        encodeURIComponent(path) +
+        "&name=" +
+        encodeURIComponent(file.name);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "The upload did not finish. Try again.");
+      }
+      uploaded += 1;
+    }
+    say(UPLOAD_COPY.done, "done");
+  } catch (error) {
+    say(uploaded > 0 ? uploaded + " uploaded. " + error.message : error.message, "error");
+  } finally {
+    uploadButton.disabled = false;
+    fileInput.value = "";
+    refresh(true);
+  }
+}
+
+async function removeFile(row) {
+  if (!window.confirm(DELETE_COPY.confirm)) {
+    return;
+  }
+  try {
+    await api(DELETE_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: row.path }),
+    });
+    say(DELETE_COPY.done, "done");
+    refresh(true);
+  } catch (error) {
+    say(error.message, "error");
+  }
+}
+
+async function restoreFile(row) {
+  try {
+    await api(RESTORE_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: row.path }),
+    });
+    say(RESTORE_COPY.done, "done");
+    refresh(true);
+  } catch (error) {
+    say(error.message, "error");
+  }
+}
+
+function setTab() {
+  tabFiles.setAttribute("aria-pressed", String(view === "folder"));
+  tabDeleted.setAttribute("aria-pressed", String(view === "deleted"));
+  document.getElementById("page-line").textContent = PAGE_LINE;
+}
+
+tabFiles.addEventListener("click", () => {
+  view = "folder";
+  setTab();
+  refresh();
+});
+
+tabDeleted.addEventListener("click", () => {
+  view = "deleted";
+  setTab();
+  refresh();
+});
+
+uploadButton.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
+
+refresh();
+  </script>
+</body>
+</html>

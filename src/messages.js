@@ -35,6 +35,19 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
     next: "Free up disk space on this device and try the save again.",
   }),
+  // The waitlist (or another bounded form) stopped accepting this caller for
+  // a moment because they sent too many requests. Nothing was stored and the
+  // address on file is untouched.
+  "rate-limited": Object.freeze({
+    what: "Too many sign-ups from your connection right now.",
+    next: "Wait a minute and try again.",
+  }),
+  // The request body was larger than the endpoint accepts, so it was never
+  // read or stored.
+  "body-too-large": Object.freeze({
+    what: "That request was too large to accept.",
+    next: "Send a smaller request and try again.",
+  }),
   // The api Worker (or the CLI's call to it) could not reach storage.
   "storage-down": Object.freeze({
     what: "We can't reach storage right now.",
@@ -44,6 +57,14 @@ export const FAILURE_MESSAGES = Object.freeze({
   "payment-failed": Object.freeze({
     what: "Your last payment didn't go through, so billing is paused.",
     next: "Use the link in the payment email to update your card.",
+  }),
+  // A request that needs the signed-in account arrived without one. This is the
+  // account gate's words (issue #45, north star: Safe): the status endpoint
+  // answers 401 and never device data, so nothing is leaked to an anonymous
+  // caller and the one next step is to sign in.
+  unauthorized: Object.freeze({
+    what: "You are not signed in to your drive.",
+    next: "Sign in, then this page updates on its own.",
   }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
