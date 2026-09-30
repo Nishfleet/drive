@@ -68,7 +68,9 @@ import { PRICE } from "./pricing.js";
 // gbMinutes for a size held the whole month, and it must not work out that
 // conversion a second way.
 export const MINUTES_PER_MONTH = 43800;
-const GB_PER_TB = 1000;
+// Exported for the same reason: the docs page's worked table divides by it too,
+// so a docs example and an invoice example cannot disagree about what a TB is.
+export const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
 
 export const BILLING_CONFIG = Object.freeze({
