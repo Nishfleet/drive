@@ -111,18 +111,18 @@ func TestUploadLabel(t *testing.T) {
 }
 
 // TestUploadLabelMatchesThePageWords pins the CLI's queue words to the ones
-// the first-run page uses (src/status.js UPLOAD_LABEL). The page is a static
-// asset and cannot import the Go, and the Go cannot import the page, so this
+// the first-run page uses (src/status.js UPLOAD_LABEL). The page is JavaScript
+// and cannot import the Go, and the Go cannot import the page, so this
 // test is the join between the two copies.
 func TestUploadLabelMatchesThePageWords(t *testing.T) {
-	page, err := os.ReadFile(filepath.Join("..", "..", "public", "get-started.html"))
+	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(page)
 	for _, want := range []string{upToDateLabel, "Uploading 1 file", "Uploading {files} files"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("public/get-started.html no longer carries %q; "+
+			t.Errorf("src/status.js no longer carries %q; "+
 				"the page and the CLI must show the same words for the same queue", want)
 		}
 	}
