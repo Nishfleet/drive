@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -501,6 +502,54 @@ func TestParseAPIBaseRequiresHTTPSOffLoopback(t *testing.T) {
 	}
 }
 
+// A config is not required to carry a whole key pair: a secret without the id
+// is a half-written file, not a file this CLI did not write, and each caller
+// asks for the half it needs.
+func TestParseRcloneConfigReportsAPartialKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := os.WriteFile(path, []byte("[drive]\nsecret_access_key = ONLYTHESECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := ParseRcloneConfig(path)
+	if err != nil {
+		t.Fatalf("a config with a secret and no id must still parse: %v", err)
+	}
+	if c.SecretKey != "ONLYTHESECRET" {
+		t.Errorf("SecretKey = %q, want the value the file carries", c.SecretKey)
+	}
+	// logout needs both, and refuses the half-written file rather than call it
+	// this device's key.
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(RcloneConfigPath(home), []byte("[drive]\nsecret_access_key = ONLYTHESECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDeviceKey(home); err == nil {
+		t.Error("ReadDeviceKey must refuse a key id with no secret, or a secret with no id")
+	}
+}
+
+// A control byte plus userinfo is the shape that could slip a credential past a
+// "check first, then print" guard, so it is pinned in the table that proves no
+// branch echoes the value.
+func TestParseAPIBaseNeverEchoesACredentialWithAControlByte(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secretkey@example.com\n",
+		"https://user:secretkey@example.com\x00",
+	} {
+		_, err := parseAPIBase(raw)
+		if err == nil {
+			t.Errorf("parseAPIBase(%q) = nil, want a refusal", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "secretkey") {
+			t.Errorf("parseAPIBase(%q) leaks the credential: %v", raw, err)
+		}
+	}
+}
+
 // A malformed line can be a bare secret; the error reaches the terminal, so
 // the line's contents must not.
 func TestParseRcloneConfigDoesNotEchoAMalformedLine(t *testing.T) {
@@ -518,12 +567,37 @@ func TestParseRcloneConfigDoesNotEchoAMalformedLine(t *testing.T) {
 }
 
 func TestReadSecretKeyRejectsMultiLineStdin(t *testing.T) {
+	// Both lines already written, then closed: the second line is sitting in the
+	// reader's buffer when the first line is read, so it is caught.
 	_, err := ReadSecretKey("", true, strings.NewReader("SECRETONE\nSECRETTWO\n"))
 	if err == nil {
 		t.Fatal("more than one line on stdin must not become one secret")
 	}
 	if !strings.Contains(err.Error(), "one line") {
 		t.Errorf("error %q does not say what is wrong", err)
+	}
+}
+
+// The flag reads a line, not the whole pipe. A writer that stays open — a
+// process manager, a long-lived producer — must not hang the mount, and the
+// test proves the read returns on the newline with the writer still live. A
+// second line that is still coming is not waited for: the flag says one line,
+// and sitting on an open pipe is the hang this exists to avoid.
+func TestReadSecretKeyReturnsOnTheNewlineNotAtEOF(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	go func() {
+		// Write the line and deliberately do NOT close: an EOF-only read would
+		// block here forever, and this test would time out with a failure
+		// rather than pass.
+		_, _ = writer.Write([]byte("SECRETFROMANOPENPIPE\n"))
+	}()
+	got, err := ReadSecretKey("", true, reader)
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != "SECRETFROMANOPENPIPE" {
+		t.Errorf("secret = %q, want the first line while the writer is still open", got)
 	}
 }
 

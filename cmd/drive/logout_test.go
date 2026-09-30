@@ -607,6 +607,54 @@ func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 	}
 }
 
+// The failed-revoke record must have a way out for the realistic case: the
+// person revokes the key from the devices page, and the CLI cannot re-check a
+// key it no longer holds the secret for. Without this, every later logout fails
+// forever with no escape but deleting the file by hand.
+func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
+	home := t.TempDir()
+	writeDeviceKey(t, home, "OLDACCESSKEY", "oldsecretkey")
+	if err := Logout("linux", home, false, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
+		t.Fatal("the revoke must fail against a server that is not there")
+	}
+	if ids, err := PendingRevoke(home); err != nil || len(ids) != 1 {
+		t.Fatalf("receipt after the failed revoke = %v (err=%v), want one live key", ids, err)
+	}
+
+	// The CLI must name the escape hatch in the failure it reports.
+	err := Logout("linux", home, false, nil)
+	if err == nil {
+		t.Fatal("a live key must still fail before the record is cleared")
+	}
+	if !strings.Contains(err.Error(), "--forget-pending") {
+		t.Errorf("failure %q does not name the way out", err)
+	}
+
+	// The escape hatch itself: it clears the record, prints the ids it cleared,
+	// and does not touch the mount or anything else.
+	out := captureStdout(t, func() {
+		if err := runLogout([]string{"--home", home, "--forget-pending"}); err != nil {
+			t.Errorf("logout --forget-pending: %v", err)
+		}
+	})
+	if !strings.Contains(out, "OLDACCESSKEY") {
+		t.Errorf("output %q does not name the id it cleared", out)
+	}
+	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
+		t.Errorf("receipt after --forget-pending = %v (err=%v), want it cleared", ids, err)
+	}
+	// And with the record cleared, a logout with no key at all is a clean
+	// sign-out again.
+	if err := Logout("linux", home, false, nil); err != nil {
+		t.Errorf("logout after the record is cleared: %v", err)
+	}
+
+	// Running it with nothing recorded is not an error.
+	if err := runLogout([]string{"--home", home, "--forget-pending"}); err != nil {
+		t.Errorf("logout --forget-pending with no record: %v", err)
+	}
+}
+
 // With no key at all, the success line must not be mistakable for a
 // revocation: there was nothing to turn off.
 func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {

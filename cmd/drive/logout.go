@@ -124,22 +124,29 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	//
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
+	//
+	// Both are attempted before either error is returned, because the second
+	// one is the storage secret and the first is not: stopping at the first
+	// failure would leave the key on the disk this command was run to clear,
+	// with the key already dead on the server. The error is still returned, so
+	// nothing is hidden — it just no longer buys a leftover.
+	var removed error
 	for _, path := range []string{LoginItemPath(goos, home), DefaultConfigDir(home)} {
 		if err := removeIfPresent(path); err != nil {
-			return err
+			removed = errors.Join(removed, err)
 		}
 	}
 	// The cache holds copies of the person's files and the queue; with the
 	// force path chosen (or an empty queue) it goes too.
 	if err := removeIfPresent(DefaultCacheDir(home)); err != nil {
-		return err
+		removed = errors.Join(removed, err)
 	}
 	// Prove the key is gone rather than trust the unlink: the acceptance is
 	// "keeps nothing secret on disk", so a leftover config is a failure.
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
-		return fmt.Errorf("logout left %s behind", RcloneConfigPath(home))
+		return errors.Join(removed, fmt.Errorf("logout left %s behind", RcloneConfigPath(home)))
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err)
+		return errors.Join(removed, fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
 	}
 	// What the person is told is decided by what is left live, not by this run's
 	// own revoke. The record is folded forward after the config is gone — so the
@@ -168,7 +175,10 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	}
 	if len(live) > 0 {
 		if err := WriteRevokePending(home, live...); err != nil {
-			return fmt.Errorf("%s (%v), and the receipt could not be written: %w", revokeWarning, receiptErr, err)
+			// Both causes, so the person is not left with "<nil>" for the one
+			// that matters. The write error is wrapped, so it is matchable.
+			return fmt.Errorf("%s, and the receipt could not be written: %w",
+				revokeSentence(revokeFailed, keyUnreadable, receiptErr), err)
 		}
 	}
 	switch {
@@ -182,6 +192,12 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 		// success line would be a lie about the whole of it, so the live-key
 		// sentence is what reaches the person instead.
 		return errors.New(revokePendingWarning)
+	}
+	if removed != nil {
+		// Nothing is live and nothing secret is on disk any more, so this is
+		// not a security failure; it is a file that outlived its own removal.
+		// Saying it costs nothing and hiding it would be worse.
+		return removed
 	}
 	if err := removeIfPresent(pendingRevokePath(home)); err != nil {
 		// Nothing is left live, so the sign-out succeeded; a spent receipt this
@@ -201,15 +217,26 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	return nil
 }
 
-// errPendingRevoke says a receipt from an earlier logout is on file: a key was
-// left live and this device no longer holds it.
-var errPendingRevoke = errors.New("an earlier logout left a key live; this device no longer has the key to revoke it with")
+// revokeSentence names, in one line, whichever of this run's faults has to
+// reach the person with a receipt that could not be written. It never returns
+// an empty string and never prints a nil error: a cause that does not exist is
+// not a reason to write "<nil>" next to the sentence that matters.
+func revokeSentence(errs ...error) string {
+	for _, err := range errs {
+		if err != nil {
+			return fmt.Sprintf("%s (%v)", revokeWarning, err)
+		}
+	}
+	return revokeWarning
+}
 
 // ReadDeviceKey reads this device's key out of the rclone config. A missing
 // config is no key at all (nil, nil): there is nothing to revoke, and that is
 // not an error. A config that cannot be read is an error, not a missing key —
 // logout would otherwise print a clean sign-out while a key it could not name
-// is still live.
+// is still live. The mode rule is inside the parser, so a key this device is
+// about to send on the wire has already been checked not to be readable by
+// every user on the machine.
 func ReadDeviceKey(home string) (*KeyPair, error) {
 	path := RcloneConfigPath(home)
 	if _, err := os.Stat(path); err != nil {
@@ -218,16 +245,15 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 		}
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
-	// The same mode rule mount applies before reading the secret applies here:
-	// a config every user can read is the same exposure the flag had, and the
-	// key it holds is about to be sent on the wire. Without this, logout would
-	// happily transmit a key it can see is exposed to the whole machine.
-	if err := checkSecretFileMode(path); err != nil {
-		return nil, err
-	}
 	c, err := ParseRcloneConfig(path)
 	if err != nil {
 		return nil, err
+	}
+	// The parser reports what the file carries, so this is where a half-written
+	// config is refused: a key id with no secret cannot be revoked, and a secret
+	// with no id names no key.
+	if c.AccessKey == "" || c.SecretKey == "" {
+		return nil, fmt.Errorf("%s: the [%s] remote needs both an access key id and a secret key to be revoked", path, RcloneRemoteName)
 	}
 	return &KeyPair{AccessKeyID: c.AccessKey, SecretKey: c.SecretKey}, nil
 }
@@ -320,11 +346,28 @@ func runLogout(args []string) error {
 	common := addCommonFlags(fs)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL (env DRIVE_API_URL); the key-revoke endpoint")
 	force := fs.Bool("force", false, "discard files waiting to upload instead of refusing")
+	forgetPending := fs.Bool("forget-pending", false, "clear the failed-revoke record after you revoked the key on the devices page")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *forgetPending {
+		// This one does not mount, revoke or delete anything: it is the
+		// acknowledgement that a key recorded as live has been turned off
+		// elsewhere. It prints what it cleared, so the person can see the ids
+		// the CLI could not check for itself.
+		ids, err := ForgetPendingRevokes(common.home)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			fmt.Println("no failed-revoke record to clear")
+			return nil
+		}
+		fmt.Printf("cleared the failed-revoke record for %s; a later drive logout reports them as still live only if another revoke fails\n", NamedKeyIDs(ids))
+		return nil
 	}
 	return Logout(CurrentGOOS(), common.home, *force, resolveKeyRevoker(*api))
 }

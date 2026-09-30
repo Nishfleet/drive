@@ -46,6 +46,8 @@ command line, where the shell history and ps output would keep a copy.
 Logout flags:
   --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
   --force       discard files waiting to upload instead of refusing to logout
+  --forget-pending  clear the failed-revoke record, after you have revoked the
+               key on the devices page in the web app
 `
 
 const version = "0.1.0"

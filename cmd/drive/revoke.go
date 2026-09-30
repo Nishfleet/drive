@@ -112,7 +112,10 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("POST %s: %s (want 204 No Content; the key is not known to be off)", RevokePath, resp.Status)
+		// The status number, not resp.Status: the reason phrase is the server's
+		// own text, and this is the one channel the file's "nothing to echo"
+		// rule left open. A number cannot be talked into carrying a credential.
+		return fmt.Errorf("POST %s: status %d (want 204 No Content; the key is not known to be off)", RevokePath, resp.StatusCode)
 	}
 	return nil
 }
@@ -141,9 +144,14 @@ const revokeWarning = "signed out here; the key is still live, run drive logout 
 // receipt proves a key is still live but holds no secret, so this run cannot
 // revoke it; saying so is the whole point. It deliberately does not repeat
 // revokeWarning's "run drive logout again": with nothing left to authenticate
-// with, that command could not do it, and a run that cannot revoke must never
-// print a success over a live key.
-const revokePendingWarning = "signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app"
+// with, that command could not do it.
+//
+// It does name the way out. The person's next step is the devices page, where a
+// key nobody holds can be turned off, and after that the record has to be
+// cleared by hand — `--forget-pending` — because the only proof the CLI could
+// otherwise accept is a secret it no longer has. Naming that command is what
+// keeps a correct refusal from being a dead end.
+const revokePendingWarning = "signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app, then run drive logout --forget-pending"
 
 // pendingRevokePath is the receipt a failed revoke leaves behind, beside the
 // config dir rather than inside it (logout deletes that dir, and the receipt
@@ -173,10 +181,10 @@ func receiptBody(ids []string) string {
 	return b.String()
 }
 
-// WriteRevokePending leaves the receipt that a failed revoke needs, so the next
-// `drive logout` knows which keys are still live even though this device no
-// longer holds them. Ids already on file are kept, so nothing already known to
-// be live is ever dropped from the record.
+// WriteRevokePending writes exactly the ids it is given. It is a plain writer,
+// not a merge: the caller (logout.go) has already read what was on file and
+// folded this run's revoke into it, and doing the read-modify-write twice would
+// give two answers to the same question.
 func WriteRevokePending(home string, accessKeyIDs ...string) error {
 	return WriteFileAtomic(pendingRevokePath(home), []byte(receiptBody(accessKeyIDs)), 0o600)
 }
@@ -242,6 +250,42 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// ForgetPendingRevokes clears the failed-revoke record and returns the ids it
+// named. It is the explicit acknowledgment that a key recorded as live has
+// been revoked elsewhere — on the devices page — because the CLI cannot re-check
+// a key it no longer holds the secret for: without the secret there is no one to
+// ask, and no request it could make. It is deliberately not automatic: clearing
+// a live-key record on any weaker signal is the clean sign-out over a live key
+// this whole receipt exists to refuse.
+func ForgetPendingRevokes(home string) ([]string, error) {
+	ids, err := PendingRevoke(home)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if err := removeIfPresent(pendingRevokePath(home)); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// NamedKeyIDs renders the ids in a receipt for a person to read: the empty id
+// is a key the CLI could not name, and it is shown as such rather than as a
+// blank.
+func NamedKeyIDs(ids []string) string {
+	named := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			named = append(named, "one it could not name")
+			continue
+		}
+		named = append(named, id)
+	}
+	return strings.Join(named, ", ")
 }
 
 // resolveKeyRevoker picks the KeyRevoker for a run. api is the api Worker base

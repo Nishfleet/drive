@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -108,20 +110,22 @@ const maxSecretBytes = 64 << 10
 // later with a confusing 403.
 func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, error) {
 	if wantStdin {
-		// One line, as the flag says. The trailing newline a shell echo or a
-		// file adds is not part of the secret; anything after the first line is
-		// a caller that piped the wrong thing, and is refused rather than
-		// mounted as one long, broken key.
-		raw, err := io.ReadAll(io.LimitReader(stdin, maxSecretBytes+1))
-		if err != nil {
+		// One line, as the flag says, and one line is what it reads: the read
+		// stops at the newline, not at EOF. Reading to EOF would make a pipe
+		// whose writer stays open — a process manager, a long-lived producer —
+		// hang mount forever, and would make a person at a terminal sit there
+		// until they found Ctrl-D. bufio is what the standard library has for
+		// exactly this, so it is what this uses — and the same reader is kept
+		// for the check below, because a second one would have buffered the rest
+		// of the pipe and thrown it away, hiding exactly the second line this
+		// is supposed to notice.
+		reader := bufio.NewReader(stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", fmt.Errorf("read the storage secret from stdin: %w", err)
 		}
-		if len(raw) > maxSecretBytes {
+		if len(line) > maxSecretBytes {
 			return "", fmt.Errorf("the storage secret on stdin is longer than %d bytes; --secret-key-stdin reads one line", maxSecretBytes)
-		}
-		line, rest, _ := strings.Cut(string(raw), "\n")
-		if strings.TrimSpace(rest) != "" {
-			return "", errors.New("stdin carried more than one line; --secret-key-stdin reads one line of the secret")
 		}
 		// A storage secret is one token, so the blank check and the value agree:
 		// surrounding whitespace is a piping mistake, not part of the key, and
@@ -131,6 +135,21 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 		if secret == "" {
 			return "", errors.New("no storage secret on stdin: --secret-key-stdin reads one line from the pipe")
 		}
+		// Anything already buffered after the first line is a caller that
+		// piped the wrong thing, and is refused rather than mounted as one
+		// long, broken key. Only what the reader already holds is looked at:
+		// waiting for a second line would put back the hang the line read just
+		// avoided, and a second line that has to be waited for is a pipe this
+		// command has no business sitting on.
+		if extra := reader.Buffered(); extra > 0 {
+			rest, err := io.ReadAll(io.LimitReader(reader, int64(extra)))
+			if err != nil {
+				return "", fmt.Errorf("read the storage secret from stdin: %w", err)
+			}
+			if strings.TrimSpace(string(rest)) != "" {
+				return "", errors.New("stdin carried more than one line; --secret-key-stdin reads one line of the secret")
+			}
+		}
 		return secret, nil
 	}
 	if env := os.Getenv(secretEnvName); env != "" {
@@ -138,12 +157,6 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 	}
 	if configPath == "" {
 		return "", nil
-	}
-	if err := checkSecretFileMode(configPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
-		}
-		return "", err
 	}
 	c, err := ParseRcloneConfig(configPath)
 	if err != nil {
@@ -171,6 +184,13 @@ func checkSecretFileMode(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file (mode %s), so it is not the drive config", path, info.Mode())
 	}
+	// The mode bits are a POSIX concept. On Windows FileMode.Perm() reports
+	// 0666/0444 for every file, so the check would refuse every config there;
+	// the CLI's other Windows-specific handling lives in the same place
+	// (CurrentGOOS), and this is the same kind of platform branch.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("%s is mode %04o, so the storage secret in it is readable by "+
 			"every user on this machine; chmod 600 %s", path, perm, path)
@@ -182,9 +202,20 @@ func checkSecretFileMode(path string) error {
 // CLI wrote. It is the same INI the tool uses (sections in brackets, `key =
 // value`, comments with # or ;) and only the fields the drive owns are taken,
 // so nothing in the file can be talked into handing over another remote's
-// credentials. A config that names no key is an error, not an empty struct:
-// logout must not call a half-read key this device's.
+// credentials.
+//
+// The mode rule lives here rather than at the call sites, so no caller can read
+// the secret out of a file every user on the machine can read, and none of them
+// has to remember to check.
+//
+// It reports what the file carries rather than insisting on a whole key pair:
+// a hand-edited config can hold a secret without the matching id, and the
+// caller knows which half it needs. Only a config with no [drive] remote is an
+// error, because that is a file this CLI did not write.
 func ParseRcloneConfig(path string) (StorageConfig, error) {
+	if err := checkSecretFileMode(path); err != nil {
+		return StorageConfig{}, err
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return StorageConfig{}, err
@@ -228,8 +259,8 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 			c.Region = value
 		}
 	}
-	if c.AccessKey == "" || c.SecretKey == "" {
-		return StorageConfig{}, fmt.Errorf("%s: the [%s] remote carries no access key id and secret key", path, RcloneRemoteName)
+	if c.AccessKey == "" && c.SecretKey == "" {
+		return StorageConfig{}, fmt.Errorf("%s: the [%s] remote carries no access key id or secret key", path, RcloneRemoteName)
 	}
 	return c, nil
 }
