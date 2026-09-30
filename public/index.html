@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — about $20 per TB a month</title>
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <meta property="og:title" content="Drive — about $20 per TB a month">
+  <meta property="og:description" content="2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
+       The favicon is an inline data: URI: there is no network fetch to
+       hash, so an integrity attribute would be meaningless. -->
+  <style>
+/* Drive pricing page — direction A ("the bill") with the 60%-full strip grafted
+   from direction C. See docs/design/pricing-brief.md. System font stacks only:
+   no web font files, so nothing blocks first paint. */
+
+:root {
+  --paper: #faf6ee;
+  --paper-raised: #fffdf8;
+  --ink: #21201c;
+  --ink-soft: #56514a;
+  --ink-faint: #6f6a5f;
+  --rule: #ddd5c5;
+  --accent: #1f3a5f;
+  --accent-soft: #e6ecf3;
+  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+/* The single action on the page; used by keyboard users, not mouse users. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 8px;
+  top: 8px;
+  z-index: 10;
+  padding: 8px 12px;
+  background: var(--ink);
+  color: var(--paper);
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 18px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 0 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+/* ---- Price statement: the only large type on the page ------------------- */
+
+.price {
+  max-width: 1000px;
+  padding: clamp(36px, 7vh, 76px) 0 clamp(28px, 4vh, 48px);
+}
+
+.price h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.02;
+  font-size: clamp(44px, 7.6vw, 92px);
+}
+
+.price h1 .qualifier {
+  font-size: 0.32em;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ink-soft);
+  vertical-align: 0.9em;
+  margin-right: 0.12em;
+}
+
+.price h1 .amount {
+  font-variant-numeric: tabular-nums;
+}
+
+.price h1 .unit {
+  display: block;
+  font-size: 0.3em;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--ink);
+  margin-top: 0.35em;
+}
+
+.price .sub,
+.price .free {
+  margin: 0.7em 0 0;
+  font-size: clamp(18px, 2.1vw, 22px);
+  max-width: 34em;
+}
+
+.price .free {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---- The one real action ------------------------------------------------ */
+
+.waitlist {
+  margin-top: clamp(26px, 3.4vh, 40px);
+  max-width: 620px;
+}
+
+.field-label {
+  display: block;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.field-row input[type="email"] {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 13px 14px;
+  font: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+
+.field-row input[type="email"]::placeholder {
+  color: var(--ink-faint);
+}
+
+.field-row button {
+  flex: 0 0 auto;
+  padding: 13px 22px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--paper-raised);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.field-row button:hover {
+  background: #16304f;
+}
+
+.field-row button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.form-note {
+  margin: 10px 0 0;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.form-note.is-error {
+  color: #8c2f1d;
+  font-weight: 600;
+}
+
+.form-note.is-done {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---- The strip: what you actually pay for ------------------------------- */
+
+.strip {
+  margin: 0;
+  padding-bottom: clamp(32px, 5vh, 56px);
+}
+
+.strip-bar {
+  display: flex;
+  width: 100%;
+  height: 76px;
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.strip-full,
+.strip-empty {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  min-width: 0;
+}
+
+.strip-full {
+  flex: 0 0 60%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strip-empty {
+  flex: 1 1 40%;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 7px,
+    var(--rule) 7px 8px
+  );
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strip-caption {
+  margin: 12px 0 0;
+  max-width: 62em;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+/* ---- Worked examples ---------------------------------------------------- */
+
+.examples {
+  border-top: 1px solid var(--rule);
+  padding: clamp(28px, 4vh, 44px) 0 clamp(30px, 4.5vh, 52px);
+}
+
+.examples h2,
+.columns h2 {
+  margin: 0 0 16px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--ink-faint);
+}
+
+.examples-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0 clamp(20px, 3vw, 40px);
+  border-top: 1px solid var(--ink);
+}
+
+.example {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.example dt {
+  font-size: 16px;
+}
+
+.example dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.examples-note {
+  margin: 18px 0 0;
+  font-size: 15px;
+  color: var(--ink-soft);
+  max-width: 56em;
+}
+
+/* ---- Three columns, one of them a person -------------------------------- */
+
+.columns {
+  border-top: 1px solid var(--rule);
+  padding-top: clamp(28px, 4vh, 44px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  gap: clamp(24px, 3.5vw, 52px);
+}
+
+.columns ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.columns li {
+  padding: 11px 0 11px 20px;
+  border-top: 1px solid var(--rule);
+  position: relative;
+  font-size: 16px;
+}
+
+.columns li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20px;
+  width: 8px;
+  height: 2px;
+  background: var(--accent);
+}
+
+.columns p {
+  margin: 0;
+  font-size: 16px;
+}
+
+.business {
+  border-left: 1px solid var(--rule);
+  padding-left: clamp(20px, 3vw, 44px);
+}
+
+.talk {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 11px 18px;
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.talk:hover {
+  background: var(--ink);
+  color: var(--paper-raised);
+}
+
+.footer {
+  max-width: 1180px;
+  margin: clamp(40px, 6vh, 72px) auto 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.footer p {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 16px;
+  }
+
+  .price h1 {
+    line-height: 1.06;
+  }
+
+  .strip-bar {
+    height: 64px;
+    flex-direction: column;
+  }
+
+  .strip-full,
+  .strip-empty {
+    flex: 0 0 auto;
+    padding: 0 12px;
+    height: 32px;
+  }
+
+  .strip-empty {
+    flex: 1 1 auto;
+  }
+
+  .business {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--rule);
+    padding-top: 20px;
+  }
+
+  .field-row input[type="email"],
+  .field-row button {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <span class="wordmark">Drive</span>
+    <span class="tagline">A Finder drive for people and their agents</span>
+  </header>
+
+  <main>
+    <section class="price" aria-labelledby="price-heading">
+      <h1 id="price-heading">
+        <span class="qualifier">about</span>
+        <span class="amount">$20</span>
+        <span class="unit">per TB a&nbsp;month</span>
+      </h1>
+      <p class="sub">2¢ per GB, billed by the minute, pay only for what you store</p>
+      <p class="free">$1 free every month, no card needed</p>
+
+      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+    <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
+        <label class="field-label" for="email">Email</label>
+        <div class="field-row">
+          <input id="email" name="email" type="email" required
+                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
+          <input type="hidden" name="source" value="pricing-page">
+          <button type="submit">Join the waitlist</button>
+        </div>
+        <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
+      </form>
+      <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
+    </section>
+
+    <section class="strip" aria-label="You pay only for what you store">
+      <div class="strip-bar" role="img"
+           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing">
+        <span class="strip-full">60% full &middot; $12</span>
+        <span class="strip-empty">empty &middot; $0</span>
+      </div>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into.</p>
+    </section>
+
+    <section class="examples" aria-labelledby="examples-heading">
+      <h2 id="examples-heading">Worked examples</h2>
+      <dl class="examples-list">
+        <div class="example">
+          <dt>500 GB for 3 days</dt>
+          <dd>about $1</dd>
+        </div>
+        <div class="example">
+          <dt>1 TB for half the month</dt>
+          <dd>about $10</dd>
+        </div>
+        <div class="example">
+          <dt>2 TB kept all month</dt>
+          <dd>about $40</dd>
+        </div>
+      </dl>
+      <p class="examples-note">Old versions are free to keep: today's saves stay a day, then one save a day for 30 days.</p>
+    </section>
+
+    <section class="columns" aria-label="What you get and what it costs">
+      <div class="column">
+        <h2>What you get</h2>
+        <ul>
+          <li>Your files in Finder, on macOS and Linux, streaming on demand</li>
+          <li>A folder your agents can read and write, where a delete can be undone</li>
+          <li>A safe copy of any folder for an agent to work in, which you approve or throw away</li>
+          <li>A spending cap you set; at the cap the drive goes read-only and nothing is deleted</li>
+        </ul>
+      </div>
+      <div class="column">
+        <h2>What it costs</h2>
+        <ul>
+          <li>2¢ per GB, billed by the minute, pay only for what you store</li>
+          <li>$1 free every month, no card needed</li>
+          <li>Downloads free up to 3&times; what you store, then 1¢ per GB</li>
+          <li>Version history free, no card to start</li>
+        </ul>
+      </div>
+      <div class="column business">
+        <h2>Business</h2>
+        <p>The same storage price, plus single sign-on, a SOC&nbsp;2 report, one company bill split by team, and priority support.</p>
+        <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>macOS and Linux. A drive folder, not a shared link. No card to start.</p>
+  </footer>
+
+  <script>
+// Waitlist form submit. Without JavaScript the form still posts to
+// /api/waitlist, so this only upgrades the response from a page reload to an
+// inline confirmation. It must never fail silently: every path writes a line
+// into the live region the markup already provides.
+const form = document.getElementById("waitlist");
+const note = document.getElementById("form-note");
+const emailInput = document.getElementById("email");
+const sourceInput = form.elements.namedItem("source");
+const submit = form.querySelector("button[type=submit]");
+
+function say(message, kind) {
+  note.textContent = message;
+  note.classList.toggle("is-error", kind === "error");
+  note.classList.toggle("is-done", kind === "done");
+}
+
+// "Talk to us" is the same real action as the form, tagged so the waitlist row
+// records which column the person came from. preventDefault is load-bearing:
+// without it the anchor's own fragment navigation to #waitlist moves focus
+// away from the field the handler just focused.
+for (const link of document.querySelectorAll("[data-waitlist-source]")) {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    sourceInput.value = link.dataset.waitlistSource;
+    form.scrollIntoView({ block: "center" });
+    emailInput.focus();
+  });
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  submit.disabled = true;
+  say("Joining the waitlist…", "pending");
+  try {
+    const response = await fetch("/api/waitlist", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: emailInput.value.trim(),
+        source: sourceInput.value,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "That did not work. Try again in a moment.");
+    }
+    say(
+      payload.already
+        ? "You are already on the list. Nothing to do."
+        : "You are on the list. One email when the drive is ready.",
+      "done",
+    );
+    form.reset();
+    sourceInput.value = payload.source;
+  } catch (error) {
+    say(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+  </script>
+</body>
+</html>
