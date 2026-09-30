@@ -58,6 +58,7 @@ export default defineConfig({
       { text: "How it works", link: "/how-it-works" },
       { text: "Agents", link: "/agents" },
       { text: "Pricing and your bill", link: "/pricing" },
+      { text: "FAQ", link: "/faq" },
       { text: "Limits", link: "/limits" },
       { text: "Security", link: "/security" },
       { text: "Changelog", link: "/changelog" },

@@ -11,11 +11,12 @@ minute with the bill cut off at a ceiling.
 
 ## Start here
 
-- [Quickstart](/quickstart) — three steps from nothing to a mounted drive.
+- [Quickstart](/quickstart) — five steps from nothing to a mounted drive.
 - [How it works](/how-it-works) — plain files, versions, restore, the bill.
 - [Agents](/agents) — `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](/pricing) — the rate, the ceiling and four
   worked sizes.
+- [FAQ](/faq) — the questions we can answer with a measured number.
 - [Limits](/limits) — what version 1 does not do, in plain words.
 - [Security](/security) — who can see your files, and what we cannot claim.
 - [Changelog](/changelog) — one line per shipped thing.

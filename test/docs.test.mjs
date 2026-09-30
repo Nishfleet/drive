@@ -18,6 +18,21 @@ import { DOC_PAGES, applyMarkers, renderDocs } from "../src/render-docs.js";
 import { INSTALL_COMMAND } from "../src/status.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { SITE } from "../src/seo.js";
+import {
+  FAQ,
+  RIVAL_1TB_LINE,
+  faqMarkdown,
+  scoreboardVerdict,
+} from "../src/docs.js";
+
+// The head-to-head table the FAQ is gated against (drive issue #114).
+// The tests below read it twice: once to prove every published answer
+// rests on a measured win, and once to prove the render refuses an
+// answer whose row has lost its measurement.
+const scoreboard = readFileSync(
+  new URL("../docs/scoreboard.md", import.meta.url),
+  "utf8",
+);
 
 // The built site, which `npm test` produces before the suite runs
 // (package.json: test = typecheck + docs:build + node --test). These tests
@@ -221,6 +236,109 @@ test("the changelog opens today and every entry is a real line", () => {
     page.includes(dollars(BILLING_CONFIG.perTbUsd)),
     "the changelog must state the ceiling it recorded",
   );
+});
+
+test("every FAQ answer rests on a scoreboard row that is a measured win", () => {
+  // The orchestrator's rule (issue #98, comment 2026-09-30): a line
+  // whose row is still "not yet measured" stays out of the published
+  // FAQ. src/docs.js declares which row each answer rests on, so the
+  // gate reads the real table: an answer that loses its measurement
+  // fails here instead of shipping an unmeasured claim.
+  for (const entry of FAQ) {
+    for (const metric of entry.scoreboard) {
+      assert.equal(
+        scoreboardVerdict(scoreboard, metric),
+        "win",
+        `${entry.question} rests on "${metric}", which the scoreboard does not mark as a measured win`,
+      );
+    }
+  }
+});
+
+test("the render refuses an FAQ answer whose row is not yet measured", () => {
+  // The same gate, turned around: take a row the FAQ answers rest on
+  // and read it the way the scoreboard reads it before a measurement
+  // lands. faqMarkdown() must refuse, naming the answer and the row,
+  // so the answer leaves the page at the next build rather than
+  // staying up unmeasured.
+  const flip = (metric, verdict) =>
+    scoreboard
+      .split("\n")
+      .map((line) =>
+        line.startsWith(`| ${metric} |`)
+          ? line.replace("| win |", `| ${verdict} |`)
+          : line,
+      )
+      .join("\n");
+  assert.throws(
+    () => faqMarkdown(flip("price at 1 TB", "not yet measured")),
+    /price at 1 TB/,
+    "the cost answer must come out when its row is not yet measured",
+  );
+  assert.throws(
+    () =>
+      faqMarkdown(
+        flip("agent features: no-delete keys", "not yet measured"),
+      ),
+    /no-delete keys/,
+    "the agents answer must come out when one of its rows is not yet measured",
+  );
+});
+
+test("the shipped FAQ is exactly the answers the data publishes", () => {
+  const faq = shipped("faq.md");
+  const headings = [...faq.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
+  assert.deepEqual(
+    headings,
+    FAQ.map((entry) => entry.question),
+    "the FAQ page must carry every answer src/docs.js publishes, and no hand-added ones",
+  );
+  for (const entry of FAQ) {
+    assert.ok(
+      faq.includes(`## ${entry.question}`),
+      `the FAQ must answer "${entry.question}"`,
+    );
+  }
+});
+
+test("the FAQ's rival line keeps the orchestrator's phrasing, from the scoreboard's row", () => {
+  const faq = shipped("faq.md");
+  // "Space price line: say '$20 a month, or $15 paid yearly'" — the
+  // phrasing is fixed, and both figures must still be the ones the
+  // scoreboard's price-at-1-TB row records for Space, so the line
+  // cannot drift from the row it came from.
+  assert.ok(
+    faq.includes(RIVAL_1TB_LINE),
+    "the FAQ must carry the rival line built in src/docs.js",
+  );
+  assert.ok(
+    faq.includes("Space charges $20 a month, or $15 paid yearly, for 1 TB."),
+    "the rival line must keep the orchestrator's exact phrasing",
+  );
+  const row = scoreboard
+    .split("\n")
+    .find((line) => line.startsWith("| price at 1 TB |"));
+  const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);
+  for (const figure of ["20", "15"]) {
+    assert.ok(
+      figures.includes(figure),
+      `the scoreboard's price at 1 TB row must still record $${figure} for Space`,
+    );
+  }
+});
+
+test("no [verify] line ships in any docs page", () => {
+  // A [verify] marker is the draft's own sign that a line is waiting
+  // on a measurement. One surviving into the built site means the
+  // line shipped before its row was measured, which is the failure
+  // the FAQ rule exists to prevent.
+  for (const page of DOC_PAGES) {
+    assert.doesNotMatch(
+      shipped(page.file),
+      /\[verify/i,
+      `${page.file} ships a [verify] line, so an unmeasured claim reached the site`,
+    );
+  }
 });
 
 test("llms.txt links every page, and llms-full.txt holds all of them", () => {

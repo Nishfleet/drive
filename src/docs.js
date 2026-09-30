@@ -127,8 +127,126 @@ export const KEY_TABLE = Object.freeze(
   ].join("\n"),
 );
 
-/** The substitution table for the {{MARKER}}s the pages use. */
-export function markerValues() {
+// ---------------------------------------------------------------------------
+// The FAQ (drive issue #98, orchestrator comment 2026-09-30)
+//
+// The rule the FAQ is built under, verbatim: "every line marked [verify] cites
+// a measured row in docs/scoreboard.md (#114) with the real number before it
+// goes live; a line whose row is still 'not yet measured' stays out of the
+// published FAQ" — and "the backup-location line stays out until the backup
+// exists (#9)".
+//
+// So an answer is data with the scoreboard row it rests on, and faqMarkdown()
+// refuses to render an answer whose row is anything but a measured win. A row
+// that loses its measurement (or a page that hand-adds an answer) fails the
+// docs build instead of shipping an unmeasured claim.
+
+/**
+ * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
+ * (docs/scoreboard.md, checked on spacefs.com 2026-09-30): about $20 month to
+ * month, $15 a month billed yearly. The orchestrator fixed the FAQ's phrasing
+ * ("say '$20 a month, or $15 paid yearly'"), so both figures render from here
+ * and test/docs.test.mjs fails if either number is not still in that row.
+ */
+export const RIVAL_1TB = Object.freeze({
+  name: "Space",
+  monthToMonthUsd: 20,
+  yearlyUsd: 15,
+});
+
+/** The rival line on the FAQ, in the orchestrator's own phrasing. */
+export const RIVAL_1TB_LINE = `${RIVAL_1TB.name} charges $${RIVAL_1TB.monthToMonthUsd} a month, or $${RIVAL_1TB.yearlyUsd} paid yearly, for 1 TB.`;
+
+/**
+ * The published FAQ, newest understanding first is not a thing here: the order
+ * is the page's order. Each entry carries the scoreboard metric (or metrics)
+ * its answer rests on; `answer` is the page's own Markdown, markers included.
+ * An answer the scoreboard does not yet back is simply not in this list —
+ * faqMarkdown()'s gate is what keeps it out until it is measured.
+ */
+export const FAQ = Object.freeze([
+  Object.freeze({
+    question: "What does it cost?",
+    scoreboard: ["price at 1 TB"],
+    answer: [
+      "{{RATE}} a month, billed by the minute, for what you actually store.",
+      "The bill is cut off at {{CEILING_FLOOR}} until your drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB after that.",
+      "{{FREE_USD}} a month is free, and no card is needed to start.",
+      "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
+      "There are no plans to pick, and nothing you are given expires.",
+      `For comparison, ${RIVAL_1TB_LINE}`,
+    ].join(" "),
+  }),
+  Object.freeze({
+    question: "What can my AI agents do?",
+    scoreboard: [
+      "agent features: MCP setup",
+      "agent features: no-delete keys",
+      "agent features: spending cap",
+    ],
+    answer: [
+      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
+      "{{AGENT_CANNOT_DELETE}} An agent can read and write your files, so a mistaken run can change a file but cannot wipe one.",
+      "The drive also carries a spending cap: at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
+    ].join(" "),
+  }),
+]);
+
+/**
+ * One row's verdict out of docs/scoreboard.md's table, by its metric name.
+ * The table's columns are | Metric | Space | Us | Verdict | Issue |, so the
+ * verdict is the fourth cell. A metric that is not in the table is an error,
+ * not a null: a renamed row would otherwise read as "no verdict" and fail
+ * later, with the metric name lost.
+ * @param {string} scoreboardText the whole scoreboard file
+ * @param {string} metric the row's first cell, exactly as the table spells it
+ */
+export function scoreboardVerdict(scoreboardText, metric) {
+  const row = scoreboardText
+    .split("\n")
+    .find((line) => line.startsWith(`| ${metric} |`));
+  if (!row) {
+    throw new Error(`docs/scoreboard.md has no row for "${metric}"`);
+  }
+  const cells = row.split("|").map((cell) => cell.trim());
+  const verdict = cells[4];
+  if (!verdict) {
+    throw new Error(`the scoreboard row "${metric}" has no verdict cell`);
+  }
+  return verdict;
+}
+
+/**
+ * The FAQ as one page's Markdown, or an error naming the first answer whose
+ * scoreboard row is not a measured win. This is the owner's rule enforced
+ * where the page is built, so a row that loses its measurement takes its
+ * answer off the site at the next build rather than leaving a stale claim up.
+ * @param {string} scoreboardText the whole docs/scoreboard.md file
+ */
+export function faqMarkdown(scoreboardText) {
+  const parts = [];
+  for (const entry of FAQ) {
+    for (const metric of entry.scoreboard) {
+      const verdict = scoreboardVerdict(scoreboardText, metric);
+      if (verdict !== "win") {
+        throw new Error(
+          `the FAQ answer "${entry.question}" rests on "${metric}", which the scoreboard marks "${verdict}" — ` +
+            "a line whose row is still not yet measured stays out of the published FAQ",
+        );
+      }
+    }
+    parts.push(`## ${entry.question}\n\n${entry.answer}`);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * The substitution table for the {{MARKER}}s the pages use. `extra` carries
+ * the markers built where a file is read (the FAQ needs docs/scoreboard.md,
+ * which this module will not open — it is plain data and pure functions).
+ * @param {Record<string, string>} [extra]
+ */
+export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
@@ -143,5 +261,6 @@ export function markerValues() {
     AGENT_CANNOT_DELETE: agentCannotDeleteSentence(),
     KEY_TABLE: KEY_TABLE,
     BILL_TABLE: BILL_TABLE,
+    ...extra,
   };
 }

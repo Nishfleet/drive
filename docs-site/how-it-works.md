@@ -47,5 +47,5 @@ separately. The numbers worked out for four sizes are on
 
 ## Next
 
-- [Quickstart](/quickstart) — three steps to a mounted drive.
+- [Quickstart](/quickstart) — five steps to a mounted drive.
 - [Pricing and your bill](/pricing) — the rate and the ceiling.

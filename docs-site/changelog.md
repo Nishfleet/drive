@@ -28,8 +28,10 @@ the live site.
 - `drive status` and `drive logout`.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
-- These docs: Quickstart, How it works, Agents, Pricing and your bill, Limits,
-  Security and this changelog, each also served as Markdown.
+- These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
+  Limits, Security and this changelog, each also served as Markdown.
+- The FAQ page: it publishes an answer only once the scoreboard row under it
+  is a measured win, so a line we have not measured yet stays off it.
 
 ## Earlier
 

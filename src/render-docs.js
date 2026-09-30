@@ -15,7 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { markerValues } from "./docs.js";
+import { faqMarkdown, markerValues } from "./docs.js";
 import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
 
 // The pages that make up the docs, in the order the sitemap and the docs home
@@ -51,24 +51,61 @@ const RENDERED_FILES = Object.freeze([DOCS_HOME, ...DOC_PAGES.map((p) => p.file)
 const DOCS_DIR = fileURLToPath(new URL("../docs-site/", import.meta.url));
 export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 
+// The head-to-head table the FAQ is gated against (docs/scoreboard.md, drive
+// issue #114). src/docs.js stays plain data and reads no file, so this build
+// step is the one that opens it and hands the text to faqMarkdown(): an answer
+// whose row is not a measured win fails here, at the build, instead of shipping
+// a number nobody has measured.
+const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
+
+/** The markers that need a file read: today, just the FAQ's own Markdown. */
+function fileMarkers() {
+  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")) };
+}
+
+// A marker's value may itself carry markers: the FAQ's answers are Markdown
+// with the price markers in them, so substituting {{FAQ}} leaves {{RATE}}
+// behind for the next round. Legitimate nesting is shallow, so a document that
+// has not settled after this many rounds is a cycle, and throwing beats looping
+// the build forever.
+const MAX_MARKER_ROUNDS = 10;
+
 /**
- * Substitute the markers in one page's Markdown. A `{{NAME}}` that src/docs.js
+ * Substitute the markers in one page's Markdown, repeatedly, because a
+ * marker's value may carry markers of its own. A `{{NAME}}` that src/docs.js
  * does not produce is an error: a silent leftover marker is exactly how a
- * wrong price ships.
+ * wrong price ships. Every name that appeared in any round is added to `used`,
+ * so a caller can tell a marker no page mentions from one only a nested value
+ * reaches.
  * @param {string} source
  * @param {Record<string, string>} [values]
+ * @param {Set<string>} [used]
  * @returns {string}
  */
-export function applyMarkers(source, values = markerValues()) {
-  const found = [...source.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]);
-  for (const name of found) {
-    if (!(name in values)) {
+export function applyMarkers(source, values = markerValues(), used = new Set()) {
+  let text = source;
+  for (let round = 0; ; round += 1) {
+    const names = [
+      ...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1])),
+    ];
+    if (names.length === 0) {
+      return text;
+    }
+    if (round >= MAX_MARKER_ROUNDS) {
       throw new Error(
-        `docs page uses {{${name}}}, which src/docs.js does not define`,
+        `a docs marker did not settle after ${MAX_MARKER_ROUNDS} rounds (${names.join(", ")}); a marker's value contains the marker it replaces`,
       );
     }
+    for (const name of names) {
+      if (!(name in values)) {
+        throw new Error(
+          `docs page uses {{${name}}}, which src/docs.js does not define`,
+        );
+      }
+      used.add(name);
+    }
+    text = text.replace(/\{\{([A-Z_]+)\}\}/g, (_whole, name) => values[name]);
   }
-  return source.replace(/\{\{([A-Z_]+)\}\}/g, (_whole, name) => values[name]);
 }
 
 /**
@@ -78,15 +115,12 @@ export function applyMarkers(source, values = markerValues()) {
  * @returns {ReadonlyArray<{file: string, title: string, url: string}>}
  */
 export function renderDocs(outDir = RENDERED_DIR) {
-  const values = markerValues();
+  const values = markerValues(fileMarkers());
   const used = new Set();
   mkdirSync(outDir, { recursive: true });
   for (const file of RENDERED_FILES) {
     const source = readFileSync(join(DOCS_DIR, file), "utf8");
-    for (const name of source.match(/\{\{([A-Z_]+)\}\}/g) || []) {
-      used.add(name.slice(2, -2));
-    }
-    writeFileSync(join(outDir, file), applyMarkers(source, values));
+    writeFileSync(join(outDir, file), applyMarkers(source, values, used));
   }
   // A value src/docs.js computes and no page reads is either a page that lost
   // its marker or a figure that stopped being stated; both are drift, so the

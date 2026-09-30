@@ -27,13 +27,15 @@ Markdown (add `.md` to the address), and the whole set is in one file for
 agents.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
-  three steps to a mounted drive
+  five steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
   plain files, versions, restore
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
   `drive init` per tool, and what an agent key cannot do
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —
   the rate, the ceiling and four worked sizes
+- [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
+  we can answer with a measured number
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
   version 1 does not do
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security) — who
