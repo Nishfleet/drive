@@ -1,7 +1,7 @@
 import { routes } from "./routes.js";
 import { errorResponse } from "./http.js";
+import { createMemoryStore } from "./keystore.js";
 import { failureMessage } from "../../../src/messages.js";
-
 // Finding 1 replaced the hand-rolled path matcher with the platform's own
 // URLPattern: matching a path, capturing :params and deciding that `/a/b/c`
 // does not match `/a/:id` are the runtime's job now, not ours. (The review
@@ -25,7 +25,7 @@ import { failureMessage } from "../../../src/messages.js";
  * @typedef {{params: Record<string, string>}|{malformed: true}} RouteMatch
  *
  * What a handler gets besides the request.
- * @typedef {{env: object, db?: any, keyProvider?: any, now: () => number, account?: {id: string}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * @typedef {{env: object, db?: any, store?: any, now: () => number, account?: {id: string}|null, params?: Record<string, string>, url?: URL}} Ctx
  */
 
 /** @type {WeakMap<Route, URLPattern>} */
@@ -71,16 +71,45 @@ function matchRoute(route, pathname) {
 }
 
 /**
+ * The account gate: a request's account comes from its own `Authorization:
+ * Bearer <device token>` header and nothing else. The token is hashed and
+ * looked up in the key store, so a caller cannot name an account, and no
+ * cookie, query value or body field is trusted (the same rule
+ * src/status.js `signedInAccount` already follows for the site Worker).
+ * @param {Request} request
+ * @param {any} store the key store, or undefined where there is none
+ * @returns {Promise<{id: string, name: string}|null>}
+ */
+export async function accountForRequest(request, store) {
+  const header = request.headers.get("authorization") ?? "";
+  const [scheme, token] = header.split(" ");
+  if (scheme === undefined || token === undefined || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+  if (store === undefined) {
+    return null;
+  }
+  return store.accountForDeviceToken(token.trim());
+}
+
+/**
  * Dispatches to the registry. Kept separate from the Worker export so tests
  * can inject a database, a key provider and a signed-in account.
  * @param {Request} request
- * @param {Ctx} ctx {env, db, keyProvider, now, account}
+ * @param {Ctx} ctx {env, db, store, now, account}
  * @param {ReadonlyArray<Route>} [table]
  */
 export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
   const pathname =
     url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
+  // The account is read from the request's own bearer token (drive#55) rather
+  // than trusted from the context, so a handler cannot be handed an account
+  // the caller never proved. `ctx.account` is honoured only where there is no
+  // store to resolve one with, which is the tests' own store-less context; the
+  // Worker export always passes a store, so nothing reaches a route that way.
+  const bearer = await accountForRequest(request, ctx.store);
+  const account = bearer ?? (ctx.store === undefined ? ctx.account ?? null : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];
@@ -105,7 +134,6 @@ export async function dispatch(request, ctx, table = routes) {
   // one that spells its rule wrong, is an account route, so a new route cannot
   // ship open by accident and a path whose every route needs an account
   // answers 401 before it says which methods it has.
-  const account = ctx.account;
   const allowed = matches.filter(({ route }) => route.auth === "public" || Boolean(account));
   if (allowed.length === 0) {
     return errorResponse(401, failureMessage("unauthorized"), {
@@ -127,7 +155,10 @@ export async function dispatch(request, ctx, table = routes) {
   }
   const { params } = /** @type {{params: Record<string, string>}} */ (handler.match);
   try {
-    return await handler.route.handler(request, { ...ctx, params, url });
+    // The account the gate resolved is the one the handler sees: one value,
+    // read once, so a handler cannot disagree with the gate about who is
+    // calling.
+    return await handler.route.handler(request, { ...ctx, account, params, url });
   } catch (error) {
     // The real error goes to the Worker's log; the caller gets the fixed
     // sentence from the one message table (src/messages.js) and can learn
@@ -141,15 +172,28 @@ export async function dispatch(request, ctx, table = routes) {
   }
 }
 
+// One key store per Worker isolate, the same choice src/index.js makes for the
+// Web Files bytes: the stand-in holds what this isolate minted, and the real
+// one (D1 plus the storage provider, build step 1) replaces this factory with
+// the same methods, so no route changes.
+/** @type {ReturnType<typeof createMemoryStore>|undefined} */
+let keyStore;
+
+/**
+ * @param {{DB?: any, [key: string]: any}} env
+ */
+function storeFor(env) {
+  if (keyStore === undefined) {
+    keyStore = createMemoryStore();
+  }
+  return keyStore;
+}
 export default {
   /**
    * @param {Request} request
    * @param {{DB?: any, [key: string]: any}} env
    */
   async fetch(request, env) {
-    // No account resolver yet: the device store lands with #2, so every
-    // account route answers 401 for now rather than trusting a caller-supplied
-    // identity. The Worker export takes the same ctx shape the tests inject.
-    return dispatch(request, { env, db: env.DB, now: Date.now });
+    return dispatch(request, { env, db: env.DB, store: storeFor(env), now: Date.now });
   },
 };
