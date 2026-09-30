@@ -267,6 +267,71 @@ test("the sitemap lists the docs pages on the canonical origin, in order", () =>
   }
 });
 
+test("every shell sample in the docs is a command the CLI actually has", () => {
+  // The orchestrator's second-pass note (issue #98, comment 1) asks for every
+  // code sample to be run in CI, the way Space checks its 84 samples. There is
+  // no stock doc-test route for this corpus: `mdbook test` runs Rust in fenced
+  // blocks, `sphinx.ext.doctest` runs Python `>>>` sessions, and VitePress,
+  // Starlight and Docusaurus ship no runner at all (searched the three tools'
+  // own docs plus mdBook's, on 2026-09-30). The samples here are shell commands
+  // that mount storage and connect agent tools, which a CI runner cannot do, so
+  // the mechanical substitute is this: every `drive ...` sample is checked
+  // against the subcommand switch in cmd/drive/main.go, and the one sample that
+  // is not a `drive` command is pinned by name. A renamed or removed
+  // subcommand fails the build instead of shipping a sample that does nothing.
+  const mainGo = readFileSync(
+    new URL("../cmd/drive/main.go", import.meta.url),
+    "utf8",
+  );
+  const switchBody = mainGo.slice(
+    mainGo.indexOf("switch os.Args[1]"),
+    mainGo.indexOf("default:"),
+  );
+  const subcommands = new Set(
+    [...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]),
+  );
+  assert.ok(
+    subcommands.has("mount") && subcommands.has("init"),
+    "the subcommand list must have been parsed out of main.go",
+  );
+
+  // The commands a page may show, outside `drive <sub>`. Each is a stock tool
+  // invocation the page explains in prose; adding one is a deliberate edit.
+  const nonDriveSamples = new Set([
+    "go install github.com/Nishfleet/drive/cmd/drive@latest",
+    "export DRIVE_S3_ENDPOINT=https://your-endpoint",
+    "export DRIVE_S3_BUCKET=your-bucket",
+    "export DRIVE_S3_PREFIX=your-folder",
+    "export DRIVE_S3_ACCESS_KEY_ID=...",
+    "export DRIVE_S3_SECRET_ACCESS_KEY=...",
+  ]);
+
+  let samples = 0;
+  for (const page of DOC_PAGES) {
+    const md = shipped(page.file);
+    for (const block of md.matchAll(/```(?:sh|bash)\n([\s\S]*?)```/g)) {
+      for (const raw of block[1].split("\n")) {
+        const line = raw.trim();
+        if (line === "") continue;
+        samples += 1;
+        const match = line.match(/^drive ([a-z]+)/);
+        if (match) {
+          assert.ok(
+            subcommands.has(match[1]),
+            `${page.file} shows \`${line}\`, and \`drive ${match[1]}\` is not in cmd/drive/main.go`,
+          );
+          continue;
+        }
+        assert.ok(
+          nonDriveSamples.has(line),
+          `${page.file} shows an unchecked sample \`${line}\`; add it to nonDriveSamples with the reason it cannot be run here`,
+        );
+      }
+    }
+  }
+  assert.ok(samples >= 5, `the docs must carry the samples (found ${samples})`);
+});
+
 test("the README describes the drive and points at the docs", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   // It is not the template stub any more: it says what the product is and
