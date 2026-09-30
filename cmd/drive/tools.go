@@ -155,11 +155,6 @@ type Tool struct {
 	// session's working directories, so a session must be started in the drive
 	// folder to use the drive server.
 	Access func(env Env) error
-	// Skill names the tool's skill-note file, a personal skill the tool loads
-	// in any session on this machine, not only one started in the drive
-	// folder. Every tool in the registry has one; see skill.go for each
-	// tool's documented path.
-	Skill func(t Tool, env Env) (string, bool)
 }
 
 // tools is the agent-tool registry. One row per tool the spec commits to.
@@ -173,7 +168,6 @@ func tools() []Tool {
 			Check:       []string{"mcp", "get", "{name}"},
 			Remove:      []string{"mcp", "remove", "{name}"},
 			Access:      accessClaude,
-			Skill:       skillPath,
 		},
 		{
 			Name:     "codex",
@@ -182,7 +176,6 @@ func tools() []Tool {
 			Check:    []string{"mcp", "get", "{name}", "--json"},
 			Remove:   []string{"mcp", "remove", "{name}"},
 			Access:   func(env Env) error { return writeNote(env, "AGENTS.md") },
-			Skill:    skillPath,
 		},
 		{
 			Name:     "gemini",
@@ -190,7 +183,6 @@ func tools() []Tool {
 			Add:      []string{"mcp", "add", "-s", "user", "-t", "stdio", "{name}", "npx", "-y", mcpPackage, "{dir}"},
 			Remove:   []string{"mcp", "remove", "-s", "user", "{name}"},
 			JSONPath: func(home string) string { return filepath.Join(home, ".gemini", "settings.json") },
-			Skill:    skillPath,
 		},
 		{
 			Name:       "cursor",
@@ -198,14 +190,12 @@ func tools() []Tool {
 			ConfigDirs: []string{".cursor"},
 			JSONPath:   func(home string) string { return filepath.Join(home, ".cursor", "mcp.json") },
 			Access:     func(env Env) error { return writeNote(env, "AGENTS.md") },
-			Skill:      skillPath,
 		},
 		{
 			Name:       "kiro",
 			Binaries:   []string{"kiro"},
 			ConfigDirs: []string{".kiro"},
 			JSONPath:   func(home string) string { return filepath.Join(home, ".kiro", "settings", "mcp.json") },
-			Skill:      skillPath,
 		},
 	}
 }
@@ -283,7 +273,7 @@ func (t Tool) Connect(env Env) error {
 			return fmt.Errorf("grant %s access to the drive: %w", t.Name, err)
 		}
 	}
-	if path, ok := t.Skill(t, env); ok {
+	if path, ok := t.SkillPath(env); ok {
 		if err := writeSkill(env, path); err != nil {
 			return fmt.Errorf("write the %s skill note: %w", t.Name, err)
 		}
@@ -326,7 +316,7 @@ func (t Tool) Revoke(env Env) error {
 	// The skill note goes last: a tool that is still registered is more useful
 	// with the note than without the registration, so the note is the last
 	// thing to disappear.
-	if path, ok := t.Skill(t, env); ok {
+	if path, ok := t.SkillPath(env); ok {
 		if err := revokeSkill(env, path); err != nil {
 			return fmt.Errorf("remove the %s skill note: %w", t.Name, err)
 		}
