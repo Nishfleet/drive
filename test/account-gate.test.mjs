@@ -376,6 +376,17 @@ test("upload, delete and restore refuse a cross-site request", async () => {
     (await stateChange("/restore", { path: "/a.txt" }, "https://evil.example")).status,
     403,
   );
+  // The refusal names the one next step rather than the table's generic
+  // "try again in a moment", which is advice to retry a request that is always
+  // refused.
+  const refused = await upload("https://evil.example");
+  const refusedBody = await refused.json();
+  assert.match(refusedBody.error, /only accepted from the drive page/);
+  assert.doesNotMatch(refusedBody.error, /try again/i);
+  // Nothing was written: a refused cross-site upload is refused before the
+  // store is touched.
+  const after = await (await call(new Request(api("?path=%2F")))).json();
+  assert.deepEqual(after.rows, [], "a refused cross-site upload must store nothing");
   // Our own page, and a caller with no Origin at all (curl, the CLI), pass:
   // the check is the extra browser-facing rule, not the whole gate.
   assert.equal((await upload("https://drive.test")).status, 201);

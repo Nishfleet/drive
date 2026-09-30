@@ -14,9 +14,7 @@
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
 // test and no-configuration stand-in, and renders every state for a screenshot.
-import { formatBytes } from "./status.js";
-import { unauthorizedResponse } from "./status.js";
-import { failureMessage } from "./messages.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 import { isSameOriginRequest } from "./email-send.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
@@ -744,7 +742,14 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     route === `${FILES_ENDPOINT}/delete` ||
     route === `${FILES_ENDPOINT}/restore`;
   if (stateChanging && !isSameOriginRequest(request)) {
-    return json({ error: failureMessage("unexpected") }, 403);
+    // A specific line rather than the table's generic fallback: "try again in
+    // a moment" would be advice to retry a request that will always be
+    // refused, and the one next step is to do it from the drive page, the same
+    // way src/waitlist.js and src/email-send.js answer their cross-site calls.
+    return json(
+      { error: "Uploads, deletes and restores are only accepted from the drive page." },
+      403,
+    );
   }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
