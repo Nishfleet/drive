@@ -98,6 +98,27 @@ Agents that run on a server rather than the laptop get an S3 key instead (`drive
 
 Each tool also gets a short skill note: where the drive is, that deletes can be undone, and to use `drive branch` before large edits. Exact command syntax is checked against each tool's current docs in build step 4.
 
+## Sandbox platforms (build step 11)
+
+Two connectors, so the drive works inside a sandbox. The first fits a platform that allows FUSE; the second needs nothing of the platform but HTTP, so it is the one that works everywhere.
+
+| Connector | How | Use when |
+|---|---|---|
+| Mount | `drive init --token <sandbox token>` runs headless: it exchanges the token for a scoped agent key (no `deleteFiles`), writes the rclone config and mounts with `rclone mount` | The sandbox allows FUSE |
+| Hosted MCP | The api Worker's remote MCP over HTTP lists, reads and writes the drive with no mount; a write is guarded by `If-Match` against the ETag the agent read | The sandbox does not allow FUSE, or the agent has no shell |
+
+Each platform, what its docs allow, and the free tier the connector has to fit. Read 2026-09-30; a page that does not state FUSE is called that here, not assumed. Listing and publishing is preview-then-autonomous and waits for the connector code and a preview (`brand`), so this table records the surface and what to publish, not a live listing.
+
+| Platform | FUSE | Surface to publish on (free) | Free tier, with the page's own words |
+|---|---|---|---|
+| Vercel Sandbox | Yes. The overview lists "System-privileged processes: Run workloads that need system-level privileges, such as container runtimes like Docker, VPN clients, and FUSE filesystem drivers", and its **Mount remote storage** page mounts "an external object store such as Amazon S3 ... with a FUSE driver" | Vercel Templates and the Marketplace/Integrations docs; the Sandbox "Mount remote storage" page is the integration doc to match | Hobby: "Sandbox is free for Hobby users within the usage quotas" — 5 active-CPU hours/month, 420 GB-hours memory, 5,000 creations, 45-minute max session, 10 concurrent sandboxes (`/docs/vercel-sandbox/pricing`) |
+| Daytona | Yes. Its **Mount External Storage** doc opens "External storage is mounted using FUSE", with a section per provider (Amazon S3 via `mount-s3`, Cloudflare R2, Tigris, Supabase, GCS, Azure Blob, Box) and two shapes: a pre-built snapshot, or runtime install | A Daytona **Snapshot** built with `mount-s3` (plus the drive rclone config) is the reusable artifact; the docs also list Volumes and "Mount External Storage" | "$200 in free compute included", "Sign up for a free trial - no credit card required" (daytona.io/pricing) |
+| boat.dev | Not stated in the pages read (Quickstart, Pricing & Limits, Environments, Setup & Scripts, Snapshots & Copies, Integrations & adapters) | The **Integrations & adapters** docs section (it already holds Eve and Harbor adapter pages — a drive adapter page goes here) and the SDKs page; **Setup & Scripts** is where a one-line install belongs | "Trial: 25 free hours, 2 sandboxes at once, small and default only, until your first payment" (docs.boat.dev/pricing); a plan includes a free 7-day trial |
+| E2B | Not stated in the pages read (E2B docs, Sandbox Templates). Its template build environment is "a full sandbox environment, so you can do anything during the build that you can do inside a running sandbox, including running Docker containers" — the FUSE question is settled by a real sandbox test, not a doc | An E2B **Template** (its docs support "one template per customer, per project, or per agent run"); the Templates docs are the integration doc | Hobby: "$100 of usage in credits", "No credit card required", sessions up to 1 hour, 20 concurrent sandboxes, 10 GiB storage free (e2b.dev/pricing) |
+| InstaCloud (instacloud.com, "Agent-Native Cloud", InsForge) | Not stated in the page read | It already has a **Templates** section and an **Agent Directory**, and its one-line connect is `npx -y insta@latest setup agent` — the drive goes in the Agent Directory and ships as a template | "Deploying For Free" / "Start Building Today" (instacloud.com); its pricing page needs a read before a listing since the tier text is thin |
+
+Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on each; until then the hosted MCP connector is the one that needs no FUSE.
+
 ## Data model (D1)
 
 | Table | Columns | Notes |
@@ -164,7 +185,7 @@ Every step is one issue, built by a queue worker and checked by a different mode
 | 7 | Branches | `branch`, `branches`, `diff`, `approve`, `discard`; server-side copy inside B2. | An agent's branch is approved into the original folder; a second is discarded with the original untouched; an approve where the original changed stops and lists the file. |
 | 8 | Backup and old versions | Nightly `rclone sync --backup-dir` to the Storage Box plus the 31-day purge, as one systemd timer; Hetzner restores in `drive restore`. | A file edited on day 1 and again on day 3 can be restored to its day-1 version from Hetzner on day 10 with a matching checksum; a file removed from B2 on purpose is restored from Hetzner; and a day-31 folder is gone. |
 | 9 | Pricing page and sign-up | Web pages above, pricing copy from spec.md. | A new person signs up, installs, stores a file and sees the right cost on the usage page, on a phone and a desktop. |
-| 11 | Connectors for agent sandboxes (after steps 3 and 4) | Two ways in, so the drive works inside boat.dev, E2B, Daytona, Vercel Sandbox, InstaCloud and similar: (a) a one-line install inside a sandbox that mounts the drive with a sandbox token (`drive init --token`), for sandboxes that allow FUSE; (b) a hosted MCP server on the api Worker, so any agent can use the drive with no mount at all. Then a listing or template on each platform that has one. | The same file is read and written from inside a real boat.dev sandbox (mount) and a real E2B sandbox (mount or hosted MCP), with the change visible on the Mac. |
+| 11 | Connectors for agent sandboxes (after steps 3 and 4) | Two ways in, so the drive works inside boat.dev, E2B, Daytona, Vercel Sandbox, InstaCloud and similar: (a) a one-line install inside a sandbox that mounts the drive with a sandbox token (`drive init --token`), for sandboxes that allow FUSE; (b) a hosted MCP server on the api Worker, so any agent can use the drive with no mount at all, with a write guarded by `If-Match` so two agents never overwrite each other. Then a listing or template on each platform that has one (what each platform allows is in [Sandbox platforms](#sandbox-platforms-build-step-11)). | The same file is read and written from inside a real boat.dev sandbox (mount) and a real E2B sandbox (mount or hosted MCP), with the change visible on the Mac. |
 | 10 | Swift File Provider app (later) | Native Finder drive to replace `rclone nfsmount` on Mac. | It passes steps 2 to 4 unchanged. |
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
