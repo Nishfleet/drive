@@ -10,6 +10,7 @@ import { signedInAccount, STATUS_ENDPOINT } from "./status.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -32,6 +33,15 @@ function storeFor(env) {
         : createMemoryStore();
   }
   return filesStore;
+}
+
+// The account store for sign-in: one place to plug the api Worker's D1 in
+// (#2), so the sign-in route never reads a binding of its own and a test can
+// hand the handler a fake. It is null today — no store is bound and none is
+// declared in cloudflare.config.ts — so the route answers its closed-door
+// message (src/signin.js) instead of reporting a code no store could hold.
+function accountsStoreFor() {
+  return null;
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -83,6 +93,15 @@ export default {
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
       return handleUsageRequest(request);
+    }
+    // The sign-in screen's start (build step 9, issue #10). The store that
+    // remembers a one-time code for an account lands with build step 1's api
+    // Worker D1 (#2), so accountsStoreFor() hands the handler nothing yet and
+    // the route answers its closed door: a 503 with the message table's words,
+    // never a code reported as sent. It is registered here, ahead of the
+    // asset fallthrough, because /api/signin must reach the Worker.
+    if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
+      return handleSigninRequest(request, accountsStoreFor());
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

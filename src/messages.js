@@ -66,6 +66,20 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
   }),
+  // A cross-site request a page made on the visitor's behalf, refused by
+  // request.referrer and Origin together; the same-origin rule in
+  // src/email-send.js is the pattern this words.
+  "cross-site": Object.freeze({
+    what: "That request did not come from the drive.",
+    next: "Open the drive's page and try again there.",
+  }),
+  // Sign-in exists as a route but the account store does not yet (build step
+  // 1 / drive#2), and no OAuth provider is wired to secrets (Nish's). This is
+  // the closed door's words, not a fake success.
+  "sign-in-closed": Object.freeze({
+    what: "Signing in is not open yet.",
+    next: "Join the waitlist, and your first email will carry a sign-in code.",
+  }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
   // and the worker's last resort.
