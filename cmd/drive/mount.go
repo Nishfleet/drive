@@ -37,6 +37,12 @@ func VFSArgs() []string {
 		"--vfs-cache-mode", vfsCacheModeValue,
 		"--vfs-write-back", vfsWriteBackValue,
 		"--vfs-cache-max-size", vfsCacheMaxValue,
+		// S3 sends no change notifications, so without a short directory cache
+		// a save made on the other machine waits out rclone's 5-minute default
+		// before it is visible here. Measured against the local stand-in
+		// (docs/build-spec.md, "The mount"): about 5 s with the flag, still
+		// absent after 60 s without.
+		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-streams", "2",
 		"--buffer-size", vfsChunkStreamSize,
 	}

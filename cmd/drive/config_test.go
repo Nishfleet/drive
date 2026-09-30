@@ -77,7 +77,9 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 }
 
 // The mount must carry the three VFS flags docs/build-spec.md names, on both
-// platforms, and use the platform's own rclone subcommand.
+// platforms, and use the platform's own rclone subcommand. --dir-cache-time is
+// one of them: S3 sends no change notifications, so without it a save from the
+// other machine waits out rclone's 5-minute default (issue #62).
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -89,6 +91,7 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-cache-mode full",
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
+			"--dir-cache-time 5s",
 		} {
 			if !strings.Contains(line, want) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
@@ -109,6 +112,7 @@ func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
 		"<string>nfsmount</string>",
 		"<string>drive:drive-standin/u/1234</string>",
 		"<string>--vfs-cache-mode</string>",
+		"<string>--dir-cache-time</string>",
 		"<true/>",
 	} {
 		if !strings.Contains(plist, want) {
@@ -126,6 +130,7 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 	for _, want := range []string{
 		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
 		"--vfs-cache-mode full",
+		"--dir-cache-time 5s",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
