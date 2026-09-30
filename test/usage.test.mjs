@@ -28,8 +28,10 @@ import {
 import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+// The first-run page is a Vite entry at the repo root (issue #70), not a
+// verbatim asset in public/, so its shell is read from there.
 const getStartedPage = readFileSync(
-  new URL("../public/get-started.html", import.meta.url),
+  new URL("../get-started.html", import.meta.url),
   "utf8",
 );
 
@@ -58,8 +60,12 @@ function month(storedGb, overrides = {}) {
 
 test("the summary carries the raw sizes and the finished labels both surfaces show", () => {
   const summary = month(400);
-  // 400 GB held all month at 2¢ is $8, under the $12 ceiling.
-  assert.equal(summary.billUsd, 8);
+  // 400 GB held all month at 2¢ is $8 of storage, under the $12 ceiling, less
+  // the free $1 credit: the cost the page and the CLI show is $7 (issue #76).
+  assert.equal(summary.billUsd, 7);
+  assert.equal(summary.billCents.storageCents, 800, "the storage line before the credit");
+  assert.equal(summary.billCents.creditCents, 100, "the free $1 as a dollar line");
+  assert.equal(summary.billCents.totalCents, 700);
   assert.equal(summary.storedGb, 400);
   assert.equal(summary.gbMonths, 400, "400 GB for a whole month is 400 GB-months");
   assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS);
@@ -67,7 +73,7 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // render, they do not format.
   assert.equal(summary.labels.storedNow, "400 GB");
   assert.equal(summary.labels.gbMonths, "400.00");
-  assert.equal(summary.labels.cost, "$8.00");
+  assert.equal(summary.labels.cost, "$7.00");
   assert.equal(summary.labels.cap, "$12.00");
   assert.equal(summary.labels.accountCap, "$12.00");
   assert.equal(summary.labels.downloads, "0 B of 1.2 TB free");
@@ -204,7 +210,7 @@ test("`drive usage` prints the four lines the spec names", () => {
       "Stored GB now: 400 GB",
       "GB-months so far: 400.00",
       "Downloads: 500 GB of 1.2 TB free",
-      "Cost so far: $8.00",
+      "Cost so far: $7.00",
     ],
     "stored GB now, GB-months so far, downloads out of the free 3x, cost so far",
   );
