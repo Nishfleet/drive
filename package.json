@@ -7,8 +7,11 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
-    "test": "npm run typecheck && node --test"
+    "pretypecheck": "cf workers types",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
+    "pretest": "npm run check",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=24"

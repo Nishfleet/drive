@@ -1,9 +1,19 @@
 {
 	"compilerOptions": {
 		"target": "es2024",
-		"lib": ["es2024"],
+		// The Workers runtime is the target, so `dom` covers the fetch platform
+		// globals the Worker code shares with a browser (Request, Response,
+		// URL, crypto, console) and `.cloudflare/types/index.d.ts` — the file
+		// `cf workers types` generates from cloudflare.config.ts and the
+		// toolchain's own workerd build — supplies the Workers-only ones
+		// (D1Database, RateLimitBinding, URLPattern, the bound Env). That is
+		// the runtime type set this issue asks for; there is no hand-rolled
+		// copy of either to drift.
+		"lib": ["es2024", "dom"],
 		"module": "preserve",
 		"moduleResolution": "bundler",
+		// The runtime types are ambient globals pulled in by the include list
+		// below, not an @types package, so no `types` are auto-loaded.
 		"types": [],
 		"strict": true,
 		"noEmit": true,
@@ -11,7 +21,16 @@
 		"isolatedModules": true,
 		"verbatimModuleSyntax": true,
 		"skipLibCheck": true,
-		"allowJs": true
+		"allowJs": true,
+		// drive issue #91: the repo is JSDoc-typed JavaScript, so this is the
+		// switch that makes those annotations load-bearing instead of comments.
+		"checkJs": true
 	},
-	"include": ["src", "cloudflare.config.ts"]
+	"include": [
+		"src",
+		"workers",
+		"test",
+		"cloudflare.config.ts",
+		".cloudflare/types/index.d.ts"
+	]
 }
