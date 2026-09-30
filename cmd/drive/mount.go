@@ -180,7 +180,17 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if foreground {
-		cmd := exec.Command(rcloneBin, p.Args()...)
+		// rcloneBin comes from operator config only (--rclone, DRIVE_RCLONE or
+		// the rclone-bin override file), never from anything remote, and
+		// LookPath resolves and checks it before it is executed. exec.Command
+		// takes an argument vector and runs no shell, so no remote or stored
+		// value can inject anything at this call site.
+		rclonePath, err := exec.LookPath(rcloneBin)
+		if err != nil {
+			return fmt.Errorf("rclone binary %q not found: %w", rcloneBin, err)
+		}
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+		cmd := exec.Command(rclonePath, p.Args()...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		// Forward the usual stop signals to rclone so the mount is taken down
