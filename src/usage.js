@@ -59,6 +59,11 @@ export const USAGE_LABELS = Object.freeze({
   }),
 });
 
+// The summary labels the four `drive usage` lines print, in print order. They
+// are checked one by one, so a summary that is missing one is refused with the
+// field named rather than rendered as "undefined".
+const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
+
 /**
  * The four lines `drive usage` prints (build-spec.md "Commands"): stored GB
  * now, GB-months so far, downloads against the free 3x, and the cost so far.
@@ -77,6 +82,16 @@ export function usageLines(summary) {
     summary.labels === null
   ) {
     throw new TypeError(`usageLines needs a usageSummary() result, got ${String(summary)}`);
+  }
+  // Each label the four lines print is checked, so a payload missing one fails
+  // here with the field named instead of printing "undefined" or "NaN" in a
+  // terminal the person is trying to read.
+  for (const key of LINE_LABEL_KEYS) {
+    if (typeof summary.labels[key] !== "string") {
+      throw new TypeError(
+        `usageLines needs summary.labels.${key} as a string, got ${String(summary.labels[key])}`,
+      );
+    }
   }
   return Object.freeze([
     `${USAGE_LABELS.storedNow}: ${summary.labels.storedNow}`,

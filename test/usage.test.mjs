@@ -221,6 +221,18 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   assert.throws(() => usageLines(null), TypeError);
   assert.throws(() => usageLines(undefined), TypeError);
   assert.throws(() => usageLines({ meteredUsd: 0 }), TypeError);
+  // A summary object that is missing one of the four labels it prints is not a
+  // summary: it used to print "Stored GB now: undefined", which the test name
+  // above promises can never happen. Each key is named when it is missing.
+  for (const key of ["storedNow", "gbMonths", "downloads", "cost"]) {
+    const labels = { storedNow: "400 GB", gbMonths: "400.00", downloads: "0 B", cost: "$8.00" };
+    delete labels[key];
+    assert.throws(
+      () => usageLines({ labels }),
+      new RegExp(`usageLines needs summary\\.labels\\.${key}`),
+      `a summary missing labels.${key} is refused by name`,
+    );
+  }
 });
 
 test("GB-months are the meter over the spec's 43,800-minute month", () => {
@@ -330,6 +342,14 @@ test("no money and no size is worked out on the page", () => {
   assert.doesNotMatch(visible, /per GB/i);
   // The chart scales a size to a viewBox unit, and nothing else.
   assert.match(page, /const largest = Math\.max/);
+  // The chart's width follows the series, so a five-day month is drawn across
+  // the whole chart instead of squeezed into the left sixth of a fixed 30-unit
+  // viewBox, and the last day lands on the right edge.
+  assert.match(page, /chartEl\.setAttribute\("viewBox", `0 0 \$\{Math\.max\(width, 1\)\} 100`\)/);
+  // Every entry the chart draws is checked before it is drawn, so a day with no
+  // number never reaches points="0,NaN" or the chart's own aria-label.
+  assert.match(page, /!summary\.storedDaily\.every\(/);
+  assert.match(page, /typeof entry\.day === "string" &&\n\s*Number\.isFinite\(entry\.gb\)/);
 });
 
 test("the page obeys the pricing page's copy rules", () => {
@@ -404,10 +424,12 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
   assert.match(page, /id="cap-slider"[^>]*disabled/);
 });
 
-test("the three page headers read as one navigation", () => {
-  // The review found three headers disagreeing three ways. The order is Your
-  // files, Pricing, Get started, Usage on every masthead (the Web Files link
-  // leads since #48 merged), and each page marks itself.
+test("the pages' mastheads read as one navigation", () => {
+  // The review found the headers disagreeing. The two mastheads that carry a
+  // nav (usage and get-started) list Your files, Pricing, Get started, Usage
+  // in that order (the Web Files link leads since #48 merged), and each marks
+  // itself. The pricing page's masthead is its wordmark alone — its links are
+  // its footer nav, which is issue #11's and is checked below.
   const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"'];
   for (const masthead of [page, getStartedPage]) {
     const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
