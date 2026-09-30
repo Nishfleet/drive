@@ -68,6 +68,12 @@ test("the headline is the rate, as the spec says", () => {
   // month" — Space's price, not ours — and Nish dropped it in the #23 rework
   // brief, so no surface may carry it again.
   assert.match(words, /2¢ per GB, billed by the minute/);
+  // The big number itself is the config's, not a typed glyph: 2¢ from the
+  // 0.02 rate.
+  assert.ok(
+    words.includes(`<span class="amount">${PRICE.headlineAmount}</span>`),
+    "the headline's big number must be the config's rate",
+  );
   for (const [name, text] of [
     ["public/index.html", words],
     ["public/llms.txt", llms],
@@ -324,7 +330,7 @@ test("llms.txt's worked examples are the computed bills", () => {
       `llms.txt must quote the ${afterCredit} bill for ${label}`,
     );
     assert.ok(
-      llms.includes(`${storage}`),
+      llms.includes(`(${storage} of storage`),
       `llms.txt must name the ${storage} storage figure for ${label}`,
     );
   }

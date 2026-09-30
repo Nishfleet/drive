@@ -26,6 +26,11 @@ import { monthlyBillForStoredTb } from "../src/billing.js";
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 
+// Dollars the way the page and llms.txt write them: no cents where there are
+// none, cents where the rule produces them ($12.80). The same shape
+// test/pricing-copy.test.mjs uses, so the two gates quote identical strings.
+const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
+
 // The first-run page is a Vite entry at the repo root (issue #70): it is built
 // (its <script type="module"> is bundled) rather than copied verbatim out of
 // public/, so it ships from the root and the metadata tests read it there.
@@ -264,13 +269,12 @@ test("llms.txt describes the drive and the current price rule", () => {
     ["5 TB", 5],
   ]) {
     const bill = monthlyBillForStoredTb(tb);
-    const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
     assert.ok(
       llms.includes(`${label} = ${dollars(bill.billUsd)}`),
       `llms.txt must carry the ${dollars(bill.billUsd)} bill for ${label}`,
     );
     assert.ok(
-      llms.includes(dollars(bill.storageUsd)),
+      llms.includes(`(${dollars(bill.storageUsd)} of storage`),
       `llms.txt must name the ${dollars(bill.storageUsd)} storage figure for ${label}`,
     );
   }
