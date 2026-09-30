@@ -606,12 +606,31 @@ function showSignedOut() {
   uploadButton.disabled = true;
 }
 
+// The other half of the sign-in panel: a read that succeeds proves this
+// browser does have an account, so the panel goes away and the actions come
+// back. Without this the page's own words ("this page updates on its own")
+// would be false the moment the sign-in flow lands.
+function showSignedIn() {
+  signedOut.hidden = true;
+  uploadButton.disabled = false;
+}
+
 // One reporter for a caught failure, so a caller in the middle of an action
 // does not print a second copy of news the sign-in panel already carries.
 function reportFailure(error) {
   if (!error.signedOut) {
     say(error.message, "error");
   }
+}
+
+// The flagged error every 401 branch throws: the sign-in panel already shows
+// the message, so reportFailure() must not print it again. One factory, so a
+// new 401 branch cannot throw a plain error and double the copy (the review
+// of this change caught exactly that in the upload path).
+function signedOutError() {
+  const error = new Error(SIGNED_OUT.what);
+  error.signedOut = true;
+  return error;
 }
 
 function api(url, options) {
@@ -626,9 +645,7 @@ function api(url, options) {
       showSignedOut();
       // A thrown error, so every caller stops here instead of rendering a
       // half-state; the sign-in message is already on the page.
-      const error = new Error(SIGNED_OUT.what);
-      error.signedOut = true;
-      throw error;
+      throw signedOutError();
     }
     if (!response.ok) {
       throw new Error(payload.error || "That did not work. Try again in a moment.");
@@ -895,6 +912,7 @@ async function refresh(keepStatus) {
       : FILES_ENDPOINT + "?path=" + encodeURIComponent(path);
   try {
     const payload = await api(url);
+    showSignedIn();
     renderRows(payload.rows || []);
     if (view === "folder") {
       crumbsForParts(path === "/" ? [] : path.slice(1).split("/"));
@@ -931,7 +949,7 @@ async function uploadFiles(files) {
         // The account gate (drive issue #73) answers every route, including
         // this one, and upload has its own fetch rather than api()'s.
         showSignedOut();
-        throw new Error(SIGNED_OUT.what);
+        throw signedOutError();
       }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));

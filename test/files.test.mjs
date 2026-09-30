@@ -340,6 +340,35 @@ test("browse: the drive never lists the trash folder as a folder", async () => {
   assert.equal(trash.rows.length, 1);
 });
 
+test("an upload with no type is a download, and a script type never inlines", () => {
+  // The whole point of serveContentType (drive issue #73): the browser never
+  // renders these bytes from our origin, whether the type was named by the
+  // upload or by the file's extension.
+  for (const [type, name] of [
+    ["text/html", "page.bin"],
+    ["image/svg+xml", "page.bin"],
+    ["application/xml", "feed.bin"],
+    ["text/xml", "feed.bin"],
+    ["", "page.html"],
+    ["text/plain", "page.svg"],
+    ["text/plain", "feed.xml"],
+    ["text/plain", "page.xhtml"],
+  ]) {
+    const served = serveContentType(type, name);
+    assert.equal(served.type, "application/octet-stream", `${type} ${name}`);
+    assert.equal(served.inline, false, `${name} must not render from our origin`);
+  }
+  // A type we can name and that cannot carry script keeps its own type.
+  assert.deepEqual(serveContentType("image/png", "photo.png"), {
+    type: "image/png",
+    inline: true,
+  });
+  assert.deepEqual(serveContentType("text/plain; charset=utf-8", "notes.txt"), {
+    type: "text/plain",
+    inline: true,
+  });
+});
+
 test("preview: a picture comes back inline, download comes back as an attachment", async () => {
   const { call, upload } = drive();
   await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
@@ -751,11 +780,26 @@ test("the page shows the message table's sign-in words on a 401", () => {
   );
   // And it has to act on the status, not merely carry the words: every 401
   // branch shows the sign-in panel instead of an empty drive.
-  assert.ok(
-    (page.match(/response\.status === 401/g) || []).length >= 2,
+  // And it has to act on the status, not merely carry the words: the
+  // behaviour the review of this change asked for is that a 401 never prints
+  // the message a second time into the status line, which is what the flagged
+  // error is for. Pinned on the page text because the page is a static asset
+  // and cannot be imported.
+  assert.equal(
+    (page.match(/response\.status === 401/g) || []).length,
+    2,
     "api() and the upload fetch must both treat 401 as the account gate",
   );
+  assert.equal(
+    (page.match(/throw signedOutError\(\);/g) || []).length,
+    2,
+    "both 401 branches must throw the flagged error, or the catch prints the message twice",
+  );
   assert.ok(page.includes('id="signed-out"'), "the page needs a sign-in panel");
+  // And a read that succeeds takes the panel away again, so the page's own
+  // "this page updates on its own" is true.
+  assert.ok(page.includes("function showSignedIn()"));
+  assert.match(page, /const payload = await api\(url\);\n    showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {

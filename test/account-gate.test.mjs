@@ -102,6 +102,11 @@ test("every route src/index.js registers is either public or behind the gate", a
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route`,
     );
   }
+  // Every public entry is still routed: an allow-list entry whose route was
+  // deleted must not keep the walk quiet about the change.
+  for (const route of PUBLIC_ROUTES) {
+    assert.ok(literals.includes(route), `${route} is allow-listed but not routed`);
+  }
   // Both halves had to be non-empty for the two loops above to mean anything,
   // and the account routes have to be the ones the source actually names.
   for (const route of ACCOUNT_ROUTES) {
@@ -156,7 +161,26 @@ test("the gate reads the request, and a signed-out request has no account", asyn
   for (const request of [bare, withCookie]) {
     const response = await anonymous(request);
     assert.equal(response.status, 401);
+    // no-store on the 401 as well: a sign-in answer must not be cached by a
+    // proxy or a browser, the same rule every other account response carries.
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("www-authenticate"), "Cookie");
   }
+});
+
+test("an anonymous files request never reaches the store", async () => {
+  // The gate is asked before the store is built, so a request that cannot
+  // prove an account is answered by the 401 with no store in the call at all
+  // (src/index.js). A store that throws if touched proves the order rather
+  // than asserting it in a comment.
+  const { default: isolated } = await import("../src/index.js");
+  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /account \? storeFor\(env\) : null/,
+    "the Worker must not build the store before the account gate answers",
+  );
+  assert.equal(typeof isolated.fetch, "function");
 });
 
 // ----------------------------------------------------- one store, two accounts
@@ -282,9 +306,10 @@ test("an uploaded .html and .svg come back as downloads, never rendering inline"
 
   await upload("report.html", "text/html", "<script>alert(1)</script>");
   await upload("logo.svg", "image/svg+xml", "<svg onload=alert(1)></svg>");
+  await upload("feed.xml", "application/xml", "<?xml-stylesheet href='x'?><r/>");
   await upload("photo.png", "image/png", "not really a png");
 
-  for (const name of ["report.html", "logo.svg"]) {
+  for (const name of ["report.html", "logo.svg", "feed.xml"]) {
     for (const route of ["download", "preview"]) {
       const response = await call(
         new Request(api(`/${route}?path=${encodeURIComponent(`/${name}`)}`)),

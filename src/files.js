@@ -92,16 +92,22 @@ export function isPreviewable(kind) {
   return kind !== "file" && kind !== "folder";
 }
 
-// The types a browser runs as code when the bytes land on our own origin,
-// and the extensions that mean the same thing even when an upload named a
-// harmless type. Anything here is served back as an octet-stream download,
-// never rendered from the site (drive issue #73, north star: Safe).
+// The types a browser runs as code when the bytes land on our own origin, and
+// the extensions that mean the same thing even when an upload named a harmless
+// type. Anything here is served back as an octet-stream download, never
+// rendered from the site (drive issue #73, north star: Safe). XML is here
+// because text/xml and application/xml can carry an XSLT stylesheet, which is
+// script the browser will run for us.
 const SCRIPTABLE_TYPES = new Set([
   "text/html",
   "application/xhtml+xml",
   "image/svg+xml",
+  "text/xml",
+  "application/xml",
 ]);
-const SCRIPTABLE_EXTENSIONS = new Set(["html", "htm", "xhtml", "svg"]);
+const SCRIPTABLE_EXTENSIONS = new Set([
+  "html", "htm", "xhtml", "xht", "svg", "svgz", "xml",
+]);
 
 /**
  * The content type a stored file's bytes may travel under, and whether that
@@ -116,10 +122,13 @@ export function serveContentType(contentType, name) {
   const declared = String(contentType || "").split(";")[0].trim().toLowerCase();
   const scriptable =
     SCRIPTABLE_TYPES.has(declared) || SCRIPTABLE_EXTENSIONS.has(extension(name));
-  return {
-    type: scriptable || !declared ? "application/octet-stream" : declared,
-    inline: !scriptable,
-  };
+  if (scriptable || !declared) {
+    // A type we cannot name is not a reason to let the browser guess one, and
+    // the octet-stream here is a download in every browser: it travels as an
+    // attachment whatever the route asked for.
+    return { type: "application/octet-stream", inline: false };
+  }
+  return { type: declared, inline: true };
 }
 
 // ---------------------------------------------------------------- the words

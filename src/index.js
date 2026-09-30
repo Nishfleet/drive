@@ -73,7 +73,12 @@ export default {
       url.pathname === `${FILES_ENDPOINT}/` ||
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
-      return handleFilesRequest(request, storeFor(env), signedInAccount(request));
+      // The gate is asked before the store is built. A request that cannot
+      // prove an account is answered by the handler's own 401 with no store
+      // in the call at all, so a misconfigured deployment fails for its own
+      // signed-in callers and tells a stranger nothing about itself.
+      const account = signedInAccount(request);
+      return handleFilesRequest(request, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset

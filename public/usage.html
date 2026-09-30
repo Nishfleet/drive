@@ -454,6 +454,9 @@ function saySignedOut() {
 
 function sayReachable() {
   statusEl.hidden = true;
+  // A read that succeeded proves the account is there, so the slider the
+  // signed-out state disabled is usable again.
+  capSlider.disabled = false;
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
