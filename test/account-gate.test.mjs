@@ -214,6 +214,11 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     ["write", "u/acct-9/docs/a b.txt"],
     ["remove", "u/acct-9/.trash/1__%2Fnotes.txt"],
   ]);
+  // A path that could climb out of the prefix is refused here, not trusted to
+  // the caller having validated it first.
+  for (const path of ["/../acct-8/x", "/a/../../b", "/.", "relative/path"]) {
+    await assert.rejects(scoped.read(path), /scoped store needs a drive path/);
+  }
   // The rows the page reads come back as drive paths, not storage keys.
   assert.deepEqual(
     (await scoped.list("/")).map((entry) => entry.path),

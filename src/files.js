@@ -438,7 +438,17 @@ export function scopeStore(store, account) {
     );
   }
   const prefix = `u/${account.id}`;
-  const toKey = (path) => `${prefix}${path}`;
+  // The drive path is checked here as well as in the handlers. Isolation must
+  // not rest on every future caller remembering to validate, so a path that
+  // could climb out of the prefix (`..`) is refused at the one place the
+  // prefix is applied, using the module's own validator.
+  const toKey = (path) => {
+    const checked = validatePath(path);
+    if (checked.error) {
+      throw new TypeError(`a scoped store needs a drive path: ${checked.error}`);
+    }
+    return `${prefix}${checked.path}`;
+  };
   const toDrivePath = (key) => {
     if (!key.startsWith(`${prefix}/`)) {
       // A store that returned a key outside this account's prefix has a bug,
@@ -458,13 +468,15 @@ export function scopeStore(store, account) {
       const entries = await store.list(toKey(path));
       return entries.map(toDriveEntry);
     },
-    read(path) {
+    // async, so a refused path is a rejected promise on every method rather
+    // than a synchronous throw from three of the four.
+    async read(path) {
       return store.read(toKey(path));
     },
-    write(path, body, contentType) {
+    async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
     },
-    remove(path) {
+    async remove(path) {
       return store.remove(toKey(path));
     },
   };
