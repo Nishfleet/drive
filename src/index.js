@@ -8,6 +8,7 @@ import {
 } from "./files.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
+import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -97,6 +98,15 @@ export default {
       // The whole env, not just the binding: the route reads the token and
       // the sending address too (src/email-send.js handleSendEmailRequest).
       return handleSendEmailRequest(request, env);
+    }
+    // The health endpoint the outside monitor polls (issue #96, #36). It
+    // comes before the asset fallthrough and takes the whole env because the
+    // check reads the dependencies off the bindings: a trivially-read D1 on
+    // each database and a fetch of the asset layer. The whole env is the
+    // honest argument — a check that only saw the bindings it was told about
+    // would be a check that could not fail.
+    if (url.pathname === HEALTH_PATH || url.pathname === `${HEALTH_PATH}/`) {
+      return handleHealthRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },

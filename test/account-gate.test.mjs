@@ -28,6 +28,7 @@ import {
 } from "../src/files.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { HEALTH_PATH } from "../src/health.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -41,13 +42,21 @@ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
 // ------------------------------------------------------------------ the walk
 
 // The one route table the walk knows. A route that is public by design (the
-// waitlist, and the token-gated send lane) is listed here, and that listing is
-// the only way to be exempt: anything src/index.js routes that is not below
-// fails the walk, so a new route cannot ship unclassified.
+// waitlist, the token-gated send lane, and the health probe) is listed here,
+// and that listing is the only way to be exempt: anything src/index.js routes
+// that is not below fails the walk, so a new route cannot ship unclassified.
 const PUBLIC_ROUTES = new Set([
+  // Sign-ups, before accounts exist.
   "/api/waitlist",
   "/api/waitlist/",
+  // The meter and the billing webhook only; closed with no token set (#73's
+  // walk added no account here because this lane's gate is a deployment
+  // secret, not a session).
   "/api/emails/send",
+  // The outside outage monitor polls it from outside with no session, and it
+  // answers ok/failing with no account data at all (src/health.js, #96).
+  HEALTH_PATH,
+  `${HEALTH_PATH}/`,
 ]);
 
 // Every account route, with the paths the walk asks. These are built from the
@@ -105,14 +114,24 @@ test("every route src/index.js registers is either public or behind the gate", a
   }
   for (const name of constants) {
     assert.ok(
-      ["FILES_ENDPOINT", "USAGE_ENDPOINT", "STATUS_ENDPOINT"].includes(name),
-      `src/index.js routes ${name}, which this test does not classify; probe it as an account route`,
+      [
+        "FILES_ENDPOINT",
+        "USAGE_ENDPOINT",
+        "STATUS_ENDPOINT",
+        "HEALTH_PATH",
+      ].includes(name),
+      `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
     );
   }
   // Every public entry is still routed: an allow-list entry whose route was
-  // deleted must not keep the walk quiet about the change.
+  // deleted must not keep the walk quiet about the change. An entry written
+  // from an endpoint constant is checked through that constant.
   for (const route of PUBLIC_ROUTES) {
-    assert.ok(literals.includes(route), `${route} is allow-listed but not routed`);
+    const fromConstant = route.startsWith(`${HEALTH_PATH}/`) || route === HEALTH_PATH;
+    assert.ok(
+      literals.includes(route) || (fromConstant && constants.includes("HEALTH_PATH")),
+      `${route} is allow-listed but not routed`,
+    );
   }
   // Both halves had to be non-empty for the two loops above to mean anything,
   // and the account routes have to be the ones the source actually names.
@@ -125,6 +144,19 @@ test("every route src/index.js registers is either public or behind the gate", a
       `${route} must be a route the Worker really serves`,
     );
   }
+});
+
+test("a public route answers with no account", async () => {
+  // The allow-list is not just a claim the walk makes: the health probe is
+  // the one public route with a real answer, and an anonymous caller must
+  // reach it. The env here has no D1 and no rate limiter, so the honest
+  // answer is 503 naming the first missing binding — what matters to this
+  // test is that it is not a 401, or the outage monitor would be locked out
+  // of the page it watches (drive issue #73, walk classifying #96's route).
+  const health = await anonymous(new Request(`https://drive.test${HEALTH_PATH}`));
+  assert.notEqual(health.status, 401, "the health probe must answer without an account");
+  assert.equal(health.status, 503, "no bindings here is the honest unhealthy answer");
+  assert.deepEqual(await health.json(), { ok: false, failing: "WAITLIST_DB" });
 });
 
 test("an anonymous request to every account route is 401 and no data", async () => {
