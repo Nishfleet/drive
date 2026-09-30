@@ -23,12 +23,17 @@
 //   DRIVE_STANDIN_RCLONE    explicit path to the rclone binary
 //   DRIVE_STANDIN_FETCH_RCLONE=0  refuse to download rclone when it is absent
 //   DRIVE_STANDIN_PROPAGATION_SECONDS  seconds a save may take to cross
+//
+// Both machines in this proof are Linux (the VPS and CI runners). The Mac half
+// of the cross-machine proof is step 2's (issue #3) and lands with it, so this
+// file proves Linux to Linux: the storage backend is the only thing the two
+// machines share.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir, platform, arch } from "node:os";
@@ -41,15 +46,23 @@ const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(TEST_FILE), "..");
 
-const PROPAGATION_SECONDS = Number(process.env.DRIVE_STANDIN_PROPAGATION_SECONDS ?? 30);
-const PROPAGATION_WINDOW_MS = 60_000;
+const rawPropagation = process.env.DRIVE_STANDIN_PROPAGATION_SECONDS;
+const PROPAGATION_SECONDS = rawPropagation === undefined ? 30 : Number(rawPropagation);
+if (!Number.isFinite(PROPAGATION_SECONDS) || PROPAGATION_SECONDS <= 0) {
+  throw new Error(`DRIVE_STANDIN_PROPAGATION_SECONDS=${rawPropagation} is not a positive number of seconds`);
+}
+// A save made now can be read back up to one propagation wait plus rclone's
+// 5 s write-back later, so the window grows with the budget instead of pinning
+// a fixed 60 s that a larger DRIVE_STANDIN_PROPAGATION_SECONDS would break.
+const MTIME_WINDOW_MS = Math.max(60_000, (PROPAGATION_SECONDS + 15) * 1000);
 
 // The step-3 mount flag set. These are the spec's flags (docs/build-spec.md,
 // "The pieces" item 2): the VFS cache flags are the product's, and
 // --dir-cache-time is what lets machine B see machine A's save at all. The
 // first test asserts the spec names every one of them, so the doc and the
-// mount cannot drift apart.
-export const MOUNT_FLAGS = [
+// mount cannot drift apart. `export` is deliberately absent: this list is the
+// proof's copy of the flags, and the product's copy is cmd/drive/config.go.
+const MOUNT_FLAGS = [
   "--vfs-cache-mode", "full",
   "--vfs-write-back", "5s",
   "--vfs-cache-max-size", "20G",
@@ -71,20 +84,28 @@ const RCLONE_RELEASE_URL = `https://downloads.rclone.org/${RCLONE_RELEASE}`;
 const RCLONE_DEFAULT_URL = `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-linux-amd64.zip`;
 let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
+// The run inside the user namespace reports its outcome here, so the outer run
+// can tell a proven namespace run from one that skipped and exited 0.
+const RESULT_FILE = process.env.DRIVE_STANDIN_RESULT;
+function reportResult(status, detail = "") {
+  if (RESULT_FILE) writeFileSync(RESULT_FILE, detail ? `${status}: ${detail}\n` : `${status}\n`);
+}
+
 function sha256OfFile(p) {
   const sum = spawnSync("sha256sum", [p], { encoding: "utf8" });
   if (sum.status !== 0) throw new Error(`sha256sum ${p} exited ${sum.status}: ${sum.stderr}`);
   return sum.stdout.trim().split(/\s+/)[0];
 }
 
-// The fetched binary is executed, so the pinned release is checked against the
-// SHA256SUMS rclone publishes beside it rather than trusted on the transport
-// alone. Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns
-// that copy's integrity, so only the default download is checked here.
+// The fetched binary is executed, so it is checked against the SHA256SUMS
+// rclone publishes beside the release. That catches a truncated or corrupted
+// download, not a compromised mirror (the sums come over the same channel).
+// Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns that
+// copy's integrity, so only the default download is checked here.
 function verifyReleaseChecksum(t, zip) {
   const name = path.basename(zip);
   const sumsUrl = `${RCLONE_RELEASE_URL}/SHA256SUMS`;
-  const sums = spawnSync("curl", ["-f", "-sSL", sumsUrl], { encoding: "utf8" });
+  const sums = spawnSync("curl", ["-f", "-sSL", "--proto", "=https", sumsUrl], { encoding: "utf8" });
   if (sums.status !== 0) throw new Error(`could not fetch ${sumsUrl} (curl exited ${sums.status})`);
   const entry = sums.stdout.split("\n").find((line) => line.trim().split(/\s+/)[1] === name);
   if (!entry) throw new Error(`${sumsUrl} lists no ${name}`);
@@ -98,7 +119,9 @@ function verifyReleaseChecksum(t, zip) {
 // caller skips then). A download that was attempted and failed throws instead:
 // a broken download must fail the run loudly, because a silent skip here would
 // delete the only done-when evidence this step produces and leave CI green.
-function findStockRclone(t) {
+// The download lands in a fresh private directory every run, so a binary left
+// behind in a shared temp path is never executed unverified.
+async function findStockRclone(t) {
   if (runs(rcloneBin)) return rcloneBin;
   const explicit = process.env.DRIVE_STANDIN_RCLONE;
   if (explicit) throw new Error(`DRIVE_STANDIN_RCLONE=${explicit} does not run; fix it or unset it`);
@@ -109,22 +132,20 @@ function findStockRclone(t) {
   }
 
   const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? RCLONE_DEFAULT_URL;
-  const dir = path.join(tmpdir(), `drive-standin-rclone-${RCLONE_RELEASE}`);
+  const dir = await mkdtemp(path.join(tmpdir(), "drive-standin-rclone-"));
+  t.after(() => rm(dir, { recursive: true, force: true }).catch(() => {}));
   const bin = path.join(dir, "rclone");
-  mkdirSync(dir, { recursive: true });
-  if (!runs(bin)) {
-    const zip = path.join(dir, path.basename(new URL(url).pathname));
-    const curl = spawnSync("curl", ["-f", "-sS", "-L", "-o", zip, url], { stdio: "inherit" });
-    if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
-    if (url === RCLONE_DEFAULT_URL) verifyReleaseChecksum(t, zip);
-    const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
-    if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
-    const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
-      .toString().trim().split("\n").filter(Boolean)[0];
-    if (found) {
-      chmodSync(found, 0o755);
-      if (found !== bin) spawnSync("mv", [found, bin]);
-    }
+  const zip = path.join(dir, path.basename(new URL(url).pathname));
+  const curl = spawnSync("curl", ["-f", "-sS", "-L", "--proto", "=https", "-o", zip, url], { stdio: "inherit" });
+  if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
+  if (url === RCLONE_DEFAULT_URL) verifyReleaseChecksum(t, zip);
+  const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
+  if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
+  const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
+    .toString().trim().split("\n").filter(Boolean)[0];
+  if (found) {
+    chmodSync(found, 0o755);
+    if (found !== bin) spawnSync("mv", [found, bin]);
   }
   if (!runs(bin)) throw new Error(`downloaded ${url}, but ${bin} still does not run`);
   return bin;
@@ -159,6 +180,9 @@ async function startStandin(dir) {
   await run("mkdir", ["-p", path.join(dir, bucket)]);
   const accessKey = "drive-standin-access-key";
   const secretKey = "drive-standin-secret-0123456789abcdef";
+  // This key pair only ever reaches this test's own processes: the stand-in
+  // below and the two rclone configs in the temp work dir. It is not a real
+  // credential and never leaves the test.
   const port = await freePort();
   const server = spawn(rcloneBin, [
     "serve", "s3", dir, "--addr", `127.0.0.1:${port}`, "--auth-key", `${accessKey},${secretKey}`,
@@ -172,7 +196,12 @@ async function startStandin(dir) {
       await run("bash", ["-c", `exec 3<>/dev/tcp/127.0.0.1/${port}`]);
       break;
     } catch {
-      if (Date.now() > deadline) throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
+      if (Date.now() > deadline) {
+        // Kill it before throwing, or a stand-in that never listened would
+        // outlive this function and hold its directory open.
+        server.kill("SIGTERM");
+        throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
+      }
       await sleep(300);
     }
   }
@@ -234,7 +263,15 @@ async function startMachine(label, workDir, cfg) {
       await run("findmnt", ["-n", "-M", mountDir]);
       return { label, mountDir, child };
     } catch {
-      if (Date.now() > deadline) throw new Error(`rclone mount ${label} never came up in 30s\n${stderr}`);
+      if (Date.now() > deadline) {
+        // Kill the stalled mount and keep its log tail in the error: the child
+        // would otherwise stay behind holding the FUSE mount and cache dir.
+        child.kill("SIGTERM");
+        const log = await readFile(logPath, "utf8").catch(() => "");
+        throw new Error(
+          `rclone mount ${label} never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+        );
+      }
       await sleep(500);
     }
   }
@@ -282,13 +319,19 @@ test("the mount flags in docs/build-spec.md are the flags the proof runs", async
 
 async function proof(t, workDir) {
   const running = [];
-  t.after(async () => {
-    for (const m of running.reverse()) await stopMachine(m).catch(() => {});
+  let standin = null;
+  // One teardown, both for the t.after at test end and for the direct-mount
+  // failure path: the catch in the test calls it before re-executing inside a
+  // user namespace, so the first attempt never leaves rclone processes or a
+  // bound port behind while the retry runs.
+  const cleanup = async () => {
+    for (const m of running.splice(0).reverse()) await stopMachine(m).catch(() => {});
+    if (standin?.stop) await standin.stop().catch(() => {});
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
-  });
+  };
+  t.after(cleanup);
 
-  const cfg = configuredStorage() ?? await startStandin(path.join(workDir, "standin"));
-  if (cfg.stop) t.after(cfg.stop);
+  const cfg = standin = configuredStorage() ?? await startStandin(path.join(workDir, "standin"));
 
   // Started one at a time so a half-started pair is still torn down: each
   // machine joins `running` as soon as it is up.
@@ -300,14 +343,15 @@ async function proof(t, workDir) {
   const seed = randomUUID();
   const fromA = `from-a-${seed}.txt`;
   const fromB = `from-b-${seed}.txt`;
-  const writtenAt = new Date();
 
   // Direction 1: machine A saves, machine B sees the save.
+  const savedAtA = new Date();
   await writeFile(path.join(a.mountDir, fromA), payload("a"));
   const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS);
   assert.ok(onB, `a save on machine A (${fromA}) never reached machine B within ${PROPAGATION_SECONDS}s`);
 
   // Direction 2: machine B saves, machine A sees the save.
+  const savedAtB = new Date();
   await writeFile(path.join(b.mountDir, fromB), payload("b"));
   const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS);
   assert.ok(onA, `a save on machine B (${fromB}) never reached machine A within ${PROPAGATION_SECONDS}s`);
@@ -325,12 +369,12 @@ async function proof(t, workDir) {
   const mtimeAonB = (await stat(path.join(b.mountDir, fromA))).mtime;
   const mtimeBonA = (await stat(path.join(a.mountDir, fromB))).mtime;
   assert.ok(
-    Math.abs(mtimeAonB.getTime() - writtenAt.getTime()) < PROPAGATION_WINDOW_MS,
-    `machine B sees ${mtimeAonB.toISOString()} for A's save, expected near ${writtenAt.toISOString()}`,
+    Math.abs(mtimeAonB.getTime() - savedAtA.getTime()) < MTIME_WINDOW_MS,
+    `machine B sees ${mtimeAonB.toISOString()} for A's save, expected near ${savedAtA.toISOString()}`,
   );
   assert.ok(
-    Math.abs(mtimeBonA.getTime() - writtenAt.getTime()) < PROPAGATION_WINDOW_MS,
-    `machine A sees ${mtimeBonA.toISOString()} for B's save, expected near ${writtenAt.toISOString()}`,
+    Math.abs(mtimeBonA.getTime() - savedAtB.getTime()) < MTIME_WINDOW_MS,
+    `machine A sees ${mtimeBonA.toISOString()} for B's save, expected near ${savedAtB.toISOString()}`,
   );
 
   t.diagnostic(`storage: ${cfg.source}`);
@@ -341,38 +385,56 @@ async function proof(t, workDir) {
 }
 
 test("a save on one machine reaches the other, both ways, with matching checksum and timestamp", async (t) => {
-  if (platform() !== "linux") return t.skip("Linux-only proof (step 3)");
+  // Both machines here are Linux; the Mac half of the cross-machine proof is
+  // step 2's (issue #3, `rclone nfsmount` on a macOS runner).
+  if (platform() !== "linux") {
+    reportResult("skipped", "not Linux");
+    return t.skip("Linux-only proof (step 3); the Mac half is step 2, issue #3");
+  }
 
-  const stock = findStockRclone(t);
+  const stock = await findStockRclone(t);
   if (!stock) {
+    reportResult("skipped", "no stock rclone for this host");
     return t.skip("no stock rclone for this host; install rclone or set DRIVE_STANDIN_RCLONE");
   }
   rcloneBin = stock;
 
-  const workDir = await mkdtemp(path.join(tmpdir(), "drive-two-machines-"));
-  if (process.env.DRIVE_STANDIN_IN_NS === "1") t.diagnostic("running inside a user namespace");
+  // The namespace run gets its own private work dir from the outer run, so a
+  // refused first attempt can never overlap it.
+  const workDir = process.env.DRIVE_STANDIN_WORKDIR ??
+    await mkdtemp(path.join(tmpdir(), "drive-two-machines-"));
+  const inNamespace = process.env.DRIVE_STANDIN_IN_NS === "1";
+  if (inNamespace) t.diagnostic("running inside a user namespace");
 
   // Mount directly first: that is the normal case (a GitHub runner), and the
   // namespace below is the fallback, not the default.
   try {
     await proof(t, workDir);
+    reportResult("proved");
     return;
   } catch (err) {
-    // `proof` registered its own teardown, so the mounts are down already.
-    await rm(workDir, { recursive: true, force: true }).catch(() => {});
     if (!err.refusedFuse) throw err;
+    t.diagnostic(`a direct mount was refused here: ${err.message.split("\n")[0]}`);
   }
 
   // This host refuses an unprivileged FUSE mount (AppArmor on the VPS), so run
   // the whole proof again inside a user namespace, where the mounts are legal
-  // and visible to this process.
-  if (process.env.DRIVE_STANDIN_IN_NS === "1") {
+  // and visible to this process. `proof`'s cleanup already ran with the test's
+  // teardown, so nothing from the refused attempt is still mounted.
+  if (inNamespace) {
+    reportResult("skipped", "the mount was refused even inside a user namespace");
     return t.skip("this host refuses an unprivileged FUSE mount even inside a user namespace");
   }
   const canUserNs = spawnSync("unshare", ["-Urm", "--propagation", "private", "true"], { stdio: "ignore" }).status === 0;
   if (!canUserNs) {
+    reportResult("skipped", "the mount was refused and no user namespace is available");
     return t.skip("this host refuses an unprivileged FUSE mount and no user namespace is available");
   }
+  const retryDir = await mkdtemp(path.join(tmpdir(), "drive-two-machines-"));
+  // The result file lives outside the work dir on purpose: the run inside the
+  // namespace removes its own work dir on the way out, and a result written
+  // inside it would be deleted before the outer run could read it.
+  const resultFile = path.join(await mkdtemp(path.join(tmpdir(), "drive-two-machines-result-")), "result");
   // Run the file as an ordinary module inside the namespace (not via --test,
   // which node treats as a recursive test run) and require the proof's own
   // assertions to have passed: run that way, a failing node:test exits non-zero.
@@ -381,10 +443,21 @@ test("a save on one machine reaches the other, both ways, with matching checksum
     process.execPath, TEST_FILE,
   ], {
     stdio: "inherit",
-    env: { ...process.env, DRIVE_STANDIN_IN_NS: "1" },
+    env: {
+      ...process.env,
+      DRIVE_STANDIN_IN_NS: "1",
+      DRIVE_STANDIN_RESULT: resultFile,
+      DRIVE_STANDIN_WORKDIR: retryDir,
+    },
     timeout: 420_000,
   });
+  const outcome = (await readFile(resultFile, "utf8").catch(() => "")).trim() || "no result reported";
+  await rm(path.dirname(resultFile), { recursive: true, force: true }).catch(() => {});
   if (inner.error) throw new Error(`the proof inside the user namespace did not run: ${inner.error.message}`);
   if (inner.signal) throw new Error(`the proof inside the user namespace was killed by ${inner.signal}`);
   assert.equal(inner.status, 0, "the two-machine proof inside the user namespace failed");
+  // Exit 0 is not enough: the run inside the namespace can also have skipped
+  // (no rclone, or a refused mount), and a skip must never read as a proof.
+  assert.equal(outcome, "proved", `the run inside the user namespace did not prove it: ${outcome}`);
+  t.diagnostic(`proved inside a user namespace (${outcome})`);
 });
