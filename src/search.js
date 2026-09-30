@@ -21,7 +21,7 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { TRASH_PATH, validatePath } from "./files.js";
+import { TRASH_PATH, drivePathFromKey, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
 /** The listing the CLI and the agent tool read. */
@@ -316,9 +316,17 @@ export async function reconcileIndex(db, store, account, options = {}) {
  * name now; size and modified time are filled by the nightly reconciler,
  * because the stream has already been handed to the store by the time the
  * wrapper runs.
+ *
+ * Position matters, and it is the one thing to get right: the write comes from
+ * `scopeStore` (src/files.js), so the key this wrapper is handed is
+ * `u/<id>/…`, never a drive path. `drivePathFromKey` is the inverse of the
+ * scope's own mapping — the index stores the drive path the page and the CLI
+ * print, and the account id the row belongs to, exactly as `reconcileIndex`
+ * does when it walks an account's scoped store.
  * @param {FileStore} store
  * @param {D1Database} db
  * @param {{id: string, name: string}} account
+ * @param {() => number} [now]
  */
 export function withIndex(store, db, account, now = () => Date.now()) {
   if (!store || !db) {
@@ -328,23 +336,42 @@ export function withIndex(store, db, account, now = () => Date.now()) {
   const remove = store.remove.bind(store);
   return {
     ...store,
-    async write(path, body, contentType) {
-      await write(path, body, contentType);
-      const checked = validatePath(path);
-      if (checked.error || locate(checked.path).trashed) {
+    async write(key, body, contentType) {
+      await write(key, body, contentType);
+      const path = drivePathFromKey(key, account);
+      if (locate(path).trashed) {
         return;
       }
-      await db.batch(upsertStatements(db, [fileRow(account, checked.path, {}, now())]));
+      await db.batch(upsertStatements(db, [fileRow(account, path, {}, now())]));
     },
-    async remove(path) {
-      await remove(path);
-      const checked = validatePath(path);
-      if (checked.error) {
-        return;
-      }
-      await db.batch([deleteStatement(db, account, checked.path)]);
+    async remove(key) {
+      await remove(key);
+      await db.batch([deleteStatement(db, account, drivePathFromKey(key, account))]);
     },
   };
+}
+
+// --------------------------------------------------------------- the accounts
+
+/**
+ * The accounts the index has rows for — the accounts a nightly rebuild is
+ * even meaningful for. A scheduled run has no request and therefore no
+ * signed-in account, and this repo has no accounts table until the device
+ * sign-in store lands (#5), so the index's own rows are the only honest list:
+ * an account the drive has never served has nothing to rebuild, and inventing
+ * one would index a drive nobody has.
+ * @param {D1Database} db
+ * @returns {Promise<Array<{id: string}>>}
+ */
+export async function indexAccounts(db) {
+  if (!db) {
+    throw new Error("indexAccounts needs the file index database");
+  }
+  const result = await db
+    .prepare("SELECT DISTINCT account_id FROM file_index WHERE account_id <> ?1")
+    .bind("")
+    .all();
+  return (result?.results ?? []).map((row) => ({ id: row.account_id }));
 }
 
 // ---------------------------------------------------------------- the route
@@ -391,13 +418,16 @@ function plain(message, status) {
  * @param {() => number} [now]
  */
 export async function handleSearchRequest(request, db, account, now = () => Date.now()) {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return plain("Method not allowed. GET a search.", 405);
-  }
+  // The gate answers first, even for a method the route does not serve: a
+  // stranger must not learn from 405 that a path it cannot read is routed at
+  // all, and 401-before-405 is the rule every account route follows.
   if (!account) {
     return json({ error: failureMessage("unauthorized") }, 401, {
       "www-authenticate": "Cookie",
     });
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return plain("Method not allowed. GET a search.", 405);
   }
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit"));

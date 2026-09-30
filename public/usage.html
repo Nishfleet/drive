@@ -8,7 +8,7 @@
   <meta name="robots" content="noindex">
   <style>
 /* Usage page: the palette and type of the pricing page (public/index.html) and
-   the first-run page (public/get-started.html) so the three read as one
+   the first-run page (get-started.html, a Vite entry at the repo root) so the three read as one
    product. System font stacks only: no web font files, so nothing blocks first
    paint. */
 
@@ -165,6 +165,13 @@ h2 {
 
 .status[data-state="unreachable"] {
   border-left-color: var(--bad);
+}
+
+/* The account gate (drive issue #73): a read that answers 401 is not a failed
+   read, it is this browser having no signed-in account, and it gets its own
+   colour and its own words. */
+.status[data-state="signed-out"] {
+  border-left-color: var(--accent);
 }
 
 /* ---- The stored-GB line chart ----------------------------------------- */
@@ -397,6 +404,13 @@ const UNREACHABLE = {
   next: "Leave this page open. It checks again in a minute.",
 };
 
+// The account gate's words (drive issue #73) are not repeated here: the 401
+// body is the message table's `unauthorized` entry (src/messages.js) and the
+// page renders what the API sent, so the endpoint and the page cannot say
+// different things and the copy has one source. A 401 is not an unreadable
+// service: it means this browser has no signed-in account, and showing one
+// account's month to another is the bug the gate exists to stop.
+
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
@@ -421,8 +435,24 @@ function sayUnreachable() {
   statusEl.hidden = false;
 }
 
+// The account gate (drive issue #73): a 401 is its own state, not an
+// unreachable service. The numbers stay hidden — there is no month to show
+// without an account — and the status region carries the words the 401 body
+// sent, so this page carries no second copy of the sign-in message.
+function saySignedOut(message) {
+  statusEl.dataset.state = "signed-out";
+  statusEl.querySelector(".what").textContent = message;
+  statusEl.querySelector(".next").textContent = "";
+  statusEl.hidden = false;
+  bodyEl.hidden = true;
+  capSlider.disabled = true;
+}
+
 function sayReachable() {
   statusEl.hidden = true;
+  // A read that succeeded proves the account is there, so the slider the
+  // signed-out state disabled is usable again.
+  capSlider.disabled = false;
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
@@ -545,7 +575,14 @@ async function readMonth() {
     return;
   }
   if (!response.ok) {
-    sayUnreachable();
+    if (response.status === 401) {
+      // The 401's own words, so the page shows the message table's entry
+      // without carrying a copy of it.
+      const payload = await response.json().catch(() => ({}));
+      saySignedOut(payload.error);
+    } else {
+      sayUnreachable();
+    }
     return;
   }
   let summary;

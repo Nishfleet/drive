@@ -20,7 +20,7 @@ import {
   searchSql,
   withIndex,
 } from "../src/search.js";
-import { createMemoryStore } from "../src/files.js";
+import { createMemoryStore, scopeStore } from "../src/files.js";
 import worker from "../src/index.js";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
@@ -256,27 +256,31 @@ test("reconcileIndex is a rebuild: rows for files the store no longer has are dr
 test("withIndex keeps the index current on write, delete and restore, without listing", async () => {
   const db = makeD1();
   const raw = seededStore();
-  const store = withIndex(raw, db, ACCOUNT);
   let listed = 0;
   const watched = {
-    ...store,
+    ...raw,
     list(path) {
       listed++;
       return raw.list(path);
     },
   };
-  await watched.write("/fresh/report.txt", "hello", "text/plain");
+  // The real composition index.js uses: scopeStore wraps the raw
+  // store so the handler speaks drive paths; withIndex sits outside
+  // that scope and records the drive path after scopeStore rewrites
+  // to the account's own key.
+  const scoped = scopeStore(withIndex(watched, db, ACCOUNT), ACCOUNT);
+  await scoped.write("/fresh/report.txt", "hello", "text/plain");
   let found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1, "the write is searchable at once");
   assert.equal(listed, 0, "indexing a write never listed the bucket");
-  await watched.remove("/fresh/report.txt");
+  await scoped.remove("/fresh/report.txt");
   found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 0, "the delete removed the row");
   // A restore is a write of the original path plus a remove of the parked
   // name, so the wrapped store keeps both halves right with no new code.
-  await watched.write("/.trash/1__%2Ffresh%2Freport.txt", "hello", "text/plain");
-  await watched.write("/fresh/report.txt", "hello", "text/plain");
-  await watched.remove("/.trash/1__%2Ffresh%2Freport.txt");
+  await scoped.write("/.trash/1__%2Ffresh%2Freport.txt", "hello", "text/plain");
+  await scoped.write("/fresh/report.txt", "hello", "text/plain");
+  await scoped.remove("/.trash/1__%2Ffresh%2Freport.txt");
   found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1, "the restore is searchable");
   const trashRows = db.sqlite.prepare("SELECT count(*) c FROM file_index WHERE path LIKE '/.trash/%'").get();
@@ -485,24 +489,40 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
       `${method} /api/search/index never reaches a search handler`,
     );
   }
-  // A file the Worker's own store now holds, so the scheduled run has
-  // something real to walk.
-  const upload = await worker.fetch(
-    new Request("https://drive.test/api/files/upload?path=%2F&name=late-arrival.txt", {
-      method: "POST",
-      body: "x",
-    }),
-    env,
+  // The only way a reindex starts is the scheduled trigger. The index knows
+  // an account from a write; the store then gains a file the write path never
+  // indexed, and the nightly walk must find it — per account, from its own
+  // prefix, with no other account's name in the answer.
+  const raw = createMemoryStore();
+  await scopeStore(withIndex(raw, db, ACCOUNT), ACCOUNT).write(
+    "/early-bird.txt",
+    "x",
+    "text/plain",
   );
-  assert.equal(upload.status, 201);
-  // The one way in is the scheduled trigger, which is what the cron calls.
+  await scopeStore(withIndex(raw, db, ACCOUNT_B), ACCOUNT_B).write(
+    "/b-only.txt",
+    "x",
+    "text/plain",
+  );
+  // Two files the write path never touched, one per account.
+  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", "x", "text/plain");
+  await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", "x", "text/plain");
+
   const waits = [];
   await worker.scheduled({ cron: REINDEX_SCHEDULE }, env, {
     waitUntil: (promise) => waits.push(promise),
-  });
+  }, raw);
   await Promise.all(waits);
-  const found = await searchDrive(db, ACCOUNT, "late-arrival");
-  assert.equal(found.count, 1, "the scheduled run rebuilt the index");
+
+  const forA = await searchDrive(db, ACCOUNT, "late");
+  assert.equal(forA.count, 1, "A's own newly walked file");
+  assert.equal(forA.results[0].path, "/late-arrival.txt");
+  const aSeesB = await searchDrive(db, ACCOUNT, "b-only");
+  assert.equal(aSeesB.count, 0, "A never sees B's name");
+  const forB = await searchDrive(db, ACCOUNT_B, "b-late");
+  assert.equal(forB.count, 1, "B's own newly walked file");
+  const bSeesA = await searchDrive(db, ACCOUNT_B, "late-arrival");
+  assert.equal(bSeesA.count, 0, "B never sees A's file");
 });
 
 test("the deployed cron schedule is the one the module names", () => {
@@ -541,26 +561,20 @@ test("the worker serves /api/search behind the account gate and file writes keep
   assert.equal(anonymous.status, 401);
   const anonymousBody = await anonymous.json();
   assert.match(anonymousBody.error, /not signed in/);
-  // A file write reaches the index through the wrapped store, keyed to the
-  // account resolveAccount names (the one stand-in drive until #5 lands).
-  const upload = await worker.fetch(
-    new Request("https://drive.test/api/files/upload?path=%2F&name=warren-buffet.txt", {
-      method: "POST",
-      body: "x",
-    }),
-    env,
-  );
-  assert.equal(upload.status, 201);
+  // The write path is the scoped store the Worker routes through, so the row
+  // is keyed to that account's own prefix and read back as a drive path.
+  const store = scopeStore(withIndex(createMemoryStore(), db, ACCOUNT), ACCOUNT);
+  await store.write("/warren-buffet.txt", "x", "text/plain");
   const rows = db.sqlite
     .prepare("SELECT account_id, name FROM file_index")
     .all()
     .map((row) => ({ account_id: row.account_id, name: row.name }));
   assert.deepEqual(rows, [{ account_id: "1", name: "warren-buffet.txt" }]);
-  // The handler with an account reads exactly that account's rows.
+  // The handler with that same account reads exactly its own row.
   const signedIn = await handleSearchRequest(
     request(`${SEARCH_ENDPOINT}?q=warren-buffet`),
     db,
-    { id: "1", name: "Your drive" },
+    ACCOUNT,
   );
   assert.equal(signedIn.status, 200);
   const body = await signedIn.json();

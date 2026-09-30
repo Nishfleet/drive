@@ -52,36 +52,48 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes } from "./status.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
+// The price's numbers come from src/pricing.js, the one price source: the
+// metered rate, the ceiling's floor and slope, and the free credit are
+// declared there once, so this file's arithmetic and the page's copy cannot
+// disagree. What is added here is operational: the B2 fallback slope, the
+// default cap, and the download allowance.
+import { PRICE } from "./pricing.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
 // 43,800 (minutes in an average month)"), kept verbatim so the meter, the
-// invoice and the page all divide by the same 43,800.
-const MINUTES_PER_MONTH = 43800;
+// invoice and the page all divide by the same 43,800. Exported because the
+// pricing copy test builds its worked examples as "kept all month", which is
+// gbMinutes for a size held the whole month, and it must not work out that
+// conversion a second way.
+export const MINUTES_PER_MONTH = 43800;
 const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
 
 export const BILLING_CONFIG = Object.freeze({
-  // The metered rate, in dollars per GB-month, billed by the minute. The 1.5¢
-  // floor applies to this rate, not to the ceiling below (build-spec.md).
-  rateUsdPerGbMonth: 0.02,
+  // From the one price source (src/pricing.js): the metered rate, in dollars
+  // per GB-month, billed by the minute. The 1.5¢ floor applies to this rate,
+  // not to the ceiling below (build-spec.md).
+  rateUsdPerGbMonth: PRICE.rateUsdPerGbMonth,
   // The ceiling is max(floorUsd, perTbUsd x peak TB). The floor is the
   // plateau: a flat $12 until the stored size passes floorUsd / perTbUsd
   // (1.5 TB on iDrive), then $8 for each TB after. The names say plateau and
   // slope so no reader takes them for per-TB caps.
-  floorUsd: 12,
-  perTbUsd: 8,
+  floorUsd: PRICE.capFloorUsd,
+  perTbUsd: PRICE.capUsdPerTb,
   // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
   // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
-  b2FallbackPerTbUsd: 10,
+  b2FallbackPerTbUsd: PRICE.b2FallbackUsdPerTb,
   // The free credit, in dollars, off every month with no card needed. Shown as
   // a dollar line, never as credits (build-spec.md, "Free credit").
-  freeMonthlyUsd: 1,
-  // The default spending cap, moved to the ceiling floor: a default account up
-  // to 1.5 TB can never be cut off (orchestrator decision 2026-09-30, issue
-  // #39). The cap counts min(metered so far, ceiling), not the raw meter, so
-  // the cap cannot pass what the invoice will be.
+  freeMonthlyUsd: PRICE.freeMonthlyUsd,
+  // The default spending cap, $12 (orchestrator decision 2026-09-30, issue
+  // #39). Its own number, not PRICE.capFloorUsd: the ceiling floor is the
+  // issue #29 decision and they only happen to agree today, so a ceiling
+  // edit must not move every default cap silently. The cap counts
+  // min(metered so far, ceiling), not the raw meter, so the cap cannot pass
+  // what the invoice will be.
   defaultCapUsd: 12,
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
@@ -176,6 +188,36 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
  */
 export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
   return monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
+}
+
+/**
+ * The month's bill in dollars for a size held all month, from monthBillCents()
+ * — the one function that turns the config into money — with no downloads.
+ * The pricing page's worked examples are all "kept all month" figures
+ * (drive issue #23, folded #86), so this is the one call both the copy gate and
+ * anything else quoting a size can share: the storage figure the examples
+ * print beside the total, and the total the invoice charges.
+ *
+ * The metered half is that many GB stored for every minute of an average
+ * month, over the spec's own 43,800-minute divisor — the conversion every
+ * consumer needs, in one place.
+ * @param {number} tb the stored size in TB, held the whole month
+ * @param {object} [config=BILLING_CONFIG]
+ * @returns {{storageUsd: number, creditUsd: number, billUsd: number}}
+ */
+export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
+  checked(tb, "tb");
+  const peakGb = tb * GB_PER_TB;
+  const bill = monthBillCents({
+    gbMinutes: peakGb * MINUTES_PER_MONTH,
+    peakGb,
+    config,
+  });
+  return Object.freeze({
+    storageUsd: bill.storageCents / 100,
+    creditUsd: bill.creditCents / 100,
+    billUsd: bill.totalCents / 100,
+  });
 }
 
 /**
@@ -511,15 +553,28 @@ const USAGE_HEADERS = Object.freeze({
 
 /**
  * Handles GET /api/usage, the usage page's and the CLI's read. It answers with
- * the month's summary. Until the meter and the account store land (issues #6
- * and #2), an account has no usage rows, so the true answer is the empty
- * month: nothing metered, nothing held, the cap the default. The shape is the
- * one a metered account gets from the real rollup, so the page and the CLI can
- * be written against it now. Any other method is a 405 with the one allowed
- * method named, like the other endpoints.
+ * the month's summary, for the signed-in account and nobody else: the account
+ * is a required argument and a request that cannot prove one is a 401 with the
+ * message table's words, never another account's money (drive issue #73,
+ * north star: Safe). The one gate is signedInAccount() in src/status.js, the
+ * same one /api/first-run-status uses.
+ *
+ * Until the meter and the account store land (issues #6 and #2), a signed-in
+ * account has no usage rows, so the true answer is the empty month: nothing
+ * metered, nothing held, the cap the default. The shape is the one a metered
+ * account gets from the real rollup, so the page and the CLI can be written
+ * against it now. Any other method is a 405 with the one allowed method named,
+ * like the other endpoints — after the gate, so an anonymous request is told
+ * only that it is not signed in, never which methods exist.
  * @param {Request} request
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  */
-export function handleUsageRequest(request) {
+export function handleUsageRequest(request, account) {
+  // The gate is first, before the method: an anonymous request learns nothing
+  // about whether it could write, only that it is not signed in.
+  if (!account) {
+    return unauthorizedResponse();
+  }
   if (request.method !== "GET") {
     return new Response("Method not allowed. GET this endpoint for monthly usage.", {
       status: 405,
