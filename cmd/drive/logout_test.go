@@ -401,8 +401,8 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Fatal("the local key must be gone after the failed revoke")
 	}
-	if _, ok, err := PendingRevoke(home); err != nil || !ok {
-		t.Fatalf("a failed revoke must leave a receipt, or the next run cannot know a key is live (present=%v, err=%v)", ok, err)
+	if ids, err := PendingRevoke(home); err != nil || len(ids) == 0 {
+		t.Fatalf("a failed revoke must leave a receipt, or the next run cannot know a key is live (ids=%v, err=%v)", ids, err)
 	}
 
 	// The retry, offline or not: no key on this device, so nothing to revoke.
@@ -416,8 +416,8 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	if strings.Contains(err.Error(), "run drive logout again") {
 		t.Errorf("retry failure %q repeats advice this command cannot carry out", err)
 	}
-	if _, ok, err := PendingRevoke(home); err != nil || !ok {
-		t.Errorf("the receipt must survive the retry so the state is not forgotten (present=%v, err=%v)", ok, err)
+	if ids, err := PendingRevoke(home); err != nil || len(ids) == 0 {
+		t.Errorf("the receipt must survive the retry so the state is not forgotten (ids=%v, err=%v)", ids, err)
 	}
 
 	// A device that signs in again and logs out for real clears it. The key it
@@ -427,7 +427,7 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
 		t.Fatalf("logout with a fresh key: %v", err)
 	}
-	if _, ok, err := PendingRevoke(home); err != nil || ok {
+	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
 		t.Error("revoking the key the receipt names must clear the receipt")
 	}
 }
@@ -435,7 +435,8 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 // The receipt names ONE key. Someone whose revoke failed signs in again, which
 // gives them a different key, and logs out: that logout revokes the new key and
 // settles nothing about the old one, which is still live. The warning has to
-// survive it, or the next run prints a clean sign-out over a live key — the
+// survive it, and the run that revokes the new key must not print a clean
+// sign-out either — or the next run reads that success over a live key, the
 // exact failure the receipt exists to prevent.
 func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) {
 	const (
@@ -449,53 +450,88 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	if err := Logout("linux", home, false, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("the first logout must fail when the key cannot be revoked")
 	}
-	id, ok, err := PendingRevoke(home)
-	if err != nil || !ok {
-		t.Fatalf("receipt after the failed revoke: present=%v err=%v", ok, err)
-	}
-	if id != oldAccess {
-		t.Fatalf("receipt names %q, want the access key id %q that is still live", id, oldAccess)
+	ids, err := PendingRevoke(home)
+	if err != nil || len(ids) != 1 || ids[0] != oldAccess {
+		t.Fatalf("receipt after the failed revoke = %v, want the one live id %q (err=%v)", ids, oldAccess, err)
 	}
 
 	// The person signs in again: a new key, and a key server that revokes it.
 	writeDeviceKey(t, home, newAccess, newSecret)
 	ks := newKeyServer(t, home, newAccess, newSecret)
-	if err := Logout("linux", home, false, ks); err != nil {
-		t.Fatalf("logout of the new key: %v", err)
-	}
+	err = Logout("linux", home, false, ks)
 	if got := ks.count(); got != 1 {
 		t.Fatalf("revoke attempts = %d, want 1", got)
 	}
-	if id, ok, err := PendingRevoke(home); err != nil || !ok || id != oldAccess {
-		t.Errorf("the old key is still live, so its receipt must survive a revoke of a different key (present=%v id=%q err=%v)", ok, id, err)
-	}
-
-	// And the run after that must still refuse to call it a clean sign-out.
-	err = Logout("linux", home, false, nil)
+	// This run did revoke its own key, so the old one is still live and the
+	// person must be told so rather than be shown a clean sign-out.
 	if err == nil {
-		t.Fatal("a logout with an older key still live must not succeed")
+		t.Fatal("revoking this device's key does not revoke an older live one: the run must not report success")
 	}
 	if !strings.Contains(err.Error(), revokePendingWarning) {
 		t.Errorf("failure = %q, want the receipt sentence", err)
 	}
+	ids, err = PendingRevoke(home)
+	if err != nil || len(ids) != 1 || ids[0] != oldAccess {
+		t.Errorf("the old key is still live, so its receipt must survive a revoke of a different key (ids=%v err=%v)", ids, err)
+	}
+
+	// And the run after that must still refuse to call it a clean sign-out.
+	if err := Logout("linux", home, false, nil); err == nil {
+		t.Fatal("a logout with an older key still live must not succeed")
+	} else if !strings.Contains(err.Error(), revokePendingWarning) {
+		t.Errorf("failure = %q, want the receipt sentence", err)
+	}
 }
 
-// A receipt is 0600 and holds the access key id and nothing else. The secret is
-// never in it, and the id alone cannot be replayed against storage.
+// Two failures, two live keys. The receipt is a list for this reason: a revoke
+// that failed, a sign-in that issued a new key, and a second revoke that failed
+// leaves two live, and remembering only the newest would silently forget the
+// first.
+func TestRevokePendingKeepsEveryKeyThatIsStillLive(t *testing.T) {
+	const (
+		firstAccess  = "FIRSTACCESSKEY"
+		secondAccess = "SECONDACCESSKEY"
+	)
+	home := t.TempDir()
+	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
+
+	writeDeviceKey(t, home, firstAccess, "firstsecret")
+	if err := Logout("linux", home, false, unreachable); err == nil {
+		t.Fatal("the first revoke must fail")
+	}
+	writeDeviceKey(t, home, secondAccess, "secondsecret")
+	if err := Logout("linux", home, false, unreachable); err == nil {
+		t.Fatal("the second revoke must fail")
+	}
+
+	ids, err := PendingRevoke(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("receipt = %v, want both live keys named", ids)
+	}
+	if !containsString(ids, firstAccess) || !containsString(ids, secondAccess) {
+		t.Errorf("receipt = %v, want it to name %q and %q", ids, firstAccess, secondAccess)
+	}
+}
+
+// A receipt is 0600 and holds access key ids and nothing else. The secret is
+// never in it, and an id alone cannot be replayed against storage.
 func TestRevokePendingHoldsOnlyTheAccessKeyID(t *testing.T) {
 	home := t.TempDir()
-	if _, ok, err := PendingRevoke(home); err != nil || ok {
-		t.Fatalf("no receipt yet: present=%v err=%v", ok, err)
+	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
+		t.Fatalf("no receipt yet: ids=%v err=%v", ids, err)
 	}
 	if err := WriteRevokePending(home, "DRIVETESTACCESSKEY"); err != nil {
 		t.Fatalf("WriteRevokePending: %v", err)
 	}
-	id, ok, err := PendingRevoke(home)
-	if err != nil || !ok {
-		t.Fatalf("PendingRevoke: present=%v err=%v", ok, err)
+	ids, err := PendingRevoke(home)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if id != "DRIVETESTACCESSKEY" {
-		t.Errorf("receipt id = %q, want the access key id", id)
+	if len(ids) != 1 || ids[0] != "DRIVETESTACCESSKEY" {
+		t.Errorf("receipt ids = %v, want just the access key id", ids)
 	}
 	info, statErr := os.Stat(pendingRevokePath(home))
 	if statErr != nil {
@@ -518,6 +554,37 @@ func TestRevokePendingHoldsOnlyTheAccessKeyID(t *testing.T) {
 	}
 }
 
+// A key this device cannot name is still live, and the receipt says so with an
+// empty id rather than staying silent. A receipt that cannot be counted must
+// never read as a receipt that is empty.
+func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A config that is there and unreadable: a key is live, and this device
+	// cannot say which.
+	if err := os.WriteFile(RcloneConfigPath(home), []byte("not a config at all\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Logout("linux", home, false, testRevoker(t, home)); err == nil {
+		t.Fatal("a key that cannot be named must not read as a clean sign-out")
+	}
+	ids, err := PendingRevoke(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "" {
+		t.Errorf("receipt ids = %q, want one unnamed entry for a key that could not be named", ids)
+	}
+	// And the next run must still not succeed over it.
+	if err := Logout("linux", home, false, nil); err == nil {
+		t.Fatal("an unnamed live key must not read as a clean sign-out on the next run either")
+	} else if !strings.Contains(err.Error(), revokePendingWarning) {
+		t.Errorf("failure = %q, want the receipt sentence", err)
+	}
+}
+
 // A receipt the run cannot read is a key the run cannot prove is off, so it
 // is reported rather than treated as absent.
 func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
@@ -535,8 +602,8 @@ func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 	if err := os.Mkdir(pendingRevokePath(home), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := PendingRevoke(home); err == nil {
-		t.Errorf("PendingRevoke: present=%v err=nil, want the unreadable receipt reported", ok)
+	if _, err := PendingRevoke(home); err == nil {
+		t.Error("PendingRevoke: err=nil, want the unreadable receipt reported")
 	}
 }
 

@@ -89,35 +89,27 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	// nor revocable: it is reported, because a key that cannot be named is a
 	// key that may still be live.
 	//
-	// The receipt is read here and the local key is compared with what it
-	// names. That comparison is the whole reason the receipt records the access
-	// key id: a receipt says one specific key is still live, so revoking a
-	// *different* key — someone who signed in again got a new one — settles
-	// nothing about it, and the warning must survive that logout.
-	var revokeErr error
-	var clearRevokeErr error
+	// What is on file is read first, and this run's revoke is folded into it
+	// rather than replacing it. That is the whole reason the receipt records
+	// access key ids: a receipt says which keys are still live, so revoking one
+	// key settles nothing about another, and a later logout that holds a
+	// different key — someone who signed in again got a new one — must not be
+	// able to read this run's success as having turned the older one off.
+	wasLive, receiptErr := PendingRevoke(home)
 	var key *KeyPair
-	pendingID, pendingLive, err := PendingRevoke(home)
-	if err != nil {
-		// A receipt this run cannot read is a key this run cannot prove is
-		// off, so it is carried on the exit below rather than treated as no
-		// receipt. The local copy is still deleted.
-		revokeErr = err
-	}
-	if pair, err := ReadDeviceKey(home); err != nil {
-		revokeErr = err
-	} else if pair != nil {
+	var revokeFailed, keyUnreadable error
+	pair, keyErr := ReadDeviceKey(home)
+	switch {
+	case keyErr != nil:
+		// The config is there but not usable: a mode fault or a parse fault.
+		// This device does not know which key it holds, so no revoke is
+		// attempted and a key that is probably live is recorded as unnamed.
+		keyUnreadable = keyErr
+	case pair != nil:
 		key = pair
-		revokeErr = revoke.Revoke(*pair)
-		if revokeErr == nil && pendingLive && pendingID == pair.AccessKeyID {
-			// This run turned off the exact key the receipt was about, so the
-			// receipt has nothing left to warn about. Any other pair of a
-			// revoked key and a receipt leaves it in place.
-			clearRevokeErr = removeIfPresent(pendingRevokePath(home))
+		if err := revoke.Revoke(*pair); err != nil {
+			revokeFailed = err
 		}
-	} else if pendingLive || revokeErr != nil {
-		// Clean-up below still runs; the exit carries the receipt.
-		revokeErr = errPendingRevoke
 	}
 	// The local copy goes even when the revoke failed: the finding is a key
 	// left live on the server, and leaving a second copy on disk would be a
@@ -149,36 +141,53 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err)
 	}
-	if revokeErr != nil {
-		if errors.Is(revokeErr, errPendingRevoke) {
-			// The receipt already names this state; the plain sentence is the
-			// whole of it. Non-zero: a key from an earlier logout is still live
-			// and this device has nothing to authenticate a revoke with.
-			return errors.New(revokePendingWarning)
-		}
-		// local state is gone, server state is not. The receipt is written
-		// after the config is gone, so the next run knows which key is live with
-		// nothing here to authenticate it. It returns non-zero: a logout that
-		// cannot revoke must never look like one that did.
-		//
-		// A config this run could not parse never learned which key it held, so
-		// the receipt is written with no key id: what is known is that some key
-		// is live, and the id is filled in by the next run that can name it.
-		leftLive := ""
-		if key != nil {
-			leftLive = key.AccessKeyID
-		}
-		if err := WriteRevokePending(home, leftLive); err != nil {
-			return fmt.Errorf("%s (%v), and the receipt could not be written: %w", revokeWarning, revokeErr, err)
-		}
-		return fmt.Errorf("%s (%w)", revokeWarning, revokeErr)
+	// What the person is told is decided by what is left live, not by this run's
+	// own revoke. The record is folded forward after the config is gone — so the
+	// next run knows which keys are live with nothing here to authenticate them
+	// — and the exit is non-zero whenever anything survives on it. A logout that
+	// cannot turn off every key it is responsible for must never look like one
+	// that did.
+	var live []string
+	// A key this run turned off is not live and leaves the record.
+	if key != nil && revokeFailed == nil {
+		live = withoutKeyID(wasLive, key.AccessKeyID)
+	} else {
+		live = append([]string(nil), wasLive...)
 	}
-	if clearRevokeErr != nil {
-		// The key this device held is off, but the receipt that named it could
-		// not be deleted. Nothing is left live, so the sign-out still
-		// succeeded; the stale receipt is reported rather than hidden, because
-		// the next run would otherwise report it with no trace of why.
-		fmt.Fprintf(os.Stderr, "note: the key is revoked, but the spent receipt %s could not be deleted: %v\n", pendingRevokePath(home), clearRevokeErr)
+	if revokeFailed != nil {
+		// The key this device held is still live on the server, and this run
+		// knows exactly which one: its access key id.
+		live = withKeyID(live, key.AccessKeyID)
+	}
+	if keyUnreadable != nil || receiptErr != nil {
+		// Either a key this device cannot name, or a receipt this run cannot
+		// read, and both mean a key that may be live and cannot be recorded by
+		// id. The empty id is that admission: a receipt that cannot be counted
+		// is never the same as a receipt that is empty.
+		live = withKeyID(live, "")
+	}
+	if len(live) > 0 {
+		if err := WriteRevokePending(home, live...); err != nil {
+			return fmt.Errorf("%s (%v), and the receipt could not be written: %w", revokeWarning, receiptErr, err)
+		}
+	}
+	switch {
+	case revokeFailed != nil:
+		// This device's own key is live and still has its secret on this
+		// machine, so this is the acceptance sentence of issue #75.
+		return fmt.Errorf("%s (%w)", revokeWarning, revokeFailed)
+	case len(live) > 0:
+		// Nothing this run held is live, but the record says something is: a
+		// key from an earlier logout, or one this run could not name. The
+		// success line would be a lie about the whole of it, so the live-key
+		// sentence is what reaches the person instead.
+		return errors.New(revokePendingWarning)
+	}
+	if err := removeIfPresent(pendingRevokePath(home)); err != nil {
+		// Nothing is left live, so the sign-out succeeded; a spent receipt this
+		// run cannot delete is reported rather than hidden, because the next
+		// run would otherwise report it with no trace of why.
+		fmt.Fprintf(os.Stderr, "note: the key is revoked, but the spent receipt %s could not be deleted: %v\n", pendingRevokePath(home), err)
 	}
 	if key != nil {
 		fmt.Printf("logged out: the mount is stopped, the key is revoked on the server and %s is deleted\n", DefaultConfigDir(home))

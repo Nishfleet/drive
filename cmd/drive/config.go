@@ -123,8 +123,12 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 		if strings.TrimSpace(rest) != "" {
 			return "", errors.New("stdin carried more than one line; --secret-key-stdin reads one line of the secret")
 		}
-		secret := strings.TrimRight(line, "\r")
-		if strings.TrimSpace(secret) == "" {
+		// A storage secret is one token, so the blank check and the value agree:
+		// surrounding whitespace is a piping mistake, not part of the key, and
+		// leaving it on would mount with a secret that is subtly wrong and fail
+		// later as a confusing 403.
+		secret := strings.TrimSpace(line)
+		if secret == "" {
 			return "", errors.New("no storage secret on stdin: --secret-key-stdin reads one line from the pipe")
 		}
 		return secret, nil
@@ -159,6 +163,13 @@ func checkSecretFileMode(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
+	}
+	// A FIFO or device is not a config file, and reading one can block forever
+	// (a named pipe with no writer hangs mount) or read something that is not
+	// the key at all. Only a regular file is read; the mode rule is for regular
+	// files anyway.
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (mode %s), so it is not the drive config", path, info.Mode())
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("%s is mode %04o, so the storage secret in it is readable by "+

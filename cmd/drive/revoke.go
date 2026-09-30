@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,7 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 	if err != nil {
 		return err
 	}
-	url := base + RevokePath
+	endpoint := base + RevokePath
 	client := &http.Client{
 		Timeout: revokeTimeout,
 		// The key rides in the Authorization header, and Go's client replays
@@ -88,19 +89,30 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("build POST %s: %w", url, err)
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return fmt.Errorf("build POST %s: %w", RevokePath, err)
 	}
 	req.SetBasicAuth(pair.AccessKeyID, pair.SecretKey)
 	req.ContentLength = 0 // an empty body: the key is in the header and nowhere else
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", url, err)
+		// A *url.Error quotes the URL it was given, and a URL is where a
+		// credential would sit if the base ever stopped rejecting one. Report
+		// the endpoint by its route, never by the value that carried it.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return fmt.Errorf("POST %s: %w", RevokePath, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("POST %s: %s (want 204 No Content; the key is not known to be off)", url, resp.Status)
+		return fmt.Errorf("POST %s: %s (want 204 No Content; the key is not known to be off)", RevokePath, resp.Status)
 	}
 	return nil
 }
@@ -142,44 +154,94 @@ func pendingRevokePath(home string) string {
 	return filepath.Join(filepath.Dir(DefaultConfigDir(home)), "drive-revoke-pending")
 }
 
-// receiptBody is what a receipt holds: the access key id of the key that could
-// not be revoked. It is the id, never the secret — an id names a key, it does
-// not open one, and without the secret it cannot be replayed. Naming the id is
-// what makes the receipt mean something specific: "this key is still live" is a
-// statement about one key, and a later logout holding a *different* key must
-// not be able to read it as having turned that one off.
-func receiptBody(accessKeyID string) string {
-	return fmt.Sprintf("access_key_id=%s\n", accessKeyID)
+// receiptBody renders the receipt: the access key ids of every key this device
+// has left live, one per line, with an empty value when a key is known to be
+// live but could not be named. It is ids, never secrets — an id names a key, it
+// does not open one, and without the secret it cannot be replayed.
+//
+// A set, not one id, because more than one key can be live at once: a revoke
+// that failed, then a sign-in that issued a new key, then a revoke that failed
+// again, leaves two. A receipt that could only remember the newest would have
+// forgotten the first, and the forgetting would be invisible.
+func receiptBody(ids []string) string {
+	var b strings.Builder
+	for _, id := range ids {
+		b.WriteString("access_key_id=")
+		b.WriteString(id)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // WriteRevokePending leaves the receipt that a failed revoke needs, so the next
-// `drive logout` knows which key is still live even though this device no
-// longer holds it. It carries no secret and no way to use the key: only the
-// access key id, which is the one fact that lets a later run tell "the key I
-// revoked is the key that was left live" from "a different key was".
-func WriteRevokePending(home, accessKeyID string) error {
-	return WriteFileAtomic(pendingRevokePath(home), []byte(receiptBody(accessKeyID)), 0o600)
+// `drive logout` knows which keys are still live even though this device no
+// longer holds them. Ids already on file are kept, so nothing already known to
+// be live is ever dropped from the record.
+func WriteRevokePending(home string, accessKeyIDs ...string) error {
+	return WriteFileAtomic(pendingRevokePath(home), []byte(receiptBody(accessKeyIDs)), 0o600)
 }
 
-// PendingRevoke reports the access key id an earlier logout left live, or
-// ("", false, nil) when no receipt is on file. A stat failure that is not
-// "there is no receipt" is returned rather than folded into absent: a receipt
-// this run cannot read is a key this run cannot prove is off, and treating it
-// as absent would be exactly the clean sign-out over a live key this command
-// exists to refuse.
-func PendingRevoke(home string) (string, bool, error) {
+// PendingRevoke reports the access key ids an earlier logout left live. The
+// empty string in the result means a key is known to be live but could not be
+// named — a config this run could not parse, or a receipt written by an older
+// build. A read failure that is not "there is no receipt" is returned rather
+// than folded into absent: a receipt this run cannot read is a key this run
+// cannot prove is off, and treating it as absent would be exactly the clean
+// sign-out over a live key this command exists to refuse.
+func PendingRevoke(home string) ([]string, error) {
 	data, err := os.ReadFile(pendingRevokePath(home))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", false, nil
+			return nil, nil
 		}
-		return "", false, fmt.Errorf("read the failed-revoke receipt: %w", err)
+		return nil, fmt.Errorf("read the failed-revoke receipt: %w", err)
 	}
-	_, id, ok := strings.Cut(strings.TrimSpace(string(data)), "=")
-	if !ok || id == "" {
-		return "", true, nil
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		_, id, ok := strings.Cut(line, "=")
+		// A line that is not an id line is not a key id, and guessing one out
+		// of it would be worse than admitting there is one here this run
+		// cannot name. The empty id is that admission.
+		if !ok {
+			ids = append(ids, "")
+			continue
+		}
+		ids = append(ids, id)
 	}
-	return id, true, nil
+	return ids, nil
+}
+
+// withKeyID adds an id to a receipt, once. The empty id is a real entry — a key
+// that is live but could not be named — and is added like any other.
+func withKeyID(ids []string, id string) []string {
+	if containsString(ids, id) {
+		return ids
+	}
+	return append(ids, id)
+}
+
+// withoutKeyID drops an id from a receipt: that key has been turned off, so it
+// is no longer live. Everything else stays, including the unnamed entry.
+func withoutKeyID(ids []string, drop string) []string {
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != drop {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveKeyRevoker picks the KeyRevoker for a run. api is the api Worker base
