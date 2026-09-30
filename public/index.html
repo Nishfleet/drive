@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — about $20 per TB a month</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
   <meta property="og:title" content="Drive — about $20 per TB a month">
-  <meta property="og:description" content="2¢ per GB, billed by the minute, pay only for what you store. $1 free every month, no card needed.">
+  <meta property="og:description" content="2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
   <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
        The favicon is an inline data: URI: there is no network fetch to
        hash, so an integrity attribute would be meaningless. -->
@@ -472,7 +472,7 @@ main {
         <span class="amount">$20</span>
         <span class="unit">per TB a&nbsp;month</span>
       </h1>
-      <p class="sub">2¢ per GB, billed by the minute, pay only for what you store</p>
+      <p class="sub">2¢ per GB, billed by the minute. Never more than $15 a TB.</p>
       <p class="free">$1 free every month, no card needed</p>
 
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
@@ -511,9 +511,14 @@ main {
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>about $40</dd>
+          <dd>about $23</dd>
+        </div>
+        <div class="example">
+          <dt>800 GB all month</dt>
+          <dd>$15, not $16</dd>
         </div>
       </dl>
+      <p class="examples-note">Each extra TB never more than $8.</p>
       <p class="examples-note">Old versions are free to keep: today's saves stay a day, then one save a day for 30 days.</p>
     </section>
 
@@ -538,7 +543,7 @@ main {
       </div>
       <div class="column business">
         <h2>Business</h2>
-        <p>The same storage price, plus single sign-on, a SOC&nbsp;2 report, one company bill split by team, and priority support.</p>
+        <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
         <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
       </div>
     </section>

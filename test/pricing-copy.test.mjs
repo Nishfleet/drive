@@ -26,11 +26,33 @@ test("the two spec lines sit under the number", () => {
   const headline = words.indexOf("about $20 per TB a month");
   assert.ok(headline >= 0, "headline missing");
   const rate = words.indexOf(
-    "2¢ per GB, billed by the minute, pay only for what you store",
+    "2¢ per GB, billed by the minute. Never more than $15 a TB.",
   );
   const free = words.indexOf("$1 free every month, no card needed");
   assert.ok(rate > headline, "the rate line must follow the number");
   assert.ok(free > rate, "the free line must follow the rate line");
+});
+
+test("the bill ceiling is stated, per the spec's Bill ceiling row", () => {
+  assert.match(words, /Never more than \$15 a TB/);
+  assert.match(words, /Each extra TB never more than \$8\./);
+});
+
+test("the worked examples carry the ceiling's numbers", () => {
+  assert.match(words, /2 TB kept all month[\s\S]{0,60}?about \$23/);
+  assert.match(words, /800 GB all month[\s\S]{0,60}?\$15, not \$16/);
+});
+
+test("no unsourced claims appear anywhere on the page", () => {
+  // The owner's review of PR #17: "We have no SOC 2, and unsourced claims
+  // are a hold." Single sign-on is marked planned where the Business box
+  // names it, since the Business tier is built after v1.
+  assert.equal(
+    words.includes("SOC 2"),
+    false,
+    "the page must not claim a SOC 2 report",
+  );
+  assert.match(words, /single sign-on \(planned\)/);
 });
 
 test("the worked example is the spec's example", () => {
