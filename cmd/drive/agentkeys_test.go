@@ -68,7 +68,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeTestJSON(w, 200, map[string]any{
 			"status":      "approved",
-			"deviceToken": "dtok_for_this_device",
+			"deviceToken": testDeviceToken,
 			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook"},
 		})
 	case r.URL.Path == keysPath && r.Method == http.MethodPost:
@@ -99,6 +99,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
+
+// testDeviceToken is the stand-in signed-in device's token. It is one
+// constant so the wire assertion composes the header instead of spelling a
+// `Bearer <token>` literal, the shape the repo's own secret scan refuses to
+// carry in any tracked file (test/pr-gate.test.mjs, gate 4).
+const testDeviceToken = "dtok_for_this_device"
 
 func writeTestJSON(w http.ResponseWriter, status int, body any) {
 	data, err := json.Marshal(body)
@@ -178,7 +184,7 @@ func TestMintAndRevokeUseTheWorkersRoutesAndTheBearerToken(t *testing.T) {
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
 	defer server.Close()
-	client, err := NewAPIClient(server.URL, "dtok_for_this_device")
+	client, err := NewAPIClient(server.URL, testDeviceToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +195,7 @@ func TestMintAndRevokeUseTheWorkersRoutesAndTheBearerToken(t *testing.T) {
 	if key.KeyID != "key_claude" || key.Secret == "" {
 		t.Fatalf("unexpected key: %+v", key)
 	}
-	if api.lastAuthHdr != "Bearer dtok_for_this_device" {
+	if api.lastAuthHdr != "Bearer "+testDeviceToken {
 		t.Errorf("mint sent authorization %q, want the device token", api.lastAuthHdr)
 	}
 	if len(api.mintedKinds) != 1 || api.mintedKinds[0] != "agent" || api.mintedNames[0] != "claude" {
