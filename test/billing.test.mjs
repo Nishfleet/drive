@@ -17,6 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
 import {
+  B2_FALLBACK_CONFIG,
   BILLING_CONFIG,
   capStatus,
   downloadCostUsd,
@@ -71,8 +72,11 @@ test("the ceiling is a floor then a slope, measured to the GB", () => {
 
 test("the B2 fallback raises the slope to $10 a TB, same floor", () => {
   // The "$8" in the headline is an iDrive figure and moves with the primary
-  // storage provider (build-spec.md, "Bill ceiling").
-  const b2 = { ...BILLING_CONFIG, perTbUsd: BILLING_CONFIG.b2FallbackPerTbUsd };
+  // storage provider (build-spec.md, "Bill ceiling"). The fallback ships as
+  // its own frozen config, the one a B2 deployment would run.
+  const b2 = B2_FALLBACK_CONFIG;
+  assert.equal(b2.perTbUsd, 10);
+  assert.equal(Object.isFrozen(b2), true);
   assert.equal(monthlyCeilingUsd(1000, b2), 12, "still the $12 plateau");
   assert.equal(monthlyCeilingUsd(1500, b2), 15, "1.5 TB x $10 = $15");
   assert.equal(monthlyCeilingUsd(2000, b2), 20);
@@ -210,6 +214,15 @@ test("the usage summary is the empty month before the meter lands", () => {
   assert.equal(summary.saved, null, "no saving on an empty month");
   assert.equal(summary.downloads.usd, 0);
   assert.throws(() => usageSummary(null), TypeError);
+  // A bad rollup is named at the entry point, before any math runs.
+  assert.throws(
+    () => usageSummary({ gbMinutes: "many", peakGb: 0, downloadBytes: 0, averageStoredGb: 0, capUsd: 12 }),
+    /usage\.gbMinutes/,
+  );
+  assert.throws(
+    () => usageSummary({ gbMinutes: 0, peakGb: 0, downloadBytes: 0, averageStoredGb: 0 }),
+    /usage\.capUsd/,
+  );
 });
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {

@@ -30,7 +30,10 @@
 // (build-spec.md, "Bill ceiling"). Nothing here reads money from the
 // environment or a secret.
 
-// Minutes in an average month (the spec's divisor): 30.44 days.
+// Minutes in an average month (the spec's divisor): 43,800, which is
+// 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
+// 43,800 (minutes in an average month)"), kept verbatim so the meter, the
+// invoice and the page all divide by the same 43,800.
 const MINUTES_PER_MONTH = 43800;
 const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
@@ -59,6 +62,14 @@ export const BILLING_CONFIG = Object.freeze({
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
   downloadRateUsdPerGb: 0.01,
+});
+
+// The fallback config, ready-made: when step 1 fails iDrive and the primary
+// becomes B2, the deployment's slope rises to $10 a TB (build-spec.md, "Bill
+// ceiling"). Frozen like the default, so a caller cannot drift either set.
+export const B2_FALLBACK_CONFIG = Object.freeze({
+  ...BILLING_CONFIG,
+  perTbUsd: BILLING_CONFIG.b2FallbackPerTbUsd,
 });
 
 function checked(value, name, { min = 0 } = {}) {
@@ -101,6 +112,7 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
  * is the ceiling.
  * @param {number} gbMinutes the month's metered GB-minutes
  * @param {number} peakGb the month's largest stored size
+ * @param {object} [config=BILLING_CONFIG]
  */
 export function monthlyBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
@@ -116,9 +128,12 @@ export function monthlyBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
  *     copy "You paid $X less than a flat plan", because the ceiling is what the
  *     same drive would have cost on a flat plan;
  *   - never negative: `null` means "no line to show" when the saving is zero
- *     or less.
+ *     or less, or when the month's bill is $0 (an empty drive is not a saving
+ *     against anything).
+ * @returns {{usd: number, copy: string}|null}
  * @param {number} gbMinutes
  * @param {number} peakGb
+ * @param {object} [config=BILLING_CONFIG]
  */
 export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
@@ -198,7 +213,11 @@ export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING
 
 function formatUsd(usd) {
   // Two decimals, so $12.80 reads as $12.80 and not $12.8: Nish's 1.6 TB
-  // example is $12.80, so the cents always show.
+  // example is $12.80, so the cents always show. A non-finite value is a
+  // broken config, not a price, and fails here instead of printing $NaN.
+  if (!Number.isFinite(usd)) {
+    throw new TypeError(`formatUsd needs a finite number, got ${String(usd)}`);
+  }
   return `$${usd.toFixed(2)}`;
 }
 
@@ -214,7 +233,16 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const { gbMinutes, peakGb, downloadBytes, averageStoredGb, capUsd } = usage;
-  // Without a card the cap is the free $1, so writes stop at $1 of usage.
+  // Every number is validated at the entry point, with the field named, so a
+  // caller with a bad rollup gets one clear error before any math runs.
+  checked(gbMinutes, "usage.gbMinutes");
+  checked(peakGb, "usage.peakGb");
+  checked(downloadBytes, "usage.downloadBytes");
+  checked(averageStoredGb, "usage.averageStoredGb");
+  checked(capUsd, "usage.capUsd");
+  // Without a card the cap is the free $1, so writes stop at $1 of usage. A
+  // cap the account chose below $1 stays lower: $1 is the default, not a
+  // floor, and a stricter choice is the safer one to honor.
   const effectiveCap = usage.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
   return Object.freeze({
