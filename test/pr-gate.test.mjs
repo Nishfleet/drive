@@ -382,12 +382,20 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
 
 test("gate 6: the suite is one command, and CI runs that command", () => {
   const pkg = JSON.parse(read("package.json"));
-  assert.equal(pkg.scripts.test, "node --test", "one command, node's own runner");
+  // One command: the types first, then node's own runner over every test file.
+  assert.match(pkg.scripts.test, /node --test/, "the command runs node's own test runner");
+  assert.equal(
+    pkg.scripts.typecheck,
+    "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
+    "the type check the command runs is the repo's own",
+  );
+  assert.match(pkg.scripts.test, /npm run typecheck/, "`npm test` checks the types first");
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci, /^\s*-?\s*run:\s*npm test\s*$/m, "CI runs the same command the builder runs");
-  // The command's own discovery is what makes it the suite: node --test runs
-  // every *.test.mjs under test/, so every file there must be a real suite
-  // (it imports node:test), and none may live outside the folder it scans.
+  // The command's own discovery is what makes it the suite: `node --test`
+  // scans the folders it is given, so every *.test.mjs under test/ and every
+  // test/ folder in a worker package must be a real suite (it imports
+  // node:test), and the engines line is what the runner has to satisfy.
   const suites = readdirSync(new URL("../test/", import.meta.url)).filter((name) =>
     name.endsWith(".test.mjs"),
   );
@@ -395,6 +403,8 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
   for (const name of suites) {
     assert.match(read(`test/${name}`), /from "node:test"/, `${name} is a node:test suite`);
   }
+  assert.ok(pkg.engines && pkg.engines.node, "the runner's version is pinned");
+  assert.match(String(pkg.engines.node), /^>=\d+$/, "an engines floor, not a range");
   // The one command must not grow junk flags a worker cannot afford.
   assert.ok(!/coverage|--watch/.test(pkg.scripts.test));
 });
