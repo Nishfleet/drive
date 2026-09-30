@@ -261,6 +261,45 @@ test("the pricing page links to the first-run page", () => {
   );
 });
 
+test("the page's sync-state labels are the module's labels", () => {
+  // The page re-implements the state table (it cannot import the module), so
+  // every label it shows has to be one the module also produces: a state
+  // named two ways in two surfaces is the bug this gate catches.
+  const labels = new Set();
+  for (const nowValue of [
+    { syncError: "storage down" },
+    { pendingBytes: 3 },
+    {},
+    { lastSyncAt: iso(30 * 1000) },
+    { lastSyncAt: iso(60 * 60 * 1000) },
+  ]) {
+    const status = syncStatus(nowValue, now);
+    labels.add(status.label);
+    // `detail` is the device's own error text, except the one the module pins.
+    if (status.detail && !status.detail.includes("storage")) {
+      labels.add(status.detail);
+    }
+  }
+  assert.deepEqual(
+    [...labels].sort(),
+    ["No syncs yet", "Quiet for a while", "Sync error", "Synced", "Uploading"],
+  );
+  for (const label of labels) {
+    assert.ok(page.includes(label), `the page must show the "${label}" label`);
+  }
+});
+
+test("the page's Devices table has a last-sync column and its empty states", () => {
+  assert.match(page, /<th scope="col">Last sync<\/th>/);
+  for (const id of ["devices", "devices-empty", "activity-empty", "activity-progress"]) {
+    assert.ok(page.includes(`id="${id}"`), `the page must carry #${id}`);
+  }
+  // Both empty states start hidden-or-shown on purpose, never both visible:
+  // the page must be able to show one message per screen, not two.
+  assert.match(page, /id="devices-empty">/);
+  assert.match(page, /id="activity-empty">/);
+});
+
 test("the shipped page carries the install command and its copy button", () => {
   assert.equal(page.includes(`id="install-command">${INSTALL_COMMAND}<`), true);
   assert.match(page, /<button type="button" id="copy-command">Copy<\/button>/);
