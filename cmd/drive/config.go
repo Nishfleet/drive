@@ -66,6 +66,28 @@ const (
 // user on the machine for as long as the process lives.
 const secretEnvName = "DRIVE_S3_SECRET_ACCESS_KEY"
 
+// secretWays names every safe way to hand the storage secret to `drive mount`,
+// in the order a caller should reach for them, with the config file this run
+// would read. It is printed by the error that refuses the flag it replaced, so
+// a person upgrading sees what to do instead of only what stopped working. The
+// example is a redirect, never a printf of a variable: a shell that expands a
+// secret variable into a command line puts the secret back in the argv this
+// change exists to keep it out of.
+func secretWays(configPath string) string {
+	return fmt.Sprintf(`the storage secret is not accepted on the command line; put it in
+  1. the config file %s (mode 0600)
+  2. the environment: DRIVE_S3_SECRET_ACCESS_KEY
+  3. --secret-key-stdin, from a redirect or a pipe, as in
+     drive mount --secret-key-stdin < secret-file
+     or  pass show drive/s3-secret | drive mount --secret-key-stdin
+where the secret is never in the command line, the shell history or ps`, configPath)
+}
+
+// maxSecretBytes bounds what a pipe can hand over. A storage secret is one
+// short line; this exists so `--secret-key-stdin` cannot be pointed at a disk
+// image and read the whole thing into the process.
+const maxSecretBytes = 64 << 10
+
 // ReadSecretKey resolves the storage secret from the safe sources, in the
 // order the caller asked for them, and only from those (issue #75). The three
 // sources are a pipe, the environment, and the config file this CLI itself
@@ -80,14 +102,22 @@ const secretEnvName = "DRIVE_S3_SECRET_ACCESS_KEY"
 // later with a confusing 403.
 func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, error) {
 	if wantStdin {
-		// A pipe is a stream, so read it to the end. The trailing newline a
-		// shell echo or a file adds is not part of the secret and is trimmed;
-		// anything else is the secret and is left alone.
-		raw, err := io.ReadAll(stdin)
+		// One line, as the flag says. The trailing newline a shell echo or a
+		// file adds is not part of the secret; anything after the first line is
+		// a caller that piped the wrong thing, and is refused rather than
+		// mounted as one long, broken key.
+		raw, err := io.ReadAll(io.LimitReader(stdin, maxSecretBytes+1))
 		if err != nil {
 			return "", fmt.Errorf("read the storage secret from stdin: %w", err)
 		}
-		secret := strings.TrimRight(string(raw), "\r\n")
+		if len(raw) > maxSecretBytes {
+			return "", fmt.Errorf("the storage secret on stdin is longer than %d bytes; --secret-key-stdin reads one line", maxSecretBytes)
+		}
+		line, rest, _ := strings.Cut(string(raw), "\n")
+		if strings.TrimSpace(rest) != "" {
+			return "", errors.New("stdin carried more than one line; --secret-key-stdin reads one line of the secret")
+		}
+		secret := strings.TrimRight(line, "\r")
 		if strings.TrimSpace(secret) == "" {
 			return "", errors.New("no storage secret on stdin: --secret-key-stdin reads one line from the pipe")
 		}
@@ -155,7 +185,9 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 		}
 		name, value, ok := strings.Cut(line, "=")
 		if !ok {
-			return StorageConfig{}, fmt.Errorf("%s line %d: %q is not a key = value line", path, lineNo+1, line)
+			// The line itself is not quoted: a config whose line is malformed
+			// can be a bare secret, and this error reaches the terminal.
+			return StorageConfig{}, fmt.Errorf("%s line %d is not a key = value line", path, lineNo+1)
 		}
 		name = strings.ToLower(strings.TrimSpace(name))
 		value = strings.TrimSpace(value)
@@ -179,10 +211,12 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 	return c, nil
 }
 
-// LoadStorageConfig resolves the storage endpoint and keys from flags first,
-// then environment variables, and fails loudly when a required value is
-// missing. Endpoint, bucket and keys are config, not code: the same binary
-// talks to the local stand-in or to iDrive e2.
+// LoadStorageConfig resolves the storage endpoint and keys and fails loudly
+// when a required value is missing. Flags win over the environment for every
+// value except the storage secret, which has no flag at all (issue #75) and
+// arrives already resolved from config.go `ReadSecretKey`. Endpoint, bucket
+// and keys are config, not code: the same binary talks to the local stand-in
+// or to iDrive e2.
 func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey string) (StorageConfig, error) {
 	c := StorageConfig{
 		Endpoint:  firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),

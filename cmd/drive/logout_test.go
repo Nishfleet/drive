@@ -365,3 +365,67 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	}
 	t.Logf("logout revoked the key, stopped the mount and deleted %s", RcloneConfigPath(home))
 }
+
+// The issue's own advice is "run drive logout again when online". This proves
+// what that run does now: it cannot revoke (the secret went with the key), so
+// it must keep saying the key is live and must never print a clean sign-out
+// over it. A later logout that does have a key clears the receipt.
+func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
+	home := configOnlyHome(t)
+	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
+
+	if err := Logout("linux", home, false, unreachable); err == nil {
+		t.Fatal("the first logout must fail when the key cannot be revoked")
+	} else if !strings.Contains(err.Error(), revokeWarning) {
+		t.Errorf("first failure = %q, want the issue's sentence", err)
+	}
+	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
+		t.Fatal("the local key must be gone after the failed revoke")
+	}
+	if !RevokePending(home) {
+		t.Fatal("a failed revoke must leave a receipt, or the next run cannot know a key is live")
+	}
+
+	// The retry, offline or not: no key on this device, so nothing to revoke.
+	err := Logout("linux", home, false, nil)
+	if err == nil {
+		t.Fatal("a retry with a live key and no way to revoke it must not succeed")
+	}
+	if !strings.Contains(err.Error(), revokePendingWarning) {
+		t.Errorf("retry failure = %q, want the receipt sentence", err)
+	}
+	if strings.Contains(err.Error(), "run drive logout again") {
+		t.Errorf("retry failure %q repeats advice this command cannot carry out", err)
+	}
+	if !RevokePending(home) {
+		t.Error("the receipt must survive the retry so the state is not forgotten")
+	}
+
+	// A device that signs in again and logs out for real clears it.
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
+		t.Fatalf("logout with a fresh key: %v", err)
+	}
+	if RevokePending(home) {
+		t.Error("a successful revoke must clear the receipt")
+	}
+}
+
+// With no key at all, the success line must not be mistakable for a
+// revocation: there was nothing to turn off.
+func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {
+	home := t.TempDir()
+	out := captureStdout(t, func() {
+		if err := Logout("linux", home, false, nil); err != nil {
+			t.Errorf("logout with nothing at all: %v", err)
+		}
+	})
+	if strings.Contains(out, "revoked") {
+		t.Errorf("output %q claims a revocation there was no key for", out)
+	}
+	if !strings.Contains(out, "no key on this device to revoke") {
+		t.Errorf("output %q should say there was nothing to revoke", out)
+	}
+}

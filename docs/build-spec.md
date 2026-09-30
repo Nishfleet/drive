@@ -65,7 +65,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive approve <branch>` | Copy the branch's changes back. Stops and lists files if the original changed since branching |
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
-| `drive logout` | Unmount, delete this device's key and local config |
+| `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
 
 ## Screens (v1)
 
@@ -95,6 +95,8 @@ Pricing page: the rate line "2¢ per GB, billed by the minute" with the ceiling 
 | Kiro | Entry in `~/.kiro/settings/mcp.json` |
 
 Agents that run on a server rather than the laptop get an S3 key instead (`drive agents connect s3`): an endpoint, key id and secret, limited in the same way.
+
+The storage secret is never read from a command line, where it would sit in the shell history and in `ps` for every user on the machine. `drive mount` reads it from the drive config file (`~/.config/drive/rclone.conf`, mode 0600), from `DRIVE_S3_SECRET_ACCESS_KEY`, or from stdin with `--secret-key-stdin`. The `--secret-key` flag is refused with an error naming these three ways.
 
 Each tool also gets a short skill note: where the drive is, that deletes can be undone, and to use `drive branch` before large edits. Exact command syntax is checked against each tool's current docs in build step 4.
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -118,5 +119,69 @@ func TestRevokeRejectsABadBaseURLBeforeAnyRequest(t *testing.T) {
 		if err == nil {
 			t.Errorf("base %q: want an error, got none", base)
 		}
+	}
+}
+
+// Only 204 means revoked. A proxy that answers 200 with an error page must
+// never read as a key turned off, and a server's own error text is not
+// relayed either: it could echo the credential this request just presented.
+func TestRevokeAcceptsOnly204AndNeverRelaysTheResponse(t *testing.T) {
+	for _, tc := range []struct {
+		code        int
+		wantRevoked bool
+	}{
+		{http.StatusNoContent, true},
+		{http.StatusOK, false},
+	} {
+		name := fmt.Sprintf("code %d", tc.code)
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.code == http.StatusNoContent {
+					w.WriteHeader(tc.code)
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(tc.code)
+				fmt.Fprintln(w, "error: ACCESSKEYID SECRETACCESSKEY not found")
+			}))
+			defer srv.Close()
+			err := (APIKeyRevoker{BaseURL: srv.URL}).Revoke(KeyPair{AccessKeyID: "ACCESSKEYID", SecretKey: "SECRETACCESSKEY"})
+			if got := err == nil; got != tc.wantRevoked {
+				t.Errorf("code %d: revoked = %v, want %v", tc.code, got, tc.wantRevoked)
+			}
+			if err != nil && strings.Contains(err.Error(), "SECRETACCESSKEY") {
+				t.Errorf("error %q relays the response body", err)
+			}
+		})
+	}
+}
+
+// The receipt is the honesty of a later logout: after a revoke that failed, a
+// fresh run must not print a clean sign-out over a live key. It needs no
+// secret and must leave no secret behind.
+func TestWriteRevokePendingAndRevokePending(t *testing.T) {
+	home := t.TempDir()
+	if RevokePending(home) {
+		t.Fatal("no receipt yet")
+	}
+	if err := WriteRevokePending(home); err != nil {
+		t.Fatalf("WriteRevokePending: %v", err)
+	}
+	if !RevokePending(home) {
+		t.Fatal("the receipt must be found after it is written")
+	}
+	info, err := os.Stat(pendingRevokePath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("receipt mode = %o, want 600", perm)
+	}
+	data, err := os.ReadFile(pendingRevokePath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "SECRETACCESSKEY") {
+		t.Error("the receipt carries key material")
 	}
 }

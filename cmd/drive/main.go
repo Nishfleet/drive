@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -111,21 +110,21 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 }
 
 func runMount(args []string) error {
-	// The storage secret is refused before the FlagSet parses, because the
-	// parse would stop at "flag provided but not defined" and name neither the
-	// reason nor the ways that are safe. The secret itself is never held: only
-	// the flag's presence is read here.
-	if flag := secretFlagArg(args); flag != "" {
-		return fmt.Errorf("%s is not accepted: %s", flag, secretWays(RcloneConfigPath(homeFromArgs(args))))
-	}
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region, accessKey string
+	var endpoint, bucket, prefix, region, accessKey, refusedSecret string
 	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
 	fs.StringVar(&accessKey, "access-key", "", "access key id")
+	// The old secret flag is registered only so the flag package consumes it
+	// correctly and can report whether it was passed; the value lands in a
+	// variable that is never read or printed, and any use is refused with the
+	// ways that are safe. A value like --bucket secret-key=x is a bucket, not
+	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
+	// is, and nothing after the first `--` reaches it.
+	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
 	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read the secret access key from stdin")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
@@ -135,6 +134,15 @@ func runMount(args []string) error {
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	refused := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "secret-key" {
+			refused = true
+		}
+	})
+	if refused {
+		return fmt.Errorf("--secret-key is not accepted: %s", secretWays(RcloneConfigPath(common.home)))
 	}
 	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
 	if err != nil {
@@ -149,42 +157,6 @@ func runMount(args []string) error {
 		rclone = DefaultRcloneBin(common.home)
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
-}
-
-// secretFlagArg returns the command line's own --secret-key argument when it
-// is present in any spelling the flag package would accept (-secret-key,
-// --secret-key, or either with =value), and empty when it is not. The value
-// after = is not returned: it is a secret, and nothing here prints it.
-func secretFlagArg(args []string) string {
-	for _, a := range args {
-		name := strings.TrimLeft(a, "-")
-		if name == "secret-key" || strings.HasPrefix(name, "secret-key=") {
-			return "--secret-key"
-		}
-	}
-	return ""
-}
-
-// homeFromArgs reads the --home value the flag package would use, so a message
-// about the config file names the file this run would actually read. The flags
-// have not parsed yet, so this scans only the one flag it needs, in both the
-// `--home X` and `--home=X` spellings; anything malformed falls back to $HOME,
-// which is what a failed parse would have failed on anyway.
-func homeFromArgs(args []string) string {
-	for i, a := range args {
-		if a == "--home" || a == "-home" {
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-			return os.Getenv("HOME")
-		}
-		for _, prefix := range []string{"--home=", "-home="} {
-			if v, ok := strings.CutPrefix(a, prefix); ok {
-				return v
-			}
-		}
-	}
-	return os.Getenv("HOME")
 }
 
 func runUnmount(args []string) error {

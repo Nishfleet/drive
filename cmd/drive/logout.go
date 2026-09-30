@@ -30,7 +30,14 @@ import (
 // copy is deleted second. When the server cannot be reached, the local copy is
 // still deleted — "keeps nothing secret on disk" — and the returned error is
 // the plain sentence that the key is still live, which main turns into a
-// non-zero exit. A clean-looking success is never printed for that case.
+// non-zero exit. A clean-looking success is never printed for that case, and
+// not on a later run either: a failed revoke leaves a receipt carrying no
+// secret (revoke.go pendingRevokePath), and any later logout that finds the
+// receipt reports the live key again instead of succeeding over it. That is
+// what keeps the issue's own advice — run `drive logout` again when online —
+// from being an instruction this command cannot follow: it keeps saying the
+// key is live, and points at the devices page, which is where a key nobody
+// holds can be turned off.
 //
 // Files waiting to upload are protected: rclone queues them in the VFS cache
 // and does not flush them on stop (measured on this host 2026-09-30 with
@@ -75,9 +82,12 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
 	}
 	// The server is asked while the config still holds the key. A missing
-	// config is no key at all, which is a complete logout on its own (logout
-	// is safe to run twice). An unreadable config is neither: it is reported,
-	// because a key that cannot be named is a key that may still be live.
+	// config is no key at all, and a receipt from an earlier run that could
+	// not revoke is the state that says a key is still live with nothing on
+	// this device to reach it with (revoke.go pendingRevokePath): it is
+	// reported, not succeeded over. An unreadable config is neither missing
+	// nor revocable: it is reported, because a key that cannot be named is a
+	// key that may still be live.
 	var revokeErr error
 	var key *KeyPair
 	if pair, err := ReadDeviceKey(home); err != nil {
@@ -85,6 +95,16 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	} else if pair != nil {
 		key = pair
 		revokeErr = revoke.Revoke(*pair)
+		if revokeErr == nil {
+			// The key this device held is off on the server, so a receipt from
+			// an earlier failed run is cleared with everything else.
+			if err := removeIfPresent(pendingRevokePath(home)); err != nil {
+				return err
+			}
+		}
+	} else if RevokePending(home) {
+		// Clean-up below still runs; the exit carries the receipt.
+		revokeErr = errPendingRevoke
 	}
 	// The local copy goes even when the revoke failed: the finding is a key
 	// left live on the server, and leaving a second copy on disk would be a
@@ -104,24 +124,48 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 		return err
 	}
 	// Prove the key is gone rather than trust the unlink: the acceptance is
-	// "leaves no key or config behind", so a leftover file is a failure.
+	// "keeps nothing secret on disk", so a leftover config is a failure.
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
 		return fmt.Errorf("logout left %s behind", RcloneConfigPath(home))
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err)
 	}
 	if revokeErr != nil {
-		// local state is gone, server state is not; say both, and return the
-		// non-zero exit the issue asks for.
-		return fmt.Errorf("%s (%v)", revokeWarning, revokeErr)
+		if errors.Is(revokeErr, errPendingRevoke) {
+			// The receipt already names this state; rewriting it would say the
+			// same thing twice. Non-zero: a key from an earlier logout is still
+			// live and this device has nothing to authenticate a revoke with.
+			return fmt.Errorf("%s (%w)", revokePendingWarning, revokeErr)
+		}
+		// local state is gone, server state is not. The receipt is written
+		// after the config is gone, so the next run knows a key is live with
+		// nothing here to authenticate it. It returns non-zero: a logout that
+		// cannot revoke must never look like one that did.
+		if err := WriteRevokePending(home); err != nil {
+			return fmt.Errorf("%s (%v), and the receipt could not be written: %w", revokeWarning, revokeErr, err)
+		}
+		return fmt.Errorf("%s (%w)", revokeWarning, revokeErr)
 	}
 	if key != nil {
 		fmt.Printf("logged out: the mount is stopped, the key is revoked on the server and %s is deleted\n", DefaultConfigDir(home))
 		return nil
 	}
-	fmt.Printf("logged out: the mount is stopped and %s is deleted\n", DefaultConfigDir(home))
+	// Nothing to revoke is a complete logout, but it is not the same event as a
+	// revoked key: without a config there is nothing this command could have
+	// turned off, and saying exactly that is what keeps a retry from reading
+	// as a successful revocation.
+	fmt.Printf("logged out: the mount is stopped and %s is deleted; there was no key on this device to revoke\n", DefaultConfigDir(home))
 	return nil
 }
+
+// ReadDeviceKey reads this device's key out of the rclone config. A missing
+// config is no key at all (nil, nil): there is nothing to revoke, and that is
+// not an error. A config that cannot be read is an error, not a missing key —
+// logout would otherwise print a clean sign-out while a key it could not name
+// is still live.
+// errPendingRevoke says a receipt from an earlier logout is on file: a key was
+// left live and this device no longer holds it.
+var errPendingRevoke = errors.New("an earlier logout left a key live; this device no longer has the key to revoke it with")
 
 // ReadDeviceKey reads this device's key out of the rclone config. A missing
 // config is no key at all (nil, nil): there is nothing to revoke, and that is

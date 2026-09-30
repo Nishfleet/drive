@@ -1,10 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -52,9 +53,11 @@ type KeyRevoker interface {
 // same credential (rclone's own S3 provider sends Basic auth, which is where
 // the key id and secret are already exercised on every upload), so the revoke
 // needs no session token and the CLI stores no second credential. The server
-// answers 204 when the key is off. The request body is empty: the key is in
-// the Authorization header and nowhere else, so there is nothing to log, to
-// echo, or to leak into a proxy's request log.
+// answers 204 No Content when the key is off, and only that: a proxy's 200
+// with an error page must never read as a revoked key. The request body is
+// empty, so there is nothing to log or to echo, and the response body is not
+// relayed either — a server that echoes the presented credential must not get
+// the CLI to print it.
 type APIKeyRevoker struct {
 	BaseURL string // the api Worker base URL, no trailing slash
 }
@@ -84,17 +87,8 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		// The server's own words are read, not guessed, and the key is not in
-		// them: the key travels in the Authorization header, and this echoes
-		// only the response body.
-		var api struct {
-			Error string `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&api); err == nil && api.Error != "" {
-			return fmt.Errorf("POST %s: %s: %s", url, resp.Status, api.Error)
-		}
-		return fmt.Errorf("POST %s: %s", url, resp.Status)
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("POST %s: %s (want 204 No Content; the key is not known to be off)", url, resp.Status)
 	}
 	return nil
 }
@@ -118,17 +112,40 @@ func (noAPIKeyStore) Revoke(KeyPair) error {
 // machine in, so it names the exact state and the exact next command.
 const revokeWarning = "signed out here; the key is still live, run drive logout again when online"
 
-// secretWays names every safe way to hand the storage secret to `drive mount`,
-// in the order a caller should reach for them, with the config file this run
-// would read. It is printed by the error that refuses the flag it replaced, so
-// a person upgrading sees what to do instead of only what stopped working.
-func secretWays(configPath string) string {
-	return fmt.Sprintf(`the storage secret is not accepted on the command line; put it in
-  1. the config file %s (mode 0600)
-  2. the environment: DRIVE_S3_SECRET_ACCESS_KEY
-  3. a pipe: --secret-key-stdin, as in
-     printf '%%s' "$DRIVE_S3_SECRET_ACCESS_KEY" | drive mount ...
-     where the secret is never in the command line, the shell history or ps`, configPath)
+// revokePendingWarning is said by a later `drive logout` that finds a receipt
+// from an earlier one whose revoke never landed (pendingRevokePath). The
+// receipt proves a key is still live but holds no secret, so this run cannot
+// revoke it; saying so is the whole point. It deliberately does not repeat
+// revokeWarning's "run drive logout again": with nothing left to authenticate
+// with, that command could not do it, and a run that cannot revoke must never
+// print a success over a live key.
+const revokePendingWarning = "signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app"
+
+// pendingRevokePath is the receipt a failed revoke leaves behind, next to the
+// config dir rather than inside it (logout deletes that dir, and the receipt
+// has to outlive it). It holds no secret and no key: only the fact that a key
+// was left live, which is what the next run needs to stop printing success.
+func pendingRevokePath(home string) string {
+	return filepath.Join(home, ".config", "drive-revoke-pending")
+}
+
+// WriteRevokePending leaves the receipt that a failed revoke needs, so the
+// next `drive logout` knows a key is still live even though this device no
+// longer holds it. The receipt carries no secret and no key: it is a marker,
+// and the key itself is the thing logout has just deleted everywhere it can.
+func WriteRevokePending(home string) error {
+	if err := WriteFileAtomic(pendingRevokePath(home), []byte("a drive key was not revoked; see `drive logout --help`\n"), 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RevokePending reports whether an earlier logout left a key live. A receipt
+// that cannot be read is treated as absent rather than as a failure, because
+// the alternative is refusing to sign out over a marker file.
+func RevokePending(home string) bool {
+	_, err := os.Stat(pendingRevokePath(home))
+	return err == nil
 }
 
 // resolveKeyRevoker picks the KeyRevoker for a run. api is the api Worker base

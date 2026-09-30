@@ -245,12 +245,18 @@ func USD(amount float64) string {
 // parseAPIBase checks the api Worker URL and drops its trailing slash, so the
 // endpoint path is appended the same way every time. A URL is operator
 // config, but it is printed and put in an error, so it is held to the same
-// rule as the secret itself (issue #75): user:password@ in a URL is a
-// credential on the command line and in every line that prints it, so it is
-// refused rather than carried, and no branch of this function prints a URL it
-// has not already cleared. The same rejection config.go applies to a rclone
-// config value applies here: a newline would break the line it is printed on,
-// and a NUL byte is never a URL.
+// rule as the secret itself (issue #75):
+//
+//   - user:password@ in a URL is a credential on the command line and in every
+//     line that prints the URL, so it is refused rather than carried;
+//   - no error here echoes the value back. Each failure names the fault and
+//     stops, because a URL that parses as scheme "user" and opaque
+//     "password@host" clears every parsed field a check could look at, so
+//     "check first, then print" is not a rule a new branch can rely on;
+//   - a secret goes over TLS, so plain http is only good enough on loopback.
+//
+// The same rejection config.go applies to a rclone config value applies here: a
+// newline would break the line it is printed on, and a NUL byte is never a URL.
 func parseAPIBase(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
@@ -267,16 +273,32 @@ func parseAPIBase(raw string) (string, error) {
 		}
 		return "", errors.New("api Worker URL does not parse")
 	}
+	if u.User != nil {
+		return "", errors.New("api Worker URL carries credentials; the key is sent in the Authorization header, not in the URL")
+	}
+	if u.Opaque != "" {
+		return "", errors.New("api Worker URL does not name a host")
+	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("api Worker URL %q must be http or https", trimmed)
+		return "", errors.New("api Worker URL must be http or https")
 	}
 	if u.Host == "" {
-		return "", fmt.Errorf("api Worker URL %q has no host", trimmed)
+		return "", errors.New("api Worker URL has no host")
 	}
-	// Refused before it can be printed anywhere: the key store takes the key
-	// in the Authorization header, so a credential in the URL is never needed.
-	if u.User != nil {
-		return "", fmt.Errorf("api Worker URL %q carries credentials; the key is sent in the Authorization header, not in the URL", u.Host)
+	// A secret travels only over TLS. Plain http is accepted for the loopback
+	// hosts the stand-in server and a local dev Worker use, and nowhere else:
+	// the storage secret is in every request this CLI makes to the Worker, and
+	// cleartext to a remote host is the same exposure as a flag in ps.
+	if u.Scheme == "http" && !loopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("api Worker URL must be https://%s ...; plain http carries the storage secret in the clear", u.Host)
 	}
 	return strings.TrimSuffix(trimmed, "/"), nil
+}
+
+// loopbackHost reports whether host is this machine. The stand-in server, a
+// local dev Worker and the test server all talk over loopback, where cleartext
+// never leaves the machine.
+func loopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

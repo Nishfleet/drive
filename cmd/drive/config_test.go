@@ -404,3 +404,80 @@ func TestParseAPIBaseDoesNotEchoAURLThatCarriesCredentials(t *testing.T) {
 		t.Errorf("error %q does not name the fault", err)
 	}
 }
+
+// Every failure branch of parseAPIBase is a place a URL can leak, not just the
+// one the guard checks first: a URL that parses as scheme "user" and opaque
+// "password@host" has no User field to inspect. So no branch may echo the
+// value at all, and this table proves it for the shapes that have a credential
+// in them.
+func TestParseAPIBaseNeverEchoesACredential(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secretkey@example.com",          // userinfo, parses
+		"ftp://user:secretkey@example.com",            // wrong scheme, userinfo
+		"http://user:secretkey@",                      // userinfo, no host
+		"user:secretkey@example.com",                  // opaque, no User field
+		"https://user:secretkey@example.com:notaport", // will not parse
+		"https://user:secretkey@example.com/%zz",      // bad escape
+	} {
+		_, err := parseAPIBase(raw)
+		if err == nil {
+			t.Errorf("parseAPIBase(%q) = nil, want a refusal", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "secretkey") {
+			t.Errorf("parseAPIBase(%q) leaks the credential: %v", raw, err)
+		}
+	}
+}
+
+// The storage secret is in every request the CLI makes to the Worker, so a
+// remote plain-http URL is refused; loopback is where the stand-in and a local
+// dev Worker live, and cleartext there never leaves the machine.
+func TestParseAPIBaseRequiresHTTPSOffLoopback(t *testing.T) {
+	if _, err := parseAPIBase("http://example.com"); err == nil {
+		t.Error("plain http to a remote host must be refused: the secret would travel in the clear")
+	} else if !strings.Contains(err.Error(), "https") {
+		t.Errorf("refusal %q does not name the fix", err)
+	}
+	for _, ok := range []string{"http://127.0.0.1:8787", "http://localhost:8787", "http://[::1]:8787"} {
+		if _, err := parseAPIBase(ok); err != nil {
+			t.Errorf("parseAPIBase(%q) = %v, want loopback http allowed", ok, err)
+		}
+	}
+	if _, err := parseAPIBase("https://api.example.com/"); err != nil {
+		t.Errorf("https must be allowed: %v", err)
+	}
+}
+
+// A malformed line can be a bare secret; the error reaches the terminal, so
+// the line's contents must not.
+func TestParseRcloneConfigDoesNotEchoAMalformedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := os.WriteFile(path, []byte("[drive]\nSECRETBLOBDATA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseRcloneConfig(path)
+	if err == nil {
+		t.Fatal("want an error for a line that is not key = value")
+	}
+	if strings.Contains(err.Error(), "SECRETBLOBDATA") {
+		t.Errorf("error %q echoes the line", err)
+	}
+}
+
+func TestReadSecretKeyRejectsMultiLineStdin(t *testing.T) {
+	_, err := ReadSecretKey("", true, strings.NewReader("SECRETONE\nSECRETTWO\n"))
+	if err == nil {
+		t.Fatal("more than one line on stdin must not become one secret")
+	}
+	if !strings.Contains(err.Error(), "one line") {
+		t.Errorf("error %q does not say what is wrong", err)
+	}
+}
+
+func TestReadSecretKeyRejectsAnOversizeStdin(t *testing.T) {
+	_, err := ReadSecretKey("", true, strings.NewReader(strings.Repeat("a", maxSecretBytes+64)))
+	if err == nil {
+		t.Fatal("an unbounded pipe must not be read as a secret")
+	}
+}
