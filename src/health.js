@@ -68,6 +68,29 @@ export const HEALTH_TIMEOUT_MS = 2000;
  */
 const LIVENESS_QUERY = "SELECT 1";
 
+/**
+ * The bindings this Worker needs to answer a customer request, by the names
+ * cloudflare.config.ts declares. Auto-discovery (d1Bindings below) covers
+ * "every bound database", but it cannot see a database that is not bound: a
+ * deploy that lost WAITLIST_DB would otherwise answer `{"ok":true}` while
+ * every sign-up 503s. This list is what makes that a 503 naming the binding.
+ *
+ * test/health.test.mjs reads cloudflare.config.ts and fails if a name here is
+ * not declared there, so a rename in the config cannot silently leave this
+ * list pointing at a binding that no longer exists.
+ *
+ * ASSETS is on the list because every page load goes through it. The rate
+ * limiter is on it because the waitlist fails closed without one
+ * (src/waitlist.js). The email binding is not: only the token-gated internal
+ * send route uses it, no customer request needs it, and its one operation
+ * would really send mail.
+ */
+export const REQUIRED_BINDINGS = Object.freeze([
+  "WAITLIST_DB",
+  "ASSETS",
+  "WAITLIST_RATE_LIMITER",
+]);
+
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
   // The monitor must never be answered from a cache: a cached 200 during an
@@ -121,9 +144,9 @@ export function d1Bindings(env) {
 }
 
 /**
- * One trivial read on a D1 database, with the query itself bounded by
- * `HEALTH_TIMEOUT_MS`. A rejected read is not swallowed: it becomes the
- * failure this check reports, with the binding's name and nothing else.
+ * One trivial read on a D1 database, bounded by the deadline's remaining
+ * share. A rejected read is not swallowed: it becomes the failure this check
+ * reports, with the binding's name and nothing else.
  * @param {string} name the binding name, safe to show an operator
  * @param {{prepare: (sql: string) => unknown}} db
  */
@@ -210,31 +233,36 @@ async function checkRateLimiter(limiter, timeoutMs) {
  */
 export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   const deadline = Date.now() + timeoutMs;
+  // A required binding that is not bound is the first thing named: the whole
+  // point of the endpoint is that a deploy which cannot serve says so.
+  for (const name of REQUIRED_BINDINGS) {
+    if (env === null || env === undefined || env[name] === undefined) {
+      return { ok: false, failing: name };
+    }
+  }
   const checks = [];
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
-  const assets = env === null || env === undefined ? undefined : env.ASSETS;
-  if (!assets || typeof assets.fetch !== "function") {
+  const assets = env.ASSETS;
+  if (typeof assets.fetch !== "function") {
     // The landing page is served by this binding on every request that is
     // not /api/*, so its absence is an outage, not a configuration nit: a
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
   checks.push({ name: "ASSETS", run: (left) => checkAssets(assets, left) });
-  // Only when this Worker has the waitlist bound: the limiter is a dependency
-  // of the waitlist route, so on a deployment without one there is nothing to
-  // reach.
-  const limiter = env === null || env === undefined ? undefined : env.WAITLIST_RATE_LIMITER;
-  if (limiter !== undefined) {
-    if (typeof limiter.limit !== "function") {
-      return { ok: false, failing: "WAITLIST_RATE_LIMITER" };
-    }
-    checks.push({
-      name: "WAITLIST_RATE_LIMITER",
-      run: (left) => checkRateLimiter(limiter, left),
-    });
+  const limiter = env.WAITLIST_RATE_LIMITER;
+  if (typeof limiter.limit !== "function") {
+    // The waitlist fails closed without this binding (src/waitlist.js), so a
+    // binding that is present but has no `limit` is as broken as a missing
+    // one and gets the same name.
+    return { ok: false, failing: "WAITLIST_RATE_LIMITER" };
   }
+  checks.push({
+    name: "WAITLIST_RATE_LIMITER",
+    run: (left) => checkRateLimiter(limiter, left),
+  });
 
   for (const check of checks) {
     // One deadline for the whole check, not one per dependency: a Worker

@@ -17,10 +17,12 @@
 // network, no Worker runtime, matching the rest of the suite.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 import {
   HEALTH_PATH,
   HEALTH_TIMEOUT_MS,
+  REQUIRED_BINDINGS,
   checkHealth,
   d1Bindings,
   handleHealthRequest,
@@ -79,9 +81,22 @@ function fakeAssets() {
   };
 }
 
+/** A rate limiter stub whose whole contract is limit({ key }) -> { success }. */
+function fakeLimiter() {
+  return {
+    limit: () => Promise.resolve({ success: true }),
+  };
+}
+
+/**
+ * The bindings a healthy deploy has, by the names cloudflare.config.ts
+ * declares. A test that wants an unhealthy Worker drops or breaks one of
+ * these, so every test starts from the real shape.
+ */
 const HEALTHY_ENV = () => ({
   WAITLIST_DB: fakeD1("ok"),
   ASSETS: fakeAssets(),
+  WAITLIST_RATE_LIMITER: fakeLimiter(),
 });
 
 const GET = (path = HEALTH_PATH) =>
@@ -106,7 +121,11 @@ test("the health answer is never cached", async () => {
 // --- the failing answer names the part -----------------------------------
 
 test("a database that cannot answer is a 503 naming that binding", async () => {
-  const env = { WAITLIST_DB: fakeD1("error"), ASSETS: fakeAssets() };
+  const env = {
+    WAITLIST_DB: fakeD1("error"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "WAITLIST_DB" });
@@ -115,7 +134,11 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
 test("a database that never answers is a 503, not a hung probe", async () => {
   // The bound is what stops a monitor's poll from outliving its own timeout,
   // which would read as "no data" rather than "down".
-  const env = { WAITLIST_DB: fakeD1("hang"), ASSETS: fakeAssets() };
+  const env = {
+    WAITLIST_DB: fakeD1("hang"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
 });
@@ -123,7 +146,10 @@ test("a database that never answers is a 503, not a hung probe", async () => {
 test("a missing asset layer is a 503 naming ASSETS", async () => {
   // The landing page is served by that binding on every non-API request, so
   // its absence is an outage and not a configuration nit.
-  const response = await handleHealthRequest(GET(), { WAITLIST_DB: fakeD1("ok") });
+  const response = await handleHealthRequest(GET(), {
+    WAITLIST_DB: fakeD1("ok"),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
 });
@@ -132,6 +158,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: { fetch: () => Promise.reject(new Error("asset manifest missing")) },
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -147,6 +174,7 @@ test("every bound D1 database is checked, not just the first", async () => {
     WAITLIST_DB: first,
     BILLING_DB: second,
     ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -170,6 +198,7 @@ test("no body carries a secret or an internal, healthy or not", async () => {
   const broken = {
     WAITLIST_DB: fakeD1("error"),
     ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -202,6 +231,7 @@ test("the failing body is the name and nothing else", async () => {
   const response = await handleHealthRequest(GET(), {
     WAITLIST_DB: fakeD1("error"),
     ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -288,15 +318,16 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     }),
   });
   const env = {
-    FIRST_DB: hang(),
+    WAITLIST_DB: hang(),
     SECOND_DB: hang(),
     THIRD_DB: hang(),
     ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
   const elapsed = Date.now() - started;
-  assert.deepEqual(result, { ok: false, failing: "FIRST_DB" });
+  assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
   assert.ok(elapsed < 600, `the check took ${elapsed}ms, more than the bound`);
 });
 
@@ -323,6 +354,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
       },
     },
     ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -411,6 +443,53 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
   assert.notEqual(keys[0], keys[1], "each poll spends a bucket of its own");
+});
+
+test("a binding that is not bound at all is a 503 naming it", async () => {
+  // Auto-discovery reads what is on env, so it cannot see a binding the
+  // deployment lost. A deploy without WAITLIST_DB answers 503 on every
+  // sign-up, so the health answer has to be 503 too, not the `ok` a
+  // discovery-only check would report.
+  for (const missing of REQUIRED_BINDINGS) {
+    const env = HEALTHY_ENV();
+    delete env[missing];
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503, `${missing} missing must be a 503`);
+    assert.deepEqual(await response.json(), { ok: false, failing: missing });
+  }
+});
+
+test("the required bindings are the ones cloudflare.config.ts declares", () => {
+  // A renamed or deleted binding in the config would leave this list pointing
+  // at nothing, and the check would report a name no operator can act on. The
+  // config is the source of truth, so the test reads its binding keys.
+  const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
+  const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
+  assert.ok(declared.length >= 6, `only found ${declared.join(", ")} in the config`);
+  for (const name of REQUIRED_BINDINGS) {
+    assert.ok(
+      declared.includes(name),
+      `REQUIRED_BINDINGS names ${name}, which cloudflare.config.ts does not declare`,
+    );
+  }
+  // The other direction: a binding in the config that the health check does
+  // not know about is a gap the alert would not cover. The email three are the
+  // documented exception (src/health.js): only the token-gated internal send
+  // route uses them, and none can be probed without side effects.
+  const NOT_CHECKED = new Set(["EMAIL", "EMAIL_SEND_TOKEN", "MAIL_FROM"]);
+  for (const name of declared) {
+    if (NOT_CHECKED.has(name)) {
+      assert.ok(
+        !REQUIRED_BINDINGS.includes(name),
+        `${name} must stay off the required list, with its reason in src/health.js`,
+      );
+      continue;
+    }
+    assert.ok(
+      REQUIRED_BINDINGS.includes(name),
+      `cloudflare.config.ts declares ${name} and the health check does not check it`,
+    );
+  }
 });
 
 test("a rate limiter that throws is a 503 naming it", async () => {
