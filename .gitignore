@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# The built drive CLI binary. `go build ./...` in the repo root writes ./drive;
+# it is a build artifact, never committed.
+drive
 .env
 .env.*
 .dev.vars
