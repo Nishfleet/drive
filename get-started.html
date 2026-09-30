@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — get started</title>
+  <meta name="description" content="Run one command on the Mac you want the drive on. This page flips to connected the moment your Mac signs in.">
+  <meta name="robots" content="noindex">
+  <style>
+/* First-run page: the palette and type of the pricing page (public/index.html)
+   so the two read as one product. System font stacks only: no web font files,
+   so nothing blocks first paint. */
+
+:root {
+  --paper: #faf6ee;
+  --paper-raised: #fffdf8;
+  --ink: #21201c;
+  --ink-soft: #56514a;
+  --ink-faint: #6f6a5f;
+  --rule: #ddd5c5;
+  --accent: #1f3a5f;
+  --accent-soft: #e6ecf3;
+  --good: #1d5c3a;
+  --bad: #8a2b2b;
+  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 8px;
+  top: 8px;
+  z-index: 10;
+  padding: 8px 12px;
+  background: var(--ink);
+  color: var(--paper);
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 18px;
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 28px 0 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.masthead a {
+  color: var(--ink-soft);
+}
+
+main {
+  max-width: 940px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+section {
+  padding: clamp(28px, 5vh, 48px) 0 0;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-size: clamp(24px, 3.5vw, 34px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.steps li {
+  grid-column: 2;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.steps li::before {
+  grid-column: 1;
+  content: counter(step);
+  counter-increment: step;
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.steps h3 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.steps p {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+#install-command {
+  padding: 8px 12px;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+#copy-command {
+  padding: 8px 16px;
+  background: var(--accent);
+  color: var(--paper);
+  border: none;
+  border-radius: 4px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+#copy-command:hover {
+  background: #1a3350;
+}
+
+.status-next {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule);
+  border-radius: 4px;
+}
+
+/* One rendered line per state; the renderer hides the others. The explicit
+   [hidden] rule is needed because the class selector would otherwise win over
+   the UA stylesheet's [hidden] { display: none }. */
+.status > .line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status > .line[hidden] {
+  display: none;
+}
+
+.status .what {
+  margin: 0;
+}
+
+.status .next {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.status[data-state="connected"] {
+  border-left-color: var(--good);
+}
+
+.status[data-state="unreachable"] {
+  border-left-color: var(--bad);
+}
+
+#devices {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+#devices th,
+#devices td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+#devices th {
+  font-weight: 600;
+  color: var(--ink-faint);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.state {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.state[data-state="synced"] {
+  background: var(--accent-soft);
+  color: var(--good);
+}
+
+.state[data-state="error"] {
+  background: #fdeaea;
+  color: var(--bad);
+}
+
+.empty {
+  padding: 16px;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.empty .what {
+  margin: 0 0 4px;
+}
+
+.empty .next {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.footer {
+  max-width: 940px;
+  margin: 32px auto 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#command-heading">Skip to the install command</a>
+  <header class="masthead">
+    <span class="wordmark">Drive</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/files">Your files</a>
+    <a href="/">Pricing</a>
+    <a href="/get-started" aria-current="page">Get started</a>
+    <a href="/usage">Usage</a>
+  </header>
+
+  <main>
+    <section aria-labelledby="get-started-heading">
+      <h1 id="get-started-heading">Get started</h1>
+      <p class="lede">
+        One command on the Mac you want the drive on. This page tells you
+        whether it worked, without you refreshing anything.
+      </p>
+    </section>
+
+    <section id="command-heading" aria-labelledby="steps-heading">
+      <h2 id="steps-heading">Three steps</h2>
+      <ol class="steps" id="steps">
+        <!-- Filled by get-started.js from src/status.js -->
+      </ol>
+
+      <div class="command">
+        <code id="install-command"></code>
+        <button type="button" id="copy-command">Copy</button>
+        <span class="status-next" id="copy-note" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="drive-heading">
+      <h2 id="drive-heading">Your drive</h2>
+      <div class="status" id="connection" data-state="waiting" role="status" aria-live="polite">
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+
+      <table id="devices" hidden>
+        <caption>Devices</caption>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Last sync</th>
+            <th scope="col">State</th>
+          </tr>
+        </thead>
+        <tbody id="devices-body"></tbody>
+      </table>
+      <div class="empty" id="devices-empty">
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+
+      <div class="empty" id="activity-empty">
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+      <div class="empty" id="activity-progress" hidden>
+        <p class="what" id="activity-progress-label"></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
+  </footer>
+
+  <script type="module" src="./src/get-started.js"></script>
+</body>
+</html>

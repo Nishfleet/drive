@@ -1,10 +1,10 @@
 // First-run and sync status: the words and the arithmetic for "is it
 // working?", kept in one place because three surfaces ask the same question
 // (the first-run page, `drive status`, and the Devices list in
-// docs/build-spec.md "Screens"). The page is a static asset served from
-// `public/`, so it cannot import this module; test/status.test.mjs reads the
-// shipped page and fails CI when its copy drifts from the strings here — the
-// same gate src/pricing.js and test/pricing-copy.test.mjs use for the price.
+// docs/build-spec.md "Screens"). The page is a Vite entry at the repo root
+// (issue #70): src/get-started.js imports this module and renders from it, so
+// the page and the CLI read the same words and there is no second copy left
+// to drift.
 //
 // Plain data and pure functions for the words and math; the one fetch handler
 // at the bottom serves the page's poll and uses only the standard Response,
