@@ -22,10 +22,8 @@ import {
   GB_PER_TB,
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
-  monthBillCents,
   monthlyCeilingUsd,
   monthlyBillForStoredTb,
-  monthlyStorageBillUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { SITE } from "./seo.js";
@@ -66,7 +64,6 @@ export const BILL_EXAMPLES = Object.freeze(
       metered: dollars(meteredUsdFor(gb * MINUTES_PER_MONTH)),
       ceiling: dollars(monthlyCeilingUsd(gb)),
       bill: dollars(bill.billUsd),
-      storage: dollars(bill.storageUsd),
     });
   }),
 );
