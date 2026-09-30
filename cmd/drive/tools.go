@@ -13,9 +13,15 @@ import (
 )
 
 // serverName is the MCP server name the drive registers in every agent tool,
-// and mcpPackage is the stock MCP filesystem server it points at the mount
-// (docs/build-spec.md, "Agent tools"). The server talks to the drive folder,
-// so every tool sees the same files. `npx -y` needs no global install.
+// and mcpPackage is the stock MCP filesystem server it points at the drive
+// folder (docs/build-spec.md, "Agent tools"). The server starts with a file
+// lock and an allowlist, so every tool must be told the folder twice: once as
+// the server's argument, and once in whatever way that tool calls the same
+// list "roots" or "allowed directories". One example, the one that bit us:
+// Claude Code with no --add-dir reports /tmp as its only root, and the
+// filesystem server (README, "Method 2: MCP Roots") lets client roots
+// completely replace its command-line directories, so the drive would be
+// denied with only the argument in place. `npx -y` needs no global install.
 const (
 	serverName = "drive"
 	mcpPackage = "@modelcontextprotocol/server-filesystem"
@@ -68,13 +74,22 @@ func (e Env) withDefaults() Env {
 //	codex    `codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)`
 //	         (codex-rs/cli/src/mcp_cmd.rs); servers live in ~/.codex/config.toml
 //	gemini   `gemini mcp add [options] <name> <commandOrUrl> [args...]`, with
-//	         `-s, --scope <project|user>` (default project); user servers live
-//	         in ~/.gemini/settings.json under `mcpServers`
-//	cursor   entry in ~/.cursor/mcp.json under `mcpServers`
-//	kiro     entry in ~/.kiro/settings/mcp.json under `mcpServers`
+//	         `-s, --scope <project|user>` (default project) and
+//	         `-t, --transport <stdio|sse|http>`; user servers live in
+//	         ~/.gemini/settings.json under `mcpServers`. add overwrites an
+//	         existing entry (packages/cli/src/commands/mcp/add.ts), so it is
+//	         safe to run again.
+//	cursor   entry in its MCP file `~/.cursor/mcp.json` under `mcpServers`;
+//	        Cursor reads AGENTS.md (the project root, and scoped AGENTS.md in
+//	        subdirectories), so the drive is added as an instruction file once
+//	        the mount exists.
+//	kiro    entry in `~/.kiro/settings/mcp.json` under `mcpServers`.
 //
-// `-s user` (claude, gemini) matters: the default scope is per-project, and a
-// fresh session in any project has to see the drive.
+// claude and codex additionally get an instruction file inside the drive
+// folder (CLAUDE.md, AGENTS.md), and claude gets the drive added to the user
+// setting that grants an extra working directory. Without those the filesystem
+// server denies the folder: Claude Code sends its own roots, which replace the
+// server's argument (see the package comment above).
 type Tool struct {
 	// Name is also the binary the CLI tools run.
 	Name string
@@ -92,19 +107,31 @@ type Tool struct {
 	Check []string
 	// Remove is the argv after the binary that disconnects the drive.
 	Remove []string
+	// AddConflict is the substring of the tool's own output that means the
+	// server is already configured, so Connect may replace it (remove, then
+	// add again). Empty when the tool's add already overwrites, as codex and
+	// gemini do.
+	AddConflict string
 	// JSONPath is the config file of a tool connected through JSON.
 	JSONPath func(home string) string
+	// Access, when set, grants the tool access to the drive folder the tool's
+	// own way, outside the MCP registration. Without it the stock filesystem
+	// server denies the folder, because the tool's roots replace the server's
+	// argument.
+	Access func(env Env) error
 }
 
 // tools is the agent-tool registry. One row per tool the spec commits to.
 func tools() []Tool {
 	return []Tool{
 		{
-			Name:     "claude",
-			Binaries: []string{"claude"},
-			Add:      []string{"mcp", "add", "-s", "user", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
-			Check:    []string{"mcp", "get", "{name}"},
-			Remove:   []string{"mcp", "remove", "{name}"},
+			Name:        "claude",
+			Binaries:    []string{"claude"},
+			Add:         []string{"mcp", "add", "-s", "user", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
+			AddConflict: "already exists",
+			Check:       []string{"mcp", "get", "{name}"},
+			Remove:      []string{"mcp", "remove", "{name}"},
+			Access:      grantClaudeDrive,
 		},
 		{
 			Name:     "codex",
@@ -112,12 +139,13 @@ func tools() []Tool {
 			Add:      []string{"mcp", "add", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
 			Check:    []string{"mcp", "get", "{name}", "--json"},
 			Remove:   []string{"mcp", "remove", "{name}"},
+			Access:   func(env Env) error { return writeNote(env, "AGENTS.md") },
 		},
 		{
 			Name:     "gemini",
 			Binaries: []string{"gemini"},
-			Add:      []string{"mcp", "add", "-s", "user", "{name}", "npx", "-y", mcpPackage, "{dir}"},
-			Remove:   []string{"mcp", "remove", "{name}"},
+			Add:      []string{"mcp", "add", "-s", "user", "-t", "stdio", "{name}", "npx", "-y", mcpPackage, "{dir}"},
+			Remove:   []string{"mcp", "remove", "-s", "user", "{name}"},
 			JSONPath: func(home string) string { return filepath.Join(home, ".gemini", "settings.json") },
 		},
 		{
@@ -125,6 +153,7 @@ func tools() []Tool {
 			Binaries:   []string{"cursor"},
 			ConfigDirs: []string{".cursor"},
 			JSONPath:   func(home string) string { return filepath.Join(home, ".cursor", "mcp.json") },
+			Access:     func(env Env) error { return writeNote(env, "AGENTS.md") },
 		},
 		{
 			Name:       "kiro",
@@ -183,18 +212,42 @@ func (t Tool) Installed(env Env) (bool, string) {
 }
 
 // Connect registers the stock MCP filesystem server for this tool. Safe to
-// run again: the CLI tools replace their own entry, and the JSON merge keeps
-// every other server in the file.
+// run again: the CLI tools replace their own entry (either because their add
+// overwrites, or by removing the existing entry first), and the JSON merge
+// keeps every other server in the file.
 func (t Tool) Connect(env Env) error {
 	env = env.withDefaults()
 	if t.Add != nil {
-		if _, err := env.Runner.Run(t.Name, expand(t.Add, env.DriveDir)...); err != nil {
+		if err := t.runAdd(env); err != nil {
 			return fmt.Errorf("connect %s: %w", t.Name, err)
 		}
+	} else if err := t.writeJSON(env, true); err != nil {
+		return fmt.Errorf("connect %s: %w", t.Name, err)
+	}
+	if t.Access != nil {
+		if err := t.Access(env); err != nil {
+			return fmt.Errorf("grant %s access to the drive: %w", t.Name, err)
+		}
+	}
+	return nil
+}
+
+// runAdd runs the tool's add command, replacing an existing entry when the
+// tool refuses to overwrite one (claude says "already exists in user config").
+func (t Tool) runAdd(env Env) error {
+	argv := expand(t.Add, env.DriveDir)
+	out, err := env.Runner.Run(t.Name, argv...)
+	if err == nil {
 		return nil
 	}
-	if err := t.writeJSON(env, true); err != nil {
-		return fmt.Errorf("connect %s: %w", t.Name, err)
+	if t.AddConflict == "" || !strings.Contains(string(out), t.AddConflict) {
+		return err // not the known "already configured" answer
+	}
+	if _, err := env.Runner.Run(t.Name, expand(t.Remove, env.DriveDir)...); err != nil {
+		return fmt.Errorf("replace the existing entry: %w", err)
+	}
+	if _, err := env.Runner.Run(t.Name, argv...); err != nil {
+		return err
 	}
 	return nil
 }

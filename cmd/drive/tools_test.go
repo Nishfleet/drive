@@ -10,16 +10,21 @@ import (
 )
 
 // recordingRunner records every command the adapters run instead of executing
-// it, so the tests assert the exact command each tool gets. fail simulates a
-// command that exits non-zero.
+// it, so the tests assert the exact command each tool gets. respond, when set,
+// answers per call; otherwise fail (when set) answers every call.
 type recordingRunner struct {
-	calls []string
-	out   string
-	fail  error
+	calls   []string
+	out     string
+	fail    error
+	respond func(callIndex int, cmd string) ([]byte, error)
 }
 
 func (r *recordingRunner) Run(name string, args ...string) ([]byte, error) {
-	r.calls = append(r.calls, strings.TrimSuffix(name+" "+strings.Join(args, " "), " "))
+	cmd := strings.TrimSuffix(name+" "+strings.Join(args, " "), " ")
+	r.calls = append(r.calls, cmd)
+	if r.respond != nil {
+		return r.respond(len(r.calls)-1, cmd)
+	}
 	if r.fail != nil {
 		return []byte(r.out), r.fail
 	}
@@ -67,20 +72,63 @@ func TestCodexConnectNeedsItsDoubleDash(t *testing.T) {
 	}
 }
 
-func TestGeminiConnectUsesUserScopeAndDefaultsRight(t *testing.T) {
+func TestGeminiConnectNamesItsTransportAndScope(t *testing.T) {
 	env, runner := testEnv(t)
 	tool, err := toolByName("gemini")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// gemini's default scope is the project config (.gemini/settings.json in
-	// the cwd), which a fresh session elsewhere would not see.
+	// Gemini's default scope is the project config, which a session elsewhere
+	// would not see, and its user scope answers the JSON path check below.
 	if err := tool.Connect(env); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("gemini mcp add -s user %s npx -y %s %s", serverName, mcpPackage, env.DriveDir)
+	want := fmt.Sprintf("gemini mcp add -s user -t stdio %s npx -y %s %s", serverName, mcpPackage, env.DriveDir)
 	if len(runner.calls) != 1 || runner.calls[0] != want {
 		t.Fatalf("Connect ran %q, want %q", runner.calls, want)
+	}
+}
+
+func TestClaudeReplacesAnExistingEntry(t *testing.T) {
+	// The spec requires `drive init` to be safe to run again, but Claude's add
+	// refuses an entry that is already there.
+	env, runner := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.respond = func(i int, cmd string) ([]byte, error) {
+		if i == 0 {
+			return []byte("MCP server drive already exists in user config"),
+				fmt.Errorf("claude mcp add: exit status 1")
+		}
+		return nil, nil
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		fmt.Sprintf("claude mcp add -s user %s -- npx -y %s %s", serverName, mcpPackage, env.DriveDir),
+		fmt.Sprintf("claude mcp remove %s", serverName),
+		fmt.Sprintf("claude mcp add -s user %s -- npx -y %s %s", serverName, mcpPackage, env.DriveDir),
+	}
+	if strings.Join(runner.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ran:\n%s\nwant:\n%s", strings.Join(runner.calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestClaudeReportsAnAddFailureThatIsNotTheKnownConflict(t *testing.T) {
+	env, runner := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.fail = fmt.Errorf("claude mcp add: exit status 1: something else")
+	if err := tool.Connect(env); err == nil {
+		t.Fatal("expected the unexpected add failure to be reported")
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("a failed add should not touch the existing entry: %q", runner.calls)
 	}
 }
 
