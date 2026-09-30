@@ -77,6 +77,9 @@ export const SITE = Object.freeze({
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
   Object.freeze({ path: "/get-started.html", indexable: false }),
+  // The Web Files page is one person's drive, so it is noindex: a crawler that
+  // reached it would see an empty listing, never a public page (issue #31).
+  Object.freeze({ path: "/files.html", indexable: false }),
 ]);
 
 /** The absolute URL of a public page, from its site-relative path. */
