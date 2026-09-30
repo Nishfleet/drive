@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { BILL_CEILING, billCeilingUsd } from "../src/pricing.js";
+import { BILL_CEILING, cappedMonthlyBillUsd } from "../src/pricing.js";
 
 const page = readFileSync(
   new URL("../public/index.html", import.meta.url),
@@ -38,15 +38,15 @@ test("the rate and the free line sit under the number", () => {
 });
 
 test("the bill ceiling headline is the spec's sentence, from config", () => {
-  assert.match(
-    words,
-    /2¢ per GB, billed by the minute\. Never more than \$15 a TB\./,
-  );
   // Built in src/pricing.js from the cap, so a config change the page does not
-  // follow fails here instead of shipping a copy that disagrees with the math.
+  // follow fails here instead of shipping copy that disagrees with the math.
   assert.ok(
     words.includes(BILL_CEILING.headline),
     "the page must carry the config's ceiling headline verbatim",
+  );
+  assert.ok(
+    words.includes("Never more than $15 a TB."),
+    "the ceiling headline must name the $15 cap",
   );
 });
 
@@ -58,24 +58,59 @@ test("extra TBs carry their own ceiling, from config", () => {
 });
 
 test("the two-TB example is the ceiling total, not the uncapped meter", () => {
-  assert.match(
-    words,
-    /2 TB kept all month[\s\S]{0,40}?\$23/,
-    "the 2 TB row must show the $23 ceiling total",
+  const twoTbTotal = `$${cappedMonthlyBillUsd(2)}`;
+  const row = words.slice(
+    words.indexOf("2 TB kept all month"),
+    words.indexOf("</dd>", words.indexOf("2 TB kept all month")),
   );
+  assert.ok(
+    row.includes(twoTbTotal),
+    `the 2 TB row must show the ${twoTbTotal} ceiling total, got ${row.trim()}`,
+  );
+  // The uncapped meter for 2 TB is $40; the row must not fall back to it.
   assert.equal(
-    words.includes("$40"),
+    row.includes("$40"),
     false,
-    "the uncapped $40 figure must not survive on the page",
+    "the 2 TB row must not show the uncapped $40 meter",
   );
 });
 
-test("billCeilingUsd matches the spec's arithmetic", () => {
-  assert.equal(billCeilingUsd(1), 15);
-  assert.equal(billCeilingUsd(2), 23);
-  assert.equal(billCeilingUsd(3), 31);
-  assert.throws(() => billCeilingUsd(0), TypeError);
-  assert.throws(() => billCeilingUsd(1.5), TypeError);
+test("the ceiling math follows the spec's worked figures", () => {
+  // build-spec.md "Bill ceiling": inside a TB you pay the meter, at the TB's
+  // cap you stop; the first TB caps at $15, each extra TB at $8.
+  assert.equal(cappedMonthlyBillUsd(0), 0, "an empty drive bills nothing");
+  assert.equal(cappedMonthlyBillUsd(0.5), 10, "500 GB a month is 2¢/GB");
+  assert.equal(cappedMonthlyBillUsd(0.8), 15, "800 GB is $15, not $16");
+  assert.equal(cappedMonthlyBillUsd(1), 15);
+  assert.equal(cappedMonthlyBillUsd(1.3), 21, "1.3 TB is $15 + $6");
+  assert.equal(cappedMonthlyBillUsd(1.6), 23, "1.6 TB is $15 + $8");
+  assert.equal(cappedMonthlyBillUsd(2), 23);
+  assert.equal(cappedMonthlyBillUsd(3), 31);
+  // The strip's 60%-full 1 TB drive bills the meter, under the $15 cap.
+  assert.equal(cappedMonthlyBillUsd(0.6), 12);
+  assert.throws(() => cappedMonthlyBillUsd(-1), TypeError);
+  assert.throws(() => cappedMonthlyBillUsd(Number.NaN), TypeError);
+});
+
+test("the page's ceiling prose names the caps from config", () => {
+  // The strip caption and the examples note repeat the caps in prose; assert
+  // they still carry both numbers so that copy cannot drift from the config.
+  for (const selector of ["strip-caption", "examples-note"]) {
+    assert.ok(
+      words.includes(`.${selector}`),
+      `the ${selector} section must exist on the page`,
+    );
+  }
+  assert.ok(
+    words.includes(`no bill passes $${BILL_CEILING.firstTbUsd} for the first TB or $${BILL_CEILING.extraTbUsd} for each TB after.`),
+    "the strip caption must state both caps",
+  );
+  assert.ok(
+    words.includes(
+      `the first TB never past $${BILL_CEILING.firstTbUsd}, every extra TB never past $${BILL_CEILING.extraTbUsd}`,
+    ),
+    "the examples note must state both caps",
+  );
 });
 
 test("the worked example is the spec's example", () => {

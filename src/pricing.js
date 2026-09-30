@@ -5,6 +5,10 @@
 // from this config and fails CI when the shipped page drifts from it.
 const FIRST_TB_USD = 15;
 const EXTRA_TB_USD = 8;
+// 2¢ per GB-month, the spec's rate; the ceilings below are where the meter is
+// cut off. Kept here so the ceiling math and the copy read the same numbers.
+const RATE_USD_PER_GB = 0.02;
+const GB_PER_TB = 1000;
 
 export const BILL_CEILING = Object.freeze({
   // The first terabyte of a bill never passes this, however the meter runs.
@@ -18,14 +22,23 @@ export const BILL_CEILING = Object.freeze({
   extraTbLine: `Extra TBs never more than $${EXTRA_TB_USD} each.`,
 });
 
-// The ceiling for `tb` whole terabytes kept all month: the first TB's cap plus
-// each extra TB's cap, so $15 for one TB and $15 + $8 = $23 for two. Fractional
-// sizes are not this function's job: inside a TB you pay 2¢/GB until its cap.
-export function billCeilingUsd(tb) {
-  if (typeof tb !== "number" || !Number.isInteger(tb) || tb < 1) {
+// The capped bill, in dollars, for a stored size of `tb` terabytes kept all
+// month (build-spec.md "How the money is worked out"): you pay the meter inside
+// each TB, but no more than that TB's ceiling. The first TB caps at $15 and
+// every TB after at $8, so 0.8 TB is $15 (metered $16), 1.3 TB is $21 ($15 +
+// $6), 2 TB is $23, and an empty drive is $0.
+export function cappedMonthlyBillUsd(tb) {
+  if (!Number.isFinite(tb) || tb < 0) {
     throw new TypeError(
-      `billCeilingUsd needs a whole number of TB of at least 1, got ${tb}`,
+      `cappedMonthlyBillUsd needs a stored size in TB of 0 or more, got ${tb}`,
     );
   }
-  return FIRST_TB_USD + (tb - 1) * EXTRA_TB_USD;
+  const firstTbBill = Math.min(tb * GB_PER_TB * RATE_USD_PER_GB, FIRST_TB_USD);
+  const extraTb = Math.max(tb - 1, 0);
+  const wholeExtraTb = Math.floor(extraTb);
+  const partExtraTb = extraTb - wholeExtraTb;
+  const extraBill =
+    wholeExtraTb * EXTRA_TB_USD +
+    Math.min(partExtraTb * GB_PER_TB * RATE_USD_PER_GB, EXTRA_TB_USD);
+  return firstTbBill + extraBill;
 }
