@@ -71,7 +71,10 @@ export const WRITE_SCOPE_BY_KIND = Object.freeze({
 });
 
 function sameCapabilities(left, right) {
-  return left.length === right.length && left.every((name, index) => name === right[index]);
+  // Set equality, not element order: a row's capability list has no meaningful
+  // order, so two rows holding the same names must not trigger a swap (which
+  // would churn a key for nothing). Names are unique within a scope.
+  return left.length === right.length && left.every((name) => right.includes(name));
 }
 
 /**
@@ -123,23 +126,18 @@ function checkedCappedFrom(key) {
 
 /**
  * The capabilities the cap is allowed to give this key back: the ones its own
- * record says it took, held to the scope the key's kind gets. The intersect is
- * the belt to the record's braces — a corrupted or hand-edited row claiming an
- * agent key was taken down from a `delete` scope restores an agent key to the
- * scope an agent key has, and no more.
- * @param {{keyId: string, kind: string, prefix: string, capabilities: string[]}} key
- * @param {string[]} taken the key row's `cappedFrom` record
+ * record says it took, held to the scope the key's kind gets. The scope is the
+ * ceiling that makes a corrupted or hand-edited record harmless — a row
+ * claiming an agent key was taken down from a `delete` scope restores an agent
+ * key to the scope an agent key has, and no more. A record with nothing this
+ * kind could ever have held returns an empty list, and the caller leaves the key
+ * read-only: there is nothing to give back, and one bad row must not crash the
+ * hourly enforcement run that is holding every other key read-only at the cap.
+ * @param {string[]} taken the key row's validated `cappedFrom` record
  * @param {ReadonlyArray<string>} scope the key kind's full scope
  */
-function grantedCapabilities(key, taken, scope) {
-  const restored = taken.filter((name) => scope.includes(name));
-  if (restored.length === 0) {
-    throw new Error(
-      `Key ${key.keyId} was capped down from ${JSON.stringify(taken)}, and none of that is in the ` +
-        `"${key.kind}" scope; fix the row before the cap tries to give this key its write back`,
-    );
-  }
-  return restored;
+function grantedCapabilities(taken, scope) {
+  return taken.filter((name) => scope.includes(name));
 }
 
 /**
@@ -171,8 +169,11 @@ function targetCapabilities(key, state) {
         `add it to WRITE_SCOPE_BY_KIND in src/cap.js`,
     );
   }
-  const restored = grantedCapabilities(key, checkedCappedFrom(key), scope);
-  return sameCapabilities(restored, key.capabilities) ? null : restored;
+  // checkedKey() has already validated the record's shape, so it is only held
+  // to the kind's scope here. A record the kind cannot use gives back nothing
+  // and leaves the key read-only, rather than emptying it or crashing the run.
+  const restored = grantedCapabilities(key.cappedFrom, scope);
+  return restored.length === 0 || sameCapabilities(restored, key.capabilities) ? null : restored;
 }
 
 /**
@@ -213,8 +214,12 @@ export function capSwapPlan(keys, cap) {
           prefix: key.prefix,
           capabilities,
           // At the cap the swap records what it took, so the raise below can
-          // give back exactly that. Below it the record is spent and cleared,
-          // which is what keeps a second raise from minting a second key.
+          // give back exactly that. The record is the capabilities the key
+          // actually held, unfiltered: the cap must still stop writes on a row
+          // whose kind has no scope entry, and holding the record to the kind's
+          // scope is the restore's job (grantedCapabilities). Below the cap the
+          // record is spent and cleared, which keeps a second raise from
+          // minting a second key.
           cappedFrom:
             cap.state === "read_only"
               ? Object.freeze([...key.capabilities])

@@ -234,12 +234,14 @@ test("a record cannot widen a key past the scope its kind gets (issue #74)", () 
     state: "active",
   });
   assert.deepEqual(plan.swaps[0].capabilities, ["list", "read", "write"], "an agent key never gains delete");
-  // A record with nothing this kind could ever have had is a data error rather
-  // than a key silently emptied.
-  assert.throws(
-    () => capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["delete"] }], { state: "active" }),
-    /none of that is in the "agent" scope/,
-  );
+  // A record with nothing this kind could ever have had gives back nothing and
+  // the key stays read-only: one bad row must not crash the hourly enforcement
+  // run that is holding every other capped account's key read-only.
+  const stuck = capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["delete"] }], {
+    state: "active",
+  });
+  assert.deepEqual(stuck.swaps, [], "a record outside the kind's scope never widens the key");
+  assert.deepEqual(stuck.mount, { restart: false, reason: null });
   // The record is a list of capability names or nothing: a half-written row is
   // a data error, never a silent "no record, carry on".
   for (const bad of [[], "write", [null], [""], 7]) {
@@ -334,6 +336,23 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
     }
   }
   assert.ok(cases >= 40, `every kind and every subset ran: ${cases} cases`);
+  // The count is read from the table, not guessed, so a kind added or removed
+  // later keeps the property instead of failing the test for the wrong reason:
+  // every kind's own subsets (2^n) plus the read-only pair once more.
+  const expected = Object.values(WRITE_SCOPE_BY_KIND).reduce(
+    (total, scope) => total + 2 ** scope.length + 1,
+    0,
+  );
+  assert.equal(cases, expected, "the property ran over every kind's every subset");
+});
+
+test("the restore does not churn a key whose capabilities are the same names in another order (issue #74)", () => {
+  // The stored list has no meaningful order, so a row reading ["read", "list"]
+  // is the same scope as the record's ["list", "read"]: a second enforcement
+  // pass must not mint a new key over it.
+  const shuffled = [{ ...agentKey, capabilities: ["read", "list"], cappedFrom: ["list", "read"] }];
+  const plan = capSwapPlan(shuffled, { state: "active" });
+  assert.deepEqual(plan.swaps, [], "the same names in another order are no work");
 });
 
 test("the provider call order keeps the write key from outliving the cap", async () => {
