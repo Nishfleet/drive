@@ -78,10 +78,11 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	}
 }
 
-// The mount must carry every VFS flag docs/build-spec.md names, on both
+// The mount must carry every VFS flag the product mounts with, on both
 // platforms, and use the platform's own rclone subcommand. --dir-cache-time is
 // the fourth: S3 sends no change notifications, so without it a save from the
-// other machine waits out rclone's 5-minute default (issue #62).
+// other machine waits out rclone's 5-minute default (issue #62; the step-3
+// proof in PR #61 carries the same flag into docs/build-spec.md).
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
