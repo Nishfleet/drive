@@ -5,7 +5,7 @@
 > monthly bill never passes max($12, $8 × TB stored): a flat $12 up to 1.5 TB,
 > then $8 for each TB after. $1 of storage is free every month, no card needed.
 >
-> Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
+> Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
 
 Drive is a mounted folder (macOS and Linux) where your files live in object
 storage instead of on your laptop disk, so libraries bigger than the laptop
@@ -15,7 +15,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 ## Pricing
 
 - Rate: 2¢ per GB per month, billed by the minute, pay only for what you store.
-- Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
+- Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
   The monthly bill is min(metered, max($12, $8 × TB stored)), TB measured to the
   GB, so the cap is a flat $12 up to 1.5 TB and only then rises at $8 a TB.
 - Free: $1 free every month, no card needed to start. That is about 50 GB of

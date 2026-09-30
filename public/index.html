@@ -4,13 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — about $20 per TB a month</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
-       AI-answer crawler reads. Every value mirrors src/seo.js; test/seo.test.mjs
+       AI-answer crawler reads. Every value mirrors src/seo.js, and every price
+       in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
        fails CI when the tags and that config drift apart. The ceiling stated
-       here is the current rule from docs/spec.md ("$12 a TB, then $8", Nish
-       2026-09-30, issue #29), and the visible page copy is issue #23's to
-       align; a follow-up issue files the merge of the two into one source. -->
+       here is the current rule from docs/build-spec.md ("Bill ceiling", Nish
+       2026-09-30, issue #29): min(metered, max($12, $8 × TB stored)). Issue
+       #23 made that config the single source the visible copy, these tags and
+       llms.txt all render from, so the page can no longer contradict itself. -->
   <!-- rel="canonical" declares a URL for a crawler to read; the browser never
        fetches it as a subresource, so there is nothing whose bytes an integrity
        hash could verify. That is why the nosemgrep rule id is on the tag: this
@@ -21,14 +23,14 @@
   <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
   <meta property="og:site_name" content="Drive">
   <meta property="og:title" content="Drive — about $20 per TB a month">
-  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — about $20 per TB a month. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta property="og:image:alt" content="Drive — about $20 per TB a month. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Drive — about $20 per TB a month">
-  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <script type="application/ld+json">
 {
@@ -37,7 +39,7 @@
   "name": "Drive",
   "applicationCategory": "BusinessApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.",
+  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.",
   "url": "https://drive-pricing.nishant345.workers.dev/",
   "image": "https://drive-pricing.nishant345.workers.dev/og.png",
   "offers": {
@@ -50,7 +52,7 @@
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, then $8. The bill is the metered cost capped at max($12, $8 × TB stored): $12 up to 1.5 TB, then $8 for each TB after."
+    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. The bill is the metered cost capped at max($12, $8 × TB stored): a flat $12 up to 1.5 TB, then $8 for each TB after."
   }
 }
   </script>
@@ -188,15 +190,10 @@ main {
 }
 
 .price .sub,
-.price .ceiling,
 .price .free {
   margin: 0.7em 0 0;
   font-size: clamp(18px, 2.1vw, 22px);
   max-width: 34em;
-}
-
-.price .ceiling {
-  font-weight: 600;
 }
 
 .price .free {
@@ -397,6 +394,15 @@ main {
   white-space: nowrap;
 }
 
+/* The rival's figure beside our own, so the row reads "$16  (Space $27)". */
+.example .compare {
+  margin-left: 0.5em;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink-faint);
+}
+
 .examples-note {
   margin: 18px 0 0;
   font-size: 15px;
@@ -536,8 +542,7 @@ main {
         <span class="amount">$20</span>
         <span class="unit">per TB a&nbsp;month</span>
       </h1>
-      <p class="sub">2¢ per GB, billed by the minute. Never more than $15 a TB.</p>
-      <p class="ceiling">Extra TBs never more than $8 each.</p>
+      <p class="sub">2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
       <p class="free">$1 free every month, no card needed</p>
 
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
@@ -564,7 +569,7 @@ main {
         <span class="strip-full">60% full &middot; $12</span>
         <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, no bill passes $15 for the first TB or $8 for each TB after.</p>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
@@ -575,15 +580,19 @@ main {
           <dd>about $1</dd>
         </div>
         <div class="example">
-          <dt>1 TB for half the month</dt>
-          <dd>about $10</dd>
+          <dt>800 GB kept all month</dt>
+          <dd>$12</dd>
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>$23</dd>
+          <dd>$16<span class="compare">(Space $27)</span></dd>
+        </div>
+        <div class="example">
+          <dt>5 TB kept all month</dt>
+          <dd>$40<span class="compare">(Space $63)</span></dd>
         </div>
       </dl>
-      <p class="examples-note">Bills stop at the ceiling: the first TB never past $15, every extra TB never past $8 — so 2&nbsp;TB is $15 + $8 = $23.</p>
+      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after.</p>
       <p class="examples-note">Old versions stay free: today's saves a day, then one save a day for 30 days.</p>
     </section>
 

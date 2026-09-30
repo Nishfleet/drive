@@ -5,9 +5,10 @@
 // later run cannot quietly drop the canonical URL, point the share card at a
 // 404, or let the structured data disagree with the config, because this fails.
 //
-// The pricing copy gate is test/pricing-copy.test.mjs; the bill numbers this
-// file also states are in src/seo.js (BILLING), which records why it does not
-// import src/pricing.js (issue #23 owns that).
+// The price copy gate is test/pricing-copy.test.mjs. The bill numbers this
+// file also states are read from src/pricing.js (PRICE), the one price source
+// src/seo.js builds BILLING from (issue #23), so a re-priced product moves the
+// tags, the JSON-LD and llms.txt together with the visible copy.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
@@ -19,6 +20,7 @@ import {
   pageUrl,
   softwareApplicationLd,
 } from "../src/seo.js";
+import { PRICE } from "../src/pricing.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
@@ -44,7 +46,7 @@ function link(page, rel) {
   return match ? match[1] : null;
 }
 
-test("every shipped HTML page is registered in src/seo.js", () => {
+test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
   const shipped = readdirSync(publicDir)
     .filter((name) => name.endsWith(".html"))
     .sort();
@@ -162,7 +164,7 @@ test("every non-indexable page is noindex and stays out of the sitemap", () => {
     assert.match(
       robots,
       /noindex/i,
-      `${name} is flagged non-indexable in src/seo.js, so it must declare noindex`,
+      `${name} is flagged non-indexable in PAGES, so it must declare noindex`,
     );
     assert.equal(
       sitemap.includes(pageUrl(page)),
@@ -277,14 +279,31 @@ test("the ceiling in the metadata is the spec's plateau, not per-TB caps", () =>
   // cap is flat at $12 until 1.5 TB and only then rises at $8 a TB. If the
   // spec is restated, the metadata has to match, so a re-priced product cannot
   // keep serving the old ceiling to crawlers.
-  assert.equal(BILLING.capFloorUsd, 12);
-  assert.equal(BILLING.capUsdPerTb, 8);
+  //
+  // The numbers and the sentences come from src/pricing.js, the one price
+  // source, so this pins the spec's values once and against PRICE: a price
+  // change is one edit there and it moves the tags, the JSON-LD, llms.txt and
+  // the visible copy together (issue #23).
+  assert.equal(PRICE.capFloorUsd, 12);
+  assert.equal(PRICE.capUsdPerTb, 8);
+  assert.equal(PRICE.capPlateauTb, 1.5);
+  // BILLING is built from PRICE, not declared beside it: a second set of
+  // numbers would be exactly the drift issue #23 was reopened for.
+  assert.equal(BILLING.capFloorUsd, PRICE.capFloorUsd);
+  assert.equal(BILLING.capUsdPerTb, PRICE.capUsdPerTb);
+  assert.equal(BILLING.ceiling, PRICE.ceiling);
+  assert.equal(BILLING.freeLine, PRICE.freeLine);
+  assert.equal(BILLING.rule, PRICE.rule);
   assert.match(
     BILLING.ceiling,
-    /Never more than \$12 a TB, then \$8\.$/,
+    /Never more than \$12 a TB, and \$8 a TB once you pass 1\.5 TB\./,
     "the ceiling sentence must be the spec's sentence",
   );
   // The rule string spells out the plateau, so no consumer of the config can
   // read the numbers back as "$12 for the first TB, then $8 each after".
   assert.match(BILLING.rule, /\$12 up to 1\.5 TB, then \$8 for each TB after\./);
+  // The superseded per-TB caps (PR #24) are what the live page contradicted
+  // itself over, so they may not come back through the tags either.
+  assert.doesNotMatch(BILLING.ceiling, /\$15/);
+  assert.doesNotMatch(BILLING.rule, /\$15/);
 });

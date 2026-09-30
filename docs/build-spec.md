@@ -80,7 +80,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
 
-Pricing page: the rate line "2¢ per GB, billed by the minute" with the ceiling "never more than $12 a TB, then $8" under it, then "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1", "2 TB kept all month: $16" — the capped total, $40 metered capped at $16, not the uncapped meter); a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited". The ceiling numbers and the two canonical ceiling sentences live in `src/pricing.js`, and `test/pricing-copy.test.mjs` builds its expectations from that config, so page copy that drifts from the numbers fails CI.
+Pricing page: the rate line "2¢ per GB, billed by the minute" with the ceiling "Never more than $12 a TB, and $8 a TB once you pass 1.5 TB" under it, then "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1", "800 GB kept all month: $12", "2 TB kept all month: $16 (Space $27)", "5 TB kept all month: $40 (Space $63)" — each the capped total, min(metered, ceiling), not the uncapped meter); a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited". The ceiling numbers and the canonical ceiling sentences live in `src/pricing.js` (PRICE), the one price source issue #23 merged `src/seo.js` into: the page copy, the meta tags and llms.txt all render from it, and `test/pricing-copy.test.mjs` builds its expectations from that config and from `monthlyBillUsd()`, so copy that drifts from the numbers fails CI.
 
 ## Agent tools
 

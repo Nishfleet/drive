@@ -1,44 +1,42 @@
-// The bill ceiling: a decision from docs/build-spec.md ("Bill ceiling"), kept
-// here so the pricing copy and any bill arithmetic read one source instead of
-// repeating the numbers. The pricing page is a static asset, so the gate that
-// keeps it honest is test/pricing-copy.test.mjs: it builds the expected copy
-// from this config and fails CI when the shipped page drifts from it.
-const FIRST_TB_USD = 15;
-const EXTRA_TB_USD = 8;
-// 2¢ per GB-month, the spec's rate; the ceilings below are where the meter is
-// cut off. Kept here so the ceiling math and the copy read the same numbers.
-const RATE_USD_PER_GB = 0.02;
-const GB_PER_TB = 1000;
+// The drive's price, in one place. The numbers and every sentence that the
+// pricing page, the meta tags and llms.txt render from live here, so they
+// cannot drift. The pricing page is a static asset; test/pricing-copy.test.mjs
+// builds its expectations from this config and fails CI when the shipped page
+// drifts from it. The meta/llms gate test/seo.test.mjs does the same.
+//
+// Source of truth: docs/build-spec.md ("Bill ceiling", Nish 2026-09-30,
+// issue #29). The rule: monthly bill = min(metered, max($12, $8 × TB stored)),
+// TB measured to the GB. Plateau: flat $12 up to 1.5 TB, then $8/TB.
+const RATE_USD_PER_GB_MONTH = 0.02;
+const CAP_FLOOR_USD = 12;
+const CAP_USD_PER_TB = 8;
+const B2_FALLBACK_USD_PER_TB = 10;
+const FREE_MONTHLY_USD = 1;
 
-export const BILL_CEILING = Object.freeze({
-  // The first terabyte of a bill never passes this, however the meter runs.
-  firstTbUsd: FIRST_TB_USD,
-  // Every terabyte after the first never passes this.
-  extraTbUsd: EXTRA_TB_USD,
-  // The spec's ceiling headline (build-spec.md: "Headline: ..."), with the cap
-  // interpolated from the number above so the copy cannot disagree with it.
-  headline: `2¢ per GB, billed by the minute. Never more than $${FIRST_TB_USD} a TB.`,
-  // The extra-TB promise, on the page as its own line under the headline.
-  extraTbLine: `Extra TBs never more than $${EXTRA_TB_USD} each.`,
+export const PRICE = Object.freeze({
+  // The metered rate, in US dollars per GB per month, billed by the minute.
+  rateUsdPerGbMonth: RATE_USD_PER_GB_MONTH,
+  // The ceiling is max(capFloorUsd, capUsdPerTb × peak TB): a flat floor
+  // until the stored size passes capFloorUsd / capUsdPerTb TB, then a per-TB
+  // slope. The names say plateau and slope so no reader takes them for per-TB
+  // caps.
+  capFloorUsd: CAP_FLOOR_USD,
+  capUsdPerTb: CAP_USD_PER_TB,
+  capPlateauTb: CAP_FLOOR_USD / CAP_USD_PER_TB,
+  // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
+  // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
+  b2FallbackUsdPerTb: B2_FALLBACK_USD_PER_TB,
+  // The free credit, in dollars, off every month with no card needed.
+  freeMonthlyUsd: FREE_MONTHLY_USD,
+  // The spec's ceiling headline (build-spec.md "Headline: ..."), interpolated
+  // from the numbers above so the copy cannot disagree with the math.
+  ceiling: `2¢ per GB, billed by the minute. Never more than $${CAP_FLOOR_USD} a TB, and $${CAP_USD_PER_TB} a TB once you pass ${CAP_FLOOR_USD / CAP_USD_PER_TB} TB.`,
+  // The free line, on the page under the ceiling.
+  freeLine: `$${FREE_MONTHLY_USD} free every month, no card needed`,
+  // The ceiling as arithmetic, for the offer description and llms.txt. Stated
+  // in words as well as symbols because a crawler reads prose, not a formula.
+  rule: `The bill is the metered cost capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): a flat $${CAP_FLOOR_USD} up to ${CAP_FLOOR_USD / CAP_USD_PER_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
+  // Rival comparison used on the worked-example rows (build-spec.md: Space
+  // charges $15 + $12 per extra TB, so 2 TB = $27, 5 TB = $63).
+  rival: Object.freeze({ name: "Space", monthlyUsd: 15, extraTbUsd: 12 }),
 });
-
-// The capped bill, in dollars, for a stored size of `tb` terabytes kept all
-// month (build-spec.md "How the money is worked out"): you pay the meter inside
-// each TB, but no more than that TB's ceiling. The first TB caps at $15 and
-// every TB after at $8, so 0.8 TB is $15 (metered $16), 1.3 TB is $21 ($15 +
-// $6), 2 TB is $23, and an empty drive is $0.
-export function cappedMonthlyBillUsd(tb) {
-  if (!Number.isFinite(tb) || tb < 0) {
-    throw new TypeError(
-      `cappedMonthlyBillUsd needs a stored size in TB of 0 or more, got ${tb}`,
-    );
-  }
-  const firstTbBill = Math.min(tb * GB_PER_TB * RATE_USD_PER_GB, FIRST_TB_USD);
-  const extraTb = Math.max(tb - 1, 0);
-  const wholeExtraTb = Math.floor(extraTb);
-  const partExtraTb = extraTb - wholeExtraTb;
-  const extraBill =
-    wholeExtraTb * EXTRA_TB_USD +
-    Math.min(partExtraTb * GB_PER_TB * RATE_USD_PER_GB, EXTRA_TB_USD);
-  return firstTbBill + extraBill;
-}
