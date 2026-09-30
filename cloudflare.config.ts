@@ -22,6 +22,17 @@ export default defineConfig({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",
 			}),
+			// Cloudflare Email Sending (drive#33): the stock provider every
+			// drive email goes through, in src/email-send.js. No options: the
+			// binding is restricted by the domains onboarded for sending, and
+			// the sender address is set per deployment, so nothing here pins a
+			// brand domain before drive has one.
+			EMAIL: bindings.sendEmail(),
+			// The bearer token POST /api/emails/send requires. A secret, never
+			// in this file: with it unset the route answers 403 (a closed
+			// door), so it cannot be used as a mail relay before the meter
+			// (drive#6) and billing webhook (drive#7) call it.
+			EMAIL_SEND_TOKEN: bindings.secret(),
 		},
 	},
 });
