@@ -13,6 +13,13 @@
 // The plan and its execution are pure data and an injected provider, so the
 // whole state machine runs here with no storage account and no Worker (issue
 // #2's key store and PR #22's KeyProvider are the wiring, not the decision).
+//
+// Issue #74 added the safety rule the last group of tests pins: raising the
+// cap may only give back what the cap took away. A key the customer made
+// read-only on purpose (`drive init --read-only`) stays read-only on every run,
+// forever, because the cap records the capabilities it took and the restore
+// reads them from the key row (issue #64's wiring) rather than guessing from
+// the key's kind.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
@@ -20,6 +27,7 @@ import { BILLING_CONFIG, capLine, capStatus } from "../src/billing.js";
 import { failureMessage as tableMessage } from "../src/messages.js";
 import {
   READ_ONLY_CAPABILITIES,
+  WRITE_SCOPE_BY_KIND,
   applyCapSwap,
   capSwapPlan,
   enforceCap,
@@ -32,12 +40,37 @@ import {
 const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
+// The month's numbers as usageSummary() takes them, at a size whose invoice is
+// past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
+// under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+const monthUsage = (gb) => ({
+  gbMinutes: fullMonthGbMinutes(gb),
+  peakGb: gb,
+  storedGb: gb,
+  storedDaily: [],
+  downloadBytes: 0,
+  averageStoredGb: gb,
+  capUsd: BILLING_CONFIG.defaultCapUsd,
+  cardAdded: true,
+});
+const capUsage = () => monthUsage(2000);
+const underCapUsage = () => monthUsage(1200);
+
 // The four kinds of key the spec mints, in the shape the plan reads.
 const deviceKey = { keyId: "k-device", kind: "device", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] };
 const agentKey = { keyId: "k-agent", kind: "agent", prefix: "u/a1/", capabilities: ["list", "read", "write"] };
 const s3Key = { keyId: "k-s3", kind: "s3", prefix: "u/a1/", capabilities: ["list", "read", "write"] };
 const branchKey = { keyId: "k-branch", kind: "branch", prefix: "u/a1/.branches/fix/", capabilities: ["list", "read", "write"] };
 const readOnlyKey = { keyId: "k-ro", kind: "agent", prefix: "u/a1/", capabilities: ["list", "read"] };
+
+// A key row as the cap left it: read-only, carrying the record of the scope the
+// cap took (issue #74). What a capped account's devices rows look like before
+// the cap is raised again.
+const capped = (key, capabilities) => ({
+  ...key,
+  capabilities: [...READ_ONLY_CAPABILITIES],
+  cappedFrom: Object.freeze([...capabilities]),
+});
 
 // A provider that records every call, so order and scope are visible.
 function recordingProvider({ swapToReadOnly = false } = {}) {
@@ -72,14 +105,17 @@ test("at the cap every write-capable key is replaced by a read-only one on its o
   assert.equal(plan.swaps.length, 4, "the four write-capable keys swap; the read-only one is left alone");
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap]));
   assert.equal(byId["k-ro"], undefined, "a key that already cannot write is not churned");
-  // A swap names only the key and the scope that replaces it. A deepEqual on
-  // the whole entry is the negative that matters here: no file id, no path
-  // inside the prefix, nothing that a swap could delete is in the plan.
+  // A swap names the key, the scope that replaces it, and the scope it took
+  // away (issue #74: the record is what the cap is allowed to give back later).
+  // A deepEqual on the whole entry is the negative that matters here: no file
+  // id, no path inside the prefix, nothing that a swap could delete is in the
+  // plan.
   assert.deepEqual(byId["k-device"], {
     keyId: "k-device",
     kind: "device",
     prefix: "u/a1/",
     capabilities: Object.freeze(["list", "read"]),
+    cappedFrom: Object.freeze(["list", "read", "write", "delete"]),
   });
   assert.deepEqual(byId["k-agent"].capabilities, READ_ONLY_CAPABILITIES);
   assert.equal(byId["k-branch"].prefix, "u/a1/.branches/fix/", "a branch key narrows to itself, never to the account");
@@ -103,9 +139,22 @@ test("a second enforcement pass is a no-op, so no key is ever churned", () => {
   assert.equal(capSwapPlan([], { state: "read_only" }).swaps.length, 0);
 });
 
-test("raising the cap restores each kind's own scope, and delete only comes back to a device key", () => {
-  const readOnly = (key) => ({ ...key, capabilities: ["list", "read"] });
-  const keys = [readOnly(deviceKey), readOnly(agentKey), readOnly(s3Key), readOnly(branchKey), agentKey];
+test("raising the cap gives back exactly what the cap took, and nothing more", () => {
+  // The rows a capped account holds: every key read-only, each one carrying the
+  // record of the scope the cap took from it (`cappedFrom`, which the api
+  // Worker stores on the devices row — issue #64's wiring).
+  const capped = (key, capabilities) => ({
+    ...key,
+    capabilities: ["list", "read"],
+    cappedFrom: capabilities,
+  });
+  const keys = [
+    capped(deviceKey, ["list", "read", "write", "delete"]),
+    capped(agentKey, ["list", "read", "write"]),
+    capped(s3Key, ["list", "read", "write"]),
+    capped(branchKey, ["list", "read", "write"]),
+    agentKey,
+  ];
   const plan = capSwapPlan(keys, { state: "active" });
 
   assert.equal(plan.swaps.length, 4, "the write-capable key is already right and stays out of the plan");
@@ -116,20 +165,175 @@ test("raising the cap restores each kind's own scope, and delete only comes back
   assert.deepEqual(byId["k-branch"], ["list", "read", "write"]);
   assert.equal(plan.swaps.find((swap) => swap.keyId === "k-branch").prefix, "u/a1/.branches/fix/");
   assert.deepEqual(plan.mount, { restart: true, reason: "cap-raised" });
+  // The record is spent once it has been given back, so the wiring clears it
+  // on the row it just minted: a later cap starts from what the key holds.
+  for (const swap of plan.swaps) {
+    assert.equal(swap.cappedFrom, null, `${swap.keyId} has nothing left to give back`);
+  }
   // Once restored, a second pass has nothing to do either: the keys on file
   // are the ones the first pass minted, not the read-only ones it replaced.
   const restored = keys.filter((key) => key !== agentKey).map((key) => ({
     ...key,
     capabilities: byId[key.keyId],
+    cappedFrom: null,
   }));
   assert.equal(capSwapPlan(restored, { state: "active" }).swaps.length, 0);
-  // A kind with no scope is a data error, not a guess. The key has to be
-  // read-only to reach the lookup: a write-capable key is already in the right
-  // shape and the plan leaves it alone before any kind is consulted.
+  // A kind with no scope is a data error, not a guess, and a record cannot be
+  // restored without it. A key with no record is left alone before any kind is
+  // consulted: there is nothing the cap took, so there is nothing to give back.
   assert.throws(
-    () => capSwapPlan([{ ...agentKey, kind: "mystery", capabilities: ["list", "read"] }], { state: "active" }),
+    () => capSwapPlan([{ ...agentKey, kind: "mystery", capabilities: ["list", "read"], cappedFrom: ["write"] }], { state: "active" }),
     /No write scope for key kind "mystery"/,
   );
+});
+
+test("a key the customer made read-only stays read-only, forever (issue #74)", () => {
+  // `drive init --read-only` hands an agent key [list, read]. Nothing is capped
+  // and nothing was taken, so there is no record to restore from: below the cap
+  // the plan leaves the key exactly as it found it. The old code rebuilt the
+  // kind's full scope here and handed the key back its write capability.
+  const readOnlyAgent = { ...agentKey, capabilities: ["list", "read"] };
+  for (const state of ["active", "read_only"]) {
+    const plan = capSwapPlan([readOnlyAgent], { state });
+    assert.deepEqual(plan.swaps, [], `a read-only-by-choice key is untouched at ${state}`);
+    assert.deepEqual(plan.mount, { restart: false, reason: null });
+  }
+  // The same holds below the cap for a key the customer narrowed itself, and
+  // for a row with no record at all (a key minted before devices.capabilities
+  // was ever swapped): nothing is taken, so nothing comes back.
+  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps, []);
+  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps, []);
+  // A capped key is a different thing entirely: it carries the record.
+  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "read_only" }).swaps, []);
+});
+
+test("the cap takes, records, and gives back one key's own scope (issue #74)", () => {
+  // The round trip the issue names: at the cap and back, a key ends exactly
+  // where it started — including a device key that never had delete, which the
+  // old code widened on the way back up.
+  const start = { ...deviceKey, capabilities: ["list", "read", "write"] };
+  const capped = capSwapPlan([start], { state: "read_only" });
+  assert.deepEqual(capped.swaps[0].capabilities, ["list", "read"]);
+  assert.deepEqual(capped.swaps[0].cappedFrom, ["list", "read", "write"]);
+
+  // The row the api Worker writes after that swap (issue #64 persists the new
+  // key id, the capabilities and this record).
+  const cappedRow = { ...start, capabilities: [...capped.swaps[0].capabilities], cappedFrom: capped.swaps[0].cappedFrom };
+  const raised = capSwapPlan([cappedRow], { state: "active" });
+  assert.deepEqual(raised.swaps[0].capabilities, ["list", "read", "write"], "delete was never taken, so it never comes back");
+
+  const restoredRow = { ...cappedRow, capabilities: [...raised.swaps[0].capabilities], cappedFrom: raised.swaps[0].cappedFrom };
+  assert.deepEqual(restoredRow.capabilities, start.capabilities);
+});
+
+test("a record cannot widen a key past the scope its kind gets (issue #74)", () => {
+  // A corrupt or hand-edited row that claims an agent key was taken down from a
+  // delete scope: the restore is held to the kind's own scope, so the agent key
+  // gets back what an agent key can have and no more.
+  const plan = capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["list", "read", "write", "delete"] }], {
+    state: "active",
+  });
+  assert.deepEqual(plan.swaps[0].capabilities, ["list", "read", "write"], "an agent key never gains delete");
+  // A record with nothing this kind could ever have had is a data error rather
+  // than a key silently emptied.
+  assert.throws(
+    () => capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["delete"] }], { state: "active" }),
+    /none of that is in the "agent" scope/,
+  );
+  // The record is a list of capability names or nothing: a half-written row is
+  // a data error, never a silent "no record, carry on".
+  for (const bad of [[], "write", [null], [""], 7]) {
+    assert.throws(
+      () => capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: bad }], { state: "active" }),
+      /cappedFrom must be a non-empty list of capability names/,
+      `rejects ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test("running the job twice changes nothing, in both directions (issue #74)", async () => {
+  // A timer runs hourly, so every direction has to be a no-op the second time:
+  // the cap must not mint a second read-only key, and a raise must not mint a
+  // second write key.
+  const provider = recordingProvider();
+  const keys = [deviceKey, agentKey, { ...branchKey, keyId: "k-ro", capabilities: ["list", "read"] }];
+  const first = await enforceCap({ usage: capUsage(), keys }, provider);
+  assert.equal(first.state, "read_only");
+  assert.equal(first.applied.length, 2, "the read-only-by-choice key is not touched by the cap either");
+  const rowsAfterCap = keys.map((key, index) =>
+    first.applied[index]
+      ? { ...key, capabilities: [...first.applied[index].capabilities], cappedFrom: first.applied[index].cappedFrom }
+      : key,
+  );
+  const second = await enforceCap({ usage: capUsage(), keys: rowsAfterCap }, recordingProvider());
+  assert.equal(second.applied.length, 0, "a second pass at the cap finds nothing to do");
+
+  const raiseProvider = recordingProvider();
+  const raised = await enforceCap({ usage: underCapUsage(), keys: rowsAfterCap }, raiseProvider);
+  assert.equal(raised.state, "active");
+  assert.equal(raised.applied.length, 2, "both keys the cap touched are restored");
+  const rowsAfterRaise = rowsAfterCap.map((key) => {
+    const applied = raised.applied.find((entry) => entry.keyId === key.keyId);
+    return applied ? { ...key, capabilities: [...applied.capabilities], cappedFrom: applied.cappedFrom } : key;
+  });
+  const again = await enforceCap({ usage: underCapUsage(), keys: rowsAfterRaise }, recordingProvider());
+  assert.equal(again.applied.length, 0, "a second pass below the cap finds nothing to do");
+  // And the read-only-by-choice key is still exactly as it was at the end.
+  assert.deepEqual(rowsAfterRaise[2].capabilities, ["list", "read"]);
+});
+
+test("every kind and every starting scope comes back from a cap exactly as it was (issue #74)", () => {
+  // The property the issue asks for, over every kind and every subset of the
+  // scope that kind gets (plus the read-only pair and the empty set): cap, then
+  // uncap, and the capabilities equal the ones the key started with. No run ever
+  // widens a key, and no run ever leaves one narrower than it found it.
+  const subsets = (names) =>
+    names.reduce((all, name) => [...all, ...all.map((set) => [...set, name])], [[]]).map((set) => {
+      // A stable order makes a failure readable: the plan's own order is the
+      // spec's order (list, read, write, delete).
+      return names.filter((candidate) => set.includes(candidate));
+    });
+  const applyPlan = (keys, plan) =>
+    keys.map((key) => {
+      const swap = plan.swaps.find((entry) => entry.keyId === key.keyId);
+      return swap
+        ? { ...key, capabilities: [...swap.capabilities], cappedFrom: swap.cappedFrom }
+        : { ...key };
+    });
+
+  let cases = 0;
+  for (const [kind, scope] of Object.entries(WRITE_SCOPE_BY_KIND)) {
+    for (const capabilities of [...subsets(scope), [...READ_ONLY_CAPABILITIES]]) {
+      cases += 1;
+      const key = { keyId: `k-${kind}`, kind, prefix: "u/a1/", capabilities };
+      const atCap = capSwapPlan([key], { state: "read_only" });
+      // Reaching the cap never adds a capability the key did not have.
+      for (const swap of atCap.swaps) {
+        assert.deepEqual(
+          [...swap.capabilities].filter((name) => !READ_ONLY_CAPABILITIES.includes(name)),
+          [],
+          `${kind} ${JSON.stringify(capabilities)} gained write at the cap`,
+        );
+      }
+      const cappedRow = applyPlan([key], atCap)[0];
+      const belowCap = capSwapPlan([cappedRow], { state: "active" });
+      // Raising the cap gives back the record and nothing outside it.
+      for (const swap of belowCap.swaps) {
+        assert.deepEqual(
+          [...swap.capabilities].filter((name) => !(cappedRow.cappedFrom ?? []).includes(name)),
+          [],
+          `${kind} ${JSON.stringify(capabilities)} gained ${JSON.stringify(swap.capabilities)} on the way back up`,
+        );
+      }
+      const restoredRow = applyPlan([cappedRow], belowCap)[0];
+      assert.deepEqual(restoredRow.capabilities, capabilities, `${kind} key does not survive a cap and a raise`);
+      assert.equal(restoredRow.cappedFrom ?? null, null, `${kind} ${JSON.stringify(capabilities)} keeps a spent record`);
+      // Both directions are idempotent, which is what makes an hourly timer safe.
+      assert.deepEqual(capSwapPlan([restoredRow], { state: "active" }).swaps, [], `${kind} restored twice`);
+      assert.deepEqual(capSwapPlan([cappedRow], { state: "read_only" }).swaps, [], `${kind} capped twice`);
+    }
+  }
+  assert.ok(cases >= 40, `every kind and every subset ran: ${cases} cases`);
 });
 
 test("the provider call order keeps the write key from outliving the cap", async () => {
@@ -149,8 +353,10 @@ test("the provider call order keeps the write key from outliving the cap", async
   assert.equal(result.mount.restart, true, "the CLI restarts the mount with the key in `applied`");
   // Raising the cap flips the order: the write key is minted first, because
   // revoking the read-only one first would leave the mount with no key at all.
+  // The key carries the cap's own record (issue #74): a read-only key with no
+  // record was never capped and stays read-only, so it mints nothing.
   const raised = recordingProvider();
-  await applyCapSwap(capSwapPlan([{ ...agentKey, capabilities: ["list", "read"] }], { state: "active" }), raised);
+  await applyCapSwap(capSwapPlan([capped(agentKey, ["list", "read", "write"])], { state: "active" }), raised);
   assert.deepEqual(raised.calls, [
     { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write"] },
     { call: "revoke", keyId: "k-agent" },
@@ -165,7 +371,7 @@ test("a provider's own swapToReadOnly is used for the cap swap, never for a rest
   assert.deepEqual(provider.calls, [{ call: "swapToReadOnly", keyId: "k-device" }]);
 
   const raised = recordingProvider({ swapToReadOnly: true });
-  await applyCapSwap(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }), raised);
+  await applyCapSwap(capSwapPlan([capped(deviceKey, ["list", "read", "write", "delete"])], { state: "active" }), raised);
   assert.deepEqual(raised.calls, [
     { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] },
     { call: "revoke", keyId: "k-device" },
