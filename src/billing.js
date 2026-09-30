@@ -58,8 +58,12 @@ import { formatBytes } from "./status.js";
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
 // 43,800 (minutes in an average month)"), kept verbatim so the meter, the
 // invoice and the page all divide by the same 43,800.
-const MINUTES_PER_MONTH = 43800;
-const GB_PER_TB = 1000;
+// Exported because they are the units the money is counted in, and a second
+// module that counted a month or a TB its own way would be a second meter.
+// src/docs.js reads them so the docs page and the invoice divide by the same
+// 43,800 and agree on what a TB is.
+export const MINUTES_PER_MONTH = 43800;
+export const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
 
 export const BILLING_CONFIG = Object.freeze({

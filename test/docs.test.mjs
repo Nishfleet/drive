@@ -1,0 +1,293 @@
+// The docs site (drive issue #98): every page reachable, every number the
+// invoice's own, and the agent-facing index complete. The docs are a generated
+// section of the site, so the gate is the same one the shipped pricing page
+// uses: the tests build their expectations from src/billing.js and fail CI
+// when a page drifts from it.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import {
+  BILLING_CONFIG,
+  meteredMonthlyBillUsd,
+  monthBillCents,
+  monthlyCeilingUsd,
+  GB_PER_TB,
+  MINUTES_PER_MONTH,
+} from "../src/billing.js";
+import { DOC_PAGES, applyMarkers, renderDocs } from "../src/render-docs.js";
+import { INSTALL_COMMAND } from "../src/status.js";
+import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
+import { SITE } from "../src/seo.js";
+
+// The built site, which `npm test` produces before the suite runs
+// (package.json: test = typecheck + docs:build + node --test). These tests
+// read what would ship, not the authored Markdown, so a page that renders but
+// ships a wrong number fails here.
+const siteDir = new URL("../public/docs/", import.meta.url);
+const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
+
+// The price numbers, worked out the way the invoice works them out: a month
+// that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
+// the same gb. Nothing in these tests types a dollar figure.
+function billFor(tb) {
+  const gb = tb * GB_PER_TB;
+  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
+}
+
+const dollars = (amount) =>
+  Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
+
+test("every docs page exists, is registered, and ships as HTML and .md", () => {
+  for (const page of DOC_PAGES) {
+    assert.ok(existsSync(new URL(page.file, siteDir)), `${page.file} was not built`);
+    assert.ok(
+      existsSync(new URL(`${page.file.replace(/\.md$/, ".html")}`, siteDir)),
+      `${page.url} must ship an HTML page`,
+    );
+    // The agent-facing copy of the same page, next to the HTML, so an answer
+    // engine reads the same words a person does.
+    assert.ok(
+      shipped(page.file).includes(`# ${page.title}`),
+      `${page.url}.md must hold the ${page.title} page`,
+    );
+  }
+});
+
+test("a page that ships is a page the index knows about, and the other way round", () => {
+  const built = readdirSync(siteDir)
+    .filter((name) => name.endsWith(".md"))
+    .sort();
+  assert.deepEqual(
+    built,
+    DOC_PAGES.map((page) => page.file).sort(),
+    "a page must be listed in DOC_PAGES, so the sitemap, the llms index and the test all know about it",
+  );
+});
+
+test("no marker survives rendering, and no marker is left without a page", () => {
+  for (const page of DOC_PAGES) {
+    const leftover = shipped(page.file).match(/\{\{[A-Z_]+\}\}/g) || [];
+    assert.deepEqual(
+      leftover,
+      [],
+      `${page.file} still carries unresolved markers: ${leftover.join(", ")}`,
+    );
+  }
+  // A value the docs compute and no page states is drift in the other
+  // direction: a page that lost its marker, or a figure nobody tells a reader.
+  assert.doesNotThrow(() => renderDocs(), "the render must find every marker used");
+});
+
+test("a page may not use a marker src/docs.js does not define", () => {
+  assert.throws(
+    () => applyMarkers("{{NOT_A_MARKER}}"),
+    /NOT_A_MARKER/,
+    "an unknown marker must fail the render, not ship as a literal",
+  );
+});
+
+test("the pricing page carries the invoice's numbers, not typed ones", () => {
+  const page = shipped("pricing.md");
+  // The rate, both halves of the ceiling, the free credit and the cap, each
+  // read from the one config the invoice reads.
+  assert.ok(page.includes("2¢ per GB"), "the pricing page must state the rate");
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.floorUsd)),
+    "the pricing page must state the ceiling floor",
+  );
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
+    "the pricing page must state the per-TB ceiling",
+  );
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.freeMonthlyUsd)),
+    "the pricing page must state the free credit",
+  );
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
+    "the pricing page must state the default cap",
+  );
+});
+
+test("every worked example on the pricing page is the invoice's own arithmetic", () => {
+  const page = shipped("pricing.md");
+  for (const tb of [0.8, 1.3, 2, 5]) {
+    const gb = tb * GB_PER_TB;
+    const bill = billFor(tb);
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyCeilingUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
+  }
+  // And the metered column is genuinely larger than the bill at the sizes the
+  // ceiling exists for, so the page cannot quietly drop the ceiling.
+  assert.ok(
+    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) >
+      billFor(2).totalCents / 100,
+    "2 TB metered must be more than 2 TB billed, or the ceiling is not being applied",
+  );
+});
+
+test("the docs never promise what the money module does not compute", () => {
+  for (const page of DOC_PAGES) {
+    const md = shipped(page.file);
+    // The spec's bans (docs/build-spec.md "Never do"): no unlimited, no
+    // credit units, no per-minute price.
+    assert.doesNotMatch(
+      md,
+      /unlimited/i,
+      `${page.file} must not claim unlimited storage`,
+    );
+    assert.doesNotMatch(
+      md,
+      /\bcredits?\b/i,
+      `${page.file} must not sell the free $1 as credits`,
+    );
+    assert.doesNotMatch(
+      md,
+      /\$\s?[\d.,]+\s*(\/|per\s)min/i,
+      `${page.file} must not advertise a per-minute price`,
+    );
+  }
+});
+
+test("the agents page names the tools the CLI connects and their real powers", () => {
+  const page = shipped("agents.md");
+  for (const tool of AGENT_TOOLS) {
+    assert.ok(page.includes(tool), `the agents page must name the ${tool} tool`);
+  }
+  // The key table is read from workers/api/src/keyprovider.js, so the page
+  // cannot claim a power the api Worker does not grant.
+  assert.equal(KEY_POWERS.device.canDelete, true);
+  assert.equal(KEY_POWERS.agent.canDelete, false);
+  assert.ok(
+    page.includes("An agent key cannot delete a file."),
+    "the agents page must say an agent key cannot delete",
+  );
+  assert.ok(
+    page.includes(INSTALL_COMMAND),
+    `the agents page must name the one command (${INSTALL_COMMAND})`,
+  );
+});
+
+test("the security page states the same key table, and what we cannot claim", () => {
+  const page = shipped("security.md");
+  assert.ok(page.includes("An agent key cannot delete a file."));
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
+    "the security page must state the default cap",
+  );
+  // A security page that only lists what is good is not useful, so the
+  // unencrypted-storage truth has to be on it.
+  assert.match(
+    page,
+    /no end-to-end encryption/i,
+    "the security page must say version 1 is not end-to-end encrypted",
+  );
+  assert.doesNotMatch(page, /SOC 2/i, "the security page must not claim a certification");
+});
+
+test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
+  const page = shipped("limits.md");
+  assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
+  assert.match(
+    page,
+    /go install github\.com\/Nishfleet\/drive\/cmd\/drive/,
+    "the limits page must give the install that works today",
+  );
+  assert.match(
+    page,
+    /slower than the alternatives/i,
+    "the limits page must say where we lose to rivals",
+  );
+  // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
+  // page as "not in the CLI", never shown as working. A test cannot read the Go
+  // switch, so this pins the two that the docs otherwise lean on.
+  for (const missing of ["restore", "branch"]) {
+    assert.match(
+      page,
+      new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
+      `the limits page must say there is no ${missing} command yet`,
+    );
+  }
+});
+
+test("the changelog opens today and every entry is a real line", () => {
+  const page = shipped("changelog.md");
+  assert.match(
+    page,
+    /## \d{4}-\d{2}-\d{2}/,
+    "the changelog must open with a date heading",
+  );
+  assert.ok(
+    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
+    "the changelog must state the ceiling it recorded",
+  );
+});
+
+test("llms.txt links every page, and llms-full.txt holds all of them", () => {
+  const llms = shipped("llms.txt");
+  const full = shipped("llms-full.txt");
+  for (const page of DOC_PAGES) {
+    // The docs home is the heading, and every page is a link with its
+    // description, so an agent can pick a page without fetching them all.
+    assert.ok(
+      llms.includes(`${SITE.origin}${page.url}.md`),
+      `llms.txt must link ${page.url}.md`,
+    );
+    assert.ok(
+      llms.includes(page.file.slice(0, -3)),
+      `llms.txt must name the ${page.title} page`,
+    );
+    assert.ok(
+      full.includes(`# ${page.title}`),
+      `llms-full.txt must hold the ${page.title} page`,
+    );
+  }
+});
+
+test("the sitemap lists the docs pages on the canonical origin, in order", () => {
+  const sitemap = readFileSync(
+    new URL("../public/sitemap.xml", import.meta.url),
+    "utf8",
+  );
+  const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+  assert.deepEqual(
+    locations,
+    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) =>
+      `${SITE.origin}${path}`,
+    ),
+    "the sitemap must list the home page and every docs page, in order",
+  );
+  // A docs URL in the sitemap that nothing serves is the drift the issue names:
+  // a page that exists on disk and is not in the sitemap, or the reverse.
+  for (const page of DOC_PAGES) {
+    assert.ok(
+      existsSync(new URL(`${page.url.replace(/^\/docs\//, "")}.html`, siteDir)),
+      `${page.url} is in the sitemap, so it must ship an HTML page`,
+    );
+  }
+});
+
+test("the docs carry the pricing page's design tokens, not a different palette", () => {
+  // The pricing page inlines its own stylesheet (public/index.html), so the
+  // docs cannot import it; the tokens are copied. This reads the shipped page
+  // and the shipped theme, so a colour edited in one place without the other
+  // fails here rather than shipping two products.
+  const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const theme = readFileSync(
+    new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
+    "utf8",
+  );
+  for (const token of ["--paper", "--ink", "--ink-soft", "--rule", "--accent"]) {
+    const from = page.match(new RegExp(`${token}:\\s*([^;]+);`));
+    assert.ok(from, `the pricing page must define ${token}`);
+    assert.ok(
+      theme.includes(`${token.replace("--", "--vp-")}`) ||
+        theme.includes(`#${from[1].trim().replace("#", "")}`),
+      `the docs theme must carry ${token} (${from[1].trim()}) from the pricing page`,
+    );
+  }
+  // System fonts only: the pricing page ships no web font, so the docs must
+  // not start one either.
+  assert.doesNotMatch(theme, /@font-face/);
+  assert.match(theme, /system-ui/);
+});
