@@ -99,30 +99,60 @@ func stopMount(goos, home string) error {
 		return nil
 	}
 	mountDir := DefaultMountDir(home)
-	// fusermount3 ships with current FUSE; fusermount is the older name. Each
-	// attempt is a fresh command (a started exec.Cmd cannot be run twice).
-	attempts := [][]string{{"fusermount3", "-u"}, {"fusermount", "-u"}}
+	// fusermount3 ships with current FUSE; fusermount is the older name. Every
+	// call site runs a literal binary name, never a variable, and the only
+	// argument is the mount dir (the caller's --home); exec.Command takes an
+	// argument vector and no shell.
 	if goos == "darwin" {
-		attempts = [][]string{{"umount"}}
-	}
-	var lastErr error
-	for _, argv := range attempts {
-		out, err := exec.Command(argv[0], append(argv[1:], mountDir)...).CombinedOutput()
-		if err == nil {
-			lastErr = nil
-			break
+		if err := runUmount(mountDir); err != nil {
+			return fmt.Errorf("unmount %s: %w", mountDir, err)
 		}
-		lastErr = fmt.Errorf("%s: %v: %s", argv[0], err, strings.TrimSpace(string(out)))
+		return expectUnmounted(goos, home)
 	}
-	if lastErr != nil {
-		return fmt.Errorf("unmount %s: %w", mountDir, lastErr)
+	if err := runFusermount(mountDir); err != nil {
+		return fmt.Errorf("unmount %s: %w", mountDir, err)
 	}
-	on, err = Mounted(goos, home)
+	return expectUnmounted(goos, home)
+}
+
+// runUmount unmounts with the stock macOS umount.
+func runUmount(mountDir string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "umount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("umount", mountDir).CombinedOutput()
+	return unmountError("umount", err, out)
+}
+
+// runFusermount unmounts with the stock Linux FUSE tool: fusermount3 where it
+// exists, fusermount otherwise. Each is a literal binary and the only argument
+// is the mount dir.
+func runFusermount(mountDir string) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err == nil {
+		return nil
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir derived from --home; exec.Command takes an argument vector, not a shell.
+	out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput()
+	return unmountError("fusermount", err, out)
+}
+
+// unmountError turns a failed unmount command into an error with the tool's
+// own output, or nil when it exited 0.
+func unmountError(name string, err error, out []byte) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(string(out)))
+}
+
+// expectUnmounted re-checks the kernel's answer after an unmount attempt. A
+// command that exits 0 is not proof the mount is gone, so this is.
+func expectUnmounted(goos, home string) error {
+	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
 	}
 	if on {
-		return fmt.Errorf("unmount %s: still mounted after fusermount", mountDir)
+		return fmt.Errorf("unmount %s: still mounted after fusermount", DefaultMountDir(home))
 	}
 	return nil
 }
