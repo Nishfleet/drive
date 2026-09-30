@@ -164,7 +164,6 @@ test("d1Bindings finds the databases and ignores everything else", () => {
   };
   assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
 });
-
 // --- no secret or internal in the body -----------------------------------
 
 test("no body carries a secret or an internal, healthy or not", async () => {
@@ -210,7 +209,24 @@ test("the failing body is the name and nothing else", async () => {
   assert.equal(typeof body.failing, "string");
 });
 
-// --- public, and shaped for a monitor -------------------------------------
+// --- public allow-list ----------------------------------------------------
+
+/**
+ * The explicit public allow-list for this Worker's /api/* routes: the ones
+ * that answer an anonymous request on purpose. It is a list, not a predicate,
+ * so a route only becomes public by being written down here, and #73's
+ * deny-by-default test can consume the same list when it lands. Anything not on
+ * it must be gated on an account (or a deployment token, for the send route)
+ * and must answer 401/403 to an anonymous caller, never 200.
+ *
+ * /api/health is public because the outside monitor (#36) holds no drive
+ * account and an outage has to be observable to something that has none; the
+ * route reads no account data, so being public exposes nothing.
+ */
+const PUBLIC_API_ROUTES = Object.freeze([
+  "/api/waitlist",
+  HEALTH_PATH,
+]);
 
 test("the endpoint needs no account, session or cookie", async () => {
   // Public by design and on the deny-by-default test's public allow-list
@@ -222,6 +238,39 @@ test("the endpoint needs no account, session or cookie", async () => {
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
+});
+
+test("the health route is on the explicit public allow-list", async () => {
+  // Issue #96 asks for the route to be on the deny-by-default test's public
+  // allow-list (#73). That test is not on main yet and its branch is in
+  // flight, so the list lives here until it lands; the assertion that matters
+  // is checked either way: a route on the list answers an anonymous request,
+  // and this one is on it.
+  assert.ok(
+    PUBLIC_API_ROUTES.includes(HEALTH_PATH),
+    `${HEALTH_PATH} must be on the public allow-list`,
+  );
+  const response = await handleHealthRequest(
+    new Request(`https://drive.test${HEALTH_PATH}`),
+    HEALTHY_ENV(),
+  );
+  assert.equal(response.status, 200);
+});
+
+test("an account route is not on the public allow-list", () => {
+  // The point of an explicit list: the account routes stay off it, so a
+  // future deny-by-default test reading this list cannot accidentally treat
+  // one of them as public.
+  for (const accountRoute of [
+    "/api/first-run-status",
+    "/api/files",
+    "/api/usage",
+  ]) {
+    assert.ok(
+      !PUBLIC_API_ROUTES.includes(accountRoute),
+      `${accountRoute} must not be public`,
+    );
+  }
 });
 
 test("only GET is answered, so a probe that posts learns it is wrong", async () => {
@@ -265,22 +314,81 @@ test("the Worker routes the health path to the handler", async () => {
   assert.equal(asset.status, 200);
 });
 
-test("the health route does not consume rate limiter quota", async () => {
-  // The limiter is a real binding on this Worker and the waitlist needs it.
-  // Its only operation spends quota, so a check that called it would use the
-  // budget it exists to protect; the check is a read, not a spend.
-  const calls = [];
+test("the health check never spends a real caller's rate limit quota", async () => {
+  // The limiter keys real callers on their client IP (src/waitlist.js). The
+  // probe has to be checked somehow and `limit()` is the only call it has, so
+  // the key is asserted to carry no IP: a health poll must not eat the quota
+  // of the very sign-ups the limiter exists to protect.
+  const keys = [];
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
-      limit(options) {
-        calls.push(options);
+      limit({ key }) {
+        keys.push(key);
         return Promise.resolve({ success: true });
       },
     },
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
-  assert.deepEqual(calls, [], "the health check must not spend limiter quota");
+  assert.equal(keys.length, 1, "the limiter is checked when it is bound");
+  assert.match(keys[0], /^health-probe-/);
+  assert.ok(!keys[0].includes("."), "the probe key must not be a client IP");
+});
+
+test("the probe key is not shared, so a hammered endpoint cannot force a false 503", async () => {
+  // /api/health is public, so its limiter key has to change per call: a
+  // stranger calling it in a loop must not exhaust one bucket and turn the
+  // health answer red while everything else is fine.
+  const keys = [];
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: {
+      limit({ key }) {
+        keys.push(key);
+        return Promise.resolve({ success: true });
+      },
+    },
+  };
+  await handleHealthRequest(GET(), env);
+  await handleHealthRequest(GET(), env);
+  assert.notEqual(keys[0], keys[1], "each poll spends a bucket of its own");
+});
+
+test("a rate limiter that throws is a 503 naming it", async () => {
+  // Without a limiter the waitlist endpoint fails closed (src/waitlist.js),
+  // so this is a real outage the alert has to be able to report.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: {
+      limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+    },
+  };
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), {
+    ok: false,
+    failing: "WAITLIST_RATE_LIMITER",
+  });
+  assert.ok(!body.includes("exploded"), "the raw error text never reaches the body");
+});
+
+test("a limiter that denies the probe is still healthy", async () => {
+  // The limiter answering "no" to the probe is the limiter working. Treating
+  // it as unhealthy would be a false 503 on every poll that landed in an
+  // exhausted bucket, which is exactly the alert noise this endpoint must not
+  // produce.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: false }),
+    },
+  };
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 200);
 });

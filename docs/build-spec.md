@@ -169,6 +169,19 @@ Every step is one issue, built by a queue worker and checked by a different mode
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
 
+## How we know it is up (the outage alert)
+
+North star "Reliable" (Nish, 2026-09-30): we hear about an outage before customers do. The outside monitor is issue #36: one free, stock external uptime monitor (UptimeRobot or Better Stack free tier, no card) checking the URLs below every few minutes, alerting Nish by phone push or email. The site origin is pinned in `src/seo.js` (`SITE.origin`, `https://drive-pricing.nishant345.workers.dev` today) and `test/seo.test.mjs` holds it there, so this table names the source rather than a second copy.
+
+| URL | What it is | Built |
+|---|---|---|
+| `/` on the site origin | The landing page, the site's front door, and the page every customer notices first. | today (static asset) |
+| `/api/health` on the site Worker | The Worker's own health endpoint (#96, `src/health.js`). 200 with `{"ok":true}` only when the Worker can reach each bound D1 database and its asset layer; 503 naming the binding that did not answer. Public, no account data, `Cache-Control: no-store`, bounded so a hung dependency cannot hang the poll. | #96 |
+| `/v1/health` on the api Worker | The API's own health route, so a drive that is mounted but cannot reach the API is caught. | with the api Worker (build step 4, #5) |
+| the download host | The host downloads stream from, so a broken download path is caught. | with the dl Worker (build step 5, #6) |
+
+`/api/health` is deliberately not a "the Worker woke up" ping: it does a trivial read (`SELECT 1`) on each bound D1 database and a `HEAD` fetch through the asset layer, so a database or a page that will not serve is a 503 while the isolate is still alive — which is the difference between an alert and a false all-clear. It names the failing binding in the body (configuration the operator already has; never a secret, a query or a stack) and reports one name, the first failure.
+
 ## Open questions (not blocking the spec)
 
 - **B2 delete events.** I confirmed the "file created" event names in Backblaze's API docs on 2026-09-29. I did not confirm the names for hidden and deleted files. The nightly reconciler covers this either way; step 5 checks it.

@@ -21,13 +21,24 @@
 //     charging a Worker invocation for a page load and without asserting on
 //     the content of a page that will change.
 //
+//   - The waitlist's rate limiter. Missing, the waitlist endpoint fails closed
+//     (src/waitlist.js answers 503 rather than accept unbounded sign-ups), so
+//     it is a binding the Worker needs to serve one of its requests. It has no
+//     read, so the check is the one callable operation, `limit()`, on a key
+//     nothing else uses and that changes every call. Two things follow: a real
+//     client key (a client IP) can never collide with the probe, and a
+//     stranger hammering this public endpoint cannot exhaust a shared probe
+//     key and push the endpoint into a false 503. The one name the result
+//     reports is the binding, never the key.
+//
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
 //   - Secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
 //     A missing secret makes the one route that needs it answer 403/503 by
 //     name already (src/email-send.js, src/waitlist.js).
-//   - The rate limiter. It has no read: `limit()` spends quota, so a health
-//     poll would consume the very budget it exists to protect.
+//   - The email binding. Only the token-gated internal send route uses it
+//     (src/email-send.js); no customer request needs it, and its only
+//     operation would really send mail.
 //
 // The check is bounded twice so a hung dependency cannot make the monitor's
 // own poll hang, which would read as "no data" rather than "down":
@@ -158,6 +169,32 @@ async function checkAssets(assets, timeoutMs) {
 }
 
 /**
+ * The waitlist's rate limiter, on a key of its own. The binding has no read,
+ * so `limit()` is the only way to know it answers at all: without it the
+ * waitlist endpoint fails closed and sign-ups stop (src/waitlist.js), which is
+ * an outage this endpoint must be able to report.
+ *
+ * The key changes every call and carries no client IP, for the reason above:
+ * a health poll spends one unit of a bucket nobody else holds, so it cannot
+ * eat a real client's quota, and a stranger hammering this public endpoint
+ * cannot exhaust the probe's bucket and turn the health answer into a false
+ * 503. Whether the limiter allows this call is not the question — the binding
+ * answering at all is.
+ *
+ * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
+ */
+async function checkRateLimiter(limiter, timeoutMs) {
+  const result = await withTimeout(
+    limiter.limit({ key: `health-probe-${crypto.randomUUID()}` }),
+    timeoutMs,
+    "WAITLIST_RATE_LIMITER",
+  );
+  if (!result || typeof result.success !== "boolean") {
+    throw new Error("the rate limiter did not answer with a verdict");
+  }
+}
+
+/**
  * Runs every dependency check and reports the outcome as data, so a test can
  * read it and the fetch handler can render it without the two disagreeing.
  *
@@ -184,6 +221,19 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     return { ok: false, failing: "ASSETS" };
   }
   checks.push({ name: "ASSETS", run: () => checkAssets(assets, timeoutMs) });
+  // Only when this Worker has the waitlist bound: the limiter is a dependency
+  // of the waitlist route, so on a deployment without one there is nothing to
+  // reach.
+  const limiter = env === null || env === undefined ? undefined : env.WAITLIST_RATE_LIMITER;
+  if (limiter !== undefined) {
+    if (typeof limiter.limit !== "function") {
+      return { ok: false, failing: "WAITLIST_RATE_LIMITER" };
+    }
+    checks.push({
+      name: "WAITLIST_RATE_LIMITER",
+      run: () => checkRateLimiter(limiter, timeoutMs),
+    });
+  }
 
   for (const check of checks) {
     try {
@@ -194,7 +244,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       // message: a D1 error string can carry the query, an account id or a
       // host. Reporting the name the caller was running, not the error's own
       // text, is what makes the name trustworthy.
-      console.error(`health: ${check.name} did not answer`, error);
+      console.error("health: a dependency did not answer", check.name, error);
       return { ok: false, failing: check.name };
     }
   }
