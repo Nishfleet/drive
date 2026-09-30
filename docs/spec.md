@@ -46,7 +46,7 @@ The first says don't build. The second says if you build, sell to people first. 
 
 ### Pricing
 
-**Recommendation (updated 2026-09-30, Nish): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB.** 1.5¢ is the hard floor (Nish). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
+**Recommendation (updated 2026-09-30, Nish): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB (so max($12, $10 × peak TB)) — the page's "$8" holds only while iDrive is primary.** 1.5¢ is the hard floor for the metered rate (Nish); the ceiling deliberately prices below it ($12 for 1 TB is 1.2¢/GB, $8 a TB above 1.5 TB is 0.8¢/GB). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
 
 | Item | Choice |
 |---|---|
@@ -144,7 +144,7 @@ So at 2¢, a Space customer who averages 60% full or less pays less with us, by 
 
 **Risks**
 - **Short jobs vs the download allowance.** B2's free 3x is based on average stored data, and it's pooled across our whole account. A 1 TB job that lives one day counts as only 33 GB stored, so reading it once could use about $9 of download allowance on a $0.66 bill. Pooling with all-month customers covers this at small scale; billing downloads over 3x is the backstop.
-- **The >4 TB niche (changed by the 2026-09-30 ceiling).** The rows above were priced before the ceiling, when Space's $12/TB add-on beat us there; under the new bill (5 TB = $40 against Space's $63) the niche is won on price, so the vault's revisit trigger now waits on demand only.
+- **The >4 TB niche (changed by the 2026-09-30 ceiling).** The rows above were priced before the ceiling, when Space's $12/TB add-on beat us there; under the new bill (5 TB = $40 against Space's $63) the niche is won on price, so the vault's revisit trigger now waits on demand only. The who-wins table above is not re-run; it stands as the 2026-09-29 record.
 - **Fees on small top-ups.** $10 top-ups lose about 9.5%. Encourage $25 or more.
 - **Exchange rate.** Hetzner bills in euros. The €2/TB Storage Box figure assumes about $1.15 per euro.
 
@@ -176,16 +176,16 @@ Left out of version 1: Windows, sharing links, search, phone app, Business tier,
 
 ### Nothing missing
 
-The remaining product gaps are now specced, one issue each:
+The remaining product gaps are now specced, one issue each (the version-1 exclusions above are separate and stay out):
 
 | Issue | What it closes |
 |---|---|
-| #30 | Two machines, one file: keep both saves, and work offline |
-| #31 | Web Files page: open your drive from any browser or phone |
-| #32 | First run and sync status: always know it's working |
-| #33 | Emails: welcome, cap warnings, payment failed, monthly receipt |
-| #34 | Account lifecycle: export, delete, sign out everywhere, update, uninstall |
-| #35 | Every error says what happened and what to do |
+| [#30](https://github.com/Nishfleet/drive/issues/30) | Two machines, one file: keep both saves, and work offline |
+| [#31](https://github.com/Nishfleet/drive/issues/31) | Web Files page: open your drive from any browser or phone (a web page, not a native phone app) |
+| [#32](https://github.com/Nishfleet/drive/issues/32) | First run and sync status: always know it's working |
+| [#33](https://github.com/Nishfleet/drive/issues/33) | Emails: welcome, cap warnings, payment failed, monthly receipt |
+| [#34](https://github.com/Nishfleet/drive/issues/34) | Account lifecycle: export, delete, sign out everywhere, update, uninstall |
+| [#35](https://github.com/Nishfleet/drive/issues/35) | Every error says what happened and what to do |
 
 ## Build plan
 
