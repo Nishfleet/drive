@@ -7,6 +7,7 @@ import {
   handleFilesRequest,
   resolveAccount,
 } from "./files.js";
+import { signedInAccount } from "./status.js";
 import { handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
 
@@ -57,11 +58,13 @@ export default {
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
+    // The handler is closed until the sign-in flow resolves an account
+    // (issue #45), so an anonymous poll gets 401 and no device data.
     if (
       url.pathname === "/api/first-run-status" ||
       url.pathname === "/api/first-run-status/"
     ) {
-      return handleFirstRunStatusRequest(request);
+      return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
     // The Web Files page's listing, download, upload and restore (issue #31).
     if (
