@@ -13,11 +13,19 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
+  drive init [flags]                    find installed agent tools and connect each to the drive
+  drive agents [flags]                  list agent tools and whether the drive is connected
+  drive agents connect <tool> [flags]   connect one agent tool to the drive
+  drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
   drive logout [flags]     stop the mount and delete this device's key and config
   drive version            print the version
+
+Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
+stock MCP filesystem server over the drive folder, using the tool's own
+mcp add command or its JSON config file.
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
@@ -41,6 +49,10 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "init":
+		err = runInit(os.Args[2:])
+	case "agents":
+		err = runAgents(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":

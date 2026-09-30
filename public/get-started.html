@@ -664,7 +664,11 @@ async function poll() {
     return;
   }
   if (!response.ok) {
-    say("unreachable");
+    // 401 is the account gate (drive issue #45): this browser has no signed-in
+    // account yet, which on this page is exactly the waiting state — the Mac
+    // has not signed in — and the words above name the real next step. It is
+    // never "unreachable": the service answered. Any other status is.
+    say(response.status === 401 ? "waiting" : "unreachable");
     return;
   }
   let payload;

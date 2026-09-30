@@ -58,6 +58,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Your last payment didn't go through, so billing is paused.",
     next: "Use the link in the payment email to update your card.",
   }),
+  // A request that needs the signed-in account arrived without one. This is the
+  // account gate's words (issue #45, north star: Safe): the status endpoint
+  // answers 401 and never device data, so nothing is leaked to an anonymous
+  // caller and the one next step is to sign in.
+  unauthorized: Object.freeze({
+    what: "You are not signed in to your drive.",
+    next: "Sign in, then this page updates on its own.",
+  }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
   // and the worker's last resort.
