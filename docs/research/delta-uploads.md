@@ -10,7 +10,7 @@ reproduces it. What we can reproduce is the byte count, and stock rclone re-send
 so a 2 GB Blender or Premiere project re-uploads 2 GB per save. This issue measures the engines
 against a local `rclone serve s3` stand-in and names the one to adopt after launch.
 
-## Recommendation — proposal, five points
+## Recommendation — six points, all proposals
 
 1. **Ship v1 as-is: whole-file re-upload.** Measured here: 67108864 B for a 4 KiB edit in a 64 MiB
    file (0.73 s loopback) and 2147483648 B for a 1 MiB edit in a 2 GB file (25.11 s loopback). Bytes
