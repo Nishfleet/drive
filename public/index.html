@@ -4,9 +4,56 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — about $20 per TB a month</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
+       AI-answer crawler reads. Every value mirrors src/seo.js; test/seo.test.mjs
+       fails CI when the tags and that config drift apart. The ceiling stated
+       here is the current rule from docs/spec.md ("$12 a TB, then $8", Nish
+       2026-09-30, issue #29), and the visible page copy is issue #23's to
+       align; a follow-up issue files the merge of the two into one source. -->
+  <!-- rel="canonical" declares a URL for a crawler to read; the browser never
+       fetches it as a subresource, so there is nothing whose bytes an integrity
+       hash could verify. That is why the nosemgrep rule id is on the tag: this
+       html.security rule only honors a same-line suppression, and the finding is
+       a false positive. -->
+  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
+  <meta property="og:site_name" content="Drive">
   <meta property="og:title" content="Drive — about $20 per TB a month">
-  <meta property="og:description" content="2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
+  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Drive — about $20 per TB a month. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Drive — about $20 per TB a month">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Drive",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "macOS, Linux",
+  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.",
+  "url": "https://drive-pricing.nishant345.workers.dev/",
+  "image": "https://drive-pricing.nishant345.workers.dev/og.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "0.02",
+    "priceCurrency": "USD",
+    "priceSpecification": {
+      "@type": "UnitPriceSpecification",
+      "price": "0.02",
+      "priceCurrency": "USD",
+      "unitText": "GB per month"
+    },
+    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, then $8. The bill never passes $12 for the first TB or $8 for each TB after."
+  }
+}
+  </script>
   <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
        The favicon is an inline data: URI: there is no network fetch to
        hash, so an integrity attribute would be meaningless. -->

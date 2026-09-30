@@ -1,0 +1,51 @@
+# Drive
+
+> A Finder drive for people and their agents: plain files in object storage,
+> mounted with stock rclone, and billed at 2¢ per GB-month by the minute. The
+> monthly bill never passes $12 for the first TB, then $8 for each TB after.
+> $1 of storage is free every month, no card needed.
+>
+> Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
+
+Drive is a mounted folder (macOS and Linux) where your files live in object
+storage instead of on your laptop disk, so libraries bigger than the laptop
+open on demand. Agents read and write the same files through the folder, the
+MCP filesystem server, or the S3 API, each with its own scoped key.
+
+## Pricing
+
+- Rate: 2¢ per GB per month, billed by the minute, pay only for what you store.
+- Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
+  The monthly bill is min(metered, max($12, $8 × TB stored)), TB measured to the
+  GB, so it never rises above that however full the drive gets.
+- Free: $1 free every month, no card needed to start. That is about 50 GB of
+  storage each month, and a card is only needed to go past it.
+- Downloads: free up to 3× what you store each month, then 1¢ per GB.
+- Version history: free. Every earlier version is kept 1 day, then one per day
+  for 30 days; any file can be restored.
+- No plan sizes and no fixed plans: you are billed for the GB you store, so a
+  1 TB drive kept 60% full bills about $12 a month.
+
+Worked examples: 800 GB kept all month = $12; 1.6 TB = $12.80; 2 TB = $16;
+5 TB = $40.
+
+## What it is
+
+- A drive folder that works in any app. Files stream on demand, so a 5 GB video
+  opens without downloading first.
+- Saves reach storage a few seconds after the file is closed and appear on the
+  other machines.
+- A spending cap you set; at the cap the drive goes read-only and nothing is
+  deleted.
+- Agents read and write freely but cannot permanently delete; a person can undo
+  an agent's delete. Branches copy a folder for an agent to work in, then you
+  approve or discard the copy.
+
+## Not yet
+
+The drive is not open yet. Sign-ups on the pricing page go to a waitlist.
+
+## Links
+
+- Pricing page (canonical): https://drive-pricing.nishant345.workers.dev/
+- Sitemap: https://drive-pricing.nishant345.workers.dev/sitemap.xml
