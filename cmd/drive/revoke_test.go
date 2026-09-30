@@ -156,32 +156,33 @@ func TestRevokeAcceptsOnly204AndNeverRelaysTheResponse(t *testing.T) {
 	}
 }
 
-// The receipt is the honesty of a later logout: after a revoke that failed, a
-// fresh run must not print a clean sign-out over a live key. It needs no
-// secret and must leave no secret behind.
-func TestWriteRevokePendingAndRevokePending(t *testing.T) {
-	home := t.TempDir()
-	if RevokePending(home) {
-		t.Fatal("no receipt yet")
+// The revoke carries the storage secret in the Authorization header, and Go's
+// client replays that header on a redirect it follows. A redirect must never be
+// followed, or a 302 to another host — or a downgrade to http — would take the
+// secret somewhere it was never meant to go.
+func TestRevokeDoesNotFollowARedirectWithTheCredential(t *testing.T) {
+	const secret = "SECRETACCESSKEY"
+	var gotAuth string
+	var reached int
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached++
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer sink.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, sink.URL+RevokePath, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	err := (APIKeyRevoker{BaseURL: redirector.URL}).Revoke(KeyPair{AccessKeyID: "ACCESSKEYID", SecretKey: secret})
+	if err == nil {
+		t.Fatal("a 302 is not 204, so the revoke must not read as done")
 	}
-	if err := WriteRevokePending(home); err != nil {
-		t.Fatalf("WriteRevokePending: %v", err)
+	if reached != 0 {
+		t.Errorf("the redirect was followed %d time(s); the credential must not travel to a redirect's target", reached)
 	}
-	if !RevokePending(home) {
-		t.Fatal("the receipt must be found after it is written")
-	}
-	info, err := os.Stat(pendingRevokePath(home))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("receipt mode = %o, want 600", perm)
-	}
-	data, err := os.ReadFile(pendingRevokePath(home))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "SECRETACCESSKEY") {
-		t.Error("the receipt carries key material")
+	if strings.Contains(gotAuth, secret) {
+		t.Errorf("the sink received the credential: %q", gotAuth)
 	}
 }

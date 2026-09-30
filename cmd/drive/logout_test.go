@@ -25,6 +25,25 @@ func testRevoker(t *testing.T, home string) *keyServer {
 	return newKeyServer(t, home, testStorage().AccessKey, testStorage().SecretKey)
 }
 
+// storageWithKey returns a copy of the test storage config carrying a specific
+// access key id and secret, so a test can write a device's config and stand up
+// a key server for that exact pair.
+func storageWithKey(accessKey, secret string) StorageConfig {
+	c := testStorage()
+	c.AccessKey = accessKey
+	c.SecretKey = secret
+	return c
+}
+
+// writeDeviceKey puts a key pair into a home the way a sign-in would, with the
+// 0600 mode the CLI itself writes.
+func writeDeviceKey(t *testing.T, home, accessKey, secret string) {
+	t.Helper()
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(storageWithKey(accessKey, secret))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func configWithLoginItem(t *testing.T) string {
 	t.Helper()
 	home := configOnlyHome(t)
@@ -382,8 +401,8 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Fatal("the local key must be gone after the failed revoke")
 	}
-	if !RevokePending(home) {
-		t.Fatal("a failed revoke must leave a receipt, or the next run cannot know a key is live")
+	if _, ok, err := PendingRevoke(home); err != nil || !ok {
+		t.Fatalf("a failed revoke must leave a receipt, or the next run cannot know a key is live (present=%v, err=%v)", ok, err)
 	}
 
 	// The retry, offline or not: no key on this device, so nothing to revoke.
@@ -397,19 +416,127 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	if strings.Contains(err.Error(), "run drive logout again") {
 		t.Errorf("retry failure %q repeats advice this command cannot carry out", err)
 	}
-	if !RevokePending(home) {
-		t.Error("the receipt must survive the retry so the state is not forgotten")
+	if _, ok, err := PendingRevoke(home); err != nil || !ok {
+		t.Errorf("the receipt must survive the retry so the state is not forgotten (present=%v, err=%v)", ok, err)
 	}
 
-	// A device that signs in again and logs out for real clears it.
-	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// A device that signs in again and logs out for real clears it. The key it
+	// signs in with is the one the first run left live, so revoking it settles
+	// the receipt.
+	writeDeviceKey(t, home, testStorage().AccessKey, testStorage().SecretKey)
 	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
 		t.Fatalf("logout with a fresh key: %v", err)
 	}
-	if RevokePending(home) {
-		t.Error("a successful revoke must clear the receipt")
+	if _, ok, err := PendingRevoke(home); err != nil || ok {
+		t.Error("revoking the key the receipt names must clear the receipt")
+	}
+}
+
+// The receipt names ONE key. Someone whose revoke failed signs in again, which
+// gives them a different key, and logs out: that logout revokes the new key and
+// settles nothing about the old one, which is still live. The warning has to
+// survive it, or the next run prints a clean sign-out over a live key — the
+// exact failure the receipt exists to prevent.
+func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) {
+	const (
+		oldAccess, oldSecret = "OLDACCESSKEY", "oldsecretkey"
+		newAccess, newSecret = "NEWACCESSKEY", "newsecretkey"
+	)
+	home := t.TempDir()
+	writeDeviceKey(t, home, oldAccess, oldSecret)
+
+	// The revoke of the old key cannot reach the server.
+	if err := Logout("linux", home, false, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
+		t.Fatal("the first logout must fail when the key cannot be revoked")
+	}
+	id, ok, err := PendingRevoke(home)
+	if err != nil || !ok {
+		t.Fatalf("receipt after the failed revoke: present=%v err=%v", ok, err)
+	}
+	if id != oldAccess {
+		t.Fatalf("receipt names %q, want the access key id %q that is still live", id, oldAccess)
+	}
+
+	// The person signs in again: a new key, and a key server that revokes it.
+	writeDeviceKey(t, home, newAccess, newSecret)
+	ks := newKeyServer(t, home, newAccess, newSecret)
+	if err := Logout("linux", home, false, ks); err != nil {
+		t.Fatalf("logout of the new key: %v", err)
+	}
+	if got := ks.count(); got != 1 {
+		t.Fatalf("revoke attempts = %d, want 1", got)
+	}
+	if id, ok, err := PendingRevoke(home); err != nil || !ok || id != oldAccess {
+		t.Errorf("the old key is still live, so its receipt must survive a revoke of a different key (present=%v id=%q err=%v)", ok, id, err)
+	}
+
+	// And the run after that must still refuse to call it a clean sign-out.
+	err = Logout("linux", home, false, nil)
+	if err == nil {
+		t.Fatal("a logout with an older key still live must not succeed")
+	}
+	if !strings.Contains(err.Error(), revokePendingWarning) {
+		t.Errorf("failure = %q, want the receipt sentence", err)
+	}
+}
+
+// A receipt is 0600 and holds the access key id and nothing else. The secret is
+// never in it, and the id alone cannot be replayed against storage.
+func TestRevokePendingHoldsOnlyTheAccessKeyID(t *testing.T) {
+	home := t.TempDir()
+	if _, ok, err := PendingRevoke(home); err != nil || ok {
+		t.Fatalf("no receipt yet: present=%v err=%v", ok, err)
+	}
+	if err := WriteRevokePending(home, "DRIVETESTACCESSKEY"); err != nil {
+		t.Fatalf("WriteRevokePending: %v", err)
+	}
+	id, ok, err := PendingRevoke(home)
+	if err != nil || !ok {
+		t.Fatalf("PendingRevoke: present=%v err=%v", ok, err)
+	}
+	if id != "DRIVETESTACCESSKEY" {
+		t.Errorf("receipt id = %q, want the access key id", id)
+	}
+	info, statErr := os.Stat(pendingRevokePath(home))
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("receipt mode = %o, want 600", perm)
+	}
+	data, readErr := os.ReadFile(pendingRevokePath(home))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(data), "drivetestsecret") {
+		t.Error("the receipt carries key material")
+	}
+	// The receipt outlives the config dir logout deletes, so it must not live
+	// inside it.
+	if filepath.Dir(pendingRevokePath(home)) == DefaultConfigDir(home) {
+		t.Error("the receipt must not live inside the config dir logout deletes")
+	}
+}
+
+// A receipt the run cannot read is a key the run cannot prove is off, so it
+// is reported rather than treated as absent.
+func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file, so the unreadable-receipt case cannot be staged")
+	}
+	home := t.TempDir()
+	if err := WriteRevokePending(home, "DRIVETESTACCESSKEY"); err != nil {
+		t.Fatal(err)
+	}
+	// Make the receipt a directory: readable as a path, unreadable as a file.
+	if err := os.Remove(pendingRevokePath(home)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(pendingRevokePath(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := PendingRevoke(home); err == nil {
+		t.Errorf("PendingRevoke: present=%v err=nil, want the unreadable receipt reported", ok)
 	}
 }
 

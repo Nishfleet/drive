@@ -88,12 +88,18 @@ where the secret is never in the command line, the shell history or ps`, configP
 // image and read the whole thing into the process.
 const maxSecretBytes = 64 << 10
 
-// ReadSecretKey resolves the storage secret from the safe sources, in the
-// order the caller asked for them, and only from those (issue #75). The three
-// sources are a pipe, the environment, and the config file this CLI itself
-// wrote, and there is no fourth: no flag, so the secret can never be read out
-// of /proc/<pid>/cmdline or out of a shell history file, which is the finding
-// this issue opened with.
+// ReadSecretKey resolves the storage secret from the safe sources and only
+// from those (issue #75). The three sources are a pipe, the environment, and
+// the config file this CLI itself wrote, and there is no fourth: no flag, so
+// the secret can never be read out of /proc/<pid>/cmdline or out of a shell
+// history file, which is the finding this issue opened with.
+//
+// The order is fixed, not negotiable: an explicit --secret-key-stdin wins over
+// the environment, the environment wins over the config file. So a pipe that
+// carries nothing is an error rather than a quiet fall-through to the
+// environment — someone who asked for the secret to come from the pipe and
+// piped nothing has made a mistake, and reading the environment instead would
+// mount with a credential they did not choose and did not see.
 //
 // configPath is the config file to fall back to, and an absent file is not an
 // error (there is no key on this machine yet). wantStdin says the caller piped
@@ -183,6 +189,15 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 			section = strings.TrimSpace(line[1 : len(line)-1])
 			continue
 		}
+		// A remote this CLI does not own is skipped before the line is even
+		// looked at, and its lines are never reported: a file can carry other
+		// remotes, and one of them having a line rclone tolerates is not this
+		// file's problem, let alone this file's business to echo. Only the
+		// drive remote is parsed, so no other remote's credentials can be read
+		// out of it.
+		if section != RcloneRemoteName {
+			continue
+		}
 		name, value, ok := strings.Cut(line, "=")
 		if !ok {
 			// The line itself is not quoted: a config whose line is malformed
@@ -191,9 +206,6 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 		}
 		name = strings.ToLower(strings.TrimSpace(name))
 		value = strings.TrimSpace(value)
-		if section != RcloneRemoteName {
-			continue
-		}
 		switch name {
 		case "access_key_id":
 			c.AccessKey = value

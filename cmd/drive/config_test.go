@@ -283,8 +283,23 @@ func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
 func TestReadSecretKeyRefusesAConfigFileOthersCanRead(t *testing.T) {
 	home := t.TempDir()
 	path := RcloneConfigPath(home)
-	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o644); err != nil {
+	// The mode is set explicitly, not left to the writer's default, so the test
+	// proves the check and not the other code path's chmod.
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(RcloneConfig(testStorage())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("test setup: mode is %04o, want 644", perm)
 	}
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
 	secret, err := ReadSecretKey(path, false, strings.NewReader(""))
@@ -296,6 +311,24 @@ func TestReadSecretKeyRefusesAConfigFileOthersCanRead(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "644") || !strings.Contains(err.Error(), "chmod 600") {
 		t.Errorf("error %q does not name the mode and the fix", err)
+	}
+}
+
+// Another remote's malformed line is not this CLI's file and not its business:
+// only the drive remote is parsed, so a config a person also uses for other
+// rclone remotes must not be refused over a line in one of them.
+func TestParseRcloneConfigIgnoresOtherRemotes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	body := "[other]\nnot a key value line at all\n" + RcloneConfig(testStorage())
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseRcloneConfig(path)
+	if err != nil {
+		t.Fatalf("a malformed line in another remote must not refuse the file: %v", err)
+	}
+	if got.AccessKey != testStorage().AccessKey || got.SecretKey != testStorage().SecretKey {
+		t.Errorf("parsed %+v, want the drive remote's key", got)
 	}
 }
 
@@ -432,16 +465,25 @@ func TestParseAPIBaseNeverEchoesACredential(t *testing.T) {
 
 // The storage secret is in every request the CLI makes to the Worker, so a
 // remote plain-http URL is refused; loopback is where the stand-in and a local
-// dev Worker live, and cleartext there never leaves the machine.
+// dev Worker live, and cleartext there never leaves the machine. Every spelling
+// of loopback counts, not just the one the first version happened to list.
 func TestParseAPIBaseRequiresHTTPSOffLoopback(t *testing.T) {
 	if _, err := parseAPIBase("http://example.com"); err == nil {
 		t.Error("plain http to a remote host must be refused: the secret would travel in the clear")
 	} else if !strings.Contains(err.Error(), "https") {
 		t.Errorf("refusal %q does not name the fix", err)
 	}
-	for _, ok := range []string{"http://127.0.0.1:8787", "http://localhost:8787", "http://[::1]:8787"} {
+	for _, ok := range []string{
+		"http://127.0.0.1:8787", "http://localhost:8787", "http://[::1]:8787",
+		"http://127.0.0.2:8787", "http://LOCALHOST:8787", "http://[::ffff:127.0.0.1]:8787",
+	} {
 		if _, err := parseAPIBase(ok); err != nil {
 			t.Errorf("parseAPIBase(%q) = %v, want loopback http allowed", ok, err)
+		}
+	}
+	for _, refused := range []string{"http://10.0.0.5:8787", "http://192.168.1.4", "http://[2001:db8::1]"} {
+		if _, err := parseAPIBase(refused); err == nil {
+			t.Errorf("parseAPIBase(%q) = nil, want a remote plain-http URL refused", refused)
 		}
 	}
 	if _, err := parseAPIBase("https://api.example.com/"); err != nil {

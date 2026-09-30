@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -298,7 +299,19 @@ func parseAPIBase(raw string) (string, error) {
 // loopbackHost reports whether host is this machine. The stand-in server, a
 // local dev Worker and the test server all talk over loopback, where cleartext
 // never leaves the machine.
+//
+// The whole 127.0.0.0/8 block and the IPv6 loopback are this machine, not just
+// 127.0.0.1, and `localhost` is matched without regard to case the way DNS
+// resolves it. A name that is an IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)
+// is loopback too: net.IP.IsLoopback knows all of them, so the check goes
+// through it rather than a hand-written list of spellings that would silently
+// fall out of date.
 func loopbackHost(host string) bool {
-	host = strings.Trim(host, "[]")
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if strings.EqualFold(strings.Trim(host, "[]"), "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

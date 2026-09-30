@@ -88,21 +88,34 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	// reported, not succeeded over. An unreadable config is neither missing
 	// nor revocable: it is reported, because a key that cannot be named is a
 	// key that may still be live.
+	//
+	// The receipt is read here and the local key is compared with what it
+	// names. That comparison is the whole reason the receipt records the access
+	// key id: a receipt says one specific key is still live, so revoking a
+	// *different* key — someone who signed in again got a new one — settles
+	// nothing about it, and the warning must survive that logout.
 	var revokeErr error
+	var clearRevokeErr error
 	var key *KeyPair
+	pendingID, pendingLive, err := PendingRevoke(home)
+	if err != nil {
+		// A receipt this run cannot read is a key this run cannot prove is
+		// off, so it is carried on the exit below rather than treated as no
+		// receipt. The local copy is still deleted.
+		revokeErr = err
+	}
 	if pair, err := ReadDeviceKey(home); err != nil {
 		revokeErr = err
 	} else if pair != nil {
 		key = pair
 		revokeErr = revoke.Revoke(*pair)
-		if revokeErr == nil {
-			// The key this device held is off on the server, so a receipt from
-			// an earlier failed run is cleared with everything else.
-			if err := removeIfPresent(pendingRevokePath(home)); err != nil {
-				return err
-			}
+		if revokeErr == nil && pendingLive && pendingID == pair.AccessKeyID {
+			// This run turned off the exact key the receipt was about, so the
+			// receipt has nothing left to warn about. Any other pair of a
+			// revoked key and a receipt leaves it in place.
+			clearRevokeErr = removeIfPresent(pendingRevokePath(home))
 		}
-	} else if RevokePending(home) {
+	} else if pendingLive || revokeErr != nil {
 		// Clean-up below still runs; the exit carries the receipt.
 		revokeErr = errPendingRevoke
 	}
@@ -110,6 +123,12 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	// left live on the server, and leaving a second copy on disk would be a
 	// second one. The exit code and the message below carry the truth about
 	// the server side.
+	//
+	// This deletion is unconditional and comes before any receipt work, because
+	// the acceptance is that a logout keeps nothing secret on disk. A receipt
+	// that cannot be written or cleared is a fact to report on the way out, and
+	// never a reason to leave the storage key on the disk it was trying to
+	// remove.
 	//
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
@@ -132,19 +151,34 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	}
 	if revokeErr != nil {
 		if errors.Is(revokeErr, errPendingRevoke) {
-			// The receipt already names this state; rewriting it would say the
-			// same thing twice. Non-zero: a key from an earlier logout is still
-			// live and this device has nothing to authenticate a revoke with.
-			return fmt.Errorf("%s (%w)", revokePendingWarning, revokeErr)
+			// The receipt already names this state; the plain sentence is the
+			// whole of it. Non-zero: a key from an earlier logout is still live
+			// and this device has nothing to authenticate a revoke with.
+			return errors.New(revokePendingWarning)
 		}
 		// local state is gone, server state is not. The receipt is written
-		// after the config is gone, so the next run knows a key is live with
+		// after the config is gone, so the next run knows which key is live with
 		// nothing here to authenticate it. It returns non-zero: a logout that
 		// cannot revoke must never look like one that did.
-		if err := WriteRevokePending(home); err != nil {
+		//
+		// A config this run could not parse never learned which key it held, so
+		// the receipt is written with no key id: what is known is that some key
+		// is live, and the id is filled in by the next run that can name it.
+		leftLive := ""
+		if key != nil {
+			leftLive = key.AccessKeyID
+		}
+		if err := WriteRevokePending(home, leftLive); err != nil {
 			return fmt.Errorf("%s (%v), and the receipt could not be written: %w", revokeWarning, revokeErr, err)
 		}
 		return fmt.Errorf("%s (%w)", revokeWarning, revokeErr)
+	}
+	if clearRevokeErr != nil {
+		// The key this device held is off, but the receipt that named it could
+		// not be deleted. Nothing is left live, so the sign-out still
+		// succeeded; the stale receipt is reported rather than hidden, because
+		// the next run would otherwise report it with no trace of why.
+		fmt.Fprintf(os.Stderr, "note: the key is revoked, but the spent receipt %s could not be deleted: %v\n", pendingRevokePath(home), clearRevokeErr)
 	}
 	if key != nil {
 		fmt.Printf("logged out: the mount is stopped, the key is revoked on the server and %s is deleted\n", DefaultConfigDir(home))
@@ -174,6 +208,13 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	// The same mode rule mount applies before reading the secret applies here:
+	// a config every user can read is the same exposure the flag had, and the
+	// key it holds is about to be sent on the wire. Without this, logout would
+	// happily transmit a key it can see is exposed to the whole machine.
+	if err := checkSecretFileMode(path); err != nil {
+		return nil, err
 	}
 	c, err := ParseRcloneConfig(path)
 	if err != nil {
