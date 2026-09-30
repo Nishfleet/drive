@@ -3,11 +3,22 @@
 // exercises every branch without a running runtime, the same split
 // src/waitlist.js uses.
 //
-// Two jobs, in the order the issue lists them:
+// Three jobs, in the order the issue lists them:
 //   1. Event intake in the api Worker, with de-duplication through
 //      `events_seen`: a storage event becomes one row in `file_versions`.
-//   2. The hourly Cron Trigger: GB-minutes per account for each closed UTC
-//      hour, written to `usage_minutes`.
+//      Events arrive in any order (a provider redelivers, and a hide can
+//      outrun its own create), so the version row is built from the events'
+//      own times, never from arrival order: `created_at` is the earliest
+//      time any event for the version carries, `hidden_at` the earliest stop
+//      time, and the size comes only from a create - so hide-then-create
+//      lands exactly where create-then-hide does, and both bill the same
+//      minutes.
+//   2. The hourly Cron Trigger: GB-minutes per account for every closed UTC
+//      hour not yet rolled, written to `usage_minutes`. A stored "rolled up
+//      to" mark (`meter_rollup_state`) makes a missed trigger a backlog the
+//      next run drains, oldest hours first, instead of a lost hour.
+//   3. The dedup table's retention: `events_seen` rows past a week are
+//      deleted by the same run, so the table cannot grow forever.
 //
 // The rules, from docs/build-spec.md "How the money is worked out" and the
 // decisions table:
@@ -29,9 +40,14 @@
 //     the same number. A version still live gets no top-up: its life can end
 //     young later, and its hidden hour's rollup books the shortfall then. A
 //     version whose whole life was inside one hour gets overlap + shortfall
-//     in that hour. The one gap - hidden_at arriving after its hour was
-//     already rolled - is the nightly reconciler's job (a follow-up issue),
-//     whose re-roll recomputes the same totals.
+//     in that hour. The top-up is booked even when the hour's overlap is
+//     zero - a version hidden exactly on an hour boundary has its last
+//     minute in the hour before, and its shortfall in the boundary hour -
+//     and for a version whose create and hide carry the same instant (a
+//     hide event that arrived before its create) the minimum is the whole
+//     booking. The one gap - hidden_at arriving more than an hour after its
+//     hour was already rolled - is the nightly reconciler's job (a follow-up
+//     issue), whose re-roll recomputes the same totals.
 //   - Nothing here rounds to whole minutes. Whole-minute billing belongs to
 //     invoice time (build step 6); rounding in the rollup would let the hours
 //     of a day drift from the version's true minutes by up to a minute per
@@ -186,9 +202,6 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
 export function versionGbMinutesInHour(version, hour, now = Date.now()) {
   const start = hourStart(hour);
   const overlap = versionOverlapGbMinutes(version, start, now);
-  if (overlap === 0) {
-    return 0;
-  }
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
     // Still live when this hour is rolled: book only the overlap. Its shortfall
     // against the minimum, if its life ends young later, is booked by the hour
@@ -197,10 +210,17 @@ export function versionGbMinutesInHour(version, hour, now = Date.now()) {
     // re-roll is what books it - a follow-up issue).
     return overlap;
   }
+  const hiddenAt = toMillis(version.hiddenAt, "hiddenAt");
+  if (hourStart(hiddenAt) !== start) {
+    // Not the hour the version stopped: this hour books its overlap only. The
+    // check is on the hidden HOUR, not on a non-zero overlap, because a
+    // version hidden exactly on this hour's boundary has no minutes in this
+    // hour and still owes the shortfall to it.
+    return overlap;
+  }
   const lifetime = versionLifetimeMinutes(version, now);
-  const hiddenHour = hourStart(version.hiddenAt);
   let booked = overlap;
-  if (lifetime < MINIMUM_MINUTES_PER_VERSION && hiddenHour === start) {
+  if (lifetime < MINIMUM_MINUTES_PER_VERSION) {
     // The shortfall against the 1-hour minimum, booked once, in the hour the
     // version stopped. The overlap sums of all its hours equal its lifetime,
     // so lifetime + shortfall is exactly 60 minutes: no under-bill and no
@@ -229,9 +249,16 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   return total;
 }
 
+// The versions one closed hour needs, in the order the composite index
+// (account_id, created_at) serves best: one account's versions by creation
+// time. The billing window is [created_at, hidden_at), so a version counts in
+// this hour when it was written before the hour ended and was still visible
+// when the hour began - `>=`, not `>`, because a version hidden exactly on
+// the hour's first instant has no overlap here but still owes this hour its
+// 1-hour-minimum shortfall (see versionGbMinutesInHour).
 const HOUR_VERSIONS_SQL = `SELECT size_bytes, created_at, hidden_at
   FROM file_versions
-  WHERE created_at < ?1 AND (hidden_at IS NULL OR hidden_at > ?2) AND account_id = ?3
+  WHERE account_id = ?3 AND created_at < ?1 AND (hidden_at IS NULL OR hidden_at >= ?2)
   ORDER BY created_at`;
 
 /**
@@ -307,6 +334,14 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
  * Every account that has a stored version. The rollup walks this list, so an
  * account that never stored a file is never queried and never gets an empty
  * usage row.
+ *
+ * The list is deliberately NOT bounded by the hours being rolled: a version
+ * created long ago and still live (hidden_at NULL) has minutes in every hour,
+ * so an account filter keyed on recent created_at would drop exactly the
+ * accounts with standing storage and underbill them. The (account_id,
+ * created_at) index makes this an index-only DISTINCT, and the catch-up run
+ * below amortizes it across every hour it rolls, so the cost per rolled hour
+ * falls even though the scan itself is whole-history.
  * @param {D1Database} db
  * @returns {Promise<string[]>}
  */
@@ -349,7 +384,9 @@ export function folderAccount(value) {
 // another provider reading its own docs writes another set, so the table lists
 // the words rather than making the caller translate.
 //
-//   "create" - a version started existing: it needs its creation time.
+//   "create" - a version started existing: it needs its creation time, and
+//              its size. The size is the create's to set: `effect` below says
+//              so, and the upsert takes the size from a create only.
 //   "hide"   - a version stopped being visible (replaced or removed), which
 //              is where billing for it stops. A true delete lands here too:
 //              a hard-deleted version is not billed, and this product's
@@ -475,7 +512,10 @@ export function validateEvent(input) {
   if (eventId.length > 512) {
     return { error: "The event's id is too long." };
   }
-  return { accountId, b2FileId, path, sizeBytes, createdAt, hiddenAt, eventId };
+  // `effect` is what the upsert needs and validateEvent is the only place
+  // that knows it: a hide carries no size of its own, and one must never be
+  // taken from a hide.
+  return { accountId, b2FileId, path, sizeBytes, createdAt, hiddenAt, eventId, effect };
 }
 
 /**
@@ -505,8 +545,12 @@ export async function recordEvent(db, event, now = Date.now()) {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(account_id, b2_file_id) DO UPDATE SET
            path = COALESCE(NULLIF(excluded.path, ''), file_versions.path),
-           size_bytes = excluded.size_bytes,
-           hidden_at = COALESCE(excluded.hidden_at, file_versions.hidden_at)`,
+           created_at = MIN(file_versions.created_at, excluded.created_at),
+           size_bytes = CASE WHEN ?7 = 'create'
+                             THEN excluded.size_bytes ELSE file_versions.size_bytes END,
+           hidden_at = CASE WHEN file_versions.hidden_at IS NULL THEN excluded.hidden_at
+                            WHEN excluded.hidden_at IS NULL THEN file_versions.hidden_at
+                            ELSE MIN(file_versions.hidden_at, excluded.hidden_at) END`,
       )
       .bind(
         event.accountId,
@@ -515,6 +559,7 @@ export async function recordEvent(db, event, now = Date.now()) {
         event.sizeBytes,
         event.createdAt,
         event.hiddenAt,
+        event.effect,
       ),
   ]);
   const seen = results?.[0]?.meta?.rows_written ?? 0;
@@ -534,6 +579,13 @@ export const EVENT_TOKEN_HEADER = "x-drive-event-token";
  * secret through timing. A length mismatch returns early, which is a length
 // check and reveals nothing beyond the length; the bytes are then compared
  * with an accumulator so no single byte's comparison ends the loop early.
+ *
+ * The platform's crypto.subtle.timingSafeEqual is deliberately not used: it
+ * exists in the Workers runtime and not in Node's Web Crypto, so calling it
+ * through a runtime check would leave every test here exercising a different
+ * compare from the one production runs. The accumulator above is the same
+ * constant-shape comparison a hand-written HMAC uses, and it has no early
+ * byte exit.
  * @param {unknown} presented
  * @param {unknown} configured
  */
@@ -608,16 +660,23 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   if (rawEvents.length === 0) {
     return json({ error: "The batch has no events in it." }, 400);
   }
+  // Events are validated one by one, and a bad one does not hold the good
+  // ones back: a batch is a delivery unit, not a billing unit, and holding a
+  // day's good events hostage to one malformed one is how an account's meter
+  // falls behind the provider's own report. The valid events are stored; the
+  // rejected ones are reported per event, with the index in the batch, and
+  // the reply is a 400 so the provider's own logs show a delivery that was
+  // not fully accepted. The retry such a reply causes is free - the dedup
+  // turns the stored events into repeats and the bad one is reported again.
   const events = [];
-  for (const raw of rawEvents) {
+  const rejected = [];
+  for (const [index, raw] of rawEvents.entries()) {
     const event = validateEvent(raw);
     if (event.error) {
-      // The whole batch is refused, and the message names the unknown action
-      // where there is one: a provider that adds an action must be visible in
-      // the caller's log, not silently dropped.
-      return json({ error: event.error }, 400);
+      rejected.push({ index, error: event.error });
+    } else {
+      events.push(event);
     }
-    events.push(event);
   }
   let stored = 0;
   try {
@@ -633,7 +692,20 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     // events already stored are repeats the second time around.
     return json({ error: "The event could not be stored." }, 503);
   }
-  return json({ ok: true, stored, deduped: events.length - stored }, 200);
+  const deduped = events.length - stored;
+  if (rejected.length > 0) {
+    return json(
+      {
+        ok: false,
+        error: `${rejected.length} of the batch's events could not be accepted.`,
+        stored,
+        deduped,
+        rejected,
+      },
+      400,
+    );
+  }
+  return json({ ok: true, stored, deduped }, 200);
 }
 
 function json(body, status) {
@@ -690,14 +762,52 @@ async function readLimitedBody(request, maxBytes) {
 // pages are pinned to their copy.
 export const METER_CRON = "5 * * * *";
 
+// How far back a run re-rolls what a previous run already wrote. One hour: an
+// event for an hour is often delivered minutes after the roll of that hour,
+// and the hour before the newest closed one is still within reach of the next
+// trigger. A stored version row is the only input, so re-rolling recomputes
+// the same total and adds no row - the grace costs a re-roll, never a bill.
+// An event later than this window is the nightly reconciler's job (#59).
+export const REROLL_GRACE_HOURS = 1;
+
+// The most hours one run rolls. A backlog (a Cron Trigger that did not fire,
+// a run that failed) is drained oldest hour first, this many hours per run,
+// and the mark below advances to the last hour actually rolled, so a long
+// outage cannot leave hours unrolled and cannot make one run unbounded work:
+// successive runs walk the whole backlog without skipping an hour.
+export const MAX_CATCHUP_HOURS = 48;
+
+// How long a dedup row is kept. The provider's own retries land inside
+// minutes, so a week is generous; past it the row is deleted by the run below
+// and a very late redelivery is handled by the version upsert, which takes
+// the earliest times and therefore recomputes the same row.
+export const EVENTS_SEEN_RETENTION_MS = 7 * 24 * HOUR_MS;
+
+const ROLLED_THROUGH_READ_SQL = "SELECT rolled_through FROM meter_rollup_state WHERE id = 1";
+const ROLLED_THROUGH_WRITE_SQL = `INSERT INTO meter_rollup_state (id, rolled_through)
+  VALUES (1, ?1)
+  ON CONFLICT(id) DO UPDATE SET rolled_through = excluded.rolled_through`;
+const EARLIEST_VERSION_SQL = "SELECT MIN(created_at) AS earliest FROM file_versions";
+const PURGE_EVENTS_SEEN_SQL = "DELETE FROM events_seen WHERE received_at < ?1";
+
 /**
- * The scheduled handler: one rollup of the hour that just closed. Called from
- * the entrypoint's scheduled() with the tracked env; it minds the D1 errors
- * by throwing, so a failed rollup is what it is - a failed Cron Trigger that
- * Cloudflare records and retries - and never a silent zero.
+ * The hourly Cron Trigger: every closed UTC hour that has not been rolled
+ * yet, oldest first, up to MAX_CATCHUP_HOURS of them per run. The hours rolled
+ * are written to `meter_rollup_state` as one `rolled_through` mark, so the
+ * next run knows where this one stopped.
+ *
+ * Correctness is idempotence, not the mark: every hour is written by the same
+ * recomputing upsert (rollupAccountHour), so a re-rolled hour repeats its
+ * number and the mark can only ever cost a re-roll, never a double bill. What
+ * the mark buys is the catch-up - a run that never happened is work the next
+ * run does - and the bound on that work.
+ *
+ * Billing the hours a version lived needs the row set per hour, so the run
+ * reads the accounts once and walks hours inside them. The purge of the dedup
+ * table rides along: one statement, once per run.
  * @param {D1Database|undefined} db
  * @param {number|Date|string} now the trigger instant
- * @returns {Promise<{hour: number, accounts: number, gbMinutes: number}>}
+ * @returns {Promise<{from: number, through: number, hours: number, accounts: number, gbMinutes: number}>}
  */
 export async function runMeterCron(db, now = Date.now()) {
   if (!db) {
@@ -707,12 +817,38 @@ export async function runMeterCron(db, now = Date.now()) {
   // The hour that just closed. The hour in progress is incomplete: a version
   // created at :59 must wait for the next trigger, which bills it with the
   // 1-hour minimum in the hour it was created.
-  const hour = hourStart(at) - HOUR_MS;
+  const lastClosed = hourStart(at) - HOUR_MS;
+  const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
+  let from;
+  if (mark === null || mark === undefined || !Number.isFinite(Number(mark.rolled_through))) {
+    // No mark: this deployment has never rolled. The floor is the hour of the
+    // oldest version stored, so the catch-up starts at the meter's own data
+    // and not at an arbitrary instant; no versions at all means there is
+    // nothing but the hour that just closed.
+    const earliest = await db.prepare(EARLIEST_VERSION_SQL).first();
+    from = Number.isFinite(Number(earliest?.earliest))
+      ? hourStart(Number(earliest.earliest))
+      : lastClosed;
+  } else {
+    // The mark is the newest hour rolled; with the grace, the same hour is
+    // rolled once more and the run continues from there.
+    from = Number(mark.rolled_through) - (REROLL_GRACE_HOURS - 1) * HOUR_MS;
+  }
+  // A mark ahead of the newest closed hour (a clock that moved backwards, a
+  // manual run with a future instant) must not silence the rollup: the run
+  // still rolls the hour that just closed and rewrites the mark to it.
+  from = Math.min(from, lastClosed);
+  const through = Math.min(lastClosed, from + (MAX_CATCHUP_HOURS - 1) * HOUR_MS);
+  const hours = Math.round((through - from) / HOUR_MS) + 1;
   const accounts = await listMeteredAccounts(db);
   let gbMinutes = 0;
-  for (const accountId of accounts) {
-    const result = await rollupAccountHour(db, accountId, hour, at);
-    gbMinutes += result.gbMinutes;
+  for (let hour = from; hour <= through; hour += HOUR_MS) {
+    for (const accountId of accounts) {
+      const result = await rollupAccountHour(db, accountId, hour, at);
+      gbMinutes += result.gbMinutes;
+    }
   }
-  return { hour, accounts: accounts.length, gbMinutes };
+  await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(through).run();
+  await db.prepare(PURGE_EVENTS_SEEN_SQL).bind(at - EVENTS_SEEN_RETENTION_MS).run();
+  return { from, through, hours, accounts: accounts.length, gbMinutes };
 }

@@ -1,5 +1,5 @@
 -- Step 5, phase 1 of the meter (drive issue #6): the meter's own tables from
--- docs/build-spec.md "Data model (D1)". Additive only, like 0001: three new
+-- docs/build-spec.md "Data model (D1)". Additive only, like 0001: four new
 -- tables and their indexes, no existing table touched, no column dropped or
 -- renamed, so a rollback is rolling the code back. D1 has no down-migrations,
 -- so this file is one-way.
@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS file_versions (
 CREATE INDEX IF NOT EXISTS file_versions_created_at_idx
   ON file_versions (created_at);
 
+-- The rollup asks one question per hour: this account's versions that were
+-- live during it. Leading with account_id and then created_at lets that query
+-- seek one account's rows in creation order and stop at the hour's upper
+-- bound, instead of the whole-history DISTINCT the account list used to do.
+CREATE INDEX IF NOT EXISTS file_versions_account_created_at_idx
+  ON file_versions (account_id, created_at);
+
 CREATE TABLE IF NOT EXISTS usage_minutes (
   account_id TEXT NOT NULL,
   -- Epoch milliseconds of the start of the UTC hour this row covers.
@@ -63,4 +70,22 @@ CREATE INDEX IF NOT EXISTS usage_minutes_hour_idx ON usage_minutes (hour);
 CREATE TABLE IF NOT EXISTS events_seen (
   b2_event_id TEXT PRIMARY KEY,
   received_at INTEGER NOT NULL
+);
+
+-- The purge walks received_at, and the primary key (the event id) cannot serve
+-- that order, so it gets its own index.
+CREATE INDEX IF NOT EXISTS events_seen_received_at_idx
+  ON events_seen (received_at);
+
+-- One row, always id = 1: the newest closed UTC hour the rollup has written.
+-- The hourly trigger reads it to find where the last run stopped, so a run
+-- that never fired is work the next run drains instead of an hour lost; it
+-- writes it back after rolling, so one long outage cannot make one run
+-- unbounded. The row is a watermark, not the authority on the numbers: every
+-- hour is recomputed and rewritten by the rollup's upsert, so a wrong or
+-- missing mark costs a re-roll and never a bill.
+CREATE TABLE IF NOT EXISTS meter_rollup_state (
+  id INTEGER PRIMARY KEY,
+  -- Epoch milliseconds of the start of the newest hour rolled.
+  rolled_through INTEGER NOT NULL
 );

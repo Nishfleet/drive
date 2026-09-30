@@ -258,7 +258,7 @@ test("the trigger's hour sums a whole day to exactly what the versions cost", as
   // The done-when compares one account's GB-minutes for a full day against
   // the provider's own report. The meter's side of that comparison, end to
   // end through the real schema: events in, hours out, day total exact.
-  const { d1 } = makeMeteredDB();
+  const { sqlite, d1 } = makeMeteredDB();
   // 2 GB stored at 10:20 on the 29th, hidden 13:10 on the 30th: 26h50m of
   // life, 5360 GB-minutes, split across the hours of the 30th (and three of
   // the 29th, which a day-view of the 30th does not book).
@@ -289,18 +289,24 @@ test("the trigger's hour sums a whole day to exactly what the versions cost", as
     }),
     at("2026-09-30T09:20:00.000Z"),
   );
-  let day = 0;
-  // One trigger per hour of the 30th, each rolling the hour that just closed.
+  // One trigger per hour of the 30th, each rolling the hours its predecessor
+  // left and re-rolling the one before that as a grace. The day is read from
+  // the hour rows, which is what a bill is worked out from; the trigger's own
+  // return is a per-run work figure and re-rolls the grace hour, so it is not
+  // the day's total.
   for (let h = 0; h < 24; h += 1) {
-    const result = await runMeterCron(d1, midnight() + (h + 1) * 60 * MINUTE_MS);
-    day += result.gbMinutes;
+    await runMeterCron(d1, midnight() + (h + 1) * 60 * MINUTE_MS);
   }
+  const rows = (await d1
+    .prepare(
+      "SELECT hour, gb_minutes_live FROM usage_minutes WHERE account_id = 'acc-abc' AND hour >= ?1 AND hour < ?2 ORDER BY hour",
+    )
+    .bind(midnight(), midnight() + 24 * 60 * MINUTE_MS)
+    .all()).results;
+  const day = rows.reduce((sum, row) => sum + row.gb_minutes_live, 0);
   // The day of the 30th: the 2 GB file from 00:00 to 13:10 (2 x 790) plus the
   // short version's 1-hour minimum (5 x 60).
   assert.equal(day, 2 * 790 + 5 * 60);
-  const rows = (await d1
-    .prepare("SELECT hour, gb_minutes_live FROM usage_minutes WHERE account_id = 'acc-abc' ORDER BY hour")
-    .all()).results;
   // Hours 00 to 13 carry the big file; hour 09 carries it plus the short
   // version's minimum. That is 14 rows, and none for the empty hours after
   // 13:10 - a rollup of an hour with nothing stored writes no row at all.
@@ -310,4 +316,98 @@ test("the trigger's hour sums a whole day to exactly what the versions cost", as
   // 1% the done-when measures, exact by construction.
   assert.equal(rows.reduce((sum, row) => sum + row.gb_minutes_live, 0), day);
   assert.equal(rows.filter((row) => row.gb_minutes_live === 0).length, 0, "no empty hour is written");
+});
+
+test("READ: a hide delivered before its create bills the same hours, through the real schema", async () => {
+  // The provider's delivery order is not ours to choose, and the meter is the
+  // one thing that has to be indifferent to it. This is the money rule: the
+  // hide-first row is the create-first row.
+  const { sqlite, d1 } = makeMeteredDB();
+  // The hide first: the provider reports the version replaced at 00:30, with
+  // no creation time of its own.
+  await recordEvent(
+    d1,
+    validateEvent({
+      eventId: "h-1",
+      keyName: "/u/acc-abc/",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      action: "file hidden",
+      eventTimestamp: midnight() + 30 * MINUTE_MS,
+    }),
+    midnight() + 30 * MINUTE_MS,
+  );
+  // The create arrives after, naming the true creation instant.
+  await recordEvent(d1, abcEvent({ eventId: "c-1" }), midnight() + 31 * MINUTE_MS);
+  const row = sqlite
+    .prepare("SELECT size_bytes, created_at, hidden_at FROM file_versions")
+    .get();
+  assert.equal(row.created_at, midnight(), "the late create moves created_at back");
+  assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS);
+  assert.equal(row.size_bytes, GB, "the hide must not set the size");
+  // The rollup bills the 30 minutes and the 1-hour minimum on top: 60.
+  const rolled = await rollupAccountHour(d1, "acc-abc", midnight(), midnight() + 60 * MINUTE_MS);
+  assert.equal(rolled.gbMinutes, 60);
+  const usage = sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes").get();
+  assert.equal(usage.gb_minutes_live, 60, "the hide-first order bills a real hour, not zero");
+});
+
+test("READ: a version hidden exactly on the hour's boundary books its minimum in that hour", async () => {
+  // The half-open window in the real schema: created 00:30, hidden 01:00.
+  // Hour 01 holds none of its minutes, and the top-up belongs there anyway, so
+  // the rollup's window has to include a version whose hidden_at IS the hour's
+  // start. A `>` bound here would drop it and bill 30 minutes for an hour.
+  const { sqlite, d1 } = makeMeteredDB();
+  await recordEvent(
+    d1,
+    abcEvent({ createdAt: at("2026-09-30T00:30:00.000Z"), hiddenAt: at("2026-09-30T01:00:00.000Z") }),
+    at("2026-09-30T00:30:00.000Z"),
+  );
+  const hour00 = await rollupAccountHour(d1, "acc-abc", midnight(), at("2026-09-30T01:05:00.000Z"));
+  assert.equal(hour00.gbMinutes, 30, "hour 00 is just its half hour of overlap");
+  const hour01 = await rollupAccountHour(
+    d1,
+    "acc-abc",
+    at("2026-09-30T01:00:00.000Z"),
+    at("2026-09-30T02:05:00.000Z"),
+  );
+  assert.equal(hour01.versions, 1, "the boundary version is in hour 01's window");
+  assert.equal(hour01.gbMinutes, 30, "hour 01 books the shortfall to the full hour");
+  const rows = sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes ORDER BY hour").all();
+  assert.deepEqual(rows.map((r) => r.gb_minutes_live), [30, 30]);
+  assert.equal(
+    rows.reduce((sum, r) => sum + r.gb_minutes_live, 0),
+    60,
+    "the version costs exactly its hour",
+  );
+});
+
+test("READ+WRITE: a missed trigger is caught up from the stored mark, through the real schema", async () => {
+  // The review's finding, against the real tables: three closed hours with no
+  // trigger, then one run. Every hour gets its row and the mark is stored.
+  // The review's finding, against the real tables: three closed hours with no
+  // trigger, then one run. Every hour gets its row and the mark is stored.
+  const { sqlite, d1 } = makeMeteredDB();
+  await recordEvent(d1, abcEvent(), midnight());
+  const caughtUp = await runMeterCron(d1, at("2026-09-30T03:05:00.000Z"));
+  assert.equal(caughtUp.from, midnight());
+  assert.equal(caughtUp.through, midnight() + 2 * 60 * MINUTE_MS);
+  assert.equal(caughtUp.hours, 3);
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM usage_minutes").get().n,
+    3,
+    "all three missed hours were rolled",
+  );
+  assert.equal(
+    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get().rolled_through,
+    midnight() + 2 * 60 * MINUTE_MS,
+  );
+  // Re-running at the same instant changes nothing: the same hours, the same
+  // numbers, one row each.
+  await runMeterCron(d1, at("2026-09-30T03:06:00.000Z"));
+  const rows = sqlite
+    .prepare("SELECT hour, gb_minutes_live FROM usage_minutes ORDER BY hour")
+    .all();
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => r.gb_minutes_live), [60, 60, 60]);
 });

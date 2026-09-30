@@ -21,7 +21,9 @@ import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
+  EVENTS_SEEN_RETENTION_MS,
   EVENT_ACTIONS,
+  MAX_CATCHUP_HOURS,
   MINUTE_MS,
   MINIMUM_MINUTES_PER_VERSION,
   METER_CRON,
@@ -68,6 +70,7 @@ function makeFakeD1() {
     file_versions: new Map(),
     usage_minutes: new Map(),
     events_seen: new Map(),
+    meter_rollup_state: new Map(),
   };
   const key = (accountId, b2FileId) => `${accountId}|${b2FileId}`;
   const usageKey = (accountId, hour) => `${accountId}|${hour}`;
@@ -83,18 +86,35 @@ function makeFakeD1() {
       return { meta: { rows_written: 1 }, results: [] };
     }
     if (text.startsWith("INSERT INTO file_versions")) {
-      const [accountId, b2FileId, path, sizeBytes, createdAt, hiddenAt] = bound;
+      const [accountId, b2FileId, path, sizeBytes, createdAt, hiddenAt, effect] = bound;
       const existing = tables.file_versions.get(key(accountId, b2FileId));
+      // The upsert's rules, worked out in JS so a test can see them and fail
+      // here if the SQL stops saying them:
+      //   created_at = MIN(existing, incoming): the events' own times, never
+      //     arrival order - a late create moves the time back.
+      //   size_bytes = the create's, never a hide's.
+      //   hidden_at  = the earliest non-NULL stop time, and never un-hidden.
+      // A hide that arrives before its create is the case this exists for: it
+      // lands as a zero-length version, and the create that follows corrects
+      // created_at backwards instead of leaving the hide's own time standing
+      // as the moment the file was written.
+      const created = existing === undefined ? createdAt : Math.min(existing.created_at, createdAt);
+      const size = effect === "create" ? sizeBytes : existing?.size_bytes ?? 0;
+      let hidden;
+      if (hiddenAt === null) {
+        hidden = existing?.hidden_at ?? null;
+      } else if (existing === undefined || existing.hidden_at === null) {
+        hidden = hiddenAt;
+      } else {
+        hidden = Math.min(existing.hidden_at, hiddenAt);
+      }
       const merged = {
         account_id: accountId,
         b2_file_id: b2FileId,
         path: path === "" ? (existing?.path ?? "") : path,
-        size_bytes: sizeBytes,
-        created_at: createdAt,
-        // COALESCE(excluded.hidden_at, file_versions.hidden_at): a later event
-        // for the same version may carry a size but no hidden time, and that
-        // must not un-hide a version.
-        hidden_at: hiddenAt === null ? (existing?.hidden_at ?? null) : hiddenAt,
+        size_bytes: size,
+        created_at: created,
+        hidden_at: hidden,
       };
       tables.file_versions.set(key(accountId, b2FileId), merged);
       return { meta: { rows_written: 1 }, results: [merged] };
@@ -134,10 +154,34 @@ function makeFakeD1() {
           (row) =>
             row.account_id === accountId &&
             row.created_at < hourEnd &&
-            (row.hidden_at === null || row.hidden_at > hourStartMs),
+            (row.hidden_at === null || row.hidden_at >= hourStartMs),
         )
         .sort((a, b) => a.created_at - b.created_at);
       return { meta: { rows_written: 0 }, results };
+    }
+    if (text.startsWith("SELECT MIN(created_at) AS earliest FROM file_versions")) {
+      const times = [...tables.file_versions.values()].map((row) => row.created_at);
+      const earliest = times.length === 0 ? null : Math.min(...times);
+      return { meta: { rows_written: 0 }, results: [{ earliest }] };
+    }
+    if (text.startsWith("SELECT rolled_through FROM meter_rollup_state")) {
+      const row = tables.meter_rollup_state.get(1);
+      return { meta: { rows_written: 0 }, results: row === undefined ? [] : [row] };
+    }
+    if (text.startsWith("INSERT INTO meter_rollup_state")) {
+      const row = { id: 1, rolled_through: bound[0] };
+      tables.meter_rollup_state.set(1, row);
+      return { meta: { rows_written: 1 }, results: [row] };
+    }
+    if (text.startsWith("DELETE FROM events_seen WHERE received_at")) {
+      const before = bound[0];
+      const ids = [...tables.events_seen.keys()].filter(
+        (id) => tables.events_seen.get(id).received_at < before,
+      );
+      for (const id of ids) {
+        tables.events_seen.delete(id);
+      }
+      return { meta: { rows_written: ids.length }, results: [] };
     }
     throw new Error(`fake D1 does not implement: ${text}`);
   }
@@ -376,7 +420,14 @@ test("a valid event becomes the meter's own shape", () => {
     createdAt: midnight(),
     hiddenAt: null,
     eventId: "evt-1",
+    effect: "create",
   });
+  // The effect, not the action's spelling, is what the upsert keys on: a size
+  // comes from a create and never from a hide, whichever way it was worded.
+  assert.equal(
+    validateEvent(event({ action: "hidden", hiddenAt: midnight() + MINUTE_MS })).effect,
+    "hide",
+  );
 });
 
 test("an event with a bad field is refused with one sentence, never a stack", () => {
@@ -507,9 +558,123 @@ test("the same version, hidden later, is one row that stops counting", async () 
   const stored = db.tables.file_versions.get(versionKey("abc123", "file-1"));
   assert.equal(stored.hidden_at, midnight() + 30 * MINUTE_MS);
   // A third event with a size but no hidden time must not un-hide it: the
-  // COALESCE in the upsert is what stops that, and this is the test for it.
+  // CASE in the upsert is what stops that, and this is the test for it.
   await recordEvent(db, validateEvent(event({ eventId: "evt-3" })), midnight() + 40 * MINUTE_MS);
   assert.equal(db.tables.file_versions.get(versionKey("abc123", "file-1")).hidden_at, midnight() + 30 * MINUTE_MS);
+});
+
+test("a hide that outruns its create bills the same minutes, whichever order the events arrive", async () => {
+  // Events arrive in any order: a provider's delivery is not a queue. This is
+  // the money rule for that - the two orders below have to end with the same
+  // row and the same bill - and it is what the review found broken.
+  const create = event({
+    eventId: "c-1",
+    createdAt: midnight(),
+    sizeBytes: GB,
+    action: "uploaded",
+  });
+  const hide = event({
+    eventId: "h-1",
+    action: "hidden",
+    createdAt: midnight() + 30 * MINUTE_MS,
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    sizeBytes: GB,
+  });
+
+  // Order A: create then hide.
+  const createFirst = makeFakeD1();
+  await recordEvent(createFirst, validateEvent(create), midnight());
+  await recordEvent(createFirst, validateEvent(hide), midnight() + 30 * MINUTE_MS);
+
+  // Order B: hide then create. The hide has no create of its own to refer to,
+  // so it lands as a zero-length version and the create moves created_at back.
+  const hideFirst = makeFakeD1();
+  await recordEvent(hideFirst, validateEvent(hide), midnight() + 30 * MINUTE_MS);
+  await recordEvent(hideFirst, validateEvent(create), midnight() + 31 * MINUTE_MS);
+
+  const a = createFirst.tables.file_versions.get(versionKey("abc123", "file-1"));
+  const b = hideFirst.tables.file_versions.get(versionKey("abc123", "file-1"));
+  assert.equal(b.created_at, midnight(), "the create corrects the hide's time, and does not bill zero");
+  assert.equal(b.hidden_at, midnight() + 30 * MINUTE_MS);
+  assert.equal(b.size_bytes, GB, "the hide carries a size and must not set it");
+  for (const field of ["created_at", "hidden_at", "size_bytes"]) {
+    assert.equal(b[field], a[field], `both orders agree on ${field}`);
+  }
+
+  // The bill: 30 minutes of 1 GB is under the hour, so the 1-hour minimum
+  // books 60 GB-minutes either way. Zero would be the broken answer.
+  const now = midnight() + 60 * MINUTE_MS;
+  assert.equal(versionGbMinutesInHour(toVersion(a), midnight(), now), 60);
+  assert.equal(versionGbMinutesInHour(toVersion(b), midnight(), now), 60);
+
+  // The same, through the whole rollup: a full day of trigger firings has to
+  // leave the day's rows summing to what the version cost. The rows are what
+  // is billed - each trigger re-rolls the hour before its own as a grace, so
+  // the returned gbMinutes is a per-run work figure, not the day's total.
+  const dayTotal = async (db) => {
+    let day = 0;
+    for (let h = 0; h < 24; h += 1) {
+      day += (await runMeterCron(db, midnight() + (h + 1) * 60 * MINUTE_MS)).gbMinutes;
+    }
+    const rows = [...db.tables.usage_minutes.values()].reduce(
+      (sum, row) => sum + row.gb_minutes_live,
+      0,
+    );
+    return { day, rows };
+  };
+  const ordered = await dayTotal(createFirst);
+  const reversed = await dayTotal(hideFirst);
+  assert.equal(ordered.rows, 60, "one 1-hour minimum for the version");
+  assert.equal(reversed.rows, 60, "the hide-first order bills the same single minimum");
+  assert.equal(reversed.rows, ordered.rows, "both orders bill the same day");
+});
+
+test("a still-live version's hour is unaffected by another version's shortfall", async () => {
+  // The minimum is per version, not per account: a long-lived version must
+  // not have its hour bumped by a short one's top-up, and the short one must
+  // not get the long one's overlap.
+  const { tables } = makeFakeD1();
+  void tables;
+  const now = midnight() + 60 * MINUTE_MS;
+  const long = toVersion({
+    size_bytes: GB,
+    created_at: midnight(),
+    hidden_at: midnight() + 90 * MINUTE_MS,
+  });
+  const short = toVersion({
+    size_bytes: GB,
+    created_at: midnight() + 20 * MINUTE_MS,
+    hidden_at: midnight() + 30 * MINUTE_MS,
+  });
+  // Hour 00: the long one is live 60 minutes (60), the short one 10 minutes
+  // plus its top-up of 50 (60): 120 together, and each is its own contract.
+  assert.equal(versionGbMinutesInHour(long, midnight(), now), 60);
+  assert.equal(versionGbMinutesInHour(short, midnight(), now), 60);
+});
+
+test("a version hidden exactly on the hour's boundary still books its minimum in that hour", async () => {
+  // created 00:30, hidden 01:00: zero minutes of hour 01, but hour 01 is the
+  // hour it stopped in, so the top-up belongs there. The old early return on
+  // a zero overlap dropped it and the version billed 30 minutes instead of 60.
+  const version = toVersion({
+    size_bytes: GB,
+    created_at: midnight() + 30 * MINUTE_MS,
+    hidden_at: midnight() + 60 * MINUTE_MS,
+  });
+  const now = midnight() + 2 * 60 * MINUTE_MS;
+  assert.equal(versionGbMinutesInHour(version, midnight(), now), 30, "hour 00 is just its overlap");
+  assert.equal(versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now), 30, "hour 01 books the shortfall");
+  const dayTotal =
+    versionGbMinutesInHour(version, midnight(), now) +
+    versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now);
+  assert.equal(dayTotal, MINIMUM_MINUTES_PER_VERSION, "the version costs exactly its hour");
+});
+
+test("a create and hide in the same instant cost one hour, not zero", async () => {
+  // The 1-hour minimum is what makes a burst of saves on one file a bounded
+  // cost. A same-instant pair is that burst's limit case.
+  const version = toVersion({ size_bytes: GB, created_at: midnight(), hidden_at: midnight() });
+  assert.equal(versionGbMinutesInHour(version, midnight(), midnight()), MINIMUM_MINUTES_PER_VERSION);
 });
 
 // --- The rollup ----------------------------------------------------------
@@ -702,22 +867,32 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
     "The request body is not valid JSON.");
   // A body that is not an event at all: a string is a caller's mistake, and
   // coercing it into a list is how an event gets billed to the wrong account.
-  assert.equal((await (await handleStorageEventRequest(post('"nope"'), db, TOKEN)).json()).error,
-    "Send one storage event as a JSON object.");
+  // The batch rule above reports it per event, so the sentence names it.
+  const scalar = await handleStorageEventRequest(post('"nope"'), db, TOKEN);
+  assert.equal(scalar.status, 400);
+  assert.deepEqual((await scalar.json()).rejected, [
+    { index: 0, error: "Send one storage event as a JSON object." },
+  ]);
   // An empty batch.
   assert.equal((await (await handleStorageEventRequest(post("[]"), db, TOKEN)).json()).error,
     "The batch has no events in it.");
-  // One bad event refuses the whole batch: a half-stored batch is a batch the
-  // provider cannot tell from a good one, and it would bill half a day's
-  // events with no record of which.
+  // A bad event does not hold the good ones hostage: the valid ones are
+  // stored, the bad ones are reported per event, and the reply is a 400 so the
+  // provider's own logs show a delivery that was not fully accepted. The
+  // retry such a reply causes is free - the dedup turns the stored events
+  // into repeats and the bad one is reported again.
   const mixed = await handleStorageEventRequest(
     post(JSON.stringify([event({ eventId: "ok-1" }), event({ eventId: "bad", action: "exploded" })])),
     db,
     TOKEN,
   );
   assert.equal(mixed.status, 400);
-  assert.equal((await mixed.json()).error, "Unknown storage event action: exploded");
-  assert.equal(db.tables.file_versions.size, 0);
+  const mixedBody = await mixed.json();
+  assert.equal(mixedBody.ok, false);
+  assert.equal(mixedBody.stored, 1);
+  assert.equal(mixedBody.deduped, 0);
+  assert.deepEqual(mixedBody.rejected, [{ index: 1, error: "Unknown storage event action: exploded" }]);
+  assert.equal(db.tables.file_versions.size, 1, "the good event was stored");
   // An oversized body is refused before it is read.
   const huge = await handleStorageEventRequest(
     post(JSON.stringify(event({ b2FileId: "x".repeat(300 * 1024) }))),
@@ -725,7 +900,9 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
     TOKEN,
   );
   assert.equal(huge.status, 413);
-  assert.equal(db.tables.events_seen.size, 0);
+  // The oversized body was refused before the batch ran, so no event from it
+  // reached the dedup table: the count is the one the mixed batch stored.
+  assert.equal(db.tables.events_seen.size, 1);
   // A storage failure is a 503 and the reason stays in the log.
   const broken = { prepare: () => { throw new Error("D1 is down"); } };
   const failed = await handleStorageEventRequest(post(JSON.stringify(event())), broken, TOKEN);
@@ -759,11 +936,16 @@ test("the hourly trigger rolls the hour that just closed, for every account", as
   );
   // Firing at 01:05 rolls hour 00: one 1 GB and one 10 GB file, an hour each.
   const result = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
-  assert.equal(result.hour, midnight());
+  assert.equal(result.from, midnight());
+  assert.equal(result.through, midnight());
+  assert.equal(result.hours, 1);
   assert.equal(result.accounts, 2);
   assert.equal(result.gbMinutes, 11 * 60);
   assert.equal(db.tables.usage_minutes.get(usageKey("abc", midnight())).gb_minutes_live, 60);
   assert.equal(db.tables.usage_minutes.get(usageKey("def", midnight())).gb_minutes_live, 600);
+  // The mark the run left: the hour rolled, so the next run knows where it
+  // stopped. One row, always id 1.
+  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
   // A file stored at 00:30 has only been stored half an hour when hour 00
   // rolls, and gets no minimum yet: its life can still end young. This is
   // shown in the 01:00 roll of the next hour.
@@ -775,7 +957,9 @@ test("the hourly trigger rolls the hour that just closed, for every account", as
     at("2026-09-30T00:30:00.000Z"),
   );
   const second = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
-  assert.equal(second.hour, midnight());
+  assert.equal(second.through, midnight());
+  // The mark brings the newest rolled hour back within reach: hour 00 is
+  // re-rolled, so an event that arrived after the first roll is in the total.
   // Still 11 hours of the two original files; the half-hour file's 30 GB
   // minutes land too, with nothing on top (it was live when the hour rolled).
   assert.equal(second.gbMinutes, 11 * 60 + 30);
@@ -783,10 +967,109 @@ test("the hourly trigger rolls the hour that just closed, for every account", as
   // runMeterCron above is a replay, and it must not add to the bill.
   const third = await runMeterCron(db, at("2026-09-30T01:06:00.000Z"));
   assert.equal(third.gbMinutes, 11 * 60 + 30);
-  // The next hour: an hour of the half-hour file, now a full hour of it.
+  assert.equal(
+    db.tables.usage_minutes.get(usageKey("ghi", midnight())).gb_minutes_live,
+    30,
+    "one row for the hour, not one per run",
+  );
+  // The next hour: the roll window now starts at the mark and covers both
+  // hours (hour 00 is re-rolled with the half-hour file, hour 01 is new).
   const fourth = await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
-  assert.equal(fourth.hour, midnight() + 60 * MINUTE_MS);
-  assert.equal(fourth.gbMinutes, 11 * 60 + 60);
+  assert.equal(fourth.from, midnight());
+  assert.equal(fourth.through, midnight() + 60 * MINUTE_MS);
+  assert.equal(fourth.hours, 2);
+  // The two hours' rows: hour 00 holds the original 11 GB x 60 minutes plus
+  // the half-hour file's 30 GB-minutes; hour 01 holds 11 GB x 60 minutes plus
+  // the half-hour file's first full hour. Each hour is one row, so the two
+  // together are exactly what the versions cost.
+  assert.equal(
+    db.tables.usage_minutes.get(usageKey("abc", midnight())).gb_minutes_live,
+    60,
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(usageKey("abc", midnight() + 60 * MINUTE_MS)).gb_minutes_live,
+    60,
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(usageKey("ghi", midnight())).gb_minutes_live,
+    30,
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(usageKey("ghi", midnight() + 60 * MINUTE_MS)).gb_minutes_live,
+    60,
+  );
+  // Every account-hour is one row: a re-roll replaces, never accumulates.
+  // The window is 48 hours from hour 00, plus hour 00 re-rolled as the grace
+  // of the last run - six account-hours across three accounts.
+  assert.equal(db.tables.usage_minutes.size, 6);
+});
+
+test("a missed trigger is caught up by the next run, and re-running bills nothing twice", async () => {
+  // The review's finding: a trigger that did not fire left its hour rolled
+  // never, so the hour was lost for good. The watermark makes the next run
+  // drain it.
+  const db = makeFakeD1();
+  await recordEvent(db, validateEvent(event()), midnight());
+  // Hour 00 was never rolled. Three hours later the trigger fires once: the
+  // mark is absent, so the run starts at the oldest version (hour 00) and
+  // rolls every closed hour through hour 02. Each hour is one 1 GB row.
+  const caughtUp = await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
+  assert.equal(caughtUp.from, midnight());
+  assert.equal(caughtUp.through, midnight() + 2 * 60 * MINUTE_MS);
+  assert.equal(caughtUp.hours, 3);
+  assert.equal(db.tables.usage_minutes.size, 3, "every missing hour got its row");
+  const rowsBefore = [...db.tables.usage_minutes.values()].map((r) => r.gb_minutes_live);
+  assert.deepEqual(rowsBefore, [60, 60, 60]);
+  // The next run re-rolls the newest hour as its grace and rolls the one after
+  // it; the total stays the version's own cost, with no hour billed twice.
+  const next = await runMeterCron(db, at("2026-09-30T04:05:00.000Z"));
+  assert.equal(next.hours, 2);
+  assert.equal(
+    [...db.tables.usage_minutes.values()].reduce((sum, r) => sum + r.gb_minutes_live, 0),
+    4 * 60,
+    "four hours of one 1 GB version, nothing double-counted",
+  );
+  assert.equal(db.tables.usage_minutes.size, 4);
+});
+
+test("one run drains at most MAX_CATCHUP_HOURS, and the next continues where it stopped", async () => {
+  // A long outage must not make one run unbounded work. The mark moves to the
+  // last hour actually rolled, so the next run starts there and no hour is
+  // skipped.
+  const db = makeFakeD1();
+  await recordEvent(db, validateEvent(event()), midnight());
+  // Ten days later: 240 closed hours. The first run rolls the first 48.
+  const longAfter = midnight() + 240 * 60 * MINUTE_MS;
+  const first = await runMeterCron(db, longAfter + 5 * MINUTE_MS);
+  assert.equal(first.hours, MAX_CATCHUP_HOURS);
+  assert.equal(first.from, midnight());
+  assert.equal(first.through, midnight() + (MAX_CATCHUP_HOURS - 1) * 60 * MINUTE_MS);
+  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, first.through);
+  const second = await runMeterCron(db, longAfter + 10 * MINUTE_MS);
+  // The grace re-rolls the last hour inside the window, then continues: 48
+  // hours again, 47 of them new.
+  assert.equal(second.from, first.through);
+  assert.equal(second.hours, MAX_CATCHUP_HOURS);
+  assert.equal(second.through, first.through + (MAX_CATCHUP_HOURS - 1) * 60 * MINUTE_MS);
+  // Every hour rolled exactly once as the catch-up walks forward, and the
+  // rows for the two windows do not overlap.
+  assert.equal(db.tables.usage_minutes.size, MAX_CATCHUP_HOURS + MAX_CATCHUP_HOURS - 1);
+});
+
+test("the dedup table is purged of rows older than the retention window", async () => {
+  const db = makeFakeD1();
+  await recordEvent(db, validateEvent(event({ eventId: "old" })), midnight());
+  await recordEvent(
+    db,
+    validateEvent(event({ eventId: "new", createdAt: midnight() + 8 * 24 * 60 * MINUTE_MS })),
+    midnight() + 8 * 24 * 60 * MINUTE_MS,
+  );
+  assert.equal(db.tables.events_seen.size, 2);
+  await runMeterCron(db, midnight() + 8 * 24 * 60 * MINUTE_MS + 5 * MINUTE_MS);
+  assert.equal(db.tables.events_seen.size, 1, "the week-old dedup row is gone");
+  assert.equal(db.tables.events_seen.has("new"), true);
+  // The window is the one the module states, so a test cannot drift from it.
+  assert.equal(EVENTS_SEEN_RETENTION_MS, 7 * 24 * 60 * MINUTE_MS);
 });
 
 test("the hourly trigger fails loudly when the binding is missing", async () => {
@@ -832,18 +1115,20 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   );
   // The trigger's scheduledTime is the clock, not Date.now(), so the rollup is
   // the closed hour whether the test runs now or in a year.
-  assert.equal(rolled.hour, midnight());
+  assert.equal(rolled.through, midnight());
   assert.equal(rolled.accounts, 1);
   assert.equal(rolled.gbMinutes, 60);
 
-  // The waitlist and the first-run page still route as they did.
+  // The waitlist and the first-run page still route as they did. The status
+  // endpoint is now closed until the sign-in flow resolves an account
+  // (issue #45), so an anonymous poll gets 401 and no device data.
   const waitlist = await worker.fetch(
     new Request("https://drive.example/api/waitlist", { method: "GET" }),
     {},
   );
   assert.equal(waitlist.status, 405);
   const status = await worker.fetch(new Request("https://drive.example/api/first-run-status"), {});
-  assert.equal((await status.json()).state, "waiting");
+  assert.equal(status.status, 401);
 });
 
 test("the migration creates exactly the tables and indexes the meter writes", () => {
@@ -851,7 +1136,7 @@ test("the migration creates exactly the tables and indexes the meter writes", ()
   // two primary keys they upsert on. Reading the migration here is the same
   // gate test/status.test.mjs uses for the shipped page's copy.
   const migration = readFileSync(new URL("../migrations/0002_meter.sql", import.meta.url), "utf8");
-  for (const table of ["file_versions", "usage_minutes", "events_seen"]) {
+  for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state"]) {
     assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
   // The dedup's key: one row per event id, so a redelivery is a no-op.
@@ -859,6 +1144,16 @@ test("the migration creates exactly the tables and indexes the meter writes", ()
   // The two upserts' keys.
   assert.match(migration, /PRIMARY KEY \(account_id, b2_file_id\)/);
   assert.match(migration, /PRIMARY KEY \(account_id, hour\)/);
+  // The indexes every statement needs: the hour's version lookup, the account
+  // list's DISTINCT, and the purge's received_at walk.
+  for (const index of [
+    "file_versions_created_at_idx",
+    "file_versions_account_created_at_idx",
+    "usage_minutes_hour_idx",
+    "events_seen_received_at_idx",
+  ]) {
+    assert.ok(migration.includes(index), `migration is missing index: ${index}`);
+  }
   // The columns every statement names.
   for (const column of [
     "size_bytes INTEGER NOT NULL",
