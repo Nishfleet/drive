@@ -189,6 +189,36 @@ export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG
 }
 
 /**
+ * The month's bill in dollars for a size held all month, from monthBillCents()
+ * — the one function that turns the config into money — with no downloads.
+ * The pricing page's worked examples are all "kept all month" figures
+ * (drive issue #23, folded #86), so this is the one call both the copy gate and
+ * anything else quoting a size can share: the storage figure the examples
+ * print beside the total, and the total the invoice charges.
+ *
+ * The metered half is that many GB stored for every minute of an average
+ * month, over the spec's own 43,800-minute divisor — the conversion every
+ * consumer needs, in one place.
+ * @param {number} tb the stored size in TB, held the whole month
+ * @param {object} [config=BILLING_CONFIG]
+ * @returns {{storageUsd: number, creditUsd: number, billUsd: number}}
+ */
+export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
+  checked(tb, "tb");
+  const peakGb = tb * GB_PER_TB;
+  const bill = monthBillCents({
+    gbMinutes: peakGb * MINUTES_PER_MONTH,
+    peakGb,
+    config,
+  });
+  return Object.freeze({
+    storageUsd: bill.storageCents / 100,
+    creditUsd: bill.creditCents / 100,
+    billUsd: bill.totalCents / 100,
+  });
+}
+
+/**
  * The month's bill, in integer cents (drive issue #76): the one function the
  * invoice, the usage page and the cap all read.
  *

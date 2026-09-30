@@ -21,6 +21,7 @@ import {
   softwareApplicationLd,
 } from "../src/seo.js";
 import { PRICE } from "../src/pricing.js";
+import { monthlyBillForStoredTb } from "../src/billing.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
@@ -240,14 +241,24 @@ test("llms.txt describes the drive and the current price rule", () => {
   );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The spec's own worked figures, so an answer engine cannot quote a number
-  // the pricing page contradicts. Each is min(metered, max($12, $8 x TB)).
-  for (const figure of [
-    "800 GB kept all month = $12", // min(16, 12)
-    "1.6 TB = $12.80", // min(32, 12.80)
-    "2 TB = $16", // min(40, 16)
-    "5 TB = $40", // min(100, 40)
+  // the pricing page contradicts. Each is min(metered, max($12, $8 x TB))
+  // less the $1 free, from the one bill function (issues #23, #76).
+  for (const [label, tb] of [
+    ["800 GB kept all month", 0.8],
+    ["1.6 TB", 1.6],
+    ["2 TB", 2],
+    ["5 TB", 5],
   ]) {
-    assert.ok(llms.includes(figure), `llms.txt must carry "${figure}"`);
+    const bill = monthlyBillForStoredTb(tb);
+    const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
+    assert.ok(
+      llms.includes(`${label} = ${dollars(bill.billUsd)}`),
+      `llms.txt must carry the ${dollars(bill.billUsd)} bill for ${label}`,
+    );
+    assert.ok(
+      llms.includes(dollars(bill.storageUsd)),
+      `llms.txt must name the ${dollars(bill.storageUsd)} storage figure for ${label}`,
+    );
   }
   // No claim the page itself is not allowed to make.
   assert.doesNotMatch(llms, /unlimited/i);

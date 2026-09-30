@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — about $20 per TB a month</title>
+  <title>Drive — 2¢ per GB, never more than $12 a TB</title>
   <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
@@ -22,14 +22,14 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
   <meta property="og:site_name" content="Drive">
-  <meta property="og:title" content="Drive — about $20 per TB a month">
+  <meta property="og:title" content="Drive — 2¢ per GB, never more than $12 a TB">
   <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — about $20 per TB a month. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:image:alt" content="Drive — 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Drive — about $20 per TB a month">
+  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $12 a TB">
   <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
   <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <script type="application/ld+json">
@@ -52,7 +52,7 @@
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. The bill is the metered cost capped at max($12, $8 × TB stored): a flat $12 up to 1.5 TB, then $8 for each TB after."
+    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. The bill is the metered cost capped at max($12, $8 × TB stored) less the $1 free every month, never below zero: a flat $12 up to 1.5 TB, then $8 for each TB after."
   }
 }
   </script>
@@ -165,15 +165,6 @@ main {
   letter-spacing: -0.02em;
   line-height: 1.02;
   font-size: clamp(44px, 7.6vw, 92px);
-}
-
-.price h1 .qualifier {
-  font-size: 0.32em;
-  font-style: italic;
-  font-weight: 400;
-  color: var(--ink-soft);
-  vertical-align: 0.9em;
-  margin-right: 0.12em;
 }
 
 .price h1 .amount {
@@ -521,6 +512,21 @@ main {
   }
 }
 
+/* The example rows carry two figures now (what the ceiling charges, then what
+   the $1 free leaves), so on a narrow phone they stack instead of forcing the
+   row wider than the viewport. */
+@media (max-width: 520px) {
+  .example {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .example dd {
+    font-size: 16px;
+    white-space: normal;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -538,11 +544,10 @@ main {
   <main>
     <section class="price" aria-labelledby="price-heading">
       <h1 id="price-heading">
-        <span class="qualifier">about</span>
-        <span class="amount">$20</span>
-        <span class="unit">per TB a&nbsp;month</span>
+        <span class="amount">2¢</span>
+        <span class="unit">per GB, billed by the&nbsp;minute</span>
       </h1>
-      <p class="sub">2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
+      <p class="sub">Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
       <p class="free">$1 free every month, no card needed</p>
 
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
@@ -565,11 +570,11 @@ main {
 
     <section class="strip" aria-label="You pay only for what you store">
       <div class="strip-bar" role="img"
-           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing">
-        <span class="strip-full">60% full &middot; $12</span>
+           aria-label="A one terabyte drive kept sixty percent full bills eleven dollars a month after the free dollar; the empty forty percent bills nothing">
+        <span class="strip-full">60% full &middot; $11</span>
         <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $11 a month: $12 of storage, less the free $1. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
@@ -577,22 +582,22 @@ main {
       <dl class="examples-list">
         <div class="example">
           <dt>500 GB for 3 days</dt>
-          <dd>about $1</dd>
+          <dd>about $1 &rarr; <strong>$0</strong> after the free $1</dd>
         </div>
         <div class="example">
           <dt>800 GB kept all month</dt>
-          <dd>$12</dd>
+          <dd>$12 &rarr; <strong>$11</strong> after the free $1</dd>
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>$16<span class="compare">(Space $27)</span></dd>
+          <dd>$16 &rarr; <strong>$15</strong> after the free $1<span class="compare">(Space $27)</span></dd>
         </div>
         <div class="example">
           <dt>5 TB kept all month</dt>
-          <dd>$40<span class="compare">(Space $63)</span></dd>
+          <dd>$40 &rarr; <strong>$39</strong> after the free $1<span class="compare">(Space $63)</span></dd>
         </div>
       </dl>
-      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after.</p>
+      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after — less the free $1, so 2&nbsp;TB is $15.</p>
       <p class="examples-note">Old versions stay free: today's saves a day, then one save a day for 30 days.</p>
     </section>
 

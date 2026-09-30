@@ -23,7 +23,7 @@ import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
 const SITE_NAME = "Drive";
-const SITE_TITLE = "Drive — about $20 per TB a month";
+const SITE_TITLE = `Drive — ${PRICE.titleLine}`;
 // The same sentence the page's own meta description already carries, so the
 // search result, the share card and the page agree word for word.
 const SITE_DESCRIPTION = `A Finder drive for people and their agents. ${PRICE.ceiling}`;

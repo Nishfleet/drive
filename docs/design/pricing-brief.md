@@ -93,10 +93,14 @@ ledger tone that the buyer's comparison actually needs.
    the strip running full width under it. Who it's for, what it does and a real
    next action are all above 900px tall.
 3. **Typography rhythm.** Display face: a high-contrast serif for the number
-   ("about $20 per TB a month" as one line, not a fragment). Body: a neutral
-   humanist sans. Numerals in the examples and the strip get the mono face, so
-   the arithmetic is visibly arithmetic. Scale steps 1.25, body 17px, price
-   76px at 1440px, clamp to 40px at 360px.
+   ("2¢" as one line, with "per GB, billed by the minute" set under it, not a
+   fragment). Body: a neutral humanist sans. Numerals in the examples and the
+   strip get the mono face, so the arithmetic is visibly arithmetic. Scale
+   steps 1.25, body 17px, price 76px at 1440px, clamp to 40px at 360px.
+   (Issue #23's rework changed the headline: it was "about $20 per TB a
+   month", which is Space's price, not ours, and the brief's rule 6 below
+   bars unsourced or rival figures in our own voice. The rate is the headline
+   now, with the ceiling under it.)
 4. **One accent.** Ink blue `#1f3a5f`, used for the filled 40%, the focus ring
    and the form's submit. No second accent anywhere.
 5. **CTA hierarchy.** One filled button ("Join the waitlist"), one text link
@@ -134,7 +138,9 @@ The eyebrow heading failed AA at 3.48:1 on the first pass (`--ink-faint: #8a8377
 it is now `#6f6a5f` (4.99:1) and re-measured live.
 
 Screenshots: `live-desktop.png`, `live-phone.png`, `live-phone-360.png`,
-`live-phone-submitted.png` (the confirmed form state).
+`live-phone-submitted.png` (the confirmed form state). The rate headline and the
+$1 free in the worked examples are issue #23's rework, re-shot as
+`live-desktop-ceiling.png` and `live-phone-ceiling.png`.
 
 ### Live waitlist rows (`drive-waitlist`, `93c9f523-159c-4261-8541-d4c059906df3`)
 
