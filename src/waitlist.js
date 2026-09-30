@@ -1,13 +1,19 @@
 // Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
 // so node --test can exercise every branch without a running runtime.
 import { failureMessage } from "./messages.js";
+import isEmail from "validator/lib/isEmail.js";
 
 export const SOURCES = ["pricing-page", "business"];
 
 const MAX_EMAIL_LENGTH = 254;
-// Deliberately conservative: one @, no spaces, a dot in the domain, no
-// control characters. Anything more clever rejects real addresses.
-const EMAIL_PATTERN = /^[^\s@,;:<>"\\[\]]+@[^\s@,;:<>"\\[\]]+\.[a-z]{2,}$/i;
+const MAX_BODY_BYTES = 4096;
+
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("body too large");
+    this.name = "BodyTooLargeError";
+  }
+}
 
 /**
  * Returns { email, source } or { error }.
@@ -27,7 +33,7 @@ export function validateSignup(input) {
   if (email.length > MAX_EMAIL_LENGTH) {
     return { error: "That email address is too long." };
   }
-  if (!EMAIL_PATTERN.test(email)) {
+  if (!isEmail(email)) {
     return { error: "That does not look like an email address." };
   }
   const requested = typeof input.source === "string" ? input.source.trim() : "";
@@ -82,27 +88,69 @@ export async function recordSignup(db, signup) {
   return { already: true, row: row(existing) };
 }
 
-function json(body, status) {
+function json(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      ...headers,
     },
   });
 }
 
+// Two layers, because either alone is bypassable: a declared content-length
+// is checked first so an oversized body is rejected without being read at
+// all, and the stream is counted as it arrives so a request that declares
+// nothing (or lies about a smaller size) is stopped at the same limit.
+async function readLimitedBody(request, maxBytes) {
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const length = Number(declared);
+    if (Number.isFinite(length) && length > maxBytes) {
+      throw new BodyTooLargeError();
+    }
+  }
+  const stream = request.body;
+  if (stream === null) {
+    return new Uint8Array(0);
+  }
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new BodyTooLargeError();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function readSignupRequest(request) {
   const contentType = request.headers.get("content-type") || "";
+  const bytes = await readLimitedBody(request, MAX_BODY_BYTES);
   if (contentType.includes("application/json")) {
     try {
-      return validateSignup(await request.json());
+      return validateSignup(JSON.parse(new TextDecoder().decode(bytes)));
     } catch {
       return { error: "The request body is not valid JSON." };
     }
   }
   // The no-JavaScript form post lands here.
-  const form = await request.formData();
+  const form = await new Response(bytes, {
+    headers: { "content-type": contentType },
+  }).formData();
   return validateSignup({
     email: form.get("email"),
     source: form.get("source"),
@@ -129,20 +177,64 @@ export function isSameOriginRequest(request) {
  * Handles every method on /api/waitlist and always returns a Response.
  * @param {Request} request
  * @param {D1Database} db
+ * @param {RateLimitBinding|undefined} rateLimiter
  */
-export async function handleWaitlistRequest(request, db) {
+export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (request.method !== "POST") {
     return new Response("Method not allowed. POST an email to join.", {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
   }
+
   if (!isSameOriginRequest(request)) {
+    // Checked before the limiter: a cross-site POST is rejected without
+    // reading a body or touching D1, so it does no work and must not spend
+    // the caller's quota (drive#28 review).
     return json(
       { error: "Sign-ups are only accepted from the drive page." },
       403,
     );
   }
+
+  // Rate limit next: it bounds the work that actually costs something (a body
+  // parse and a D1 write), so it runs before both.
+  if (!rateLimiter) {
+    // The binding is missing on this deployment: an operator problem, so it
+    // goes to the log by name and the visitor gets the table's generic words,
+    // never a binding name or a stack. Fails closed: an unrate-limited
+    // endpoint is the case this binding exists to prevent.
+    console.error("waitlist: WAITLIST_RATE_LIMITER binding is not configured");
+    return json({ error: failureMessage("unexpected") }, 503);
+  }
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp === null) {
+    // Cloudflare always sets this header, so a request without it is not one
+    // of ours. It lands in one shared bucket on purpose: without a client IP
+    // there is nothing finer to key on, and the log line is how an operator
+    // sees it.
+    console.warn(
+      "waitlist: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
+    );
+  }
+  const key = clientIp === null ? "unknown" : clientIp;
+  let success;
+  try {
+    ({ success } = await rateLimiter.limit({ key }));
+  } catch (error) {
+    // A rate limiter failure is an operator problem. Fail closed with the
+    // table's generic words; the reason stays in the log.
+    console.error("waitlist: the rate limiter call failed", error);
+    return json({ error: failureMessage("unexpected") }, 503);
+  }
+  if (!success) {
+    return json(
+      { error: failureMessage("rate-limited") },
+      429,
+      { "retry-after": "60" },
+    );
+  }
+
   if (!db) {
     // The binding is missing on this deployment: an operator problem, so it
     // goes to the log by name and the visitor gets the table's storage-down
@@ -155,8 +247,11 @@ export async function handleWaitlistRequest(request, db) {
   try {
     signup = await readSignupRequest(request);
   } catch (error) {
-    // request.formData() throws on a malformed body. The raw parser error is
-    // useful in the log and is never shown to the visitor.
+    if (error instanceof BodyTooLargeError) {
+      return json({ error: failureMessage("body-too-large") }, 413);
+    }
+    // request.formData() or JSON.parse() throws on a malformed body. The
+    // raw parser error is useful in the log and is never shown to the visitor.
     console.error("waitlist: could not read the request body", error);
     return json({ error: failureMessage("unexpected") }, 400);
   }
@@ -165,18 +260,10 @@ export async function handleWaitlistRequest(request, db) {
   }
 
   try {
-    const { already, row: stored } = await recordSignup(db, signup);
-    return json(
-      {
-        ok: true,
-        already,
-        id: stored.id,
-        email: stored.email,
-        source: stored.source,
-        created_at: stored.created_at,
-      },
-      already ? 200 : 201,
-    );
+    await recordSignup(db, signup);
+    // The response is identical whether the address was already on the list
+    // or not — no enumeration oracle, no echo of stored data.
+    return json({ ok: true }, 200);
   } catch (error) {
     // Storage failure is the table's storage-down message with the reason in
     // the log only: the raw error text never reaches the visitor.

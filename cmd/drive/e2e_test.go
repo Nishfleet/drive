@@ -295,19 +295,39 @@ func waitForMount(t *testing.T, cmd *exec.Cmd, dir string) bool {
 	return false
 }
 
-// driveBin builds the CLI once and returns its path.
-var builtBinary string
+// driveBin builds the CLI once and returns its path. The binary outlives the
+// test that built it: a per-test TempDir would be deleted with that test, and
+// a second caller would then exec a path that no longer exists.
+var (
+	builtBinary string
+	builtBinDir string
+)
 
 func driveBin(t *testing.T) string {
 	t.Helper()
 	if builtBinary != "" {
 		return builtBinary
 	}
-	out := filepath.Join(t.TempDir(), "drive")
+	dir, err := os.MkdirTemp("", "drive-bin-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	builtBinDir = dir
+	out := filepath.Join(dir, "drive")
 	cmd := exec.Command("go", "build", "-o", out, ".")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, b)
 	}
 	builtBinary = out
-	return out
+	return builtBinary
+}
+
+// TestMain removes the built binary's directory after the run, since no single
+// test owns it (any test may have been the one to build it).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtBinDir != "" {
+		_ = os.RemoveAll(builtBinDir)
+	}
+	os.Exit(code)
 }

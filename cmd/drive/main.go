@@ -13,10 +13,19 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
+  drive init [flags]                    find installed agent tools and connect each to the drive
+  drive agents [flags]                  list agent tools and whether the drive is connected
+  drive agents connect <tool> [flags]   connect one agent tool to the drive
+  drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
-  drive status [flags]     whether the drive is mounted, and where
+  drive status [flags]     the mount, the upload queue, and this month's cost
+  drive logout [flags]     stop the mount and delete this device's key and config
   drive version            print the version
+
+Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
+stock MCP filesystem server over the drive folder, using the tool's own
+mcp add command or its JSON config file.
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
@@ -40,12 +49,18 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "init":
+		err = runInit(os.Args[2:])
+	case "agents":
+		err = runAgents(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "logout":
+		err = runLogout(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -123,39 +138,6 @@ func runUnmount(args []string) error {
 		return errFlagParse
 	}
 	return Unmount(CurrentGOOS(), common.home)
-}
-
-func runStatus(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	common := addCommonFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		return errFlagParse
-	}
-	home := common.home
-	mountDir := DefaultMountDir(home)
-	on, err := Mounted(CurrentGOOS(), home)
-	if err != nil {
-		return err
-	}
-	state := "not mounted"
-	if on {
-		state = "mounted"
-	}
-	fmt.Printf("drive: %s\n", state)
-	fmt.Printf("mount dir: %s\n", mountDir)
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	loginItem := LoginItemPath(CurrentGOOS(), home)
-	exists := "absent"
-	if _, err := os.Stat(loginItem); err == nil {
-		exists = "present"
-	}
-	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
-		fmt.Printf("entries: %d\n", n)
-	}
-	return nil
 }
 
 // countEntries lists a mount dir with a deadline. A FUSE mount whose backing
