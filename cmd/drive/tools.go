@@ -37,7 +37,14 @@ type Runner interface {
 // ExecRunner runs the real command.
 type ExecRunner struct{}
 
+// ExecRunner runs the real command. name and args are never taken from user
+// input: every caller passes a Tool from the tools() registry and argv built
+// by expand() from that row. The binary is looked up on PATH (claude, codex,
+// gemini), and DriveDir reaches args only as the user's own --home value on
+// their own machine. exec.Command takes argv, not a shell, so no argument is
+// word-split or interpreted.
 func (ExecRunner) Run(name string, args ...string) ([]byte, error) {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- command comes from the fixed tools() registry, argv from expand(); see the audit above.
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "),
