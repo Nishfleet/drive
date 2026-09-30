@@ -20,6 +20,7 @@ const REQUIRED_PATHS = [
   "disk-cache-full",
   "storage-down",
   "payment-failed",
+  "unauthorized",
 ];
 
 // Every entry must have exactly these keys, no more, no less (sorted for the
@@ -41,7 +42,7 @@ const SECRET_MARKERS = [
   /[A-Za-z0-9+/]{32,}/, // base64-like token run (no legitimate sentence has this)
 ];
 
-test("the six named failure paths exist", () => {
+test("the named failure paths exist", () => {
   for (const key of REQUIRED_PATHS) {
     assert.ok(key in FAILURE_MESSAGES, `missing required path: ${key}`);
   }
