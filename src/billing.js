@@ -313,9 +313,28 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       gbMonths: months.toFixed(2),
       downloads: `${formatBytes(downloadBytes)} of ${formatBytes(downloads.freeBytes)} free`,
       cost: formatUsd(bill),
+      // Two caps, because they are two things: `cap` is the cap writes stop
+      // at (a card-less account's is the free $1, not the account's own) and
+      // `accountCap` is the account's own setting, which is what the page's
+      // cap slider shows.
       cap: formatUsd(effectiveCap),
+      accountCap: formatUsd(capUsd),
     }),
   });
+}
+
+/**
+ * A real calendar day in YYYY-MM-DD form. The pattern alone would accept
+ * 2026-09-40; the parse-and-round-trip rejects a day the meter's rollup could
+ * not have produced, including a day a month does not have.
+ * @param {unknown} value
+ */
+function isDay(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const time = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
 }
 
 /**
@@ -334,9 +353,9 @@ function storedSeries(entries) {
         `usage.storedDaily[${index}] must be a {day, gb} day, got ${String(entry)}`,
       );
     }
-    if (typeof entry.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(entry.day)) {
+    if (!isDay(entry.day)) {
       throw new TypeError(
-        `usage.storedDaily[${index}].day must be a YYYY-MM-DD date, got ${String(entry.day)}`,
+        `usage.storedDaily[${index}].day must be a real YYYY-MM-DD date, got ${String(entry.day)}`,
       );
     }
     checked(entry.gb, `usage.storedDaily[${index}].gb`);

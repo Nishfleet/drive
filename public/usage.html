@@ -302,62 +302,75 @@ h2 {
     </section>
 
     <section aria-labelledby="month-heading">
-      <h2 id="month-heading">This month</h2>
+      <h2 id="month-heading" tabindex="-1">This month</h2>
       <p class="saved" id="saved" hidden></p>
       <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
       </div>
-
-      <figure class="chart">
-        <svg id="chart" viewBox="0 0 30 100" preserveAspectRatio="none" role="img" aria-label="Stored size over the last 30 days" hidden>
-          <polyline id="chart-line" fill="none" stroke-width="2"></polyline>
-        </svg>
-        <figcaption>Stored GB, last 30 days</figcaption>
-      </figure>
-      <div class="empty" id="storage-empty">
-        <p class="what">No storage history yet.</p>
-        <p class="next">It fills in from the drive's first day on the meter.</p>
-      </div>
-
-      <dl class="readout">
-        <div class="pair">
-          <dt>Stored GB now</dt>
-          <dd id="stored-now">0 B</dd>
-        </div>
-        <div class="pair">
-          <dt>GB-months so far</dt>
-          <dd id="gb-months">0.00</dd>
-        </div>
-        <div class="pair">
-          <dt>Cost so far</dt>
-          <dd id="cost">$0.00</dd>
-        </div>
-      </dl>
     </section>
 
-    <section aria-labelledby="downloads-heading">
-      <h2 id="downloads-heading">Downloads</h2>
-      <dl class="readout">
-        <div class="pair">
-          <dt>Downloads</dt>
-          <dd id="downloads-line">0 B of 0 B free</dd>
+    <!-- Every number below is the endpoint's, so nothing here is shown until a
+         read has landed: a month that has not been read must not paint as a
+         priced month of zeros. Without JavaScript there is no read at all, and
+         this says so instead of leaving a blank page. -->
+    <div id="usage-body" hidden>
+      <section aria-labelledby="stored-heading">
+        <h2 id="stored-heading">Stored</h2>
+        <figure class="chart" id="chart-figure">
+          <svg id="chart" viewBox="0 0 30 100" preserveAspectRatio="none" role="img" aria-label="Stored size over the last 30 days" hidden>
+            <polyline id="chart-line" fill="none" stroke-width="2"></polyline>
+          </svg>
+          <figcaption>Stored GB, last 30 days</figcaption>
+        </figure>
+        <div class="empty" id="storage-empty" hidden>
+          <p class="what">No storage history yet.</p>
+          <p class="next">It fills in from the drive's first day on the meter.</p>
         </div>
-      </dl>
-      <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
-    </section>
 
-    <section aria-labelledby="cap-heading">
-      <h2 id="cap-heading">Your cap</h2>
-      <div class="cap">
-        <input type="range" id="cap-slider" min="1" max="12" step="1" value="12" disabled aria-describedby="cap-note">
-        <p class="cap-value" id="cap-value">$12.00</p>
-      </div>
-      <div class="empty" id="cap-note">
-        <p class="what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-        <p class="next">Changing the cap from this page arrives with accounts.</p>
-      </div>
-    </section>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Stored GB now</dt>
+            <dd id="stored-now"></dd>
+          </div>
+          <div class="pair">
+            <dt>GB-months so far</dt>
+            <dd id="gb-months"></dd>
+          </div>
+          <div class="pair">
+            <dt>Cost so far</dt>
+            <dd id="cost"></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="downloads-heading">
+        <h2 id="downloads-heading">Downloads</h2>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Downloads</dt>
+            <dd id="downloads-line"></dd>
+          </div>
+        </dl>
+        <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
+      </section>
+
+      <section aria-labelledby="cap-heading">
+        <h2 id="cap-heading">Your cap</h2>
+        <div class="cap">
+          <label for="cap-slider">Monthly cap, in dollars</label>
+          <input type="range" id="cap-slider" min="0.01" max="12" step="0.01" value="12" disabled aria-describedby="cap-note">
+          <p class="cap-value" id="cap-value"></p>
+        </div>
+        <div class="empty" id="cap-note">
+          <p class="what">At the cap the drive goes read-only; nothing is ever deleted.</p>
+          <p class="next">Changing the cap from this page arrives with accounts.</p>
+        </div>
+      </section>
+    </div>
+    <noscript>
+      <p class="hint">This page reads this month's usage from the drive service, so it needs JavaScript. <a href="/get-started">Get started</a> instead.</p>
+    </noscript>
   </main>
 
   <footer class="footer">
@@ -383,8 +396,10 @@ const UNREACHABLE = {
 
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
+const bodyEl = document.getElementById("usage-body");
 const chartEl = document.getElementById("chart");
 const chartLine = document.getElementById("chart-line");
+const chartFigureEl = document.getElementById("chart-figure");
 const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
 const gbMonthsEl = document.getElementById("gb-months");
@@ -400,12 +415,20 @@ function sayUnreachable() {
   statusEl.hidden = false;
 }
 
+function sayReachable() {
+  statusEl.hidden = true;
+  // The first successful read is what puts the numbers on the page; until then
+  // nothing painted them, so an unread month never looks like an empty one.
+  bodyEl.hidden = false;
+}
+
 // The chart's viewBox is one unit per day and 100 units tall, so a day is its
 // own x and the y is that day's share of the month's largest day. Nothing else
 // is scaled: the labels around the chart are the endpoint's own strings.
 function drawChart(series) {
   if (series.length === 0) {
     chartEl.hidden = true;
+    chartFigureEl.hidden = true;
     storageEmptyEl.hidden = false;
     return;
   }
@@ -421,28 +444,46 @@ function drawChart(series) {
   chartLine.setAttribute("points", marks);
   chartEl.setAttribute(
     "aria-label",
-    `Stored size from ${first.gb} GB on ${first.day} to ${last.gb} GB on ${last.day}, at most ${largest} GB`,
+    `Stored size from ${Math.round(first.gb)} GB on ${first.day} to ${Math.round(last.gb)} GB on ${last.day}, at most ${Math.round(largest)} GB`,
   );
   chartEl.hidden = false;
+  chartFigureEl.hidden = false;
   storageEmptyEl.hidden = true;
 }
+
+// The five strings the readouts print, in the order render() sets them. A
+// payload missing one is as unusable as no answer: setting a missing label
+// would put "undefined" on the page, which is the failure this check exists
+// for.
+const LABEL_KEYS = ["storedNow", "gbMonths", "downloads", "cost", "cap", "accountCap"];
 
 // A payload that is not the summary shape is as unusable as no answer, so it
 // leaves the numbers on the page alone and says the service was unreachable.
 function render(summary) {
+  if (typeof summary !== "object" || summary === null) {
+    sayUnreachable();
+    return;
+  }
+  const labels = summary.labels;
+  const cap = summary.cap;
   if (
-    typeof summary !== "object" ||
-    summary === null ||
+    typeof labels !== "object" ||
+    labels === null ||
+    LABEL_KEYS.some((key) => typeof labels[key] !== "string") ||
+    typeof cap !== "object" ||
+    cap === null ||
+    !Number.isFinite(cap.capUsd) ||
+    !Number.isFinite(summary.ceilingUsd) ||
     !Array.isArray(summary.storedDaily) ||
-    typeof summary.labels !== "object" ||
-    summary.labels === null ||
-    typeof summary.cap !== "object" ||
-    summary.cap === null
+    (summary.saved !== null &&
+      (typeof summary.saved !== "object" ||
+        summary.saved === null ||
+        typeof summary.saved.copy !== "string"))
   ) {
     sayUnreachable();
     return;
   }
-  statusEl.hidden = true;
+  sayReachable();
 
   // The saved line is the endpoint's own sentence, shown only when it is a
   // real saving: an empty month has none and stays hidden.
@@ -454,16 +495,17 @@ function render(summary) {
   }
 
   drawChart(summary.storedDaily);
-  storedNowEl.textContent = summary.labels.storedNow;
-  gbMonthsEl.textContent = summary.labels.gbMonths;
-  costEl.textContent = summary.labels.cost;
-  downloadsEl.textContent = summary.labels.downloads;
-  capValueEl.textContent = summary.labels.cap;
+  storedNowEl.textContent = labels.storedNow;
+  gbMonthsEl.textContent = labels.gbMonths;
+  costEl.textContent = labels.cost;
+  downloadsEl.textContent = labels.downloads;
+  capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
-  // month's ceiling or the cap, whichever is larger. It is a display until the
-  // accounts store lands (issue #2), which is why it ships disabled.
-  capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, summary.cap.capUsd)));
-  capSlider.value = String(summary.cap.capUsd);
+  // month's ceiling or the cap, whichever is larger, in whole dollars. It is a
+  // display until the accounts store lands (issue #2), which is why it ships
+  // disabled.
+  capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, cap.capUsd)));
+  capSlider.value = String(cap.capUsd);
 }
 
 async function readMonth() {

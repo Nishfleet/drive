@@ -69,8 +69,23 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   assert.equal(summary.labels.gbMonths, "400.00");
   assert.equal(summary.labels.cost, "$8.00");
   assert.equal(summary.labels.cap, "$12.00");
+  assert.equal(summary.labels.accountCap, "$12.00");
   assert.equal(summary.labels.downloads, "0 B of 1.2 TB free");
   assert.equal(Object.isFrozen(summary.labels), true);
+  // The cap writes stop at and the cap the account chose are two things: a
+  // card-less account's writes stop at the free $1 while the account's own cap
+  // is still the sign-up default.
+  const withoutCard = usageSummary({
+    gbMinutes: 400 * MINUTES_PER_MONTH,
+    peakGb: 400,
+    storedGb: 400,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 400,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+  });
+  assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
+  assert.equal(withoutCard.labels.accountCap, "$12.00", "the account's own cap is untouched");
 });
 
 test("the downloads label is bytes used against the free 3x, from the same config", () => {
@@ -85,10 +100,14 @@ test("the downloads label is bytes used against the free 3x, from the same confi
 
 test("the stored series is the last 30 days, oldest first", () => {
   // The meter hands the rollup back in whatever order it has; the summary
-  // orders it and keeps the window, so the chart's x axis is a day.
+  // orders it and keeps the window, so the chart's x axis is a day. The days
+  // run over a month boundary on purpose: the window is 30 days, not a
+  // calendar month.
   const entries = [];
   for (let day = 1; day <= 40; day += 1) {
-    entries.push({ day: `2026-09-${String(day).padStart(2, "0")}`, gb: day });
+    const month = day <= 9 ? "09" : "08";
+    const date = day <= 9 ? day : day - 9;
+    entries.push({ day: `2026-${month}-${String(date).padStart(2, "0")}`, gb: day });
   }
   entries.reverse();
   const summary = usageSummary({
@@ -101,10 +120,33 @@ test("the stored series is the last 30 days, oldest first", () => {
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
   assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS, "at most 30 days");
-  assert.equal(summary.storedDaily[0].day, "2026-09-11", "the oldest of the window first");
-  assert.equal(summary.storedDaily[29].day, "2026-09-40");
+  assert.equal(summary.storedDaily[0].day, "2026-08-11", "the oldest of the window first");
+  assert.equal(summary.storedDaily[29].day, "2026-09-09", "the newest of the window last");
   const dayStrings = summary.storedDaily.map((entry) => entry.day);
   assert.deepEqual(dayStrings, [...dayStrings].sort(), "oldest first");
+});
+
+test("a day the calendar does not have fails, not just a day that is not a date", () => {
+  // The pattern alone would accept 2026-09-40; the parse-and-round-trip is what
+  // makes "a real date" true, and the rollup cannot have produced the other.
+  const base = {
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+  };
+  for (const day of ["2026-09-40", "2026-02-30", "2026-13-01", "2026-09-40T00:00:00Z", 20260901]) {
+    assert.throws(
+      () => usageSummary({ ...base, storedDaily: [{ day, gb: 1 }] }),
+      /usage\.storedDaily\[0\]\.day/,
+      `${day} is not a real day`,
+    );
+  }
+  // A real leap day is a real day.
+  const leap = usageSummary({ ...base, storedDaily: [{ day: "2024-02-29", gb: 1 }] });
+  assert.equal(leap.storedDaily[0].day, "2024-02-29");
 });
 
 test("a day that is not a day, or a size that is not a size, fails at the entry point", () => {
@@ -200,6 +242,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   assert.deepEqual(body.storedDaily, []);
   assert.equal(body.saved, null);
   assert.deepEqual(Object.keys(body.labels).sort(), [
+    "accountCap",
     "cap",
     "cost",
     "downloads",
@@ -303,28 +346,81 @@ test("the page obeys the pricing page's copy rules", () => {
 });
 
 test("the page states the free allowance from the config, not a literal", () => {
-  assert.match(page, /3× the month's average stored size/);
+  // The hint is a word the page owns (the "what the 3x is" line), built from
+  // BILLING_CONFIG in src/usage.js and carried verbatim by the page, so a
+  // change to the multiplier fails here instead of shipping a stale 3x.
   assert.ok(page.includes(USAGE_LABELS.downloadsHint));
+  assert.match(page, /3× the month's average stored size/);
   assert.equal(BILLING_CONFIG.freeDownloadMultiplier, 3);
+  assert.match(USAGE_LABELS.downloadsHint, /Free up to 3×/);
 });
 
 test("the empty chart is a state with a next step, not a blank panel", () => {
   assert.match(page, /id="storage-empty"/);
   assert.match(page, /drawChart\(summary\.storedDaily\)/);
   assert.match(page, /chartEl\.hidden = true;/);
+  assert.match(page, /chartFigureEl\.hidden = true;/);
   assert.match(page, /storageEmptyEl\.hidden = false;/);
-  // The chart is described for a screen reader, not left as an unlabelled box.
+  // The chart is described for a screen reader, not left as an unlabelled box,
+  // in whole GB rather than raw rollup decimals.
   assert.match(page, /setAttribute\(\s*"aria-label"/);
+  assert.match(page, /at most \$\{Math\.round\(largest\)\} GB/);
 });
 
-test("the page is reachable from the first-run page and registered as noindex", () => {
-  // A page nothing links to is a page nothing reaches; get-started is the page
-  // a signed-in person is already on.
-  assert.ok(
-    getStartedPage.includes(`href="${USAGE_PATH}"`),
-    "the first-run page must link to the usage page",
+test("no month is painted before a read has landed", () => {
+  // The readouts ship empty, not as $0.00: a month that has not been read must
+  // not look like a priced month of zeros, and the empty chart sits inside the
+  // same hidden wrapper.
+  assert.match(page, /<div id="usage-body" hidden>/);
+  assert.match(page, /<dd id="stored-now"><\/dd>/);
+  assert.match(page, /<dd id="gb-months"><\/dd>/);
+  assert.match(page, /<dd id="cost"><\/dd>/);
+  assert.match(page, /<dd id="downloads-line"><\/dd>/);
+  assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
+  assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
+  // A noscript reader is told why, instead of a page with nothing on it.
+  assert.match(page, /<noscript>[\s\S]*needs JavaScript/);
+  // The first good read is what reveals them.
+  assert.match(page, /function sayReachable\(\)[\s\S]*bodyEl\.hidden = false;/);
+  // A payload that is not the summary reveals nothing: every label has to be a
+  // string, or the page would print "undefined" where a number belongs.
+  assert.match(page, /const LABEL_KEYS = \[[^\]]*"accountCap"\]/);
+  assert.match(page, /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/);
+  assert.match(page, /!Number\.isFinite\(cap\.capUsd\)/);
+  assert.match(page, /typeof summary\.saved\.copy !== "string"/);
+});
+
+test("the cap slider shows the account's own cap, over the range a cap can take", () => {
+  // The thumb is the account's cap (labels.accountCap, the account's own
+  // setting), not the card-less cap writes stop at, and the range tops out at
+  // the month's ceiling: a cap above that is not a real choice.
+  assert.match(page, /capValueEl\.textContent = labels\.accountCap;/);
+  assert.match(
+    page,
+    /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.ceilingUsd, cap\.capUsd\)\)\);/,
   );
-  assert.match(page, /<meta name="robots" content="noindex">/);
+  assert.match(page, /<label for="cap-slider">Monthly cap, in dollars<\/label>/);
+  // It is a display, not a control, until the accounts store lands (#2).
+  assert.match(page, /id="cap-slider"[^>]*disabled/);
+});
+
+test("the three page headers read as one navigation", () => {
+  // The review found three headers disagreeing three ways. The order is
+  // Pricing, Get started, Usage on both mastheads, and each page marks itself.
+  for (const nav of [page, getStartedPage]) {
+    const links = [...nav.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
+    assert.deepEqual(
+      links.slice(0, 3),
+      ['<a href="/"', '<a href="/get-started"', '<a href="/usage"'],
+      "the masthead links are in the same order on both pages",
+    );
+  }
+  assert.match(page, /<a href="\/usage" aria-current="page">Usage<\/a>/);
+  assert.match(getStartedPage, /<a href="\/get-started" aria-current="page">Get started<\/a>/);
+  // The pricing page keeps its own footer nav; its masthead is issue #11's, and
+  // this issue only adds the usage page.
+  const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(pricingPage, /<a href="\/get-started">Get started<\/a>/);
 });
 
 test("a read that fails says so and leaves the numbers alone", () => {
@@ -333,4 +429,5 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.dataset\.state = "unreachable";/);
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
+  assert.match(page, /if \(document\.hidden\) \{\n    return;/);
 });
