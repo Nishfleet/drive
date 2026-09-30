@@ -110,6 +110,10 @@ test("the three methods the spec's screen names are the three it accepts", async
   const refused = readSigninRequest({ method: "sms" });
   assert.ok(refused.error);
   assert.match(refused.error, /email, google, github/);
+  // A body that carries none is refused too, not defaulted: the method is the
+  // one thing this request must name.
+  assert.ok(readSigninRequest({ email: "you@example.com" }).error);
+  assert.ok(readSigninRequest().error);
 });
 
 test("the email method needs an address; the OAuth methods do not", () => {
@@ -146,6 +150,23 @@ test("the route hands the store the method and address, once, and reports failur
   });
   assert.equal(broken.status, 502, "a store that failed must not answer 202");
   assert.equal((await broken.json()).error, "The mail service did not take the code.");
+});
+
+test("the closed door's words come from the message table, once", async () => {
+  // One entry, read through failureMessage() like every other surface, so
+  // the words cannot fork between the endpoint and anything else that names it.
+  const built = signinClosedBody();
+  assert.deepEqual(built, { error: FAILURE_MESSAGES["sign-in-closed"].what + " " + FAILURE_MESSAGES["sign-in-closed"].next });
+  // The endpoint never invents a second draft of the sentence.
+  const storeless = await handleSigninRequest(
+    new Request("https://drive.test/api/signin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "github" }),
+    }),
+    null,
+  );
+  assert.deepEqual(await storeless.json(), built);
 });
 
 // --------------------------------------------------------- the shipped page
