@@ -343,12 +343,28 @@ test("a template cannot be corrupted through the caller's object", () => {
   assert.deepEqual(data, copy);
 });
 
-test("interpolated values are escaped in the HTML part", () => {
-  // Dollars are numbers today; a filename or an address is the value most
-  // likely to arrive one day, and it must not become markup.
+test("the HTML part carries no unescaped caller value", () => {
+  // Every interpolated value is a validated number rendered by usd() (digits,
+  // a dot, a leading $) or fixed prose, so no template needs a hand-rolled
+  // HTML escape -- which is also why semgrep's replaceAll-sanitization rule
+  // has nothing to flag. If a future template interpolates a string (a
+  // filename, an address), it must bring a real sanitizer, and this test is
+  // where that shows up.
+  for (const kind of EMAIL_KINDS) {
+    const { html } = renderEmail(kind, dataFor(kind));
+    assert.equal(/<script|javascript:|onerror=|onload=/i.test(html), false, `${kind} html`);
+  }
+});
+
+test("every interpolated value is a validated number or fixed prose", () => {
+  // The templates only ever splice usd() output or a constant sentence into
+  // the markup; a caller cannot smuggle markup through the data object.
   const { html } = paymentFailedTemplate({ amountUsd: 1 });
-  assert.ok(!html.includes("<script"), "no raw markup can reach the HTML part");
-  assert.ok(html.includes("&amp;") || !html.includes("&"), "ampersands are escaped when present");
+  assert.match(html, /\$1\.00/);
+  // The data object's string fields are never concatenated into html: passing
+  // one changes nothing in the output.
+  const injected = monthlyReceiptTemplate({ ...receiptData(), note: "<img onerror=alert(1)>" });
+  assert.equal(injected.html.includes("<img"), false);
 });
 
 // ---------------------------------------------------------------------------

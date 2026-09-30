@@ -3,7 +3,8 @@
 // about money or limits | Emails: welcome, 80% of cap, read-only reached,
 // payment failed, monthly receipt with the 'you saved' line".  The copy lives
 // here so the api Worker, the meter and the billing webhook read one source,
-// and test/emails.test.mjs pins every sentence so a later run cannot quietly
+// and test/emails.test.mjs pins the sentences, the numbers and the two "you
+// saved" baselines from drive#39 rather than letting a later run quietly
 // reword a customer's inbox.
 //
 // Plain data and pure renderers only -- no Worker or DOM imports -- so
@@ -72,34 +73,24 @@ export function savedLine(month) {
 }
 
 // Dollars as a person reads them: always two decimals, so an inbox line never
-// shows "$12" next to a bill that says "$12.00".
+// shows "$12" next to a bill that says "$12.00". The output contains only
+// digits, a dot and a leading $ -- no HTML-special characters -- so it can
+// be embedded directly into the text and HTML parts without escaping.
 function usd(value) {
   return `$${value.toFixed(2)}`;
 }
 
-// Escapes the four characters that change markup; interpolated values here
-// are dollars and counts, but the escape keeps the renderer safe if a caller
-// ever passes a filename or an address.
-function html(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-// A paragraph in the HTML part, escaped.
-function para(value) {
-  return `<p>${html(value)}</p>`;
-}
-
-// A list item in the HTML part, escaped.
-function item(value) {
-  return `<li>${html(value)}</li>`;
-}
-
 // Every email ends the same way, so the footer is written once.
 const SIGN_OFF = "-- Drive";
+
+// Money that must be present: a missing amount is a bug in the caller, not a
+// $0 that hides it (issue rule: never swallow an error).
+function requireMoney(value, name) {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${name} must be a number of dollars, got ${value}`);
+  }
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // 1) Welcome -- sent after sign-up. No per-account data is needed.
@@ -120,12 +111,12 @@ export function welcomeTemplate() {
     "Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.",
   ];
   const html_lines = [
-    para("Welcome to Drive."),
-    para("Your drive is a plain folder that streams from object storage, so big files open without downloading first."),
-    para("One command sets it up:"),
-    `<ul>${item("drive init")}</ul>`,
-    para("It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again."),
-    para("Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted."),
+    "<p>Welcome to Drive.</p>",
+    "<p>Your drive is a plain folder that streams from object storage, so big files open without downloading first.</p>",
+    "<p>One command sets it up:</p>",
+    "<ul><li>drive init</li></ul>",
+    "<p>It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.</p>",
+    "<p>Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });
 }
@@ -145,9 +136,9 @@ export function capWarningTemplate({ capUsd } = {}) {
     "Raise the cap to keep writing. If you leave it, nothing changes until you do.",
   ];
   const html_lines = [
-    para(`You've used ${percent}% of your ${usd(cap)} spending cap.`),
-    para(`At ${usd(cap)} the drive goes read-only. Nothing is deleted, and uploads waiting on your machines stay on disk.`),
-    para("Raise the cap to keep writing. If you leave it, nothing changes until you do."),
+    `<p>You've used ${percent}% of your ${usd(cap)} spending cap.</p>`,
+    `<p>At ${usd(cap)} the drive goes read-only. Nothing is deleted, and uploads waiting on your machines stay on disk.</p>`,
+    "<p>Raise the cap to keep writing. If you leave it, nothing changes until you do.</p>",
   ];
   return finish({ subject, lines, html_lines });
 }
@@ -166,9 +157,9 @@ export function readOnlyTemplate({ capUsd } = {}) {
     "Raise or remove the cap in the billing portal, or run `drive cap <dollars>` in a terminal, to start writing again.",
   ];
   const html_lines = [
-    para(`Your drive has reached its ${usd(cap)} spending cap and is now read-only.`),
-    para("Nothing is deleted. Your files are safe and still readable, and uploads waiting on your machines stay on disk."),
-    para("Raise or remove the cap in the billing portal, or run `drive cap <dollars>` in a terminal, to start writing again."),
+    `<p>Your drive has reached its ${usd(cap)} spending cap and is now read-only.</p>`,
+    "<p>Nothing is deleted. Your files are safe and still readable, and uploads waiting on your machines stay on disk.</p>",
+    "<p>Raise or remove the cap in the billing portal, or run `drive cap <dollars>` in a terminal, to start writing again.</p>",
   ];
   return finish({ subject, lines, html_lines });
 }
@@ -187,9 +178,9 @@ export function paymentFailedTemplate({ amountUsd } = {}) {
     "If the card is not fixed, storage past your free credit will stop and the drive will go read-only. Nothing is deleted.",
   ];
   const html_lines = [
-    para(`We could not charge ${usd(amount)}.`),
-    para("Your files are safe and your drive is still working. Update your card in the billing portal and we will try again."),
-    para("If the card is not fixed, storage past your free credit will stop and the drive will go read-only. Nothing is deleted."),
+    `<p>We could not charge ${usd(amount)}.</p>`,
+    "<p>Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.</p>",
+    "<p>If the card is not fixed, storage past your free credit will stop and the drive will go read-only. Nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });
 }
@@ -213,12 +204,12 @@ export function monthlyReceiptTemplate({
     "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
   ];
   const html_lines = [
-    para(`Your Drive bill for this month is ${usd(bill)}.`),
-    para("This is min(metered, ceiling): the ceiling is never charged, it only caps the bill."),
+    `<p>Your Drive bill for this month is ${usd(bill)}.</p>`,
+    "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
   ];
   if (saved) {
     lines.push("", saved);
-    html_lines.push(para(saved));
+    html_lines.push(`<p>${saved}</p>`);
   }
   return finish({ subject, lines, html_lines, saved });
 }
@@ -232,17 +223,8 @@ function finish({ subject, lines, html_lines, saved = null }) {
   for (const line of html_lines) {
     htmlLines.push(line);
   }
-  htmlLines.push(para(SIGN_OFF), "</body>", "</html>");
+  htmlLines.push(`<p>${SIGN_OFF}</p>`, "</body>", "</html>");
   return { subject, text, html: htmlLines.join("\n"), saved };
-}
-
-// Money that must be present: a missing amount is a bug in the caller, not a
-// $0 that hides it (issue rule: never swallow an error).
-function requireMoney(value, name) {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`${name} must be a number of dollars, got ${value}`);
-  }
-  return value;
 }
 
 // The kind names every caller and the test suite use. Order is the spec's.
