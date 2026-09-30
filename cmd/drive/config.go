@@ -22,13 +22,15 @@ type StorageConfig struct {
 // MountFlags are the stock rclone VFS flags this product mounts with. They are
 // the same on Mac (nfsmount) and Linux (mount): the docs describe them.
 const (
-	VFSFlagCacheMode   = "--vfs-cache-mode full"
-	VFSFlagWriteBack   = "--vfs-write-back 5s"
-	VFSFlagCacheMax    = "--vfs-cache-max-size 20G"
-	vfsCacheModeValue  = "full"
-	vfsWriteBackValue  = "5s"
-	vfsCacheMaxValue   = "20G"
-	vfsChunkStreamSize = "32M" // streaming read-ahead for big files
+	VFSFlagCacheMode     = "--vfs-cache-mode full"
+	VFSFlagWriteBack     = "--vfs-write-back 5s"
+	VFSFlagCacheMax      = "--vfs-cache-max-size 20G"
+	VFSFlagDirCacheTime  = "--dir-cache-time " + vfsDirCacheTimeValue
+	vfsCacheModeValue    = "full"
+	vfsWriteBackValue    = "5s"
+	vfsCacheMaxValue     = "20G"
+	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
+	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
 )
 
 // Default paths, overridable for tests.

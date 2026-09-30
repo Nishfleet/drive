@@ -79,8 +79,14 @@ export const FAILURE_MESSAGES = Object.freeze({
 // one next step. An unknown key is a programmer error and throws here rather
 // than silently returning a default, because a default would hide the missing
 // entry the issue made required.
+/**
+ * @param {string} key
+ * @returns {string}
+ */
 export function failureMessage(key) {
-  const entry = FAILURE_MESSAGES[key];
+  const entry = Object.hasOwn(FAILURE_MESSAGES, key)
+    ? FAILURE_MESSAGES[/** @type {keyof typeof FAILURE_MESSAGES} */ (key)]
+    : undefined;
   if (!entry) {
     throw new Error(
       `no failure message for "${key}"; add it to FAILURE_MESSAGES in src/messages.js`,

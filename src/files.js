@@ -91,6 +91,39 @@ export function isPreviewable(kind) {
   return kind !== "file" && kind !== "folder";
 }
 
+// What an inline preview may be served as. A file the customer uploaded is
+// never a page on our origin, so the served type follows the file's kind
+// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
+// and media keeps its own type only when it matches its kind. Anything else is
+// octet-stream, which a browser will not render as a document. The header pair
+// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
+// uploaded .svg is still an image in the page's <img>, but opening the preview
+// URL directly gets it a sandboxed document instead of our origin.
+const PREVIEW_CONTENT_TYPES = Object.freeze({
+  text: "text/plain; charset=utf-8",
+  pdf: "application/pdf",
+});
+
+/** The content type an inline preview is served as, never a document type. */
+export function previewContentType(name, storedContentType = "") {
+  const kind = fileKind(name, storedContentType);
+  const stored = String(storedContentType).split(";")[0].trim().toLowerCase();
+  const pinned = PREVIEW_CONTENT_TYPES[kind];
+  if (pinned) {
+    return pinned;
+  }
+  if (kind === "image" && !stored.startsWith("image/")) {
+    return "application/octet-stream";
+  }
+  if (kind === "video" && !stored.startsWith("video/")) {
+    return "application/octet-stream";
+  }
+  if (kind === "audio" && !stored.startsWith("audio/")) {
+    return "application/octet-stream";
+  }
+  return stored || "application/octet-stream";
+}
+
 // ---------------------------------------------------------------- the words
 
 // The page's copy for a preview. `fallback` is the one thing to do when the
@@ -728,12 +761,23 @@ async function readRequest(request, url, store, download) {
   }
   const name = checked.path.split("/").pop();
   const headers = {
-    "content-type": object.contentType || "application/octet-stream",
+    // The bytes leave as a file: an attachment to download, and an inline
+    // preview the page renders in a media element. Neither is a document on
+    // our origin, and the two headers below keep it that way when the preview
+    // URL is opened directly: nosniff honors the type above, and the sandbox
+    // policy gives a document an opaque origin with no script of its own.
+    "content-type": download
+      ? object.contentType || "application/octet-stream"
+      : previewContentType(name, object.contentType),
     "content-disposition": download
       ? `attachment; filename="${name.replace(/"/g, "")}"`
       : "inline",
+    "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
   };
+  if (!download) {
+    headers["content-security-policy"] = "sandbox";
+  }
   return new Response(request.method === "HEAD" ? null : object.body, {
     status: 200,
     headers,

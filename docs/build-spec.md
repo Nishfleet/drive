@@ -39,7 +39,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 ```
 
 1. **drive CLI** (on the user's machine). One binary. Signs in, writes the rclone config, starts the mount as a login item, registers agent tools, runs branch commands. Language: Go, because rclone is Go and the CLI ships as one file; it calls the installed `rclone` binary rather than embedding it.
-2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --b2-download-url https://dl.<domain>`. Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
+2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --b2-download-url https://dl.<domain>`, and both with `--dir-cache-time 5s`: S3 sends no change notifications, so without it the other machine waits out rclone's 5-minute directory cache before it sees a save (measured 2026-09-30 against a local S3 stand-in with two mounts: 5.0 s with the flag, still absent after 60 s without it, so the counterfactual is measured, not assumed). Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
 3. **api Worker** (Cloudflare Workers + D1). Accounts, device sign-in, key minting, spending cap, branch bookkeeping, the web pages. Holds the B2 master key as a Worker secret; nothing else does.
 4. **dl Worker** (Cloudflare Workers). Sits on the download hostname. Streams B2 reads through Cloudflare (B2 to Cloudflare egress is free) and adds the bytes to the user's download counter, found from the `/u/<id>/` path.
 5. **Meter** (Worker Cron Trigger, hourly). Turns file events into GB-minutes per user, pushes usage to Dodo, and flips accounts to read-only at their cap. The schedule's reason: Dodo needs periodic usage reports.
@@ -80,7 +80,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
 
-Pricing page: the rate line "2¢ per GB, billed by the minute" with the ceiling "never more than $12 a TB, then $8" under it, then "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1", "2 TB kept all month: $16" — the capped total, $40 metered capped at $16, not the uncapped meter); a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited". The ceiling numbers and the two canonical ceiling sentences live in `src/pricing.js`, and `test/pricing-copy.test.mjs` builds its expectations from that config, so page copy that drifts from the numbers fails CI.
+Pricing page: the headline is the rate, "2¢ per GB, billed by the minute", with the ceiling under it — issue #23's finish line renders it "Never more than $12 a TB, and $8 a TB once you pass 1.5 TB" — then "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1, then $0 after the $1", "800 GB kept all month: $12 of storage, $11 billed", "2 TB kept all month: $16 of storage, $15 billed (Space $27)", "5 TB kept all month: $40 of storage, $39 billed (Space $63)") — each the capped total, min(metered, ceiling), less the $1 free (#76), with the storage figure beside it and Space's, which this file's Bill ceiling decision already fixes as $27 and $63; a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited". The page no longer carries the "about $20 per TB a month" headline, which was Space's price in our voice (issue #23's rework). The ceiling numbers and the canonical ceiling sentences live in `src/pricing.js` (PRICE), the single price module `src/seo.js` reads (issue #23 folded the metadata's copy into it): the page copy, the meta tags and llms.txt are all gated against that config, `src/billing.js`'s `monthBillCents()` is the one function that turns those numbers into dollars, and `test/pricing-copy.test.mjs` builds its expectations from that config and that function, so copy that drifts from the numbers fails CI.
 
 ## Agent tools
 
@@ -168,6 +168,19 @@ Every step is one issue, built by a queue worker and checked by a different mode
 | 10 | Swift File Provider app (later) | Native Finder drive to replace `rclone nfsmount` on Mac. | It passes steps 2 to 4 unchanged. |
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
+
+## How we know it is up (the outage alert)
+
+North star "Reliable" (Nish, 2026-09-30): we hear about an outage before customers do. The outside monitor is issue #36: one free, stock external uptime monitor (UptimeRobot or Better Stack free tier, no card) checking the URLs below every few minutes, alerting Nish by phone push or email. The site origin is pinned in `src/seo.js` (`SITE.origin`, `https://drive-pricing.nishant345.workers.dev` today) and `test/seo.test.mjs` holds it there, so this table names the source rather than a second copy.
+
+| URL | What it is | Built |
+|---|---|---|
+| `/` on the site origin | The landing page, the site's front door, and the page every customer notices first. | today (static asset) |
+| `/api/health` on the site Worker | The Worker's own health endpoint (#96, `src/health.js`). 200 with `{"ok":true}` only when the Worker can reach each bound D1 database and its asset layer; 503 naming the binding that did not answer. Public, no account data, `Cache-Control: no-store`, bounded so a hung dependency cannot hang the poll. | #96 |
+| `/v1/health` on the api Worker | The API's own health route, so a drive that is mounted but cannot reach the API is caught. | with the api Worker (build step 4, #5) |
+| the download host | The host downloads stream from, so a broken download path is caught. | with the dl Worker (build step 5, #6) |
+
+`/api/health` is deliberately not a "the Worker woke up" ping: it does a trivial read (`SELECT 1`) on each bound D1 database and a `HEAD` fetch through the asset layer, so a database or a page that will not serve is a 503 while the isolate is still alive — which is the difference between an alert and a false all-clear. It names the failing binding in the body (configuration the operator already has; never a secret, a query or a stack) and reports one name, the first failure.
 
 ## Open questions (not blocking the spec)
 
