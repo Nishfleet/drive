@@ -179,10 +179,6 @@ func writeSkill(env Env, tool Tool, path string) error {
 	return nil
 }
 
-// revokeSkill removes the drive's block, leaving any text after it, and
-// removes the skill directory when it was the drive's own and is now empty. A
-// shared directory (Kiro's ~/.kiro/steering) is never removed. A missing file
-// is already revoked.
 // revokeSkill removes the drive's note from the tool's skill file, leaving
 // any text the user put after the drive's block. The file itself is only
 // removed when the drive's frontmatter and block were all it held; the
