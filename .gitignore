@@ -8,3 +8,8 @@ drive
 .dev.vars
 .wrangler/
 .cloudflare/
+
+# Go CLI
+/drive
+/cmd/drive/drive
+*.test
