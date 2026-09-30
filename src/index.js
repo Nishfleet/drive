@@ -8,7 +8,18 @@ import {
   resolveAccount,
 } from "./files.js";
 import { signedInAccount } from "./status.js";
-import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
+import { USAGE_ENDPOINT, handleUsageRequest, usageSummary, BILLING_CONFIG } from "./billing.js";
+import {
+  REQUEST_ENDPOINT,
+  SHARE_ENDPOINT,
+  SHARE_LINK_PREFIX,
+  createMemoryLinkStore,
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleRequestUploadRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+} from "./share.js";
 import { handleSendEmailRequest } from "./email-send.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -32,6 +43,39 @@ function storeFor(env) {
         : createMemoryStore();
   }
   return filesStore;
+}
+
+// One link store per Worker isolate, the same stand-in shape storeFor() uses
+// for files: the in-memory LinkStore stands in until the accounts store lands
+// (#55), where the shares and upload_requests rows move to D1 behind the same
+// interface (src/share.js). Sharing the FileStore above is what makes a file
+// dropped through an upload page appear on the owner's drive at its next
+// listing.
+let linksStore;
+function linksFor() {
+  if (!linksStore) {
+    linksStore = createMemoryLinkStore();
+  }
+  return linksStore;
+}
+
+// The owner's spending-cap state for the public upload routes, read from the
+// same src/billing.js summary the usage page shows. Until the accounts store
+// and the meter land (#6, #55) an account has no usage rows, so this is the
+// empty month the usage endpoint already answers with — the honest cap for a
+// drive with nothing stored. One swap point.
+function capStateFor() {
+  const empty = usageSummary({
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  });
+  return empty.cap.state;
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -82,6 +126,34 @@ export default {
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
       return handleUsageRequest(request);
+    }
+    // Share links and upload requests (issue #19). The share/request routes
+    // are the owner's side (the same stand-in account /api/files uses until
+    // the sign-in gate lands, #73); /s/<token> and the request pages are the
+    // logged-out side, and they are the only routes here that serve a caller
+    // who is not the owner.
+    if (
+      url.pathname === SHARE_ENDPOINT ||
+      url.pathname === `${SHARE_ENDPOINT}/`
+    ) {
+      return handleShareRequest(request, storeFor(env), linksFor(), resolveAccount(request));
+    }
+    if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
+      return handleShareFileRequest(request, storeFor(env), linksFor());
+    }
+    if (
+      url.pathname === REQUEST_ENDPOINT ||
+      url.pathname === `${REQUEST_ENDPOINT}/`
+    ) {
+      return handleRequestRequest(request, storeFor(env), linksFor(), resolveAccount(request));
+    }
+    // The two public request routes are matched after the owner's /api/request
+    // root so the exact root is never mistaken for its own child.
+    if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
+      return handleRequestInfoRequest(request, linksFor(), capStateFor());
+    }
+    if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor());
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

@@ -610,14 +610,18 @@ export function resolveAccount(request) {
   return { ...STAND_IN_ACCOUNT };
 }
 
-function safeFileName(name) {
+// Exported for src/share.js: an upload request takes a dropped file's name
+// exactly the way the Files page does, so there is one name cleaner rather
+// than two that can drift.
+export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
     .replace(/[\/\\\u0000-\u001f]/g, "-");
   return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : "upload";
 }
 
-function joinPath(folder, name) {
+/** Exported for src/share.js, for the same one-place reason. */
+export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
 }
