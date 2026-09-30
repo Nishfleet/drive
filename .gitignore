@@ -4,6 +4,7 @@ dist/
 .env.*
 .dev.vars
 .wrangler/
+.cloudflare/
 
 # Go CLI
 /drive

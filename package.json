@@ -1,9 +1,18 @@
 {
   "name": "drive",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "drive: a Finder drive for people and their agents. This Worker serves the pricing and landing page and stores waitlist sign-ups in D1 (drive issue #11).",
   "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "beta",
+    "cf": "^1.0.0-beta.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
   }
 }
