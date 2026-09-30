@@ -5,12 +5,16 @@
 # Minor and patch version updates land as one grouped PR per ecosystem.
 # Security updates are deliberately ungrouped: a group with no
 # `applies-to: security-updates` applies to version updates only.
+# The 7-day cooldown holds a new release back long enough for a malicious
+# or broken publish to be withdrawn before Dependabot proposes it.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       npm-minor-patch:
         applies-to: version-updates
@@ -22,6 +26,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       gomod-minor-patch:
         applies-to: version-updates
@@ -33,6 +39,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions-minor-patch:
         applies-to: version-updates
