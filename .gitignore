@@ -4,3 +4,8 @@ dist/
 .env.*
 .dev.vars
 .wrangler/
+
+# Go CLI
+/drive
+/cmd/drive/drive
+*.test
