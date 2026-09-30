@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- drive issue #37: one public page, so one URL. Mirrors SITE in src/seo.js;
+     test/seo.test.mjs fails CI when this file and that config disagree. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>
