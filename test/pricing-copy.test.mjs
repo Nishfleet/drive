@@ -14,8 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { PRICE, rivalMonthlyUsd } from "../src/pricing.js";
-import { monthlyBillForStoredTb } from "../src/billing.js";
-import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
+import { monthlyBillForStoredTb } from "../src/billing.js";import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
 const page = readFileSync(
   new URL("../public/index.html", import.meta.url),
@@ -32,7 +31,10 @@ const llms = readFileSync(
 const words = page
   .replaceAll("&nbsp;", " ")
   .replaceAll("&middot;", "-")
-  .replaceAll("&times;", "x")
+  // Both spellings of the multiplication sign, folded to the one the copy
+  // uses, so an assertion on "max($12, $8 × TB stored)" holds whichever form
+  // the shipped HTML happens to write.
+  .replaceAll("&times;", "×")
   .replaceAll("&rarr;", "→")
   .replaceAll("&amp;", "&");
 
@@ -265,6 +267,45 @@ test("the page's ceiling prose names the cap from config", () => {
   );
 });
 
+test("the worked-example helpers fail closed on a size that cannot be billed", () => {
+  // monthlyBillForStoredTb() is what the copy gate quotes, and rivalMonthlyUsd()
+  // is what the Space comparison is checked against. Both take a size, so
+  // both reject a size no bill could ever be worked out from: a negative one,
+  // a NaN, a string. (The pre-#23 test asserted this on cappedMonthlyBillUsd(),
+  // which the issue replaced; the guarantee moves with the function.)
+  for (const bad of [-1, Number.NaN, "2", undefined, null]) {
+    assert.throws(() => monthlyBillForStoredTb(bad), TypeError, `monthlyBillForStoredTb(${String(bad)}) must throw`);
+    assert.throws(() => rivalMonthlyUsd(bad), TypeError, `rivalMonthlyUsd(${String(bad)}) must throw`);
+  }
+  assert.equal(monthlyBillForStoredTb(0).storageUsd, 0, "an empty drive is a size, not an error");
+  assert.equal(rivalMonthlyUsd(0), PRICE.rival.monthlyUsd, "an empty drive is the rival's floor");
+});
+
+test("the bill's figures are exact cents, not a rounding near-miss", () => {
+  // Every figure on the page and in llms.txt is dollars read back out of
+  // monthBillCents(), which is integer cents end to end. Asserting on the
+  // cents means a future rounding change fails here with the exact number,
+  // instead of a float equality that only holds while the arithmetic lands.
+  const cents = (tb) => {
+    const bill = monthlyBillForStoredTb(tb);
+    return {
+      storage: Math.round(bill.storageUsd * 100),
+      credit: Math.round(bill.creditUsd * 100),
+      total: Math.round(bill.billUsd * 100),
+    };
+  };
+  // 800 GB meters at $16 and caps at $12; 1.6 TB caps at $12.80; 2 TB is
+  // $8 x 2 TB; 5 TB is $40. All less the $1.
+  assert.deepEqual(cents(0.8), { storage: 1200, credit: 100, total: 1100 });
+  assert.deepEqual(cents(1.6), { storage: 1280, credit: 100, total: 1180 });
+  assert.deepEqual(cents(2), { storage: 1600, credit: 100, total: 1500 });
+  assert.deepEqual(cents(5), { storage: 4000, credit: 100, total: 3900 });
+  // 50 GB all month is exactly the free $1, so the credit floors it at zero
+  // and never turns into a refund.
+  assert.deepEqual(cents(0.05), { storage: 100, credit: 100, total: 0 });
+  assert.deepEqual(cents(0), { storage: 0, credit: 100, total: 0 });
+});
+
 test("copy, meta tags and llms.txt all render from the one price source", () => {
   // The live page contradicted itself: visible copy said 2 TB = $23 while the
   // meta tags and llms.txt said $16 (issue #23). src/seo.js now builds its
@@ -307,6 +348,15 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   }
   // llms.txt, twice: the summary line and the Pricing section.
   assert.equal(llms.split(PRICE.ceiling).length - 1, 2, "llms.txt must carry the ceiling sentence twice");
+  // The shipped inline JSON-LD, not just the object src/seo.js builds:
+  // test/seo.test.mjs deep-equals the whole parsed block against
+  // softwareApplicationLd(), and this checks the two price strings on the
+  // shipped bytes, so the hand-written block cannot drift while its object
+  // stays right.
+  const jsonLd = page.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+  assert.ok(jsonLd, "the page must ship the JSON-LD block");
+  assert.ok(jsonLd[1].includes(PRICE.ceiling), "the shipped JSON-LD must carry the ceiling sentence");
+  assert.ok(jsonLd[1].includes(PRICE.rule), "the shipped JSON-LD must carry the bill rule");
   // The JSON-LD offer, which a crawler reads instead of the prose.
   const ld = softwareApplicationLd();
   assert.ok(ld.offers.description.includes(PRICE.ceiling));
@@ -317,7 +367,17 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
 test("llms.txt's worked examples are the computed bills", () => {
   // An answer engine quotes llms.txt, so its figures are the ones the rule
   // computes — the storage line and what is charged after the $1 — asserted
-  // from the same call the example rows use.
+  // from the same call the example rows use. And so is the one figure in its
+  // prose: a 1 TB drive kept 60% full bills $11 a month.
+  const sixtyPercent = billForAllMonth(0.6);
+  const llmsFlat = llms.replace(/\s+/g, " ");
+  assert.ok(
+    llmsFlat.includes(
+      `1 TB drive kept 60% full bills ${usd(sixtyPercent.billUsd)} a month ` +
+        `(${usd(sixtyPercent.storageUsd)} of storage, less the $${PRICE.freeMonthlyUsd}).`,
+    ),
+    "llms.txt's 60%-full figure must be the computed bill",
+  );
   for (const [tb, label] of [
     [0.8, "800 GB kept all month"],
     [1.6, "1.6 TB"],

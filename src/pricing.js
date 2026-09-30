@@ -1,6 +1,7 @@
-// The drive's price, in one place. The numbers and every sentence that the
-// pricing page, the meta tags and llms.txt render from live here, so they
-// cannot drift. The pricing page is a static asset; test/pricing-copy.test.mjs
+// The drive's price, in one place. The numbers and every sentence the
+// pricing page, the meta tags and llms.txt must carry live here, so they
+// cannot drift. The shipped page is a hand-written static asset, so nothing
+// renders it at build time: the gate is test/pricing-copy.test.mjs, which
 // builds its expectations from this config and from src/billing.js's one bill
 // function, monthBillCents(), and fails CI when the shipped page drifts from
 // them. The meta/llms gate test/seo.test.mjs does the same.
@@ -21,8 +22,15 @@ const B2_FALLBACK_USD_PER_TB = 10;
 const FREE_MONTHLY_USD = 1;
 const CAP_PLATEAU_TB = CAP_FLOOR_USD / CAP_USD_PER_TB;
 // "2¢", from the rate above so the copy cannot state a rate the arithmetic
-// does not charge. `toFixed(0)` is right at these magnitudes (2¢, not 2.00¢).
-const RATE_TEXT = `${(RATE_USD_PER_GB_MONTH * 100).toFixed(0)}¢`;
+// does not charge. A rate that is not a whole number of cents throws here
+// rather than rounding into a headline the meter does not charge.
+const RATE_CENTS = RATE_USD_PER_GB_MONTH * 100;
+if (!Number.isInteger(RATE_CENTS)) {
+  throw new Error(
+    `the rate must be a whole number of cents so its copy cannot drift from the arithmetic, got ${RATE_USD_PER_GB_MONTH}`,
+  );
+}
+const RATE_TEXT = `${RATE_CENTS}¢`;
 
 export const PRICE = Object.freeze({
   // The metered rate, in US dollars per GB per month, billed by the minute.
@@ -59,8 +67,12 @@ export const PRICE = Object.freeze({
   // then the $1 off. Stated in words as well as symbols because a crawler
   // reads prose, not a formula.
   rule: `The bill is the metered cost capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored) less the $${FREE_MONTHLY_USD} free every month, never below zero: a flat $${CAP_FLOOR_USD} up to ${CAP_PLATEAU_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
-  // Rival comparison used on the worked-example rows (build-spec.md: Space
-  // charges $15 + $12 per extra TB, so 2 TB = $27, 5 TB = $63).
+  // Rival comparison on the worked-example rows. The source is
+  // docs/build-spec.md's "Bill ceiling" decision (Nish 2026-09-30): "2 TB =
+  // $16, against Space $27; 5 TB = $40, against Space $63", which is Space's
+  // $15 a month plus $12 for each TB after the first. Kept here so the
+  // comparison is one rule the page's copy is gated against, not a number
+  // typed beside each row.
   rival: Object.freeze({ name: "Space", monthlyUsd: 15, extraTbUsd: 12 }),
 });
 

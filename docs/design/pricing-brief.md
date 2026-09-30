@@ -96,11 +96,14 @@ ledger tone that the buyer's comparison actually needs.
    ("2¢" as one line, with "per GB, billed by the minute" set under it, not a
    fragment). Body: a neutral humanist sans. Numerals in the examples and the
    strip get the mono face, so the arithmetic is visibly arithmetic. Scale
-   steps 1.25, body 17px, price 76px at 1440px, clamp to 40px at 360px.
-   (Issue #23's rework changed the headline: it was "about $20 per TB a
-   month", which is Space's price, not ours, and the brief's rule 6 below
-   bars unsourced or rival figures in our own voice. The rate is the headline
-   now, with the ceiling under it.)
+   steps 1.25, body 17px, price `clamp(44px, 7.6vw, 92px)` (92px at 1440,
+   44px at 360), the price is the only thing allowed to be large.
+   (Issue #23's rework changed what the headline says: it was "about $20 per
+   TB a month", which is Space's price, not ours. Rule 6 below bars unsourced
+   claims and rival figures in our own voice, and that number was one. The
+   Space figures in the worked-example rows are different: build-spec.md's
+   "Bill ceiling" decision fixes them at $27 and $63, and they are labelled
+   `(Space $…)` beside ours, cited there.)
 4. **One accent.** Ink blue `#1f3a5f`, used for the filled 40%, the focus ring
    and the form's submit. No second accent anywhere.
 5. **CTA hierarchy.** One filled button ("Join the waitlist"), one text link

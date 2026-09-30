@@ -88,11 +88,13 @@ export const BILLING_CONFIG = Object.freeze({
   // The free credit, in dollars, off every month with no card needed. Shown as
   // a dollar line, never as credits (build-spec.md, "Free credit").
   freeMonthlyUsd: PRICE.freeMonthlyUsd,
-  // The default spending cap, moved to the ceiling floor: a default account up
-  // to 1.5 TB can never be cut off (orchestrator decision 2026-09-30, issue
-  // #39). The cap counts min(metered so far, ceiling), not the raw meter, so
-  // the cap cannot pass what the invoice will be.
-  defaultCapUsd: PRICE.capFloorUsd,
+  // The default spending cap, $12 (orchestrator decision 2026-09-30, issue
+  // #39). Its own number, not PRICE.capFloorUsd: the ceiling floor is the
+  // issue #29 decision and they only happen to agree today, so a ceiling
+  // edit must not move every default cap silently. The cap counts
+  // min(metered so far, ceiling), not the raw meter, so the cap cannot pass
+  // what the invoice will be.
+  defaultCapUsd: 12,
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
   downloadRateUsdPerGb: 0.01,
