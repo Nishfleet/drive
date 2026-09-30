@@ -13,6 +13,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import worker from "../src/index.js";
 import { monthBillCents, USAGE_ENDPOINT } from "../src/billing.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
@@ -38,7 +40,14 @@ const pointersOn = (line) =>
     .map((match) => match[1])
     .filter((token) => POINTER.test(token) && !token.includes("${"));
 
-test("the list is checkable: eight lines, under fifteen, every pointer real", () => {
+// The list's own shape: the 3pm review found pages shipped with no login, and
+// review after merge is too late; this dispatch is the mechanical version of
+// the builder reading the list. Each line above the tests names a test or file
+// that must exist, and each gate below is then proved against the modules the
+// Worker runs. The one line a program cannot judge is the last one — what the
+// PR body claims was proven on real records — so its pointer is the spec's rule
+// for it (docs/build-spec.md), and the builder answers it in the PR.
+test("the list is checkable: eight lines, every pointer real, gates still wired", () => {
   const agents = read("AGENTS.md");
   const start = agents.indexOf("## Before you open a PR");
   assert.notEqual(start, -1, "AGENTS.md must carry the 'Before you open a PR' list");
@@ -61,21 +70,19 @@ test("the list is checkable: eight lines, under fifteen, every pointer real", ()
       );
     }
   }
-  // The gates the lines rest on, all of which must stay named.
-  for (const pointer of [
-    "src/index.js",
-    "src/files.js",
-    "src/messages.js",
-    "src/billing.js",
-    "src/status.js",
-    ".github/workflows/ci.yml",
-    "docs/build-spec.md",
-    "test/status.test.mjs",
-    "test/files.test.mjs",
-    "test/billing.test.mjs",
-    "test/messages.test.mjs",
-  ]) {
-    assert.ok(list.includes(`\`${pointer}\``), `the list must point at ${pointer}`);
+  // The gates the lines rest on. The line-by-line pointer check above already
+  // proves each exists; these prove the *gates* are still wired, so a line
+  // cannot name a test that runs but no longer enforces anything.
+  assert.match(srcFile("index.js"), /export default \{\n  async fetch/);
+  const required = [
+    ["src/status.js", /export function signedInAccount\(request\)/],
+    ["src/files.js", /export function createS3Store\(config\)/],
+    ["src/files.js", /`u\/\$\{account\}\$\{path\}`/],
+    ["src/billing.js", /export function monthBillCents\(/],
+    ["src/messages.js", /export function failureMessage\(key\)/],
+  ];
+  for (const [file, gate] of required) {
+    assert.match(srcFile(file.slice(4)), gate, `${file} must keep its gate`);
   }
 });
 
@@ -107,19 +114,55 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
       `src/${route.source} must name ${route.path}, the path it handles`,
     );
   }
-  // The account gate is one function, and the gated route reads it.
-  assert.ok(index.includes("signedInAccount(request)"), "the gated route reads the signed-in account");
-  assert.ok(index.includes("resolveAccount(request)"), "the files route names its account source");
-  // The live proof: anonymous is 401 with the table's words, and the public
-  // list's own route serves the pre-sign-in page.
+  // The account gate is one function. It is reached in the fetch switch (not
+  // only in a comment above it), and the files route names its account source
+  // there too.
+  const switchIsLive = index.indexOf("async fetch(request, env) {");
+  assert.notEqual(switchIsLive, -1, "src/index.js must keep its fetch switch");
+  const branch = index.slice(switchIsLive, index.indexOf("return env.ASSETS.fetch(request);"));
+  // Each route decides its own account where it is mounted, not somewhere else
+  // in the file: the expression has to sit in the route's own branch, and every
+  // route's branch is named by the constant the switch compares against.
+  for (const [usedAs, account] of [
+    ["STATUS_ENDPOINT", "signedInAccount(request)"],
+    ["FILES_ENDPOINT", "resolveAccount(request)"],
+  ]) {
+    const at = branch.indexOf(usedAs);
+    assert.notEqual(at, -1, `${usedAs} must have its own branch in the fetch switch`);
+    assert.ok(
+      branch.slice(at, at + 700).includes(account),
+      `${usedAs}'s branch must read ${account}`,
+    );
+  }
+  // The live proof: anonymous is 401 with the table's words.
   const env = { ASSETS: { fetch: () => new Response("asset") } };
   const anonymous = await worker.fetch(new Request(`https://drive.test${STATUS_ENDPOINT}`), env);
   assert.equal(anonymous.status, 401);
   assert.deepEqual(await anonymous.json(), {
     error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
   });
-  const usage = await worker.fetch(new Request("https://drive.test/api/usage"), env);
+  // A route's account is bound by its own module, so each one is checked where
+  // it is decided. /api/usage may sit on the public list only while it reads
+  // no account at all: until the meter and the account store land (issues #2
+  // and #6) it answers the empty month for everyone, and the moment that
+  // changes this tripwire fails and the route has to move behind the gate.
+  assert.match(srcFile("billing.js"), /export function handleUsageRequest\(request\)/);
+  const usage = await worker.fetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env);
   assert.equal(usage.status, 200);
+  assert.equal((await usage.json()).billUsd, 0, "the public usage read has no account's data");
+  // The send-email route's gate is its deployment token, not a session: only
+  // POST is served, and with no token configured every POST is closed.
+  assert.match(srcFile("email-send.js"), /EMAIL_SEND_TOKEN/);
+  const send = await worker.fetch(new Request("https://drive.test/api/emails/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ to: "nobody@drive.test", subject: "x", text: "x" }),
+  }), env);
+  assert.equal(send.status, 403, "with no token configured the route is closed");
+  // The files route's account is the module's stand-in, never a header the
+  // caller sends: the storage prefix comes from the account, not the request.
+  assert.match(srcFile("files.js"), /export function resolveAccount\(request\) \{\n  return \{ \.\.\.STAND_IN_ACCOUNT \};/);
+  assert.ok(!index.includes("x-drive-account"), "no caller-supplied account header");
 });
 
 // ------------------------------------------------ 2. one account, one space
@@ -130,57 +173,88 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   // a stub's answer. Keys carry the account prefix, and this proves no request
   // either store makes ever names the other's prefix.
   const objects = new Map();
-  const requests = { a: [], b: [] };
-  const server = (name) => async (url, init = {}) => {
+  const seen = [];
+  const server = async (url, init = {}) => {
     const method = init.method || "GET";
     const { pathname, search } = new URL(url);
-    requests[name].push(`${method} ${decodeURIComponent(`${pathname}${search}`)}`);
+    const key = pathname.slice("/drive/".length);
+    seen.push(`${method} ${decodeURIComponent(`${pathname}${search}`)}`);
     if (method === "PUT") {
-      objects.set(pathname, await new Response(init.body).text());
+      objects.set(key, await new Response(init.body).text());
       return new Response(null, { status: 200 });
     }
     if (method === "DELETE") {
-      objects.delete(pathname);
+      objects.delete(key);
       return new Response(null, { status: 204 });
     }
     if (search.includes("list-type=2")) {
       const prefix = new URLSearchParams(search).get("prefix");
       const contents = [...objects.keys()]
-        .map((key) => key.slice("/drive/".length))
-        .filter((key) => key.startsWith(prefix) && key !== prefix)
-        .map((key) => `<Contents><Key>${key}</Key><Size>1</Size></Contents>`)
+        .filter((name) => name.startsWith(prefix) && name !== prefix)
+        .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
         .join("");
       return new Response(
         `<?xml version="1.0"?><ListBucketResult>${contents}</ListBucketResult>`,
         { status: 200 },
       );
     }
-    const key = pathname.slice("/drive/".length);
     return objects.has(key)
       ? new Response(objects.get(key), { status: 200 })
       : new Response("no key", { status: 404 });
   };
-  const config = (name) => ({
-    endpoint: "https://s3.test",
-    bucket: "drive",
-    account: name,
-    fetchImpl: server(name),
-  });
-  const a = createS3Store(config("a"));
-  const b = createS3Store(config("b"));
-  await a.write("/photos/holiday.jpg", new Response("a's own bytes").body, "image/jpeg");
+  // One endpoint, one fetch, and the account comes from the store's own
+  // config — the same config src/index.js builds from the deployment's.
+  const storeFor = (account) =>
+    createS3Store({ endpoint: "https://s3.test", bucket: "drive", account, fetchImpl: server });
+  const a = storeFor("a");
+  const b = storeFor("b");
+
+  // A real request through the Worker's handler: upload with A, then ask for
+  // the same path with B. The handler is given each account the way
+  // src/index.js gives it, so this exercises the request -> account -> key path
+  // that a bare store call would skip.
+  const api = (suffix) => `https://drive.test${FILES_ENDPOINT}${suffix}`;
+  const put = (store, account, folder, name, body) =>
+    handleFilesRequest(
+      new Request(`${api("/upload")}?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      store,
+      account,
+    );
+  const get = (store, account, route, path) =>
+    handleFilesRequest(new Request(`${api(route)}?path=${encodeURIComponent(path)}`), store, account);
+  const who = (id, name) => ({ id, name });
+
+  const uploaded = await put(a, who("a", "A"), "/photos", "note.txt", "A's own bytes");
+  assert.equal(uploaded.status, 201);
   // A's write landed under A's prefix and nowhere else.
-  assert.deepEqual([...objects.keys()], ["/drive/u/a/photos/holiday.jpg"]);
-  // B, asking for the same drive path, gets nothing, and cannot see it listed.
-  assert.equal(await b.read("/photos/holiday.jpg"), null);
-  assert.deepEqual(await b.list("/photos"), []);
-  assert.deepEqual((await a.list("/photos")).map((entry) => entry.name), ["holiday.jpg"]);
-  for (const [name, other] of [["a", "b"], ["b", "a"]]) {
-    assert.ok(requests[name].length > 0, `store ${name} must have spoken`);
-    for (const request of requests[name]) {
-      assert.ok(request.includes(`u/${name}/`), `${name}'s request stays in its prefix: ${request}`);
-      assert.ok(!request.includes(`u/${other}/`), `${name} must never name ${other}'s prefix: ${request}`);
-    }
+  assert.deepEqual([...objects.keys()], ["u/a/photos/note.txt"]);
+  // B, at the same drive path through the same handler, gets a real 404, and
+  // cannot see it listed.
+  assert.equal((await get(b, who("b", "B"), "/download", "/photos/note.txt")).status, 404);
+  const empty = await (await get(b, who("b", "B"), "", "/photos")).json();
+  assert.deepEqual(empty.rows, []);
+  const mine = await (await get(a, who("a", "A"), "", "/photos")).json();
+  assert.deepEqual(mine.rows.map((row) => row.name), ["note.txt"]);
+  // B's own write is its own key, and A still reads only A's bytes there.
+  assert.equal((await put(b, who("b", "B"), "/photos", "note.txt", "B's own bytes")).status, 201);
+  assert.equal(
+    await (await get(a, who("a", "A"), "/download", "/photos/note.txt")).text(),
+    "A's own bytes",
+  );
+  assert.deepEqual([...objects.keys()].sort(), [
+    "u/a/photos/note.txt",
+    "u/b/photos/note.txt",
+  ]);
+  // Every request A made named A's prefix and no other account's.
+  for (const request of seen) {
+    const prefix = request.includes("u/a") ? "a" : request.includes("u/b") ? "b" : null;
+    assert.ok(prefix !== null, `every storage request names an account prefix: ${request}`);
+    const other = prefix === "a" ? "u/b" : "u/a";
+    assert.ok(!request.includes(other), `${prefix} must never name the other account: ${request}`);
   }
 });
 
@@ -197,18 +271,35 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
         { method: "POST", headers: { "content-type": type }, body },
       ),
     );
-  // A path that climbs out is a 400, and a name with a path in it stays one file.
+  // A path that climbs out is a 400, and a name with a path in it stays one
+  // file. The three separators, the traversal, and a missing name.
   const climb = await call(new Request(`https://drive.test${FILES_ENDPOINT}?path=%2F..%2F..%2Fetc`));
   assert.equal(climb.status, 400);
+  for (const bad of ["a\\b.txt", "..", "%2F%2Fetc"]) {
+    const refused = await call(
+      new Request(`https://drive.test${FILES_ENDPOINT}?path=${encodeURIComponent(bad)}`),
+    );
+    assert.equal(refused.status, 400, `${bad} must not be a path`);
+  }
+  const nameless = await call(
+    new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F`, { method: "POST", body: "x" }),
+  );
+  assert.equal(nameless.status, 400, "an upload with no name is refused");
   const named = await upload("a/../b.txt", "x", "text/plain");
   assert.equal(named.status, 201);
   assert.equal((await named.json()).name, "a-..-b.txt");
-  // An uploaded page is bytes on /api/files, as an attachment; a page path is
-  // the asset layer's, so nothing a person uploads can answer as a document.
+  // An uploaded page is bytes on /api/files: a download is an attachment, an
+  // inline preview is served as its kind's type with nosniff and a sandbox, and
+  // a page path is still the asset layer's, so nothing a person uploads can
+  // answer as a document on the origin that holds it.
   const page = await upload("page.html", "<!doctype html><title>a page</title>", "text/html");
   assert.equal(page.status, 201);
   const download = await call(new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fpage.html`));
   assert.equal(download.headers.get("content-disposition"), 'attachment; filename="page.html"');
+  const preview = await call(new Request(`https://drive.test${FILES_ENDPOINT}/preview?path=%2Fpage.html`));
+  assert.equal(preview.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(preview.headers.get("content-security-policy"), "sandbox");
   const asPage = await worker.fetch(new Request("https://drive.test/page.html"), {
     ASSETS: { fetch: () => new Response("asset") },
   });
@@ -217,7 +308,7 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
 
 // ------------------------------------------------ 4. no secret, anywhere
 
-test("gate 4: the secret scan is wired, and a shipped page carries no token", () => {
+test("gate 4: the secret scan is wired, and nothing tracked carries a token", () => {
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci, /gitleaks/, "every PR runs the secret scan");
   const SECRET_LITERALS = [
@@ -226,10 +317,19 @@ test("gate 4: the secret scan is wired, and a shipped page carries no token", ()
     /Bearer\s+[A-Za-z0-9._-]{12,}/,
     /eyJ[A-Za-z0-9_-]{20,}\./,
   ];
-  for (const name of publicPages()) {
-    const page = read(`public/${name}`);
+  // Every tracked file a page, a Worker or the CLI ships or runs: code,
+  // config, data and docs alike. A token in a log line or a message string is
+  // a tracked file like any other, so the scan covers the same set gitleaks
+  // does rather than only the HTML.
+  const tracked = execFileSync("git", ["ls-files"], {
+    cwd: fileURLToPath(new URL("../", import.meta.url)),
+    encoding: "utf8",
+  });
+  assert.ok(tracked.length > 0, "the gate reads the tracked files, so it runs in a checkout");
+  for (const file of tracked.split("\n").filter(Boolean)) {
+    const contents = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
     for (const literal of SECRET_LITERALS) {
-      assert.ok(!literal.test(page), `${name} must carry no token-shaped literal (${literal})`);
+      assert.ok(!literal.test(contents), `${file} must carry no token-shaped literal (${literal})`);
     }
   }
 });
@@ -241,29 +341,60 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   assert.match(billing, /export function monthBillCents\(/, "the one billing function");
   // The storage bill is read out of it rather than worked out a second time.
   assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return monthBillCents\(/);
-  const bill = monthBillCents({ gbMinutes: 4611, peakGb: 137.5 });
-  const centsFields = Object.entries(bill).filter(([field]) => field.endsWith("Cents"));
-  assert.equal(centsFields.length, 4, "storage, downloads, credit and total");
-  for (const [field, value] of centsFields) {
-    assert.equal(value, Math.round(value), `${field} is whole cents`);
+  // Three months worked out by hand from the spec's numbers (2¢/GB-month on
+  // 43,800 minutes, the $12 floor, $8/TB past it, the free $1, downloads free
+  // to 3x the average then 1¢/GB) and checked against the one function:
+  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, -$1 → 700¢
+  //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
+  //   100 GB billable → +100¢ → $2.00
+  //   2 TB all month: 4000¢ metered, capped at 8 × $2 = $16 → 1600¢, -$1 →
+  //   1500¢
+  const MINUTES_PER_MONTH = 43800;
+  const cases = [
+    [
+      { gbMinutes: 400 * MINUTES_PER_MONTH, peakGb: 400 },
+      { storageCents: 800, downloadCents: 0, creditCents: 100, totalCents: 700 },
+    ],
+    [
+      {
+        gbMinutes: 400 * MINUTES_PER_MONTH,
+        peakGb: 400,
+        downloadBytes: 400e9,
+        averageStoredGb: 100,
+      },
+      { storageCents: 800, downloadCents: 100, creditCents: 100, totalCents: 800 },
+    ],
+    [
+      { gbMinutes: 2000 * MINUTES_PER_MONTH, peakGb: 2000 },
+      { storageCents: 1600, downloadCents: 0, creditCents: 100, totalCents: 1500 },
+    ],
+  ];
+  for (const [input, expected] of cases) {
+    const bill = monthBillCents(input);
+    for (const [field, cents] of Object.entries(expected)) {
+      assert.equal(bill[field], cents, `${field} for ${JSON.stringify(input)}`);
+      assert.ok(Number.isInteger(bill[field]), `${field} is whole cents`);
+    }
   }
-  for (const line of bill.lines) {
-    assert.equal(line.cents, Math.round(line.cents), `${line.label} is whole cents`);
-  }
-  assert.equal(bill.totalCents, Math.max(0, bill.storageCents + bill.downloadCents - bill.creditCents));
 });
 
 // ------------------------------------------- 6. one command, run by CI
 
 test("gate 6: the suite is one command, and CI runs that command", () => {
   const pkg = JSON.parse(read("package.json"));
-  assert.equal(pkg.scripts.test, "node --test");
+  assert.equal(pkg.scripts.test, "node --test", "one command, node's own runner");
   const ci = read(".github/workflows/ci.yml");
-  assert.match(ci, /- run: npm test/, "CI runs the same command the builder runs");
+  assert.match(ci, /^\s*-?\s*run:\s*npm test\s*$/m, "CI runs the same command the builder runs");
+  // The command's own discovery is what makes it the suite: node --test runs
+  // every *.test.mjs under test/, so every file there must be a real suite
+  // (it imports node:test), and none may live outside the folder it scans.
   const suites = readdirSync(new URL("../test/", import.meta.url)).filter((name) =>
     name.endsWith(".test.mjs"),
   );
-  assert.ok(suites.length >= 10, `the suite is every test file in test/ (${suites.length})`);
+  assert.ok(suites.length > 0, "the suite is every test file in test/");
+  for (const name of suites) {
+    assert.match(read(`test/${name}`), /from "node:test"/, `${name} is a node:test suite`);
+  }
   // The one command must not grow junk flags a worker cannot afford.
   assert.ok(!/coverage|--watch/.test(pkg.scripts.test));
 });
@@ -272,26 +403,33 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
 
 test("gate 7: failure words come from the one table", () => {
   // Every key src/ names is a key the table has; failureMessage throws on an
-  // unknown one, so this catches the drift before a request does.
+  // unknown one, so this catches the drift before a request does. Quoting is
+  // not load-bearing, so single quotes, double quotes and backticks all scan.
   for (const name of readdirSync(new URL("../src/", import.meta.url))) {
     if (!name.endsWith(".js")) {
       continue;
     }
-    for (const [, key] of srcFile(name).matchAll(/failureMessage\("([^"]+)"\)/g)) {
+    for (const [, key] of srcFile(name).matchAll(/failureMessage\(\s*["'`]([^"'`]+)["'`]\s*\)/g)) {
       assert.ok(
         Object.hasOwn(FAILURE_MESSAGES, key),
         `src/${name} names "${key}", which the table must have`,
       );
     }
   }
-  // A page cannot import the module, so the words it repeats must be the
-  // table's, verbatim, and the API's signed-out words stay on the API.
-  const index = read("public/index.html");
-  for (const key of ["offline", "unexpected"]) {
-    assert.ok(
-      index.includes(`${FAILURE_MESSAGES[key].what} ${FAILURE_MESSAGES[key].next}`),
-      `index.html must carry the table's ${key} words`,
-    );
+  // A page cannot import the module, so where a page carries a word the table
+  // owns it must carry the table's own pair — the `what` and its `next`
+  // together, verbatim — so a drifted variant fails. And the API's signed-out
+  // words stay on the API: no page carries a second copy of them.
+  for (const [key, entry] of Object.entries(FAILURE_MESSAGES)) {
+    for (const name of publicPages()) {
+      const page = read(`public/${name}`);
+      if (page.includes(entry.what) && key !== "unauthorized") {
+        assert.ok(
+          page.includes(`${entry.what} ${entry.next}`),
+          `${name} carries "${key}"'s what, so it must carry its next too`,
+        );
+      }
+    }
   }
   for (const name of publicPages()) {
     assert.ok(

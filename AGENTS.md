@@ -11,11 +11,11 @@ A Finder drive for people and their agents: plain files in object storage, mount
 
 ## Before you open a PR
 
-Each line is a gate, not prose: the test or file after the dash is what enforces it. `test/pr-gate.test.mjs` fails when a line below stops naming a real gate.
+Each line is a gate, not prose: the test or file after the dash is what enforces it. `test/pr-gate.test.mjs` fails when a line below names a file that is gone, and proves each gate against the same modules the Worker runs.
 
 - [ ] The route is in the `src/index.js` table, behind the account gate (`signedInAccount`, `src/status.js`) or on the public list there, with the anonymous-401 proof in `test/status.test.mjs`.
-- [ ] Every read and write stays in the signed-in account — `src/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves account A's store can neither read nor list account B's bytes.
-- [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `src/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or preview bytes, never as a page: only `/api/*` reaches the Worker, so a page path stays the asset layer's (`src/index.js`).
+- [ ] Every read and write stays in the account its store was built for — `src/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves, through the request path, that one account's requests can neither read nor list another account's bytes.
+- [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `src/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or as preview bytes a browser cannot read as a page — the preview serves the file's kind, never the upload's claim, with `nosniff` and a sandbox (`src/files.js`).
 - [ ] No secret in code, flags, logs or error text: gitleaks on every PR (`.github/workflows/ci.yml`) and the safety rules `test/messages.test.mjs` enforces on every string.
 - [ ] Money is whole cents out of the one billing function, `monthBillCents` (`src/billing.js`), pinned by `test/billing.test.mjs`.
 - [ ] Tests come first for core logic, and `npm test` is green before the PR; `.github/workflows/ci.yml` runs that same command with the helper-script ban and gitleaks beside it.
