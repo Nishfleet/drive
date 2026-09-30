@@ -405,13 +405,15 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
 });
 
 test("the three page headers read as one navigation", () => {
-  // The review found three headers disagreeing three ways. The order is
-  // Pricing, Get started, Usage on both mastheads, and each page marks itself.
-  for (const nav of [page, getStartedPage]) {
-    const links = [...nav.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
+  // The review found three headers disagreeing three ways. The order is Your
+  // files, Pricing, Get started, Usage on every masthead (the Web Files link
+  // leads since #48 merged), and each page marks itself.
+  const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"'];
+  for (const masthead of [page, getStartedPage]) {
+    const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
     assert.deepEqual(
-      links.slice(0, 3),
-      ['<a href="/"', '<a href="/get-started"', '<a href="/usage"'],
+      links.slice(0, nav.length),
+      nav,
       "the masthead links are in the same order on both pages",
     );
   }
