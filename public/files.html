@@ -479,6 +479,13 @@ dialog.viewer::backdrop {
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
     </div>
+    <!-- The account gate's message (drive issue #73). Shown when a read
+         answers 401, so a browser with no signed-in account is told that
+         rather than shown an empty drive that is not the truth. -->
+    <div class="empty" id="signed-out" hidden>
+      <p class="what" id="signed-out-what"></p>
+      <p class="next" id="signed-out-next"></p>
+    </div>
   </main>
 
   <div class="upload">
@@ -538,6 +545,16 @@ const EMPTY_STATES = {
   },
 };
 
+// The account gate's words (drive issue #73), the message table's
+// `unauthorized` entry in src/messages.js verbatim — the page cannot import
+// it, so test/files.test.mjs pins these strings against that table. A 401
+// from any route means this browser has no signed-in account, so the page
+// says so instead of showing an empty drive that is not the truth.
+const SIGNED_OUT = {
+  what: "You are not signed in to your drive.",
+  next: "Sign in, then this page updates on its own.",
+};
+
 const UPLOAD_COPY = {
   empty: "Choose at least one file to upload.",
   done: "Uploaded.",
@@ -552,6 +569,9 @@ const list = document.getElementById("file-list");
 const empty = document.getElementById("empty");
 const emptyWhat = document.getElementById("empty-what");
 const emptyNext = document.getElementById("empty-next");
+const signedOutWhat = document.getElementById("signed-out-what");
+const signedOutNext = document.getElementById("signed-out-next");
+const signedOut = document.getElementById("signed-out");
 const statusLine = document.getElementById("status");
 const crumbs = document.getElementById("crumbs");
 const uploadButton = document.getElementById("upload-button");
@@ -572,6 +592,28 @@ function say(message, kind) {
   statusLine.dataset.kind = kind || "";
 }
 
+// A 401 is the account gate (drive issue #73), not an empty drive and not a
+// failed request. The file list is emptied so a stranger is never left looking
+// at a list, the empty state is cleared because "Your drive is empty" is a
+// lie here, and the upload button is disabled: every action on this page needs
+// the account the page does not have.
+function showSignedOut() {
+  list.textContent = "";
+  empty.hidden = true;
+  signedOutWhat.textContent = SIGNED_OUT.what;
+  signedOutNext.textContent = SIGNED_OUT.next;
+  signedOut.hidden = false;
+  uploadButton.disabled = true;
+}
+
+// One reporter for a caught failure, so a caller in the middle of an action
+// does not print a second copy of news the sign-in panel already carries.
+function reportFailure(error) {
+  if (!error.signedOut) {
+    say(error.message, "error");
+  }
+}
+
 function api(url, options) {
   return fetch(url, options).then(async (response) => {
     let payload = {};
@@ -579,6 +621,14 @@ function api(url, options) {
       payload = await response.json();
     } catch {
       payload = {};
+    }
+    if (response.status === 401) {
+      showSignedOut();
+      // A thrown error, so every caller stops here instead of rendering a
+      // half-state; the sign-in message is already on the page.
+      const error = new Error(SIGNED_OUT.what);
+      error.signedOut = true;
+      throw error;
     }
     if (!response.ok) {
       throw new Error(payload.error || "That did not work. Try again in a moment.");
@@ -852,7 +902,7 @@ async function refresh(keepStatus) {
       crumbs.textContent = "";
     }
   } catch (error) {
-    say(error.message, "error");
+    reportFailure(error);
   }
 }
 
@@ -877,6 +927,12 @@ async function uploadFiles(files) {
         headers: { "content-type": file.type || "application/octet-stream" },
         body: file,
       });
+      if (response.status === 401) {
+        // The account gate (drive issue #73) answers every route, including
+        // this one, and upload has its own fetch rather than api()'s.
+        showSignedOut();
+        throw new Error(SIGNED_OUT.what);
+      }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || "The upload did not finish. Try again.");
@@ -885,9 +941,13 @@ async function uploadFiles(files) {
     }
     say(UPLOAD_COPY.done, "done");
   } catch (error) {
-    say(uploaded > 0 ? uploaded + " uploaded. " + error.message : error.message, "error");
+    if (error.signedOut) {
+      reportFailure(error);
+    } else {
+      say(uploaded > 0 ? uploaded + " uploaded. " + error.message : error.message, "error");
+    }
   } finally {
-    uploadButton.disabled = false;
+    uploadButton.disabled = signedOut.hidden === false;
     fileInput.value = "";
     refresh(true);
   }
@@ -906,7 +966,7 @@ async function removeFile(row) {
     say(DELETE_COPY.done, "done");
     refresh(true);
   } catch (error) {
-    say(error.message, "error");
+    reportFailure(error);
   }
 }
 
@@ -920,7 +980,7 @@ async function restoreFile(row) {
     say(RESTORE_COPY.done, "done");
     refresh(true);
   } catch (error) {
-    say(error.message, "error");
+    reportFailure(error);
   }
 }
 

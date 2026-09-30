@@ -630,6 +630,51 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
   assert.equal(typeof store.list, "function");
 });
 
+test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {
+  // The bucket is one namespace for every account, so this is the layer where
+  // a missing prefix would actually cross accounts (drive issue #73). The fake
+  // fetch records the URLs, and the assertion is on the storage keys in them.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const urls = [];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <CommonPrefixes><Prefix>u/acct-a/Photos/</Prefix></CommonPrefixes>
+  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size>
+  <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
+</ListBucketResult>`;
+  const fetchImpl = async (url, init) => {
+    urls.push({ method: (init && init.method) || "GET", url });
+    if (url.includes("list-type=2")) {
+      return new Response(xml, { status: 200 });
+    }
+    return new Response("bytes", {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": "5" },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+  const a = scopeStore(s3, { id: "acct-a", name: "A" });
+  const b = scopeStore(s3, { id: "acct-b", name: "B" });
+
+  // A's listing is one slash, not two, and its rows come back as drive paths.
+  assert.deepEqual(await a.list("/"), [
+    { name: "Photos", path: "/Photos", kind: "folder" },
+    {
+      name: "holiday.jpg",
+      path: "/holiday.jpg",
+      kind: "image",
+      size: 2400,
+      modified: Date.parse("2026-09-30T11:00:00.000Z"),
+    },
+  ]);
+  assert.match(urls[0].url, /prefix=u%2Facct-a%2F&/);
+
+  await a.write("/note.txt", new Blob(["hi"]).stream(), "text/plain");
+  assert.match(urls[1].url, /\/drive\/u\/acct-a\/note.txt$/);
+  await b.read("/holiday.jpg");
+  assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
+});
+
 // ---------------------------------------------------------------- the Worker
 
 test("the Worker routes the page's API to the files handler", async () => {
@@ -690,6 +735,27 @@ test("the page's copy is the module's copy", () => {
   assert.ok(page.includes(DELETE_COPY.confirm));
   assert.ok(page.includes(DELETE_COPY.done));
   assert.ok(page.includes(RESTORE_COPY.done));
+});
+
+test("the page shows the message table's sign-in words on a 401", () => {
+  // The page cannot import src/messages.js, so it carries the account gate's
+  // two sentences verbatim and this pins them against the table (drive issue
+  // #73). A drift here would have the page say something the endpoint does not.
+  assert.ok(
+    page.includes(FAILURE_MESSAGES.unauthorized.what),
+    `the page must carry the sign-in sentence: "${FAILURE_MESSAGES.unauthorized.what}"`,
+  );
+  assert.ok(
+    page.includes(FAILURE_MESSAGES.unauthorized.next),
+    `the page must carry the sign-in next step: "${FAILURE_MESSAGES.unauthorized.next}"`,
+  );
+  // And it has to act on the status, not merely carry the words: every 401
+  // branch shows the sign-in panel instead of an empty drive.
+  assert.ok(
+    (page.match(/response\.status === 401/g) || []).length >= 2,
+    "api() and the upload fetch must both treat 401 as the account gate",
+  );
+  assert.ok(page.includes('id="signed-out"'), "the page needs a sign-in panel");
 });
 
 test("the page's script reads the same endpoints and the same window", () => {

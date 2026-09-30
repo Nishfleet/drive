@@ -543,13 +543,17 @@ export function createS3Store(config) {
 
   return {
     async list(path) {
-      const prefix = `${path}${path === "/" ? "/" : "/"}`;
+      // `path` is a storage key (`u/<id>`, `u/<id>/Photos`); the query wants
+      // exactly one trailing slash and no second one.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
       const query = `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F`;
       const response = await fetchImpl(`${base}${query}`);
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
-      return parseListObjects(await response.text(), prefix, path);
+      // The base a row's key is built from: the folder key without its
+      // trailing slash, so a child key is `${base}/${name}`.
+      return parseListObjects(await response.text(), prefix, prefix.slice(0, -1));
     },
     async read(path) {
       const response = await fetchImpl(urlFor(path));

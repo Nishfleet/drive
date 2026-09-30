@@ -26,6 +26,7 @@ import {
   usageSummary,
 } from "../src/billing.js";
 import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { FAILURE_MESSAGES } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 // The signed-in account the handler tests run as, until the sign-in flow lands
@@ -468,4 +469,20 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
   assert.match(page, /if \(document\.hidden\) \{\n    return;/);
+});
+
+test("a 401 read shows the message table's sign-in words, not unreachable", () => {
+  // The account gate (drive issue #73) answers /api/usage; this page must
+  // treat its 401 as "not signed in", with the message table's `unauthorized`
+  // entry verbatim, and never as an unreachable service.
+  assert.ok(
+    page.includes(FAILURE_MESSAGES.unauthorized.what),
+    `the page must carry the sign-in sentence: "${FAILURE_MESSAGES.unauthorized.what}"`,
+  );
+  assert.ok(
+    page.includes(FAILURE_MESSAGES.unauthorized.next),
+    `the page must carry the sign-in next step: "${FAILURE_MESSAGES.unauthorized.next}"`,
+  );
+  assert.match(page, /if \(response\.status === 401\) \{\n      saySignedOut\(\);/);
+  assert.match(page, /statusEl\.dataset\.state = "signed-out";/);
 });

@@ -167,6 +167,13 @@ h2 {
   border-left-color: var(--bad);
 }
 
+/* The account gate (drive issue #73): a read that answers 401 is not a failed
+   read, it is this browser having no signed-in account, and it gets its own
+   colour and its own words. */
+.status[data-state="signed-out"] {
+  border-left-color: var(--accent);
+}
+
 /* ---- The stored-GB line chart ----------------------------------------- */
 
 .chart {
@@ -397,6 +404,17 @@ const UNREACHABLE = {
   next: "Leave this page open. It checks again in a minute.",
 };
 
+// The account gate's words (drive issue #73), the message table's
+// `unauthorized` entry in src/messages.js verbatim — the page cannot import
+// it, so test/usage.test.mjs pins these strings against that table. A 401 is
+// not an unreadable service: it means this browser has no signed-in account,
+// and showing the numbers of one account's month to another is the bug the
+// gate exists to stop.
+const SIGNED_OUT = {
+  what: "You are not signed in to your drive.",
+  next: "Sign in, then this page updates on its own.",
+};
+
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
@@ -419,6 +437,19 @@ function sayUnreachable() {
   // hidden is not announced by every screen reader, so showing it first is
   // what makes the sentence actually read out.
   statusEl.hidden = false;
+}
+
+// The account gate (drive issue #73): a 401 is its own state, not an
+// unreachable service. The numbers stay hidden — there is no month to show
+// without an account — and the status region carries the sign-in words, which
+// are the message table's `unauthorized` entry rather than this page's own.
+function saySignedOut() {
+  statusEl.dataset.state = "signed-out";
+  statusEl.querySelector(".what").textContent = SIGNED_OUT.what;
+  statusEl.querySelector(".next").textContent = SIGNED_OUT.next;
+  statusEl.hidden = false;
+  bodyEl.hidden = true;
+  capSlider.disabled = true;
 }
 
 function sayReachable() {
@@ -545,7 +576,11 @@ async function readMonth() {
     return;
   }
   if (!response.ok) {
-    sayUnreachable();
+    if (response.status === 401) {
+      saySignedOut();
+    } else {
+      sayUnreachable();
+    }
     return;
   }
   let summary;
