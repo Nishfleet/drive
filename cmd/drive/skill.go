@@ -119,12 +119,13 @@ func skillBlock(driveDir string) string {
 }
 
 // planSkill returns the exact text the drive's skill file should hold for this
-// tool. It is the write path's whole decision, so a caller can preflight it
-// (checkSkill) before changing anything, and writeSkill can apply it.
+// tool. It is the write path's whole decision, so the same plan is used by
+// writeSkill when it rewrites the file.
 //
 // A file that is not the drive's own note is an error, never a clobber: either
-// it lacks the drive header, or it lacks one half of the begin/end pair. Text
-// the user appended after the end marker is carried over untouched.
+// it lacks the drive header, or it lacks one half of the begin/end pair, or it
+// carries a second drive block the drive did not write. Text the user
+// appended after the end marker is carried over untouched.
 func planSkill(env Env, tool Tool, path string) (string, error) {
 	fresh := skillHeader(tool.Name) + skillBlock(env.DriveDir) + "\n"
 	data, err := os.ReadFile(path)
@@ -147,6 +148,12 @@ func planSkill(env Env, tool Tool, path string) (string, error) {
 	if begin < 0 || end < 0 || end < begin {
 		return "", collisionError(path)
 	}
+	// A second begin marker after this block is not the drive's own layout
+	// (a partial revoke or a manual paste); rewriting only the first block
+	// would leave the second, so the file is refused instead.
+	if strings.Contains(text[end+len(skillEnd):], skillBegin) {
+		return "", collisionError(path)
+	}
 	// Replace only the drive's block; keep whatever follows the end marker.
 	return text[:begin] + skillBlock(env.DriveDir) + text[end+len(skillEnd):], nil
 }
@@ -155,16 +162,9 @@ func collisionError(path string) error {
 	return fmt.Errorf("%s exists and is not the drive's skill note; remove or rename it and run `drive agents connect` again", path)
 }
 
-// checkSkill applies planSkill without writing, so Connect can refuse a
-// collision before it registers anything and leaves no half-applied state.
-func checkSkill(env Env, tool Tool, path string) error {
-	_, err := planSkill(env, tool, path)
-	return err
-}
-
 // writeSkill writes the drive's skill note to the tool's skill location,
-// replacing an earlier drive note. The caller preflights with checkSkill, so a
-// failure here is a real filesystem error and is reported, not hidden.
+// replacing an earlier drive note. It runs before the tool is registered, so a
+// failure here leaves nothing registered to be half-applied.
 func writeSkill(env Env, tool Tool, path string) error {
 	text, err := planSkill(env, tool, path)
 	if err != nil {
@@ -180,11 +180,11 @@ func writeSkill(env Env, tool Tool, path string) error {
 }
 
 // revokeSkill removes the drive's note from the tool's skill file, leaving
-// any text the user put after the drive's block. The file itself is only
-// removed when the drive's frontmatter and block were all it held; the
-// directory is only removed when the drive created it (its own
-// <skills>/drive) and nothing is left in it. A shared directory (Kiro's
-// ~/.kiro/steering) is never removed. A missing file is already revoked.
+// any text the user put between the frontmatter and the block, and after the
+// end marker. The file itself is only removed when the drive's frontmatter and
+// block were all it held; the directory is only removed when the drive created
+// it (its own <skills>/drive) and nothing is left in it. A shared directory
+// (Kiro's ~/.kiro/steering) is never removed. A missing file is already revoked.
 func revokeSkill(env Env, tool Tool, path string) error {
 	data, err := os.ReadFile(path)
 	switch {
@@ -196,14 +196,20 @@ func revokeSkill(env Env, tool Tool, path string) error {
 	}
 	text := string(data)
 	header := skillHeader(tool.Name)
-	begin := strings.Index(text, skillBegin)
-	end := strings.Index(text, skillEnd)
-	if !strings.HasPrefix(text, header) || begin < 0 || end < 0 || end < begin {
+	if !strings.HasPrefix(text, header) {
 		return nil // not the drive's note; never delete a file we do not own
 	}
-	// Drop the drive's frontmatter and its block, keeping what the user
-	// wrote after the block.
-	kept := strings.TrimRight(text[end+len(skillEnd):], "\n")
+	begin := strings.Index(text, skillBegin)
+	end := strings.Index(text, skillEnd)
+	if begin < 0 || end < 0 || end < begin {
+		return nil // not the drive's note; never delete a file we do not own
+	}
+	// The drive's own bytes are the frontmatter and the block between the
+	// markers. Keep everything the user wrote between the frontmatter and the
+	// begin marker, plus anything after the end marker: the same text the
+	// rewrite path (planSkill) preserves, so both paths agree on what the
+	// drive owns.
+	kept := strings.TrimSpace(text[len(header):begin] + text[end+len(skillEnd):])
 	switch {
 	case kept == "":
 		if err := os.Remove(path); err != nil {

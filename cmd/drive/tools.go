@@ -261,11 +261,14 @@ func (t Tool) Connect(env Env) error {
 	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
 		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
 	}
-	// Preflight the skill note before anything is registered: a file at the
-	// skill path that is not the drive's is a collision, and refusing it here
-	// leaves the tool unregistered instead of registered without its note.
+	// The skill note goes first. A note with no registration is recoverable
+	// (the next `drive init` finds the tool and registers it), while a tool
+	// registered with no note is the silent gap the note exists to close, so
+	// the note is written before anything is registered. planSkill refuses a
+	// file at the skill path that is not the drive's, so a collision still
+	// fails before any registration happens.
 	if path, ok := t.SkillPath(env); ok {
-		if err := checkSkill(env, t, path); err != nil {
+		if err := writeSkill(env, t, path); err != nil {
 			return fmt.Errorf("write the %s skill note: %w", t.Name, err)
 		}
 	}
@@ -279,11 +282,6 @@ func (t Tool) Connect(env Env) error {
 	if t.Access != nil {
 		if err := t.Access(env); err != nil {
 			return fmt.Errorf("grant %s access to the drive: %w", t.Name, err)
-		}
-	}
-	if path, ok := t.SkillPath(env); ok {
-		if err := writeSkill(env, t, path); err != nil {
-			return fmt.Errorf("write the %s skill note: %w", t.Name, err)
 		}
 	}
 	return nil
