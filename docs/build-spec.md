@@ -80,7 +80,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
 
-Pricing page: one big number, "about $20 per TB a month"; under it "2¢ per GB, billed by the minute, pay only for what you store" and "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1"); a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited".
+Pricing page: one big number, "about $20 per TB a month"; under it the ceiling headline "2¢ per GB, billed by the minute. Never more than $15 a TB", then "Extra TBs never more than $8 each" and "$1 free every month, no card needed"; worked examples ("500 GB for 3 days: about $1", "2 TB kept all month: $23" — the capped total, $15 + $8, not the uncapped meter); a Business column with "Talk to us". No per-minute price, no credit units, no "unlimited". The ceilings and the sentences quoting them live in `src/pricing.js`, and `test/pricing-copy.test.mjs` builds its expectations from that config, so page copy that drifts from the numbers fails CI.
 
 ## Agent tools
 
