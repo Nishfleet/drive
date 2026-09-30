@@ -233,6 +233,18 @@ main {
   font-weight: 600;
 }
 
+/* The two pages of the site, side by side under the waitlist. */
+.footer-nav {
+  display: flex;
+  gap: 18px;
+  margin: 10px 0 0;
+  font-size: 14px;
+}
+
+.footer-nav a {
+  color: var(--ink-soft);
+}
+
 /* ---- The strip: what you actually pay for ------------------------------- */
 
 .strip {
@@ -492,6 +504,10 @@ main {
         </div>
         <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
       </form>
+      <nav class="footer-nav" aria-label="Drive">
+        <a href="/get-started">Get started</a>
+        <a href="/">Pricing</a>
+      </nav>
       <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
     </section>
 
