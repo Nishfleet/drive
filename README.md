@@ -4,6 +4,8 @@ Template for new Node/JS repos. Already wired to the canonical reusable CI in
 [nish3451/shared-workflows](https://github.com/nish3451/shared-workflows) — the
 CI standard applies by construction, with no per-repo setup.
 
+Dependency PRs (Dependabot, `.github/dependabot.yml`) merge on green CI.
+
 ## Use it
 
 1. Click **"Use this template"** on

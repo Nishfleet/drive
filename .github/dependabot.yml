@@ -1,0 +1,41 @@
+# Stock dependency watch (drive#93). Actions are pinned by SHA in
+# .github/workflows/**; Dependabot keeps both the SHAs and the version
+# comments current.
+#
+# Minor and patch version updates land as one grouped PR per ecosystem.
+# Security updates are deliberately ungrouped: a group with no
+# `applies-to: security-updates` applies to version updates only.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gomod-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types: [minor, patch]
