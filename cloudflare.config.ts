@@ -1,8 +1,10 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
+import { METER_CRON } from "./src/meter.js";
 
 // drive issue #11: the pricing and landing page, served as Worker static
-// assets, with /api/* routed to the Worker for the waitlist form.
+// assets, with /api/* routed to the Worker for the waitlist form and the
+// meter's event intake.
 export default defineConfig({
 	worker: {
 		name: "drive-pricing",
@@ -16,9 +18,21 @@ export default defineConfig({
 			runWorkerFirst: ["/api/*"],
 			notFoundHandling: "404-page",
 		},
+		// The meter's hourly rollup (drive issue #6). One trigger, and the
+		// schedule string is the one the meter module exports, pinned by
+		// test/meter.test.mjs the way the static pages are pinned to their copy.
+		triggers: [triggers.scheduled({ schedule: METER_CRON })],
 		env: {
 			ASSETS: bindings.assets(),
 			WAITLIST_DB: bindings.d1({
+				name: "drive-waitlist",
+				id: "93c9f523-159c-4261-8541-d4c059906df3",
+			}),
+			// The meter reads and writes the api Worker's own tables, so it
+			// binds the same database under a name of its own: the meter's code
+			// says which tables it owns, and when those tables move to their own
+			// database the binding is the only line that changes.
+			METER_DB: bindings.d1({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",
 			}),
