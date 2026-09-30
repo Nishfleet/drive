@@ -163,6 +163,92 @@ export function stateCellText(status) {
   return `${status.label} — ${status.detail}`;
 }
 
+// The module's words for a device that has never synced, resolved once, so the
+// Last-sync column and the State column cannot say two different things.
+const NO_SYNC_LABEL = syncStatus({}, 0).label;
+
+/**
+ * The age of a timestamp in milliseconds, or null when it cannot be read. A
+ * device row that carries an unreadable date is reported, not thrown: the row
+ * is a report, and the page's own poll failure is the `unreachable` state,
+ * not a device's.
+ * @param {string|number|Date|null} value
+ * @param {number} now
+ * @returns {number|null}
+ */
+export function ageMs(value, now = Date.now()) {
+  if (!Number.isFinite(now)) {
+    throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
+  }
+  const time = typeof value === "number" ? value : Date.parse(value);
+  if (!Number.isFinite(time)) {
+    return null;
+  }
+  return now - time;
+}
+
+/**
+ * The Last-sync cell's words: the date a device last synced, or the module's
+ * own "no syncs yet" label, so a device that has never synced says so rather
+ * than showing a blank cell. Unparseable dates take the same label: a row is a
+ * report, and the page's own poll failure is the `unreachable` state, not a
+ * device's.
+ * @param {{lastSyncAt?: string|number|Date|null}} device
+ * @returns {string}
+ */
+export function lastSyncText(device) {
+  if (!device.lastSyncAt) {
+    return NO_SYNC_LABEL;
+  }
+  const time = new Date(device.lastSyncAt);
+  if (Number.isNaN(time.getTime())) {
+    return NO_SYNC_LABEL;
+  }
+  return time.toLocaleString();
+}
+
+/**
+ * The connection state a poll response's status code maps to. A 401 is the
+ * account gate (issue #45): the browser has no signed-in account yet, which
+ * on this page is the waiting state — the Mac has not signed in — and the
+ * waiting line names the real next step. It is never `unreachable`: the
+ * service answered. Any other non-ok status is.
+ * @param {number} status
+ * @returns {"waiting"|"unreachable"}
+ */
+export function connectionStateForStatus(status) {
+  if (!Number.isInteger(status)) {
+    throw new TypeError(
+      `connectionStateForStatus needs a status code, got ${String(status)}`,
+    );
+  }
+  return status === 401 ? "waiting" : "unreachable";
+}
+
+/**
+ * Whether a poll payload means the Mac has connected: a device signed in
+ * inside the module's window, or the service's own `connected` state. The
+ * page stops its timer when this is true.
+ * @param {object} payload
+ * @param {number} now
+ * @returns {boolean}
+ */
+export function isConnected(payload, now = Date.now()) {
+  if (typeof payload !== "object" || payload === null) {
+    throw new TypeError(
+      `isConnected needs a payload object, got ${String(payload)}`,
+    );
+  }
+  if (payload.state === "connected") {
+    return true;
+  }
+  const devices = Array.isArray(payload.devices) ? payload.devices : [];
+  return devices.some((device) => {
+    const age = ageMs(device.lastSeenAt, now);
+    return age !== null && age <= CONNECTED_WINDOW_MS;
+  });
+}
+
 // ---- The bottom half: the page wiring the builders above. ----
 
 // Every element the wiring touches, named once. A missing element is a real
@@ -247,29 +333,6 @@ function showConnection(state) {
   }
 }
 
-// The age of a timestamp, or null when it cannot be read. A device row that
-// carries an unreadable date is shown as "No syncs yet" rather than as
-// "NaN": the row is a report, and the poll's own failure is the page's
-// `unreachable` state, not a device's.
-function ageMs(value) {
-  const time = typeof value === "number" ? value : Date.parse(value);
-  if (!Number.isFinite(time)) {
-    return null;
-  }
-  return Date.now() - time;
-}
-
-function lastSyncText(device) {
-  if (!device.lastSeenAt && !device.lastSyncAt) {
-    return "";
-  }
-  const time = new Date(device.lastSyncAt);
-  if (Number.isNaN(time.getTime())) {
-    return "";
-  }
-  return time.toLocaleString();
-}
-
 function deviceRow(device) {
   const sync = deviceSyncState(device);
   const tr = document.createElement("tr");
@@ -324,10 +387,6 @@ function maybeAskToNotify(devices) {
 
 function render(payload) {
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
-  const connected = devices.some((device) => {
-    const age = ageMs(device.lastSeenAt);
-    return age !== null && age <= CONNECTED_WINDOW_MS;
-  });
 
   required("devices-body").replaceChildren(...devices.map(deviceRow));
   const table = required("devices");
@@ -351,7 +410,7 @@ function render(payload) {
   }
   maybeAskToNotify(devices);
 
-  if (connected || payload.state === "connected") {
+  if (isConnected(payload)) {
     showConnection("connected");
     // Nothing left to watch: the page is done and stops asking.
     if (timer !== null) {
@@ -376,11 +435,10 @@ async function poll() {
     return;
   }
   if (!response.ok) {
-    // 401 is the account gate (drive issue #45): this browser has no signed-in
-    // account yet, which on this page is exactly the waiting state — the Mac
-    // has not signed in — and the words on the line name the real next step.
-    // It is never "unreachable": the service answered. Any other status is.
-    showConnection(response.status === 401 ? "waiting" : "unreachable");
+    // A 401 is the waiting state, not an unreachable service: the account
+    // gate answered, so the service is up. connectionStateForStatus owns the
+    // mapping and both arms are states this page renders.
+    showConnection(connectionStateForStatus(response.status));
     return;
   }
   let payload;

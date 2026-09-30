@@ -33,11 +33,15 @@ import {
   uploadProgress,
 } from "../src/status.js";
 import {
+  ageMs,
   connectionLine,
+  connectionStateForStatus,
   connectionStates,
   deviceSyncState,
   emptyState,
   installCommand,
+  isConnected,
+  lastSyncText,
   pollIntervalMs,
   stateCellText,
   statusEndpoint,
@@ -334,6 +338,19 @@ test("the page's state cell shows the module's own sync state and words", () => 
   assert.throws(() => stateCellText({ detail: "x" }), TypeError);
 });
 
+test("an unreadable device date is reported, never shown as a number", () => {
+  // The row's age helper: null for a date the page cannot read, so the caller
+  // reports the device rather than rendering NaN. A non-finite `now` is a
+  // programmer error and throws, like every other builder here.
+  assert.equal(ageMs("not-a-date", now), null);
+  assert.equal(ageMs(null, now), null);
+  assert.equal(ageMs(undefined, now), null);
+  assert.equal(ageMs(new Date(now - 5000), now), 5000);
+  assert.equal(ageMs(new Date(now - 5000).toISOString(), now), 5000);
+  assert.equal(ageMs(now - 5000, now), 5000);
+  assert.throws(() => ageMs("not-a-date", "nope"), TypeError);
+});
+
 test("the page's Devices table has a last-sync column and its empty states", () => {
   assert.match(shell, /<th scope="col">Last sync<\/th>/);
   for (const id of ["devices", "devices-body", "devices-empty", "activity-empty", "activity-progress"]) {
@@ -426,31 +443,83 @@ test("a 401 is the waiting line, not an unreachable service", () => {
   // page is where the sign-in lands, so a 401 IS the waiting state: the Mac
   // has not signed in, and the waiting line names the real next step.
   // Reporting it as "unreachable" would tell someone to wait on a service
-  // that is answering. The mapping is pinned on the module's own source, and
-  // both arms must be states the module's table defines, so a rename cannot
-  // leave the line blank.
-  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
-  const mapping = source.match(
-    /showConnection\(response\.status === 401 \? "(\w+)" : "(\w+)"\)/,
-  );
-  assert.ok(mapping, "the poll must branch on the 401 status");
-  const [, on401, otherwise] = mapping;
-  for (const state of [on401, otherwise]) {
+  // that is answering. The mapping is a pure function over the response
+  // status, and both arms are states the module's table defines, so a rename
+  // cannot leave the line blank.
+  assert.equal(connectionStateForStatus(401), "waiting");
+  assert.equal(connectionStateForStatus(403), "unreachable");
+  assert.equal(connectionStateForStatus(500), "unreachable");
+  assert.equal(connectionStateForStatus(503), "unreachable");
+  for (const status of [401, 403, 500, 503]) {
     assert.ok(
-      connectionStates().includes(state),
-      `the renderer must define "${state}" in CONNECTION_COPY's states`,
+      connectionStates().includes(connectionStateForStatus(status)),
+      `the renderer must define a line for the state a ${status} maps to`,
     );
   }
-  assert.equal(on401, "waiting", "401 shows the waiting line");
-  assert.equal(otherwise, "unreachable", "every other failure is unreachable");
+  assert.throws(() => connectionStateForStatus("401"), TypeError);
+  assert.throws(() => connectionStateForStatus(null), TypeError);
 });
 
-test("the page stops asking once it is connected", () => {
-  // A page that keeps polling forever is a battery bug on the one screen a
-  // new person leaves open, so the connected state clears its own timer.
+test("the Last-sync cell says so, never blank, for a device with no sync", () => {
+  // The row's date column, distinct from its state column: a device that has
+  // never synced takes the module's own "no syncs yet" label, the same words
+  // syncStatus reports for the `never` state. A blank cell would read as a
+  // missing value rather than a device that has not synced.
+  assert.equal(lastSyncText({}), "No syncs yet");
+  assert.equal(lastSyncText({ lastSyncAt: null }), "No syncs yet");
+  assert.equal(lastSyncText({ lastSyncAt: "not-a-date" }), "No syncs yet");
+  // The words are the module's: the same label syncStatus produces, asserted
+  // against the module rather than a copy in the renderer.
+  assert.equal(lastSyncText({}), syncStatus({}, now).label);
+  // A real date renders as a local time, not the module's fallback.
+  const shown = lastSyncText({ lastSyncAt: new Date(now) });
+  assert.notEqual(shown, "No syncs yet");
+  assert.ok(shown.length > 0);
+});
+
+test("a signed-in Mac inside the window is connected, and the page stops asking", () => {
+  // The decision the page acts on to stop polling, pinned behaviourally, then
+  // the one thing about it that is wiring: the connected state clears its own
+  // timer, because polling forever is a battery bug on the one screen a new
+  // person leaves open.
+  const fresh = new Date(now - 1000).toISOString();
+  const stale = new Date(now - 60 * 60 * 1000).toISOString();
+  assert.equal(isConnected({ state: "waiting", devices: [] }, now), false);
+  assert.equal(
+    isConnected({ devices: [{ lastSeenAt: fresh }] }, now),
+    true,
+    "a device inside the connected window flips the page to connected",
+  );
+  assert.equal(
+    isConnected({ devices: [{ lastSeenAt: stale }] }, now),
+    false,
+    "a sign-in from an hour ago is not the sign-in the page is waiting for",
+  );
+  assert.equal(
+    isConnected({ state: "connected", devices: [] }, now),
+    true,
+    "the service's own connected state is connected",
+  );
+  // The window's edge belongs to connected, one millisecond past it does not.
+  assert.equal(
+    isConnected(
+      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS).toISOString() }] },
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    isConnected(
+      { devices: [{ lastSeenAt: new Date(now - CONNECTED_WINDOW_MS - 1).toISOString() }] },
+      now,
+    ),
+    false,
+  );
+  assert.throws(() => isConnected(null), TypeError);
+
   const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
   assert.match(source, /clearInterval\(timer\)/);
-  assert.match(source, /state === "connected"/);
+  assert.match(source, /isConnected\(payload\)/);
 });
 
 test("the page raises one desktop notification per sync error", () => {
