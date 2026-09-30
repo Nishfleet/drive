@@ -267,6 +267,29 @@ test("the sitemap lists the docs pages on the canonical origin, in order", () =>
   }
 });
 
+test("the README describes the drive and points at the docs", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  // It is not the template stub any more: it says what the product is and
+  // links every docs page, so a reader who lands on the repository has a way in.
+  assert.doesNotMatch(
+    readme,
+    /node-repo-template/,
+    "the README must not still be the template stub",
+  );
+  assert.match(readme, /^# Drive$/m, "the README must name the product");
+  assert.match(
+    readme,
+    /2¢ per GB a month/,
+    "the README must state the rate",
+  );
+  for (const page of DOC_PAGES) {
+    assert.ok(
+      readme.includes(`${SITE.origin}${page.url}`),
+      `the README must point at ${page.url}`,
+    );
+  }
+});
+
 test("the docs carry the pricing page's design tokens, not a different palette", () => {
   // The pricing page inlines its own stylesheet (public/index.html), so the
   // docs cannot import it; the tokens are copied. This reads the shipped page
