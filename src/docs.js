@@ -24,6 +24,8 @@ import {
   meteredMonthlyBillUsd,
   monthBillCents,
   monthlyCeilingUsd,
+  monthlyBillForStoredTb,
+  monthlyStorageBillUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { SITE } from "./seo.js";
@@ -45,33 +47,26 @@ export function meteredUsdFor(gbMinutes) {
 }
 
 /**
- * The storage bill for a month that stored `tb` terabytes all month, in whole
- * cents. The month is described the way the meter describes one — GB-minutes
- * and a peak in GB — so the number comes from monthBillCents() rather than a
- * second formula written for the docs.
- * @param {number} tb stored size, kept for the whole month
- */
-export function monthBillFor(tb) {
-  const gb = tb * GB_PER_TB;
-  const gbMinutes = gb * MINUTES_PER_MONTH;
-  return monthBillCents({ gbMinutes, peakGb: gb });
-}
-
-/**
  * The worked examples on the Pricing page: the four sizes the spec walks
- * through, each with the meter before the ceiling and the bill after it, and
- * the total after the free credit. Every figure is a function call.
+ * through, each with the meter before the ceiling, the storage line under it,
+ * and the total after the free credit. Every figure is a function call: the
+ * total and the storage line come from monthlyBillForStoredTb(), the one
+ * "kept all month" converter the pricing copy already uses, and the meter and
+ * the ceiling from the two functions the usage page reads. A docs row is
+ * therefore the same row, worked the same way, that the copy gate holds the
+ * live page to.
  */
 export const BILL_EXAMPLES = Object.freeze(
   [0.8, 1.3, 2, 5].map((tb) => {
     const gb = tb * GB_PER_TB;
-    const bill = monthBillFor(tb);
+    const bill = monthlyBillForStoredTb(tb);
     return Object.freeze({
       tb,
       stored: `${tb} TB`,
       metered: dollars(meteredUsdFor(gb * MINUTES_PER_MONTH)),
       ceiling: dollars(monthlyCeilingUsd(gb)),
-      bill: dollars(bill.totalCents / 100),
+      bill: dollars(bill.billUsd),
+      storage: dollars(bill.storageUsd),
     });
   }),
 );
