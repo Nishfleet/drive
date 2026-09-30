@@ -28,8 +28,10 @@ import {
 import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+// The first-run page is a Vite entry at the repo root (issue #70), not a
+// verbatim asset in public/, so its shell is read from there.
 const getStartedPage = readFileSync(
-  new URL("../public/get-started.html", import.meta.url),
+  new URL("../get-started.html", import.meta.url),
   "utf8",
 );
 
