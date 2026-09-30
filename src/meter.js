@@ -461,17 +461,32 @@ export function validateEvent(input) {
   // version's creation time may not be in the event at all, and the instant
   // the provider saw the change is the honest moment billing stops.
   const eventTimestamp = input.eventTimestamp;
-  let createdAt;
-  try {
-    createdAt = toMillis(input.createdAt ?? eventTimestamp, "createdAt");
-  } catch {
-    return { error: "The event has no usable timestamp." };
-  }
   const action =
     typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
   const effect = Object.hasOwn(EVENT_ACTIONS, action) ? EVENT_ACTIONS[action] : null;
   if (effect === null) {
     return { error: `Unknown storage event action: ${action}` };
+  }
+  // created_at comes from the event's own time, never from arrival. A CREATE
+  // must say it: a create with no creation time cannot say when the version
+  // was written, and storing the arrival instant instead would bill the file
+  // from the moment the meter heard about it - or, once it is hidden, not at
+  // all. So it is refused instead. A HIDE may carry none (the provider sends
+  // when a version disappeared, not when it was written): its event
+  // timestamp seeds the row, which is never wrong by more than the version's
+  // own life and is corrected to the truth by the create that follows, since
+  // the upsert's created_at = MIN always takes the earliest time any event
+  // for the version carries. Both orders therefore end on the same row.
+  let createdAt;
+  if (effect === "create" && (input.createdAt === undefined || input.createdAt === null || input.createdAt === "")) {
+    return { error: "The event does not say when the version was written." };
+  }
+  try {
+    // A hide without an explicit createdAt falls back to its own timestamp:
+    // hidden_at IS that instant, and file_versions.created_at is NOT NULL.
+    createdAt = toMillis(input.createdAt ?? eventTimestamp, "createdAt");
+  } catch {
+    return { error: "The event has no usable timestamp." };
   }
   let hiddenAt = null;
   if (effect === "hide") {

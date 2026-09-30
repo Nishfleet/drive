@@ -629,6 +629,52 @@ test("a hide that outruns its create bills the same minutes, whichever order the
   assert.equal(reversed.rows, ordered.rows, "both orders bill the same day");
 });
 
+test("a create event without createdAt is refused so the meter never silently bills zero", () => {
+  const bad = event({ eventId: "c-bad", sizeBytes: GB, action: "uploaded", createdAt: undefined });
+  const result = validateEvent(bad);
+  assert.notEqual(result.error, undefined, "a create with no createdAt is refused");
+});
+
+test("a hide that outruns its create and carries no createdAt bills the same minutes", async () => {
+  // Hide events often omit createdAt: the provider sends when it
+  // disappeared, not when the version was written. The hide's event
+  // timestamp seeds created_at, and the late create's real createdAt
+  // (always earlier) moves it back via the upsert's MIN.
+  const create = event({
+    eventId: "c-3",
+    createdAt: midnight(),
+    sizeBytes: GB,
+    action: "uploaded",
+  });
+  const hide = event({
+    eventId: "h-3",
+    action: "hidden",
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    sizeBytes: GB,
+  });
+
+  const createFirst = makeFakeD1();
+  await recordEvent(createFirst, validateEvent(create), midnight());
+  await recordEvent(createFirst, validateEvent(hide), midnight() + 30 * MINUTE_MS);
+
+  const hideFirst = makeFakeD1();
+  await recordEvent(hideFirst, validateEvent(hide), midnight() + 30 * MINUTE_MS);
+  await recordEvent(hideFirst, validateEvent(create), midnight() + 31 * MINUTE_MS);
+
+  const a = createFirst.tables.file_versions.get(versionKey("abc123", "file-1"));
+  const b = hideFirst.tables.file_versions.get(versionKey("abc123", "file-1"));
+  assert.equal(b.created_at, midnight(), "the create corrects the hide's time");
+  assert.equal(b.hidden_at, midnight() + 30 * MINUTE_MS);
+  for (const field of ["created_at", "hidden_at", "size_bytes"]) {
+    assert.equal(b[field], a[field], `both orders agree on ${field}`);
+  }
+
+  const now = midnight() + 60 * MINUTE_MS;
+  assert.equal(versionGbMinutesInHour(toVersion(a), midnight(), now), 60);
+  assert.equal(versionGbMinutesInHour(toVersion(b), midnight(), now), 60);
+});
+
 test("a still-live version's hour is unaffected by another version's shortfall", async () => {
   // The minimum is per version, not per account: a long-lived version must
   // not have its hour bumped by a short one's top-up, and the short one must
