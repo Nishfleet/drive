@@ -29,6 +29,7 @@ import {
 import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { HEALTH_PATH } from "../src/health.js";
+import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -49,6 +50,12 @@ const PUBLIC_ROUTES = new Set([
   // Sign-ups, before accounts exist.
   "/api/waitlist",
   "/api/waitlist/",
+  // The sign-in screen (build step 9, #10) is the one route a caller reaches
+  // with no session: it is what mints the session every other account route
+  // demands. A closed door until the account store lands, never a 401 that
+  // would be indistinguishable from "your session expired".
+  SIGNIN_ENDPOINT,
+  `${SIGNIN_ENDPOINT}/`,
   // The meter and the billing webhook only; closed with no token set (#73's
   // walk added no account here because this lane's gate is a deployment
   // secret, not a session).
@@ -119,6 +126,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         "USAGE_ENDPOINT",
         "STATUS_ENDPOINT",
         "HEALTH_PATH",
+        "SIGNIN_ENDPOINT",
       ].includes(name),
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
     );
@@ -127,9 +135,14 @@ test("every route src/index.js registers is either public or behind the gate", a
   // deleted must not keep the walk quiet about the change. An entry written
   // from an endpoint constant is checked through that constant.
   for (const route of PUBLIC_ROUTES) {
-    const fromConstant = route.startsWith(`${HEALTH_PATH}/`) || route === HEALTH_PATH;
+    const fromConstant =
+      route.startsWith(`${HEALTH_PATH}/`) ||
+      route === HEALTH_PATH ||
+      route.startsWith(SIGNIN_ENDPOINT);
     assert.ok(
-      literals.includes(route) || (fromConstant && constants.includes("HEALTH_PATH")),
+      literals.includes(route) ||
+        (fromConstant &&
+          (constants.includes("HEALTH_PATH") || constants.includes("SIGNIN_ENDPOINT"))),
       `${route} is allow-listed but not routed`,
     );
   }
