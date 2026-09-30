@@ -7,6 +7,7 @@ import {
   handleFilesRequest,
   resolveAccount,
 } from "./files.js";
+import { handleUsageRequest } from "./billing.js";
 
 // One drive per Worker isolate (build step 1's stand-in). With no storage
 // configured the in-memory store holds what the page uploaded this run, so the
@@ -36,7 +37,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(request, env.WAITLIST_DB);
+      return handleWaitlistRequest(
+        request,
+        env.WAITLIST_DB,
+        env.WAITLIST_RATE_LIMITER,
+      );
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
@@ -53,6 +58,11 @@ export default {
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
       return handleFilesRequest(request, storeFor(env), resolveAccount(request));
+    }
+    // The usage page's and the CLI's read of the month's money (issue #7,
+    // build step 6). Same rule: the branch comes before the asset fallthrough.
+    if (url.pathname === "/api/usage" || url.pathname === "/api/usage/") {
+      return handleUsageRequest(request);
     }
     return env.ASSETS.fetch(request);
   },

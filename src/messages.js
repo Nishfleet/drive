@@ -35,6 +35,19 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
     next: "Free up disk space on this device and try the save again.",
   }),
+  // The waitlist (or another bounded form) stopped accepting this caller for
+  // a moment because they sent too many requests. Nothing was stored and the
+  // address on file is untouched.
+  "rate-limited": Object.freeze({
+    what: "Too many sign-ups from your connection right now.",
+    next: "Wait a minute and try again.",
+  }),
+  // The request body was larger than the endpoint accepts, so it was never
+  // read or stored.
+  "body-too-large": Object.freeze({
+    what: "That request was too large to accept.",
+    next: "Send a smaller request and try again.",
+  }),
   // The api Worker (or the CLI's call to it) could not reach storage.
   "storage-down": Object.freeze({
     what: "We can't reach storage right now.",
