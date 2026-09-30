@@ -13,17 +13,20 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import {
   BILLING,
+  PAGES,
   SITE,
   absoluteUrl,
+  pageUrl,
   softwareApplicationLd,
 } from "../src/seo.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 
-// Every shipped HTML page. A new public page is picked up by this list, so its
-// title, description and canonical have to be filled in rather than inherited.
-const htmlPages = readdirSync(publicDir).filter((name) => name.endsWith(".html"));
+// Every shipped HTML page, from the config, not from the directory, so a page
+// that ships without being added to src/seo.js fails the first test below.
+const indexablePages = PAGES.filter((page) => page.indexable);
+const fileFor = (page) => page.path.replace(/^\//, "") || "index.html";
 
 // These read hand-maintained HTML, so they assume double-quoted attributes in
 // a fixed order. That is a real (small) coupling to the file's formatting, not
@@ -41,14 +44,27 @@ function link(page, rel) {
   return match ? match[1] : null;
 }
 
+test("every shipped HTML page is registered in src/seo.js", () => {
+  const shipped = readdirSync(publicDir)
+    .filter((name) => name.endsWith(".html"))
+    .sort();
+  const registered = PAGES.map(fileFor).sort();
+  assert.deepEqual(
+    shipped,
+    registered,
+    "a public page must be added to PAGES with its own indexable flag, so its metadata is filled in rather than inherited",
+  );
+});
+
 test("every public page has a unique title and meta description", () => {
   const titles = new Set();
   const descriptions = new Set();
-  for (const name of htmlPages) {
-    const page = read(name);
-    const title = page.match(/<title>([^<]*)<\/title>/i);
+  for (const page of PAGES) {
+    const name = fileFor(page);
+    const html = read(name);
+    const title = html.match(/<title>([^<]*)<\/title>/i);
     assert.ok(title, `${name} must have a <title>`);
-    const description = meta(page, "name", "description");
+    const description = meta(html, "name", "description");
     assert.ok(description, `${name} must have a meta description`);
     assert.ok(title[1].trim().length > 0, `${name} needs a non-empty title`);
     assert.ok(
@@ -66,59 +82,62 @@ test("every public page has a unique title and meta description", () => {
   }
 });
 
-test("every public page names the canonical URL, and it is one per page", () => {
-  const seen = new Set();
-  for (const name of htmlPages) {
+test("every indexable page names its own canonical URL", () => {
+  for (const page of indexablePages) {
+    const name = fileFor(page);
     const canonical = link(read(name), "canonical");
-    assert.ok(canonical, `${name} must have a <link rel="canonical">`);
-    assert.equal(new URL(canonical).origin, SITE.origin);
-    assert.equal(seen.has(canonical), false, `duplicate canonical on ${name}`);
-    seen.add(canonical);
+    assert.equal(
+      canonical,
+      pageUrl(page),
+      `${name} must have <link rel="canonical"> for its own URL`,
+    );
   }
-  assert.deepEqual([...seen], [absoluteUrl(SITE.homePath)]);
 });
 
-test("every public page carries a complete Open Graph card that resolves", () => {
-  for (const name of htmlPages) {
-    const page = read(name);
-    assert.equal(meta(page, "property", "og:title"), SITE.title);
-    assert.equal(meta(page, "property", "og:description"), SITE.description);
-    assert.equal(meta(page, "property", "og:url"), absoluteUrl(SITE.homePath));
-    assert.equal(meta(page, "property", "og:type"), "website");
+test("every indexable page carries a complete Open Graph card that resolves", () => {
+  for (const page of indexablePages) {
+    const name = fileFor(page);
+    const html = read(name);
+    assert.equal(meta(html, "property", "og:title"), SITE.title);
+    assert.equal(meta(html, "property", "og:description"), SITE.description);
+    assert.equal(meta(html, "property", "og:url"), pageUrl(page));
+    assert.equal(meta(html, "property", "og:type"), "website");
     assert.equal(
-      meta(page, "property", "og:image"),
+      meta(html, "property", "og:image"),
       absoluteUrl(SITE.ogImagePath),
     );
-    assert.equal(meta(page, "property", "og:image:width"), "1200");
-    assert.equal(meta(page, "property", "og:image:height"), "630");
+    assert.equal(meta(html, "property", "og:image:width"), "1200");
+    assert.equal(meta(html, "property", "og:image:height"), "630");
     assert.ok(
-      meta(page, "property", "og:image:alt"),
+      meta(html, "property", "og:image:alt"),
       `${name} needs an og:image:alt for screen readers and crawlers`,
     );
-    const image = SITE.ogImagePath.replace(/^\//, "");
-    assert.ok(
-      existsSync(new URL(image, publicDir)),
-      `og:image must ship as public/${image}`,
-    );
   }
+  // The share card is one shared asset, so it only has to exist once.
+  const image = SITE.ogImagePath.replace(/^\//, "");
+  assert.ok(
+    existsSync(new URL(image, publicDir)),
+    `og:image must ship as public/${image}`,
+  );
 });
 
-test("every public page carries a Twitter summary_large_image card", () => {
-  for (const name of htmlPages) {
-    const page = read(name);
-    assert.equal(meta(page, "name", "twitter:card"), "summary_large_image");
-    assert.equal(meta(page, "name", "twitter:title"), SITE.title);
+test("every indexable page carries a Twitter summary_large_image card", () => {
+  for (const page of indexablePages) {
+    const html = read(fileFor(page));
+    assert.equal(meta(html, "name", "twitter:card"), "summary_large_image");
+    assert.equal(meta(html, "name", "twitter:title"), SITE.title);
     assert.equal(
-      meta(page, "name", "twitter:image"),
+      meta(html, "name", "twitter:image"),
       absoluteUrl(SITE.ogImagePath),
     );
   }
 });
 
-test("the JSON-LD is a SoftwareApplication whose price matches the config", () => {
-  for (const name of htmlPages) {
-    const page = read(name);
-    const block = page.match(
+test("every indexable page carries a JSON-LD SoftwareApplication matching the config", () => {
+  for (const page of indexablePages) {
+    const name = fileFor(page);
+    const html = read(name);
+    const block = html.match(
       /<script type="application\/ld\+json">([\s\S]*?)<\/script>/i,
     );
     assert.ok(block, `${name} must carry a JSON-LD block`);
@@ -132,6 +151,24 @@ test("the JSON-LD is a SoftwareApplication whose price matches the config", () =
     // The whole object, so a stale or invented field fails rather than passing
     // because the two types happen to agree.
     assert.deepStrictEqual(parsed, softwareApplicationLd());
+  }
+});
+
+test("every non-indexable page is noindex and stays out of the sitemap", () => {
+  const sitemap = read("sitemap.xml");
+  for (const page of PAGES.filter((p) => !p.indexable)) {
+    const name = fileFor(page);
+    const robots = meta(read(name), "name", "robots") || "";
+    assert.match(
+      robots,
+      /noindex/i,
+      `${name} is flagged non-indexable in src/seo.js, so it must declare noindex`,
+    );
+    assert.equal(
+      sitemap.includes(pageUrl(page)),
+      false,
+      `${name} is noindex and must not appear in the sitemap`,
+    );
   }
 });
 
@@ -152,15 +189,15 @@ test("the JSON-LD offer carries the ceiling as a real per-unit price", () => {
   );
 });
 
-test("sitemap.xml lists every public page once, on the canonical origin", () => {
+test("sitemap.xml lists exactly the indexable pages, on the canonical origin", () => {
   const sitemap = read("sitemap.xml");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
     (match) => match[1],
   );
   assert.deepEqual(
     locations,
-    htmlPages.map(() => absoluteUrl(SITE.homePath)),
-    "the sitemap must list exactly the pages that ship, at their canonical URL",
+    indexablePages.map(pageUrl),
+    "the sitemap must list exactly the indexable pages, at their canonical URLs",
   );
   for (const location of locations) {
     assert.equal(new URL(location).origin, SITE.origin);

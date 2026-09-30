@@ -68,6 +68,22 @@ export const SITE = Object.freeze({
   llmsPath: "/llms.txt",
 });
 
+// Every public HTML page, and whether a crawler should index it. The order is
+// the sitemap order. get-started.html is a per-device first-run page a person
+// lands on from the CLI; it declares <meta name="robots" content="noindex">
+// and stays out of the sitemap. test/seo.test.mjs walks this list, so a new
+// page has to be added here and given its own title, description and canonical
+// rather than inheriting this page's.
+export const PAGES = Object.freeze([
+  Object.freeze({ path: "/", indexable: true }),
+  Object.freeze({ path: "/get-started.html", indexable: false }),
+]);
+
+/** The absolute URL of a public page, from its site-relative path. */
+export function pageUrl(page) {
+  return absoluteUrl(page.path);
+}
+
 /**
  * A site-root-relative path as the absolute URL a crawler reads it at, so a
  * meta tag, the sitemap and a test never spell an origin out separately.
