@@ -26,6 +26,17 @@ import { monthlyBillForStoredTb } from "../src/billing.js";
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 
+// The first-run page is a Vite entry at the repo root (issue #70): it is built
+// (its <script type="module"> is bundled) rather than copied verbatim out of
+// public/, so it ships from the root and the metadata tests read it there.
+// Every other page is still a verbatim public/ asset.
+const ROOT_PAGES = new Set(["get-started.html"]);
+const rootDir = new URL("../", import.meta.url);
+const pageUrlFor = (name) =>
+  ROOT_PAGES.has(name) ? new URL(name, rootDir) : new URL(name, publicDir);
+const readPage = (name) => readFileSync(pageUrlFor(name), "utf8");
+const pageExists = (name) => existsSync(pageUrlFor(name));
+
 // Every shipped HTML page, from the config, not from the directory, so a page
 // that ships without being added to src/seo.js fails the first test below.
 const indexablePages = PAGES.filter((page) => page.indexable);
@@ -48,9 +59,12 @@ function link(page, rel) {
 }
 
 test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
-  const shipped = readdirSync(publicDir)
-    .filter((name) => name.endsWith(".html"))
-    .sort();
+  // The site ships pages from two places (issue #70): the verbatim assets in
+  // public/ and the built Vite entries at the repo root, so both are walked.
+  const shipped = [
+    ...readdirSync(publicDir).filter((name) => name.endsWith(".html")),
+    ...[...ROOT_PAGES].filter((name) => pageExists(name)),
+  ].sort();
   const registered = PAGES.map(fileFor).sort();
   assert.deepEqual(
     shipped,
@@ -64,7 +78,7 @@ test("every public page has a unique title and meta description", () => {
   const descriptions = new Set();
   for (const page of PAGES) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     const title = html.match(/<title>([^<]*)<\/title>/i);
     assert.ok(title, `${name} must have a <title>`);
     const description = meta(html, "name", "description");
@@ -88,7 +102,7 @@ test("every public page has a unique title and meta description", () => {
 test("every indexable page names its own canonical URL", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const canonical = link(read(name), "canonical");
+    const canonical = link(readPage(name), "canonical");
     assert.equal(
       canonical,
       pageUrl(page),
@@ -100,7 +114,7 @@ test("every indexable page names its own canonical URL", () => {
 test("every indexable page carries a complete Open Graph card that resolves", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     assert.equal(meta(html, "property", "og:title"), SITE.title);
     assert.equal(meta(html, "property", "og:description"), SITE.description);
     assert.equal(meta(html, "property", "og:url"), pageUrl(page));
@@ -126,7 +140,7 @@ test("every indexable page carries a complete Open Graph card that resolves", ()
 
 test("every indexable page carries a Twitter summary_large_image card", () => {
   for (const page of indexablePages) {
-    const html = read(fileFor(page));
+    const html = readPage(fileFor(page));
     assert.equal(meta(html, "name", "twitter:card"), "summary_large_image");
     assert.equal(meta(html, "name", "twitter:title"), SITE.title);
     assert.equal(
@@ -139,7 +153,7 @@ test("every indexable page carries a Twitter summary_large_image card", () => {
 test("every indexable page carries a JSON-LD SoftwareApplication matching the config", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     const block = html.match(
       /<script type="application\/ld\+json">([\s\S]*?)<\/script>/i,
     );
@@ -161,7 +175,7 @@ test("every non-indexable page is noindex and stays out of the sitemap", () => {
   const sitemap = read("sitemap.xml");
   for (const page of PAGES.filter((p) => !p.indexable)) {
     const name = fileFor(page);
-    const robots = meta(read(name), "name", "robots") || "";
+    const robots = meta(readPage(name), "name", "robots") || "";
     assert.match(
       robots,
       /noindex/i,

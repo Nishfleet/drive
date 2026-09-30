@@ -45,6 +45,7 @@
 // implements swapToReadOnly() is used for the cap swap rather than this module
 // re-doing revoke-then-mint by hand.
 import { usageSummary } from "./billing.js";
+import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
 // path too, so a key that has only delete is still a key the cap has to take
@@ -61,14 +62,12 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(["list", "read"]);
 // branch key stays inside /u/<id>/.branches/<name>/ and is never widened to
 // the whole account. The table is also the ceiling on any restore: the most a
 // kind may ever hold, so a corrupted record cannot hand an agent key `delete`.
-// This mirrors the kind switch in keyprovider.js scopeFor(); when that file
-// lands it becomes the one table and this constant reads from it.
-export const WRITE_SCOPE_BY_KIND = Object.freeze({
-  device: Object.freeze(["list", "read", "write", "delete"]),
-  agent: Object.freeze(["list", "read", "write"]),
-  s3: Object.freeze(["list", "read", "write"]),
-  branch: Object.freeze(["list", "read", "write"]),
-});
+//
+// It is the same object the api Worker scopes keys with: the one kind to
+// capabilities table is declared in workers/api/src/keyprovider.js
+// (CAPABILITIES_BY_KIND) and this name is that object, not a second copy
+// (drive#77), so a kind cannot end up with different powers in two places.
+export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 
 function sameCapabilities(left, right) {
   // Set equality, not element order: a row's capability list has no meaningful

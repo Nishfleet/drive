@@ -46,8 +46,10 @@ import {
 } from "../src/files.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
+// The first-run page is a Vite entry at the repo root (issue #70), not a
+// verbatim asset in public/, so its shell is read from there.
 const getStarted = readFileSync(
-  new URL("../public/get-started.html", import.meta.url),
+  new URL("../get-started.html", import.meta.url),
   "utf8",
 );
 const now = Date.parse("2026-09-30T12:00:00.000Z");
