@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -26,6 +27,7 @@ import {
   connectionStatus,
   formatBytes,
   handleFirstRunStatusRequest,
+  signedInAccount,
   syncStatus,
   uploadProgress,
 } from "../src/status.js";
@@ -187,21 +189,58 @@ test("the desktop notification is one sentence each way", () => {
 });
 
 test("the status endpoint answers a signed-out account honestly", () => {
+  // The account gate (drive issue #45): without a signed-in account there is
+  // no device data to read, so the handler's own answer to a null account is
+  // the 401 below. With an account it answers `waiting` with no devices, the
+  // same shape the real store returns for an account with no devices yet.
   const response = handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status"),
+    null,
   );
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 401);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  // No device can have signed in before the device store lands (#22), so the
-  // true answer is waiting with no devices. The page reads exactly this shape.
   return response.json().then((body) => {
-    assert.deepEqual(body, { state: "waiting", devices: [] });
+    assert.equal(body.error, failureMessage("unauthorized"));
+    assert.equal("devices" in body, false, "a signed-out poll must not read devices");
   });
+});
+
+test("a signed-in account reads waiting, and no device data leaks without one", async () => {
+  const account = { id: "1", name: "Your drive" };
+  const signedIn = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    account,
+  );
+  assert.equal(signedIn.status, 200);
+  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [] });
+
+  // The account is a required argument: a call that forgets it is the 401, not
+  // an open endpoint, so a future route cannot accidentally serve anonymous.
+  const forgot = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+  );
+  assert.equal(forgot.status, 401);
+});
+
+test("no request can prove an account until the sign-in flow lands", () => {
+  // Build step 4 (#5) owns the session; until then signedInAccount() is the
+  // one swap point and returns null for every request, signed-in cookie or
+  // not, so the endpoint is closed rather than open (north star: Safe).
+  assert.equal(signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
+  assert.equal(
+    signedInAccount(
+      new Request("https://drive.test/api/first-run-status", {
+        headers: { cookie: "drive_session=made-up" },
+      }),
+    ),
+    null,
+  );
 });
 
 test("the status endpoint names the one method it serves", () => {
   const response = handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status", { method: "POST" }),
+    { id: "1", name: "Your drive" },
   );
   assert.equal(response.status, 405);
   assert.equal(response.headers.get("allow"), "GET");
@@ -210,15 +249,16 @@ test("the status endpoint names the one method it serves", () => {
 test("the Worker routes the page's poll to the status handler", async () => {
   // The page's endpoint has to be reachable through the Worker, not only by
   // importing the module in a test: /api/* runs the Worker, so an unrouted
-  // path would fall through to the assets and 404 on every poll.
+  // path would fall through to the assets and 404 on every poll. With no
+  // sign-in flow yet the Worker's gate is closed, so the route answers 401.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
     const response = await worker.fetch(
       new Request(`https://drive.test${path}`),
       env,
     );
-    assert.equal(response.status, 200, `${path} must reach the handler`);
-    assert.deepEqual(await response.json(), { state: "waiting", devices: [] });
+    assert.equal(response.status, 401, `${path} must reach the handler`);
+    assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
   const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
@@ -337,6 +377,15 @@ test("the page's script reads the same words, endpoint and interval", () => {
       `the page must carry "${entry.next}" verbatim`,
     );
   }
+  // The signed-out line is the message table's `unauthorized` entry (issue
+  // #45): the page cannot import src/messages.js either, so both halves are
+  // pinned from the table.
+  for (const half of Object.values(FAILURE_MESSAGES.unauthorized)) {
+    assert.ok(
+      page.includes(half),
+      `the page must carry the signed-out line "${half}"`,
+    );
+  }
   for (const entry of Object.values(EMPTY_STATES)) {
     assert.ok(page.includes(entry.what), `the page must carry "${entry.what}"`);
     assert.ok(page.includes(entry.next), `the page must carry "${entry.next}"`);
@@ -361,6 +410,22 @@ test("the page's script reads the same words, endpoint and interval", () => {
     page.includes(`const SYNCED_WINDOW_MINUTES = ${SYNCED_WINDOW_MS / 60000};`),
     "the page must use the sync window the module pins",
   );
+});
+
+test("a 401 is the signed-out line, not an unreachable service", () => {
+  // The account gate (issue #45) answers 401 until the sign-in lands, and the
+  // page is where the sign-in lands, so a 401 is actionable copy and its own
+  // state. Reporting it as "unreachable" would tell someone to wait on a
+  // service that is answering perfectly well.
+  assert.match(
+    page,
+    /response\.status === 401 \? "signedOut" : "unreachable"/,
+    "the poll must map 401 to the signed-out line",
+  );
+  assert.match(page, /data-state="waiting"/, "the live line carries its state");
+  // The state is named in the markup the CSS keys off, so a signed-out line
+  // never borrows the unreachable state\'s red border.
+  assert.ok(page.includes("signedOut"), "the page must name the signed-out state");
 });
 
 test("the page stops asking once it is connected", () => {

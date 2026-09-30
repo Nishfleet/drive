@@ -9,6 +9,7 @@
 // Plain data and pure functions for the words and math; the one fetch handler
 // at the bottom serves the page's poll and uses only the standard Response,
 // which node --test provides.
+import { failureMessage } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
 // setup": `drive init` signs you in, mounts the drive and connects every agent
@@ -220,19 +221,48 @@ const STATUS_HEADERS = Object.freeze({
 });
 
 /**
- * Handles GET /api/first-run-status, the page's poll. It answers with the
- * account's device state; until the api Worker's device store lands
- * (build-spec.md data model `devices`, built with #22/#2), no device can have
- * signed in, so the true answer is `waiting` with an empty device list — the
- * same shape a signed-out account gets from the real store. Any other method
- * is a 405 with the one allowed method named, like the waitlist API.
+ * The signed-in account a request carries, or null when it is signed out. The
+ * session that would prove the account — the cookie the device-approval screen
+ * mints and the store that validates it — is build step 4 (#5), and with
+ * neither built no request can be signed in, so this is null for every caller.
+ * It is the one swap point: the endpoint's account gate below does not change
+ * when the sign-in flow lands, and a request that cannot prove an account
+ * never reads one's device data (issue #45, north star: Safe).
  * @param {Request} request
+ * @returns {{id: string, name: string}|null}
  */
-export function handleFirstRunStatusRequest(request) {
+export function signedInAccount(request) {
+  return null;
+}
+
+/**
+ * Handles GET /api/first-run-status, the page's poll. It answers with the
+ * signed-in account's device state; until the api Worker's device store lands
+ * (build-spec.md data model `devices`, built with #22/#2), no device can have
+ * signed in, so a signed-in account gets `waiting` with an empty device list —
+ * the same shape the real store returns for a signed-in account with no
+ * devices yet.
+ *
+ * The account is a required argument and never read from an anonymous request
+ * (issue #45, north star: Safe): a request with no signed-in account gets 401
+ * and the message table's `unauthorized` words, never device data. The sign-in
+ * flow that resolves the account is build step 4 (#5); until it lands this is
+ * null for every caller, so the endpoint is closed rather than open. Any other
+ * method is a 405 with the one allowed method named, like the waitlist API.
+ * @param {Request} request
+ * @param {{id: string, name: string}|null|undefined} account the signed-in account, or null when signed out
+ */
+export function handleFirstRunStatusRequest(request, account) {
   if (request.method !== "GET") {
     return new Response("Method not allowed. GET this endpoint for drive status.", {
       status: 405,
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  if (!account) {
+    return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
+      status: 401,
+      headers: STATUS_HEADERS,
     });
   }
   return new Response(
