@@ -67,35 +67,67 @@ function runs(bin) {
 // --- the stock rclone, from PATH or the pinned release ----------------------
 
 const RCLONE_RELEASE = "v1.71.2";
+const RCLONE_RELEASE_URL = `https://downloads.rclone.org/${RCLONE_RELEASE}`;
+const RCLONE_DEFAULT_URL = `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-linux-amd64.zip`;
 let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
+function sha256OfFile(p) {
+  const sum = spawnSync("sha256sum", [p], { encoding: "utf8" });
+  if (sum.status !== 0) throw new Error(`sha256sum ${p} exited ${sum.status}: ${sum.stderr}`);
+  return sum.stdout.trim().split(/\s+/)[0];
+}
+
+// The fetched binary is executed, so the pinned release is checked against the
+// SHA256SUMS rclone publishes beside it rather than trusted on the transport
+// alone. Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns
+// that copy's integrity, so only the default download is checked here.
+function verifyReleaseChecksum(t, zip) {
+  const name = path.basename(zip);
+  const sumsUrl = `${RCLONE_RELEASE_URL}/SHA256SUMS`;
+  const sums = spawnSync("curl", ["-f", "-sSL", sumsUrl], { encoding: "utf8" });
+  if (sums.status !== 0) throw new Error(`could not fetch ${sumsUrl} (curl exited ${sums.status})`);
+  const entry = sums.stdout.split("\n").find((line) => line.trim().split(/\s+/)[1] === name);
+  if (!entry) throw new Error(`${sumsUrl} lists no ${name}`);
+  const want = entry.trim().split(/\s+/)[0];
+  const got = sha256OfFile(zip);
+  if (got !== want) throw new Error(`${name} failed its checksum: got ${got}, ${sumsUrl} says ${want}`);
+  t.diagnostic(`verified ${name} against ${sumsUrl}: sha256 ${got.slice(0, 16)}`);
+}
+
+// A runnable rclone, or null when this host legitimately cannot have one (the
+// caller skips then). A download that was attempted and failed throws instead:
+// a broken download must fail the run loudly, because a silent skip here would
+// delete the only done-when evidence this step produces and leave CI green.
 function findStockRclone(t) {
   if (runs(rcloneBin)) return rcloneBin;
-  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") === "0") return null;
+  const explicit = process.env.DRIVE_STANDIN_RCLONE;
+  if (explicit) throw new Error(`DRIVE_STANDIN_RCLONE=${explicit} does not run; fix it or unset it`);
   if (platform() !== "linux" || arch() !== "x64") return null;
-  const url = process.env.DRIVE_STANDIN_RCLONE_URL ??
-    `https://downloads.rclone.org/${RCLONE_RELEASE}/rclone-${RCLONE_RELEASE}-linux-amd64.zip`;
+  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") === "0") {
+    t.diagnostic("rclone is not installed and DRIVE_STANDIN_FETCH_RCLONE=0, so nothing was downloaded");
+    return null;
+  }
+
+  const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? RCLONE_DEFAULT_URL;
   const dir = path.join(tmpdir(), `drive-standin-rclone-${RCLONE_RELEASE}`);
   const bin = path.join(dir, "rclone");
-  try {
-    mkdirSync(dir, { recursive: true });
-    if (!runs(bin)) {
-      const zip = path.join(dir, "rclone.zip");
-      spawnSync("curl", ["-f", "-sS", "-L", "-o", zip, url], { stdio: "inherit" });
-      if (!spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" }).status) {
-        const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
-          .toString().trim().split("\n").filter(Boolean)[0];
-        if (found) {
-          chmodSync(found, 0o755);
-          if (found !== bin) spawnSync("mv", [found, bin]);
-        }
-      }
+  mkdirSync(dir, { recursive: true });
+  if (!runs(bin)) {
+    const zip = path.join(dir, path.basename(new URL(url).pathname));
+    const curl = spawnSync("curl", ["-f", "-sS", "-L", "-o", zip, url], { stdio: "inherit" });
+    if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
+    if (url === RCLONE_DEFAULT_URL) verifyReleaseChecksum(t, zip);
+    const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
+    if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
+    const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
+      .toString().trim().split("\n").filter(Boolean)[0];
+    if (found) {
+      chmodSync(found, 0o755);
+      if (found !== bin) spawnSync("mv", [found, bin]);
     }
-    if (runs(bin)) return bin;
-  } catch (err) {
-    t.diagnostic(`could not fetch stock rclone (${url}): ${err.message}`);
   }
-  return null;
+  if (!runs(bin)) throw new Error(`downloaded ${url}, but ${bin} still does not run`);
+  return bin;
 }
 
 // --- stand-in and machines --------------------------------------------------
@@ -313,42 +345,46 @@ test("a save on one machine reaches the other, both ways, with matching checksum
 
   const stock = findStockRclone(t);
   if (!stock) {
-    return t.skip("rclone is not installed and the pinned stock binary could not be fetched; " +
-      "install rclone or set DRIVE_STANDIN_RCLONE");
+    return t.skip("no stock rclone for this host; install rclone or set DRIVE_STANDIN_RCLONE");
   }
   rcloneBin = stock;
 
   const workDir = await mkdtemp(path.join(tmpdir(), "drive-two-machines-"));
   if (process.env.DRIVE_STANDIN_IN_NS === "1") t.diagnostic("running inside a user namespace");
 
-  // On a host that refuses an unprivileged FUSE mount, run the whole proof
-  // inside a user namespace so the mounts are legal and visible to this
-  // process. A GitHub runner mounts directly and never takes this branch.
-  if (process.env.DRIVE_STANDIN_IN_NS !== "1") {
-    const canUserNs = spawnSync("unshare", ["-Urm", "--propagation", "private", "true"], { stdio: "ignore" }).status === 0;
-    if (canUserNs) {
-      // Run the file as an ordinary module inside the namespace (not via
-      // --test, which node treats as a recursive test run), and require the
-      // proof's own assertions to have passed.
-      const inner = spawnSync("unshare", [
-        "-Urm", "--propagation", "private",
-        process.execPath, TEST_FILE,
-      ], {
-        stdio: "inherit",
-        env: { ...process.env, DRIVE_STANDIN_IN_NS: "1" },
-      });
-      assert.equal(inner.status, 0, "the two-machine proof inside the user namespace failed");
-      return;
-    }
-  }
-
+  // Mount directly first: that is the normal case (a GitHub runner), and the
+  // namespace below is the fallback, not the default.
   try {
     await proof(t, workDir);
+    return;
   } catch (err) {
+    // `proof` registered its own teardown, so the mounts are down already.
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
-    if (err.refusedFuse) {
-      return t.skip("this host refuses an unprivileged FUSE mount and no user namespace is available");
-    }
-    throw err;
+    if (!err.refusedFuse) throw err;
   }
+
+  // This host refuses an unprivileged FUSE mount (AppArmor on the VPS), so run
+  // the whole proof again inside a user namespace, where the mounts are legal
+  // and visible to this process.
+  if (process.env.DRIVE_STANDIN_IN_NS === "1") {
+    return t.skip("this host refuses an unprivileged FUSE mount even inside a user namespace");
+  }
+  const canUserNs = spawnSync("unshare", ["-Urm", "--propagation", "private", "true"], { stdio: "ignore" }).status === 0;
+  if (!canUserNs) {
+    return t.skip("this host refuses an unprivileged FUSE mount and no user namespace is available");
+  }
+  // Run the file as an ordinary module inside the namespace (not via --test,
+  // which node treats as a recursive test run) and require the proof's own
+  // assertions to have passed: run that way, a failing node:test exits non-zero.
+  const inner = spawnSync("unshare", [
+    "-Urm", "--propagation", "private",
+    process.execPath, TEST_FILE,
+  ], {
+    stdio: "inherit",
+    env: { ...process.env, DRIVE_STANDIN_IN_NS: "1" },
+    timeout: 420_000,
+  });
+  if (inner.error) throw new Error(`the proof inside the user namespace did not run: ${inner.error.message}`);
+  if (inner.signal) throw new Error(`the proof inside the user namespace was killed by ${inner.signal}`);
+  assert.equal(inner.status, 0, "the two-machine proof inside the user namespace failed");
 });
