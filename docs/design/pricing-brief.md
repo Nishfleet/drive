@@ -137,6 +137,26 @@ with headless Chrome (Playwright, real network, `networkidle`).
 The eyebrow heading failed AA at 3.48:1 on the first pass (`--ink-faint: #8a8377`);
 it is now `#6f6a5f` (4.99:1) and re-measured live.
 
+**Re-measured after issue #23's rework** (rate headline, two figures per example
+row). Headless Chrome on the built page at `file://public/index.html` (the
+production URL updates on merge to main), viewport 1440x900 / 390x844 / 360x780,
+device scale 2:
+
+| Check | Result |
+|---|---|
+| Desktop 1440x900 | 200, `scrollWidth == clientWidth == 1440`, 0 overflowing elements, 0 console errors |
+| Phone 390x844 | 200, `scrollWidth == clientWidth == 390`, 0 overflowing elements, 0 console errors |
+| Small phone 360x780 | 200, `scrollWidth == clientWidth == 360`, 0 overflowing elements, 0 console errors |
+| Headline reads as one line | "2¢ per GB, billed by the minute" |
+| Example rows, as a reader sees them | 500 GB for 3 days: "about $1 → $0 after the free $1"; 800 GB: "$12 → $11 after the free $1"; 2 TB: "$16 → $15 after the free $1 (Space $27)"; 5 TB: "$40 → $39 after the free $1 (Space $63)" |
+| Strip | "60% full · $11" |
+| Contrast, WCAG AA normal text (>= 4.5) | headline 15.13, sub 15.13, free line 10.65, strip label 9.66, strip caption 7.29, example 15.13, the billed figure (bold) 15.13, Space comparison 4.99, examples note 7.29 |
+
+The example rows overflowed 1440px on the first pass of the rework (`$16 → $15
+after the free $1 (Space $27)` is one unbreakable run in a nowrap cell,
+`scrollWidth 1476`); `white-space: normal` on the figure cell and a stacked row
+under 520px fixed it, and the three viewports above are the re-measure.
+
 Screenshots: `live-desktop.png`, `live-phone.png`, `live-phone-360.png`,
 `live-phone-submitted.png` (the confirmed form state). The rate headline and the
 $1 free in the worked examples are issue #23's rework, re-shot as

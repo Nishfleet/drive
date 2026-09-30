@@ -382,7 +382,11 @@ main {
   font-size: 17px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  white-space: nowrap;
+  /* The row carries two figures and the $1 the bill takes off, so it wraps
+     between words rather than pushing the page wider than the viewport. The
+     figures themselves have no spaces, so a number never breaks mid-figure. */
+  white-space: normal;
+  text-align: right;
 }
 
 /* The rival's figure beside our own, so the row reads "$16  (Space $27)". */
