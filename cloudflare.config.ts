@@ -14,9 +14,10 @@ export default defineConfig({
 		// path an asset 404 instead of a hand-rolled error page.
 		assets: {
 			// runWorkerFirst sends /api/* and the share links here; the branch just
-			has to come before the asset fallthrough. /s/<token> is a logged-out share
-			link served by the Worker (src/share.js handleShareFileRequest); the rest
-			of the site is still straight from the asset layer.
+			// has to come before the asset fallthrough. /s/<token> is a logged-out
+			// share link served by the Worker (src/share.js
+			// handleShareFileRequest); the rest of the site is still straight from
+			// the asset layer.
 			runWorkerFirst: ["/api/*", "/s/*"],
 			notFoundHandling: "404-page",
 		},
