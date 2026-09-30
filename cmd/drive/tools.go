@@ -261,6 +261,14 @@ func (t Tool) Connect(env Env) error {
 	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
 		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
 	}
+	// Preflight the skill note before anything is registered: a file at the
+	// skill path that is not the drive's is a collision, and refusing it here
+	// leaves the tool unregistered instead of registered without its note.
+	if path, ok := t.SkillPath(env); ok {
+		if err := checkSkill(env, t, path); err != nil {
+			return fmt.Errorf("write the %s skill note: %w", t.Name, err)
+		}
+	}
 	if t.Add != nil {
 		if err := t.runAdd(env); err != nil {
 			return fmt.Errorf("connect %s: %w", t.Name, err)
@@ -274,7 +282,7 @@ func (t Tool) Connect(env Env) error {
 		}
 	}
 	if path, ok := t.SkillPath(env); ok {
-		if err := writeSkill(env, path); err != nil {
+		if err := writeSkill(env, t, path); err != nil {
 			return fmt.Errorf("write the %s skill note: %w", t.Name, err)
 		}
 	}
@@ -317,7 +325,7 @@ func (t Tool) Revoke(env Env) error {
 	// with the note than without the registration, so the note is the last
 	// thing to disappear.
 	if path, ok := t.SkillPath(env); ok {
-		if err := revokeSkill(env, path); err != nil {
+		if err := revokeSkill(env, t, path); err != nil {
 			return fmt.Errorf("remove the %s skill note: %w", t.Name, err)
 		}
 	}

@@ -70,6 +70,41 @@ func TestSkillPathReportsAToolWithNoDocumentedLocation(t *testing.T) {
 	}
 }
 
+// TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds: the four SKILL.md
+// tools document YAML frontmatter with name and description, and the loaders
+// read it from the very start of the file. Kiro steering needs no name or
+// description, so its file only makes the default inclusion explicit.
+func TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds(t *testing.T) {
+	for _, name := range toolNames() {
+		t.Run(name, func(t *testing.T) {
+			env, _ := testEnv(t)
+			tool, err := toolByName(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tool.Connect(env); err != nil {
+				t.Fatal(err)
+			}
+			path, _ := tool.SkillPath(env)
+			text := readFile(t, path)
+			if !strings.HasPrefix(text, "---\n") {
+				t.Fatalf("%s skill does not start with frontmatter:\n%s", name, text)
+			}
+			if name == "kiro" {
+				if !strings.Contains(text, "inclusion: always") {
+					t.Errorf("kiro steering does not set inclusion: always:\n%s", text)
+				}
+				return
+			}
+			for _, want := range []string{"name: drive", "description: "} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s SKILL.md frontmatter is missing %q:\n%s", name, want, text)
+				}
+			}
+		})
+	}
+}
+
 // TestConnectWritesTheSkillNote proves the note the spec asks for: where the
 // drive is, that deletes can be undone, and to branch before large edits.
 func TestConnectWritesTheSkillNote(t *testing.T) {
@@ -85,7 +120,7 @@ func TestConnectWritesTheSkillNote(t *testing.T) {
 			}
 			path, _ := tool.SkillPath(env)
 			text := readFile(t, path)
-			for _, want := range []string{skillMarker, env.DriveDir, "drive restore", "drive branch"} {
+			for _, want := range []string{skillBegin, skillEnd, env.DriveDir, "drive restore", "drive branch"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s skill note is missing %q:\n%s", name, want, text)
 				}
@@ -137,7 +172,7 @@ func TestWriteSkillIsIdempotent(t *testing.T) {
 	if second != first {
 		t.Fatalf("a second connect changed the note:\n%s\n%s", first, second)
 	}
-	if n := strings.Count(second, skillMarker); n != 1 {
+	if n := strings.Count(second, skillBegin); n != 1 {
 		t.Fatalf("the note appears %d times:\n%s", n, second)
 	}
 }
@@ -154,7 +189,7 @@ func TestWriteSkillUpdatesTheNoteInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := Env{Home: env.Home, DriveDir: filepath.Join(env.Home, "OtherDrive"), Runner: env.Runner, LookPath: env.LookPath}.withDefaults()
-	if err := writeSkill(moved, filepath.Join(moved.Home, ".claude", "skills", skillName, "SKILL.md")); err != nil {
+	if err := writeSkill(moved, tool, filepath.Join(moved.Home, ".claude", "skills", skillName, "SKILL.md")); err != nil {
 		t.Fatal(err)
 	}
 	text := readFile(t, filepath.Join(moved.Home, ".claude", "skills", skillName, "SKILL.md"))
@@ -164,8 +199,38 @@ func TestWriteSkillUpdatesTheNoteInPlace(t *testing.T) {
 	if strings.Contains(text, env.DriveDir) {
 		t.Fatalf("the note still names the old drive folder:\n%s", text)
 	}
-	if n := strings.Count(text, skillMarker); n != 1 {
+	if n := strings.Count(text, skillBegin); n != 1 {
 		t.Fatalf("the note appears %d times:\n%s", n, text)
+	}
+}
+
+// TestWriteSkillKeepsTextAfterTheDriveBlock: a user who adds a line after the
+// drive's block keeps it; a rewrite replaces only the block between the begin
+// and end markers.
+func TestWriteSkillKeepsTextAfterTheDriveBlock(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	writeFile(t, path, readFile(t, path)+"\n## My notes\n\nkeep me\n")
+	moved := Env{Home: env.Home, DriveDir: filepath.Join(env.Home, "OtherDrive"), Runner: env.Runner, LookPath: env.LookPath}.withDefaults()
+	if err := writeSkill(moved, tool, path); err != nil {
+		t.Fatal(err)
+	}
+	text := readFile(t, path)
+	if !strings.Contains(text, "keep me") {
+		t.Fatalf("the text after the drive block was lost:\n%s", text)
+	}
+	if !strings.Contains(text, moved.DriveDir) {
+		t.Fatalf("the drive block was not updated:\n%s", text)
+	}
+	if n := strings.Count(text, skillBegin); n != 1 {
+		t.Fatalf("the block appears %d times:\n%s", n, text)
 	}
 }
 
@@ -182,11 +247,11 @@ func TestWriteSkillRefusesAFileTheDriveDidNotWrite(t *testing.T) {
 	path, _ := tool.SkillPath(env)
 	const users = "---\nname: drive\n---\n\nmy own note\n"
 	writeFile(t, path, users)
-	err = writeSkill(env, path)
+	err = writeSkill(env, tool, path)
 	if err == nil {
 		t.Fatal("expected a collision error, got nil")
 	}
-	if !strings.Contains(err.Error(), "was not written by the drive") {
+	if !strings.Contains(err.Error(), "is not the drive's skill note") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := readFile(t, path); got != users {
@@ -194,9 +259,29 @@ func TestWriteSkillRefusesAFileTheDriveDidNotWrite(t *testing.T) {
 	}
 }
 
+// TestWriteSkillRefusesAHalfDelimitedBlock: a file that mentions the begin
+// marker but has no end marker (or a foreign file that merely contains the
+// string) must be a collision, never a silent rewrite or delete.
+func TestWriteSkillRefusesAHalfDelimitedBlock(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	const half = "---\nname: drive\n---\n" + skillBegin + "\nno end here\n"
+	writeFile(t, path, half)
+	if err := writeSkill(env, tool, path); err == nil {
+		t.Fatal("expected a collision error for a half-delimited block")
+	}
+	if got := readFile(t, path); got != half {
+		t.Fatalf("the file was modified:\n%s", got)
+	}
+}
+
 // TestRevokeRemovesTheDriveNoteAndNothingElse. The note is the drive's own
-// file, so revoke takes it away, and the skill directory it created goes too
-// when nothing is left in it.
+// file, so revoke takes it away, and the dedicated drive skill directory goes
+// too when nothing is left in it.
 func TestRevokeRemovesTheDriveNoteAndNothingElse(t *testing.T) {
 	for _, name := range toolNames() {
 		t.Run(name, func(t *testing.T) {
@@ -216,13 +301,38 @@ func TestRevokeRemovesTheDriveNoteAndNothingElse(t *testing.T) {
 				t.Fatalf("the note survived the revoke: %s", path)
 			}
 			dir := filepath.Dir(path)
+			if filepath.Base(dir) != skillName {
+				return // a shared directory (Kiro's steering dir) is kept
+			}
 			if _, err := os.Stat(dir); !os.IsNotExist(err) {
-				entries, readErr := os.ReadDir(dir)
-				if readErr == nil && len(entries) == 0 {
-					t.Errorf("the empty skill directory %s was left behind", dir)
-				}
+				t.Fatalf("the drive's own empty skill directory %s was left behind", dir)
 			}
 		})
+	}
+}
+
+// TestRevokeKeepsKirosSharedSteeringDirectory: ~/.kiro/steering holds the
+// user's other steering files and may have existed before the drive; revoking
+// the drive's file must not delete it.
+func TestRevokeKeepsKirosSharedSteeringDirectory(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("kiro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Revoke(env); err != nil {
+		t.Fatal(err)
+	}
+	steering := filepath.Join(env.Home, ".kiro", "steering")
+	st, err := os.Stat(steering)
+	if err != nil {
+		t.Fatalf("kiro's steering directory was removed: %v", err)
+	}
+	if !st.IsDir() {
+		t.Fatalf("%s is not a directory", steering)
 	}
 }
 
@@ -250,6 +360,28 @@ func TestRevokeOnAnAbsentNoteIsFine(t *testing.T) {
 	}
 	if err := tool.Revoke(env); err != nil {
 		t.Fatalf("revoking a tool with no note should succeed: %v", err)
+	}
+}
+
+// TestConnectPreflightsTheSkillBeforeRegistering: a collision at the skill
+// path must be refused before the tool is registered, so the failure leaves no
+// half-applied state (a server registered without its note).
+func TestConnectPreflightsTheSkillBeforeRegistering(t *testing.T) {
+	env, runner := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	writeFile(t, path, "my own skill file\n")
+	if err := tool.Connect(env); err == nil {
+		t.Fatal("expected the collision to fail the connect")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("Connect registered the tool before refusing the collision: %q", runner.calls)
+	}
+	if got := readFile(t, path); got != "my own skill file\n" {
+		t.Fatalf("the user's file was modified: %q", got)
 	}
 }
 

@@ -39,10 +39,29 @@ const (
 	// skillName is the skill directory name for the SKILL.md tools and the
 	// steering file stem for Kiro.
 	skillName = "drive"
-	// skillMarker recognises a skill note the drive wrote, so an update
-	// replaces it instead of appending it twice.
-	skillMarker = "<!-- drive:skill-note -->"
+	// skillBegin and skillEnd delimit the drive's own block inside the file.
+	// A rewrite replaces only that block, so text the user put after it
+	// survives; a file with no complete drive block is a collision, not a
+	// clobber.
+	skillBegin = "<!-- drive:skill-note:begin -->"
+	skillEnd   = "<!-- drive:skill-note:end -->"
 )
+
+// skillDescription is the frontmatter description the Agent Skills loaders use
+// to decide when the skill is relevant. It must be a single YAML line.
+const skillDescription = "Read and write the user's drive folder through the drive MCP server. Use when the user asks about files in their drive, or to list, read, or edit drive files."
+
+// skillHeader is the fixed opening of the drive's skill file. The four
+// SKILL.md loaders require YAML frontmatter at the very start with name and
+// description (Claude Code skills, Codex skills, Gemini CLI skills, Cursor
+// skills); Kiro steering files are plain markdown whose default is "always
+// included", which its frontmatter makes explicit.
+func skillHeader(toolName string) string {
+	if toolName == "kiro" {
+		return "---\ninclusion: always\n---\n"
+	}
+	return "---\nname: " + skillName + "\ndescription: " + skillDescription + "\n---\n"
+}
 
 // skillPaths is one skill-file path per tool, keyed by the registry name. A
 // missing entry means the tool has no skill location the docs name (none
@@ -76,13 +95,12 @@ func (t Tool) SkillPath(env Env) (string, bool) {
 	return fn(env.Home), true
 }
 
-// skillBody is the skill note the drive writes: where the drive is, that
-// deletes can be undone, and to branch before large edits (docs/build-spec.md,
-// "Agent tools"). A session outside the drive folder learns the drive exists
-// here; a session inside it learns the same from the in-folder note.
+// skillBody is the drive's block: where the drive is, that deletes can be
+// undone, and to branch before large edits (docs/build-spec.md, "Agent
+// tools"). A session outside the drive folder learns the drive exists here; a
+// session inside it learns the same from the in-folder note.
 func skillBody(driveDir string) string {
-	return skillMarker + "\n" +
-		"# The user's drive\n\n" +
+	return "# The user's drive\n\n" +
 		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
 		"agent. The `drive` MCP server (name `drive`, the stock filesystem\n" +
 		"server over that folder) reads and writes it. The server is allowed\n" +
@@ -93,30 +111,64 @@ func skillBody(driveDir string) string {
 		"  when the changes are ready to copy back.\n"
 }
 
-// writeSkill writes the drive's skill note to the tool's skill location,
-// replacing an earlier drive note and keeping any other content. A file at
-// the path that the drive did not write is an error, not a clobber.
-func writeSkill(env Env, path string) error {
+// skillBlock is the drive's managed region: the begin marker, the body, and
+// the end marker. The header (frontmatter) sits before it, because the
+// loaders require frontmatter at the very start of the file.
+func skillBlock(driveDir string) string {
+	return skillBegin + "\n" + skillBody(driveDir) + skillEnd
+}
+
+// planSkill returns the exact text the drive's skill file should hold for this
+// tool. It is the write path's whole decision, so a caller can preflight it
+// (checkSkill) before changing anything, and writeSkill can apply it.
+//
+// A file that is not the drive's own note is an error, never a clobber: either
+// it lacks the drive header, or it lacks one half of the begin/end pair. Text
+// the user appended after the end marker is carried over untouched.
+func planSkill(env Env, tool Tool, path string) (string, error) {
+	fresh := skillHeader(tool.Name) + skillBlock(env.DriveDir) + "\n"
 	data, err := os.ReadFile(path)
 	switch {
-	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
-		data = nil
-	default:
-		return fmt.Errorf("read %s: %w", path, err)
+		return fresh, nil
+	case err != nil:
+		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	text := string(data)
-	if text != "" && !strings.Contains(text, skillMarker) {
-		return fmt.Errorf("%s exists and was not written by the drive; remove or rename it and run `drive agents connect` again", path)
+	if text == fresh {
+		return fresh, nil // already exactly this note
 	}
-	body := skillBody(env.DriveDir)
-	switch {
-	case text == "":
-		text = body
-	default:
-		// Replace the block between the marker and the end of the file: the
-		// drive note is always the last section of the file it writes.
-		text = text[:strings.Index(text, skillMarker)] + body
+	header := skillHeader(tool.Name)
+	if !strings.HasPrefix(text, header) {
+		return "", collisionError(path)
+	}
+	begin := strings.Index(text, skillBegin)
+	end := strings.Index(text, skillEnd)
+	if begin < 0 || end < 0 || end < begin {
+		return "", collisionError(path)
+	}
+	// Replace only the drive's block; keep whatever follows the end marker.
+	return text[:begin] + skillBlock(env.DriveDir) + text[end+len(skillEnd):], nil
+}
+
+func collisionError(path string) error {
+	return fmt.Errorf("%s exists and is not the drive's skill note; remove or rename it and run `drive agents connect` again", path)
+}
+
+// checkSkill applies planSkill without writing, so Connect can refuse a
+// collision before it registers anything and leaves no half-applied state.
+func checkSkill(env Env, tool Tool, path string) error {
+	_, err := planSkill(env, tool, path)
+	return err
+}
+
+// writeSkill writes the drive's skill note to the tool's skill location,
+// replacing an earlier drive note. The caller preflights with checkSkill, so a
+// failure here is a real filesystem error and is reported, not hidden.
+func writeSkill(env Env, tool Tool, path string) error {
+	text, err := planSkill(env, tool, path)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create dir for %s: %w", path, err)
@@ -127,10 +179,17 @@ func writeSkill(env Env, path string) error {
 	return nil
 }
 
-// revokeSkill removes the drive's skill note, leaving any other content in
-// the file, and removes the skill directory when it is left empty. A missing
-// file is already revoked.
-func revokeSkill(env Env, path string) error {
+// revokeSkill removes the drive's block, leaving any text after it, and
+// removes the skill directory when it was the drive's own and is now empty. A
+// shared directory (Kiro's ~/.kiro/steering) is never removed. A missing file
+// is already revoked.
+// revokeSkill removes the drive's note from the tool's skill file, leaving
+// any text the user put after the drive's block. The file itself is only
+// removed when the drive's frontmatter and block were all it held; the
+// directory is only removed when the drive created it (its own
+// <skills>/drive) and nothing is left in it. A shared directory (Kiro's
+// ~/.kiro/steering) is never removed. A missing file is already revoked.
+func revokeSkill(env Env, tool Tool, path string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -140,13 +199,17 @@ func revokeSkill(env Env, path string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	text := string(data)
-	if !strings.Contains(text, skillMarker) {
+	header := skillHeader(tool.Name)
+	begin := strings.Index(text, skillBegin)
+	end := strings.Index(text, skillEnd)
+	if !strings.HasPrefix(text, header) || begin < 0 || end < 0 || end < begin {
 		return nil // not the drive's note; never delete a file we do not own
 	}
-	idx := strings.Index(text, skillMarker)
-	kept := strings.TrimRight(text[:idx], "\n")
+	// Drop the drive's frontmatter and its block, keeping what the user
+	// wrote after the block.
+	kept := strings.TrimRight(text[end+len(skillEnd):], "\n")
 	switch {
-	case strings.TrimSpace(kept) == "":
+	case kept == "":
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -155,7 +218,13 @@ func revokeSkill(env Env, path string) error {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
+	// Only a directory the drive created for its own skill is removed. Kiro's
+	// steering directory is shared with the user's other steering files, so it
+	// stays even when the drive's file was the last thing in it.
 	dir := filepath.Dir(path)
+	if filepath.Base(dir) != skillName {
+		return nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", dir, err)
