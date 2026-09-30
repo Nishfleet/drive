@@ -10,9 +10,11 @@ export function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
+      ...headers,
+      // Last, so a caller's extra headers cannot silently switch off no-store
+      // or lie about the body type: every api body is per-account JSON.
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
-      ...headers,
     },
   });
 }
@@ -21,9 +23,11 @@ export function json(body, status = 200, headers = {}) {
  * Error body shape used everywhere: {error: <plain sentence>}.
  * @param {number} status
  * @param {string} message
+ * @param {Record<string, string>} [headers] extra response headers, e.g. the
+ *   `www-authenticate` challenge on a 401 or the `allow` list on a 405.
  */
-export function errorResponse(status, message) {
-  return json({ error: message }, status);
+export function errorResponse(status, message, headers) {
+  return json({ error: message }, status, headers);
 }
 
 /**

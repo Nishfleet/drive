@@ -2,19 +2,24 @@
 
 JSON over HTTPS, served by `workers/api`. Routes are registered in `workers/api/src/routes.js`. Errors are `{"error": "<sentence>"}` with a 4xx or 5xx status. Bearer tokens are `Authorization: Bearer <device_token>`.
 
-| Route | Purpose |
-|---|---|
-| `POST /v1/device/code` | Start device sign-in. Returns `{device_code, user_code, verification_url, interval}` |
-| `POST /v1/device/token` `{device_code}` | Poll. Returns `{status: "pending"}` or `{status: "approved", device_token, device_id, storage: {endpoint, bucket, region, access_key_id, secret, prefix}}` |
-| `GET /v1/keys` | List the account's keys (never the secrets) |
-| `POST /v1/keys` `{kind, name, prefix?}` | Mint a key; `kind` is `agent`, `s3` or `branch`. The secret is returned once |
-| `DELETE /v1/keys` `{id}` | Revoke a key |
-| `GET /v1/me` | `{account_id, email, state, cap_cents}` |
+Every route carries an `auth` rule and the account gate is deny by default: only `auth: "public"` answers without a signed-in account, and a route that needs one answers `401` with a `www-authenticate: Bearer` challenge. `test/index.test.js` walks the registry and fails on a route with no rule, so a new route cannot ship open by accident. Request bodies that are not a JSON object are `400`. A path whose `:param` cannot be percent-decoded is `400`; a known path reached with a method it does not serve is `405` with an `allow` header.
+
+Routing is the platform's own `URLPattern`, not a hand-rolled matcher: it is a Workers global, so the api needs no router dependency, and a malformed percent-escape is decoded here where a failure is a `400` rather than an uncaught `URIError`. The `auth` rule is read before the method: a path whose every route needs an account answers `401` without naming which methods it has.
+
+## Routes
+
+Only what has landed. The liveness probe is public on purpose: it answers before anyone is signed in, and it reads the clock and nothing else. A route lands here when it lands in `workers/api/src/routes.js`, not before — the account, key and device-sign-in routes come with the issues that build them.
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /v1/health` | public | Liveness. `{ok, time}`. |
 
 ## Key scopes
 
-Storage access goes through the `KeyProvider` interface (`mint(scope)`, `revoke(keyId)`, `swapToReadOnly(keyId)`), see `workers/api/src/keyprovider.js`.
+Storage access goes through the `KeyProvider` interface (`mint(scope)`, `revoke(keyId)`, `swapToReadOnly(keyId)`), see `workers/api/src/keyprovider.js`. `swapToReadOnly` is the one the pricing Worker already calls when the cap takes a key (see `applyCapSwap` in `src/cap.js`); `mint` and `revoke` land with the keys routes.
 
 - device key: list, read, write and delete on `/u/<account>/`
 - agent key (and s3 key): the same prefix without delete
 - branch key: `/u/<account>/.branches/<name>/` without delete
+
+The kind to capabilities table is `CAPABILITIES_BY_KIND` in `workers/api/src/keyprovider.js`, and it is the only copy: the pricing Worker's cap logic (`src/cap.js`) reads it too, and `test/cap-keyprovider-table.test.mjs` fails if a second copy appears. `scopeFor()` validates the account id and the branch name before they go into a prefix, so a name like `../../x` or `a/b` is refused rather than escaping the account's folder.

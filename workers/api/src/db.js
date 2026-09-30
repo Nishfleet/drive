@@ -2,19 +2,27 @@
 // bound, never interpolated.
 
 /**
- * @param {D1Database} db
+ * The slice of Cloudflare's D1 database these helpers touch. Declared here
+ * (rather than as the ambient D1Database global) so the module type-checks and
+ * runs under plain node, where the tests stand it in with the same shape.
+ * @typedef {{prepare: (sql: string) => {bind: (...params: unknown[]) => {first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}}}} D1Like
+ */
+
+/**
+ * @param {D1Like} db
  * @param {string} sql
- * @param {unknown[]} params
+ * @param {...unknown} params
+ * @returns {Promise<unknown>}
  */
 export function first(db, sql, ...params) {
   return db.prepare(sql).bind(...params).first();
 }
 
 /**
- * @param {D1Database} db
+ * @param {D1Like} db
  * @param {string} sql
- * @param {unknown[]} params
- * @returns {Promise<any[]>}
+ * @param {...unknown} params
+ * @returns {Promise<unknown[]>}
  */
 export async function all(db, sql, ...params) {
   const result = await db.prepare(sql).bind(...params).all();
@@ -22,9 +30,10 @@ export async function all(db, sql, ...params) {
 }
 
 /**
- * @param {D1Database} db
+ * @param {D1Like} db
  * @param {string} sql
- * @param {unknown[]} params
+ * @param {...unknown} params
+ * @returns {Promise<unknown>}
  */
 export function run(db, sql, ...params) {
   return db.prepare(sql).bind(...params).run();
@@ -37,7 +46,7 @@ export function nowSeconds(now = Date.now()) {
 
 const HEX = "0123456789abcdef";
 
-function toHex(bytes) {
+function toHex(/** @type {Uint8Array} */ bytes) {
   let out = "";
   for (const byte of bytes) {
     out += HEX[byte >> 4] + HEX[byte & 15];
