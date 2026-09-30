@@ -35,7 +35,14 @@ type Runner interface {
 }
 
 // ExecRunner runs the real command.
-type ExecRunner struct{}
+type ExecRunner struct {
+	// Home, when set, is the HOME the child sees. The agent tools keep their
+	// MCP config under $HOME, so --home must reach the child too: without it
+	// `drive init --home <fresh>` registered the server in the real user's
+	// config, and a clean-machine run could not be proven at all (both seen
+	// on this host 2026-09-30).
+	Home string
+}
 
 // ExecRunner runs the real command. name and args are never taken from user
 // input: every caller passes a Tool from the tools() registry and argv built
@@ -43,14 +50,32 @@ type ExecRunner struct{}
 // gemini), and DriveDir reaches args only as the user's own --home value on
 // their own machine. exec.Command takes argv, not a shell, so no argument is
 // word-split or interpreted.
-func (ExecRunner) Run(name string, args ...string) ([]byte, error) {
+func (r ExecRunner) Run(name string, args ...string) ([]byte, error) {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- command comes from the fixed tools() registry, argv from expand(); see the audit above.
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	if r.Home != "" {
+		cmd.Env = environWithHome(os.Environ(), r.Home)
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "),
 			err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
+}
+
+// environWithHome returns environ with exactly one HOME entry, its value
+// home: existing entries are dropped, the new one is appended (Go passes the
+// slice to execve unchanged).
+func environWithHome(environ []string, home string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+home)
 }
 
 // Env is what a tool adapter needs. Runner and LookPath are injectable so the
@@ -64,7 +89,7 @@ type Env struct {
 
 func (e Env) withDefaults() Env {
 	if e.Runner == nil {
-		e.Runner = ExecRunner{}
+		e.Runner = ExecRunner{Home: e.Home}
 	}
 	if e.LookPath == nil {
 		e.LookPath = exec.LookPath
@@ -228,6 +253,14 @@ func (t Tool) Installed(env Env) (bool, string) {
 // keeps every other server in the file.
 func (t Tool) Connect(env Env) error {
 	env = env.withDefaults()
+	// The MCP filesystem server refuses to start against a folder that does
+	// not exist ("None of the specified directories are accessible"), and the
+	// tools run it on registration to report a live status: claude mcp get said
+	// "Failed to connect" until the folder existed (seen on this host
+	// 2026-09-30). Create it before the tool is pointed at it.
+	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
+		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+	}
 	if t.Add != nil {
 		if err := t.runAdd(env); err != nil {
 			return fmt.Errorf("connect %s: %w", t.Name, err)

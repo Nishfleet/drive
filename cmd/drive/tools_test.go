@@ -413,3 +413,83 @@ func TestDriveDirDefaultsToTheHome(t *testing.T) {
 		t.Fatalf("DriveDir = %q", env.DriveDir)
 	}
 }
+
+func TestEnvironWithHomeKeepsExactlyOneHome(t *testing.T) {
+	env := []string{"PATH=/bin", "HOME=/real", "LANG=C"}
+	got := environWithHome(env, "/fresh")
+	homes := 0
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "HOME=") {
+			homes++
+			if kv != "HOME=/fresh" {
+				t.Fatalf("HOME entry = %q, want HOME=/fresh", kv)
+			}
+		}
+	}
+	if homes != 1 {
+		t.Fatalf("got %d HOME entries, want exactly 1: %v", homes, got)
+	}
+	for _, keep := range []string{"PATH=/bin", "LANG=C"} {
+		found := false
+		for _, kv := range got {
+			if kv == keep {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("dropped unrelated env %q: %v", keep, got)
+		}
+	}
+}
+
+func TestDefaultRunnerCarriesTheEnvHome(t *testing.T) {
+	// --home must reach the agent tools too: they write their MCP config under
+	// $HOME, so the clean-machine proof would otherwise touch the real user's
+	// config (seen on this host 2026-09-30).
+	env := Env{Home: "/fresh"}.withDefaults()
+	runner, ok := env.Runner.(ExecRunner)
+	if !ok {
+		t.Fatalf("default Runner is %T, want ExecRunner", env.Runner)
+	}
+	if runner.Home != "/fresh" {
+		t.Fatalf("ExecRunner.Home = %q, want /fresh", runner.Home)
+	}
+}
+
+func TestConnectCreatesTheDriveFolderBeforeRegistering(t *testing.T) {
+	// The MCP filesystem server refuses a folder that does not exist, and the
+	// tools run it on registration: claude reported "Failed to connect"
+	// against a missing folder (seen on this host 2026-09-30).
+	env, runner := testEnv(t)
+	existedAtCall := false
+	runner.respond = func(_ int, _ string) ([]byte, error) {
+		if st, err := os.Stat(env.DriveDir); err == nil && st.IsDir() {
+			existedAtCall = true
+		}
+		return nil, nil
+	}
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	if !existedAtCall {
+		t.Fatalf("the drive folder did not exist when the tool was registered")
+	}
+}
+
+func TestConnectCreatesTheDriveFolderForJSONTools(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("kiro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(env.DriveDir); err != nil || !st.IsDir() {
+		t.Fatalf("the drive folder was not created: %v", err)
+	}
+}
