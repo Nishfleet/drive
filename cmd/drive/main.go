@@ -12,10 +12,12 @@ Usage:
   drive agents [flags]                  list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
   drive version                         print the version
 
 Flags:
   --home   home directory (default $HOME)
+  --api    drive api base URL for drive search (default $DRIVE_API_URL)
 
 Tools: claude, codex, cursor, gemini, kiro
 
@@ -36,6 +38,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "agents":
 		err = runAgents(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
