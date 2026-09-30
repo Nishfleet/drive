@@ -7,7 +7,7 @@ import {
   handleFilesRequest,
   resolveAccount,
 } from "./files.js";
-import { signedInAccount } from "./status.js";
+import { signedInAccount, STATUS_ENDPOINT } from "./status.js";
 import { USAGE_ENDPOINT, handleUsageRequest, usageSummary, BILLING_CONFIG } from "./billing.js";
 import {
   REQUEST_ENDPOINT,
@@ -21,6 +21,7 @@ import {
   handleShareRequest,
 } from "./share.js";
 import { handleSendEmailRequest } from "./email-send.js";
+import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -103,10 +104,11 @@ export default {
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
     // The handler is closed until the sign-in flow resolves an account
-    // (issue #45), so an anonymous poll gets 401 and no device data.
+    // (issue #45), so an anonymous poll gets 401 and no device data. The path
+    // is the module's own constant, so the route and the page cannot drift.
     if (
-      url.pathname === "/api/first-run-status" ||
-      url.pathname === "/api/first-run-status/"
+      url.pathname === STATUS_ENDPOINT ||
+      url.pathname === `${STATUS_ENDPOINT}/`
     ) {
       return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
@@ -159,6 +161,15 @@ export default {
       // The whole env, not just the binding: the route reads the token and
       // the sending address too (src/email-send.js handleSendEmailRequest).
       return handleSendEmailRequest(request, env);
+    }
+    // The health endpoint the outside monitor polls (issue #96, #36). It
+    // comes before the asset fallthrough and takes the whole env because the
+    // check reads the dependencies off the bindings: a trivially-read D1 on
+    // each database and a fetch of the asset layer. The whole env is the
+    // honest argument — a check that only saw the bindings it was told about
+    // would be a check that could not fail.
+    if (url.pathname === HEALTH_PATH || url.pathname === `${HEALTH_PATH}/`) {
+      return handleHealthRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },

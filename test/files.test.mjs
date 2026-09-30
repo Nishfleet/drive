@@ -34,6 +34,7 @@ import {
   isRestorable,
   parseListObjects,
   parseTrashName,
+  previewContentType,
   previewCopy,
   restorableUntil,
   resolveAccount,
@@ -355,6 +356,54 @@ test("preview: a file name cannot break out of the header", async () => {
   await upload("/", 'a"b.txt', "x", "text/plain");
   const response = await call(new Request(api("/download?path=%2Fa%22b.txt")));
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="ab.txt"');
+});
+
+test("preview: an uploaded page is never a page on our origin", async () => {
+  // A file the customer uploaded is data, not a document on the origin that
+  // holds it: the served type follows the file's kind, never the type the
+  // upload claimed, and the two headers below keep a browser from deciding
+  // otherwise.
+  const { call, upload } = drive();
+  await upload("/", "page.html", "<!doctype html><title>a page</title>", "text/html");
+  await upload("/", "script.svg", '<svg xmlns="http://www.w3.org/2000/svg" onload="run()"/>', "image/svg+xml");
+  await upload("/", "note.txt", "just words", "text/plain");
+  await upload("/", "sheet.csv", "a,b\n1,2", "text/csv");
+  for (const route of ["/preview", "/download"]) {
+    const page = await call(new Request(api(`${route}?path=%2Fpage.html`)));
+    assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+    if (route === "/preview") {
+      assert.equal(page.headers.get("content-type"), "text/plain; charset=utf-8");
+      assert.equal(page.headers.get("content-disposition"), "inline");
+      assert.equal(page.headers.get("content-security-policy"), "sandbox");
+    } else {
+      // The download is the customer's own file, with the type they sent.
+      assert.equal(page.headers.get("content-type"), "text/html");
+      assert.equal(page.headers.get("content-disposition"), 'attachment; filename="page.html"');
+    }
+  }
+  // A download is the customer's file, byte for byte, with the type they sent.
+  const download = await call(new Request(api("/download?path=%2Fpage.html")));
+  assert.equal(download.headers.get("content-security-policy"), null);
+  assert.equal(download.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(await download.text(), "<!doctype html><title>a page</title>");
+  // An image keeps its own type, so the page's <img> and <video> still work.
+  const picture = await call(new Request(api("/preview?path=%2Fscript.svg")));
+  assert.equal(picture.headers.get("content-type"), "image/svg+xml");
+  const text = await call(new Request(api("/preview?path=%2Fnote.txt")));
+  assert.equal(text.headers.get("content-type"), "text/plain; charset=utf-8");
+  const csv = await call(new Request(api("/preview?path=%2Fsheet.csv")));
+  assert.equal(csv.headers.get("content-type"), "text/plain; charset=utf-8");
+  // The rule, as a function: a kind decides the type, a wrong claim does not.
+  assert.equal(previewContentType("page.html", "text/html"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("report.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(previewContentType("clip.mp4", "video/mp4"), "video/mp4");
+  // A lying type wins the kind (type beats extension), and a text kind is
+  // served as text either way, so no claim can produce a document type.
+  assert.equal(previewContentType("clip.mp4", "text/html"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
+  assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
+  assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
+  assert.throws(() => previewContentType(null, "text/plain"), TypeError);
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
