@@ -9,6 +9,12 @@ import {
 } from "./files.js";
 import { handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
+import {
+  INDEX_ENDPOINT,
+  SEARCH_ENDPOINT,
+  handleSearchRequest,
+  withIndex,
+} from "./search.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -64,12 +70,33 @@ export default {
       return handleFirstRunStatusRequest(request);
     }
     // The Web Files page's listing, download, upload and restore (issue #31).
+    // Search reads only the D1 file index (issue #18); the write half of the
+    // same module keeps it current by wrapping the store, so an upload, a
+    // delete or a restore is in the index before the next search, and the
+    // search itself never lists the bucket.
+    if (
+      url.pathname === SEARCH_ENDPOINT ||
+      url.pathname === `${SEARCH_ENDPOINT}/` ||
+      url.pathname === INDEX_ENDPOINT ||
+      url.pathname === `${INDEX_ENDPOINT}/`
+    ) {
+      return handleSearchRequest(
+        request,
+        env.WAITLIST_DB,
+        storeFor(env),
+        resolveAccount(request),
+      );
+    }
     if (
       url.pathname === FILES_ENDPOINT ||
       url.pathname === `${FILES_ENDPOINT}/` ||
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
-      return handleFilesRequest(request, storeFor(env), resolveAccount(request));
+      return handleFilesRequest(
+        request,
+        withIndex(storeFor(env), env.WAITLIST_DB, resolveAccount(request)),
+        resolveAccount(request),
+      );
     }
     // The usage page's and the CLI's read of the month's money (issue #7,
     // build step 6). Same rule: the branch comes before the asset fallthrough.

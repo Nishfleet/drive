@@ -1,0 +1,494 @@
+// Unit tests for file-name search (drive issue #18), run against a real
+// SQLite engine — D1 is SQLite, so the numbers the issue asks for are
+// measured on the same SQL the Worker runs, with the shipped migrations
+// applied. The adapter at the bottom is the only test-only code: it speaks
+// the subset of the D1 API the module uses (prepare/bind/all/first, batch).
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
+import {
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  MAX_WORDS,
+  SEARCH_ENDPOINT,
+  INDEX_ENDPOINT,
+  handleSearchRequest,
+  parseQuery,
+  reconcileIndex,
+  searchDrive,
+  searchSql,
+  withIndex,
+} from "../src/search.js";
+import { createMemoryStore } from "../src/files.js";
+import worker from "../src/index.js";
+
+const ACCOUNT = { id: "1", name: "Your drive" };
+
+// ------------------------------------------------------------------- the db
+
+// The D1 shape over a real SQLite database, with the shipped migrations
+// applied, so every test below runs the SQL the Worker will run.
+function makeD1() {
+  const sqlite = new DatabaseSync(":memory:");
+  for (const name of ["0001_waitlist.sql", "0002_file_index.sql"]) {
+    sqlite.exec(
+      readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"),
+    );
+  }
+  const runOne = (sql, params) => {
+    if (/^\s*(SELECT|WITH)/i.test(sql)) {
+      return { results: sqlite.prepare(sql).all(...params) };
+    }
+    const info = sqlite.prepare(sql).run(...params);
+    return { success: true, meta: { changes: info.changes } };
+  };
+  return {
+    sqlite,
+    prepare(sql) {
+      return {
+        bind(...params) {
+          return {
+            sql,
+            params,
+            async all() {
+              return runOne(sql, params);
+            },
+            async first() {
+              const row = sqlite.prepare(sql).get(...params);
+              return row === undefined ? null : row;
+            },
+          };
+        },
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      sqlite.exec("BEGIN");
+      try {
+        for (const statement of statements) {
+          results.push(runOne(statement.sql, statement.params));
+        }
+      } finally {
+        sqlite.exec("COMMIT");
+      }
+      return results;
+    },
+  };
+}
+
+// A fake account's store with a small tree, used by the feed tests.
+function seededStore() {
+  const store = createMemoryStore();
+  return store;
+}
+
+async function seed(store, entries) {
+  for (const [path, body] of entries) {
+    await store.write(path, body, "text/plain");
+  }
+}
+
+// ---------------------------------------------------------------- the query
+
+test("parseQuery folds case, splits words and drops repeats", () => {
+  assert.deepEqual(parseQuery("  Invoice   2024 invoice "), {
+    words: ["invoice", "2024"],
+  });
+});
+
+test("parseQuery says what to do when the query is empty", () => {
+  for (const empty of [undefined, "", "   ", null, 42]) {
+    const parsed = parseQuery(empty);
+    assert.equal(parsed.error, "Type one or more words to search for.");
+  }
+});
+
+test("parseQuery rejects an over-long query with the limit named", () => {
+  const parsed = parseQuery("a".repeat(257));
+  assert.match(parsed.error, /too long/);
+});
+
+test("parseQuery caps the word count", () => {
+  const parsed = parseQuery(Array.from({ length: MAX_WORDS + 1 }, (_, i) => `w${i}`).join(" "));
+  assert.match(parsed.error, /at most 8 words/);
+});
+
+test("searchSql builds one AND clause per word, escapes wildcards and never interpolates input", () => {
+  const { sql, params } = searchSql(["report", "50%_done"], { accountId: "1", limit: 50 });
+  // Count the word clauses (before ORDER BY); the ranking LIKE in ORDER BY also
+  // uses ESCAPE '\' but is not a word filter.
+  const where = sql.slice(sql.indexOf("WHERE"), sql.indexOf("ORDER BY"));
+  assert.equal((where.match(/LIKE \?\d+ ESCAPE '\\'/g) || []).length, 2, "two word clauses");
+  assert.ok(sql.includes("AND"), "words are ANDed");
+  assert.ok(sql.includes("ORDER BY"), "ranked");
+  assert.equal(params[0], "1");
+  assert.equal(params[1], "%report%");
+  // % and _ are escaped so they match themselves, and the text is a bound
+  // parameter, never part of the SQL string.
+  assert.equal(params[2], "%50\\%\\_done%");
+  assert.ok(!sql.includes("50%_done"), "no user text in the SQL");
+});
+
+// ------------------------------------------------- real D1-shaped SQLite db
+
+test("search finds a file by name across folders and ranks whole-name matches first", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [
+    ["/Report Q4.pdf", "x"],
+    ["/fin/2024 annual report.pdf", "x"],
+    ["/fin/reporting-tool.exe", "x"],
+    ["/photos/beach.jpg", "x"],
+  ]);
+  await reconcileIndex(db, store, ACCOUNT);
+  const found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.error, undefined);
+  assert.deepEqual(found.words, ["report"]);
+  assert.equal(found.count, 3);
+  assert.equal(found.results[0].name, "Report Q4.pdf", "whole-name match first");
+  assert.equal(found.results[0].path, "/Report Q4.pdf");
+  assert.equal(found.results[1].name, "reporting-tool.exe", "prefix match second");
+  assert.equal(found.results[2].name, "2024 annual report.pdf", "substring match third");
+});
+
+test("search matches every word (AND) and is case-insensitive", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [
+    ["/INVOICE March.pdf", "x"],
+    ["/invoice-april.pdf", "x"],
+    ["/march receipts.pdf", "x"],
+  ]);
+  await reconcileIndex(db, store, ACCOUNT);
+  const both = await searchDrive(db, ACCOUNT, "MARCH invoice");
+  assert.equal(both.count, 1);
+  assert.equal(both.results[0].name, "INVOICE March.pdf");
+});
+
+test("search treats % and _ as characters, not wildcards", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [
+    ["/50%_off.txt", "x"],
+    ["/50percent_off.txt", "x"],
+  ]);
+  await reconcileIndex(db, store, ACCOUNT);
+  const literal = await searchDrive(db, ACCOUNT, "50%_off");
+  assert.equal(literal.count, 1);
+  assert.equal(literal.results[0].name, "50%_off.txt");
+});
+
+test("search never touches the bucket: the store is not a search parameter", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [["/notes.txt", "x"]]);
+  await reconcileIndex(db, store, ACCOUNT);
+  const hostile = {
+    list() {
+      throw new Error("a search listed the bucket");
+    },
+    read() {
+      throw new Error("a search read the bucket");
+    },
+  };
+  const found = await searchDrive(db, ACCOUNT, "notes");
+  assert.equal(found.count, 1);
+  assert.ok(hostile, "the search path has no store to call");
+});
+
+test("search honours limit and reports truncation", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(
+    store,
+    Array.from({ length: 7 }, (_, i) => [`/note-${i}.txt`, "x"]),
+  );
+  await reconcileIndex(db, store, ACCOUNT);
+  const page = await searchDrive(db, ACCOUNT, "note", { limit: 3 });
+  assert.equal(page.count, 3);
+  assert.equal(page.truncated, true);
+  const all = await searchDrive(db, ACCOUNT, "note", { limit: 7 });
+  assert.equal(all.count, 7);
+  assert.equal(all.truncated, false);
+});
+
+test("searchDrive without a database says the index is not configured", async () => {
+  const found = await searchDrive(null, ACCOUNT, "notes");
+  assert.equal(found.status, 503);
+});
+
+// ------------------------------------------------------------------- feeds
+
+test("reconcileIndex indexes every live file, nested, and skips the trash", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [
+    ["/a.txt", "x"],
+    ["/deep/er/one.md", "x"],
+    ["/deep/two.md", "x"],
+  ]);
+  await store.write("/.trash/1__/a.txt", "x", "text/plain");
+  const built = await reconcileIndex(db, store, ACCOUNT);
+  assert.equal(built.error, undefined);
+  assert.equal(built.folders, 3, "root, /deep, /deep/er");
+  assert.equal(built.indexed, 3, "the trashed copy is not indexed");
+  const found = await searchDrive(db, ACCOUNT, "a.txt");
+  assert.deepEqual(
+    found.results.map((r) => r.path),
+    ["/a.txt"],
+  );
+});
+
+test("reconcileIndex is a rebuild: rows for files the store no longer has are dropped", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [["/keep.txt", "x"], ["/gone.txt", "x"]]);
+  await reconcileIndex(db, store, ACCOUNT);
+  await store.remove("/gone.txt");
+  const second = await reconcileIndex(db, store, ACCOUNT);
+  assert.equal(second.indexed, 1);
+  const found = await searchDrive(db, ACCOUNT, "gone");
+  assert.equal(found.count, 0);
+});
+
+test("withIndex keeps the index current on write, delete and restore, without listing", async () => {
+  const db = makeD1();
+  const raw = seededStore();
+  const store = withIndex(raw, db, ACCOUNT);
+  let listed = 0;
+  const watched = {
+    ...store,
+    list(path) {
+      listed++;
+      return raw.list(path);
+    },
+  };
+  await watched.write("/fresh/report.txt", "hello", "text/plain");
+  let found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1, "the write is searchable at once");
+  assert.equal(listed, 0, "indexing a write never listed the bucket");
+  await watched.remove("/fresh/report.txt");
+  found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 0, "the delete removed the row");
+  // A restore is a write of the original path plus a remove of the parked
+  // name, so the wrapped store keeps both halves right with no new code.
+  await watched.write("/.trash/1__%2Ffresh%2Freport.txt", "hello", "text/plain");
+  await watched.write("/fresh/report.txt", "hello", "text/plain");
+  await watched.remove("/.trash/1__%2Ffresh%2Freport.txt");
+  found = await searchDrive(db, ACCOUNT, "report");
+  assert.equal(found.count, 1, "the restore is searchable");
+  const trashRows = db.sqlite.prepare("SELECT count(*) c FROM file_index WHERE path LIKE '/.trash/%'").get();
+  assert.equal(trashRows.c, 0, "parked copies are never indexed");
+});
+
+test("withIndex passes the store through unchanged when there is no database", () => {
+  const raw = seededStore();
+  assert.equal(withIndex(raw, null, ACCOUNT), raw);
+});
+
+// ------------------------------------------------------------------ timing
+
+// The issue's bar: 100,000 files, one search, under one second. The rows go
+// in through the production statements and the search runs the production
+// statement, on the engine D1 runs (SQLite), migrations applied.
+test("100,000 files: a search returns in well under one second", async () => {
+  const db = makeD1();
+  const TOTAL = 100_000;
+  const rows = [];
+  for (let i = 0; i < TOTAL; i++) {
+    const bucket = i % 20;
+    rows.push({
+      account_id: ACCOUNT.id,
+      path: `/folder-${bucket}/file-${String(i).padStart(6, "0")}-invoice-${i}.pdf`,
+      name: `file-${String(i).padStart(6, "0")}-invoice-${i}.pdf`,
+      parent: `/folder-${bucket}`,
+      size_bytes: 100,
+      modified_at: "2026-09-30T00:00:00.000Z",
+      indexed_at: "2026-09-30T00:00:00.000Z",
+    });
+  }
+  const started = performance.now();
+  await db.batch([
+    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id),
+  ]);
+  for (let start = 0; start < rows.length; start += 14 * 64) {
+    const slice = rows.slice(start, start + 14 * 64);
+    const statements = [];
+    for (let s = 0; s < slice.length; s += 14) {
+      const chunk = slice.slice(s, s + 14);
+      const values = chunk
+        .map((_, rowIndex) =>
+          `(?${rowIndex * 7 + 1}, ?${rowIndex * 7 + 2}, ?${rowIndex * 7 + 3}, ?${rowIndex * 7 + 4}, ?${rowIndex * 7 + 5}, ?${rowIndex * 7 + 6}, ?${rowIndex * 7 + 7})`,
+        )
+        .join(", ");
+      const params = chunk.flatMap((r) => [
+        r.account_id, r.path, r.name, r.parent, r.size_bytes, r.modified_at, r.indexed_at,
+      ]);
+      statements.push(
+        db.prepare(
+          `INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) VALUES ${values}`,
+        ).bind(...params),
+      );
+    }
+    await db.batch(statements);
+  }
+  const indexMs = performance.now() - started;
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get().c, TOTAL);
+
+  // The plan must be the account+name index, not a scan that degrades with
+  // table size beyond the LIKE scan itself.
+  const plan = db.sqlite
+    .prepare(
+      "EXPLAIN QUERY PLAN SELECT path FROM file_index WHERE account_id = '1' AND name LIKE '%invoice%'",
+    )
+    .all()
+    .map((row) => row.detail)
+    .join(" | ");
+  assert.match(plan, /file_index_account_name_idx/, `plan used the name index: ${plan}`);
+
+  const timed = await searchDrive(db, ACCOUNT, "invoice", { now: () => performance.now() });
+  assert.equal(timed.count, DEFAULT_LIMIT);
+  assert.equal(timed.truncated, true);
+  assert.ok(timed.tookMs < 1000, `search took ${timed.tookMs.toFixed(1)}ms, budget 1000ms`);
+  const rare = await searchDrive(db, ACCOUNT, "file-099999", { now: () => performance.now() });
+  assert.equal(rare.count, 1);
+  assert.ok(rare.tookMs < 1000, `rare search took ${rare.tookMs.toFixed(1)}ms, budget 1000ms`);
+  console.log(
+    `# search-100k: index ${TOTAL} files in ${indexMs.toFixed(0)}ms; ` +
+      `"invoice" ${timed.tookMs.toFixed(1)}ms; "file-099999" ${rare.tookMs.toFixed(1)}ms (budget 1000ms)`,
+  );
+});
+
+// ------------------------------------------------------------------ routes
+
+function request(path, options = {}) {
+  return new Request(`https://drive.test${path}`, options);
+}
+
+test("GET /api/search answers with the found rows", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [["/pictures/np-2024.png", "x"]]);
+  await reconcileIndex(db, store, ACCOUNT);
+  const response = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=np-2024`),
+    db,
+    store,
+    ACCOUNT,
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.count, 1);
+  assert.equal(body.results[0].path, "/pictures/np-2024.png");
+  assert.ok(typeof body.tookMs === "number");
+});
+
+test("an empty query is a 400 with the one next step", async () => {
+  const response = await handleSearchRequest(
+    request(SEARCH_ENDPOINT),
+    makeD1(),
+    seededStore(),
+    ACCOUNT,
+  );
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, "Type one or more words to search for.");
+});
+
+test("a search without an index binding is a 503", async () => {
+  const response = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=x`),
+    null,
+    seededStore(),
+    ACCOUNT,
+  );
+  assert.equal(response.status, 503);
+});
+
+test("POST rebuilds the index and the search reflects it", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(store, [["/late-arrival.txt", "x"]]);
+  const response = await handleSearchRequest(request(INDEX_ENDPOINT, { method: "POST" }), db, store, ACCOUNT);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.indexed, 1);
+  const found = await searchDrive(db, ACCOUNT, "late-arrival");
+  assert.equal(found.count, 1);
+});
+
+test("the index route answers 405 with the one allowed method named", async () => {
+  const response = await handleSearchRequest(
+    request(INDEX_ENDPOINT),
+    makeD1(),
+    seededStore(),
+    ACCOUNT,
+  );
+  assert.equal(response.status, 405);
+  assert.match(await response.text(), /POST/);
+});
+
+test("the search route answers 405 with the one allowed method named", async () => {
+  const response = await handleSearchRequest(
+    request(SEARCH_ENDPOINT, { method: "POST" }),
+    makeD1(),
+    seededStore(),
+    ACCOUNT,
+  );
+  assert.equal(response.status, 405);
+  assert.match(await response.text(), /GET/);
+});
+
+// ------------------------------------------------------------ worker wiring
+
+test("the worker serves /api/search from the D1 index and /api/files writes keep it fresh", async () => {
+  const db = makeD1();
+  const env = { WAITLIST_DB: db };
+  const built = new Request("https://drive.test/api/search/index", { method: "POST" });
+  const seeded = await worker.fetch(built, env);
+  assert.equal(seeded.status, 200);
+  const upload = await worker.fetch(
+    new Request("https://drive.test/api/files/upload?path=%2F&name=warren-buffet.txt", {
+      method: "POST",
+      body: "x",
+    }),
+    env,
+  );
+  assert.equal(upload.status, 201);
+  const found = await worker.fetch(
+    new Request("https://drive.test/api/search?q=warren-buffet"),
+    env,
+  );
+  assert.equal(found.status, 200);
+  const body = await found.json();
+  assert.equal(body.count, 1);
+  assert.equal(body.results[0].path, "/warren-buffet.txt");
+});
+
+// --------------------------------------------------------------- migration
+
+test("the migration is additive: one new table, no drops, every column defaulted", () => {
+  const sql = readFileSync(new URL("../migrations/0002_file_index.sql", import.meta.url), "utf8");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS file_index"));
+  const withoutComments = sql.replace(/--.*$/gm, "");
+  assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), "no drops");
+  assert.ok(!/ALTER TABLE/im.test(withoutComments), "no existing table touched");
+  for (const match of sql.matchAll(/(\w+)\s+TEXT NOT NULL(?!\s+DEFAULT)/g)) {
+    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
+  }
+  for (const match of sql.matchAll(/(\w+)\s+INTEGER NOT NULL(?!\s+DEFAULT)/g)) {
+    assert.fail(`column ${match[1]} is NOT NULL without a DEFAULT`);
+  }
+});
+
+test("MAX_LIMIT is the ceiling a caller can ask for", async () => {
+  const db = makeD1();
+  const store = seededStore();
+  await seed(
+    store,
+    Array.from({ length: MAX_LIMIT + 10 }, (_, i) => [`/many-${i}.txt`, "x"]),
+  );
+  await reconcileIndex(db, store, ACCOUNT);
+  const page = await searchDrive(db, ACCOUNT, "many", { limit: 10_000 });
+  assert.equal(page.count, MAX_LIMIT);
+});
