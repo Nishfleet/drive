@@ -10,18 +10,42 @@ import (
 	"strings"
 )
 
+// accessClaude grants Claude Code the folder both ways the tool reads it:
+// permissions.additionalDirectories for its built-in file tools, and the
+// CLAUDE.md note inside the drive folder so a session started there is told
+// what the folder is. Both must succeed; a failure is reported, not hidden.
+func accessClaude(env Env) error {
+	if err := grantClaudeDrive(env); err != nil {
+		return err
+	}
+	return writeNote(env, claudeNoteName)
+}
+
 // claudeSettingsPath is Claude Code's user settings file. `drive init` adds
-// the drive folder to permissions.additionalDirectories here: the stock
-// filesystem server takes its allowed directories from the client's roots, and
-// Claude Code's roots are the session's working directories. Without this, a
-// session started anywhere else is denied the drive ("Claude Code with no
-// --add-dir reports /tmp as its only root"). Verified on this host 2026-09-30:
-// with the setting, `list_allowed_directories` returns /tmp and the drive.
+// the drive folder to permissions.additionalDirectories here, which lets
+// Claude's built-in file tools (Bash, Read, Edit) use the drive from any
+// working directory. It does not change the MCP filesystem server's roots:
+// those are the session's working directories and replace the server's
+// arguments entirely, so the drive MCP server only serves sessions started
+// inside the drive folder (see grantClaudeDrive below).
 const claudeSettingsPath = ".claude/settings.json"
 
 // grantClaudeDrive adds the drive folder to Claude Code's user-level
-// additionalDirectories, creating the settings file when absent and keeping
-// every existing setting. It is idempotent: a second run changes nothing.
+// permissions.additionalDirectories, creating the settings file when absent and
+// keeping every existing setting. It is idempotent: a second run changes nothing.
+//
+// The additionalDirectories setting makes Claude's built-in file tools (Bash,
+// Read, Edit) treat the listed directories as allowed. However, it does NOT
+// extend the MCP filesystem server's roots: Claude Code's MCP roots are the
+// session's working directories and completely replace the server's command-line
+// arguments (see the MCP filesystem server docs: Roots protocol replaces Allowed
+// directories). This means a Claude Code session started outside the drive
+// cannot use the drive MCP server unless started in the drive folder.
+//
+// To grant MCP-root access, start Claude Code in the drive folder (e.g. cd
+// ~/Drive && claude -p). The CLAUDE.md note left in the drive folder instructs
+// agents to start there. Without starting in the folder, the MCP server's only
+// allowed directory is the cwd.
 func grantClaudeDrive(env Env) error {
 	path := filepath.Join(env.Home, claudeSettingsPath)
 	doc, err := readJSONObject(path)
@@ -96,7 +120,8 @@ func noteBody(driveDir string) string {
 	return noteMarker + "\n" +
 		"# This is the drive\n\n" +
 		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
-		"agent. The `drive` MCP server reads and writes this folder.\n\n" +
+		"agent. The `drive` MCP server reads and writes this folder; start the\n" +
+		"session in this folder so the server is allowed to serve it.\n\n" +
 		"- Deletes are recoverable: `drive restore <file>` brings a file back.\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve` when\n" +
 		"  the changes are ready to copy back.\n"

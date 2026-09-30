@@ -209,3 +209,39 @@ func TestConnectFailsLoudlyWhenAccessCannotBeGranted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestConnectClaudeWritesBothAccessGrants(t *testing.T) {
+	// claude's Access is the only one that must do two things: the settings
+	// entry for its built-in file tools, and the CLAUDE.md note a session
+	// started in the drive folder reads.
+	env, _ := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(env.Home, claudeSettingsPath)); !strings.Contains(got, env.DriveDir) {
+		t.Errorf("the drive is not in the claude settings:\n%s", got)
+	}
+	note := readFile(t, filepath.Join(env.DriveDir, claudeNoteName))
+	for _, want := range []string{noteMarker, env.DriveDir, "drive restore", "drive branch"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the %s note is missing %q:\n%s", claudeNoteName, want, note)
+		}
+	}
+}
+
+func TestNoteTellsTheAgentToStartInTheDrive(t *testing.T) {
+	// The MCP server serves the session's working directory, not the folder on
+	// its command line, so the note is the only place a session learns it.
+	env, _ := testEnv(t)
+	if err := writeNote(env, agentsNoteName); err != nil {
+		t.Fatal(err)
+	}
+	text := readFile(t, filepath.Join(env.DriveDir, agentsNoteName))
+	if !strings.Contains(text, "start the\nsession in this folder") {
+		t.Fatalf("the note does not tell the agent to start in the drive:\n%s", text)
+	}
+}

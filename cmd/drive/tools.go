@@ -14,14 +14,16 @@ import (
 
 // serverName is the MCP server name the drive registers in every agent tool,
 // and mcpPackage is the stock MCP filesystem server it points at the drive
-// folder (docs/build-spec.md, "Agent tools"). The server starts with a file
-// lock and an allowlist, so every tool must be told the folder twice: once as
-// the server's argument, and once in whatever way that tool calls the same
-// list "roots" or "allowed directories". One example, the one that bit us:
-// Claude Code with no --add-dir reports /tmp as its only root, and the
-// filesystem server (README, "Method 2: MCP Roots") lets client roots
-// completely replace its command-line directories, so the drive would be
-// denied with only the argument in place. `npx -y` needs no global install.
+// folder (docs/build-spec.md, "Agent tools"). The server takes a file lock and
+// an allowlist. It also supports MCP Roots, and per its README ("Method 2: MCP
+// Roots") roots notified by the client "completely replace any server-side
+// Allowed directories when provided". Claude Code sends its session's working
+// directories as roots, so a session started outside the drive is served only
+// its own cwd, even with the drive folder on the command line. Verified on
+// this host 2026-09-30 with claude 2.1.284 and server-filesystem 2026.8.31:
+// `list_allowed_directories` returned /tmp for a session started in /tmp and
+// the drive folder for one started in the drive. `npx -y` needs no global
+// install.
 const (
 	serverName = "drive"
 	mcpPackage = "@modelcontextprotocol/server-filesystem"
@@ -85,11 +87,10 @@ func (e Env) withDefaults() Env {
 //	        the mount exists.
 //	kiro    entry in `~/.kiro/settings/mcp.json` under `mcpServers`.
 //
-// claude and codex additionally get an instruction file inside the drive
-// folder (CLAUDE.md, AGENTS.md), and claude gets the drive added to the user
-// setting that grants an extra working directory. Without those the filesystem
-// server denies the folder: Claude Code sends its own roots, which replace the
-// server's argument (see the package comment above).
+// claude gets a CLAUDE.md note in the drive folder and the drive added to the
+// user setting that lets its built-in file tools use the folder from anywhere;
+// codex and cursor get an AGENTS.md note, which is the instruction file they
+// read.
 type Tool struct {
 	// Name is also the binary the CLI tools run.
 	Name string
@@ -114,10 +115,13 @@ type Tool struct {
 	AddConflict string
 	// JSONPath is the config file of a tool connected through JSON.
 	JSONPath func(home string) string
-	// Access, when set, grants the tool access to the drive folder the tool's
-	// own way, outside the MCP registration. Without it the stock filesystem
-	// server denies the folder, because the tool's roots replace the server's
-	// argument.
+	// Access, when set, grants the tool access to the drive folder outside the
+	// MCP registration: Claude gets the folder in permissions.additionalDirectories
+	// (its built-in file tools), and claude, codex and cursor get an
+	// instruction note in the folder so a session opened on the drive knows
+	// what it is. Neither reaches the MCP server's roots, which are the
+	// session's working directories, so a session must be started in the drive
+	// folder to use the drive server.
 	Access func(env Env) error
 }
 
@@ -131,7 +135,7 @@ func tools() []Tool {
 			AddConflict: "already exists",
 			Check:       []string{"mcp", "get", "{name}"},
 			Remove:      []string{"mcp", "remove", "{name}"},
-			Access:      grantClaudeDrive,
+			Access:      accessClaude,
 		},
 		{
 			Name:     "codex",
