@@ -14,7 +14,8 @@
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
 // test and no-configuration stand-in, and renders every state for a screenshot.
-import { formatBytes } from "./status.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
+import { isSameOriginRequest } from "./email-send.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
@@ -26,8 +27,6 @@ export const TRASH_FOLDER = ".trash";
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
 /** How long a deleted file stays restorable (build-spec.md "Old versions"). */
 export const RECENTLY_DELETED_DAYS = 30;
-/** Build step 1 (#2) owns the real bucket; until then the page is one drive. */
-export const STAND_IN_ACCOUNT = Object.freeze({ id: "1", name: "Your drive" });
 
 // ---------------------------------------------------------------- file kinds
 
@@ -89,6 +88,39 @@ export function fileKind(name, contentType = "") {
 /** Which kinds open inside the page instead of only downloading. */
 export function isPreviewable(kind) {
   return kind !== "file" && kind !== "folder";
+}
+
+// What an inline preview may be served as. A file the customer uploaded is
+// never a page on our origin, so the served type follows the file's kind
+// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
+// and media keeps its own type only when it matches its kind. Anything else is
+// octet-stream, which a browser will not render as a document. The header pair
+// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
+// uploaded .svg is still an image in the page's <img>, but opening the preview
+// URL directly gets it a sandboxed document instead of our origin.
+const PREVIEW_CONTENT_TYPES = Object.freeze({
+  text: "text/plain; charset=utf-8",
+  pdf: "application/pdf",
+});
+
+/** The content type an inline preview is served as, never a document type. */
+export function previewContentType(name, storedContentType = "") {
+  const kind = fileKind(name, storedContentType);
+  const stored = String(storedContentType).split(";")[0].trim().toLowerCase();
+  const pinned = PREVIEW_CONTENT_TYPES[kind];
+  if (pinned) {
+    return pinned;
+  }
+  if (kind === "image" && !stored.startsWith("image/")) {
+    return "application/octet-stream";
+  }
+  if (kind === "video" && !stored.startsWith("video/")) {
+    return "application/octet-stream";
+  }
+  if (kind === "audio" && !stored.startsWith("audio/")) {
+    return "application/octet-stream";
+  }
+  return stored || "application/octet-stream";
 }
 
 // ---------------------------------------------------------------- the words
@@ -369,6 +401,82 @@ export function restorableUntil(deletedAt) {
  */
 
 /**
+ * One account's view of a shared store: every drive path is rewritten to that
+ * account's own prefix, and every row that comes back is rewritten to a drive
+ * path, so the page and the handlers never see a storage key and one account
+ * can never name another's (drive issue #73, north star: Safe). The id is
+ * carried in a full segment (`u/<id>/…`) so an id that is a prefix of another
+ * (`1` and `10`) cannot reach across.
+ *
+ * This is the one place the prefix is applied, so an adapter never has to know
+ * it: `createMemoryStore` and `createS3Store` are both plain stores over
+ * storage keys, and the gate scopes them.
+ * @param {FileStore} store the shared, unscoped store
+ * @param {{id: string, name?: string}} account
+ * @returns {FileStore}
+ */
+export function scopeStore(store, account) {
+  if (!store) {
+    throw new TypeError("scopeStore needs a store");
+  }
+  if (typeof account !== "object" || account === null || typeof account.id !== "string") {
+    throw new TypeError(
+      `scopeStore needs a signed-in account with an id, got ${String(account)}`,
+    );
+  }
+  if (account.id.length === 0 || account.id.includes("/")) {
+    // A prefix cut mid-segment would put one account's root inside another's
+    // folder, so the id is checked rather than escaped.
+    throw new TypeError(
+      `an account id is one path segment, got "${account.id}"`,
+    );
+  }
+  const prefix = `u/${account.id}`;
+  // The drive path is checked here as well as in the handlers. Isolation must
+  // not rest on every future caller remembering to validate, so a path that
+  // could climb out of the prefix (`..`) is refused at the one place the
+  // prefix is applied, using the module's own validator.
+  const toKey = (path) => {
+    const checked = validatePath(path);
+    if (checked.error) {
+      throw new TypeError(`a scoped store needs a drive path: ${checked.error}`);
+    }
+    return `${prefix}${checked.path}`;
+  };
+  const toDrivePath = (key) => {
+    if (!key.startsWith(`${prefix}/`)) {
+      // A store that returned a key outside this account's prefix has a bug,
+      // not a row to show: the page would render another account's path.
+      throw new Error(
+        `the store returned ${key}, which is not under ${prefix}/; a scoped store must never read outside the account's own prefix`,
+      );
+    }
+    return `/${key.slice(prefix.length + 1)}`;
+  };
+  const toDriveEntry = (entry) => {
+    const path = toDrivePath(entry.path);
+    return path === entry.path ? entry : { ...entry, path };
+  };
+  return {
+    async list(path) {
+      const entries = await store.list(toKey(path));
+      return entries.map(toDriveEntry);
+    },
+    // async, so a refused path is a rejected promise on every method rather
+    // than a synchronous throw from three of the four.
+    async read(path) {
+      return store.read(toKey(path));
+    },
+    async write(path, body, contentType) {
+      return store.write(toKey(path), body, contentType);
+    },
+    async remove(path) {
+      return store.remove(toKey(path));
+    },
+  };
+}
+
+/**
  * The in-memory stand-in: one Map of path to bytes. The tests use it and the
  * page runs on it with no storage configured, so every screen renders and
  * every state is exercised without a bucket.
@@ -378,7 +486,10 @@ export function createMemoryStore() {
   const objects = new Map();
   return {
     async list(path) {
-      const prefix = path === "/" ? "/" : `${path}/`;
+      // The scopeStore prefix already ends in a slash, and the drive root is
+      // one too, so the key a child lives under is the path plus its own
+      // separator rather than a second slash.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
       const folders = new Map();
       const files = [];
       for (const [key, value] of objects) {
@@ -428,29 +539,34 @@ export function createMemoryStore() {
  * The stand-in storage the issue names: plain S3 over HTTP, pointed at
  * `rclone serve s3` on the build host. The four S3 calls the page needs are
  * the four store methods; the real scoped-key, signed-request adapter for
- * iDrive e2 / B2 lands with #2 behind this same FileStore interface.
- * @param {{endpoint: string, bucket: string, account?: string, fetchImpl?: typeof fetch}} config
+ * iDrive e2 / B2 lands with #2 behind this same FileStore interface. The keys
+ * are exactly the paths the store is given — the account prefix is applied by
+ * scopeStore, which is the one place it is applied.
+ * @param {{endpoint: string, bucket: string, fetchImpl?: typeof fetch}} config
  * @returns {FileStore}
  */
 export function createS3Store(config) {
-  const { endpoint, bucket, account = STAND_IN_ACCOUNT.id, fetchImpl = fetch } = config;
+  const { endpoint, bucket, fetchImpl = fetch } = config;
   if (!endpoint || !bucket) {
     throw new Error("createS3Store needs an endpoint and a bucket.");
   }
   const base = `${String(endpoint).replace(/\/$/, "")}/${bucket}`;
-  const key = (path) => `u/${account}${path}`;
   const urlFor = (path) =>
-    `${base}/${key(path).split("/").map(encodeURIComponent).join("/")}`;
+    `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
   return {
     async list(path) {
-      const prefix = `${key(path)}${path === "/" ? "/" : "/"}`;
+      // `path` is a storage key (`u/<id>`, `u/<id>/Photos`); the query wants
+      // exactly one trailing slash and no second one.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
       const query = `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F`;
       const response = await fetchImpl(`${base}${query}`);
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
-      return parseListObjects(await response.text(), prefix, path);
+      // The base a row's key is built from: the folder key without its
+      // trailing slash, so a child key is `${base}/${name}`.
+      return parseListObjects(await response.text(), prefix, prefix.slice(0, -1));
     },
     async read(path) {
       const response = await fetchImpl(urlFor(path));
@@ -600,14 +716,64 @@ function plain(message, status) {
 }
 
 /**
- * The account the request is for. Until the device sign-in store lands (build
- * step 4, #5) the page serves the one stand-in drive, which is the honest
- * answer for a repo with no accounts table and the same shape the real session
- * reads: `{id, name}`. This is the one swap point.
+ * The account the request is for, and the store scoped to it. There is
+ * exactly one way in, the signedInAccount() gate in src/status.js: a request
+ * that cannot prove an account is a 401 with the message table's words and no
+ * data, before any store is touched (drive issue #73, north star: Safe). The
+ * stand-in account this module used to answer for everyone is gone.
+ *
+ * Every method other than a read is a state change, so it also refuses a
+ * cross-site request with the same rule src/email-send.js and src/waitlist.js
+ * use. A caller with no Origin (curl, the CLI) passes that check; the gate
+ * above is what actually keeps a stranger out.
  * @param {Request} request
+ * @param {FileStore} store the shared, unscoped store
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
+ * @param {number} now
  */
-export function resolveAccount(request) {
-  return { ...STAND_IN_ACCOUNT };
+export async function handleFilesRequest(request, store, account, now = Date.now()) {
+  if (!account) {
+    return unauthorizedResponse();
+  }
+  if (!store) {
+    return json({ error: "The drive is not configured on this deployment." }, 503);
+  }
+  const url = new URL(request.url);
+  const route = url.pathname.replace(/\/$/, "");
+  // Reading is safe to repeat, so only the three that change the drive carry
+  // the cross-site rule. The decision is by route, not by method, so a
+  // mislabelled method on a listing still cannot smuggle a write through.
+  const stateChanging =
+    route === `${FILES_ENDPOINT}/upload` ||
+    route === `${FILES_ENDPOINT}/delete` ||
+    route === `${FILES_ENDPOINT}/restore`;
+  if (stateChanging && !isSameOriginRequest(request)) {
+    // A specific line rather than the table's generic fallback: "try again in
+    // a moment" would be advice to retry a request that will always be
+    // refused, and the one next step is to do it from the drive page, the same
+    // way src/waitlist.js and src/email-send.js answer their cross-site calls.
+    return json(
+      { error: "Uploads, deletes and restores are only accepted from the drive page." },
+      403,
+    );
+  }
+  const scoped = scopeStore(store, account);
+  if (route === FILES_ENDPOINT) {
+    return listRequest(request, url, scoped, now);
+  }
+  if (route === `${FILES_ENDPOINT}/download` || route === `${FILES_ENDPOINT}/preview`) {
+    return readRequest(request, url, scoped, route.endsWith("download"));
+  }
+  if (route === `${FILES_ENDPOINT}/upload`) {
+    return uploadRequest(request, url, scoped);
+  }
+  if (route === `${FILES_ENDPOINT}/delete`) {
+    return deleteRequest(request, scoped, now);
+  }
+  if (route === `${FILES_ENDPOINT}/restore`) {
+    return restoreRequest(request, scoped, now);
+  }
+  return plain("Not found.", 404);
 }
 
 function safeFileName(name) {
@@ -636,7 +802,10 @@ async function readJsonObject(request) {
 }
 
 /**
- * Handles every method on /api/files and always answers. The page reads it:
+ * Handles every method on /api/files and always answers. The gate is in front
+ * of it (see handleFilesRequest): the account is required, the store it reads
+ * is scoped to that account, and a state change also has to be same-origin.
+ * The page reads it:
  *
  *   GET  /api/files?path=/            list a folder
  *   GET  /api/files?view=deleted      Recently deleted
@@ -648,33 +817,8 @@ async function readJsonObject(request) {
  *
  * @param {Request} request
  * @param {FileStore} store
- * @param {{id: string, name: string}} account
  * @param {number} now
  */
-export async function handleFilesRequest(request, store, account, now = Date.now()) {
-  if (!store) {
-    return json({ error: "The drive is not configured on this deployment." }, 503);
-  }
-  const url = new URL(request.url);
-  const route = url.pathname.replace(/\/$/, "");
-  if (route === FILES_ENDPOINT) {
-    return listRequest(request, url, store, now);
-  }
-  if (route === `${FILES_ENDPOINT}/download` || route === `${FILES_ENDPOINT}/preview`) {
-    return readRequest(request, url, store, route.endsWith("download"));
-  }
-  if (route === `${FILES_ENDPOINT}/upload`) {
-    return uploadRequest(request, url, store);
-  }
-  if (route === `${FILES_ENDPOINT}/delete`) {
-    return deleteRequest(request, store, now);
-  }
-  if (route === `${FILES_ENDPOINT}/restore`) {
-    return restoreRequest(request, store, now);
-  }
-  return plain("Not found.", 404);
-}
-
 async function listRequest(request, url, store, now) {
   if (request.method !== "GET") {
     return plain("Method not allowed. GET a listing.", 405);
@@ -728,12 +872,23 @@ async function readRequest(request, url, store, download) {
   }
   const name = checked.path.split("/").pop();
   const headers = {
-    "content-type": object.contentType || "application/octet-stream",
+    // The bytes leave as a file: an attachment to download, and an inline
+    // preview the page renders in a media element. Neither is a document on
+    // our origin, and the two headers below keep it that way when the preview
+    // URL is opened directly: nosniff honors the type above, and the sandbox
+    // policy gives a document an opaque origin with no script of its own.
+    "content-type": download
+      ? object.contentType || "application/octet-stream"
+      : previewContentType(name, object.contentType),
     "content-disposition": download
       ? `attachment; filename="${name.replace(/"/g, "")}"`
       : "inline",
+    "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
   };
+  if (!download) {
+    headers["content-security-policy"] = "sandbox";
+  }
   return new Response(request.method === "HEAD" ? null : object.body, {
     status: 200,
     headers,

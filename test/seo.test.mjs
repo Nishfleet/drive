@@ -5,23 +5,43 @@
 // later run cannot quietly drop the canonical URL, point the share card at a
 // 404, or let the structured data disagree with the config, because this fails.
 //
-// The pricing copy gate is test/pricing-copy.test.mjs; the bill numbers this
-// file also states are in src/seo.js (BILLING), which records why it does not
-// import src/pricing.js (issue #23 owns that).
+// The price copy gate is test/pricing-copy.test.mjs. The bill numbers this
+// file also states are read from src/pricing.js (PRICE), the one price source
+// src/seo.js builds BILLING from (issue #23), so a re-priced product moves the
+// tags, the JSON-LD and llms.txt together with the visible copy.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import {
   BILLING,
+  DOC_PAGES,
   PAGES,
   SITE,
   absoluteUrl,
   pageUrl,
   softwareApplicationLd,
 } from "../src/seo.js";
+import { PRICE } from "../src/pricing.js";
+import { monthlyBillForStoredTb } from "../src/billing.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
+
+// Dollars the way the page and llms.txt write them: no cents where there are
+// none, cents where the rule produces them ($12.80). The same shape
+// test/pricing-copy.test.mjs uses, so the two gates quote identical strings.
+const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
+
+// The first-run page is a Vite entry at the repo root (issue #70): it is built
+// (its <script type="module"> is bundled) rather than copied verbatim out of
+// public/, so it ships from the root and the metadata tests read it there.
+// Every other page is still a verbatim public/ asset.
+const ROOT_PAGES = new Set(["get-started.html"]);
+const rootDir = new URL("../", import.meta.url);
+const pageUrlFor = (name) =>
+  ROOT_PAGES.has(name) ? new URL(name, rootDir) : new URL(name, publicDir);
+const readPage = (name) => readFileSync(pageUrlFor(name), "utf8");
+const pageExists = (name) => existsSync(pageUrlFor(name));
 
 // Every shipped HTML page, from the config, not from the directory, so a page
 // that ships without being added to src/seo.js fails the first test below.
@@ -44,10 +64,13 @@ function link(page, rel) {
   return match ? match[1] : null;
 }
 
-test("every shipped HTML page is registered in src/seo.js", () => {
-  const shipped = readdirSync(publicDir)
-    .filter((name) => name.endsWith(".html"))
-    .sort();
+test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
+  // The site ships pages from two places (issue #70): the verbatim assets in
+  // public/ and the built Vite entries at the repo root, so both are walked.
+  const shipped = [
+    ...readdirSync(publicDir).filter((name) => name.endsWith(".html")),
+    ...[...ROOT_PAGES].filter((name) => pageExists(name)),
+  ].sort();
   const registered = PAGES.map(fileFor).sort();
   assert.deepEqual(
     shipped,
@@ -61,7 +84,7 @@ test("every public page has a unique title and meta description", () => {
   const descriptions = new Set();
   for (const page of PAGES) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     const title = html.match(/<title>([^<]*)<\/title>/i);
     assert.ok(title, `${name} must have a <title>`);
     const description = meta(html, "name", "description");
@@ -85,7 +108,7 @@ test("every public page has a unique title and meta description", () => {
 test("every indexable page names its own canonical URL", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const canonical = link(read(name), "canonical");
+    const canonical = link(readPage(name), "canonical");
     assert.equal(
       canonical,
       pageUrl(page),
@@ -97,7 +120,7 @@ test("every indexable page names its own canonical URL", () => {
 test("every indexable page carries a complete Open Graph card that resolves", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     assert.equal(meta(html, "property", "og:title"), SITE.title);
     assert.equal(meta(html, "property", "og:description"), SITE.description);
     assert.equal(meta(html, "property", "og:url"), pageUrl(page));
@@ -123,7 +146,7 @@ test("every indexable page carries a complete Open Graph card that resolves", ()
 
 test("every indexable page carries a Twitter summary_large_image card", () => {
   for (const page of indexablePages) {
-    const html = read(fileFor(page));
+    const html = readPage(fileFor(page));
     assert.equal(meta(html, "name", "twitter:card"), "summary_large_image");
     assert.equal(meta(html, "name", "twitter:title"), SITE.title);
     assert.equal(
@@ -136,7 +159,7 @@ test("every indexable page carries a Twitter summary_large_image card", () => {
 test("every indexable page carries a JSON-LD SoftwareApplication matching the config", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
-    const html = read(name);
+    const html = readPage(name);
     const block = html.match(
       /<script type="application\/ld\+json">([\s\S]*?)<\/script>/i,
     );
@@ -158,11 +181,11 @@ test("every non-indexable page is noindex and stays out of the sitemap", () => {
   const sitemap = read("sitemap.xml");
   for (const page of PAGES.filter((p) => !p.indexable)) {
     const name = fileFor(page);
-    const robots = meta(read(name), "name", "robots") || "";
+    const robots = meta(readPage(name), "name", "robots") || "";
     assert.match(
       robots,
       /noindex/i,
-      `${name} is flagged non-indexable in src/seo.js, so it must declare noindex`,
+      `${name} is flagged non-indexable in PAGES, so it must declare noindex`,
     );
     assert.equal(
       sitemap.includes(pageUrl(page)),
@@ -194,10 +217,16 @@ test("sitemap.xml lists exactly the indexable pages, on the canonical origin", (
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
     (match) => match[1],
   );
+  // The docs pages (drive issue #98) are read from the same config, so a docs
+  // page that ships without being listed here fails this test.
+  const expected = [
+    ...indexablePages.map(pageUrl),
+    ...DOC_PAGES.map((page) => absoluteUrl(page.path)),
+  ];
   assert.deepEqual(
     locations,
-    indexablePages.map(pageUrl),
-    "the sitemap must list exactly the indexable pages, at their canonical URLs",
+    expected,
+    "the sitemap must list exactly the indexable pages and the docs pages, at their canonical URLs",
   );
   for (const location of locations) {
     assert.equal(new URL(location).origin, SITE.origin);
@@ -238,14 +267,23 @@ test("llms.txt describes the drive and the current price rule", () => {
   );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The spec's own worked figures, so an answer engine cannot quote a number
-  // the pricing page contradicts. Each is min(metered, max($12, $8 x TB)).
-  for (const figure of [
-    "800 GB kept all month = $12", // min(16, 12)
-    "1.6 TB = $12.80", // min(32, 12.80)
-    "2 TB = $16", // min(40, 16)
-    "5 TB = $40", // min(100, 40)
+  // the pricing page contradicts. Each is min(metered, max($12, $8 x TB))
+  // less the $1 free, from the one bill function (issues #23, #76).
+  for (const [label, tb] of [
+    ["800 GB kept all month", 0.8],
+    ["1.6 TB", 1.6],
+    ["2 TB", 2],
+    ["5 TB", 5],
   ]) {
-    assert.ok(llms.includes(figure), `llms.txt must carry "${figure}"`);
+    const bill = monthlyBillForStoredTb(tb);
+    assert.ok(
+      llms.includes(`${label} = ${dollars(bill.billUsd)}`),
+      `llms.txt must carry the ${dollars(bill.billUsd)} bill for ${label}`,
+    );
+    assert.ok(
+      llms.includes(`(${dollars(bill.storageUsd)} of storage`),
+      `llms.txt must name the ${dollars(bill.storageUsd)} storage figure for ${label}`,
+    );
   }
   // No claim the page itself is not allowed to make.
   assert.doesNotMatch(llms, /unlimited/i);
@@ -277,14 +315,31 @@ test("the ceiling in the metadata is the spec's plateau, not per-TB caps", () =>
   // cap is flat at $12 until 1.5 TB and only then rises at $8 a TB. If the
   // spec is restated, the metadata has to match, so a re-priced product cannot
   // keep serving the old ceiling to crawlers.
-  assert.equal(BILLING.capFloorUsd, 12);
-  assert.equal(BILLING.capUsdPerTb, 8);
+  //
+  // The numbers and the sentences come from src/pricing.js, the one price
+  // source, so this pins the spec's values once and against PRICE: a price
+  // change is one edit there and it moves the tags, the JSON-LD, llms.txt and
+  // the visible copy together (issue #23).
+  assert.equal(PRICE.capFloorUsd, 12);
+  assert.equal(PRICE.capUsdPerTb, 8);
+  assert.equal(PRICE.capPlateauTb, 1.5);
+  // BILLING is built from PRICE, not declared beside it: a second set of
+  // numbers would be exactly the drift issue #23 was reopened for.
+  assert.equal(BILLING.capFloorUsd, PRICE.capFloorUsd);
+  assert.equal(BILLING.capUsdPerTb, PRICE.capUsdPerTb);
+  assert.equal(BILLING.ceiling, PRICE.ceiling);
+  assert.equal(BILLING.freeLine, PRICE.freeLine);
+  assert.equal(BILLING.rule, PRICE.rule);
   assert.match(
     BILLING.ceiling,
-    /Never more than \$12 a TB, then \$8\.$/,
+    /Never more than \$12 a TB, and \$8 a TB once you pass 1\.5 TB\./,
     "the ceiling sentence must be the spec's sentence",
   );
   // The rule string spells out the plateau, so no consumer of the config can
   // read the numbers back as "$12 for the first TB, then $8 each after".
   assert.match(BILLING.rule, /\$12 up to 1\.5 TB, then \$8 for each TB after\./);
+  // The superseded per-TB caps (PR #24) are what the live page contradicted
+  // itself over, so they may not come back through the tags either.
+  assert.doesNotMatch(BILLING.ceiling, /\$15/);
+  assert.doesNotMatch(BILLING.rule, /\$15/);
 });

@@ -7,23 +7,33 @@
 // cannot disagree. The one fetch handler at the bottom serves GET /api/usage
 // with the standard Response, which node --test provides.
 //
-// The rule (docs/build-spec.md, "Bill ceiling" and "How the money is worked
-// out"; Nish 2026-09-30, superseding the older per-TB caps):
+// The rule (docs/build-spec.md, "Bill ceiling", "How the money is worked out"
+// and "Free credit"; Nish 2026-09-30, superseding the older per-TB caps; drive
+// issue #76):
 //
-//     monthly_bill = min(metered_2c_per_GB_minute, max($12, $8 x peak_TB))
+//     storage      = min(metered_2c_per_GB_minute, max($12, $8 x peak_TB))
+//     downloads    = 1¢/GB above 3x the month's average stored size
+//     monthly_bill = max(0, storage + downloads - $1 free credit)
 //
 // with peak_TB measured to the GB, so 1.6 TB caps at $12.80, not $16. The
 // max() is what stops a cliff: adding data never lowers the bill. Inside the
 // ceiling the metered rate is 2¢ per GB-month billed by the minute, so GB that
-// was stored for only part of the month bills for that part only. Nish's six
-// figures (400 GB, 800 GB, 1.3 TB, 1.6 TB, 2 TB, 5 TB, all held all month) are
-// the acceptance cases in test/billing.test.mjs.
+// was stored for only part of the month bills for that part only. The ceiling
+// is the spec's storage formula; downloads are the spec's own separate line,
+// outside it, and the free $1 comes off the total, never below zero.
+// monthBillCents() is the one function that returns this bill, in integer
+// cents, so the invoice, the usage page and the cap all read the same number.
+// Nish's six storage figures (400 GB, 800 GB, 1.3 TB, 1.6 TB, 2 TB, 5 TB, all
+// held all month) are the storage-line cases, and the five #76 figures are the
+// month's totals, in test/billing.test.mjs.
 //
-// Two inputs, not one: the meter (the bill) and the peak size (the ceiling).
-// They are the same number only when the data was held for the whole month
-// (Nish's cases). When the drive grew mid-month they differ, and the ceiling
-// must follow the peak, so the peak is passed in rather than read back out of
-// the meter.
+// Two storage inputs, not one: the meter (the metered charge) and the peak
+// size (the ceiling). They are the same number only when the data was held for
+// the whole month (Nish's cases). When the drive grew mid-month they differ,
+// and the ceiling must follow the peak, so the peak is passed in rather than
+// read back out of the meter. monthBillCents() takes two more — the download
+// bytes and the average stored size that sets their free 3x — and the config's
+// $1 credit is the last term.
 //
 // Every number that could be a constant is a config value in BILLING_CONFIG,
 // including the iDrive $8/TB and its B2 fallback $10/TB: the "$8" in the
@@ -42,36 +52,50 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes } from "./status.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
+// The price's numbers come from src/pricing.js, the one price source: the
+// metered rate, the ceiling's floor and slope, and the free credit are
+// declared there once, so this file's arithmetic and the page's copy cannot
+// disagree. What is added here is operational: the B2 fallback slope, the
+// default cap, and the download allowance.
+import { PRICE } from "./pricing.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
 // 43,800 (minutes in an average month)"), kept verbatim so the meter, the
-// invoice and the page all divide by the same 43,800.
-const MINUTES_PER_MONTH = 43800;
-const GB_PER_TB = 1000;
+// invoice and the page all divide by the same 43,800. Exported because the
+// pricing copy test builds its worked examples as "kept all month", which is
+// gbMinutes for a size held the whole month, and it must not work out that
+// conversion a second way.
+export const MINUTES_PER_MONTH = 43800;
+// Exported for the same reason: the docs page's worked table divides by it too,
+// so a docs example and an invoice example cannot disagree about what a TB is.
+export const GB_PER_TB = 1000;
 const BYTES_PER_GB = 1e9;
 
 export const BILLING_CONFIG = Object.freeze({
-  // The metered rate, in dollars per GB-month, billed by the minute. The 1.5¢
-  // floor applies to this rate, not to the ceiling below (build-spec.md).
-  rateUsdPerGbMonth: 0.02,
+  // From the one price source (src/pricing.js): the metered rate, in dollars
+  // per GB-month, billed by the minute. The 1.5¢ floor applies to this rate,
+  // not to the ceiling below (build-spec.md).
+  rateUsdPerGbMonth: PRICE.rateUsdPerGbMonth,
   // The ceiling is max(floorUsd, perTbUsd x peak TB). The floor is the
   // plateau: a flat $12 until the stored size passes floorUsd / perTbUsd
   // (1.5 TB on iDrive), then $8 for each TB after. The names say plateau and
   // slope so no reader takes them for per-TB caps.
-  floorUsd: 12,
-  perTbUsd: 8,
+  floorUsd: PRICE.capFloorUsd,
+  perTbUsd: PRICE.capUsdPerTb,
   // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
   // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
-  b2FallbackPerTbUsd: 10,
+  b2FallbackPerTbUsd: PRICE.b2FallbackUsdPerTb,
   // The free credit, in dollars, off every month with no card needed. Shown as
   // a dollar line, never as credits (build-spec.md, "Free credit").
-  freeMonthlyUsd: 1,
-  // The default spending cap, moved to the ceiling floor: a default account up
-  // to 1.5 TB can never be cut off (orchestrator decision 2026-09-30, issue
-  // #39). The cap counts min(metered so far, ceiling), not the raw meter, so
-  // the cap cannot pass what the invoice will be.
+  freeMonthlyUsd: PRICE.freeMonthlyUsd,
+  // The default spending cap, $12 (orchestrator decision 2026-09-30, issue
+  // #39). Its own number, not PRICE.capFloorUsd: the ceiling floor is the
+  // issue #29 decision and they only happen to agree today, so a ceiling
+  // edit must not move every default cap silently. The cap counts
+  // min(metered so far, ceiling), not the raw meter, so the cap cannot pass
+  // what the invoice will be.
   defaultCapUsd: 12,
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
@@ -153,17 +177,114 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
 }
 
 /**
- * The month's bill, in dollars: the meter capped at the ceiling. Dodo is
- * pushed this amount at invoice time, so the provider is never sent the
- * uncapped meter. Below the ceiling the bill is the meter; above it the bill
- * is the ceiling.
+ * The month's storage bill, in dollars: the meter capped at the ceiling,
+ * before the download line and the free $1 credit. It is the storage line of
+ * monthBillCents() — the one function that returns the whole month's bill —
+ * so the "you saved" copy can compare the meter, the ceiling and the bill
+ * without a second copy of the min/max. It is not the amount Dodo is pushed:
+ * that is monthBillCents().totalCents, and the name says storage so a caller
+ * cannot mistake it for the whole bill.
  * @param {number} gbMinutes the month's metered GB-minutes
  * @param {number} peakGb the month's largest stored size
  * @param {object} [config=BILLING_CONFIG]
  */
-export function monthlyBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
-  const metered = meteredMonthlyBillUsd(gbMinutes, config);
-  return Math.min(metered, monthlyCeilingUsd(peakGb, config));
+export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
+  return monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
+}
+
+/**
+ * The month's bill in dollars for a size held all month, from monthBillCents()
+ * — the one function that turns the config into money — with no downloads.
+ * The pricing page's worked examples are all "kept all month" figures
+ * (drive issue #23, folded #86), so this is the one call both the copy gate and
+ * anything else quoting a size can share: the storage figure the examples
+ * print beside the total, and the total the invoice charges.
+ *
+ * The metered half is that many GB stored for every minute of an average
+ * month, over the spec's own 43,800-minute divisor — the conversion every
+ * consumer needs, in one place.
+ * @param {number} tb the stored size in TB, held the whole month
+ * @param {object} [config=BILLING_CONFIG]
+ * @returns {{storageUsd: number, creditUsd: number, billUsd: number}}
+ */
+export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
+  checked(tb, "tb");
+  const peakGb = tb * GB_PER_TB;
+  const bill = monthBillCents({
+    gbMinutes: peakGb * MINUTES_PER_MONTH,
+    peakGb,
+    config,
+  });
+  return Object.freeze({
+    storageUsd: bill.storageCents / 100,
+    creditUsd: bill.creditCents / 100,
+    billUsd: bill.totalCents / 100,
+  });
+}
+
+/**
+ * The month's bill, in integer cents (drive issue #76): the one function the
+ * invoice, the usage page and the cap all read.
+ *
+ *   storageCents  = min(metered, max($12, $8 x peak TB)), the spec's ceiling
+ *                   formula (build-spec.md "Bill ceiling"), in whole cents
+ *   downloadCents = 1¢/GB for the bytes over 3x the month's average stored
+ *                   size (build-spec.md "How the money is worked out")
+ *   creditCents   = the free $1 every month (build-spec.md "Free credit")
+ *   totalCents    = max(0, storage + downloads - credit), never below zero
+ *
+ * The ceiling caps storage only: the spec's min() is over the storage meter
+ * ("monthly cost = total GB-minutes ÷ 43,800 × 2¢"), and downloads are the
+ * spec's own separate line, so they ride on top of the ceiling. The free $1 is
+ * the last term and comes off storage + downloads together.
+ *
+ * Every field is a whole number of cents, the smallest unit money has, so a
+ * caller cannot hand Dodo a fractional cent (billing_pushes.amount_units).
+ * `lines` is the same three amounts as the invoice's own lines — storage,
+ * downloads, and the credit shown as a dollar line — so the invoice prints
+ * what the arithmetic produced.
+ * @param {{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number}} month
+ * @param {object} [config=BILLING_CONFIG]
+ */
+export function monthBillCents({
+  gbMinutes,
+  peakGb,
+  downloadBytes = 0,
+  averageStoredGb = 0,
+  config = BILLING_CONFIG,
+} = {}) {
+  checked(gbMinutes, "month.gbMinutes");
+  checked(peakGb, "month.peakGb");
+  checked(downloadBytes, "month.downloadBytes");
+  checked(averageStoredGb, "month.averageStoredGb");
+  // The free 3x allowance is the average stored size, so a rollup with
+  // download bytes but no stored average is a broken month: defaulting the
+  // average to 0 would silently charge every downloaded byte. Both omitted is
+  // a storage-only call (the cap's own use), which is fine.
+  if (downloadBytes > 0 && averageStoredGb === 0) {
+    throw new TypeError(
+      "month.downloadBytes needs month.averageStoredGb: a month with downloads cannot have no stored average",
+    );
+  }
+  const storageCents = Math.min(
+    Math.round(meteredMonthlyBillUsd(gbMinutes, config) * 100),
+    Math.round(monthlyCeilingUsd(peakGb, config) * 100),
+  );
+  const downloadCents = Math.round(
+    downloadCostUsd(downloadBytes, averageStoredGb, config).usd * 100,
+  );
+  const creditCents = Math.round(config.freeMonthlyUsd * 100);
+  return Object.freeze({
+    storageCents,
+    downloadCents,
+    creditCents,
+    totalCents: Math.max(0, storageCents + downloadCents - creditCents),
+    lines: Object.freeze([
+      Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
+      Object.freeze({ label: "Downloads", cents: downloadCents, usd: formatUsd(downloadCents / 100) }),
+      Object.freeze({ label: "Free credit", cents: -creditCents, usd: signedUsd(-creditCents / 100) }),
+    ]),
+  });
 }
 
 /**
@@ -185,7 +306,7 @@ export function monthlyBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
 export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
   const ceiling = monthlyCeilingUsd(peakGb, config);
-  const bill = monthlyBillUsd(gbMinutes, peakGb, config);
+  const bill = monthlyStorageBillUsd(gbMinutes, peakGb, config);
   const capped = metered > ceiling;
   const saved = Math.max(0, (capped ? metered : ceiling) - bill);
   // Hidden when there is nothing to compare: build-spec.md's Usage screen
@@ -218,10 +339,7 @@ export function capStatus(gbMinutes, peakGb, capUsd, config = BILLING_CONFIG) {
   checked(gbMinutes, "gbMinutes");
   checked(peakGb, "peakGb");
   checked(capUsd, "capUsd");
-  const counted = Math.min(
-    meteredMonthlyBillUsd(gbMinutes, config),
-    monthlyCeilingUsd(peakGb, config),
-  );
+  const counted = monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it. This is
   // what makes the 2026-09-30 decision true (issue #39): min(metered,
   // ceiling) pins at the $12 floor for anything up to 1.5 TB of peak, so an
@@ -308,6 +426,13 @@ function formatUsd(usd) {
   return `$${usd.toFixed(2)}`;
 }
 
+// A line that takes money off the bill carries the minus in front, the way an
+// invoice prints a credit: "-$1.00", never "$-1.00" (build-spec.md, "Free
+// credit": the free $1 is shown as a dollar line).
+function signedUsd(usd) {
+  return usd < 0 ? `-${formatUsd(-usd)}` : formatUsd(usd);
+}
+
 /**
  * Everything the usage page and `drive usage` show for one month, read from
  * the same numbers in one call so the page cannot show a bill the invoice
@@ -342,14 +467,20 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   const effectiveCap = usage.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
   const months = gbMonths(gbMinutes);
-  const bill = monthlyBillUsd(gbMinutes, peakGb, config);
+  // The one bill function (issue #76): storage capped at the ceiling, plus the
+  // download line, minus the free $1 credit. The page's cost and the cap both
+  // read it, so neither can work out a different number.
+  const bill = monthBillCents({ gbMinutes, peakGb, downloadBytes, averageStoredGb, config });
   return Object.freeze({
     gbMonths: months,
     storedGb,
     storedDaily: series,
     meteredUsd: meteredMonthlyBillUsd(gbMinutes, config),
     ceilingUsd: monthlyCeilingUsd(peakGb, config),
-    billUsd: bill,
+    billUsd: bill.totalCents / 100,
+    // The one function's whole result, cents and invoice lines, so the page,
+    // the CLI and the Dodo push read the same bytes.
+    billCents: bill,
     saved: savedLine(gbMinutes, peakGb, config),
     downloads: Object.freeze({
       freeBytes: downloads.freeBytes,
@@ -364,7 +495,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       storedNow: formatBytes(storedGb * BYTES_PER_GB),
       gbMonths: months.toFixed(2),
       downloads: `${formatBytes(downloadBytes)} of ${formatBytes(downloads.freeBytes)} free`,
-      cost: formatUsd(bill),
+      cost: formatUsd(bill.totalCents / 100),
       // Two caps, because they are two things: `cap` is the cap writes stop
       // at (a card-less account's is the free $1, not the account's own) and
       // `accountCap` is the account's own setting, which is what the page's
@@ -424,15 +555,28 @@ const USAGE_HEADERS = Object.freeze({
 
 /**
  * Handles GET /api/usage, the usage page's and the CLI's read. It answers with
- * the month's summary. Until the meter and the account store land (issues #6
- * and #2), an account has no usage rows, so the true answer is the empty
- * month: nothing metered, nothing held, the cap the default. The shape is the
- * one a metered account gets from the real rollup, so the page and the CLI can
- * be written against it now. Any other method is a 405 with the one allowed
- * method named, like the other endpoints.
+ * the month's summary, for the signed-in account and nobody else: the account
+ * is a required argument and a request that cannot prove one is a 401 with the
+ * message table's words, never another account's money (drive issue #73,
+ * north star: Safe). The one gate is signedInAccount() in src/status.js, the
+ * same one /api/first-run-status uses.
+ *
+ * Until the meter and the account store land (issues #6 and #2), a signed-in
+ * account has no usage rows, so the true answer is the empty month: nothing
+ * metered, nothing held, the cap the default. The shape is the one a metered
+ * account gets from the real rollup, so the page and the CLI can be written
+ * against it now. Any other method is a 405 with the one allowed method named,
+ * like the other endpoints — after the gate, so an anonymous request is told
+ * only that it is not signed in, never which methods exist.
  * @param {Request} request
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  */
-export function handleUsageRequest(request) {
+export function handleUsageRequest(request, account) {
+  // The gate is first, before the method: an anonymous request learns nothing
+  // about whether it could write, only that it is not signed in.
+  if (!account) {
+    return unauthorizedResponse();
+  }
   if (request.method !== "GET") {
     return new Response("Method not allowed. GET this endpoint for monthly usage.", {
       status: 405,

@@ -32,12 +32,18 @@ type MountPlan struct {
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
-// for rclone's mount command describe each one.
+// for rclone's mount and nfsmount commands describe each one.
 func VFSArgs() []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
 		"--vfs-write-back", vfsWriteBackValue,
 		"--vfs-cache-max-size", vfsCacheMaxValue,
+		// S3 sends no change notifications, so without a short directory cache
+		// a save made on the other machine waits out rclone's 5-minute default
+		// before it is visible here. The step-3 two-machine proof measured it
+		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
+		// flag, still absent after 60 s without.
+		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-streams", "2",
 		"--buffer-size", vfsChunkStreamSize,
 	}

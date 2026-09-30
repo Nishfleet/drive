@@ -27,10 +27,11 @@ type StorageConfig struct {
 // They are the same on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs
 // is the one place that turns them into an argument vector.
 const (
-	vfsCacheModeValue  = "full"
-	vfsWriteBackValue  = "5s"
-	vfsCacheMaxValue   = "20G"
-	vfsChunkStreamSize = "32M" // streaming read-ahead for big files
+	vfsCacheModeValue    = "full"
+	vfsWriteBackValue    = "5s"
+	vfsCacheMaxValue     = "20G"
+	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
+	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
 )
 
 // Default paths, overridable for tests.

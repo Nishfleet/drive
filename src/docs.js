@@ -1,0 +1,266 @@
+// The docs site (drive issue #98), as one plain data module.
+//
+// Every number the docs state is worked out here, from the same functions the
+// invoice is worked out from, because a docs page that typed "$12" by hand is a
+// claim that can go stale. The pages are authored Markdown with {{MARKER}}
+// placeholders, and src/render-docs.js swaps in the strings from this file at
+// build time; the same markers are asserted in test/docs.test.mjs, so a page
+// that drops a marker, or carries a number this file no longer produces, fails
+// CI instead of shipping a wrong price.
+//
+// The numbers come from src/billing.js, which is the one place the money is
+// worked out (drive issues #7, #53, #76) and the one the invoice, the usage
+// page and the cap all read. src/pricing.js still holds the older per-TB caps
+// the pricing page's visible copy is built from; issue #23 owns the collapse
+// of the two, and test/docs.test.mjs fails while they disagree, so the docs
+// cannot ship a bill the invoice would not produce.
+//
+// Plain data and pure functions only, so `node --test` runs this directly (the
+// same reason src/status.js, src/seo.js and src/billing.js are plain).
+import {
+  BILLING_CONFIG,
+  GB_PER_TB,
+  MINUTES_PER_MONTH,
+  meteredMonthlyBillUsd,
+  monthlyCeilingUsd,
+  monthlyBillForStoredTb,
+} from "./billing.js";
+import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
+import { SITE } from "./seo.js";
+
+/**
+ * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
+ * not retyped, so a re-rate moves the docs and the invoice together.
+ */
+export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
+
+/**
+ * The metered cost of a month, in dollars, before the ceiling: the rate on the
+ * month's GB-months. This is the "meter" column of the worked example, and it
+ * is the same function the usage page and `drive usage` read.
+ * @param {number} gbMinutes
+ */
+export function meteredUsdFor(gbMinutes) {
+  return meteredMonthlyBillUsd(gbMinutes);
+}
+
+/**
+ * The worked examples on the Pricing page: the four sizes the spec walks
+ * through, each with the meter before the ceiling, the storage line under it,
+ * and the total after the free credit. Every figure is a function call: the
+ * total and the storage line come from monthlyBillForStoredTb(), the one
+ * "kept all month" converter the pricing copy already uses, and the meter and
+ * the ceiling from the two functions the usage page reads. A docs row is
+ * therefore the same row, worked the same way, that the copy gate holds the
+ * live page to.
+ */
+export const BILL_EXAMPLES = Object.freeze(
+  [0.8, 1.3, 2, 5].map((tb) => {
+    const gb = tb * GB_PER_TB;
+    const bill = monthlyBillForStoredTb(tb);
+    return Object.freeze({
+      tb,
+      stored: `${tb} TB`,
+      metered: dollars(meteredUsdFor(gb * MINUTES_PER_MONTH)),
+      ceiling: dollars(monthlyCeilingUsd(gb)),
+      bill: dollars(bill.billUsd),
+    });
+  }),
+);
+
+/** A dollar figure, as the invoice prints it: whole dollars without cents,
+ * anything else with two decimals. */
+function dollars(amount) {
+  return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
+}
+
+/**
+ * The whole worked table, header included, as Markdown. Built here rather than
+ * typed in the page so a re-price cannot leave a stale example on a page that
+ * still reads as current.
+ */
+export const BILL_TABLE = Object.freeze(
+  [
+    "| Stored, kept all month | The meter | The ceiling | Your bill |",
+    "| --- | --- | --- | --- |",
+    ...BILL_EXAMPLES.map(
+      (e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`,
+    ),
+  ].join("\n"),
+);
+
+/**
+ * The sentence that says what an agent key may not do. Checked against
+ * KEY_POWERS rather than typed, so the page cannot claim a power the api
+ * Worker's capability table (workers/api/src/keyprovider.js) does not grant,
+ * or deny one it does.
+ */
+export function agentCannotDeleteSentence() {
+  if (KEY_POWERS.agent.canDelete) {
+    throw new Error(
+      "the agents page says an agent key cannot delete, but CAPABILITIES_BY_KIND grants it",
+    );
+  }
+  return "An agent key cannot delete a file.";
+}
+
+/**
+ * The key table on the Security and Agents pages: one row per key kind, with
+ * its powers read from the one capabilities table the api Worker enforces.
+ * @param {keyof typeof KEY_POWERS} kind
+ * @param {string} owner the person this key belongs to, in plain words
+ */
+function keyRow(kind, owner) {
+  const powers = KEY_POWERS[kind];
+  return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${yesNo(powers.canDelete)} |`;
+}
+
+const yesNo = (value) => (value ? "yes" : "no");
+
+/** The two keys a person meets, as a Markdown table. */
+export const KEY_TABLE = Object.freeze(
+  [
+    "| Key | Belongs to | Can read | Can write | Can delete |",
+    "| --- | --- | --- | --- | --- |",
+    keyRow("device", "your machine"),
+    keyRow("agent", "one agent tool"),
+  ].join("\n"),
+);
+
+// ---------------------------------------------------------------------------
+// The FAQ (drive issue #98, orchestrator comment 2026-09-30)
+//
+// The rule the FAQ is built under, verbatim: "every line marked [verify] cites
+// a measured row in docs/scoreboard.md (#114) with the real number before it
+// goes live; a line whose row is still 'not yet measured' stays out of the
+// published FAQ" — and "the backup-location line stays out until the backup
+// exists (#9)".
+//
+// So an answer is data with the scoreboard row it rests on, and faqMarkdown()
+// refuses to render an answer whose row is anything but a measured win. A row
+// that loses its measurement (or a page that hand-adds an answer) fails the
+// docs build instead of shipping an unmeasured claim.
+
+/**
+ * Space's 1 TB price, as the scoreboard's "price at 1 TB" row records it
+ * (docs/scoreboard.md, checked on spacefs.com 2026-09-30): about $20 month to
+ * month, $15 a month billed yearly. The orchestrator fixed the FAQ's phrasing
+ * ("say '$20 a month, or $15 paid yearly'"), so both figures render from here
+ * and test/docs.test.mjs fails if either number is not still in that row.
+ */
+export const RIVAL_1TB = Object.freeze({
+  name: "Space",
+  monthToMonthUsd: 20,
+  yearlyUsd: 15,
+});
+
+/** The rival line on the FAQ, in the orchestrator's own phrasing. */
+export const RIVAL_1TB_LINE = `${RIVAL_1TB.name} charges $${RIVAL_1TB.monthToMonthUsd} a month, or $${RIVAL_1TB.yearlyUsd} paid yearly, for 1 TB.`;
+
+/**
+ * The published FAQ, newest understanding first is not a thing here: the order
+ * is the page's order. Each entry carries the scoreboard metric (or metrics)
+ * its answer rests on; `answer` is the page's own Markdown, markers included.
+ * An answer the scoreboard does not yet back is simply not in this list —
+ * faqMarkdown()'s gate is what keeps it out until it is measured.
+ */
+export const FAQ = Object.freeze([
+  Object.freeze({
+    question: "What does it cost?",
+    scoreboard: ["price at 1 TB"],
+    answer: [
+      "{{RATE}} a month, billed by the minute, for what you actually store.",
+      "The bill is cut off at {{CEILING_FLOOR}} until your drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB after that.",
+      "{{FREE_USD}} a month is free, and no card is needed to start.",
+      "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
+      "There are no plans to pick, and nothing you are given expires.",
+      `For comparison, ${RIVAL_1TB_LINE}`,
+    ].join(" "),
+  }),
+  Object.freeze({
+    question: "What can my AI agents do?",
+    scoreboard: [
+      "agent features: MCP setup",
+      "agent features: no-delete keys",
+      "agent features: spending cap",
+    ],
+    answer: [
+      "`drive init` connects {{AGENT_TOOLS}}, one command per tool, and each tool gets its own key.",
+      "{{AGENT_CANNOT_DELETE}} An agent can read and write your files, so a mistaken run can change a file but cannot wipe one.",
+      "The drive also carries a spending cap: at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
+    ].join(" "),
+  }),
+]);
+
+/**
+ * One row's verdict out of docs/scoreboard.md's table, by its metric name.
+ * The table's columns are | Metric | Space | Us | Verdict | Issue |, so the
+ * verdict is the fourth cell. A metric that is not in the table is an error,
+ * not a null: a renamed row would otherwise read as "no verdict" and fail
+ * later, with the metric name lost.
+ * @param {string} scoreboardText the whole scoreboard file
+ * @param {string} metric the row's first cell, exactly as the table spells it
+ */
+export function scoreboardVerdict(scoreboardText, metric) {
+  const row = scoreboardText
+    .split("\n")
+    .find((line) => line.startsWith(`| ${metric} |`));
+  if (!row) {
+    throw new Error(`docs/scoreboard.md has no row for "${metric}"`);
+  }
+  const cells = row.split("|").map((cell) => cell.trim());
+  const verdict = cells[4];
+  if (!verdict) {
+    throw new Error(`the scoreboard row "${metric}" has no verdict cell`);
+  }
+  return verdict;
+}
+
+/**
+ * The FAQ as one page's Markdown, or an error naming the first answer whose
+ * scoreboard row is not a measured win. This is the owner's rule enforced
+ * where the page is built, so a row that loses its measurement takes its
+ * answer off the site at the next build rather than leaving a stale claim up.
+ * @param {string} scoreboardText the whole docs/scoreboard.md file
+ */
+export function faqMarkdown(scoreboardText) {
+  const parts = [];
+  for (const entry of FAQ) {
+    for (const metric of entry.scoreboard) {
+      const verdict = scoreboardVerdict(scoreboardText, metric);
+      if (verdict !== "win") {
+        throw new Error(
+          `the FAQ answer "${entry.question}" rests on "${metric}", which the scoreboard marks "${verdict}" — ` +
+            "a line whose row is still not yet measured stays out of the published FAQ",
+        );
+      }
+    }
+    parts.push(`## ${entry.question}\n\n${entry.answer}`);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * The substitution table for the {{MARKER}}s the pages use. `extra` carries
+ * the markers built where a file is read (the FAQ needs docs/scoreboard.md,
+ * which this module will not open — it is plain data and pure functions).
+ * @param {Record<string, string>} [extra]
+ */
+export function markerValues(extra = {}) {
+  return {
+    SITE_ORIGIN: SITE.origin,
+    RATE: RATE_LABEL,
+    FREE_USD: dollars(BILLING_CONFIG.freeMonthlyUsd),
+    FREE_GB: String(Math.floor(BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth)),
+    CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
+    CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
+    DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
+    FREE_DOWNLOAD_MULTIPLE: String(BILLING_CONFIG.freeDownloadMultiplier),
+    DOWNLOAD_RATE: `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`,
+    AGENT_TOOLS: AGENT_TOOLS.join(", "),
+    AGENT_CANNOT_DELETE: agentCannotDeleteSentence(),
+    KEY_TABLE: KEY_TABLE,
+    BILL_TABLE: BILL_TABLE,
+    ...extra,
+  };
+}
