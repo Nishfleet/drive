@@ -3,6 +3,7 @@ package main
 import (
 	"html"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -53,12 +54,16 @@ func TestRemoteForTrimsPrefix(t *testing.T) {
 }
 
 func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
-	if _, err := LoadStorageConfig("", "", "", "", "", ""); err == nil {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	if _, err := LoadStorageConfig("", "", "", ""); err == nil {
 		t.Fatal("expected an error when no storage config is given")
 	} else if !strings.Contains(err.Error(), "missing storage config") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "", "", "a", "s")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
+	c, err := LoadStorageConfig("http://x", "b", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,9 +72,40 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	}
 }
 
+// The keys are read from the environment only: a flag would put a device key
+// in `ps` output and the shell history.
+func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
+	c, err := LoadStorageConfig("http://x", "b", "p", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.AccessKey != "envaccess" || c.SecretKey != "envsecret" {
+		t.Errorf("keys = %q/%q, want the environment values", c.AccessKey, c.SecretKey)
+	}
+}
+
+// There is no flag to put a key in, so a key cannot be smuggled in as one.
+func TestMountRefusesAKeyFlag(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
+	out, err := exec.Command(driveBin(t), "mount",
+		"--endpoint", "http://x", "--bucket", "b",
+		"--access-key", "leaked", "--secret-key", "leaked", "--dry-run").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a usage error for the removed key flags, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "flag provided but not defined: -access-key") {
+		t.Errorf("expected a flag-not-defined usage error, got:\n%s", out)
+	}
+}
+
 func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
 	t.Setenv("DRIVE_S3_ENDPOINT", "http://from-env")
-	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "a", "s")
+	c, err := LoadStorageConfig("http://from-flag", "b", "p", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,6 +209,11 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
+	// rclone has no `umount` subcommand; stopping is rclone's own SIGTERM
+	// handling, which is what systemd sends by default.
+	if strings.Contains(unit, "ExecStop") {
+		t.Errorf("systemd unit has an ExecStop line rclone cannot run:\n%s", unit)
+	}
 	// The flag and value must be adjacent on the ExecStart line (not in a comment).
 	execStart := extractExecStart(unit)
 	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", "5s") {
@@ -254,17 +295,31 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 		{"newline in secret", func(c *StorageConfig) { c.SecretKey = "SECRET\nno_check_certificate = true" }},
 		{"cr in endpoint", func(c *StorageConfig) { c.Endpoint = "http://x\r\nprovider = Other" }},
 		{"nul in bucket", func(c *StorageConfig) { c.Bucket = "bucket\x00x" }},
+		{"parent segment in prefix", func(c *StorageConfig) { c.Prefix = "u/1/../2" }},
+		{"prefix above the bucket root", func(c *StorageConfig) { c.Prefix = "../other-device" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testStorage()
 			tc.mutate(&c)
 			// LoadStorageConfig is the gate: feed the mutated value through as
 			// the flag, which wins over env.
-			_, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.AccessKey, c.SecretKey)
-			if err == nil {
+			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", c.AccessKey)
+			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", c.SecretKey)
+			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region); err == nil {
 				t.Fatal("want an error for a value that breaks out of its config line")
 			}
 		})
+	}
+}
+
+// A prefix that only walks down is fine, and an empty one is the whole bucket.
+func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
+	for _, prefix := range []string{"", "/", "u/1", "/u/1/branches/", "u/1/...hidden"} {
+		if _, err := LoadStorageConfig("http://x", "b", prefix, ""); err != nil {
+			t.Errorf("prefix %q rejected: %v", prefix, err)
+		}
 	}
 }
 
@@ -298,5 +353,100 @@ func TestBsdMountHasMountPoint(t *testing.T) {
 		if bsdMountHasMountPoint(listing, dir) {
 			t.Errorf("mount point %q reported mounted but is not a mount point", dir)
 		}
+	}
+}
+
+// `drive mount --dry-run` renders the config it would write; it must never
+// print either device key, so a dry run on a shared screen or in a terminal
+// transcript cannot leak the key even though it was in the environment.
+func TestMountDryRunNeverPrintsAKey(t *testing.T) {
+	const access, secret = "DRYRUNACCESSKEY", "dryrun-secret-value"
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", access)
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
+	out, err := exec.Command(driveBin(t), "mount",
+		"--endpoint", "http://127.0.0.1:1", "--bucket", "drive-dry-run",
+		"--prefix", "u/dryrun", "--home", t.TempDir(), "--dry-run").CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry run failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Errorf("dry-run output carries the secret key:\n%s", out)
+	}
+	if strings.Contains(string(out), access) {
+		t.Errorf("dry-run output carries the access key:\n%s", out)
+	}
+}
+
+// A login item has no shell PATH, so the plan must carry an absolute rclone
+// path (Homebrew's is /opt/homebrew/bin/rclone) rather than a bare name.
+func TestResolveRcloneReturnsAnAbsolutePath(t *testing.T) {
+	got, err := ResolveRclone("")
+	if err != nil {
+		t.Skipf("rclone is not installed on this host: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("ResolveRclone(\"\") = %q, want an absolute path", got)
+	}
+	if got, err := ResolveRclone("rclone"); err != nil || !filepath.IsAbs(got) {
+		t.Errorf("ResolveRclone(\"rclone\") = %q, %v; want an absolute path", got, err)
+	}
+	if _, err := ResolveRclone("rclone-that-is-not-installed"); err == nil {
+		t.Error("a named rclone that is not installed should fail here, not at the next login")
+	}
+	t.Setenv("DRIVE_RCLONE", "rclone")
+	if got, err := ResolveRclone(""); err != nil || !filepath.IsAbs(got) {
+		t.Errorf("DRIVE_RCLONE was ignored: %q, %v", got, err)
+	}
+}
+
+// The launchctl verbs are bootstrap/bootout, not the deprecated load/unload
+// that also fail when the item is already in the requested state.
+func TestLaunchctlUsesBootstrapNotDeprecatedLoad(t *testing.T) {
+	const target = "gui/501"
+	cases := []struct {
+		action string
+		item   string
+		want   string
+	}{
+		{"print", "", "print gui/501/" + LaunchdLabel},
+		{"bootout", "", "bootout gui/501/" + LaunchdLabel},
+		{"bootstrap", "/Users/test/Library/LaunchAgents/" + LaunchdLabel + ".plist",
+			"bootstrap gui/501 /Users/test/Library/LaunchAgents/" + LaunchdLabel + ".plist"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(launchctlArgv(tc.action, target, tc.item), " "); got != tc.want {
+			t.Errorf("launchctlArgv(%q) = %q, want %q", tc.action, got, tc.want)
+		}
+	}
+	for _, gone := range []string{"load", "unload"} {
+		if launchctlArgv(gone, target, "/p.plist") != nil {
+			t.Errorf("deprecated launchctl action %q is still built", gone)
+		}
+	}
+}
+
+// A relative path from LookPath is not usable in a login item, which is not
+// started from a working directory.
+func TestAbsPathMakesARelativeLookPathAbsolute(t *testing.T) {
+	got, err := absPath("./rclone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("absPath(./rclone) = %q, want an absolute path", got)
+	}
+	if got, err := absPath("/usr/bin/rclone"); err != nil || got != "/usr/bin/rclone" {
+		t.Errorf("absPath(/usr/bin/rclone) = %q, %v", got, err)
+	}
+}
+
+// The Linux start path must apply the unit it just wrote, not leave a running
+// unit with the old configuration: enable --now does not restart an active
+// unit, so the caller has to restart.
+func TestMountLinuxRestartsAnAlreadyRunningUnit(t *testing.T) {
+	got := mountSystemctlActions()
+	want := []string{"daemon-reload", "enable", "restart"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("systemctl actions = %v, want %v", got, want)
 	}
 }
