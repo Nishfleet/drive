@@ -2,8 +2,8 @@
 
 > A Finder drive for people and their agents: plain files in object storage,
 > mounted with stock rclone, and billed at 2¢ per GB-month by the minute. The
-> monthly bill never passes $12 for the first TB, then $8 for each TB after.
-> $1 of storage is free every month, no card needed.
+> monthly bill never passes max($12, $8 × TB stored): a flat $12 up to 1.5 TB,
+> then $8 for each TB after. $1 of storage is free every month, no card needed.
 >
 > Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
 
@@ -17,7 +17,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 - Rate: 2¢ per GB per month, billed by the minute, pay only for what you store.
 - Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.
   The monthly bill is min(metered, max($12, $8 × TB stored)), TB measured to the
-  GB, so it never rises above that however full the drive gets.
+  GB, so the cap is a flat $12 up to 1.5 TB and only then rises at $8 a TB.
 - Free: $1 free every month, no card needed to start. That is about 50 GB of
   storage each month, and a card is only needed to go past it.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.

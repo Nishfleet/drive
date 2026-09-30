@@ -7,16 +7,26 @@
 // prebuilt HTML document, not an app that renders a route per request.
 //
 // PRICE, and how it relates to src/pricing.js: the numbers below are the
-// ceiling the site advertises now, 2¢/GB by the minute with the bill never
-// passing max($12, $8 x TB) — "$12 a TB, then $8". That is the rule in
-// docs/spec.md and docs/build-spec.md ("Bill ceiling", Nish 2026-09-30, issue
-// #29) and the price the owner named for these tags in issue #37.
+// ceiling the site advertises now, from docs/spec.md and docs/build-spec.md
+// ("Bill ceiling", Nish 2026-09-30, issue #29):
 //
-// src/pricing.js still carries the superseded per-TB caps ($15 first TB) and
-// is issue #23's to fix; that branch is in flight, so this file deliberately
-// does not import it. The two converge when #23 lands, and the follow-up
-// issue filed with this PR folds these numbers into src/pricing.js then, so
-// the price has one home rather than two.
+//     bill = min(metered, max($12, $8 x peak TB))
+//
+// where the metered rate is 2¢/GB-month billed by the minute. Read that as a
+// plateau, not as per-TB caps: the cap is a flat $12 until the stored size
+// passes 1.5 TB, and only then does it rise at $8 for each TB. So 800 GB bills
+// min(16, 12) = $12, 1.6 TB bills min(32, 12.80) = $12.80, 2 TB bills
+// min(40, 16) = $16, and 5 TB bills min(100, 40) = $40.
+//
+// src/pricing.js still holds the superseded per-TB caps and is issue #23's to
+// fix; that branch is in flight, so this file cannot import it without
+// contradicting it mid-flight. When #23 lands these two collapse into
+// src/pricing.js as the single price home; the follow-up issue filed with this
+// PR carries that, and it names the divergence so nothing hides it.
+const RATE_USD_PER_GB = 0.02;
+const CAP_FLOOR_USD = 12;
+const CAP_USD_PER_TB = 8;
+const FREE_MONTHLY_USD = 1;
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
 const SITE_NAME = "Drive";
 const SITE_TITLE = "Drive — about $20 per TB a month";
@@ -26,18 +36,23 @@ const SITE_DESCRIPTION =
   "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.";
 
 export const BILLING = Object.freeze({
-  // The metered rate, in US dollars per GB per month, carried as a string
-  // because that is the form schema.org documents for a price and it renders
-  // identically here, in the inline JSON-LD and in a Rich Results test.
-  rateUsdPerGbMonth: "0.02",
-  // The bill ceiling: the first TB never passes $12, each TB after never $8.
-  capFirstTbUsd: 12,
-  extraTbUsd: 8,
-  freeMonthlyUsd: 1,
+  // The metered rate, in US dollars per GB per month. Carried as a string
+  // because that is the form schema.org documents for a price, so it renders
+  // identically in the config, in the inline JSON-LD and to a validator.
+  rateUsdPerGbMonth: RATE_USD_PER_GB.toFixed(2),
+  // The cap is max(capFloorUsd, capUsdPerTb x TB): a flat floor until the
+  // stored size passes capFloorUsd / capUsdPerTb TB, then a per-TB slope. The
+  // names say plateau and slope so no reader takes them for per-TB caps.
+  capFloorUsd: CAP_FLOOR_USD,
+  capUsdPerTb: CAP_USD_PER_TB,
+  freeMonthlyUsd: FREE_MONTHLY_USD,
   // Both sentences interpolated from the numbers above, so one edit moves the
   // tags, the JSON-LD and llms.txt together.
-  ceiling: "2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.",
-  freeLine: "$1 free every month, no card needed",
+  ceiling: `2¢ per GB, billed by the minute. Never more than $${CAP_FLOOR_USD} a TB, then $${CAP_USD_PER_TB}.`,
+  freeLine: `$${FREE_MONTHLY_USD} free every month, no card needed`,
+  // The ceiling as arithmetic, for the offer description and llms.txt. Stated
+  // in words as well as symbols because a crawler reads prose, not a formula.
+  rule: `The bill is the metered cost capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): $${CAP_FLOOR_USD} up to ${CAP_FLOOR_USD / CAP_USD_PER_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
 });
 
 export const SITE = Object.freeze({
@@ -53,26 +68,30 @@ export const SITE = Object.freeze({
   llmsPath: "/llms.txt",
 });
 
-/** The URL a crawler treats as canonical, and the one a share card points at. */
-export function canonicalUrl() {
-  return `${SITE.origin}${SITE.homePath}`;
-}
-
-export function ogImageUrl() {
-  return `${SITE.origin}${SITE.ogImagePath}`;
-}
-
-export function sitemapUrl() {
-  return `${SITE.origin}${SITE.sitemapPath}`;
+/**
+ * A site-root-relative path as the absolute URL a crawler reads it at, so a
+ * meta tag, the sitemap and a test never spell an origin out separately.
+ * @param {string} path
+ */
+export function absoluteUrl(path) {
+  return `${SITE.origin}${path}`;
 }
 
 /**
  * The JSON-LD for the pricing page, as a JS object. schema.org's
  * SoftwareApplication carries the price, so a Rich Results test and an
  * AI-answer crawler read the same ceiling the prose states.
+ *
+ * On the shape: a metered product has no single product price, so `price` is
+ * the bill ceiling for one TB-month rather than the 2¢ rate. A bare 0.02 in
+ * `price` would be read as "this whole product costs two cents", which is the
+ * opposite of the page. UnitPriceSpecification carries the unit, and the
+ * description carries the full rule, so nothing in the markup is a bare number
+ * a reader could take at face value.
  * @returns {Record<string, unknown>}
  */
 export function softwareApplicationLd() {
+  const price = BILLING.capFloorUsd.toFixed(2);
   return {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -80,22 +99,19 @@ export function softwareApplicationLd() {
     applicationCategory: "BusinessApplication",
     operatingSystem: "macOS, Linux",
     description: SITE.description,
-    url: canonicalUrl(),
-    image: ogImageUrl(),
+    url: absoluteUrl(SITE.homePath),
+    image: absoluteUrl(SITE.ogImagePath),
     offers: {
       "@type": "Offer",
-      // 2¢ per GB-month, in dollars: schema.org has no "per GB-month" unit, so
-      // UnitPriceSpecification carries the unit and the description names the
-      // ceiling the page advertises.
-      price: BILLING.rateUsdPerGbMonth,
+      price,
       priceCurrency: "USD",
       priceSpecification: {
         "@type": "UnitPriceSpecification",
-        price: BILLING.rateUsdPerGbMonth,
+        price,
         priceCurrency: "USD",
-        unitText: "GB per month",
+        unitText: "TB-month",
       },
-      description: `${BILLING.ceiling} The bill never passes $${BILLING.capFirstTbUsd} for the first TB or $${BILLING.extraTbUsd} for each TB after.`,
+      description: `${BILLING.ceiling} ${BILLING.rule}`,
     },
   };
 }

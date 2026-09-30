@@ -5,18 +5,4 @@
 User-agent: *
 Allow: /
 
-# AI answer engines are welcome to read the page and ground answers on it; the
-# product is early and being found is the point (see /llms.txt).
-User-agent: GPTBot
-Allow: /
-
-User-agent: ClaudeBot
-Allow: /
-
-User-agent: PerplexityBot
-Allow: /
-
-User-agent: Google-Extended
-Allow: /
-
 Sitemap: https://drive-pricing.nishant345.workers.dev/sitemap.xml
