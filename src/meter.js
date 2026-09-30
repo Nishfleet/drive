@@ -291,17 +291,16 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
   }
-  await db.batch([
-    db
-      .prepare(
-        `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, rolled_up_at)
-         VALUES (?1, ?2, ?3, 0, ?4)
-         ON CONFLICT(account_id, hour) DO UPDATE SET
-           gb_minutes_live = excluded.gb_minutes_live,
-           rolled_up_at = excluded.rolled_up_at`,
-      )
-      .bind(accountId, hourStart(hour), gbMinutes, toMillis(now, "now")),
-  ]);
+  await db
+    .prepare(
+      `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, rolled_up_at)
+       VALUES (?1, ?2, ?3, 0, ?4)
+       ON CONFLICT(account_id, hour) DO UPDATE SET
+         gb_minutes_live = excluded.gb_minutes_live,
+         rolled_up_at = excluded.rolled_up_at`,
+    )
+    .bind(accountId, hourStart(hour), gbMinutes, toMillis(now, "now"))
+    .run();
 }
 
 /**
@@ -316,6 +315,10 @@ export async function listMeteredAccounts(db) {
     .prepare("SELECT DISTINCT account_id FROM file_versions ORDER BY account_id")
     .all();
   return (result.results || []).map((row) => {
+    // Not a skipped row and not a silent filter: a version with no account
+    // cannot be billed to anyone, and quietly rolling past it would leave
+    // storage that no rollup ever accounts for. The trigger fails, the
+    // operator sees why, and the row is fixed at the source.
     if (typeof row.account_id !== "string" || row.account_id === "") {
       throw new TypeError("file_versions has a row with no account_id");
     }
@@ -334,26 +337,35 @@ export async function listMeteredAccounts(db) {
  * @returns {string|null}
  */
 export function folderAccount(value) {
-  const match = /(?:^|\/)u\/([^/]+)/.exec(value);
+  // Anchored at the start: the account folder is the root of the key's
+  // prefix, never something that appears mid-path. Without the anchor a path
+  // like /u/alice/notes/u/bob/secret would bill bob's bytes to alice.
+  const match = /^\/?u\/([^/]+)/.exec(value);
   return match === null ? null : match[1];
 }
 
-// The event actions this intake accepts, all mapped to the same effect: store
-// the version the event names. Backblaze words the same lifecycle as several
-// actions ("file created", "file hidden", "file deleted"), and a provider
-// reading its own docs writes another set; what matters to the meter is the
-// version and its times, not the verb. An action outside this table is a 400
-// naming it, never a silent store: billing for a lifecycle we never reasoned
-// about is how a meter drifts.
-export const EVENT_ACTIONS = Object.freeze([
-  "created",
-  "uploaded",
-  "hidden",
-  "deleted",
-  "file created",
-  "file hidden",
-  "file deleted",
-]);
+// The event actions this intake accepts, each mapped to the effect it has on
+// a version row. Backblaze words the same lifecycle as several actions and
+// another provider reading its own docs writes another set, so the table lists
+// the words rather than making the caller translate.
+//
+//   "create" - a version started existing: it needs its creation time.
+//   "hide"   - a version stopped being visible (replaced or removed), which
+//              is where billing for it stops. A true delete lands here too:
+//              a hard-deleted version is not billed, and this product's
+//              hide-not-delete lifecycle means the hard delete comes after
+//              the hide.
+// An action outside this table is a 400 naming it, never a silent store:
+// billing for a lifecycle we never reasoned about is how a meter drifts.
+export const EVENT_ACTIONS = Object.freeze({
+  created: "create",
+  uploaded: "create",
+  "file created": "create",
+  hidden: "hide",
+  "file hidden": "hide",
+  deleted: "hide",
+  "file deleted": "hide",
+});
 
 // A batch of 1000 events at a realistic size sits well under this, and a
 // request over it is refused without being read, the same two layers
@@ -383,7 +395,9 @@ export function validateEvent(input) {
   // The account is read from whichever field carries the key's folder: a
   // provider event may name the key, the file, or both. The stored path is
   // the file's own path when the event has one, and the key's name prefix
-  // when it does not (some providers only name the prefix on a create).
+  // when it does not (some providers only name the prefix on a create). The
+  // folder is read from the root of that path, so a "/u/" deeper in a file's
+  // own name is never taken for an account.
   const named = [input.path, input.keyName].filter(
     (value) => typeof value === "string" && value !== "",
   );
@@ -394,9 +408,9 @@ export function validateEvent(input) {
   if (accountId.length > 128) {
     return { error: "The event's account folder is too long." };
   }
-  // The row's path: the file's path if this event carried one, else the key's
-  // prefix, so the row is never left without a path.
-  const path = named.find((value) => value.startsWith("/u/") || value.includes("/u/")) ?? named[0];
+  // The row's path: the field that resolved the account, so the row is never
+  // left without a path and never carries one that names another account.
+  const path = named.find((value) => folderAccount(value) === accountId) ?? named[0];
   const b2FileId =
     typeof input.b2FileId === "string" ? input.b2FileId.trim() : "";
   if (b2FileId === "" || b2FileId.length > 512) {
@@ -406,14 +420,42 @@ export function validateEvent(input) {
   if (!Number.isInteger(sizeBytes) || sizeBytes < 0) {
     return { error: "The event's size is not a whole number of bytes." };
   }
+  // The event's own time, which is what a hide or delete event carries: the
+  // version's creation time may not be in the event at all, and the instant
+  // the provider saw the change is the honest moment billing stops.
+  const eventTimestamp = input.eventTimestamp;
   let createdAt;
   try {
-    createdAt = toMillis(input.createdAt ?? input.eventTimestamp, "createdAt");
+    createdAt = toMillis(input.createdAt ?? eventTimestamp, "createdAt");
   } catch {
     return { error: "The event has no usable timestamp." };
   }
+  const action =
+    typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
+  const effect = Object.hasOwn(EVENT_ACTIONS, action) ? EVENT_ACTIONS[action] : null;
+  if (effect === null) {
+    return { error: `Unknown storage event action: ${action}` };
+  }
   let hiddenAt = null;
-  if (input.hiddenAt !== undefined && input.hiddenAt !== null && input.hiddenAt !== "") {
+  if (effect === "hide") {
+    // A hide says the version stopped existing, so it has to say when. The
+    // hidden time, or the event's own time, is that instant; a hide with
+    // neither is refused rather than stored as a version that bills forever.
+    const hiddenSource = input.hiddenAt ?? eventTimestamp;
+    if (hiddenSource === undefined || hiddenSource === null || hiddenSource === "") {
+      return { error: "The event does not say when the version stopped being visible." };
+    }
+    try {
+      hiddenAt = toMillis(hiddenSource, "hiddenAt");
+    } catch {
+      return { error: "The event's hidden time is not a timestamp." };
+    }
+    if (hiddenAt < createdAt) {
+      return { error: "The event's hidden time is before the version was written." };
+    }
+  } else if (input.hiddenAt !== undefined && input.hiddenAt !== null && input.hiddenAt !== "") {
+    // A create that already carries a hidden time (a provider that reports a
+    // replaced file in one event) is stored with it.
     try {
       hiddenAt = toMillis(input.hiddenAt, "hiddenAt");
     } catch {
@@ -422,11 +464,6 @@ export function validateEvent(input) {
     if (hiddenAt < createdAt) {
       return { error: "The event's hidden time is before the version was written." };
     }
-  }
-  const action =
-    typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
-  if (!EVENT_ACTIONS.includes(action)) {
-    return { error: `Unknown storage event action: ${action}` };
   }
   // The dedup key. A provider event carries its own id; when the caller has
   // none, the version and its times are the identity: the same version at the
@@ -484,14 +521,45 @@ export async function recordEvent(db, event, now = Date.now()) {
   return { stored: seen > 0 };
 }
 
+// The header the storage provider's event rule sends. The value is a Worker
+// secret binding, never a value in this repo (AGENTS.md: secrets live in the
+// VPS credential store). A request without it, or with the wrong one, is
+// refused before the body is read: this endpoint writes the numbers a bill is
+// worked out from, so an open one would let anyone inflate an account's
+// storage.
+export const EVENT_TOKEN_HEADER = "x-drive-event-token";
+
+/**
+ * Compares a presented token with the configured one without leaking the
+ * secret through timing. A length mismatch returns early, which is a length
+// check and reveals nothing beyond the length; the bytes are then compared
+ * with an accumulator so no single byte's comparison ends the loop early.
+ * @param {unknown} presented
+ * @param {unknown} configured
+ */
+export function tokensMatch(presented, configured) {
+  if (typeof presented !== "string" || typeof configured !== "string") {
+    return false;
+  }
+  if (presented.length !== configured.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let i = 0; i < presented.length; i += 1) {
+    difference |= presented.charCodeAt(i) ^ configured.charCodeAt(i);
+  }
+  return difference === 0;
+}
+
 /**
  * Handles POST /api/storage-events: one event or a provider batch, stored
  * through the dedup. Always returns a Response; never echoes a stored path,
  * an id or an error stack back to the caller.
  * @param {Request} request
  * @param {D1Database|undefined} db
+ * @param {string|undefined} eventToken the configured secret
  */
-export async function handleStorageEventRequest(request, db) {
+export async function handleStorageEventRequest(request, db, eventToken) {
   if (request.method !== "POST") {
     return new Response("Method not allowed. POST a storage event here.", {
       status: 405,
@@ -504,6 +572,18 @@ export async function handleStorageEventRequest(request, db) {
     // name, like the waitlist's missing-binding path.
     console.error("meter: METER_DB binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
+  }
+  // The token is checked before the body is read, and a missing secret fails
+  // closed: an unconfigured binding must never leave an endpoint that writes
+  // billing rows open to whoever finds the path.
+  if (typeof eventToken !== "string" || eventToken === "") {
+    console.error("meter: METER_EVENT_TOKEN binding is not configured");
+    return json({ error: "The meter cannot reach its database right now." }, 503);
+  }
+  if (!tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken)) {
+    // One sentence, no echo of what was presented: a wrong token is a caller
+    // with a stale or misconfigured event rule, and its text is not a hint.
+    return json({ error: "The event could not be accepted from this caller." }, 401);
   }
   let parsed;
   try {

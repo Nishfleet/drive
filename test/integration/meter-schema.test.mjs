@@ -37,7 +37,7 @@ const midnight = () => at("2026-09-30T00:00:00.000Z");
 const migrationsDir = new URL("../../migrations/", import.meta.url);
 const migrationFiles = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
-  .sort();
+  .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
 
 function applyMigrations(sqlite) {
   for (const name of migrationFiles) {

@@ -36,6 +36,11 @@ export default defineConfig({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",
 			}),
+			// The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
+			// from a Worker secret. The secret binding declares the name so the
+			// runtime knows to inject it; a missing secret produces a warning at
+			// dev/deploy, and the handler fails closed with 503 until it is set.
+			METER_EVENT_TOKEN: bindings.secret(),
 			// drive issue #28: bound the waitlist endpoint. Five sign-ups a
 			// minute per client IP is far above a person's pace and far below
 			// what a script needs to enumerate addresses or fill the table.

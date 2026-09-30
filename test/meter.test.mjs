@@ -25,6 +25,7 @@ import {
   MINUTE_MS,
   MINIMUM_MINUTES_PER_VERSION,
   METER_CRON,
+  EVENT_TOKEN_HEADER,
   folderAccount,
   gbMinutesInHour,
   handleStorageEventRequest,
@@ -36,6 +37,7 @@ import {
   runMeterCron,
   toMillis,
   toVersion,
+  tokensMatch,
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
@@ -47,6 +49,11 @@ const at = (iso) => Date.parse(iso);
 // How the fake keys its rows, so a test can look one up by name.
 const versionKey = (accountId, b2FileId) => `${accountId}|${b2FileId}`;
 const usageKey = (accountId, hour) => `${accountId}|${hour}`;
+
+// The shared secret the storage provider's event rule sends. The value itself
+// never ships: the tests use one of their own, and the real one is a Worker
+// secret.
+const TOKEN = "test-event-token";
 
 // --- A fake D1 that speaks the meter's SQL -------------------------------
 
@@ -348,6 +355,13 @@ test("the account comes from the key's own folder, and an event without one is r
   assert.equal(folderAccount("/u/abc123/dir/f.txt"), "abc123");
   assert.equal(folderAccount("someone-elses-key"), null);
   assert.equal(folderAccount("/u/"), null);
+  // Anchored: a folder that appears mid-path is not an account root, or a
+  // file of alice's sitting in a bob-named subfolder would bill bob's bytes
+  // to whoever the inner name belongs to.
+  assert.equal(folderAccount("/home/alice/u/bob/secret"), null);
+  // The root decides: a deeper /u/ is part of the file's own path and never
+  // moves the account.
+  assert.equal(folderAccount("/u/alice/notes/u/bob/secret"), "alice");
   assert.equal(validateEvent(event({ keyName: "/root/not-our-key", path: "/root/not-our-key" })).error,
     "The event does not name an account folder under /u/.");
 });
@@ -378,6 +392,7 @@ test("an event with a bad field is refused with one sentence, never a stack", ()
       "The event's hidden time is before the version was written.",
     ],
     [event({ action: "exploded" }), "Unknown storage event action: exploded"],
+    [event({ action: "deleted", hiddenAt: null }), "The event does not say when the version stopped being visible."],
     [event({ b2FileId: "x".repeat(600) }), "The event does not name a file version."],
     [event({ keyName: `/u/${"a".repeat(200)}/x`, path: `/u/${"a".repeat(200)}/x` }),
       "The event's account folder is too long."],
@@ -411,10 +426,37 @@ test("the accepted actions are the storage lifecycle, and the list is pinned", (
   // The provider words this lifecycle several ways; a caller that uses one of
   // them is understood, and a caller that invents one is refused rather than
   // stored.
-  for (const action of ["created", "uploaded", "hidden", "deleted", "file created", "FILE HIDDEN"]) {
+  for (const action of ["created", "uploaded", "file created"]) {
     assert.equal(validateEvent(event({ action })).error, undefined, action);
   }
-  assert.deepEqual([...EVENT_ACTIONS].sort(), [
+  // A hide is a hide whichever way it is spelled, and it has to say when the
+  // version stopped.
+  for (const action of ["hidden", "deleted", "file hidden", "file deleted"]) {
+    const parsed = validateEvent(
+      event({ action, hiddenAt: midnight() + 30 * MINUTE_MS }),
+    );
+    assert.equal(parsed.error, undefined, action);
+    assert.equal(parsed.hiddenAt, midnight() + 30 * MINUTE_MS);
+    // Without a time, a hide would be stored as a version that bills forever,
+    // so it is refused instead.
+    assert.equal(
+      validateEvent(event({ action, hiddenAt: null })).error,
+      "The event does not say when the version stopped being visible.",
+      action,
+    );
+  }
+  // A hide that names only its own time (some providers report a replacement
+  // in one event, with no creation time) is stored against that time.
+  const reportedLate = validateEvent({
+    keyName: "/u/abc123/",
+    b2FileId: "file-9",
+    sizeBytes: GB,
+    action: "file hidden",
+    eventTimestamp: midnight() + 45 * MINUTE_MS,
+  });
+  assert.equal(reportedLate.createdAt, midnight() + 45 * MINUTE_MS);
+  assert.equal(reportedLate.hiddenAt, midnight() + 45 * MINUTE_MS);
+  assert.deepEqual(Object.keys(EVENT_ACTIONS).sort(), [
     "created",
     "deleted",
     "file created",
@@ -424,6 +466,7 @@ test("the accepted actions are the storage lifecycle, and the list is pinned", (
     "uploaded",
   ]);
   assert.equal(validateEvent(event({ action: undefined })).error, undefined);
+  assert.equal(validateEvent(event({ action: "exploded" })).error, "Unknown storage event action: exploded");
 });
 
 // --- The dedup -----------------------------------------------------------
@@ -556,10 +599,10 @@ test("the intake stores a post and answers with counts, not with stored data", a
   const request = () =>
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", [EVENT_TOKEN_HEADER]: TOKEN },
       body: JSON.stringify(event()),
     });
-  const first = await handleStorageEventRequest(request(), db);
+  const first = await handleStorageEventRequest(request(), db, TOKEN);
   assert.equal(first.status, 200);
   const body = await first.json();
   // The reply says how many events landed and how many were repeats, and
@@ -567,7 +610,7 @@ test("the intake stores a post and answers with counts, not with stored data", a
   // the reply is a confirmation, not a read.
   assert.deepEqual(body, { ok: true, stored: 1, deduped: 0 });
   assert.equal(db.tables.file_versions.size, 1);
-  const repeat = await (await handleStorageEventRequest(request(), db)).json();
+  const repeat = await (await handleStorageEventRequest(request(), db, TOKEN)).json();
   assert.deepEqual(repeat, { ok: true, stored: 0, deduped: 1 });
 });
 
@@ -581,16 +624,17 @@ test("a provider batch is stored event by event, and a re-sent batch is free", a
   const post = () =>
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
       body: JSON.stringify(batch),
     });
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db)).json(), {
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
     ok: true,
     stored: 3,
     deduped: 0,
   });
   // The provider retries the batch after a timeout. Every event is a repeat,
   // so nothing is stored twice and no byte is counted twice.
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db)).json(), {
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
     ok: true,
     stored: 0,
     deduped: 3,
@@ -602,25 +646,66 @@ test("a provider batch is stored event by event, and a re-sent batch is free", a
 test("the intake refuses what it cannot bill, and says why in one sentence", async () => {
   const db = makeFakeD1();
   const post = (body) =>
-    new Request("https://drive.example/api/storage-events", { method: "POST", body });
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body,
+    });
 
   // Not a POST: the method is named in the Allow header, like the waitlist.
   const wrongMethod = await handleStorageEventRequest(
     new Request("https://drive.example/api/storage-events"),
     db,
+    TOKEN,
   );
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.headers.get("allow"), "POST");
 
+  // No token at all, and the wrong token: both refused before the body is
+  // read, because this endpoint writes the numbers a bill comes from.
+  assert.equal(
+    (await (
+      await handleStorageEventRequest(
+        new Request("https://drive.example/api/storage-events", {
+          method: "POST",
+          body: JSON.stringify(event()),
+        }),
+        db,
+        TOKEN,
+      )
+    ).json()).error,
+    "The event could not be accepted from this caller.",
+  );
+  assert.equal(
+    (await (
+      await handleStorageEventRequest(
+        new Request("https://drive.example/api/storage-events", {
+          method: "POST",
+          headers: { [EVENT_TOKEN_HEADER]: `${TOKEN}-wrong` },
+          body: JSON.stringify(event()),
+        }),
+        db,
+        TOKEN,
+      )
+    ).json()).error,
+    "The event could not be accepted from this caller.",
+  );
+  // A deployment with no token configured fails closed: 503, and no event
+  // stored even though the caller presented a token.
+  const unconfigured = await handleStorageEventRequest(post(JSON.stringify(event())), db, undefined);
+  assert.equal(unconfigured.status, 503);
+  assert.equal(unconfigured.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(db.tables.file_versions.size, 0);
+
   // Not JSON.
-  assert.equal((await (await handleStorageEventRequest(post("{oops"), db)).json()).error,
+  assert.equal((await (await handleStorageEventRequest(post("{oops"), db, TOKEN)).json()).error,
     "The request body is not valid JSON.");
   // A body that is not an event at all: a string is a caller's mistake, and
   // coercing it into a list is how an event gets billed to the wrong account.
-  assert.equal((await (await handleStorageEventRequest(post('"nope"'), db)).json()).error,
+  assert.equal((await (await handleStorageEventRequest(post('"nope"'), db, TOKEN)).json()).error,
     "Send one storage event as a JSON object.");
   // An empty batch.
-  assert.equal((await (await handleStorageEventRequest(post("[]"), db)).json()).error,
+  assert.equal((await (await handleStorageEventRequest(post("[]"), db, TOKEN)).json()).error,
     "The batch has no events in it.");
   // One bad event refuses the whole batch: a half-stored batch is a batch the
   // provider cannot tell from a good one, and it would bill half a day's
@@ -628,6 +713,7 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   const mixed = await handleStorageEventRequest(
     post(JSON.stringify([event({ eventId: "ok-1" }), event({ eventId: "bad", action: "exploded" })])),
     db,
+    TOKEN,
   );
   assert.equal(mixed.status, 400);
   assert.equal((await mixed.json()).error, "Unknown storage event action: exploded");
@@ -636,19 +722,30 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   const huge = await handleStorageEventRequest(
     post(JSON.stringify(event({ b2FileId: "x".repeat(300 * 1024) }))),
     db,
+    TOKEN,
   );
   assert.equal(huge.status, 413);
   assert.equal(db.tables.events_seen.size, 0);
   // A storage failure is a 503 and the reason stays in the log.
   const broken = { prepare: () => { throw new Error("D1 is down"); } };
-  const failed = await handleStorageEventRequest(post(JSON.stringify(event())), broken);
+  const failed = await handleStorageEventRequest(post(JSON.stringify(event())), broken, TOKEN);
   assert.equal(failed.status, 503);
   assert.equal((await failed.json()).error, "The event could not be stored.");
   // A missing binding is an operator problem, named in the log and not in the
   // reply.
-  const unbound = await handleStorageEventRequest(post(JSON.stringify(event())), undefined);
+  const unbound = await handleStorageEventRequest(post(JSON.stringify(event())), undefined, TOKEN);
   assert.equal(unbound.status, 503);
   assert.equal((await unbound.json()).error, "The meter cannot reach its database right now.");
+});
+
+test("the token compare is constant-shape and never a prefix match", () => {
+  assert.equal(tokensMatch(TOKEN, TOKEN), true);
+  assert.equal(tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
+  assert.equal(tokensMatch(TOKEN.slice(0, -1), TOKEN), false, "a prefix is not the token");
+  assert.equal(tokensMatch("", TOKEN), false);
+  assert.equal(tokensMatch(undefined, TOKEN), false);
+  assert.equal(tokensMatch(TOKEN, undefined), false);
+  assert.equal(tokensMatch(TOKEN, ""), false);
 });
 
 test("the hourly trigger rolls the hour that just closed, for every account", async () => {
@@ -721,9 +818,10 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   const posted = await worker.fetch(
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
       body: JSON.stringify(event()),
     }),
-    { METER_DB: db },
+    { METER_DB: db, METER_EVENT_TOKEN: TOKEN },
   );
   assert.equal(posted.status, 200);
   assert.equal(db.tables.file_versions.size, 1);

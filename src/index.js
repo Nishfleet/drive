@@ -17,14 +17,15 @@ export default {
         env.WAITLIST_RATE_LIMITER,
       );
     }
-    // The meter's event intake (issue #6). The storage provider's webhook
-    // lands here; the dedup in src/meter.js makes the provider's own retries
-    // safe, so no rate limiter is bound to this path.
+    // The meter's event intake (issue #6). The storage provider's event rule
+    // lands here with the shared token in a header; the dedup in
+    // src/meter.js makes the provider's own retries safe, so no rate limiter
+    // is bound to this path.
     if (
       url.pathname === "/api/storage-events" ||
       url.pathname === "/api/storage-events/"
     ) {
-      return handleStorageEventRequest(request, env.METER_DB);
+      return handleStorageEventRequest(request, env.METER_DB, env.METER_EVENT_TOKEN);
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
