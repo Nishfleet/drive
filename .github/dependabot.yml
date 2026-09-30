@@ -2,11 +2,20 @@
 # .github/workflows/**; Dependabot keeps both the SHAs and the version
 # comments current.
 #
+# npm carries two prerelease specs, both pinned exactly in package.json and
+# matched by a package-lock.json entry with integrity:
+#   @cloudflare/vite-plugin 2.0.0-beta.sha-ad79608dd — the 2.0 prerelease the
+#     floating `beta` dist-tag already resolved to on 2026-09-30. Pinning the
+#     version records the choice; the tag alone left it unstated and floating.
+#   cf ^1.0.0-beta.5 — the `cf` CLI has no stable release (its `latest` tag is
+#     itself 1.0.0-beta.6), so the range stays and Dependabot moves it.
+# Dependabot's own version-update PRs keep both current.
+#
 # Minor and patch version updates land as one grouped PR per ecosystem.
 # Security updates are deliberately ungrouped: a group with no
 # `applies-to: security-updates` applies to version updates only.
-# The 7-day cooldown holds a new release back long enough for a malicious
-# or broken publish to be withdrawn before Dependabot proposes it.
+# The 7-day cooldown holds a new version-update release back long enough for a
+# malicious or broken publish to be withdrawn before Dependabot proposes it.
 version: 2
 updates:
   - package-ecosystem: npm

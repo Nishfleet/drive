@@ -4,7 +4,9 @@ Template for new Node/JS repos. Already wired to the canonical reusable CI in
 [nish3451/shared-workflows](https://github.com/nish3451/shared-workflows) — the
 CI standard applies by construction, with no per-repo setup.
 
-Dependency PRs (Dependabot, `.github/dependabot.yml`) merge on green CI.
+Dependency PRs (Dependabot, `.github/dependabot.yml`) are non-draft, so
+`.github/workflows/auto-merge-arm.yml` arms them and they land once the
+required checks are green.
 
 ## Use it
 
