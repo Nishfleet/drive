@@ -75,7 +75,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 |---|---|
 | Sign in | Email one-time code, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
-| Usage | One "you saved" line, two copies (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
+| Usage | One "you saved" line, whose copy varies by month type (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
