@@ -269,6 +269,12 @@ button:disabled {
     <p class="free">No card asked. $1 free every month, no card needed</p>
 
     <div class="card">
+      <!-- Not Django: this is a static asset, and the route it posts to is not
+           a cookie-authenticated form handler that trusts the browser.
+           Whatever cookie a session later carries is set by POST /api/signin,
+           which refuses a request another origin made (isSameOriginRequest,
+           src/email-send.js), so a token in the markup would protect nothing. -->
+      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
       <form id="signin-form" action="/api/signin" method="post">
         <label for="email">Email</label>
         <div class="field-row">
