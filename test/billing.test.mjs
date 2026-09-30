@@ -1,13 +1,15 @@
-// Tests for the month's money (drive issue #7, build step 6).
+// Tests for the month's money (drive issue #7, build step 6; issue #76).
 //
-// The acceptance cases are Nish's own six figures, from his 2026-09-30 comment
-// on the issue ("Tests: 400 GB -> $8, 800 GB -> $12, 1.3 TB -> $12, 1.6 TB ->
-// $12.80, 2 TB -> $16, 5 TB -> $40"), each for data held all month, which is
-// the only case where the metered bill and the peak size are the same number.
-// The rest covers what the issue also asks for: the ceiling applied at invoice
-// time so Dodo is never sent the uncapped meter, the cap counting
-// min(metered, ceiling) so a default account is never cut off early, the two
-// "you saved" lines, the free downloads, and the endpoint the usage page reads.
+// The acceptance cases are Nish's own six storage figures, from his 2026-09-30
+// comment on the issue ("Tests: 400 GB -> $8, 800 GB -> $12, 1.3 TB -> $12,
+// 1.6 TB -> $12.80, 2 TB -> $16, 5 TB -> $40"), each for data held all month,
+// which is the only case where the metered storage and the peak size are the
+// same number. Issue #76 adds the month's totals those storage lines produce
+// once the free $1 credit comes off, plus the download line and the invoice
+// lines, in the four tests below the original twelve. The rest covers what the
+// issue also asks for: the cap counting min(metered, ceiling) so a default
+// account is never cut off early, the two "you saved" lines, the free
+// downloads, and the endpoint the usage page reads.
 //
 // The saved line and the $12 default cap come from the orchestrator's decision
 // on 2026-09-30 (issue #39), which resolved the question docs/build-spec.md
@@ -26,7 +28,8 @@ import {
   downloadCostUsd,
   handleUsageRequest,
   meteredMonthlyBillUsd,
-  monthlyBillUsd,
+  monthBillCents,
+  monthlyStorageBillUsd,
   monthlyCeilingUsd,
   savedLine,
   usageSummary,
@@ -37,8 +40,13 @@ import {
 const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
-test("the six figures Nish named, for data held all month", () => {
-  // month = min(2¢/GB x GB, max($12, $8 x peak TB)), peak TB to the GB.
+/** The same dollars the module formats, for a label assertion. */
+const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+test("the six storage figures Nish named, for data held all month", () => {
+  // The storage line of monthBillCents(): min(2¢/GB x GB, max($12, $8 x peak
+  // TB)), peak TB to the GB. Issue #76's totals take the free $1 credit off
+  // these (below).
   const cases = [
     [400, 8],
     [800, 12],
@@ -50,7 +58,7 @@ test("the six figures Nish named, for data held all month", () => {
   for (const [gb, expected] of cases) {
     const gbMinutes = fullMonthGbMinutes(gb);
     assert.equal(
-      monthlyBillUsd(gbMinutes, gb),
+      monthlyStorageBillUsd(gbMinutes, gb),
       expected,
       `${gb} GB held all month bills $${expected}`,
     );
@@ -89,11 +97,11 @@ test("the bill is the meter below the ceiling, the ceiling above it", () => {
   // 300 GB held all month: metered $6, ceiling $12, so the bill is the meter.
   const metered = meteredMonthlyBillUsd(fullMonthGbMinutes(300));
   assert.equal(metered, 6);
-  assert.equal(monthlyBillUsd(fullMonthGbMinutes(300), 300), 6);
-  // 2 TB held all month: metered $40, ceiling $16, so Dodo is sent $16, never
-  // the $40. The ceiling is applied at invoice time.
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(300), 300), 6);
+  // 2 TB held all month: metered $40, ceiling $16, so the storage line is
+  // $16, never the $40; the bill Dodo gets is monthBillCents().totalCents.
   assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(2000)), 40);
-  assert.equal(monthlyBillUsd(fullMonthGbMinutes(2000), 2000), 16);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(2000), 2000), 16);
 });
 
 test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
@@ -101,7 +109,7 @@ test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
   // month is 3/30.44 of the time, so the bill is well under the $12 ceiling
   // and the meter is what the person pays.
   const threeDaysMinutes = fullMonthGbMinutes(500) * (3 / 30.44);
-  const bill = monthlyBillUsd(threeDaysMinutes, 500);
+  const bill = monthlyStorageBillUsd(threeDaysMinutes, 500);
   assert.ok(bill > 0.9 && bill < 1.1, `500 GB for 3 days is about $1, got ${bill}`);
 });
 
@@ -255,7 +263,11 @@ test("the usage summary is the empty month before the meter lands", () => {
 });
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"));
+  const account = { id: "1", name: "Your drive" };
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -265,6 +277,7 @@ test("the usage endpoint answers the empty month, and names its one method", asy
 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
+    account,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");
@@ -272,15 +285,193 @@ test("the usage endpoint answers the empty month, and names its one method", asy
 
 test("the Worker routes the usage read to the handler", async () => {
   // /api/* runs the Worker, so an unrouted path would fall through to the
-  // assets and 404 on every read of the usage page.
+  // assets and 404 on every read of the usage page. The handler's gate answers
+  // 401 with no sign-in flow yet (issue #73), which is what proves the route
+  // reached the handler rather than the asset layer.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/usage", "/api/usage/"]) {
     const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
-    assert.equal(response.status, 200, `${path} must reach the handler`);
-    const body = await response.json();
-    assert.equal(body.billUsd, 0);
+    assert.equal(response.status, 401, `${path} must reach the handler`);
   }
   // A stray path is still the asset layer's 404, not a hand-rolled page.
   const asset = await worker.fetch(new Request("https://drive.test/nope"), env);
   assert.equal(asset.status, 200);
+});
+
+// --- Issue #76: the bill takes off the $1 free credit and adds download
+// charges, worked out in one function that returns integer cents ------------
+
+test("the month's bill in cents: storage under the ceiling, minus the $1 credit", () => {
+  // The five figures issue #76 names, for data held all month. Storage is
+  // min(metered, max($12, $8 x peak TB)) exactly as before; the free $1 then
+  // comes off the total, which is never below zero:
+  //   30 GB   metered 60c  - $1 -> $0 (the credit floors it, never a refund)
+  //   400 GB  metered 800c - $1 -> $7
+  //   800 GB  metered 1600c capped at the $12 plateau, - $1 -> $11
+  //   2 TB    metered 4000c capped at $16, - $1 -> $15
+  //   5 TB    metered 10000c capped at $40, - $1 -> $39
+  const cases = [
+    [30, 60, 0],
+    [400, 800, 700],
+    [800, 1200, 1100],
+    [2000, 1600, 1500],
+    [5000, 4000, 3900],
+  ];
+  for (const [gb, storageCents, totalCents] of cases) {
+    const bill = monthBillCents({ gbMinutes: fullMonthGbMinutes(gb), peakGb: gb });
+    assert.equal(bill.storageCents, storageCents, `${gb} GB of storage`);
+    assert.equal(bill.downloadCents, 0, `${gb} GB month with no downloads`);
+    assert.equal(bill.creditCents, 100, "the free $1 is a line of its own");
+    assert.equal(bill.totalCents, totalCents, `${gb} GB held all month bills ${usd(totalCents)}`);
+  }
+});
+
+test("downloads at 4x stored add 1c a GB, on top of the capped storage", () => {
+  // 100 GB held all month: 200c of storage, so $1.00 after the credit.
+  const stored = { gbMinutes: fullMonthGbMinutes(100), peakGb: 100 };
+  const quiet = monthBillCents(stored);
+  assert.equal(quiet.totalCents, 100);
+  // 400 GB downloaded against 100 GB of average storage: 300 GB free, 100 GB
+  // billable at 1c a GB = 100c on top.
+  const busy = monthBillCents({ ...stored, downloadBytes: 400e9, averageStoredGb: 100 });
+  assert.equal(busy.downloadCents, 100, "the 100 GB above the free 3x");
+  assert.equal(busy.storageCents, quiet.storageCents, "downloads do not move storage");
+  assert.equal(busy.totalCents, 200, "$1.00 storage + $1.00 downloads - the $1 credit");
+  // A GB for a GB: each GB above the free 3x is exactly one more cent.
+  for (const gb of [400, 401, 500, 1600]) {
+    const bill = monthBillCents({ ...stored, downloadBytes: gb * 1e9, averageStoredGb: 100 });
+    assert.equal(bill.downloadCents, gb - 300, `${gb} GB downloaded`);
+  }
+  // The ceiling caps storage only (build-spec.md "Bill ceiling" is the
+  // storage formula; downloads are their own line in "How the money is worked
+  // out"), so downloads ride on top of it: 2 TB pinned at $16 of storage,
+  // plus 2 TB of billable downloads.
+  const capped = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(2000),
+    peakGb: 2000,
+    downloadBytes: 8000e9,
+    averageStoredGb: 2000,
+  });
+  assert.equal(capped.storageCents, 1600, "storage is still capped at $16");
+  assert.equal(capped.downloadCents, 2000, "8 TB downloaded, 6 TB free, 2 TB billable");
+  assert.equal(capped.totalCents, 3500, "$16.00 + $20.00 - the $1 credit");
+});
+
+test("the bill never goes below zero, and the credit is a dollar line", () => {
+  // 10 GB all month is 20c of storage against a $1 credit: the customer owes
+  // $0.00, never -$0.80.
+  const bill = monthBillCents({ gbMinutes: fullMonthGbMinutes(10), peakGb: 10 });
+  assert.equal(bill.storageCents, 20);
+  assert.equal(bill.totalCents, 0);
+  // The invoice lines are separate: storage, downloads, and the free credit
+  // shown as a dollar line (build-spec.md, "Free credit": in dollars, never
+  // as credits or points).
+  assert.deepEqual(
+    bill.lines.map((line) => [line.label, line.usd]),
+    [
+      ["Storage", "$0.20"],
+      ["Downloads", "$0.00"],
+      ["Free credit", "-$1.00"],
+    ],
+  );
+  // The lines are storage + downloads - the credit, and the bill is that sum
+  // floored at zero.
+  const sum = bill.lines.reduce((total, line) => total + line.cents, 0);
+  assert.equal(sum, -80, "the lines add to -80c before the floor");
+  assert.equal(bill.totalCents, Math.max(0, sum));
+});
+
+test("every line is integer cents, whatever the meter recorded", () => {
+  for (const gbMinutes of [0, 1, 37, 21900, 43800, 1234567]) {
+    for (const peakGb of [0, 1, 733, 1600, 5321]) {
+      const bill = monthBillCents({
+        gbMinutes,
+        peakGb,
+        downloadBytes: 987654321,
+        averageStoredGb: 42.7,
+      });
+      for (const key of ["storageCents", "downloadCents", "creditCents", "totalCents"]) {
+        assert.equal(Number.isInteger(bill[key]), true, `${key} is ${bill[key]}`);
+      }
+      for (const line of bill.lines) {
+        assert.equal(Number.isInteger(line.cents), true, `${line.label} is ${line.cents}`);
+      }
+      assert.ok(bill.totalCents >= 0, "the bill is never negative");
+    }
+  }
+  // Bad rollups are named, the way the rest of the module names them. The two
+  // download inputs are optional (a storage-only call is the cap's own use),
+  // so undefined means zero; every other bad value is refused.
+  for (const bad of [Number.NaN, -1, "600", null]) {
+    assert.throws(() => monthBillCents({ gbMinutes: bad, peakGb: 0 }), TypeError);
+    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: bad }), TypeError);
+    assert.throws(
+      () => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: bad }),
+      TypeError,
+    );
+    assert.throws(
+      () => monthBillCents({ gbMinutes: 0, peakGb: 0, averageStoredGb: bad }),
+      TypeError,
+    );
+  }
+  assert.throws(() => monthBillCents({ gbMinutes: undefined, peakGb: 0 }), TypeError);
+  assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: undefined }), TypeError);
+  // The free 3x allowance is the average stored size: a paired download and
+  // average, or neither, but never download bytes against no stored average,
+  // which would silently charge every downloaded byte.
+  assert.throws(
+    () => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: 1e9, averageStoredGb: 0 }),
+    /averageStoredGb/,
+  );
+  // Omitting the download inputs is a month with no downloads, not an error.
+  const storageOnly = monthBillCents({ gbMinutes: fullMonthGbMinutes(400), peakGb: 400 });
+  assert.equal(storageOnly.downloadCents, 0);
+  assert.equal(
+    storageOnly.totalCents,
+    monthBillCents({
+      gbMinutes: fullMonthGbMinutes(400),
+      peakGb: 400,
+      downloadBytes: 0,
+      averageStoredGb: 0,
+    }).totalCents,
+  );
+});
+
+test("the usage page and the cap check read this one function", () => {
+  // Four months mixing storage above and below the ceiling with heavy and no
+  // downloads, so a surface that worked the money out a second way is caught
+  // in either. (The Dodo push is issue #51, not built here; what this issue
+  // ships it is the function itself: totalCents, in whole cents, the amount
+  // the push sends.)
+  for (const [storedGb, downloadGb] of [
+    [30, 0],
+    [400, 0],
+    [800, 4000],
+    [2000, 5000],
+  ]) {
+    const usage = {
+      gbMinutes: fullMonthGbMinutes(storedGb),
+      peakGb: storedGb,
+      storedGb,
+      storedDaily: [],
+      downloadBytes: downloadGb * 1e9,
+      averageStoredGb: storedGb,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+    };
+    const bill = monthBillCents(usage);
+    // The usage page: the cost it shows is this function's total, and the
+    // summary carries the function's own cents so nothing re-derives them.
+    const summary = usageSummary(usage);
+    assert.equal(summary.billUsd, bill.totalCents / 100);
+    assert.deepEqual(summary.billCents, bill, "the summary carries the one function's result");
+    assert.equal(summary.labels.cost, usd(bill.totalCents));
+    // The cap check counts the storage line the spec names ("the cap counts
+    // min(metered so far, ceiling)"), read from this function too, not from a
+    // second copy of the min/max.
+    assert.equal(
+      capStatus(usage.gbMinutes, usage.peakGb, BILLING_CONFIG.defaultCapUsd).countedUsd,
+      bill.storageCents / 100,
+    );
+  }
 });
