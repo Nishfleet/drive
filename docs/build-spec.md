@@ -98,6 +98,8 @@ Agents that run on a server rather than the laptop get an S3 key instead (`drive
 
 The storage secret is never read from a command line, where it would sit in the shell history and in `ps` for every user on the machine. `drive mount` reads it from the drive config file (`~/.config/drive/rclone.conf`, mode 0600), from `DRIVE_S3_SECRET_ACCESS_KEY`, or from stdin with `--secret-key-stdin`. The `--secret-key` flag is refused with an error naming these three ways.
 
+When a revoke fails, `drive logout` records the access key id of the key it could not turn off (never the secret) and every later `logout` keeps reporting that a key is live until that exact key is revoked. So signing in again with a new key, then logging out and revoking the new key, still reports the older key — the exit code is non-zero while any recorded key is still live, never a clean sign-out.
+
 Each tool also gets a short skill note: where the drive is, that deletes can be undone, and to use `drive branch` before large edits. Exact command syntax is checked against each tool's current docs in build step 4.
 
 ## Data model (D1)
