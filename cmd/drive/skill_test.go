@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -405,5 +406,109 @@ func TestConnectFailsLoudlyWhenTheSkillCannotBeWritten(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "skill note") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestConnectWritesTheSkillNoteBeforeRegistering pins the ordering: the note
+// is written first, so a registration that fails afterwards still leaves the
+// note in place -- the silent gap the note exists to close is a tool that is
+// registered and unexplained, and the note must outlive the registration.
+func TestConnectWritesTheSkillNoteBeforeRegistering(t *testing.T) {
+	env, runner := testEnv(t)
+	runner.fail = errors.New("tool refused")
+	env = env.withDefaults()
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err == nil {
+		t.Fatal("expected the registration failure to fail the connect")
+	}
+	path, _ := tool.SkillPath(env)
+	text := readFile(t, path)
+	for _, want := range []string{skillBegin, env.DriveDir} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the note is missing %q after a failed registration:\n%s", want, text)
+		}
+	}
+}
+
+// TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock: the rewrite path
+// (planSkill) preserves text between the drive's frontmatter and its block, so
+// revoke must preserve the same span. Dropping it there would delete text the
+// user wrote.
+func TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	header := skillHeader(tool.Name)
+	const mine = "## Between the markers\n\nuser text, keep me\n"
+	writeFile(t, path, header+skillBegin+"\n"+skillEnd+"\n"+mine)
+	if err := tool.Revoke(env); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); got != mine {
+		t.Fatalf("revoke changed the user's text between the markers:\n%q\nwant\n%q", got, mine)
+	}
+	// What is left after the revoke is the user's own text at the drive's own
+	// name, so a reconnect refuses it as a collision rather than gobbling it:
+	// the same rule as a file the drive never wrote.
+	if err := tool.Connect(env); err == nil {
+		t.Fatal("expected the connect to refuse the user's text as a collision")
+	}
+	if got := readFile(t, path); got != mine {
+		t.Fatalf("the collision failed the connect but changed the user's text:\n%q", got)
+	}
+}
+
+// TestWriteSkillRefusesASecondDriveBlock: a file that somehow holds two drive
+// blocks is not a file the drive wrote (a partial revoke or a manual paste),
+// and rewriting only the first would leave the second, so it is refused as a
+// collision instead of being rewritten.
+func TestWriteSkillRefusesASecondDriveBlock(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	first := readFile(t, path)
+	pasted := first + "\n" + skillBegin + "\nstale copy\n" + skillEnd + "\n"
+	writeFile(t, path, pasted)
+	if err := writeSkill(env, tool, path); err == nil {
+		t.Fatal("expected a second drive block to be refused")
+	}
+	if got := readFile(t, path); got != pasted {
+		t.Fatalf("the file was rewritten when it should have been refused:\n%s", got)
+	}
+}
+
+// TestRevokeKeepsUserTextAfterTheEndMarker: the same user text survives a
+// revoke as survives a rewrite, so the user's notes outlive the note.
+func TestRevokeKeepsUserTextAfterTheEndMarker(t *testing.T) {
+	env, _ := testEnv(t)
+	tool, err := toolByName("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Connect(env); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := tool.SkillPath(env)
+	writeFile(t, path, readFile(t, path)+"\n## My notes\n\nkeep me on revoke\n")
+	if err := tool.Revoke(env); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); !strings.Contains(got, "keep me on revoke") {
+		t.Fatalf("revoke lost the user's text after the block:\n%q", got)
 	}
 }
