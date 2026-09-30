@@ -49,9 +49,9 @@ function requireBinding(emailBinding) {
 }
 
 // The deployment's own token, compared without an early return so the
-// comparison does not say where the bytes diverge. With the same-origin rule
-// below it keeps a direct curl (which sends no Origin) from turning our
-// domain into a mail relay.
+// comparison does not say where the bytes diverge. This token -- not the
+// same-origin rule below, which a curl without an Origin header passes -- is
+// what stops our domain being used as a mail relay.
 function tokenMatches(presented, expected) {
   let diff = presented.length ^ expected.length;
   const length = Math.max(presented.length, expected.length);
@@ -84,7 +84,10 @@ export function isAuthorizedSend(request, expected) {
 /**
  * The same-origin rule the waitlist API already uses (src/waitlist.js): a
  * browser always sends Origin on a cross-site POST, so a request that names
- * another origin is refused rather than quietly accepted.
+ * another origin is refused rather than quietly accepted. This is an extra
+ * browser-facing check only -- a direct curl sends no Origin and passes here
+ * -- so the token above is what actually keeps our domain from being a mail
+ * relay.
  * @param {Request} request
  */
 export function isSameOriginRequest(request) {
@@ -101,7 +104,7 @@ export function isSameOriginRequest(request) {
  * caller decides whether to retry and a false "sent" would silently drop a
  * customer's receipt.
  * @param {object} emailBinding the EMAIL binding
- * @param {{to: string, kind: string, data?: object, from: string, fromName?: string}} request
+ * @param {{to: string, kind: string, data?: object, from: string, fromName?: string, rendered?: {subject: string, text: string, html: string}}} request
  * @returns {Promise<{messageId: string, subject: string}>}
  */
 export async function sendEmail(emailBinding, request) {
@@ -109,7 +112,7 @@ export async function sendEmail(emailBinding, request) {
   if (typeof request !== "object" || request === null) {
     throw new TypeError(`sendEmail needs a request object, got ${String(request)}`);
   }
-  const { to, kind, data = {}, from, fromName = FROM_NAME } = request;
+  const { to, kind, data = {}, from, fromName = FROM_NAME, rendered } = request;
   if (typeof to !== "string" || to.trim().length === 0) {
     throw new TypeError(`sendEmail needs a recipient address, got ${to}`);
   }
@@ -120,8 +123,9 @@ export async function sendEmail(emailBinding, request) {
     throw new TypeError("sendEmail needs a from address (the deployment's MAIL_FROM)");
   }
   // renderEmail throws on an unknown kind, so a typo fails here and not as a
-  // 202 with an empty body.
-  const { subject, text, html } = renderEmail(kind, data);
+  // 202 with an empty body. The route renders first (so a bad body is a 400
+  // rather than a 502) and passes the result in.
+  const { subject, text, html } = rendered ?? renderEmail(kind, data);
   // Both parts: some clients show only the text part, and a text part is a
   // large part of the spam score.
   const message = await binding.send({
@@ -131,7 +135,12 @@ export async function sendEmail(emailBinding, request) {
     text,
     html,
   });
-  if (!message || typeof message.messageId !== "string") {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    typeof message.messageId !== "string" ||
+    message.messageId.trim().length === 0
+  ) {
     throw new Error(
       `Cloudflare Email Sending returned no message id for the ${kind} email to ${to}; a send with no id cannot be retried safely`,
     );
@@ -141,8 +150,13 @@ export async function sendEmail(emailBinding, request) {
 
 // The five kinds, as a body must name them: an unknown kind is a 400 with the
 // allowed list named, so a caller with a typo learns the names instead of
-// guessing.
-function readKind(body) {
+// guessing. The data is rendered here, not inside sendEmail, so a template
+// that cannot be built from the body's data is a request error (400) and not a
+// provider failure (502) the caller would retry forever.
+function readRequest(body) {
+  if (typeof body !== "object" || body === null) {
+    return { error: "Send a JSON object with an email kind, an address and its data." };
+  }
   const { kind, to, data } = body;
   if (typeof kind !== "string" || !EMAIL_KINDS.includes(kind)) {
     return {
@@ -152,7 +166,15 @@ function readKind(body) {
   if (typeof to !== "string" || to.trim().length === 0) {
     return { error: "An email address is required." };
   }
-  return { kind, to: to.trim(), data };
+  try {
+    const rendered = renderEmail(kind, typeof data === "object" && data !== null ? data : {});
+    return { kind, to: to.trim(), data, rendered };
+  } catch (error) {
+    // A missing or unusable amount is named, never defaulted: a receipt sent
+    // with a $0 bill because the meter lost a number is the worst outcome
+    // this lane can produce.
+    return { error: `Cannot build the ${kind} email: ${error.message}` };
+  }
 }
 
 /**
@@ -195,7 +217,7 @@ export async function handleSendEmailRequest(request, env) {
       400,
     );
   }
-  const read = readKind(body);
+  const read = readRequest(body);
   if (read.error) {
     return json({ error: read.error }, 400);
   }
@@ -211,7 +233,12 @@ export async function handleSendEmailRequest(request, env) {
     );
   }
   try {
-    const sent = await sendEmail(env.EMAIL, { ...read, from: env.MAIL_FROM });
+    const sent = await sendEmail(env.EMAIL, {
+      to: read.to,
+      kind: read.kind,
+      from: env.MAIL_FROM,
+      rendered: read.rendered,
+    });
     return json({ ok: true, kind: read.kind, to: read.to, ...sent }, 202);
   } catch (error) {
     // Named, never swallowed: the caller retries a failed send, and "sent"

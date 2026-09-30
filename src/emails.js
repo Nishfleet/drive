@@ -53,6 +53,12 @@ export function savedLine(month) {
     throw new TypeError(`savedLine needs a month object, got ${String(month)}`);
   }
   const { meteredUsd, billUsd, ceilingUsd, capped } = month;
+  // Required, and a real boolean: the flag picks the saving's baseline, so a
+  // truthy string would silently move a customer's receipt from one sentence
+  // to another.
+  if (typeof capped !== "boolean") {
+    throw new TypeError(`capped must be true or false, got ${String(capped)}`);
+  }
   for (const [name, value] of [
     ["meteredUsd", meteredUsd],
     ["billUsd", billUsd],
@@ -193,7 +199,7 @@ export function monthlyReceiptTemplate({
   billUsd,
   meteredUsd,
   ceilingUsd,
-  capped = false,
+  capped,
 } = {}) {
   const bill = requireMoney(billUsd, "billUsd");
   const saved = savedLine({ meteredUsd, billUsd: bill, ceilingUsd, capped });
@@ -246,14 +252,15 @@ const TEMPLATES = Object.freeze({
 
 /**
  * Renders a named email from its data. Throws on an unknown kind rather than
- * silently sending the wrong message.
+ * silently sending the wrong message. Object.hasOwn, not a plain lookup: an
+ * inherited name such as "constructor" must stay unknown, or it renders
+ * nothing and the send goes out with empty parts.
  * @param {string} kind
  * @param {object} data
  */
 export function renderEmail(kind, data = {}) {
-  const template = TEMPLATES[kind];
-  if (!template) {
-    throw new Error(`Unknown email kind "${kind}"`);
+  if (typeof kind !== "string" || !Object.hasOwn(TEMPLATES, kind)) {
+    throw new Error(`Unknown email kind "${String(kind)}"`);
   }
-  return template(data);
+  return TEMPLATES[kind](data);
 }

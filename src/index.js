@@ -10,10 +10,12 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 // not the waitlist or send-email API falls through to the assets, so a stray
 // path is a real 404 from the asset worker rather than a hand-rolled page.
 //
-// The send-email route is not mounted. Its only producers (the meter's cap
-// emails and the billing webhook, build step 6 / drive#7) do not exist, and a
-// route anyone can POST to is a way to mail an arbitrary person from our
-// domain. Mounting it is one line, added with the first producer.
+// The send-email route is mounted behind its deployment's token and the
+// same-origin rule (src/email-send.js), which together keep it from mailing
+// an arbitrary person from our domain: with EMAIL_SEND_TOKEN unset the route
+// answers 403, so the deployment is closed until the token is set, and the
+// first producers are the meter's cap emails and the billing webhook
+// (build step 6, drive#7).
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -21,7 +23,9 @@ export default {
       return handleWaitlistRequest(request, env.WAITLIST_DB);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
-      return handleSendEmailRequest(request, env.EMAIL);
+      // The whole env, not just the binding: the route reads the token and
+      // the sending address too (src/email-send.js handleSendEmailRequest).
+      return handleSendEmailRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },

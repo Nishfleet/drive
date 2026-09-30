@@ -264,12 +264,13 @@ test("an uncapped month says you paid less than a flat plan, ceiling minus bill"
 });
 
 test("the saved line is hidden when the saving is zero or less", () => {
-  // drive#39: "Hidden when <= 0". One case per baseline: a capped month where
-  // the meter equals the bill, and an uncapped month where the ceiling equals
-  // the bill.
+  // drive#39: "Hidden when <= 0". One consistent case per baseline (the bill
+  // is min(metered, ceiling), so these are real months): a capped month where
+  // the meter equals the bill, and an uncapped month that reached the ceiling
+  // exactly.
   for (const month of [
-    { meteredUsd: 12, billUsd: 12, ceilingUsd: 23, capped: true },
-    { meteredUsd: 9, billUsd: 12, ceilingUsd: 12, capped: false },
+    { meteredUsd: 12, billUsd: 12, ceilingUsd: 12, capped: true },
+    { meteredUsd: 12, billUsd: 12, ceilingUsd: 12, capped: false },
   ]) {
     assert.equal(savedLine(month), null);
     const { text, html, saved } = monthlyReceiptTemplate({ ...receiptData(), ...month });
@@ -277,6 +278,24 @@ test("the saved line is hidden when the saving is zero or less", () => {
     assert.equal(/saved you|less than a flat plan/.test(text), false);
     assert.equal(/saved you|less than a flat plan/.test(html), false);
   }
+});
+
+test("a receipt is built from months that can actually happen", () => {
+  // The receipt says the bill is min(metered, ceiling). A caller that passes
+  // a bill above the meter (or above the ceiling) has a bug upstream; this
+  // pins the arithmetic on real, consistent months rather than on an
+  // impossible one.
+  // 0.6 TB metered at 2c/GB = $12, ceiling $23 (uncapped): bill $12, saved $11.
+  const uncapped = monthlyReceiptTemplate({
+    billUsd: 12, meteredUsd: 12, ceilingUsd: 23, capped: false,
+  });
+  assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
+  // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
+  const capped = monthlyReceiptTemplate({
+    billUsd: 23, meteredUsd: 40, ceilingUsd: 23, capped: true,
+  });
+  assert.equal(capped.saved, "Our price cap saved you $17.00");
+  assert.match(capped.text, /bill for this month is \$23\.00/);
 });
 
 test("savedLine refuses a month with nonsense in it", () => {
@@ -325,12 +344,92 @@ test("the rate constant is the spec's 2 cents per GB", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The Worker's own wiring: the route only works if the dispatcher hands the
+// handler the whole env, and that is a mistake node --test's direct handler
+// calls cannot catch (the in-run review found exactly that).
+// ---------------------------------------------------------------------------
+
+test("the Worker routes POST /api/emails/send to the send handler with env", async () => {
+  // env, not env.EMAIL: the handler reads the token and the sending address.
+  const { default: worker } = await import("../src/index.js");
+  const env = makeEnv({
+    ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+  });
+  const res = await worker.fetch(
+    postRequest(
+      { to: "person@example.com", kind: "welcome" },
+      { authorization: `Bearer ${TOKEN}` },
+    ),
+    env,
+  );
+  assert.equal(res.status, 202);
+  assert.equal(env.EMAIL.sent.length, 1);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.messageId, "<fake@drive.example>");
+});
+
+test("the Worker refuses the send route without the token, and says so", async () => {
+  // The gate that keeps the mounted route from being a mail relay.
+  const { default: worker } = await import("../src/index.js");
+  const env = makeEnv({
+    ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+  });
+  const res = await worker.fetch(
+    postRequest({ to: "attacker@example.com", kind: "welcome" }),
+    env,
+  );
+  assert.equal(res.status, 403);
+  assert.equal(env.EMAIL.sent.length, 0);
+});
+
+test("the Worker still serves the waitlist and the assets", async () => {
+  // The new branch must not have displaced the existing routes.
+  const { default: worker } = await import("../src/index.js");
+  const env = makeEnv({
+    ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+    WAITLIST_DB: null,
+  });
+  const asset = await worker.fetch(new Request("https://drive.example/"), env);
+  assert.equal(asset.status, 200);
+  assert.equal(await asset.text(), "asset");
+  const waitlist = await worker.fetch(
+    new Request("https://drive.example/api/waitlist", { method: "GET" }),
+    env,
+  );
+  assert.equal(waitlist.status, 405);
+  assert.equal(waitlist.headers.get("allow"), "POST");
+});
+
+// ---------------------------------------------------------------------------
 // Rendering: unknown kinds, escaping, no shared mutation
 // ---------------------------------------------------------------------------
 
 test("an unknown kind throws rather than sending the wrong message", () => {
-  for (const kind of ["wlecome", "", null, undefined, "welcome "]) {
+  // Includes the inherited Object.prototype names: a plain map lookup would
+  // find "constructor" and render nothing.
+  for (const kind of [
+    "wlecome", "", null, undefined, "welcome ", "constructor", "toString",
+    "hasOwnProperty", "__proto__", 7,
+  ]) {
     assert.throws(() => renderEmail(kind, {}), /Unknown email kind/);
+  }
+});
+
+test("capped must be a real boolean, because it picks the saving's baseline", () => {
+  // drive#39 gives two different sentences depending on this flag. A truthy
+  // string would silently put the wrong one on a customer's receipt.
+  for (const capped of [undefined, null, 1, "true", "", {}]) {
+    assert.throws(
+      () => savedLine({ meteredUsd: 16, billUsd: 12, ceilingUsd: 23, capped }),
+      TypeError,
+      `capped: ${String(capped)}`,
+    );
+    assert.throws(
+      () => monthlyReceiptTemplate({ billUsd: 12, meteredUsd: 16, ceilingUsd: 23, capped }),
+      TypeError,
+      `capped: ${String(capped)}`,
+    );
   }
 });
 
@@ -429,8 +528,9 @@ test("a provider failure is raised, never reported as sent", async () => {
 
 test("a send with no message id is a failure, not a success", async () => {
   // No id means no safe retry: the meter's "once per month" decision and the
-  // billing webhook's retry both need it.
-  for (const result of [null, {}, { messageId: 42 }]) {
+  // billing webhook's retry both need it. An empty or whitespace id is the
+  // same failure as a missing one.
+  for (const result of [null, {}, { messageId: 42 }, { messageId: "" }, { messageId: "   " }]) {
     const email = makeFakeEmail(result);
     await assert.rejects(
       sendEmail(email, { to: "person@example.com", from: MAIL_FROM, kind: "welcome" }),
@@ -553,8 +653,55 @@ test("the route rejects a body that is not JSON", async () => {
   assert.match((await res.json()).error, /not valid JSON/);
 });
 
+test("the route answers a JSON null body with a 400, not a Worker 500", async () => {
+  // readRequest used to destructure null and throw out of the handler, which
+  // a Worker turns into an opaque 500. Every non-object JSON body is a named
+  // 400 now: null and scalars get the object message, an array gets the
+  // kinds message.
+  for (const body of ["null", "[]", '"a string"', "42", "true"]) {
+    const res = await handleSendEmailRequest(authed(body), makeEnv());
+    assert.equal(res.status, 400, `body: ${body}`);
+    assert.match((await res.json()).error, /Send a JSON object|Send one of these emails/);
+  }
+});
+
+test("a body the template cannot be built from is a 400, not a 502", async () => {
+  // A deterministic caller error must not look like a retryable provider
+  // failure: the billing webhook would retry a missing amount forever.
+  const env = makeEnv();
+  for (const [kind, data] of [
+    ["monthly-receipt", { billUsd: 12 }],            // no meter, ceiling or capped
+    ["cap-warning", {}],                             // no cap
+    ["read-only", {}],                               // no cap
+    ["payment-failed", {}],                          // no amount
+  ]) {
+    const res = await handleSendEmailRequest(
+      authed({ to: "person@example.com", kind, data }),
+      env,
+    );
+    assert.equal(res.status, 400, `kind: ${kind}`);
+    assert.match((await res.json()).error, new RegExp(`Cannot build the ${kind}`));
+  }
+  assert.equal(env.EMAIL.sent.length, 0, "nothing is sent for a 400");
+});
+
+test("a receipt with no saving and no capped flag is a 400, not a $0 receipt", async () => {
+  // The one output this lane must never produce: a receipt that silently
+  // claims an uncapped month, or a $0 bill that hides a lost meter number.
+  const res = await handleSendEmailRequest(
+    authed({
+      to: "person@example.com",
+      kind: "monthly-receipt",
+      data: { billUsd: 12, meteredUsd: 16, ceilingUsd: 12 },
+    }),
+    makeEnv(),
+  );
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /capped must be true or false/);
+});
+
 test("the route names the five kinds when the kind is wrong", async () => {
-  for (const kind of ["nope", 7, null, ""]) {
+  for (const kind of ["nope", 7, null, "", "constructor", "toString"]) {
     const res = await handleSendEmailRequest(
       authed({ to: "person@example.com", kind }),
       makeEnv(),
