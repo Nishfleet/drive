@@ -26,8 +26,12 @@ import {
   usageSummary,
 } from "../src/billing.js";
 import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { FAILURE_MESSAGES } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+// The signed-in account the handler tests run as, until the sign-in flow lands
+// (build step 4, #5). The gate itself is pinned in test/account-gate.test.mjs.
+const account = Object.freeze({ id: "1", name: "Your drive" });
 // The first-run page is a Vite entry at the repo root (issue #70), not a
 // verbatim asset in public/, so its shell is read from there.
 const getStartedPage = readFileSync(
@@ -249,7 +253,10 @@ test("GB-months are the meter over the spec's 43,800-minute month", () => {
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"));
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -281,10 +288,18 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
   assert.equal(USAGE_ENDPOINT, "/api/usage");
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/usage", "/api/usage/"]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
-    assert.equal(response.status, 200, `${path} must reach the handler`);
-    assert.equal((await response.json()).billUsd, 0);
+    // The route reaches the handler and the gate answers 401: with no sign-in
+    // flow yet no request can prove an account, so the Worker's read shows
+    // nobody's money (issue #73). The signed-in shape is pinned in
+    // test/account-gate.test.mjs.
+    const anonymous = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
+  const handler = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  );
+  assert.equal((await handler.json()).billUsd, 0);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
     "the page must read the endpoint the Worker routes",
@@ -460,4 +475,16 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
   assert.match(page, /if \(document\.hidden\) \{\n    return;/);
+});
+
+test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
+  // The account gate (drive issue #73) answers /api/usage; this page must
+  // treat its 401 as "not signed in", never as an unreachable service, and
+  // render the words the 401 body carried — the message table's entry — rather
+  // than carrying a copy of them (test/pr-gate.test.mjs pins that too).
+  assert.match(page, /if \(response\.status === 401\) \{/);
+  assert.match(page, /saySignedOut\(payload\.error\)/);
+  assert.match(page, /function saySignedOut\(message\)/);
+  assert.match(page, /statusEl\.dataset\.state = "signed-out";/);
+  assert.doesNotMatch(page, /You are not signed in to your drive/);
 });
