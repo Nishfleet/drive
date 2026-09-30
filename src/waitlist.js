@@ -88,16 +88,21 @@ export async function recordSignup(db, signup) {
   return { already: true, row: row(existing) };
 }
 
-function json(body, status) {
+function json(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      ...headers,
     },
   });
 }
 
+// Two layers, because either alone is bypassable: a declared content-length
+// is checked first so an oversized body is rejected without being read at
+// all, and the stream is counted as it arrives so a request that declares
+// nothing (or lies about a smaller size) is stopped at the same limit.
 async function readLimitedBody(request, maxBytes) {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
@@ -182,14 +187,37 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     });
   }
 
-  // Rate limit first: bounds all subsequent work and prevents enumeration
-  // of the waitlist via timing. The binding is required in production; if
-  // missing it is an operator problem reported by name.
+  if (!isSameOriginRequest(request)) {
+    // Checked before the limiter: a cross-site POST is rejected without
+    // reading a body or touching D1, so it does no work and must not spend
+    // the caller's quota (drive#28 review).
+    return json(
+      { error: "Sign-ups are only accepted from the drive page." },
+      403,
+    );
+  }
+
+  // Rate limit next: it bounds the work that actually costs something (a body
+  // parse and a D1 write), so it runs before both.
   if (!rateLimiter) {
+    // The binding is missing on this deployment: an operator problem, so it
+    // goes to the log by name and the visitor gets the table's generic words,
+    // never a binding name or a stack. Fails closed: an unrate-limited
+    // endpoint is the case this binding exists to prevent.
     console.error("waitlist: WAITLIST_RATE_LIMITER binding is not configured");
     return json({ error: failureMessage("unexpected") }, 503);
   }
-  const key = request.headers.get("cf-connecting-ip") || "unknown";
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp === null) {
+    // Cloudflare always sets this header, so a request without it is not one
+    // of ours. It lands in one shared bucket on purpose: without a client IP
+    // there is nothing finer to key on, and the log line is how an operator
+    // sees it.
+    console.warn(
+      "waitlist: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
+    );
+  }
+  const key = clientIp === null ? "unknown" : clientIp;
   let success;
   try {
     ({ success } = await rateLimiter.limit({ key }));
@@ -200,15 +228,13 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     return json({ error: failureMessage("unexpected") }, 503);
   }
   if (!success) {
-    return json({ error: failureMessage("rate-limited") }, 429);
-  }
-
-  if (!isSameOriginRequest(request)) {
     return json(
-      { error: "Sign-ups are only accepted from the drive page." },
-      403,
+      { error: failureMessage("rate-limited") },
+      429,
+      { "retry-after": "60" },
     );
   }
+
   if (!db) {
     // The binding is missing on this deployment: an operator problem, so it
     // goes to the log by name and the visitor gets the table's storage-down

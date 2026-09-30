@@ -224,6 +224,7 @@ test("handleWaitlistRequest returns 429 when the rate limiter denies", async () 
   });
   const res = await handleWaitlistRequest(req, db, limiter);
   assert.equal(res.status, 429);
+  assert.equal(res.headers.get("retry-after"), "60");
   const data = await res.json();
   assert.equal(data.error, failureMessage("rate-limited"));
   assert.equal(db.waitlist.size, 0, "a rate-limited request must not write");
@@ -294,6 +295,26 @@ test("handleWaitlistRequest fails closed when the rate limiter throws", async ()
   const data = await res.json();
   assert.equal(data.error, failureMessage("unexpected"));
   assert.ok(!data.error.includes("exploded"));
+});
+
+test("handleWaitlistRequest rejects a cross-site request without spending rate limit quota", async () => {
+  const limiter = makeRateLimiter();
+  const req = new Request("https://example.com/api/waitlist", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://evil.example",
+      "cf-connecting-ip": "203.0.113.11",
+    },
+    body: JSON.stringify({ email: "cross@example.com" }),
+  });
+  const res = await handleWaitlistRequest(req, makeFakeDB(), limiter);
+  assert.equal(res.status, 403);
+  assert.equal(
+    limiter.calls.length,
+    0,
+    "a rejected cross-site request must not consume the caller's quota",
+  );
 });
 
 // --- body size (bullet 5) -------------------------------------------------

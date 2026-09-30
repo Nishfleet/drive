@@ -695,11 +695,13 @@ form.addEventListener("submit", async (event) => {
       throw parseError;
     }
     if (!response.ok) {
-      userMessage =
+      say(
         typeof payload.error === "string" && payload.error.length > 0
           ? payload.error
-          : UNEXPECTED_MESSAGE;
-      throw new Error(userMessage);
+          : UNEXPECTED_MESSAGE,
+        "error",
+      );
+      return;
     }
     // One confirmation for every accepted address: the server answers the
     // same whether or not it was already on the list, so this page cannot
