@@ -40,22 +40,22 @@
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
 //
-// The check is bounded twice so a hung dependency cannot make the monitor's
-// own poll hang, which would read as "no data" rather than "down":
-// AbortSignal.timeout on each database read (the runtime stops the query) and
-// a wall-clock race over the whole check (a dependency that ignores its
-// signal cannot outlive the answer). Either path reports the part that did not
-// answer, so the alert says which dependency rather than "unhealthy".
+// The check is bounded once, with one deadline shared by every dependency, so
+// a hung dependency cannot make the monitor's own poll hang (which would read
+// as "no data" rather than "down") and cannot make it late: three slow
+// dependencies still answer inside HEALTH_TIMEOUT_MS, not three times it.
+// A dependency that does not answer in its share reports itself by name, so
+// the alert says which dependency rather than "unhealthy".
 
 /** The path the outside monitor (#36) polls, and this Worker's only route. */
 export const HEALTH_PATH = "/api/health";
 
 /**
- * How long one dependency gets to answer, and how long the whole check gets.
- * The per-read bound is the D1 query's own AbortSignal; the overall bound is
- * the race. A monitor that polls every few minutes needs an answer well inside
- * its own timeout, and a Worker that answers nothing is worse than one that
- * answers "down": the first loses the alert, the second raises it.
+ * How long the whole check gets, and so how long each dependency gets: the
+ * checks share one deadline, so three dependencies cost three seconds at
+ * worst, not six. A monitor that polls every few minutes needs an answer well
+ * inside its own timeout, and a Worker that answers nothing is worse than one
+ * that answers "down": the first loses the alert, the second raises it.
  */
 export const HEALTH_TIMEOUT_MS = 2000;
 
@@ -209,9 +209,10 @@ async function checkRateLimiter(limiter, timeoutMs) {
  * @returns {Promise<{ok: true} | {ok: false, failing: string}>}
  */
 export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
+  const deadline = Date.now() + timeoutMs;
   const checks = [];
   for (const { name, db } of d1Bindings(env)) {
-    checks.push({ name, run: () => checkD1(name, db, timeoutMs) });
+    checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
   const assets = env === null || env === undefined ? undefined : env.ASSETS;
   if (!assets || typeof assets.fetch !== "function") {
@@ -220,7 +221,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({ name: "ASSETS", run: () => checkAssets(assets, timeoutMs) });
+  checks.push({ name: "ASSETS", run: (left) => checkAssets(assets, left) });
   // Only when this Worker has the waitlist bound: the limiter is a dependency
   // of the waitlist route, so on a deployment without one there is nothing to
   // reach.
@@ -231,13 +232,22 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     }
     checks.push({
       name: "WAITLIST_RATE_LIMITER",
-      run: () => checkRateLimiter(limiter, timeoutMs),
+      run: (left) => checkRateLimiter(limiter, left),
     });
   }
 
   for (const check of checks) {
+    // One deadline for the whole check, not one per dependency: a Worker
+    // holding three slow dependencies still answers inside HEALTH_TIMEOUT_MS,
+    // which is the number the monitor's own timeout is set against.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      // The check that never got its turn is the one that did not answer.
+      console.error("health: out of time before checking a dependency", check.name);
+      return { ok: false, failing: check.name };
+    }
     try {
-      await check.run();
+      await check.run(remaining);
     } catch (error) {
       // The raw error is the operator's, and it goes to the log with the
       // binding's name attached; the response gets the name alone. Never the

@@ -273,6 +273,62 @@ test("an account route is not on the public allow-list", () => {
   }
 });
 
+test("the bound is a deadline shared by every dependency, not one per check", async () => {
+  // The number the monitor's own timeout is set against is
+  // HEALTH_TIMEOUT_MS, so three slow dependencies must not cost three times
+  // it. Each hangs until its own signal aborts, and the whole check still
+  // answers in one bound: the second and third never get their turn, and the
+  // answer names the one that was still waiting.
+  const hang = () => ({
+    prepare: () => ({
+      all: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    }),
+  });
+  const env = {
+    FIRST_DB: hang(),
+    SECOND_DB: hang(),
+    THIRD_DB: hang(),
+    ASSETS: fakeAssets(),
+  };
+  const started = Date.now();
+  const result = await checkHealth(env, { timeoutMs: 60 });
+  const elapsed = Date.now() - started;
+  assert.deepEqual(result, { ok: false, failing: "FIRST_DB" });
+  assert.ok(elapsed < 600, `the check took ${elapsed}ms, more than the bound`);
+});
+
+test("a dependency that never got its turn is named, not reported as healthy", async () => {
+  // The same case from the other end: when the deadline passes before a
+  // dependency is reached, that dependency is the one that did not answer.
+  // Answering 200 there would be a lie in the only direction that matters.
+  let calls = 0;
+  const env = {
+    WAITLIST_DB: {
+      prepare: () => ({
+        all: () => {
+          calls += 1;
+          return new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error("aborted")), 40);
+          });
+        },
+      }),
+    },
+    LATER_DB: {
+      prepare: () => {
+        calls += 1;
+        return { all: () => Promise.resolve({ results: [] }) };
+      },
+    },
+    ASSETS: fakeAssets(),
+  };
+  const result = await checkHealth(env, { timeoutMs: 20 });
+  assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
+  assert.equal(calls, 1, "the second database was never reached");
+});
+
 test("only GET is answered, so a probe that posts learns it is wrong", async () => {
   for (const method of ["POST", "PUT", "DELETE", "HEAD", "PATCH"]) {
     const response = await handleHealthRequest(
