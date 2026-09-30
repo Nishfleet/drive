@@ -70,16 +70,18 @@ export const SITE = Object.freeze({
 
 // Every public HTML page, and whether a crawler should index it. The order is
 // the sitemap order. get-started.html is a per-device first-run page a person
-// lands on from the CLI; it declares <meta name="robots" content="noindex">
-// and stays out of the sitemap. test/seo.test.mjs walks this list, so a new
-// page has to be added here and given its own title, description and canonical
-// rather than inheriting this page's.
+// lands on from the CLI, and usage.html is one person's own month: both
+// declare <meta name="robots" content="noindex"> and stay out of the sitemap.
+// test/seo.test.mjs walks this list, so a new page has to be added here and
+// given its own title, description and canonical rather than inheriting this
+// page's.
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
   Object.freeze({ path: "/get-started.html", indexable: false }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
+  Object.freeze({ path: "/usage.html", indexable: false }),
 ]);
 
 /** The absolute URL of a public page, from its site-relative path. */

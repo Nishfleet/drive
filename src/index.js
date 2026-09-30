@@ -7,14 +7,10 @@ import {
   handleFilesRequest,
   resolveAccount,
 } from "./files.js";
-import { handleUsageRequest } from "./billing.js";
+import { signedInAccount } from "./status.js";
+import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
-import {
-  INDEX_ENDPOINT,
-  SEARCH_ENDPOINT,
-  handleSearchRequest,
-  withIndex,
-} from "./search.js";
+import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, withIndex } from "./search.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -39,8 +35,8 @@ function storeFor(env) {
   return filesStore;
 }
 
-// Static assets serve the pricing page, the first-run page and the Web Files
-// page; only /api/* reaches this Worker (see runWorkerFirst in
+// Static assets serve the pricing page, the first-run page, the Web Files page
+// and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
@@ -63,28 +59,31 @@ export default {
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
+    // The handler is closed until the sign-in flow resolves an account
+    // (issue #45), so an anonymous poll gets 401 and no device data.
     if (
       url.pathname === "/api/first-run-status" ||
       url.pathname === "/api/first-run-status/"
     ) {
-      return handleFirstRunStatusRequest(request);
+      return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
     // The Web Files page's listing, download, upload and restore (issue #31).
-    // Search reads only the D1 file index (issue #18); the write half of the
-    // same module keeps it current by wrapping the store, so an upload, a
-    // delete or a restore is in the index before the next search, and the
-    // search itself never lists the bucket.
+    // Search reads only the D1 file index (issue #18), behind the account
+    // gate every drive read that names files goes through (`signedInAccount`,
+    // issue #45): an anonymous caller gets 401 and no names, and a signed-in
+    // one reads only their own rows. The write half of the same module keeps
+    // the index current by wrapping the store, so an upload, a delete or a
+    // restore is in the index before the next search, and the search itself
+    // never lists the bucket. The rebuild is not a web route: it runs from
+    // the scheduled handler below.
     if (
       url.pathname === SEARCH_ENDPOINT ||
-      url.pathname === `${SEARCH_ENDPOINT}/` ||
-      url.pathname === INDEX_ENDPOINT ||
-      url.pathname === `${INDEX_ENDPOINT}/`
+      url.pathname === `${SEARCH_ENDPOINT}/`
     ) {
       return handleSearchRequest(
         request,
         env.WAITLIST_DB,
-        storeFor(env),
-        resolveAccount(request),
+        signedInAccount(request),
       );
     }
     if (
@@ -98,9 +97,13 @@ export default {
         resolveAccount(request),
       );
     }
-    // The usage page's and the CLI's read of the month's money (issue #7,
-    // build step 6). Same rule: the branch comes before the asset fallthrough.
-    if (url.pathname === "/api/usage" || url.pathname === "/api/usage/") {
+    // The usage page's and the CLI's read of the month's money (issues #7 and
+    // #53, build step 6). Same rule: the branch comes before the asset
+    // fallthrough.
+    if (
+      url.pathname === USAGE_ENDPOINT ||
+      url.pathname === `${USAGE_ENDPOINT}/`
+    ) {
       return handleUsageRequest(request);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
@@ -109,5 +112,23 @@ export default {
       return handleSendEmailRequest(request, env);
     }
     return env.ASSETS.fetch(request);
+  },
+
+  // The nightly reconciler (build-spec.md piece 6, drive issue #18):
+  // `reconcileIndex` walks the store once and rebuilds the index rows, so an
+  // event the write path missed is corrected within a day. One schedule, one
+  // account, keyed by schedule: the run is invoked and cannot be started by a
+  // browser request, which a route on /api/search/index would have allowed.
+  // One drive until the accounts table lands (src/files.js resolveAccount's
+  // swap point, #5); when it does, this loop widens to the accounts that
+  // have rows.
+  async scheduled(event, env, context) {
+    context.waitUntil(
+      reconcileIndex(env.WAITLIST_DB, storeFor(env), resolveAccount()).catch(
+        (error) => {
+          throw new Error(`the nightly reindex failed: ${error.message}`);
+        },
+      ),
+    );
   },
 };

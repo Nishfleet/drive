@@ -11,8 +11,8 @@ import {
   DEFAULT_LIMIT,
   MAX_LIMIT,
   MAX_WORDS,
+  REINDEX_SCHEDULE,
   SEARCH_ENDPOINT,
-  INDEX_ENDPOINT,
   handleSearchRequest,
   parseQuery,
   reconcileIndex,
@@ -24,6 +24,7 @@ import { createMemoryStore } from "../src/files.js";
 import worker from "../src/index.js";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
+const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
 
 // ------------------------------------------------------------------- the db
 
@@ -374,7 +375,6 @@ test("GET /api/search answers with the found rows", async () => {
   const response = await handleSearchRequest(
     request(`${SEARCH_ENDPOINT}?q=np-2024`),
     db,
-    store,
     ACCOUNT,
   );
   assert.equal(response.status, 200);
@@ -388,7 +388,6 @@ test("an empty query is a 400 with the one next step", async () => {
   const response = await handleSearchRequest(
     request(SEARCH_ENDPOINT),
     makeD1(),
-    seededStore(),
     ACCOUNT,
   );
   assert.equal(response.status, 400);
@@ -399,40 +398,129 @@ test("a search without an index binding is a 503", async () => {
   const response = await handleSearchRequest(
     request(`${SEARCH_ENDPOINT}?q=x`),
     null,
-    seededStore(),
     ACCOUNT,
   );
   assert.equal(response.status, 503);
 });
 
-test("POST rebuilds the index and the search reflects it", async () => {
+// --------------------------------------------------------------- the gate
+
+// The safety review (issue #18, 2026-09-30): search had no login, so any
+// caller could read every name in the index. It now sits behind the same
+// gate as /api/first-run-status: the account comes from `signedInAccount()`,
+// null means 401, and the rows are filtered on account_id.
+test("an anonymous request is a 401 and no names leave the index", async () => {
   const db = makeD1();
   const store = seededStore();
-  await seed(store, [["/late-arrival.txt", "x"]]);
-  const response = await handleSearchRequest(request(INDEX_ENDPOINT, { method: "POST" }), db, store, ACCOUNT);
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.equal(body.indexed, 1);
-  const found = await searchDrive(db, ACCOUNT, "late-arrival");
-  assert.equal(found.count, 1);
+  await seed(store, [["/secret-contract.pdf", "x"]]);
+  await reconcileIndex(db, store, ACCOUNT);
+  for (const account of [null, undefined]) {
+    const response = await handleSearchRequest(
+      request(`${SEARCH_ENDPOINT}?q=secret-contract`),
+      db,
+      account,
+    );
+    assert.equal(response.status, 401);
+    const body = await response.json();
+    assert.match(body.error, /not signed in/);
+    assert.ok(!JSON.stringify(body).includes("secret-contract"), "no name in a 401");
+  }
+  // A forgotten account argument is the same 401, not a stand-in account.
+  const forgot = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=secret-contract`),
+    db,
+  );
+  assert.equal(forgot.status, 401);
 });
 
-test("the index route answers 405 with the one allowed method named", async () => {
-  const response = await handleSearchRequest(
-    request(INDEX_ENDPOINT),
-    makeD1(),
-    seededStore(),
-    ACCOUNT,
+test("account A never sees account B's file names", async () => {
+  const db = makeD1();
+  // Two drives, one index: A and B each walk their own store into the same
+  // table, the way two accounts share one D1 database in production.
+  const storeA = seededStore();
+  await seed(storeA, [
+    ["/taxes/only-for-a.txt", "x"],
+    ["/a/notes.txt", "x"],
+  ]);
+  await reconcileIndex(db, storeA, ACCOUNT);
+  const storeB = seededStore();
+  await seed(storeB, [
+    ["/b-only/invoice-for-b.txt", "x"],
+    ["/b/notes.txt", "x"],
+  ]);
+  await reconcileIndex(db, storeB, ACCOUNT_B);
+
+  // A search for B's unique name answers nothing to A.
+  const stolen = await searchDrive(db, ACCOUNT, "invoice-for-b");
+  assert.equal(stolen.count, 0, "A cannot read B's names");
+  // A word both drives hold still answers only A's rows, and the answer never
+  // carries a name from B's side.
+  const both = await searchDrive(db, ACCOUNT, "notes");
+  assert.equal(both.count, 1, "one of A's own rows, not a union of the drives");
+  assert.equal(both.results[0].path, "/a/notes.txt");
+  assert.ok(!JSON.stringify(both).includes("invoice-for-b"), "no B name anywhere in A's answer");
+  // And the same word answers only B's rows to B.
+  const forB = await searchDrive(db, ACCOUNT_B, "notes");
+  assert.equal(forB.count, 1);
+  assert.equal(forB.results[0].path, "/b/notes.txt");
+});
+
+// --------------------------------------------------------- the reindex rule
+
+// The safety review: a full reindex walks the whole bucket, which costs the
+// storage money the drive bills for, so it is not a web route at all. The
+// only way one starts is the scheduled trigger.
+test("no web request can start a reindex: /api/search/index is not a route", async () => {
+  const db = makeD1();
+  const assets = { fetch: () => new Response("asset", { status: 200 }) };
+  const env = { WAITLIST_DB: db, ASSETS: assets };
+  for (const method of ["GET", "POST", "DELETE"]) {
+    const response = await worker.fetch(
+      new Request("https://drive.test/api/search/index", { method }),
+      env,
+    );
+    assert.equal(
+      await response.text(),
+      "asset",
+      `${method} /api/search/index never reaches a search handler`,
+    );
+  }
+  // A file the Worker's own store now holds, so the scheduled run has
+  // something real to walk.
+  const upload = await worker.fetch(
+    new Request("https://drive.test/api/files/upload?path=%2F&name=late-arrival.txt", {
+      method: "POST",
+      body: "x",
+    }),
+    env,
   );
-  assert.equal(response.status, 405);
-  assert.match(await response.text(), /POST/);
+  assert.equal(upload.status, 201);
+  // The one way in is the scheduled trigger, which is what the cron calls.
+  const waits = [];
+  await worker.scheduled({ cron: REINDEX_SCHEDULE }, env, {
+    waitUntil: (promise) => waits.push(promise),
+  });
+  await Promise.all(waits);
+  const found = await searchDrive(db, ACCOUNT, "late-arrival");
+  assert.equal(found.count, 1, "the scheduled run rebuilt the index");
+});
+
+test("the deployed cron schedule is the one the module names", () => {
+  const config = readFileSync(
+    new URL("../cloudflare.config.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    config,
+    new RegExp(`triggers\\.scheduled\\(\\{ schedule: "${REINDEX_SCHEDULE.replace(/\*/g, "\\*")}" \\}\\)`),
+    "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
+  );
 });
 
 test("the search route answers 405 with the one allowed method named", async () => {
   const response = await handleSearchRequest(
     request(SEARCH_ENDPOINT, { method: "POST" }),
     makeD1(),
-    seededStore(),
     ACCOUNT,
   );
   assert.equal(response.status, 405);
@@ -441,12 +529,20 @@ test("the search route answers 405 with the one allowed method named", async () 
 
 // ------------------------------------------------------------ worker wiring
 
-test("the worker serves /api/search from the D1 index and /api/files writes keep it fresh", async () => {
+test("the worker serves /api/search behind the account gate and file writes keep it fresh", async () => {
   const db = makeD1();
-  const env = { WAITLIST_DB: db };
-  const built = new Request("https://drive.test/api/search/index", { method: "POST" });
-  const seeded = await worker.fetch(built, env);
-  assert.equal(seeded.status, 200);
+  const assets = { fetch: () => new Response("asset", { status: 200 }) };
+  const env = { WAITLIST_DB: db, ASSETS: assets };
+  // Anonymous: 401 with the account gate's words, never a name.
+  const anonymous = await worker.fetch(
+    new Request("https://drive.test/api/search?q=warren-buffet"),
+    env,
+  );
+  assert.equal(anonymous.status, 401);
+  const anonymousBody = await anonymous.json();
+  assert.match(anonymousBody.error, /not signed in/);
+  // A file write reaches the index through the wrapped store, keyed to the
+  // account resolveAccount names (the one stand-in drive until #5 lands).
   const upload = await worker.fetch(
     new Request("https://drive.test/api/files/upload?path=%2F&name=warren-buffet.txt", {
       method: "POST",
@@ -455,18 +551,24 @@ test("the worker serves /api/search from the D1 index and /api/files writes keep
     env,
   );
   assert.equal(upload.status, 201);
-  const found = await worker.fetch(
-    new Request("https://drive.test/api/search?q=warren-buffet"),
-    env,
+  const rows = db.sqlite
+    .prepare("SELECT account_id, name FROM file_index")
+    .all()
+    .map((row) => ({ account_id: row.account_id, name: row.name }));
+  assert.deepEqual(rows, [{ account_id: "1", name: "warren-buffet.txt" }]);
+  // The handler with an account reads exactly that account's rows.
+  const signedIn = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=warren-buffet`),
+    db,
+    { id: "1", name: "Your drive" },
   );
-  assert.equal(found.status, 200);
-  const body = await found.json();
+  assert.equal(signedIn.status, 200);
+  const body = await signedIn.json();
   assert.equal(body.count, 1);
   assert.equal(body.results[0].path, "/warren-buffet.txt");
 });
 
 // --------------------------------------------------------------- migration
-
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
   const sql = readFileSync(new URL("../migrations/0002_file_index.sql", import.meta.url), "utf8");
   assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS file_index"));

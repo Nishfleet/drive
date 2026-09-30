@@ -9,18 +9,31 @@
 //     "storage event" the event intake (build step 5) will replay; and
 //   * the nightly reconciler — `reconcileIndex(db, store, account)` walks the
 //     store once and rebuilds the account's rows, so an event the drive
-//     missed is corrected within a day.
+//     missed is corrected within a day. The Worker's scheduled trigger calls
+//     it (REINDEX_SCHEDULE); no request can.
 //
 // Plain data and functions, no Worker-only import: node --test exercises the
 // query, the feeds and every route against a real SQLite engine (the D1
 // adapter in test/search.test.mjs), so the number the issue asks for is
 // measured on the same SQL the Worker runs.
+//
+// Two rules the endpoint carries, both from the 2026-09-30 safety review:
+// a search answers only for the signed-in account (`handleSearchRequest`
+// takes the account, never a request), and the rebuild has no route at all —
+// `reconcileIndex` is reached from the nightly scheduled trigger.
 import { TRASH_PATH, validatePath } from "./files.js";
+import { failureMessage } from "./messages.js";
 
 /** The listing the CLI and the agent tool read. */
 export const SEARCH_ENDPOINT = "/api/search";
-/** The reconciler's entry point; the nightly Cron calls the same function. */
-export const INDEX_ENDPOINT = "/api/search/index";
+/**
+ * The nightly reconciler's schedule, in the Worker's cron syntax (the
+ * `triggers.scheduled` entry in cloudflare.config.ts). 03:00 UTC is the quiet
+ * hour the spec's reconciler runs in; the job is the only way a rebuild
+ * starts, so a web request cannot spend the walk a 100,000-file drive costs
+ * (issue #18 safety review, 2026-09-30).
+ */
+export const REINDEX_SCHEDULE = "0 3 * * *";
 
 /** How long a query may be, and how many words it may hold. Far above a
  * person's pace, low enough that a query cannot become a table scan with
@@ -341,8 +354,11 @@ const JSON_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+function json(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...headers },
+  });
 }
 
 function plain(message, status) {
@@ -356,37 +372,34 @@ function plain(message, status) {
 }
 
 /**
- * Handles GET /api/search and POST /api/search/index and always answers:
+ * Handles GET /api/search and always answers. The account is a required
+ * argument, never read from a request that cannot prove one (issue #18
+ * safety review, 2026-09-30): the same gate as /api/first-run-status
+ * (`signedInAccount()`, issue #45), so an anonymous caller gets 401 and no
+ * file names, and a signed-in caller reads only their own rows
+ * (`searchDrive` filters on `account_id`).
+ *
+ * There is no rebuild route here on purpose: `reconcileIndex` runs from the
+ * nightly scheduled trigger only, so neither an anonymous nor a signed-in web
+ * request can make the deployment walk a bucket.
  *
  *   GET  /api/search?q=<words>&limit=<n>   names from D1, never the bucket
- *   POST /api/search/index                 rebuild the account's rows
  *
  * @param {Request} request
  * @param {D1Database} db
- * @param {FileStore} store only the index route touches it
- * @param {{id: string, name: string}} account
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {() => number} [now]
  */
-export async function handleSearchRequest(request, db, store, account, now = () => Date.now()) {
-  const url = new URL(request.url);
-  const route = url.pathname.replace(/\/$/, "");
-  if (route === INDEX_ENDPOINT) {
-    if (request.method !== "POST") {
-      return plain("Method not allowed. POST to rebuild the index.", 405);
-    }
-    if (!db || !store) {
-      return json({ error: "The drive index is not configured on this deployment." }, 503);
-    }
-    try {
-      const built = await reconcileIndex(db, store, account, { now });
-      return json({ ok: true, ...built });
-    } catch (error) {
-      return json({ error: `The index could not be rebuilt: ${error.message}` }, 500);
-    }
-  }
+export async function handleSearchRequest(request, db, account, now = () => Date.now()) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return plain("Method not allowed. GET a search.", 405);
   }
+  if (!account) {
+    return json({ error: failureMessage("unauthorized") }, 401, {
+      "www-authenticate": "Cookie",
+    });
+  }
+  const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit"));
   const found = await searchDrive(db, account, url.searchParams.get("q") || "", {
     limit: Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_LIMIT,
