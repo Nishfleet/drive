@@ -4,9 +4,56 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — about $20 per TB a month</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
+  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
+       AI-answer crawler reads. Every value mirrors src/seo.js; test/seo.test.mjs
+       fails CI when the tags and that config drift apart. The ceiling stated
+       here is the current rule from docs/spec.md ("$12 a TB, then $8", Nish
+       2026-09-30, issue #29), and the visible page copy is issue #23's to
+       align; a follow-up issue files the merge of the two into one source. -->
+  <!-- rel="canonical" declares a URL for a crawler to read; the browser never
+       fetches it as a subresource, so there is nothing whose bytes an integrity
+       hash could verify. That is why the nosemgrep rule id is on the tag: this
+       html.security rule only honors a same-line suppression, and the finding is
+       a false positive. -->
+  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
+  <meta property="og:site_name" content="Drive">
   <meta property="og:title" content="Drive — about $20 per TB a month">
-  <meta property="og:description" content="2¢ per GB, billed by the minute. Never more than $15 a TB. $1 free every month, no card needed.">
+  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Drive — about $20 per TB a month. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Drive — about $20 per TB a month">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.">
+  <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Drive",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "macOS, Linux",
+  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.",
+  "url": "https://drive-pricing.nishant345.workers.dev/",
+  "image": "https://drive-pricing.nishant345.workers.dev/og.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "12.00",
+    "priceCurrency": "USD",
+    "priceSpecification": {
+      "@type": "UnitPriceSpecification",
+      "price": "12.00",
+      "priceCurrency": "USD",
+      "unitText": "TB-month"
+    },
+    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, then $8. The bill is the metered cost capped at max($12, $8 × TB stored): $12 up to 1.5 TB, then $8 for each TB after."
+  }
+}
+  </script>
   <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
        The favicon is an inline data: URI: there is no network fetch to
        hash, so an integrity attribute would be meaningless. -->
@@ -231,6 +278,18 @@ main {
 .form-note.is-done {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* The two pages of the site, side by side under the waitlist. */
+.footer-nav {
+  display: flex;
+  gap: 18px;
+  margin: 10px 0 0;
+  font-size: 14px;
+}
+
+.footer-nav a {
+  color: var(--ink-soft);
 }
 
 /* ---- The strip: what you actually pay for ------------------------------- */
@@ -492,6 +551,10 @@ main {
         </div>
         <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
       </form>
+      <nav class="footer-nav" aria-label="Drive">
+        <a href="/get-started">Get started</a>
+        <a href="/">Pricing</a>
+      </nav>
       <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
     </section>
 
@@ -566,6 +629,13 @@ const emailInput = document.getElementById("email");
 const sourceInput = form.elements.namedItem("source");
 const submit = form.querySelector("button[type=submit]");
 
+// The two failure strings this page can show without a server reply. They are
+// the same words as src/messages.js ("offline" and "unexpected"); this file is
+// a static asset and cannot import the module, so test/messages.test.mjs reads
+// this page and fails CI when either string drifts from the table.
+const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
+const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
+
 function say(message, kind) {
   note.textContent = message;
   note.classList.toggle("is-error", kind === "error");
@@ -589,29 +659,61 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   submit.disabled = true;
   say("Joining the waitlist…", "pending");
+  // The only safe text this page may show on failure: the table's own
+  // fallback, replaced by one of our constants or by the server's
+  // table-built message. The raw Error message is never shown (drive#28).
+  let userMessage = UNEXPECTED_MESSAGE;
   try {
-    const response = await fetch("/api/waitlist", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        email: emailInput.value.trim(),
-        source: sourceInput.value,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "That did not work. Try again in a moment.");
+    // Captured before reset(): the server no longer echoes source, because
+    // the reply must be the same whether the address is new or already on
+    // the list (drive#28).
+    const sentSource = sourceInput.value;
+    let response;
+    try {
+      response = await fetch("/api/waitlist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: emailInput.value.trim(),
+          source: sentSource,
+        }),
+      });
+    } catch (networkError) {
+      // fetch rejects only when the browser cannot reach the network at all;
+      // that is the offline message, never the raw failure text.
+      userMessage = OFFLINE_MESSAGE;
+      throw networkError;
     }
-    say(
-      payload.already
-        ? "You are already on the list. Nothing to do."
-        : "You are on the list. One email when the drive is ready.",
-      "done",
-    );
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      // A non-JSON reply (an error page, a captive portal) is not something
+      // this page can explain; the table's fallback is shown and the raw text
+      // stays out of the live region.
+      userMessage = UNEXPECTED_MESSAGE;
+      throw parseError;
+    }
+    if (!response.ok) {
+      say(
+        typeof payload.error === "string" && payload.error.length > 0
+          ? payload.error
+          : UNEXPECTED_MESSAGE,
+        "error",
+      );
+      return;
+    }
+    // One confirmation for every accepted address: the server answers the
+    // same whether or not it was already on the list, so this page cannot
+    // and must not say which it was (drive#28).
+    say("You are on the list. One email when the drive is ready.", "done");
     form.reset();
-    sourceInput.value = payload.source;
+    sourceInput.value = sentSource;
   } catch (error) {
-    say(error.message, "error");
+    // The raw error goes to the console; the live region only ever shows a
+    // message built from the table.
+    console.error("waitlist: signup failed", error);
+    say(userMessage, "error");
   } finally {
     submit.disabled = false;
   }
