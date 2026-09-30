@@ -405,14 +405,6 @@ const CONNECTION = {
     what: "Cannot reach the drive service right now.",
     next: "Leave this page open. It keeps checking and flips to connected on its own.",
   },
-  // The status endpoint needs the signed-in account before it will answer with
-  // device data (drive issue #45), so 401 is its own state and not an
-  // "unreachable" the person cannot act on: the words are the message table's
-  // `unauthorized` entry.
-  signedOut: {
-    what: "You are not signed in to your drive.",
-    next: "Sign in, then this page updates on its own.",
-  },
 };
 
 const SYNC_ERROR_NOTIFICATION = {
@@ -672,10 +664,11 @@ async function poll() {
     return;
   }
   if (!response.ok) {
-    // 401 is the account gate (drive issue #45), not a service failure: it
-    // names the one thing to do, so it is its own state and the poll keeps
-    // going — the sign-in lands in this same tab.
-    say(response.status === 401 ? "signedOut" : "unreachable");
+    // 401 is the account gate (drive issue #45): this browser has no signed-in
+    // account yet, which on this page is exactly the waiting state — the Mac
+    // has not signed in — and the words above name the real next step. It is
+    // never "unreachable": the service answered. Any other status is.
+    say(response.status === 401 ? "waiting" : "unreachable");
     return;
   }
   let payload;

@@ -199,8 +199,10 @@ test("the status endpoint answers a signed-out account honestly", () => {
   );
   assert.equal(response.status, 401);
   assert.equal(response.headers.get("cache-control"), "no-store");
+  // A cookie session, so the challenge names the scheme sign-in mints.
+  assert.equal(response.headers.get("www-authenticate"), "Cookie");
   return response.json().then((body) => {
-    assert.equal(body.error, failureMessage("unauthorized"));
+    assert.deepEqual(body, { error: failureMessage("unauthorized") });
     assert.equal("devices" in body, false, "a signed-out poll must not read devices");
   });
 });
@@ -377,15 +379,14 @@ test("the page's script reads the same words, endpoint and interval", () => {
       `the page must carry "${entry.next}" verbatim`,
     );
   }
-  // The signed-out line is the message table's `unauthorized` entry (issue
-  // #45): the page cannot import src/messages.js either, so both halves are
-  // pinned from the table.
-  for (const half of Object.values(FAILURE_MESSAGES.unauthorized)) {
-    assert.ok(
-      page.includes(half),
-      `the page must carry the signed-out line "${half}"`,
-    );
-  }
+  // The signed-out words are the message table's `unauthorized` entry (issue
+  // #45) and live on the API, not on this page: a 401 is the waiting state
+  // here, so the page shows the waiting line it already has and must not
+  // carry a second copy of the source's words.
+  assert.ok(
+    !page.includes(FAILURE_MESSAGES.unauthorized.what),
+    "the page must not carry a second copy of the API's signed-out words",
+  );
   for (const entry of Object.values(EMPTY_STATES)) {
     assert.ok(page.includes(entry.what), `the page must carry "${entry.what}"`);
     assert.ok(page.includes(entry.next), `the page must carry "${entry.next}"`);
@@ -412,20 +413,28 @@ test("the page's script reads the same words, endpoint and interval", () => {
   );
 });
 
-test("a 401 is the signed-out line, not an unreachable service", () => {
-  // The account gate (issue #45) answers 401 until the sign-in lands, and the
-  // page is where the sign-in lands, so a 401 is actionable copy and its own
-  // state. Reporting it as "unreachable" would tell someone to wait on a
-  // service that is answering perfectly well.
-  assert.match(
-    page,
-    /response\.status === 401 \? "signedOut" : "unreachable"/,
-    "the poll must map 401 to the signed-out line",
+test("a 401 is the waiting line, not an unreachable service", () => {
+  // The account gate (issue #45) answers 401 until the sign-in lands, and this
+  // page is where the sign-in lands, so a 401 IS the waiting state: the Mac
+  // has not signed in, and the waiting line names the real next step.
+  // Reporting it as "unreachable" would tell someone to wait on a service
+  // that is answering.
+  const mapping = page.match(
+    /say\(response\.status === 401 \? "(\w+)" : "(\w+)"\)/,
   );
-  assert.match(page, /data-state="waiting"/, "the live line carries its state");
-  // The state is named in the markup the CSS keys off, so a signed-out line
-  // never borrows the unreachable state\'s red border.
-  assert.ok(page.includes("signedOut"), "the page must name the signed-out state");
+  assert.ok(mapping, "the poll must branch on the 401 status");
+  const [, on401, otherwise] = mapping;
+  // Both arms must be keys the page's own table defines, so a rename cannot
+  // leave say() writing a blank line.
+  for (const state of [on401, otherwise]) {
+    assert.match(
+      page,
+      new RegExp(`^  ${state}: \\{`, "m"),
+      `the page must define ${state} in its CONNECTION table`,
+    );
+  }
+  assert.equal(on401, "waiting", "401 shows the waiting line");
+  assert.equal(otherwise, "unreachable", "every other failure is unreachable");
 });
 
 test("the page stops asking once it is connected", () => {

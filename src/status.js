@@ -221,17 +221,28 @@ const STATUS_HEADERS = Object.freeze({
 });
 
 /**
- * The signed-in account a request carries, or null when it is signed out. The
- * session that would prove the account — the cookie the device-approval screen
- * mints and the store that validates it — is build step 4 (#5), and with
- * neither built no request can be signed in, so this is null for every caller.
- * It is the one swap point: the endpoint's account gate below does not change
- * when the sign-in flow lands, and a request that cannot prove an account
- * never reads one's device data (issue #45, north star: Safe).
+ * The signed-in account a request carries, or null when the request is signed
+ * out. The session that would prove the account — the cookie the
+ * device-approval screen mints and the store that validates it — is build step
+ * 4 (#5), and with neither built no request can be signed in, so this is null
+ * for every caller. It is the one swap point: the endpoint's account gate below
+ * does not change when the sign-in flow lands, and a request that cannot prove
+ * an account never reads one's device data (issue #45, north star: Safe).
+ *
+ * The parameter is read (not just accepted) so the swap point has exactly one
+ * shape to fill in when #5 lands: resolving the account from the request and
+ * returning null when it names none.
  * @param {Request} request
  * @returns {{id: string, name: string}|null}
  */
 export function signedInAccount(request) {
+  if (request.headers.get("cookie") === null) {
+    // No session presented: signed out, which is the honest answer.
+    return null;
+  }
+  // A cookie is presented but nothing built can validate it against an
+  // account, so it proves nothing and stays signed out rather than trusting
+  // a value the browser chose.
   return null;
 }
 
@@ -243,14 +254,13 @@ export function signedInAccount(request) {
  * the same shape the real store returns for a signed-in account with no
  * devices yet.
  *
- * The account is a required argument and never read from an anonymous request
- * (issue #45, north star: Safe): a request with no signed-in account gets 401
- * and the message table's `unauthorized` words, never device data. The sign-in
- * flow that resolves the account is build step 4 (#5); until it lands this is
- * null for every caller, so the endpoint is closed rather than open. Any other
+ * The account is a required argument and never read from a request that
+ * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
+ * for every caller until the sign-in flow lands, so the endpoint answers 401
+ * and the message table's `unauthorized` words, never device data. Any other
  * method is a 405 with the one allowed method named, like the waitlist API.
  * @param {Request} request
- * @param {{id: string, name: string}|null|undefined} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  */
 export function handleFirstRunStatusRequest(request, account) {
   if (request.method !== "GET") {
@@ -262,7 +272,9 @@ export function handleFirstRunStatusRequest(request, account) {
   if (!account) {
     return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
       status: 401,
-      headers: STATUS_HEADERS,
+      // A cookie session, so the challenge names the scheme the sign-in flow
+      // mints rather than a bearer token it does not use.
+      headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
     });
   }
   return new Response(
