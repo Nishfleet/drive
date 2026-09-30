@@ -30,6 +30,18 @@
 // headline is an iDrive figure and moves with the primary storage provider
 // (build-spec.md, "Bill ceiling"). Nothing here reads money from the
 // environment or a secret.
+//
+// The cap line (`drive status`'s cap, and the usage response's `capLine`) is
+// in this file too, because it is the money's words: it reads the same
+// capStatus() number the CLI and the page do, and it takes its capped-drive
+// sentence from the one message table (src/messages.js) rather than carrying a
+// second copy of it.
+//
+// The finished labels `usageSummary()` carries are formatted here for the same
+// reason: one place formats each number, so the usage page and `drive usage`
+// cannot print the same money two different ways.
+
+import { failureMessage } from "./messages.js";
 import { formatBytes } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
@@ -227,6 +239,46 @@ export function capStatus(gbMinutes, peakGb, capUsd, config = BILLING_CONFIG) {
 }
 
 /**
+ * The cap line `drive status` prints for the spending cap, one per state. The
+ * numbers come straight from a capStatus() result, so the CLI cannot print a
+ * line the invoice would not match; the capped-drive sentence is the message
+ * table's `cap-reached` entry verbatim, so the page, the CLI and the api cannot
+ * each write their own version of the same news (docs/build-spec.md,
+ * "Every failure path maps to one plain message with one next step").
+ *
+ * The CLI is Go and cannot import this module, so the line travels in the
+ * /api/usage response (see handleUsageRequest) and `drive status` prints it as
+ * it arrives.
+ * @param {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}} cap a capStatus() result
+ * @returns {string}
+ */
+export function capLine(cap) {
+  if (typeof cap !== "object" || cap === null) {
+    throw new TypeError(`capLine needs a capStatus result, got ${String(cap)}`);
+  }
+  if (cap.state !== "active" && cap.state !== "read_only") {
+    throw new TypeError(
+      `capLine needs a cap whose state is "active" or "read_only", got ${String(cap.state)}`,
+    );
+  }
+  checked(cap.capUsd, "cap.capUsd");
+  checked(cap.countedUsd, "cap.countedUsd");
+  checked(cap.remainingUsd, "cap.remainingUsd");
+  if (cap.state === "active") {
+    return `Cap ${formatUsd(cap.capUsd)}: ${formatUsd(cap.countedUsd)} counted this month, ${formatUsd(cap.remainingUsd)} left.`;
+  }
+  // Two sentences: the message table's words first (what happened, and the one
+  // thing to do), then the numbers and the promise that matters most at the
+  // cap: nothing was deleted, and the uploads still waiting in the VFS cache
+  // go up once the cap is raised (build-spec.md, "Keys and safety").
+  return (
+    failureMessage("cap-reached") +
+    `\nCap ${formatUsd(cap.capUsd)} reached: ${formatUsd(cap.countedUsd)} counted this month. ` +
+    "Uploads waiting in the cache stay on this Mac and go up once the cap is raised."
+  );
+}
+
+/**
  * Download cost this month: bytes are free up to 3x the average stored data,
  * then 1¢/GB. `averageStoredGb` is the month's mean stored size, so the free
  * allowance scales with what the drive actually held; `downloadBytes` is the
@@ -399,5 +451,10 @@ export function handleUsageRequest(request) {
     // (issue #2). Before accounts exist the honest cap is the sign-up default.
     cardAdded: true,
   });
-  return new Response(JSON.stringify(empty), { status: 200, headers: USAGE_HEADERS });
+  // The cap line rides on the response rather than inside usageSummary(): the
+  // summary is money (numbers only, which is what the usage page's chart and
+  // the invoice read), and building the line here is what lets the Go CLI print
+  // the Worker's words instead of carrying its own copy of them.
+  const body = { ...empty, capLine: capLine(empty.cap) };
+  return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
