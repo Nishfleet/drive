@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 )
 
 // usage is the command list from docs/build-spec.md. Step 2 of that spec ships
@@ -53,10 +55,24 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
+		// A FlagSet with ContinueOnError has already printed the parse error
+		// and the usage to stderr. --help is a success, and any other parse
+		// error exits 2 (usage), not 1, so the shell can tell usage from
+		// failure.
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		if errors.Is(err, errFlagParse) {
+			os.Exit(2)
+		}
 		fmt.Fprintln(os.Stderr, "drive:", err)
 		os.Exit(1)
 	}
 }
+
+// errFlagParse marks an error the flag package has already printed, so main
+// does not print it a second time.
+var errFlagParse = errors.New("flag parse")
 
 type commonFlags struct {
 	home   string
@@ -84,7 +100,7 @@ func runMount(args []string) error {
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
+		return errFlagParse
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -104,7 +120,7 @@ func runUnmount(args []string) error {
 	fs := flag.NewFlagSet("unmount", flag.ContinueOnError)
 	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
+		return errFlagParse
 	}
 	return Unmount(CurrentGOOS(), common.home)
 }
@@ -113,7 +129,7 @@ func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
+		return errFlagParse
 	}
 	home := common.home
 	mountDir := DefaultMountDir(home)
@@ -134,8 +150,31 @@ func runStatus(args []string) error {
 		exists = "present"
 	}
 	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	if files, err := os.ReadDir(mountDir); err == nil && len(files) > 0 {
-		fmt.Printf("entries: %d\n", len(files))
+	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
+		fmt.Printf("entries: (unreadable: %v)\n", err)
+	} else if n > 0 {
+		fmt.Printf("entries: %d\n", n)
 	}
 	return nil
+}
+
+// countEntries lists a mount dir with a deadline. A FUSE mount whose backing
+// store has gone away can block a plain ReadDir forever, and `drive status` is
+// exactly the command a user runs when that happens, so it must still answer.
+func countEntries(dir string, wait time.Duration) (int, error) {
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		files, err := os.ReadDir(dir)
+		done <- result{len(files), err}
+	}()
+	select {
+	case r := <-done:
+		return r.n, r.err
+	case <-time.After(wait):
+		return 0, fmt.Errorf("timed out after %s", wait)
+	}
 }

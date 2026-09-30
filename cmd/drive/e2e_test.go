@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,9 +24,12 @@ import (
 //  2. a file written through the mount survives a stop/start with the same
 //     checksum.
 //
-// It needs FUSE. On a host where an unprivileged mount is not permitted the
-// test skips with the kernel's own error; run it inside `unshare -Urm` on such
-// hosts. Set DRIVE_STANDIN_SIZE_MB to change the big file's size (default 64).
+// It needs FUSE. Where the host does not permit an unprivileged FUSE mount the
+// test skips with a message naming the user-namespace fallback, so a CI runner
+// without /dev/fuse does not fail every unrelated PR; an rclone that exits
+// before the mount appears is still a real failure. Run it inside
+// `unshare -Urm` on a host where an unprivileged mount is refused. Set
+// DRIVE_STANDIN_SIZE_MB to change the big file's size (default 64).
 func TestStandinMountProof(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -86,7 +90,7 @@ func TestStandinMountProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	if testing.Verbose() {
-		t.Logf("seed config:\n%s", RcloneConfig(cfg))
+		t.Logf("seed config:\n%s", RcloneConfigRedacted(cfg))
 	}
 	for _, f := range []string{bigPath, smallPath} {
 		seed := exec.Command("rclone", "copy", f, "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/")
@@ -96,18 +100,6 @@ func TestStandinMountProof(t *testing.T) {
 		}
 	}
 
-	mount := func() *exec.Cmd {
-		cmd := exec.Command(driveBin(t), "mount",
-			"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
-			"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key", secretKey,
-			"--foreground")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		waitForMount(t, mountDir)
-		return cmd
-	}
 	unmount := func(cmd *exec.Cmd) {
 		// The CLI's Unmount (systemd on Linux) is not available in the test
 		// namespace, so stop the foreground process, then a stale mount point
@@ -126,6 +118,32 @@ func TestStandinMountProof(t *testing.T) {
 		exec.Command("fusermount3", "-u", mountDir).Run()
 		exec.Command("fusermount", "-u", mountDir).Run()
 	}
+
+	var current *exec.Cmd
+	mount := func() *exec.Cmd {
+		cmd := exec.Command(driveBin(t), "mount",
+			"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+			"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key", secretKey,
+			"--foreground")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitForMount(t, cmd, mountDir) {
+			unmount(cmd)
+			t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+				"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run Standin", mountDir)
+		}
+		current = cmd
+		return cmd
+	}
+	// Clean up whatever mount is current even if an assertion below fails,
+	// so a failing run does not leave an orphaned rclone mount behind.
+	defer func() {
+		if current != nil {
+			unmount(current)
+		}
+	}()
 
 	// Proof 1: first bytes before the whole file is down.
 	cmd := mount()
@@ -176,7 +194,7 @@ func TestStandinMountProof(t *testing.T) {
 	unmount(cmd)
 
 	cmd = mount()
-	defer unmount(cmd)
+	_ = cmd
 	after, err := md5File(filepath.Join(mountDir, "small.bin"))
 	if err != nil {
 		t.Fatal(err)
@@ -257,17 +275,24 @@ func waitForPort(t *testing.T, port string) {
 	t.Fatalf("stand-in never listened on %s", port)
 }
 
-func waitForMount(t *testing.T, dir string) {
+// waitForMount waits for the mount to appear. A plain directory that never
+// becomes a mount point while rclone is still running means the host refuses
+// the FUSE mount (a CI runner without /dev/fuse): that is a skip, reported by
+// the caller. An rclone that has already exited is a real failure.
+func waitForMount(t *testing.T, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("rclone exited before mounting %s: %v (see its log above)", dir, err)
+		}
 		out, err := exec.Command("findmnt", "-n", "-M", dir).Output()
 		if err == nil && strings.TrimSpace(string(out)) != "" {
-			return
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("drive never mounted on %s (is FUSE permitted? try: unshare -Urm go test ./cmd/drive -run Standin)", dir)
+	return false
 }
 
 // driveBin builds the CLI once and returns its path.

@@ -86,7 +86,39 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey st
 	if len(missing) > 0 {
 		return c, fmt.Errorf("missing storage config: %s", strings.Join(missing, ", "))
 	}
+	// These values are written into the rclone config as INI values, one per
+	// line. A newline or carriage return in any of them would end the line and
+	// let a value smuggle in an extra rclone option (a different provider, a
+	// no_check_certificate, its own endpoint). Refuse rather than escape, so a
+	// rejected key is visible at the point it is set.
+	for _, f := range []struct {
+		name  string
+		value string
+	}{
+		{"endpoint", c.Endpoint},
+		{"bucket", c.Bucket},
+		{"prefix", c.Prefix},
+		{"region", c.Region},
+		{"access key", c.AccessKey},
+		{"secret key", c.SecretKey},
+	} {
+		if err := checkConfigValue(f.name, f.value); err != nil {
+			return c, err
+		}
+	}
 	return c, nil
+}
+
+// checkConfigValue rejects a value that would break out of its line in the
+// generated rclone config.
+func checkConfigValue(name, value string) error {
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("invalid %s: a newline would inject an rclone option", name)
+	}
+	if strings.Contains(value, "\x00") {
+		return fmt.Errorf("invalid %s: contains a NUL byte", name)
+	}
+	return nil
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -103,7 +135,7 @@ func firstNonEmpty(vals ...string) string {
 // stock signature version every S3-compatible provider accepts.
 func RcloneConfig(c StorageConfig) string {
 	var b strings.Builder
-	b.WriteString("[drive]\n")
+	fmt.Fprintf(&b, "[%s]\n", RcloneRemoteName)
 	b.WriteString("type = s3\n")
 	b.WriteString("provider = Other\n")
 	fmt.Fprintf(&b, "access_key_id = %s\n", c.AccessKey)
@@ -111,6 +143,17 @@ func RcloneConfig(c StorageConfig) string {
 	fmt.Fprintf(&b, "endpoint = %s\n", c.Endpoint)
 	fmt.Fprintf(&b, "region = %s\n", c.Region)
 	return b.String()
+}
+
+// RcloneConfigRedacted renders the same config for display, with both keys
+// replaced by a placeholder. `drive mount --dry-run` prints this, so a dry run
+// on a shared screen or in a terminal transcript can never leak the device's
+// secret key. The real config is still written 0600 by Mount.
+func RcloneConfigRedacted(c StorageConfig) string {
+	r := c
+	r.AccessKey = "<redacted>"
+	r.SecretKey = "<redacted>"
+	return RcloneConfig(r)
 }
 
 // WriteFileAtomic writes data to path via a sibling temp file and rename, with

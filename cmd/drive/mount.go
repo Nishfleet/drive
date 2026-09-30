@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -129,7 +131,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=%s
 ExecStop=%s umount %s
 Restart=on-failure
@@ -137,7 +139,34 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, p.CommandLine(), p.RcloneBin, p.MountDir)
+`, p.Remote, systemdCommandLine(p), systemdEscapeArg(p.RcloneBin), systemdEscapeArg(p.MountDir))
+}
+
+// systemdCommandLine renders the rclone argument vector the way systemd reads
+// it, not the way a shell would: systemd has its own quoting rules for
+// ExecStart (double quotes with backslash and quote escaped, and every percent
+// doubled for its %-specifier expansion). CommandLine stays shell-shaped for
+// human display only.
+func systemdCommandLine(p MountPlan) string {
+	parts := append([]string{p.RcloneBin}, p.Args()...)
+	for i, a := range parts {
+		parts[i] = systemdEscapeArg(a)
+	}
+	return strings.Join(parts, " ")
+}
+
+// systemdEscapeArg quotes one ExecStart argument per systemd.syntax: arguments
+// are split on whitespace, so an argument containing whitespace, a quote or a
+// backslash is double-quoted with those characters escaped, and every percent
+// is doubled because systemd expands % specifiers in the command.
+func systemdEscapeArg(arg string) string {
+	arg = strings.ReplaceAll(arg, "%", "%%")
+	if !strings.ContainsAny(arg, " \t\"'\\") {
+		return arg
+	}
+	arg = strings.ReplaceAll(arg, `\`, `\\`)
+	arg = strings.ReplaceAll(arg, `"`, `\"`)
+	return `"` + arg + `"`
 }
 
 // LoginItemPath is where the login item for goos is written.
@@ -161,18 +190,20 @@ func LoginItem(goos string, p MountPlan) string {
 // otherwise the login item starts it (launchd on macOS, systemd on Linux).
 func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool) error {
 	p := BuildMountPlan(goos, home, rcloneBin, c)
-	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
-		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
-	}
-	config := []byte(RcloneConfig(c))
 	item := []byte(LoginItem(goos, p))
 	itemPath := LoginItemPath(goos, home)
+	// The mount dir is created only once the plan is real: --dry-run writes
+	// nothing at all, and prints the config with both keys redacted.
 	if dryRun {
-		fmt.Printf("--- %s ---\n%s", p.ConfigPath, config)
+		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- %s ---\n%s", itemPath, item)
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
 	}
+	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
+		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
+	}
+	config := []byte(RcloneConfig(c))
 	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
 		return err
 	}
@@ -224,10 +255,17 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	return nil
 }
 
-// Unmount stops the mount and the login item.
+// Unmount stops the mount and the login item. Running it twice is not an
+// error: an absent login item means the drive is already stopped.
 func Unmount(goos, home string) error {
+	itemPath := LoginItemPath(goos, home)
+	if _, err := os.Stat(itemPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", itemPath, err)
+	}
 	if goos == "darwin" {
-		itemPath := LaunchdPlistPath(home)
 		if err := exec.Command("launchctl", "unload", "-w", itemPath).Run(); err != nil {
 			return fmt.Errorf("launchctl unload %s: %w", itemPath, err)
 		}
@@ -239,10 +277,18 @@ func Unmount(goos, home string) error {
 	return nil
 }
 
-// Mounted reports whether MountDir has a live mount. On Linux it asks the
-// kernel mount table; a plain directory that is not a mount point is unmounted.
+// Mounted reports whether MountDir has a live mount. Linux asks the kernel
+// mount table through findmnt; macOS has no findmnt, so the BSD mount listing
+// is the platform's own answer and its mount-point field is what is compared.
 func Mounted(goos, home string) (bool, error) {
 	mountDir := DefaultMountDir(home)
+	if goos == "darwin" {
+		out, err := exec.Command("mount").Output()
+		if err != nil {
+			return false, fmt.Errorf("mount: %w", err)
+		}
+		return bsdMountHasMountPoint(string(out), mountDir), nil
+	}
 	out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
@@ -251,6 +297,33 @@ func Mounted(goos, home string) (bool, error) {
 		return false, fmt.Errorf("findmnt %s: %w", mountDir, err)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+// bsdMountHasMountPoint reports whether a `mount` listing mounts dir. A line
+// reads "<device> on <mount point> (<options>)"; the mount point may contain
+// spaces (mount escapes them as backslash-040) and the options start after the
+// last " (".
+func bsdMountHasMountPoint(listing, dir string) bool {
+	for _, line := range strings.Split(listing, "\n") {
+		i := strings.Index(line, " on ")
+		if i < 0 {
+			continue
+		}
+		point := line[i+len(" on "):]
+		if j := strings.LastIndex(point, " ("); j > 0 {
+			point = point[:j]
+		}
+		if unescapeMountField(point) == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// unescapeMountField undoes the octal escaping the BSD mount(8) listing uses
+// for spaces, tabs and backslashes in a mount point.
+func unescapeMountField(s string) string {
+	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\134`, `\`).Replace(s)
 }
 
 // DefaultRcloneBin returns an explicit rclone path when the operator set one,
