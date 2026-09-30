@@ -566,6 +566,13 @@ const emailInput = document.getElementById("email");
 const sourceInput = form.elements.namedItem("source");
 const submit = form.querySelector("button[type=submit]");
 
+// The two failure strings this page can show without a server reply. They are
+// the same words as src/messages.js ("offline" and "unexpected"); this file is
+// a static asset and cannot import the module, so test/messages.test.mjs reads
+// this page and fails CI when either string drifts from the table.
+const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
+const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
+
 function say(message, kind) {
   note.textContent = message;
   note.classList.toggle("is-error", kind === "error");
@@ -590,17 +597,36 @@ form.addEventListener("submit", async (event) => {
   submit.disabled = true;
   say("Joining the waitlist…", "pending");
   try {
-    const response = await fetch("/api/waitlist", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        email: emailInput.value.trim(),
-        source: sourceInput.value,
-      }),
-    });
-    const payload = await response.json();
+    let response;
+    try {
+      response = await fetch("/api/waitlist", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: emailInput.value.trim(),
+          source: sourceInput.value,
+        }),
+      });
+    } catch (networkError) {
+      // fetch rejects only when the browser cannot reach the network at all;
+      // that is the offline message, never the raw failure text.
+      throw new Error(OFFLINE_MESSAGE, { cause: networkError });
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      // A non-JSON reply (an error page, a captive portal) is not something
+      // this page can explain; the table's fallback is shown and the raw text
+      // stays out of the live region.
+      throw new Error(UNEXPECTED_MESSAGE, { cause: parseError });
+    }
     if (!response.ok) {
-      throw new Error(payload.error || "That did not work. Try again in a moment.");
+      throw new Error(
+        typeof payload.error === "string" && payload.error.length > 0
+          ? payload.error
+          : UNEXPECTED_MESSAGE,
+      );
     }
     say(
       payload.already
