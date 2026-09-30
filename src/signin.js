@@ -9,15 +9,14 @@
 // here — the same gate test/usage.test.mjs runs for src/usage.js and
 // test/pricing-copy.test.mjs for the price.
 //
-// What the endpoint does today, and what it deliberately does not: the store
-// that remembers a one-time code for an account lands with build step 1's api
-// Worker D1 (drive#2; the account model is docs/build-spec.md's `accounts`
-// table). Until a store is passed in, the route is a closed door: it answers
-// 503 with the message table's words rather than reporting a code sent that no
-// store could hold, the same posture POST /api/emails/send takes with
-// EMAIL_SEND_TOKEN unset (src/email-send.js). The day the store lands, the
-// only changes are the store argument at the call site in src/index.js and the
-// two branches below it; the copy, the validation and the vocabulary gate stay.
+// What the endpoint does today, and what it deliberately does not. The store
+// is src/accounts.js: an in-memory account store with the interface D1 will
+// have (drive#2; the account model is docs/build-spec.md's `accounts` table),
+// so the email one-time code signs a person in for real today and swapping the
+// store for D1 is one factory, not a route change. The route stays a closed
+// door (503, the message table's words) when no store is passed at all, which
+// is the same posture POST /api/emails/send takes with EMAIL_SEND_TOKEN unset
+// (src/email-send.js) and what a deployment with no accounts answers.
 //
 // Third-party sign-in (Google, GitHub) is present as the spec's screen shows
 // it and answered the same closed way. The OAuth client ids and secrets are
@@ -26,6 +25,7 @@
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
+import { sessionCookie } from "./accounts.js";
 
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
@@ -56,12 +56,21 @@ export const SIGNIN_COPY = Object.freeze({
   emailButton: "Email me a code",
   emailNote: "We email a 6-digit code. No password to remember.",
   codeLabel: "The 6-digit code",
+  codePlaceholder: "000000",
   codeButton: "Finish signing in",
   googleButton: "Continue with Google",
   githubButton: "Continue with GitHub",
   // The line the page shows while it waits for the endpoint, and the line it
   // falls back to when the browser cannot reach the network at all. The second
   // is the message table's `offline` entry; the first is this page's own.
+  // The two steps the sign-in screen posts: "start" asks for a code, "finish"
+  // sends the code back and mints the session. They are two posts to one
+  // endpoint rather than two endpoints, because a person signing in is one
+  // action with a step in the middle, and the page already keeps the address
+  // from the first step to send with the second.
+  step: "start",
+  stepStart: "start",
+  stepFinish: "finish",
   sending: "Sending…",
   // Shown under the buttons, before anything is submitted: the drive is not
   // open yet, so nobody is left guessing why no code arrives.
@@ -79,22 +88,65 @@ export function signinClosedBody() {
 }
 
 /**
- * Reads and checks the posted body. The method is checked against
- * SIGNIN_METHODS, and the email method requires an address; the OAuth methods
- * carry none, because the provider is the one that asks.
+ * The two steps a sign-in post can be. Anything else is refused, so a typo in
+ * a field name cannot read as a request to start a sign-in.
+ */
+export const SIGNIN_STEPS = Object.freeze(["start", "finish"]);
+
+/**
+ * Reads and checks the posted body for the start step: the method is checked
+ * against SIGNIN_METHODS, and the email method requires an address; the OAuth
+ * methods carry none, because the provider is the one that asks.
  * @param {unknown} body
- * @returns {{method: string, email?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string}|{error: string}}
  */
 export function readSigninRequest(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { error: "Send a JSON object." };
   }
+  const step = typeof body.step === "string" ? body.step : SIGNIN_STEPS[0];
+  if (!SIGNIN_STEPS.includes(step)) {
+    return { error: `Send step: ${SIGNIN_STEPS.join(" or ")}.` };
+  }
+  if (step === "finish") {
+    return readFinish(body);
+  }
+  return readStart(body);
+}
+
+/**
+ * The finish step: the address the code went to and the code itself. Both are
+ * required and both are checked for shape, because a missing one is a person
+ * who has not finished and deserves a 400 rather than a silent no-op.
+ * @param {{email?: unknown, code?: unknown}} body
+ * @returns {{step: "finish", email: string, code: string}|{error: string}}
+ */
+function readFinish(body) {
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const code = typeof body.code === "string" ? body.code.trim() : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { error: "Enter the address you asked for the code at." };
+  }
+  // The 6 digits the spec's screen names, and nothing else: a code with a
+  // space, a letter or a seventh digit is not a code this app sent.
+  if (!/^[0-9]{6}$/.test(code)) {
+    return { error: "Enter the 6-digit code from the email." };
+  }
+  return { step: "finish", email, code };
+}
+
+/**
+ * The start step: the method and, for the email method, the address.
+ * @param {Record<string, unknown>} body
+ * @returns {{step: "start", method: string, email?: string}|{error: string}}
+ */
+function readStart(body) {
   const method = body.method;
   if (!SIGNIN_METHODS.includes(method)) {
     return { error: `Choose one of: ${SIGNIN_METHODS.join(", ")}.` };
   }
   if (method !== "email") {
-    return { method };
+    return { step: "start", method };
   }
   const email = typeof body.email === "string" ? body.email.trim() : "";
   // One check, the same shape the waitlist form accepts: an address with a
@@ -103,20 +155,27 @@ export function readSigninRequest(body) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: "Enter an email address we can send the code to." };
   }
-  return { method, email };
+  return { step: "start", method, email };
 }
 
 /**
  * Handles POST /api/signin. Always answers; the page reads the JSON.
  *
- *   POST /api/signin  {"method":"email","email":"you@example.com"}
- *   POST /api/signin  {"method":"google"}   (and "github")
+ *   POST /api/signin  {"step":"start","method":"email","email":"you@example.com"}
+ *   POST /api/signin  {"step":"finish","email":"you@example.com","code":"012345"}
+ *   POST /api/signin  {"step":"start","method":"google"}   (and "github")
+ *
+ * The start step answers 202 with the account it found or made, and never the
+ * code: the code leaves by email or not at all. The finish step answers 200
+ * with the signed-in account and a `Set-Cookie` the browser keeps, which is
+ * what lets every account route (/api/files, /api/usage, the devices screen)
+ * see a person who has signed in.
  *
  * The store is an argument, not a binding read here, so the account store
- * (drive#2) plugs in at one call site and a test can pass a fake. With no
- * store the method branches are still exercised — shape, cross-site and method
- * checks all answer before the store is consulted — and the final answer is
- * the closed door.
+ * (src/accounts.js, D1 with drive#2) plugs in at one call site and a test can
+ * pass a fake. With no store the route answers its closed door: a 503 with the
+ * message table's words rather than reporting a code sent that no store could
+ * hold.
  * @param {Request} request
  * @param {unknown} store the account store, or a falsy value while #2 lands
  * @returns {Promise<Response>}
@@ -148,20 +207,67 @@ export async function handleSigninRequest(request, store) {
   }
   // The store's own answer, whatever it is: a sign-in that fails must say so
   // rather than leaving the page waiting. The store contract is the account
-  // store's (drive#2) — start() records the one-time code against the address
-  // and emails it, and reports what it did.
+  // store's (src/accounts.js) — startSignin records the one-time code against
+  // the address and emails it, finishSignin checks the code and mints the
+  // session, and both report what they did.
+  if (read.step === "finish") {
+    const signedIn = await store.finishSignin(read);
+    if (signedIn && signedIn.error) {
+      return json({ error: SIGNIN_ERRORS[signedIn.error] ?? signedIn.error }, 400);
+    }
+    return json(
+      {
+        ok: true,
+        step: "finish",
+        // The account the session names, with the address it was made from:
+        // a person who signed in as one address and lands on another's files
+        // would have no way to tell, so the address travels with the answer.
+        account: {
+          id: signedIn.account.id,
+          name: signedIn.account.name,
+          email: signedIn.account.email,
+        },
+      },
+      200,
+      { "set-cookie": sessionCookie(signedIn.sessionToken) },
+    );
+  }
   const started = await store.startSignin(read);
   if (started && started.error) {
-    return json({ error: started.error }, 502);
+    // A store error is a named key the copy below turns into a sentence, so
+    // the page never shows a raw key to a person.
+    if (started.error === "rate-limited") {
+      return json({ error: failureMessage("rate-limited") }, 429);
+    }
+    return json(signinClosedBody(), 503);
   }
-  return json({ ok: true, method: read.method }, 202);
+  if (started.method === "google" || started.method === "github") {
+    // Third-party sign-in is on the screen as the spec shows it and answered
+    // the closed way: their client ids and secrets are Nish's credentials,
+    // never values in this repo, so there is no client to redirect to.
+    return json(signinClosedBody(), 503);
+  }
+  return json({ ok: true, step: "start", method: read.method, expiresIn: started.expiresIn }, 202);
 }
+
+/**
+ * The words for each named sign-in failure, so the page shows a sentence and
+ * never a key. `invalid-code` is deliberately vague about why (wrong code vs
+ * expired code vs no code sent): telling a stranger which of the three they hit
+ * is telling them about a mailbox they may not own.
+ */
+const SIGNIN_ERRORS = Object.freeze({
+  "invalid-code": "That code did not work. Ask for a new one and try again.",
+});
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 });
 
-function json(body, status) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+function json(body, status, extraHeaders = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...extraHeaders },
+  });
 }

@@ -7,9 +7,10 @@ import {
   handleFilesRequest,
 } from "./files.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { handleSendEmailRequest, sendEmail } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
+import { createAccountStore } from "./accounts.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -39,11 +40,51 @@ function storeFor(env) {
 
 // The account store for sign-in: one place to plug the api Worker's D1 in
 // (#2), so the sign-in route never reads a binding of its own and a test can
-// hand the handler a fake. It is null today — no store is bound and none is
-// declared in cloudflare.config.ts — so the route answers its closed-door
-// message (src/signin.js) instead of reporting a code no store could hold.
-function accountsStoreFor() {
-  return null;
+// hand the handler a fake. One store per Worker isolate, holding the accounts,
+// their one-time codes and their sessions (src/accounts.js). The real D1
+// store is #2; swapping it is one factory with the same three methods.
+let accountsStore;
+function accountsStoreFor(env) {
+  // A store passed on the env wins, and that is how a test drives the real
+  // dispatch (test/account-gate.test.mjs reads the emailed code through the
+  // fake EMAIL binding and the store it builds). A deployment never sets it,
+  // so the one-isolate cache below is what production uses.
+  if (env.ACCOUNTS_STORE) {
+    return env.ACCOUNTS_STORE;
+  }
+  if (!accountsStore) {
+    accountsStore = createAccountStore({
+      // The code leaves by email through the same provider every drive email
+      // uses (src/email-send.js). With no EMAIL binding the store is built
+      // without a mailer, and a start that cannot be mailed is reported as
+      // failed rather than as a code sent — the route reads the store's answer
+      // either way, so nothing here decides what a person is told.
+      sendCode: env.EMAIL
+        ? async ({ to, code }) => {
+            await sendEmail(env.EMAIL, {
+              to,
+              kind: "signin-code",
+              from: env.MAIL_FROM,
+              rendered: signinCodeEmail(code),
+            });
+          }
+        : undefined,
+    });
+  }
+  return accountsStore;
+}
+
+// The one email the sign-in code arrives in. It is rendered here rather than in
+// src/emails.js because it carries a secret and that module's templates are the
+// five the spec names for customers (welcome, cap, read-only, payment, receipt)
+// — a secret is not one of them, and a template table that also held codes
+// would be a place to leak one from.
+function signinCodeEmail(code) {
+  return {
+    subject: `Your drive sign-in code: ${code}`,
+    text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
+    html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
+  };
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -77,7 +118,7 @@ export default {
       url.pathname === STATUS_ENDPOINT ||
       url.pathname === `${STATUS_ENDPOINT}/`
     ) {
-      return handleFirstRunStatusRequest(request, signedInAccount(request));
+      return handleFirstRunStatusRequest(request, await signedInAccount(request, accountsStoreFor(env)));
     }
     // The files handler is behind the same account gate as the page's poll
     // (issue #73): it answers 401 with no data for a request that cannot prove
@@ -91,7 +132,7 @@ export default {
       // prove an account is answered by the handler's own 401 with no store
       // in the call at all, so a misconfigured deployment fails for its own
       // signed-in callers and tells a stranger nothing about itself.
-      const account = signedInAccount(request);
+      const account = await signedInAccount(request, accountsStoreFor(env));
       return handleFilesRequest(request, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
@@ -102,16 +143,15 @@ export default {
       url.pathname === USAGE_ENDPOINT ||
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
-      return handleUsageRequest(request, signedInAccount(request));
+      return handleUsageRequest(request, await signedInAccount(request, accountsStoreFor(env)));
     }
-    // The sign-in screen's start (build step 9, issue #10). The store that
-    // remembers a one-time code for an account lands with build step 1's api
-    // Worker D1 (#2), so accountsStoreFor() hands the handler nothing yet and
-    // the route answers its closed door: a 503 with the message table's words,
-    // never a code reported as sent. It is registered here, ahead of the
-    // asset fallthrough, because /api/signin must reach the Worker.
+    // The sign-in screen's start and finish (build step 9, issue #10). The
+    // account store (src/accounts.js) records the one-time code against the
+    // address and, on the finish step, mints the session cookie every account
+    // route above is gated on. It is registered here, ahead of the asset
+    // fallthrough, because /api/signin must reach the Worker.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, accountsStoreFor());
+      return handleSigninRequest(request, accountsStoreFor(env));
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

@@ -75,7 +75,7 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   // cannot name a test that runs but no longer enforces anything.
   assert.match(srcFile("index.js"), /export default \{\n  async fetch/);
   const required = [
-    ["src/status.js", /export function signedInAccount\(request\)/],
+    ["src/status.js", /export async function signedInAccount\(request, store\)/],
     ["src/files.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
@@ -126,8 +126,8 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // in the file: the expression has to sit in the route's own branch, and every
   // route's branch is named by the constant the switch compares against.
   for (const [usedAs, account] of [
-    ["STATUS_ENDPOINT", "signedInAccount(request)"],
-    ["FILES_ENDPOINT", "signedInAccount(request)"],
+    ["STATUS_ENDPOINT", "signedInAccount(request"],
+    ["FILES_ENDPOINT", "signedInAccount(request"],
   ]) {
     const at = branch.indexOf(usedAs);
     assert.notEqual(at, -1, `${usedAs} must have its own branch in the fetch switch`);

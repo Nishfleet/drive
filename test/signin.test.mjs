@@ -31,6 +31,7 @@ import {
   readSigninRequest,
   signinClosedBody,
 } from "../src/signin.js";
+import { createAccountStore } from "../src/accounts.js";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
@@ -53,7 +54,12 @@ test("the Worker routes the sign-in start and serves no other method", async () 
     const response = await worker.fetch(post({ method: "email", email: "a@b.co" }, {
       url: `https://drive.test${path}`,
     }), env);
-    assert.equal(response.status, 503, `${path} must reach the sign-in handler`);
+    // The Worker's own store is bound, so a start is a real 202 with a code
+    // emailed and no code in the reply.
+    assert.equal(response.status, 202, `${path} must reach the sign-in handler`);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal("code" in payload, false, "the code leaves by email, never in the reply");
   }
   // GET is not served: a GET must not be answered by the handler's POST
   // body, and must not fall through to the asset layer either.
@@ -63,7 +69,10 @@ test("the Worker routes the sign-in start and serves no other method", async () 
 });
 
 test("with no account store the route is a closed door, not a fake success", async () => {
-  const response = await worker.fetch(post({ method: "email", email: "a@b.co" }), env);
+  const response = await handleSigninRequest(
+    post({ method: "email", email: "a@b.co" }),
+    null,
+  );
   assert.equal(response.status, 503);
   const payload = await response.json();
   assert.deepEqual(payload, signinClosedBody());
@@ -71,6 +80,7 @@ test("with no account store the route is a closed door, not a fake success", asy
   // The closed door must not look like a sent code, in any field.
   assert.equal("ok" in payload, false, "a closed sign-in must not answer ok");
   assert.equal("code" in payload, false, "a closed sign-in must not answer a code");
+  assert.equal(response.headers.get("set-cookie"), null, "a closed sign-in sets no session");
 });
 
 test("a request that did not come from the site is refused before anything is stored", async () => {
@@ -78,19 +88,19 @@ test("a request that did not come from the site is refused before anything is st
     { method: "email", email: "a@b.co" },
     { headers: { origin: "https://elsewhere.example" } },
   );
-  const response = await worker.fetch(cross, env);
+  const response = await handleSigninRequest(cross, createAccountStore());
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: failureMessage("cross-site") });
 });
 
 test("a body that is not JSON, or not an object, is a 400 and never a 202", async () => {
   for (const body of ["not json", '["email"]', '"email"', "null"]) {
-    const response = await worker.fetch(post(body), env);
+    const response = await handleSigninRequest(post(body), createAccountStore());
     assert.equal(response.status, 400, `body ${body} must be refused`);
   }
 });
 
-test("the three methods the spec's screen names are the three it accepts", async () => {
+test("the three methods the spec's screen names are the three it accepts", () => {
   // docs/build-spec.md, "Screens": "Sign in | Email one-time code, or Google
   // or GitHub. No card asked". This is the spec's own sentence, kept here as
   // the line a change to the method list has to argue with.
@@ -126,6 +136,7 @@ test("the email method needs an address; the OAuth methods do not", () => {
   // Google and GitHub ask the person who they are; the address is not ours
   // to collect, and the page does not collect one.
   assert.deepEqual(readSigninRequest({ method: "github", email: "ignored@x.co" }), {
+    step: "start",
     method: "github",
   });
 });
@@ -135,21 +146,46 @@ test("the route hands the store the method and address, once, and reports failur
   const store = {
     async startSignin(read) {
       calls.push(read);
-      return { ok: true };
+      return { expiresIn: 600 };
     },
   };
   const ok = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), store);
   assert.equal(ok.status, 202);
-  assert.deepEqual(await ok.json(), { ok: true, method: "email" });
-  assert.deepEqual(calls, [{ method: "email", email: "you@example.com" }]);
+  assert.deepEqual(await ok.json(), { ok: true, step: "start", method: "email", expiresIn: 600 });
+  assert.deepEqual(calls, [{ step: "start", method: "email", email: "you@example.com" }]);
 
-  const broken = await handleSigninRequest(post({ method: "google" }), {
+  // A store that failed does not become a 202, and the raw key never reaches
+  // a person: the route's own words answer instead.
+  const broken = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), {
     async startSignin() {
-      return { error: "The mail service did not take the code." };
+      return { error: "rate-limited" };
     },
   });
-  assert.equal(broken.status, 502, "a store that failed must not answer 202");
-  assert.equal((await broken.json()).error, "The mail service did not take the code.");
+  assert.equal(broken.status, 429, "a store that failed must not answer 202");
+  assert.equal((await broken.json()).error, failureMessage("rate-limited"));
+});
+
+test("the finish step is checked before anything is minted", () => {
+  // Both fields are required and both are shape-checked, so a missing or
+  // malformed code is a 400 rather than a store lookup of "".
+  for (const body of [
+    { step: "finish" },
+    { step: "finish", email: "you@example.com" },
+    { step: "finish", code: "123456" },
+    { step: "finish", email: "nope", code: "123456" },
+    { step: "finish", email: "you@example.com", code: "12345" },
+    { step: "finish", email: "you@example.com", code: "1234567" },
+    { step: "finish", email: "you@example.com", code: "12345a" },
+    { step: "finish", email: "you@example.com", code: "123 456" },
+  ]) {
+    const read = readSigninRequest(body);
+    assert.ok(read.error, `${JSON.stringify(body)} must be refused`);
+  }
+  const good = readSigninRequest({ step: "finish", email: " you@example.com ", code: " 012345 " });
+  assert.deepEqual(good, { step: "finish", email: "you@example.com", code: "012345" });
+  // A step that is neither is refused by name, so a typo cannot read as a
+  // start and quietly email another code.
+  assert.match(readSigninRequest({ step: "confirm", email: "a@b.co" }).error, /start or finish/);
 });
 
 test("the closed door's words come from the message table, once", async () => {
