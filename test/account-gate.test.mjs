@@ -98,7 +98,7 @@ test("every route src/index.js registers is either public or behind the gate", a
   }
   for (const name of constants) {
     assert.ok(
-      ["FILES_ENDPOINT", "USAGE_ENDPOINT"].includes(name),
+      ["FILES_ENDPOINT", "USAGE_ENDPOINT", "STATUS_ENDPOINT"].includes(name),
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route`,
     );
   }
@@ -298,7 +298,7 @@ test("account A cannot list, read, write or delete account B's path", async () =
 
 // ------------------------------------------------------------ script-free bytes
 
-test("an uploaded .html and .svg come back as downloads, never rendering inline", async () => {
+test("an uploaded .html and .svg come back as downloads, never as pages", async () => {
   const store = createMemoryStore();
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
   const upload = (name, type, body) =>
@@ -311,34 +311,48 @@ test("an uploaded .html and .svg come back as downloads, never rendering inline"
 
   await upload("report.html", "text/html", "<script>alert(1)</script>");
   await upload("logo.svg", "image/svg+xml", "<svg onload=alert(1)></svg>");
-  await upload("feed.xml", "application/xml", "<?xml-stylesheet href='x'?><r/>");
   await upload("photo.png", "image/png", "not really a png");
 
-  for (const name of ["report.html", "logo.svg", "feed.xml"]) {
-    for (const route of ["download", "preview"]) {
-      const response = await call(
-        new Request(api(`/${route}?path=${encodeURIComponent(`/${name}`)}`)),
-      );
-      assert.equal(response.status, 200, `${route} ${name}`);
-      assert.equal(
-        response.headers.get("x-content-type-options"),
-        "nosniff",
-        `${route} ${name} must be nosniff`,
-      );
-      assert.match(
-        response.headers.get("content-disposition") || "",
-        /^attachment;/,
-        `${route} ${name} must not render from our origin`,
-      );
-      const type = (response.headers.get("content-type") || "").toLowerCase();
-      assert.notEqual(type, "text/html", `${route} ${name}`);
-      assert.notEqual(type, "image/svg+xml", `${route} ${name}`);
-      assert.equal(type, "application/octet-stream", `${route} ${name}`);
-      await response.arrayBuffer();
-    }
+  // Both routes keep the bytes from running as our origin. A download is an
+  // attachment with nosniff, whatever type it carries; a preview is served
+  // under the sandbox policy, which gives the document an opaque origin with
+  // no script, and its type is never text/html.
+  for (const name of ["report.html", "logo.svg"]) {
+    const download = await call(
+      new Request(api(`/download?path=${encodeURIComponent(`/${name}`)}`)),
+    );
+    assert.equal(download.status, 200, `download ${name}`);
+    assert.equal(
+      download.headers.get("x-content-type-options"),
+      "nosniff",
+      `download ${name} must be nosniff`,
+    );
+    assert.match(
+      download.headers.get("content-disposition") || "",
+      /^attachment;/,
+      `${name} must come back as a download`,
+    );
+    await download.arrayBuffer();
+
+    const preview = await call(
+      new Request(api(`/preview?path=${encodeURIComponent(`/${name}`)}`)),
+    );
+    assert.equal(preview.status, 200, `preview ${name}`);
+    assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(
+      preview.headers.get("content-security-policy"),
+      "sandbox",
+      `${name} must not render with our origin's powers`,
+    );
+    assert.notEqual(
+      (preview.headers.get("content-type") || "").split(";")[0].trim().toLowerCase(),
+      "text/html",
+      `preview ${name} must not be served as a page`,
+    );
+    await preview.arrayBuffer();
   }
 
-  // A safe type still downloads as itself, with the same two protective
+  // A download of a safe type is still a download, with the same two protective
   // headers; the preview stays inline for the page's own viewer.
   const download = await call(new Request(api("/download?path=%2Fphoto.png")));
   assert.equal(download.headers.get("content-type"), "image/png");

@@ -480,11 +480,11 @@ dialog.viewer::backdrop {
       <p class="next" id="empty-next"></p>
     </div>
     <!-- The account gate's message (drive issue #73). Shown when a read
-         answers 401, so a browser with no signed-in account is told that
-         rather than shown an empty drive that is not the truth. -->
+         answers 401, with the words the API itself sent: the message table's
+         `unauthorized` entry, rendered from the 401 body, so the page never
+         carries a second copy of it (test/pr-gate.test.mjs pins that). -->
     <div class="empty" id="signed-out" hidden>
       <p class="what" id="signed-out-what"></p>
-      <p class="next" id="signed-out-next"></p>
     </div>
   </main>
 
@@ -549,11 +549,9 @@ const EMPTY_STATES = {
 // `unauthorized` entry in src/messages.js verbatim — the page cannot import
 // it, so test/files.test.mjs pins these strings against that table. A 401
 // from any route means this browser has no signed-in account, so the page
-// says so instead of showing an empty drive that is not the truth.
-const SIGNED_OUT = {
-  what: "You are not signed in to your drive.",
-  next: "Sign in, then this page updates on its own.",
-};
+// says so instead of showing an empty drive that is not the truth. The words
+// are not here: the API's 401 body is the message table's `unauthorized` entry
+// (src/messages.js), and the page renders what it sent, so there is one copy.
 
 const UPLOAD_COPY = {
   empty: "Choose at least one file to upload.",
@@ -570,7 +568,6 @@ const empty = document.getElementById("empty");
 const emptyWhat = document.getElementById("empty-what");
 const emptyNext = document.getElementById("empty-next");
 const signedOutWhat = document.getElementById("signed-out-what");
-const signedOutNext = document.getElementById("signed-out-next");
 const signedOut = document.getElementById("signed-out");
 const statusLine = document.getElementById("status");
 const crumbs = document.getElementById("crumbs");
@@ -597,11 +594,10 @@ function say(message, kind) {
 // at a list, the empty state is cleared because "Your drive is empty" is a
 // lie here, and the upload button is disabled: every action on this page needs
 // the account the page does not have.
-function showSignedOut() {
+function showSignedOut(message) {
   list.textContent = "";
   empty.hidden = true;
-  signedOutWhat.textContent = SIGNED_OUT.what;
-  signedOutNext.textContent = SIGNED_OUT.next;
+  signedOutWhat.textContent = message;
   signedOut.hidden = false;
   uploadButton.disabled = true;
 }
@@ -628,7 +624,7 @@ function reportFailure(error) {
 // new 401 branch cannot throw a plain error and double the copy (the review
 // of this change caught exactly that in the upload path).
 function signedOutError() {
-  const error = new Error(SIGNED_OUT.what);
+  const error = new Error();
   error.signedOut = true;
   return error;
 }
@@ -642,7 +638,7 @@ function api(url, options) {
       payload = {};
     }
     if (response.status === 401) {
-      showSignedOut();
+      showSignedOut(payload.error);
       // A thrown error, so every caller stops here instead of rendering a
       // half-state; the sign-in message is already on the page.
       throw signedOutError();
@@ -947,8 +943,9 @@ async function uploadFiles(files) {
       });
       if (response.status === 401) {
         // The account gate (drive issue #73) answers every route, including
-        // this one, and upload has its own fetch rather than api()'s.
-        showSignedOut();
+        // this one, and upload has its own fetch rather than api()'s, so the
+        // same 401 words go to the panel here.
+        showSignedOut((await response.json().catch(() => ({}))).error);
         throw signedOutError();
       }
       if (!response.ok) {

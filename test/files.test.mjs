@@ -34,9 +34,9 @@ import {
   isRestorable,
   parseListObjects,
   parseTrashName,
+  previewContentType,
   previewCopy,
   restorableUntil,
-  serveContentType,
   sortEntries,
   splitEntries,
   trashName,
@@ -47,8 +47,10 @@ import {
 import { FAILURE_MESSAGES } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
+// The first-run page is a Vite entry at the repo root (issue #70), not a
+// verbatim asset in public/, so its shell is read from there.
 const getStarted = readFileSync(
-  new URL("../public/get-started.html", import.meta.url),
+  new URL("../get-started.html", import.meta.url),
   "utf8",
 );
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -340,35 +342,6 @@ test("browse: the drive never lists the trash folder as a folder", async () => {
   assert.equal(trash.rows.length, 1);
 });
 
-test("an upload with no type is a download, and a script type never inlines", () => {
-  // The whole point of serveContentType (drive issue #73): the browser never
-  // renders these bytes from our origin, whether the type was named by the
-  // upload or by the file's extension.
-  for (const [type, name] of [
-    ["text/html", "page.bin"],
-    ["image/svg+xml", "page.bin"],
-    ["application/xml", "feed.bin"],
-    ["text/xml", "feed.bin"],
-    ["", "page.html"],
-    ["text/plain", "page.svg"],
-    ["text/plain", "feed.xml"],
-    ["text/plain", "page.xhtml"],
-  ]) {
-    const served = serveContentType(type, name);
-    assert.equal(served.type, "application/octet-stream", `${type} ${name}`);
-    assert.equal(served.inline, false, `${name} must not render from our origin`);
-  }
-  // A type we can name and that cannot carry script keeps its own type.
-  assert.deepEqual(serveContentType("image/png", "photo.png"), {
-    type: "image/png",
-    inline: true,
-  });
-  assert.deepEqual(serveContentType("text/plain; charset=utf-8", "notes.txt"), {
-    type: "text/plain",
-    inline: true,
-  });
-});
-
 test("preview: a picture comes back inline, download comes back as an attachment", async () => {
   const { call, upload } = drive();
   await upload("/", "holiday.jpg", "the-bytes", "image/jpeg");
@@ -394,6 +367,54 @@ test("preview: a file name cannot break out of the header", async () => {
   await upload("/", 'a"b.txt', "x", "text/plain");
   const response = await call(new Request(api("/download?path=%2Fa%22b.txt")));
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="ab.txt"');
+});
+
+test("preview: an uploaded page is never a page on our origin", async () => {
+  // A file the customer uploaded is data, not a document on the origin that
+  // holds it: the served type follows the file's kind, never the type the
+  // upload claimed, and the two headers below keep a browser from deciding
+  // otherwise.
+  const { call, upload } = drive();
+  await upload("/", "page.html", "<!doctype html><title>a page</title>", "text/html");
+  await upload("/", "script.svg", '<svg xmlns="http://www.w3.org/2000/svg" onload="run()"/>', "image/svg+xml");
+  await upload("/", "note.txt", "just words", "text/plain");
+  await upload("/", "sheet.csv", "a,b\n1,2", "text/csv");
+  for (const route of ["/preview", "/download"]) {
+    const page = await call(new Request(api(`${route}?path=%2Fpage.html`)));
+    assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+    if (route === "/preview") {
+      assert.equal(page.headers.get("content-type"), "text/plain; charset=utf-8");
+      assert.equal(page.headers.get("content-disposition"), "inline");
+      assert.equal(page.headers.get("content-security-policy"), "sandbox");
+    } else {
+      // The download is the customer's own file, with the type they sent.
+      assert.equal(page.headers.get("content-type"), "text/html");
+      assert.equal(page.headers.get("content-disposition"), 'attachment; filename="page.html"');
+    }
+  }
+  // A download is the customer's file, byte for byte, with the type they sent.
+  const download = await call(new Request(api("/download?path=%2Fpage.html")));
+  assert.equal(download.headers.get("content-security-policy"), null);
+  assert.equal(download.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(await download.text(), "<!doctype html><title>a page</title>");
+  // An image keeps its own type, so the page's <img> and <video> still work.
+  const picture = await call(new Request(api("/preview?path=%2Fscript.svg")));
+  assert.equal(picture.headers.get("content-type"), "image/svg+xml");
+  const text = await call(new Request(api("/preview?path=%2Fnote.txt")));
+  assert.equal(text.headers.get("content-type"), "text/plain; charset=utf-8");
+  const csv = await call(new Request(api("/preview?path=%2Fsheet.csv")));
+  assert.equal(csv.headers.get("content-type"), "text/plain; charset=utf-8");
+  // The rule, as a function: a kind decides the type, a wrong claim does not.
+  assert.equal(previewContentType("page.html", "text/html"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("report.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(previewContentType("clip.mp4", "video/mp4"), "video/mp4");
+  // A lying type wins the kind (type beats extension), and a text kind is
+  // served as text either way, so no claim can produce a document type.
+  assert.equal(previewContentType("clip.mp4", "text/html"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
+  assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
+  assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
+  assert.throws(() => previewContentType(null, "text/plain"), TypeError);
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -766,37 +787,21 @@ test("the page's copy is the module's copy", () => {
   assert.ok(page.includes(RESTORE_COPY.done));
 });
 
-test("the page shows the message table's sign-in words on a 401", () => {
-  // The page cannot import src/messages.js, so it carries the account gate's
-  // two sentences verbatim and this pins them against the table (drive issue
-  // #73). A drift here would have the page say something the endpoint does not.
-  assert.ok(
-    page.includes(FAILURE_MESSAGES.unauthorized.what),
-    `the page must carry the sign-in sentence: "${FAILURE_MESSAGES.unauthorized.what}"`,
-  );
-  assert.ok(
-    page.includes(FAILURE_MESSAGES.unauthorized.next),
-    `the page must carry the sign-in next step: "${FAILURE_MESSAGES.unauthorized.next}"`,
-  );
-  // And it has to act on the status, not merely carry the words: every 401
-  // branch shows the sign-in panel instead of an empty drive.
-  // And it has to act on the status, not merely carry the words: the
-  // behaviour the review of this change asked for is that a 401 never prints
-  // the message a second time into the status line, which is what the flagged
-  // error is for. Pinned on the page text because the page is a static asset
-  // and cannot be imported.
-  assert.equal(
-    (page.match(/response\.status === 401/g) || []).length,
-    2,
-    "api() and the upload fetch must both treat 401 as the account gate",
-  );
-  assert.equal(
-    (page.match(/throw signedOutError\(\);/g) || []).length,
-    2,
-    "both 401 branches must throw the flagged error, or the catch prints the message twice",
-  );
+test("the page shows the sign-in words the 401 sent, and carries no copy", () => {
+  // The page cannot import src/messages.js and must not carry a second copy of
+  // the table's `unauthorized` entry (test/pr-gate.test.mjs pins that): the
+  // API's 401 body IS that entry, so the page renders what the endpoint sent
+  // (drive issue #73). This pins the plumbing, not the words.
+  assert.match(page, /function showSignedOut\(message\)/);
+  assert.match(page, /signedOutWhat\.textContent = message;/);
+  assert.match(page, /showSignedOut\(payload\.error\)/);
+  assert.doesNotMatch(page, /You are not signed in to your drive/);
   assert.ok(page.includes('id="signed-out"'), "the page needs a sign-in panel");
-  // And a read that succeeds takes the panel away again, so the page's own
+  // Both 401 branches stop here with the flagged error, so the catch cannot
+  // print the message a second time into the status line.
+  assert.equal((page.match(/response\.status === 401/g) || []).length, 2);
+  assert.equal((page.match(/throw signedOutError\(\);/g) || []).length, 2);
+  // A read that succeeds takes the panel away again, so the page's own
   // "this page updates on its own" is true.
   assert.ok(page.includes("function showSignedIn()"));
   assert.match(page, /const payload = await api\(url\);\n    showSignedIn\(\);/);

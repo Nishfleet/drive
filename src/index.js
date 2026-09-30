@@ -1,5 +1,5 @@
 import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest, signedInAccount } from "./status.js";
+import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT } from "./status.js";
 import {
   FILES_ENDPOINT,
   createMemoryStore,
@@ -60,10 +60,11 @@ export default {
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
     // The handler is closed until the sign-in flow resolves an account
-    // (issue #45), so an anonymous poll gets 401 and no device data.
+    // (issue #45), so an anonymous poll gets 401 and no device data. The path
+    // is the module's own constant, so the route and the page cannot drift.
     if (
-      url.pathname === "/api/first-run-status" ||
-      url.pathname === "/api/first-run-status/"
+      url.pathname === STATUS_ENDPOINT ||
+      url.pathname === `${STATUS_ENDPOINT}/`
     ) {
       return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
