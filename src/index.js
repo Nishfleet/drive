@@ -1,5 +1,6 @@
 import { handleWaitlistRequest } from "./waitlist.js";
 import { handleFirstRunStatusRequest } from "./status.js";
+import { handleUsageRequest } from "./billing.js";
 
 // Static assets serve the pricing page and the first-run page; only /api/*
 // reaches this Worker (see runWorkerFirst in cloudflare.config.ts). Anything
@@ -23,6 +24,11 @@ export default {
       url.pathname === "/api/first-run-status/"
     ) {
       return handleFirstRunStatusRequest(request);
+    }
+    // The usage page's and the CLI's read of the month's money (issue #7,
+    // build step 6). Same rule: the branch comes before the asset fallthrough.
+    if (url.pathname === "/api/usage" || url.pathname === "/api/usage/") {
+      return handleUsageRequest(request);
     }
     return env.ASSETS.fetch(request);
   },
