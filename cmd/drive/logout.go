@@ -158,11 +158,6 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 	return nil
 }
 
-// ReadDeviceKey reads this device's key out of the rclone config. A missing
-// config is no key at all (nil, nil): there is nothing to revoke, and that is
-// not an error. A config that cannot be read is an error, not a missing key —
-// logout would otherwise print a clean sign-out while a key it could not name
-// is still live.
 // errPendingRevoke says a receipt from an earlier logout is on file: a key was
 // left live and this device no longer holds it.
 var errPendingRevoke = errors.New("an earlier logout left a key live; this device no longer has the key to revoke it with")
