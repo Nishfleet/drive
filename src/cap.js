@@ -23,6 +23,15 @@
 //   3. Nothing is deleted. A swap moves writes only: the account's files, its
 //      other keys and its branches are untouched. Only the storage key is
 //      replaced, and only its write capability is lost.
+//   4. The cap gives back only what it took (issue #74). "Read-only" has two
+//      causes and this module must not confuse them: the cap, and the customer
+//      (`drive init --read-only` mints an agent key with just [list, read]).
+//      The swap that reduces a key records the capabilities it took on the key
+//      row (`cappedFrom`, which the wiring in issue #64 stores on the devices
+//      row next to capabilities), and only a key carrying that record is ever
+//      widened — back to exactly the recorded scope, never to the kind's full
+//      table. A key without a record stays whatever the customer made it, on
+//      every run, forever.
 //
 // *When* the cap is reached is not decided here: src/billing.js's
 // usageSummary()/capStatus() own that, and this module only acts on the state
@@ -50,8 +59,10 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(["list", "read"]);
 // safety": a device key may delete, and an agent, s3 or branch key may not.
 // These are the capabilities only: a swap keeps the key's own prefix, so a
 // branch key stays inside /u/<id>/.branches/<name>/ and is never widened to
-// the whole account. This mirrors the kind switch in keyprovider.js scopeFor();
-// when that file lands it becomes the one table and this constant reads from it.
+// the whole account. The table is also the ceiling on any restore: the most a
+// kind may ever hold, so a corrupted record cannot hand an agent key `delete`.
+// This mirrors the kind switch in keyprovider.js scopeFor(); when that file
+// lands it becomes the one table and this constant reads from it.
 export const WRITE_SCOPE_BY_KIND = Object.freeze({
   device: Object.freeze(["list", "read", "write", "delete"]),
   agent: Object.freeze(["list", "read", "write"]),
@@ -60,7 +71,10 @@ export const WRITE_SCOPE_BY_KIND = Object.freeze({
 });
 
 function sameCapabilities(left, right) {
-  return left.length === right.length && left.every((name, index) => name === right[index]);
+  // Set equality, not element order: a row's capability list has no meaningful
+  // order, so two rows holding the same names must not trigger a swap (which
+  // would churn a key for nothing). Names are unique within a scope.
+  return left.length === right.length && left.every((name) => right.includes(name));
 }
 
 /**
@@ -88,17 +102,54 @@ function checkedKey(key) {
   if (!Array.isArray(key.capabilities)) {
     throw new TypeError(`A key row needs capabilities as a list, got ${String(key.capabilities)}`);
   }
+  // cappedFrom is the cap swap's own record (issue #74) and is optional: a key
+  // the customer narrowed itself has none. When present it must be a real
+  // list of capability names — a half-written row is a data error to surface,
+  // not a "no record, carry on" that would guess a key's scope.
+  if (key.cappedFrom !== undefined && key.cappedFrom !== null) {
+    checkedCappedFrom(key);
+  }
   return key;
+}
+
+function checkedCappedFrom(key) {
+  const taken = key.cappedFrom;
+  const names = Array.isArray(taken) && taken.every((name) => typeof name === "string" && name.length > 0);
+  if (!names || taken.length === 0) {
+    throw new TypeError(
+      `A key row's cappedFrom must be a non-empty list of capability names, ` +
+        `got ${String(JSON.stringify(taken))} on key ${String(key.keyId)}`,
+    );
+  }
+  return taken;
+}
+
+/**
+ * The capabilities the cap is allowed to give this key back: the ones its own
+ * record says it took, held to the scope the key's kind gets. The scope is the
+ * ceiling that makes a corrupted or hand-edited record harmless — a row
+ * claiming an agent key was taken down from a `delete` scope restores an agent
+ * key to the scope an agent key has, and no more. A record with nothing this
+ * kind could ever have held returns an empty list, and the caller leaves the key
+ * read-only: there is nothing to give back, and one bad row must not crash the
+ * hourly enforcement run that is holding every other key read-only at the cap.
+ * @param {string[]} taken the key row's validated `cappedFrom` record
+ * @param {ReadonlyArray<string>} scope the key kind's full scope
+ */
+function grantedCapabilities(taken, scope) {
+  return taken.filter((name) => scope.includes(name));
 }
 
 /**
  * The capabilities this key should end up with for the cap's state, or null
- * when it is already there. At the cap that is the read-only pair; below it,
- * the key's kind's full set, which hands a device key its delete back and never
- * gives an agent key one. An unknown kind below the cap is a data error and
- * throws: guessing capabilities for a kind we do not know is how an agent key
- * would quietly come back able to delete.
- * @param {{keyId: string, kind: string, prefix: string, capabilities: string[]}} key
+ * when it is already there. At the cap that is the read-only pair. Below it,
+ * only a key the cap itself reduced can widen, and only back to what the cap
+ * took: the record on the key row (`cappedFrom`), never the kind's full table,
+ * because a key the customer made read-only (`drive init --read-only`) has no
+ * record and must stay read-only on every run, forever. An unknown kind with a
+ * record is a data error and throws: restoring without the kind's scope is how
+ * an agent key would quietly come back able to delete.
+ * @param {{keyId: string, kind: string, prefix: string, capabilities: string[], cappedFrom?: string[]|null}} key
  * @param {"active"|"read_only"} state
  */
 function targetCapabilities(key, state) {
@@ -108,6 +159,9 @@ function targetCapabilities(key, state) {
   if (isWriteCapable(key)) {
     return null;
   }
+  if (key.cappedFrom === undefined || key.cappedFrom === null) {
+    return null;
+  }
   const scope = WRITE_SCOPE_BY_KIND[key.kind];
   if (!scope) {
     throw new Error(
@@ -115,7 +169,11 @@ function targetCapabilities(key, state) {
         `add it to WRITE_SCOPE_BY_KIND in src/cap.js`,
     );
   }
-  return scope;
+  // checkedKey() has already validated the record's shape, so it is only held
+  // to the kind's scope here. A record the kind cannot use gives back nothing
+  // and leaves the key read-only, rather than emptying it or crashing the run.
+  const restored = grantedCapabilities(key.cappedFrom, scope);
+  return restored.length === 0 || sameCapabilities(restored, key.capabilities) ? null : restored;
 }
 
 /**
@@ -124,11 +182,14 @@ function targetCapabilities(key, state) {
  * key to be the one in use. The plan is built from the account's key rows and
  * touches nothing; applyCapSwap() does the talking.
  *
- * A swap is `{keyId, kind, prefix, capabilities}`: the read-only scope at the
- * cap, the kind's full scope once the cap is raised. Keys already in the right
- * shape are left out, which is what makes a second run a no-op.
+ * A swap is `{keyId, kind, prefix, capabilities, cappedFrom}`: the read-only
+ * scope at the cap, the recorded scope once the cap is raised. `cappedFrom` is
+ * the record of what this swap took (the api Worker stores it on the devices row
+ * next to capabilities), and `null` on the swap that gives it back, so the row
+ * never keeps a spent record. Keys already in the right shape are left out,
+ * which is what makes a second run a no-op.
  *
- * @param {Array<{keyId: string, kind: string, prefix: string, capabilities: string[]}>} keys the account's key rows
+ * @param {Array<{keyId: string, kind: string, prefix: string, capabilities: string[], cappedFrom?: string[]|null}>} keys the account's key rows
  * @param {{state: "active"|"read_only"}} cap a capStatus() result
  * @returns {{state: "active"|"read_only", swaps: ReadonlyArray<object>, mount: {restart: boolean, reason: string|null}}}
  */
@@ -152,6 +213,17 @@ export function capSwapPlan(keys, cap) {
           kind: key.kind,
           prefix: key.prefix,
           capabilities,
+          // At the cap the swap records what it took, so the raise below can
+          // give back exactly that. The record is the capabilities the key
+          // actually held, unfiltered: the cap must still stop writes on a row
+          // whose kind has no scope entry, and holding the record to the kind's
+          // scope is the restore's job (grantedCapabilities). Below the cap the
+          // record is spent and cleared, which keeps a second raise from
+          // minting a second key.
+          cappedFrom:
+            cap.state === "read_only"
+              ? Object.freeze([...key.capabilities])
+              : null,
         }),
       );
     }
