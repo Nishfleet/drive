@@ -75,7 +75,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 |---|---|
 | Sign in | Email one-time code, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
-| Usage | One "you saved" line, two copies (decided #39, 2026-09-30): a capped month (metered > bill) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0. Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
+| Usage | One "you saved" line, two copies (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
 | Billing | Dodo's hosted portal: card, invoices, the free $1 shown as a dollar line |
 | Branches | Each branch: agent, files changed, approve or discard |
@@ -117,7 +117,7 @@ Each tool also gets a short skill note: where the drive is, that deletes can be 
 - Monthly cost = total GB-minutes ÷ 43,800 (minutes in an average month) × 2¢.
 - Downloads: bytes counted by the dl Worker. Anything above 3x the average stored GB that month is billed at 1¢/GB.
 - The free $1 comes off each month. Without a card, writes stop at $1 of usage (the account's cap is $1 until a card is added).
-- The monthly invoice and usage page show one "you saved" line, with the baseline chosen by month type (decided #39, 2026-09-30; Nish can overrule). Capped month (metered > bill): saved = metered − bill, copy "Our price cap saved you $X". Uncapped month: saved = ceiling − bill, copy "You paid $X less than a flat plan". Hidden when the figure is 0 or less. The bill itself is min(metered, ceiling); the ceiling is applied at invoice time, so Dodo gets the capped amount.
+- The monthly invoice and usage page show one "you saved" line, with the baseline chosen by month type (decided #39, 2026-09-30; Nish can overrule). Capped month (metered > ceiling): saved = metered − bill, copy "Our price cap saved you $X". Uncapped month: saved = ceiling − bill, copy "You paid $X less than a flat plan". Hidden when the figure is 0 or less, and on a month with no bill (an empty drive costs $0 on every plan, so there is nothing to have saved). The bill itself is min(metered, ceiling); the ceiling is applied at invoice time, so Dodo gets the capped amount.
 - The meter pushes each hour's total to Dodo, keyed by account and hour, so a repeat push is ignored.
 
 ## Keys and safety
