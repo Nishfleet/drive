@@ -1,12 +1,11 @@
 import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest } from "./status.js";
+import { handleFirstRunStatusRequest, signedInAccount } from "./status.js";
 import {
   FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
 } from "./files.js";
-import { signedInAccount } from "./status.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
 
@@ -14,11 +13,14 @@ import { handleSendEmailRequest } from "./email-send.js";
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
 
-// One drive per Worker isolate (build step 1's stand-in). With no storage
-// configured the in-memory store holds what the page uploaded this run, so the
-// Web Files page is real in dev and in the tests; FILES_S3_ENDPOINT and
-// FILES_S3_BUCKET point the same handlers at `rclone serve s3` instead. The
-// real scoped-key adapter lands with #2 behind the same FileStore interface.
+// One store per Worker isolate, holding every account's files under its own
+// prefix. With no storage configured the in-memory store holds what the page
+// uploaded this run, so the Web Files page is real in dev and in the tests;
+// FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
+// `rclone serve s3` instead. The real scoped-key adapter lands with #2 behind
+// the same FileStore interface. Both are plain stores over storage keys: the
+// account prefix and the isolation between accounts are scopeStore's job
+// (src/files.js), so an adapter never has to know about an account.
 let filesStore;
 function storeFor(env) {
   if (!filesStore) {
