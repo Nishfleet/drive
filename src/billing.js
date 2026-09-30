@@ -27,11 +27,13 @@
 // held all month) are the storage-line cases, and the five #76 figures are the
 // month's totals, in test/billing.test.mjs.
 //
-// Two inputs, not one: the meter (the bill) and the peak size (the ceiling).
-// They are the same number only when the data was held for the whole month
-// (Nish's cases). When the drive grew mid-month they differ, and the ceiling
-// must follow the peak, so the peak is passed in rather than read back out of
-// the meter.
+// Two storage inputs, not one: the meter (the metered charge) and the peak
+// size (the ceiling). They are the same number only when the data was held for
+// the whole month (Nish's cases). When the drive grew mid-month they differ,
+// and the ceiling must follow the peak, so the peak is passed in rather than
+// read back out of the meter. monthBillCents() takes two more — the download
+// bytes and the average stored size that sets their free 3x — and the config's
+// $1 credit is the last term.
 //
 // Every number that could be a constant is a config value in BILLING_CONFIG,
 // including the iDrive $8/TB and its B2 fallback $10/TB: the "$8" in the
@@ -166,12 +168,13 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
  * monthBillCents() — the one function that returns the whole month's bill —
  * so the "you saved" copy can compare the meter, the ceiling and the bill
  * without a second copy of the min/max. It is not the amount Dodo is pushed:
- * that is monthBillCents().totalCents.
+ * that is monthBillCents().totalCents, and the name says storage so a caller
+ * cannot mistake it for the whole bill.
  * @param {number} gbMinutes the month's metered GB-minutes
  * @param {number} peakGb the month's largest stored size
  * @param {object} [config=BILLING_CONFIG]
  */
-export function monthlyBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
+export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
   return monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
 }
 
@@ -210,6 +213,15 @@ export function monthBillCents({
   checked(peakGb, "month.peakGb");
   checked(downloadBytes, "month.downloadBytes");
   checked(averageStoredGb, "month.averageStoredGb");
+  // The free 3x allowance is the average stored size, so a rollup with
+  // download bytes but no stored average is a broken month: defaulting the
+  // average to 0 would silently charge every downloaded byte. Both omitted is
+  // a storage-only call (the cap's own use), which is fine.
+  if (downloadBytes > 0 && averageStoredGb === 0) {
+    throw new TypeError(
+      "month.downloadBytes needs month.averageStoredGb: a month with downloads cannot have no stored average",
+    );
+  }
   const storageCents = Math.min(
     Math.round(meteredMonthlyBillUsd(gbMinutes, config) * 100),
     Math.round(monthlyCeilingUsd(peakGb, config) * 100),
@@ -250,7 +262,7 @@ export function monthBillCents({
 export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
   const ceiling = monthlyCeilingUsd(peakGb, config);
-  const bill = monthlyBillUsd(gbMinutes, peakGb, config);
+  const bill = monthlyStorageBillUsd(gbMinutes, peakGb, config);
   const capped = metered > ceiling;
   const saved = Math.max(0, (capped ? metered : ceiling) - bill);
   // Hidden when there is nothing to compare: build-spec.md's Usage screen

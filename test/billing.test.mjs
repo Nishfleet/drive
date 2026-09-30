@@ -1,13 +1,15 @@
-// Tests for the month's money (drive issue #7, build step 6).
+// Tests for the month's money (drive issue #7, build step 6; issue #76).
 //
-// The acceptance cases are Nish's own six figures, from his 2026-09-30 comment
-// on the issue ("Tests: 400 GB -> $8, 800 GB -> $12, 1.3 TB -> $12, 1.6 TB ->
-// $12.80, 2 TB -> $16, 5 TB -> $40"), each for data held all month, which is
-// the only case where the metered bill and the peak size are the same number.
-// The rest covers what the issue also asks for: the ceiling applied at invoice
-// time so Dodo is never sent the uncapped meter, the cap counting
-// min(metered, ceiling) so a default account is never cut off early, the two
-// "you saved" lines, the free downloads, and the endpoint the usage page reads.
+// The acceptance cases are Nish's own six storage figures, from his 2026-09-30
+// comment on the issue ("Tests: 400 GB -> $8, 800 GB -> $12, 1.3 TB -> $12,
+// 1.6 TB -> $12.80, 2 TB -> $16, 5 TB -> $40"), each for data held all month,
+// which is the only case where the metered storage and the peak size are the
+// same number. Issue #76 adds the month's totals those storage lines produce
+// once the free $1 credit comes off, plus the download line and the invoice
+// lines, in the four tests below the original twelve. The rest covers what the
+// issue also asks for: the cap counting min(metered, ceiling) so a default
+// account is never cut off early, the two "you saved" lines, the free
+// downloads, and the endpoint the usage page reads.
 //
 // The saved line and the $12 default cap come from the orchestrator's decision
 // on 2026-09-30 (issue #39), which resolved the question docs/build-spec.md
@@ -27,7 +29,7 @@ import {
   handleUsageRequest,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyBillUsd,
+  monthlyStorageBillUsd,
   monthlyCeilingUsd,
   savedLine,
   usageSummary,
@@ -41,8 +43,10 @@ const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 /** The same dollars the module formats, for a label assertion. */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
-test("the six figures Nish named, for data held all month", () => {
-  // month = min(2¢/GB x GB, max($12, $8 x peak TB)), peak TB to the GB.
+test("the six storage figures Nish named, for data held all month", () => {
+  // The storage line of monthBillCents(): min(2¢/GB x GB, max($12, $8 x peak
+  // TB)), peak TB to the GB. Issue #76's totals take the free $1 credit off
+  // these (below).
   const cases = [
     [400, 8],
     [800, 12],
@@ -54,7 +58,7 @@ test("the six figures Nish named, for data held all month", () => {
   for (const [gb, expected] of cases) {
     const gbMinutes = fullMonthGbMinutes(gb);
     assert.equal(
-      monthlyBillUsd(gbMinutes, gb),
+      monthlyStorageBillUsd(gbMinutes, gb),
       expected,
       `${gb} GB held all month bills $${expected}`,
     );
@@ -93,11 +97,11 @@ test("the bill is the meter below the ceiling, the ceiling above it", () => {
   // 300 GB held all month: metered $6, ceiling $12, so the bill is the meter.
   const metered = meteredMonthlyBillUsd(fullMonthGbMinutes(300));
   assert.equal(metered, 6);
-  assert.equal(monthlyBillUsd(fullMonthGbMinutes(300), 300), 6);
-  // 2 TB held all month: metered $40, ceiling $16, so Dodo is sent $16, never
-  // the $40. The ceiling is applied at invoice time.
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(300), 300), 6);
+  // 2 TB held all month: metered $40, ceiling $16, so the storage line is
+  // $16, never the $40; the bill Dodo gets is monthBillCents().totalCents.
   assert.equal(meteredMonthlyBillUsd(fullMonthGbMinutes(2000)), 40);
-  assert.equal(monthlyBillUsd(fullMonthGbMinutes(2000), 2000), 16);
+  assert.equal(monthlyStorageBillUsd(fullMonthGbMinutes(2000), 2000), 16);
 });
 
 test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
@@ -105,7 +109,7 @@ test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
   // month is 3/30.44 of the time, so the bill is well under the $12 ceiling
   // and the meter is what the person pays.
   const threeDaysMinutes = fullMonthGbMinutes(500) * (3 / 30.44);
-  const bill = monthlyBillUsd(threeDaysMinutes, 500);
+  const bill = monthlyStorageBillUsd(threeDaysMinutes, 500);
   assert.ok(bill > 0.9 && bill < 1.1, `500 GB for 3 days is about $1, got ${bill}`);
 });
 
@@ -407,6 +411,13 @@ test("every line is integer cents, whatever the meter recorded", () => {
   }
   assert.throws(() => monthBillCents({ gbMinutes: undefined, peakGb: 0 }), TypeError);
   assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: undefined }), TypeError);
+  // The free 3x allowance is the average stored size: a paired download and
+  // average, or neither, but never download bytes against no stored average,
+  // which would silently charge every downloaded byte.
+  assert.throws(
+    () => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: 1e9, averageStoredGb: 0 }),
+    /averageStoredGb/,
+  );
   // Omitting the download inputs is a month with no downloads, not an error.
   const storageOnly = monthBillCents({ gbMinutes: fullMonthGbMinutes(400), peakGb: 400 });
   assert.equal(storageOnly.downloadCents, 0);
@@ -421,10 +432,12 @@ test("every line is integer cents, whatever the meter recorded", () => {
   );
 });
 
-test("the usage page, the cap and Dodo all read this one function", () => {
+test("the usage page and the cap check read this one function", () => {
   // Four months mixing storage above and below the ceiling with heavy and no
   // downloads, so a surface that worked the money out a second way is caught
-  // in any of the three.
+  // in either. (The Dodo push is issue #51, not built here; what this issue
+  // ships it is the function itself: totalCents, in whole cents, the amount
+  // the push sends.)
   for (const [storedGb, downloadGb] of [
     [30, 0],
     [400, 0],
@@ -455,7 +468,5 @@ test("the usage page, the cap and Dodo all read this one function", () => {
       capStatus(usage.gbMinutes, usage.peakGb, BILLING_CONFIG.defaultCapUsd).countedUsd,
       bill.storageCents / 100,
     );
-    // Dodo's amount is the total in whole cents (the push itself is #51).
-    assert.equal(Number.isInteger(bill.totalCents), true);
   }
 });
