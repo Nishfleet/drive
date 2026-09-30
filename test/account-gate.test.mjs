@@ -80,6 +80,13 @@ test("every route src/index.js registers is either public or behind the gate", a
   // /api route added to the chain is found here and fails until the test
   // classifies it (as a public allow-list entry, or as an account route that
   // must answer 401).
+  //
+  // The limit, stated so it is not mistaken for more than it is: the walk
+  // reads the text of the route expressions. A route mounted from a value
+  // that appears nowhere as a literal or a known endpoint constant would
+  // escape it — which is why the body's route expressions stay literals or
+  // the exported endpoints, and why index.js is left readable rather than
+  // clever.
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   const literals = [...source.matchAll(/"(\/api\/[^"]*)"/g)].map((match) => match[1]);
   // A route assembled from a constant shows up as `${SOMETHING_ENDPOINT}` in a
