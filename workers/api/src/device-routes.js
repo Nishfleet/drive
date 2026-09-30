@@ -21,15 +21,28 @@ const APPROVE_INTRO =
   "Type the code shown in the drive terminal, then approve. Approving signs " +
   "this device in to a new drive; there is no password to enter yet.";
 
+// The characters an HTML text or attribute value must not contain, and what
+// they become. One pass over the string, so nothing is escaped twice and no
+// character is left for a second call to miss.
+const HTML_ESCAPES = Object.freeze({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+});
+
 /**
+ * The two values a page render can put into HTML are this function's whole
+ * job, and they are escaped for a fixed, closed set of characters — the code
+ * the person typed and one of a fixed list of sentences this file writes.
+ * There is no untrusted HTML, no attribute context and no URL context, so a
+ * sanitization library (a new dependency this issue does not allow) would be a
+ * large parser solving a problem this page does not have.
  * @param {unknown} text
  */
 function escapeHtml(text) {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)]);
 }
 
 /**

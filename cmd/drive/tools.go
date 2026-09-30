@@ -79,13 +79,35 @@ func environWithHome(environ []string, home string) []string {
 }
 
 // Env is what a tool adapter needs. Runner and LookPath are injectable so the
-// adapters are tested without an agent tool installed.
+// adapters are tested without an agent tool installed. Minter, when set, is
+// how a tool gets its own storage key: the api Worker mints it (build step 4,
+// drive#55) and the MCP entry is pointed at that key, so two tools are never
+// one shared key. A tool with no Minter connects the local folder as before,
+// and says so.
 type Env struct {
 	Home     string
 	DriveDir string
 	Runner   Runner
 	LookPath func(string) (string, error)
+	Minter   KeyMinter
 }
+
+// KeyMinter mints one storage key for one agent tool, server-side. It returns
+// the key id and the account folder the key is limited to. The api Worker
+// answers POST /v1/keys (workers/api/src/key-routes.js).
+type KeyMinter interface {
+	MintKey(kind, name string) (MintedKey, error)
+	RevokeKey(keyID string) error
+}
+
+// agentKeyEnv is the one key an agent tool's MCP server runs on (build-spec.md
+// "Agent tools": each tool gets its own B2 key, read and write, no
+// deleteFiles). The key travels to the tool as two env vars, never as
+// command-line arguments, so a `ps` on this machine cannot read it (drive#75).
+// The names are the drive's own, so an agent that knows them can also be told
+// to ask the storage API (docs/api.md) for the account's folder listing with
+// the same pair, as HTTP Basic auth.
+const agentKeyEnv = "DRIVE"
 
 func (e Env) withDefaults() Env {
 	if e.Runner == nil {
@@ -133,6 +155,12 @@ type Tool struct {
 	// Add is the argv after the binary that connects the drive; {dir} becomes
 	// the drive folder and {name} the server name. nil means a JSON tool.
 	Add []string
+	// KeyEnv, when set, is the prefix of the two environment variable names
+	// the tool's MCP server is launched with: the access key id in
+	// <KeyEnv>_ACCESS_KEY_ID, the secret in <KeyEnv>_SECRET_ACCESS_KEY. They
+	// are env vars, never argv, so a `ps` on this machine cannot read the
+	// key (drive#75). nil means the tool's entry takes no key.
+	KeyEnv string
 	// Check is the argv after the binary that reports whether the drive is
 	// connected: exit 0 with output naming the server means connected, and a
 	// non-zero exit is the tool's own "no such server" answer. nil means the
@@ -163,25 +191,28 @@ func tools() []Tool {
 		{
 			Name:        "claude",
 			Binaries:    []string{"claude"},
-			Add:         []string{"mcp", "add", "-s", "user", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
+			Add:         []string{"mcp", "add", "-s", "user", "{name}", "-e", "{key}", "--", "npx", "-y", mcpPackage, "{dir}"},
 			AddConflict: "already exists",
 			Check:       []string{"mcp", "get", "{name}"},
 			Remove:      []string{"mcp", "remove", "{name}"},
+			KeyEnv:      agentKeyEnv,
 			Access:      accessClaude,
 		},
 		{
 			Name:     "codex",
 			Binaries: []string{"codex"},
-			Add:      []string{"mcp", "add", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
+			Add:      []string{"mcp", "add", "--env", "{key}", "{name}", "--", "npx", "-y", mcpPackage, "{dir}"},
 			Check:    []string{"mcp", "get", "{name}", "--json"},
 			Remove:   []string{"mcp", "remove", "{name}"},
+			KeyEnv:   agentKeyEnv,
 			Access:   func(env Env) error { return writeNote(env, "AGENTS.md") },
 		},
 		{
 			Name:     "gemini",
 			Binaries: []string{"gemini"},
-			Add:      []string{"mcp", "add", "-s", "user", "-t", "stdio", "{name}", "npx", "-y", mcpPackage, "{dir}"},
+			Add:      []string{"mcp", "add", "-s", "user", "-t", "stdio", "-e", "{key}", "{name}", "npx", "-y", mcpPackage, "{dir}"},
 			Remove:   []string{"mcp", "remove", "-s", "user", "{name}"},
+			KeyEnv:   agentKeyEnv,
 			JSONPath: func(home string) string { return filepath.Join(home, ".gemini", "settings.json") },
 		},
 		{
@@ -189,6 +220,7 @@ func tools() []Tool {
 			Binaries:   []string{"cursor"},
 			ConfigDirs: []string{".cursor"},
 			JSONPath:   func(home string) string { return filepath.Join(home, ".cursor", "mcp.json") },
+			KeyEnv:     agentKeyEnv,
 			Access:     func(env Env) error { return writeNote(env, "AGENTS.md") },
 		},
 		{
@@ -196,6 +228,7 @@ func tools() []Tool {
 			Binaries:   []string{"kiro"},
 			ConfigDirs: []string{".kiro"},
 			JSONPath:   func(home string) string { return filepath.Join(home, ".kiro", "settings", "mcp.json") },
+			KeyEnv:     agentKeyEnv,
 		},
 	}
 }
@@ -219,13 +252,51 @@ func toolNames() []string {
 	return names
 }
 
-// expand fills the {dir} and {name} placeholders in a tool's argv.
-func expand(args []string, driveDir string) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
+// connectKey mints this tool's own storage key, once, and returns the
+// `NAME=VALUE NAME=VALUE` argument the tool's MCP entry takes (env values, not
+// argv, so a `ps` cannot read the key: drive#75). It is minted per tool
+// (build-spec.md, "Agent tools"), so `drive agents revoke <tool>` cuts exactly
+// one key and no other. A device that has not signed in, or a tool that takes
+// no key, gets an empty argument and connects exactly as it did before, and
+// `drive agents` says there is no key rather than pretending there is.
+func (t Tool) connectKey(env Env) (string, error) {
+	if t.KeyEnv == "" || env.Minter == nil {
+		return "", nil
+	}
+	key, err := agentKeyFor(env.Home, t.Name)
+	if err != nil {
+		return "", err
+	}
+	if key == nil {
+		return "", nil
+	}
+	return keyEnvArg(t.KeyEnv, *key), nil
+}
+
+// keyEnvArg renders the two `NAME=VALUE` arguments a tool's `mcp add -e` (or
+// `--env`) takes, in the fixed order expand() fills the {key} placeholder
+// with: the access key id first, then the secret.
+func keyEnvArg(prefix string, key agentKey) string {
+	return prefix + "_ACCESS_KEY_ID=" + key.AccessKeyID + " " +
+		prefix + "_SECRET_ACCESS_KEY=" + key.Secret
+}
+
+// expand fills the {dir}, {name} and {key} placeholders in a tool's argv.
+// When there is no key (a device that has not signed in, or a tool that takes
+// none), the env flag and its value are dropped whole: `-e` with an empty
+// value would register a server with a blank key, which is worse than no key.
+func expand(args []string, driveDir, key string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if key == "" && (a == "-e" || a == "--env") {
+			i++ // skip the flag and its {key} value together
+			continue
+		}
 		a = strings.ReplaceAll(a, "{dir}", driveDir)
 		a = strings.ReplaceAll(a, "{name}", serverName)
-		out[i] = a
+		a = strings.ReplaceAll(a, "{key}", key)
+		out = append(out, a)
 	}
 	return out
 }
@@ -250,9 +321,15 @@ func (t Tool) Installed(env Env) (bool, string) {
 // Connect registers the stock MCP filesystem server for this tool. Safe to
 // run again: the CLI tools replace their own entry (either because their add
 // overwrites, or by removing the existing entry first), and the JSON merge
-// keeps every other server in the file.
+// keeps every other server in the file. When the device is signed in (env has
+// a key minter and this tool has a key on disk) the tool's own key travels
+// into its MCP entry; otherwise the server is registered exactly as before.
 func (t Tool) Connect(env Env) error {
 	env = env.withDefaults()
+	keyArg, err := t.connectKey(env)
+	if err != nil {
+		return err
+	}
 	// The MCP filesystem server refuses to start against a folder that does
 	// not exist ("None of the specified directories are accessible"), and the
 	// tools run it on registration to report a live status: claude mcp get said
@@ -273,10 +350,10 @@ func (t Tool) Connect(env Env) error {
 		}
 	}
 	if t.Add != nil {
-		if err := t.runAdd(env); err != nil {
+		if err := t.runAdd(env, keyArg); err != nil {
 			return fmt.Errorf("connect %s: %w", t.Name, err)
 		}
-	} else if err := t.writeJSON(env, true); err != nil {
+	} else if err := t.writeJSON(env, true, keyArg); err != nil {
 		return fmt.Errorf("connect %s: %w", t.Name, err)
 	}
 	if t.Access != nil {
@@ -289,8 +366,8 @@ func (t Tool) Connect(env Env) error {
 
 // runAdd runs the tool's add command, replacing an existing entry when the
 // tool refuses to overwrite one (claude says "already exists in user config").
-func (t Tool) runAdd(env Env) error {
-	argv := expand(t.Add, env.DriveDir)
+func (t Tool) runAdd(env Env, keyArg string) error {
+	argv := expand(t.Add, env.DriveDir, keyArg)
 	out, err := env.Runner.Run(t.Name, argv...)
 	if err == nil {
 		return nil
@@ -298,7 +375,7 @@ func (t Tool) runAdd(env Env) error {
 	if t.AddConflict == "" || !strings.Contains(string(out), t.AddConflict) {
 		return err // not the known "already configured" answer
 	}
-	if _, err := env.Runner.Run(t.Name, expand(t.Remove, env.DriveDir)...); err != nil {
+	if _, err := env.Runner.Run(t.Name, expand(t.Remove, env.DriveDir, "")...); err != nil {
 		return fmt.Errorf("replace the existing entry: %w", err)
 	}
 	if _, err := env.Runner.Run(t.Name, argv...); err != nil {
@@ -313,10 +390,10 @@ func (t Tool) runAdd(env Env) error {
 func (t Tool) Revoke(env Env) error {
 	env = env.withDefaults()
 	if t.Remove != nil {
-		if _, err := env.Runner.Run(t.Name, expand(t.Remove, env.DriveDir)...); err != nil {
+		if _, err := env.Runner.Run(t.Name, expand(t.Remove, env.DriveDir, "")...); err != nil {
 			return fmt.Errorf("revoke %s: %w", t.Name, err)
 		}
-	} else if err := t.writeJSON(env, false); err != nil {
+	} else if err := t.writeJSON(env, false, ""); err != nil {
 		return fmt.Errorf("revoke %s: %w", t.Name, err)
 	}
 	// The skill note goes last: a tool that is still registered is more useful
@@ -334,7 +411,7 @@ func (t Tool) Revoke(env Env) error {
 func (t Tool) Connected(env Env) (bool, error) {
 	env = env.withDefaults()
 	if t.Check != nil {
-		out, err := env.Runner.Run(t.Name, expand(t.Check, env.DriveDir)...)
+		out, err := env.Runner.Run(t.Name, expand(t.Check, env.DriveDir, "")...)
 		if err != nil {
 			// The tool's own "no such server" answer, not a drive failure.
 			return false, nil
@@ -398,20 +475,51 @@ func serverTable(doc map[string]any, create bool) (map[string]any, error) {
 	return table, nil
 }
 
-// serverEntry is the stock MCP stdio server shape: the command and its args,
-// and nothing else. Every JSON-config tool in the registry reads this shape.
-func serverEntry(driveDir string) map[string]any {
-	return map[string]any{
+// serverEntry is the stock MCP stdio server shape: the command, its args and,
+// when this tool has its own key, the two key env vars. Every JSON-config tool
+// in the registry reads this shape. The secret is an env value, never argv, so
+// a `ps` on this machine cannot read it (drive#75).
+func serverEntry(t Tool, env Env, keyArg string) (map[string]any, error) {
+	entry := map[string]any{
 		"command": "npx",
-		"args":    []string{"-y", mcpPackage, driveDir},
+		"args":    []string{"-y", mcpPackage, env.DriveDir},
 	}
+	if t.KeyEnv == "" || keyArg == "" {
+		return entry, nil
+	}
+	vars, err := keyEnv(t.KeyEnv, keyArg)
+	if err != nil {
+		return nil, err
+	}
+	entry["env"] = vars
+	return entry, nil
+}
+
+// keyEnv parses the `NAME=VALUE NAME=VALUE` argument a tool's `mcp add -e`
+// takes back into the env map a JSON tool stores. The argument is one string
+// on the way out (argv has no nesting), and it is parsed back here rather than
+// passed around, so a name without `=` is an error and never a silent empty
+// value.
+func keyEnv(prefix, arg string) (map[string]any, error) {
+	vars := map[string]any{}
+	for _, pair := range strings.Fields(arg) {
+		name, value, found := strings.Cut(pair, "=")
+		if !found || name == "" || value == "" {
+			return nil, fmt.Errorf("the %s key argument %q is not NAME=VALUE", prefix, pair)
+		}
+		vars[name] = value
+	}
+	if len(vars) == 0 {
+		return nil, fmt.Errorf("the %s key argument is empty", prefix)
+	}
+	return vars, nil
 }
 
 // writeJSON merges (connect) or removes (revoke) the drive's server in the
 // tool's JSON config. Every other key in the file is preserved, because these
 // files hold the user's other settings too. An absent file is created on
 // connect and stays absent on revoke.
-func (t Tool) writeJSON(env Env, connect bool) error {
+func (t Tool) writeJSON(env Env, connect bool, keyArg string) error {
 	path := t.JSONPath(env.Home)
 	doc, err := t.readConfig(env)
 	if err != nil {
@@ -427,7 +535,11 @@ func (t Tool) writeJSON(env Env, connect bool) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if connect {
-		table[serverName] = serverEntry(env.DriveDir)
+		entry, err := serverEntry(t, env, keyArg)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		table[serverName] = entry
 	} else {
 		delete(table, serverName)
 	}
