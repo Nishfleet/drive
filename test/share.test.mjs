@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createMemoryStore, handleFilesRequest, FILES_ENDPOINT } from "../src/files.js";
+import { createMemoryStore, handleFilesRequest, scopeStore, FILES_ENDPOINT } from "../src/files.js";
 import { failureMessage } from "../src/messages.js";
 import {
   DEFAULT_LINK_DAYS,
@@ -395,6 +395,14 @@ test("done when: a real file opens from a share link, logged out", async () => {
   );
   assert.equal(await opened.text(), "the real bytes");
 
+  // The bytes leave under the same two headers /api/files/preview carries, so
+  // a link opened directly is never a page on our origin: nosniff honors the
+  // file's own kind, and the sandbox gives a document an opaque origin with no
+  // script. A shared .html and a shared .svg are the two that would otherwise
+  // be pages here, so both are pinned below.
+  assert.equal(opened.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(opened.headers.get("content-security-policy"), "sandbox");
+
   // The download is counted on the share row, and the row names the owner:
   // that account id is what the dl Worker's byte rollup adds to the month.
   const record = await links.shares.get(TOKEN);
@@ -414,6 +422,54 @@ test("done when: a real file opens from a share link, logged out", async () => {
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
   assert.equal((await links.shares.get(TOKEN)).downloadCount, 2);
+  // HEAD is how a browser checks a link, not a download of it: the
+  // bytes were never sent, so the byte count stays at the one GET,
+  // and the dl Worker's byte rollup (#58) is what measures bytes
+  // actually served.
+  assert.equal((await links.shares.get(TOKEN)).downloadBytes, "the real bytes".length);
+});
+
+test("a shared file can never act as a page on our origin", async () => {
+  const { upload, share, files, links } = drive();
+  // The two types that render as a document when a URL is opened directly:
+  // HTML is a page, and SVG can carry script. Both are served under the
+  // file's own kind instead, with the preview's two headers, exactly as
+  // /api/files/preview serves them.
+  await upload("/", "report.html", "<script>alert(1)</script>", "text/html");
+  await upload("/", "logo.svg", "<svg onload=alert(1)></svg>", "image/svg+xml");
+  const byName = { "report.html": TOKEN, "logo.svg": "B".repeat(22) };
+
+  for (const [name, token] of Object.entries(byName)) {
+    const made = await (await share(`/${name}`, { token })).json();
+    assert.equal(made.share.url, `https://drive.test${SHARE_LINK_PREFIX}/${token}`);
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      { now },
+    );
+    assert.equal(opened.status, 200, `share ${name}`);
+    assert.equal(
+      opened.headers.get("x-content-type-options"),
+      "nosniff",
+      `${name} is never sniffed into a page`,
+    );
+    assert.equal(
+      opened.headers.get("content-security-policy"),
+      "sandbox",
+      `${name} is rendered with no script on our origin`,
+    );
+    assert.doesNotMatch(
+      opened.headers.get("content-type") || "",
+      /text\/html/,
+      `${name} must not be served as a page`,
+    );
+    assert.equal(
+      await opened.text(),
+      name === "report.html" ? "<script>alert(1)</script>" : "<svg onload=alert(1)></svg>",
+      `${name} bytes arrive unchanged, only the type is not the uploader's claim`,
+    );
+  }
 });
 
 test("done when: a revoked link returns 404", async () => {
@@ -508,9 +564,16 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   // shows the dropped file, with its real bytes.
   const rows = await list();
   assert.deepEqual(rows.map((row) => row.name), ["contract.pdf"]);
-  const readBack = await files.read("/contract.pdf");
+  // Read back the way the owner reads it: through scopeStore, the one place
+  // the account prefix is applied. A raw store.read() would ask for an
+  // unprefixed key and find nothing — which is the proof that the drop landed
+  // under this account and nowhere else.
+  const readBack = await scopeStore(files, account).read("/contract.pdf");
   assert.equal(readBack.contentType, "application/pdf");
   assert.equal(await new Response(readBack.body).text(), "the contract");
+  // The unprefixed key really is empty: the same bytes are not readable
+  // outside the account's own prefix.
+  assert.equal(await files.read("/contract.pdf"), null);
 
   // The name is cleaned by the same function /api/files/upload uses, so a
   // dropped name cannot walk out of the folder: the slash becomes a dash and

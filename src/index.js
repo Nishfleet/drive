@@ -1,14 +1,21 @@
 import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest } from "./status.js";
+import {
+  handleFirstRunStatusRequest,
+  signedInAccount,
+  STATUS_ENDPOINT,
+} from "./status.js";
 import {
   FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
-  resolveAccount,
 } from "./files.js";
-import { signedInAccount, STATUS_ENDPOINT } from "./status.js";
-import { USAGE_ENDPOINT, handleUsageRequest, usageSummary, BILLING_CONFIG } from "./billing.js";
+import {
+  USAGE_ENDPOINT,
+  handleUsageRequest,
+  usageSummary,
+  BILLING_CONFIG,
+} from "./billing.js";
 import {
   REQUEST_ENDPOINT,
   SHARE_ENDPOINT,
@@ -27,11 +34,14 @@ import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
 
-// One drive per Worker isolate (build step 1's stand-in). With no storage
-// configured the in-memory store holds what the page uploaded this run, so the
-// Web Files page is real in dev and in the tests; FILES_S3_ENDPOINT and
-// FILES_S3_BUCKET point the same handlers at `rclone serve s3` instead. The
-// real scoped-key adapter lands with #2 behind the same FileStore interface.
+// One store per Worker isolate, holding every account's files under its own
+// prefix. With no storage configured the in-memory store holds what the page
+// uploaded this run, so the Web Files page is real in dev and in the tests;
+// FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
+// `rclone serve s3` instead. The real scoped-key adapter lands with #2 behind
+// the same FileStore interface. Both are plain stores over storage keys: the
+// account prefix and the isolation between accounts are scopeStore's job
+// (src/files.js), so an adapter never has to know about an account.
 let filesStore;
 function storeFor(env) {
   if (!filesStore) {
@@ -112,33 +122,49 @@ export default {
     ) {
       return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
-    // The Web Files page's listing, download, upload and restore (issue #31).
+    // The files handler is behind the same account gate as the page's poll
+    // (issue #73): it answers 401 with no data for a request that cannot prove
+    // an account, and scopes every read and write to that account's prefix.
     if (
       url.pathname === FILES_ENDPOINT ||
       url.pathname === `${FILES_ENDPOINT}/` ||
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
-      return handleFilesRequest(request, storeFor(env), resolveAccount(request));
+      // The gate is asked before the store is built. A request that cannot
+      // prove an account is answered by the handler's own 401 with no store
+      // in the call at all, so a misconfigured deployment fails for its own
+      // signed-in callers and tells a stranger nothing about itself.
+      const account = signedInAccount(request);
+      return handleFilesRequest(request, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
-    // fallthrough.
+    // fallthrough, and the account gate is what keeps one account's numbers
+    // from being shown to another (issue #73).
     if (
       url.pathname === USAGE_ENDPOINT ||
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
-      return handleUsageRequest(request);
+      return handleUsageRequest(request, signedInAccount(request));
     }
-    // Share links and upload requests (issue #19). The share/request routes
-    // are the owner's side (the same stand-in account /api/files uses until
-    // the sign-in gate lands, #73); /s/<token> and the request pages are the
-    // logged-out side, and they are the only routes here that serve a caller
-    // who is not the owner.
+    // Share links and upload requests (issue #19). The share/request roots
+    // are the owner's side and stand behind the same gate as /api/files
+    // (issue #73): a caller that cannot prove an account gets 401 with no
+    // link, no file and no list. /s/<token>, the request info and the upload
+    // route are the logged-out side and carry the token in the path or the
+    // query instead of a session, so they do not ask the gate for an account
+    // — the token is the whole proof, and one that expires or is revoked
+    // answers 404 (src/share.js).
     if (
       url.pathname === SHARE_ENDPOINT ||
       url.pathname === `${SHARE_ENDPOINT}/`
     ) {
-      return handleShareRequest(request, storeFor(env), linksFor(), resolveAccount(request));
+      return handleShareRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        signedInAccount(request),
+      );
     }
     if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
       return handleShareFileRequest(request, storeFor(env), linksFor());
@@ -147,7 +173,12 @@ export default {
       url.pathname === REQUEST_ENDPOINT ||
       url.pathname === `${REQUEST_ENDPOINT}/`
     ) {
-      return handleRequestRequest(request, storeFor(env), linksFor(), resolveAccount(request));
+      return handleRequestRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        signedInAccount(request),
+      );
     }
     // The two public request routes are matched after the owner's /api/request
     // root so the exact root is never mistaken for its own child.

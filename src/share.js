@@ -36,9 +36,17 @@
 // invents a second path to storage: bytes go through the FileStore interface
 // (src/files.js), so the stand-in, `rclone serve s3` and the real bucket are
 // the same to this file.
-import { TRASH_PATH, joinPath, safeFileName, validatePath } from "./files.js";
+import {
+  TRASH_PATH,
+  joinPath,
+  previewContentType,
+  safeFileName,
+  scopeStore,
+  validatePath,
+} from "./files.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
-import { formatBytes } from "./status.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
 export const SHARE_LINK_PREFIX = "/s";
@@ -456,6 +464,18 @@ function methodNotAllowed(allowed, action) {
   return plain(`Method not allowed. ${action}`, 405, { allow: allowed });
 }
 
+// The one refusal for a state-changing link request that came from another
+// origin. A specific line rather than the table's generic fallback: "try
+// again in a moment" would be advice to retry a request that will always be
+// refused, and the one next step is to do it from the drive page — the same
+// shape src/files.js answers its cross-site upload, delete and restore with.
+function crossSiteRefused() {
+  return json(
+    { error: "Sharing and upload requests are only accepted from your drive page." },
+    403,
+  );
+}
+
 async function readJsonObject(request) {
   let body;
   try {
@@ -506,18 +526,33 @@ export function folderDisplayName(folder) {
  *   POST {path}       mint a link for one file
  *   DELETE {token}    revoke a link
  *
- * The account comes from the caller (the same stand-in account /api/files
- * uses) so this route has no second idea of who the owner is.
+ * The account comes from the caller and is required, never defaulted: a
+ * request that cannot prove an account is answered with the shared 401
+ * (unauthorizedResponse, src/status.js) before any link, file or list is
+ * touched, exactly the way /api/files is (drive issue #73, north star: Safe).
+ * Every read and write goes through scopeStore(files, account), the one place
+ * the account prefix is applied, so a share can only ever name a path inside
+ * the account that minted it.
+ *
+ * Reading is safe to repeat, so only the two that change the drive — minting
+ * and revoking — carry the cross-site rule src/files.js already uses.
  * @param {Request} request
  * @param {object} files a FileStore
  * @param {LinkStore} links
- * @param {{id: string, name: string}} account
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
  */
 export async function handleShareRequest(request, files, links, account, options = {}) {
+  if (!account) {
+    return unauthorizedResponse();
+  }
   const now = options.now ?? Date.now();
   const base = baseFromRequest(request);
   const store = links.shares;
+  const scoped = scopeStore(files, account);
+  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
+    return crossSiteRefused();
+  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -535,7 +570,7 @@ export async function handleShareRequest(request, files, links, account, options
     }
     let object;
     try {
-      object = await files.read(checked.path);
+      object = await scoped.read(checked.path);
     } catch (cause) {
       return json({ error: `We could not read that file: ${cause.message}` }, 500);
     }
@@ -575,10 +610,19 @@ export async function handleShareRequest(request, files, links, account, options
  * one, an expired one, a file that is gone — is the same 404 with the message
  * table's words, so the route never tells a stranger which of those it was.
  *
- * The bytes come from the FileStore, and the response is `no-store` so no
+ * The bytes come from the FileStore, scoped to the share row's own account the
+ * way /api/files scopes to the signed-in one, so a link can only ever name a
+ * path inside the account that minted it. The response is `no-store` so no
  * cache (including Cloudflare's) can keep serving them after a revoke. The
  * download is counted on the share row, and the record's `accountId` is where
  * the dl Worker reads the owner from to add the bytes to their month.
+ *
+ * The type is the file's kind, never the claim the uploader made of it, and a
+ * type that can carry script by its own name or by the file's extension is
+ * served as an octet-stream attachment instead of rendering from our origin
+ * (the same rule /api/files/download applies — src/files.js). A shared file
+ * still opens in the tab for a picture or a PDF, which is what "a link that
+ * opens the file" means; what it cannot do is run as a page on our domain.
  * @param {Request} request
  * @param {object} files a FileStore
  * @param {LinkStore} links
@@ -598,9 +642,12 @@ export async function handleShareFileRequest(request, files, links, options = {}
   if (!linkIsOpen(record, now)) {
     return plain(failureMessage("link-not-found"), 404);
   }
+  // The one scoping place: the share row names the owner, so the row is what
+  // the read is scoped to, not whatever the request carried.
+  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   let object;
   try {
-    object = await files.read(record.path);
+    object = await scoped.read(record.path);
   } catch (cause) {
     return json({ error: `We could not read that file: ${cause.message}` }, 500);
   }
@@ -610,16 +657,30 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // Count the download the way this route can honestly count it: the object
   // the store reported, once, for a link that opened. A client that stops
   // mid-stream still holds a working link; the dl Worker's byte rollup
-  // (#58) is what measures the bytes actually served.
-  await links.shares.addDownload(checked.token, object.size);
+  // (#58) is what measures the bytes actually served. A HEAD is counted as an
+  // open but carries no bytes, so it cannot inflate the owner's allowance for
+  // a body nobody received.
+  await links.shares.addDownload(
+    checked.token,
+    request.method === "HEAD" ? 0 : object.size,
+  );
+  // The served type is the file's own kind, never the claim the uploader made
+  // of it, through the same previewContentType() /api/files/preview uses: text
+  // leaves as text/plain, an unknown type as octet-stream, and an .html named
+  // as text/html does not come back as a page. The header pair is the same one
+  // the preview path carries: nosniff honors the type above, and the sandbox
+  // policy gives a document an opaque origin with no script of its own — which
+  // is what keeps an uploaded .svg from acting as a page on our origin when
+  // the link is opened directly. A picture or a PDF still opens in the tab,
+  // which is what "a link that opens the file" means.
   return new Response(request.method === "HEAD" ? null : object.body, {
     status: 200,
     headers: {
-      "content-type": object.contentType || "application/octet-stream",
-      // A shared file opens in the browser tab rather than downloading, which
-      // is what "a link that opens the file" means for a picture or a PDF.
+      "content-type": previewContentType(record.path, object.contentType),
       "content-disposition": "inline",
       "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
     },
   });
 }
@@ -630,16 +691,28 @@ export async function handleShareFileRequest(request, files, links, options = {}
  *   GET               the account's open requests
  *   POST {folder}     mint an upload page for one folder
  *   DELETE {token}    revoke it
+ * The account is required and never defaulted, exactly as on /api/share and
+ * /api/files: a request that cannot prove one gets the shared 401 with no
+ * request read, no folder looked at and no list returned (issue #73). The
+ * folder is looked at through scopeStore(files, account), so a request can
+ * only ever open an upload page for a folder inside the signed-in account.
  * @param {Request} request
  * @param {object} files a FileStore
  * @param {LinkStore} links
- * @param {{id: string, name: string}} account
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
  */
 export async function handleRequestRequest(request, files, links, account, options = {}) {
+  if (!account) {
+    return unauthorizedResponse();
+  }
   const now = options.now ?? Date.now();
   const base = baseFromRequest(request);
   const store = links.requests;
+  const scoped = scopeStore(files, account);
+  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
+    return crossSiteRefused();
+  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -657,7 +730,7 @@ export async function handleRequestRequest(request, files, links, account, optio
     }
     let exists;
     try {
-      exists = await folderExists(files, checked.path);
+      exists = await folderExists(scoped, checked.path);
     } catch (cause) {
       return json({ error: `We could not look at that folder: ${cause.message}` }, 500);
     }
@@ -739,7 +812,9 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * request body is the file. The name is cleaned by the same function
  * /api/files/upload uses, so a dropped file cannot name a path, and the bytes
  * are written to the file through the same FileStore — which is why a file
- * dropped here shows up on the owner's drive at its next listing.
+ * dropped here shows up on the owner's drive at its next listing. The write
+ * goes through scopeStore(files, the request row's account), so a dropped
+ * file lands inside the owner's prefix and nowhere else.
  * @param {Request} request
  * @param {object} files a FileStore
  * @param {LinkStore} links
@@ -774,8 +849,11 @@ export async function handleRequestUploadRequest(request, files, links, capState
   }
   const path = joinPath(record.folder, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
+  // The request row names the owner, so that is the prefix the write lands
+  // under — the same scopeStore /api/files/upload writes through.
+  const scoped = scopeStore(files, { id: record.accountId, name: "" });
   try {
-    await files.write(path, request.body, contentType);
+    await scoped.write(path, request.body, contentType);
   } catch (cause) {
     return json({ error: `The upload did not finish: ${cause.message}` }, 500);
   }
