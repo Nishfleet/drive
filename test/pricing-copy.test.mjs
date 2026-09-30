@@ -148,3 +148,15 @@ test("the first viewport says who it is for and what it does", () => {
   const masthead = page.slice(0, page.indexOf("</header>"));
   assert.match(masthead, /A Finder drive for people and their agents/);
 });
+
+test("no unsourced claims appear anywhere on the page", () => {
+  // The owner's review of PR #17: "We have no SOC 2, and unsourced claims
+  // are a hold." Single sign-on is marked planned where the Business box
+  // names it, since the Business tier is built after v1.
+  assert.equal(
+    words.includes("SOC 2"),
+    false,
+    "the page must not claim a SOC 2 report",
+  );
+  assert.match(words, /single sign-on \(planned\)/);
+});

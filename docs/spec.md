@@ -12,7 +12,7 @@ Revisit when both are true:
 
 ## Pressure test (2026-09-29)
 
-These rows were worked out at the earlier 1¢/GB price. The current price is 2¢/GB billed hourly (see Pricing).
+These rows were worked out at the earlier 1¢/GB price, before the 2026-09-30 bill ceiling, and are kept as the record. The current price is 2¢/GB billed by the minute, with the monthly bill capped at max($12, $8 × peak TB) (see Pricing).
 
 | Question | Finding |
 |---|---|
@@ -37,26 +37,28 @@ The first says don't build. The second says if you build, sell to people first. 
 
 ## What to build if greenlit
 
-**A drive for people and their agents: a Finder folder that streams plain files from Backblaze B2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Billed only for what is stored, billed by the minute (2¢/GB/month, floor 1.5¢), with no $15 minimum.**
+**A drive for people and their agents: a Finder folder that streams plain files from Backblaze B2, set up with one command that also connects Claude Code, Codex, Cursor, Gemini and Kiro. Billed only for what is stored, 2¢/GB/month billed by the minute, and the monthly bill never passes max($12, $8 × peak TB) — never more than $12 a TB, then $8.**
 
 - **Who it's for:** people first (solo creators with libraries bigger than their laptop disk). Agents are a free extra, not the product.
-- **Why it could win:** no $15 floor, pay only for the GB-hours you use. Honest limit: at 2¢ it beats Space only below 750 GB or for short jobs, and it costs more than iCloud/Google for files kept all month.
+- **Why it could win:** no plan floor, pay only for the GB-hours you use, and the bill never passes max($12, $8 × peak TB). Honest limit: it costs more than iCloud/Google for files kept all month.
 - **What it is not:** not a video-team product (LucidLink), not a Windows product, not an app-hosting cloud (InstaCloud), not open source or self-hostable.
 - **No owned servers.** Storage on B2, with a backup copy on a Hetzner Storage Box. The drive runs on the user's Mac.
 
 ### Pricing
 
-**Recommendation (2026-09-29): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store.** 1.5¢ is the hard floor (Nish). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
+**Recommendation (updated 2026-09-30, Nish): 2¢ per GB-month, billed by the minute (changed from per second on 2026-09-29, Nish; never advertise a per-minute price), with downloads included up to 3x what you store. The monthly bill is min(metered, max($12, $8 × peak TB)), TB measured to the GB; on the B2 fallback the ceiling rate is $10/TB (so max($12, $10 × peak TB)) — the page's "$8" holds only while iDrive is primary.** 1.5¢ is the hard floor for the metered rate (Nish); the ceiling deliberately prices below it ($12 for 1 TB is 1.2¢/GB, $8 a TB above 1.5 TB is 0.8¢/GB). Keep 1.5¢ in reserve for a yearly prepaid plan, the way Space discounts yearly billing by 25%. The full test is below.
 
 | Item | Choice |
 |---|---|
-| Price | 2¢/GB-month ($20/TB), billed by the minute, shown as a monthly total |
+| Price | 2¢/GB-month, billed by the minute, shown as a monthly total |
+| Bill ceiling | min(metered, max($12, $8 × peak TB)), TB measured to the GB; B2 fallback $10/TB (Nish, 2026-09-30) |
 | Minimum per file | 1 hour of storage (B2 bills us by the byte-hour; proposed 2026-09-29, not yet confirmed by Nish) |
 | Downloads | Free up to 3x your average stored data each month, then 1¢/GB (the same rule B2 applies to us) |
 | Billing | Dodo usage billing on what is stored; no fixed monthly minimum |
 | Free credit | $1 of storage free every month (about 50 GB), no card needed to start; a card only to go past it. Shown in dollars, never as credit units or expiring balances (Nish, 2026-09-29, from the Higgsfield research) |
-| Headline | "About $20 per TB a month" as the one simple number; never an "unlimited" plan (Nish, 2026-09-29) |
-| Spending cap | Each account sets one; storage goes read-only at the cap, nothing is deleted |
+| Headline | "Never more than $12 a TB, then $8" as the ceiling line under the rate; never an "unlimited" plan (Nish, 2026-09-30) |
+| Spending cap | Each account sets one, default $12 (the ceiling floor); storage goes read-only on exceeding the cap, nothing is deleted. The cap counts min(metered so far, ceiling), so a default account is never cut off at or under 1.5 TB peak (Nish via #39, 2026-09-30) |
+| "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
 | Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum |
 | Snapshots | Paid add-on only |
 | Storage | Backblaze B2 as primary, plus a backup copy on a Hetzner Storage Box |
@@ -143,7 +145,7 @@ So at 2¢, a Space customer who averages 60% full or less pays less with us, by 
 
 **Risks**
 - **Short jobs vs the download allowance.** B2's free 3x is based on average stored data, and it's pooled across our whole account. A 1 TB job that lives one day counts as only 33 GB stored, so reading it once could use about $9 of download allowance on a $0.66 bill. Pooling with all-month customers covers this at small scale; billing downloads over 3x is the backstop.
-- **The >4 TB niche is lost at any price at or above 1.5¢.** Space's $12/TB add-on beats us there, so the vault's revisit trigger needs a new niche or a volume price.
+- **The >4 TB niche (changed by the 2026-09-30 ceiling).** The rows above were priced before the ceiling, when Space's $12/TB add-on beat us there; under the new bill (5 TB = $40 against Space's $63) the niche is won on price, so the vault's revisit trigger now waits on demand only. The who-wins table above is not re-run; it stands as the 2026-09-29 record.
 - **Fees on small top-ups.** $10 top-ups lose about 9.5%. Encourage $25 or more.
 - **Exchange rate.** Hetzner bills in euros. The €2/TB Storage Box figure assumes about $1.15 per euro.
 
@@ -172,6 +174,19 @@ Price sources (checked 2026-09-29): https://www.backblaze.com/cloud-storage/pric
 | Usage bill | Per-minute billing, $1 free credit a month, spending cap |
 
 Left out of version 1: Windows, sharing links, search, phone app, Business tier, self-hosting.
+
+### Nothing missing
+
+The remaining product gaps are now specced, one issue each (the version-1 exclusions above are separate and stay out):
+
+| Issue | What it closes |
+|---|---|
+| [#30](https://github.com/Nishfleet/drive/issues/30) | Two machines, one file: keep both saves, and work offline |
+| [#31](https://github.com/Nishfleet/drive/issues/31) | Web Files page: open your drive from any browser or phone (a web page, not a native phone app) |
+| [#32](https://github.com/Nishfleet/drive/issues/32) | First run and sync status: always know it's working |
+| [#33](https://github.com/Nishfleet/drive/issues/33) | Emails: welcome, cap warnings, payment failed, monthly receipt |
+| [#34](https://github.com/Nishfleet/drive/issues/34) | Account lifecycle: export, delete, sign out everywhere, update, uninstall |
+| [#35](https://github.com/Nishfleet/drive/issues/35) | Every error says what happened and what to do |
 
 ## Build plan
 
