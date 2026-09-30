@@ -219,6 +219,8 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   const usage = (gb) => ({
     gbMinutes: fullMonthGbMinutes(gb),
     peakGb: gb,
+    storedGb: gb,
+    storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: gb,
     capUsd: BILLING_CONFIG.defaultCapUsd,
@@ -257,6 +259,8 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
     usage: {
       gbMinutes: fullMonthGbMinutes(60),
       peakGb: 60,
+      storedGb: 60,
+      storedDaily: [],
       downloadBytes: 0,
       averageStoredGb: 60,
       capUsd: BILLING_CONFIG.defaultCapUsd,

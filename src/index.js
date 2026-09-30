@@ -8,7 +8,7 @@ import {
   resolveAccount,
 } from "./files.js";
 import { signedInAccount } from "./status.js";
-import { handleUsageRequest } from "./billing.js";
+import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -34,8 +34,8 @@ function storeFor(env) {
   return filesStore;
 }
 
-// Static assets serve the pricing page, the first-run page and the Web Files
-// page; only /api/* reaches this Worker (see runWorkerFirst in
+// Static assets serve the pricing page, the first-run page, the Web Files page
+// and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
@@ -74,9 +74,13 @@ export default {
     ) {
       return handleFilesRequest(request, storeFor(env), resolveAccount(request));
     }
-    // The usage page's and the CLI's read of the month's money (issue #7,
-    // build step 6). Same rule: the branch comes before the asset fallthrough.
-    if (url.pathname === "/api/usage" || url.pathname === "/api/usage/") {
+    // The usage page's and the CLI's read of the month's money (issues #7 and
+    // #53, build step 6). Same rule: the branch comes before the asset
+    // fallthrough.
+    if (
+      url.pathname === USAGE_ENDPOINT ||
+      url.pathname === `${USAGE_ENDPOINT}/`
+    ) {
       return handleUsageRequest(request);
     }
     if (url.pathname === SEND_EMAIL_PATH) {

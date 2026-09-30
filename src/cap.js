@@ -235,8 +235,8 @@ export async function applyCapSwap(plan, provider) {
  * Enforcement in one call: read the month's numbers the way the usage page
  * reads them, decide the cap from them, swap the keys the state implies.
  * @param {{usage: object, keys: Array<object>}} account `usage` is a
- *   usageSummary() input: gbMinutes, peakGb, downloadBytes, averageStoredGb,
- *   capUsd, cardAdded.
+ *   usageSummary() input: gbMinutes, peakGb, storedGb, storedDaily,
+ *   downloadBytes, averageStoredGb, capUsd, cardAdded.
  * @param {object} provider
  */
 export async function enforceCap(account, provider) {

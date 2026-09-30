@@ -13,6 +13,9 @@
 // on 2026-09-30 (issue #39), which resolved the question docs/build-spec.md
 // still carries open. Both are read from BILLING_CONFIG, so a later run that
 // changes either value changes these tests with it.
+//
+// The shapes the two consumers read (the usage page and `drive usage`, issue
+// #53) are in test/usage.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
@@ -178,6 +181,8 @@ test("a card-less account is capped at the free $1", () => {
   const withoutCard = usageSummary({
     gbMinutes: fullMonthGbMinutes(60),
     peakGb: 60,
+    storedGb: 60,
+    storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 60,
     capUsd: BILLING_CONFIG.defaultCapUsd,
@@ -188,6 +193,8 @@ test("a card-less account is capped at the free $1", () => {
   const withCard = usageSummary({
     gbMinutes: fullMonthGbMinutes(60),
     peakGb: 60,
+    storedGb: 60,
+    storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 60,
     capUsd: BILLING_CONFIG.defaultCapUsd,
@@ -204,6 +211,8 @@ test("the usage summary is the empty month before the meter lands", () => {
   const summary = usageSummary({
     gbMinutes: 0,
     peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 0,
     capUsd: BILLING_CONFIG.defaultCapUsd,
@@ -213,14 +222,34 @@ test("the usage summary is the empty month before the meter lands", () => {
   assert.equal(summary.cap.state, "active");
   assert.equal(summary.saved, null, "no saving on an empty month");
   assert.equal(summary.downloads.usd, 0);
+  assert.equal(summary.gbMonths, 0);
+  assert.equal(summary.storedGb, 0);
+  assert.deepEqual(summary.storedDaily, []);
   assert.throws(() => usageSummary(null), TypeError);
   // A bad rollup is named at the entry point, before any math runs.
   assert.throws(
-    () => usageSummary({ gbMinutes: "many", peakGb: 0, downloadBytes: 0, averageStoredGb: 0, capUsd: 12 }),
+    () =>
+      usageSummary({
+        gbMinutes: "many",
+        peakGb: 0,
+        storedGb: 0,
+        storedDaily: [],
+        downloadBytes: 0,
+        averageStoredGb: 0,
+        capUsd: 12,
+      }),
     /usage\.gbMinutes/,
   );
   assert.throws(
-    () => usageSummary({ gbMinutes: 0, peakGb: 0, downloadBytes: 0, averageStoredGb: 0 }),
+    () =>
+      usageSummary({
+        gbMinutes: 0,
+        peakGb: 0,
+        storedGb: 0,
+        storedDaily: [],
+        downloadBytes: 0,
+        averageStoredGb: 0,
+      }),
     /usage\.capUsd/,
   );
 });
