@@ -26,6 +26,7 @@ import {
   monthlyCeilingUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
+import { SITE } from "./seo.js";
 
 /**
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
@@ -137,6 +138,7 @@ export const KEY_TABLE = Object.freeze(
 /** The substitution table for the {{MARKER}}s the pages use. */
 export function markerValues() {
   return {
+    SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
     FREE_USD: dollars(BILLING_CONFIG.freeMonthlyUsd),
     FREE_GB: String(Math.floor(BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth)),

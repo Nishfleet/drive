@@ -23,5 +23,6 @@ minute with the bill cut off at a ceiling.
 ## For agents reading this site
 
 Every page here is also served as Markdown: add `.md` to the address. The whole
-set is in [llms-full.txt](/llms-full.txt), and [llms.txt](/llms.txt) is the
-index.
+set is in
+[llms-full.txt]({{SITE_ORIGIN}}/docs/llms-full.txt), and the site-wide
+[llms.txt]({{SITE_ORIGIN}}/llms.txt) is the index.

@@ -332,6 +332,48 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   assert.ok(samples >= 5, `the docs must carry the samples (found ${samples})`);
 });
 
+test("the docs config and the site's own config agree on the origin", () => {
+  // The VitePress config cannot import src/seo.js (it is outside the docs
+  // project, and VitePress's Vite will not load from there), so it repeats the
+  // origin. This is the gate that keeps the repeat honest: a base or an origin
+  // edited in one place fails here rather than shipping a docs site on a
+  // different host from the pricing page.
+  const config = readFileSync(
+    new URL("../docs-site/.vitepress/config.mts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    config,
+    new RegExp(`const SITE_ORIGIN = "${SITE.origin}";`),
+    "the docs config must use the canonical origin from src/seo.js",
+  );
+  assert.match(
+    config,
+    /base: "\/docs\/"/,
+    "the docs must be served from /docs/, beside the pricing page",
+  );
+  // And the two llms files the pages link are the ones that ship.
+  const home = shipped("index.html");
+  assert.ok(
+    home.includes("/docs/llms-full.txt"),
+    "the docs home must link the llms-full.txt that the build writes",
+  );
+  const rootLlms = readFileSync(
+    new URL("../public/llms.txt", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    rootLlms.includes(`${SITE.origin}/docs/llms-full.txt`),
+    "the site llms.txt must link the llms-full.txt that the build writes",
+  );
+  for (const page of DOC_PAGES) {
+    assert.ok(
+      rootLlms.includes(`${SITE.origin}${page.url}.md`),
+      `the site llms.txt must link ${page.url}.md`,
+    );
+  }
+});
+
 test("the README describes the drive and points at the docs", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   // It is not the template stub any more: it says what the product is and

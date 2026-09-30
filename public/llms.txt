@@ -44,7 +44,7 @@ Worked examples: 800 GB kept all month = $12; 1.6 TB = $12.80; 2 TB = $16;
 ## Docs
 
 Every page below is one plain-words page about the drive, also served as
-Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/llms-full.txt)
+Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
 holds all seven in one file.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
