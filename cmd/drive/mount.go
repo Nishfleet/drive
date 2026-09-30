@@ -221,11 +221,14 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			return err
 		}
 	} else {
-		if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
-			return fmt.Errorf("systemctl --user daemon-reload: %w", err)
-		}
-		if err := exec.Command("systemctl", "--user", "enable", "--now", SystemdUnitName).Run(); err != nil {
-			return fmt.Errorf("systemctl --user enable --now %s: %w", SystemdUnitName, err)
+		for _, action := range mountSystemctlActions() {
+			args := []string{"--user", action}
+			if action != "daemon-reload" {
+				args = append(args, SystemdUnitName)
+			}
+			if err := exec.Command("systemctl", args...).Run(); err != nil {
+				return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+			}
 		}
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
@@ -251,19 +254,36 @@ func mountForeground(p MountPlan) error {
 	cmd := exec.Command(rclonePath, p.Args()...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Start the child first, so the signal handler below never sees a nil
+	// Process: a SIGINT between Notify and Run would otherwise panic.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone mount: %w", err)
+	}
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
-	// mount attached behind a dead CLI.
+	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
+	// gone, and joined is waited on so no handler outlives the mount.
 	stop := make(chan os.Signal, 2)
+	quit := make(chan struct{})
+	joined := make(chan struct{})
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	defer func() { signal.Stop(stop) }()
 	go func() {
-		for sig := range stop {
-			_ = cmd.Process.Signal(sig)
+		defer close(joined)
+		for {
+			select {
+			case sig := <-stop:
+				_ = cmd.Process.Signal(sig)
+			case <-quit:
+				return
+			}
 		}
 	}()
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rclone mount: %w", err)
+	runErr := cmd.Wait()
+	signal.Stop(stop)
+	close(quit)
+	<-joined
+	if runErr != nil {
+		return fmt.Errorf("rclone mount: %w", runErr)
 	}
 	return nil
 }
@@ -284,11 +304,30 @@ func waitMounted(goos, home string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("the mount did not come up within %s; check the login item and %s",
-		mountWait, filepath.Join(DefaultConfigDir(home), "mount.log"))
+		mountWait, mountLogHint(goos, home))
 }
 
 // mountWait bounds the wait for a freshly started mount to appear.
 const mountWait = 30 * time.Second
+
+// mountLogHint is where to look when the mount did not come up: launchd
+// writes the item's output to the log path from the plan; on Linux the user
+// journal owns a systemd unit's output.
+func mountLogHint(goos, home string) string {
+	if goos == "darwin" {
+		return filepath.Join(DefaultConfigDir(home), "mount.log")
+	}
+	return "journalctl --user -u " + SystemdUnitName
+}
+
+// mountSystemctlActions is the ordered systemctl work a Linux mount does.
+// `enable --now` is deliberately absent: it starts a stopped unit but leaves a
+// running one alone, so a second `drive mount` with a different bucket,
+// prefix, key or rclone path would report success while rclone still served the
+// old one. `restart` applies the unit just written, every time.
+func mountSystemctlActions() []string {
+	return []string{"daemon-reload", "enable", "restart"}
+}
 
 // bootstrapLaunchd loads the login item with the current launchctl verbs.
 // `load`/`unload -w` are deprecated and not idempotent (loading an item that
@@ -432,13 +471,28 @@ func ResolveRclone(rclone string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("rclone not found on PATH: %w", err)
 		}
-		return path, nil
+		return absPath(path)
 	}
-	path, err := exec.LookPath(rclone)
+	parent, err := exec.LookPath(rclone)
 	if err != nil {
 		return "", fmt.Errorf("rclone binary %q not found: %w", rclone, err)
 	}
-	return path, nil
+	return absPath(parent)
+}
+
+// absPath makes a LookPath result absolute. A relative PATH entry or an
+// explicit `./rclone` yields a relative result from LookPath: it only works
+// from one working directory, and a login item is not started from one, so
+// the value written into the plist or the unit must be absolute.
+func absPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", p, err)
+	}
+	return abs, nil
 }
 
 // CurrentGOOS is split out so tests can inject a platform.

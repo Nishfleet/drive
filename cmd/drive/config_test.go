@@ -357,3 +357,29 @@ func TestLaunchctlUsesBootstrapNotDeprecatedLoad(t *testing.T) {
 		}
 	}
 }
+
+// A relative path from LookPath is not usable in a login item, which is not
+// started from a working directory.
+func TestAbsPathMakesARelativeLookPathAbsolute(t *testing.T) {
+	got, err := absPath("./rclone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("absPath(./rclone) = %q, want an absolute path", got)
+	}
+	if got, err := absPath("/usr/bin/rclone"); err != nil || got != "/usr/bin/rclone" {
+		t.Errorf("absPath(/usr/bin/rclone) = %q, %v", got, err)
+	}
+}
+
+// The Linux start path must apply the unit it just wrote, not leave a running
+// unit with the old configuration: enable --now does not restart an active
+// unit, so the caller has to restart.
+func TestMountLinuxRestartsAnAlreadyRunningUnit(t *testing.T) {
+	got := mountSystemctlActions()
+	want := []string{"daemon-reload", "enable", "restart"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("systemctl actions = %v, want %v", got, want)
+	}
+}
