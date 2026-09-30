@@ -21,7 +21,6 @@
 
 import {
   EMAIL_KINDS,
-  FROM_ADDRESS,
   FROM_NAME,
   renderEmail,
 } from "./emails.js";
@@ -102,7 +101,7 @@ export function isSameOriginRequest(request) {
  * caller decides whether to retry and a false "sent" would silently drop a
  * customer's receipt.
  * @param {object} emailBinding the EMAIL binding
- * @param {{to: string, kind: string, data?: object, from?: string, fromName?: string}} request
+ * @param {{to: string, kind: string, data?: object, from: string, fromName?: string}} request
  * @returns {Promise<{messageId: string, subject: string}>}
  */
 export async function sendEmail(emailBinding, request) {
@@ -110,9 +109,15 @@ export async function sendEmail(emailBinding, request) {
   if (typeof request !== "object" || request === null) {
     throw new TypeError(`sendEmail needs a request object, got ${String(request)}`);
   }
-  const { to, kind, data = {}, from = FROM_ADDRESS, fromName = FROM_NAME } = request;
+  const { to, kind, data = {}, from, fromName = FROM_NAME } = request;
   if (typeof to !== "string" || to.trim().length === 0) {
     throw new TypeError(`sendEmail needs a recipient address, got ${to}`);
+  }
+  // Required, not defaulted: an unset sender is a deployment that is not
+  // configured, and a placeholder domain would fail every send while looking
+  // configured. src/email-send.js turns this into a 503.
+  if (typeof from !== "string" || from.trim().length === 0) {
+    throw new TypeError("sendEmail needs a from address (the deployment's MAIL_FROM)");
   }
   // renderEmail throws on an unknown kind, so a typo fails here and not as a
   // 202 with an empty body.
@@ -121,7 +126,7 @@ export async function sendEmail(emailBinding, request) {
   // large part of the spam score.
   const message = await binding.send({
     to: to.trim(),
-    from: { email: from, name: fromName },
+    from: { email: from.trim(), name: fromName },
     subject,
     text,
     html,
@@ -157,7 +162,7 @@ function readKind(body) {
  * same-origin rule, so the route cannot be used to mail an arbitrary person
  * from our domain.
  * @param {Request} request
- * @param {{EMAIL?: object, EMAIL_SEND_TOKEN?: string}} env
+ * @param {{EMAIL?: object, EMAIL_SEND_TOKEN?: string, MAIL_FROM?: string}} env
  */
 export async function handleSendEmailRequest(request, env) {
   if (request.method !== "POST") {
@@ -197,8 +202,16 @@ export async function handleSendEmailRequest(request, env) {
   if (!env || !env.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
+  if (typeof env.MAIL_FROM !== "string" || env.MAIL_FROM.trim().length === 0) {
+    // A deployment with no sending domain yet: closed, and it says which
+    // setting is missing rather than mailing from a placeholder.
+    return json(
+      { error: "MAIL_FROM is not set on this deployment." },
+      503,
+    );
+  }
   try {
-    const sent = await sendEmail(env.EMAIL, read);
+    const sent = await sendEmail(env.EMAIL, { ...read, from: env.MAIL_FROM });
     return json({ ok: true, kind: read.kind, to: read.to, ...sent }, 202);
   } catch (error) {
     // Named, never swallowed: the caller retries a failed send, and "sent"

@@ -10,10 +10,11 @@
 // node --test exercises every template without a runtime, the same shape as
 // src/pricing.js and src/status.js.
 
-// The sender every drive email comes from. One address keeps replies and
-// bounces in one place; the domain is onboarded to Cloudflare Email Sending,
-// the same service the Worker's send_email binding uses.
-export const FROM_ADDRESS = "notifications@drive.example";
+// The sender name every drive email carries. The address itself is a
+// deployment setting (env.MAIL_FROM), because drive has no sending domain of
+// its own yet: a placeholder domain in this file would make every send fail
+// while looking configured, and the domain is a deployment decision, not a
+// code one.
 export const FROM_NAME = "Drive";
 
 // The one rate the receipt's "you saved" line is measured against, from

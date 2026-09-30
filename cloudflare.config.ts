@@ -28,11 +28,16 @@ export default defineConfig({
 			// the sender address is set per deployment, so nothing here pins a
 			// brand domain before drive has one.
 			EMAIL: bindings.sendEmail(),
-			// The bearer token POST /api/emails/send requires. A secret, never
-			// in this file: with it unset the route answers 403 (a closed
-			// door), so it cannot be used as a mail relay before the meter
-			// (drive#6) and billing webhook (drive#7) call it.
+			// The bearer token POST /api/emails/send requires, and the address
+			// the emails come from. Both are secrets, never values in this
+			// file: with the token unset the route answers 403 (a closed
+			// door), and with no MAIL_FROM it answers 503, so it cannot be
+			// used as a mail relay and cannot send from a placeholder domain
+			// before drive has one. Set at deploy time:
+			//   npx wrangler secret put EMAIL_SEND_TOKEN
+			//   npx wrangler secret put MAIL_FROM
 			EMAIL_SEND_TOKEN: bindings.secret(),
+			MAIL_FROM: bindings.secret(),
 		},
 	},
 });

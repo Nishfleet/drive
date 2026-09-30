@@ -11,7 +11,6 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
-  FROM_ADDRESS,
   FROM_NAME,
   RATE_USD_PER_GB,
   SAVED_COPY,
@@ -29,6 +28,10 @@ import {
   isSameOriginRequest,
   sendEmail,
 } from "../src/email-send.js";
+
+// The deployment's sending address, set per deployment (the sending domain is
+// a deployment decision, not a code one).
+const MAIL_FROM = "notifications@drive.example";
 
 // A fake send_email binding: records the message, and can be told to fail.
 function makeFakeEmail(result = { messageId: "<fake@drive.example>" }) {
@@ -48,7 +51,12 @@ function makeFakeEmail(result = { messageId: "<fake@drive.example>" }) {
 // The route's own token, and an env carrying it.
 const TOKEN = "test-send-token";
 function makeEnv(overrides = {}) {
-  return { EMAIL: makeFakeEmail(), EMAIL_SEND_TOKEN: TOKEN, ...overrides };
+  return {
+    EMAIL: makeFakeEmail(),
+    EMAIL_SEND_TOKEN: TOKEN,
+    MAIL_FROM,
+    ...overrides,
+  };
 }
 
 function postRequest(body, headers = {}) {
@@ -351,6 +359,7 @@ test("sendEmail hands the rendered message to the binding", async () => {
   const email = makeFakeEmail({ messageId: "<abc@drive.example>" });
   const sent = await sendEmail(email, {
     to: "  person@example.com  ",
+    from: MAIL_FROM,
     kind: "welcome",
   });
   assert.equal(sent.messageId, "<abc@drive.example>");
@@ -360,7 +369,7 @@ test("sendEmail hands the rendered message to the binding", async () => {
   assert.equal(email.sent.length, 1);
   assert.deepEqual(email.sent[0], {
     to: "person@example.com",
-    from: { email: FROM_ADDRESS, name: FROM_NAME },
+    from: { email: MAIL_FROM, name: FROM_NAME },
     subject: "Your drive is ready",
     text: welcomeTemplate().text,
     html: welcomeTemplate().html,
@@ -370,7 +379,7 @@ test("sendEmail hands the rendered message to the binding", async () => {
 test("sendEmail throws when the binding is missing or wrong", async () => {
   for (const binding of [null, undefined, {}, { send: "nope" }]) {
     await assert.rejects(
-      sendEmail(binding, { to: "person@example.com", kind: "welcome" }),
+      sendEmail(binding, { to: "person@example.com", from: MAIL_FROM, kind: "welcome" }),
       /EMAIL is not bound/,
     );
   }
@@ -379,10 +388,11 @@ test("sendEmail throws when the binding is missing or wrong", async () => {
 test("sendEmail refuses an empty recipient and an unknown kind", async () => {
   const email = makeFakeEmail();
   for (const request of [
-    { to: "", kind: "welcome" },
-    { to: "   ", kind: "welcome" },
-    { to: 42, kind: "welcome" },
-    { to: "person@example.com", kind: "nope" },
+    { to: "", from: MAIL_FROM, kind: "welcome" },
+    { to: "   ", from: MAIL_FROM, kind: "welcome" },
+    { to: 42, from: MAIL_FROM, kind: "welcome" },
+    { to: "person@example.com", from: MAIL_FROM, kind: "nope" },
+    { to: "person@example.com", kind: "welcome" },
   ]) {
     await assert.rejects(sendEmail(email, request), (error) => {
       assert.ok(error instanceof TypeError || /Unknown email kind/.test(error.message));
@@ -396,7 +406,7 @@ test("a provider failure is raised, never reported as sent", async () => {
   // The one lie this lane must not tell: "sent" for a message nobody got.
   const email = makeFakeEmail(new Error("E_SENDER_NOT_VERIFIED"));
   await assert.rejects(
-    sendEmail(email, { to: "person@example.com", kind: "welcome" }),
+    sendEmail(email, { to: "person@example.com", from: MAIL_FROM, kind: "welcome" }),
     /E_SENDER_NOT_VERIFIED/,
   );
 });
@@ -407,7 +417,7 @@ test("a send with no message id is a failure, not a success", async () => {
   for (const result of [null, {}, { messageId: 42 }]) {
     const email = makeFakeEmail(result);
     await assert.rejects(
-      sendEmail(email, { to: "person@example.com", kind: "welcome" }),
+      sendEmail(email, { to: "person@example.com", from: MAIL_FROM, kind: "welcome" }),
       /no message id/,
     );
   }
@@ -552,6 +562,21 @@ test("the route needs a recipient address", async () => {
   }
 });
 
+test("a deployment with no MAIL_FROM says so, and sends nothing", async () => {
+  // The sending address is a deployment setting. A missing one is closed and
+  // named, never a placeholder domain that silently fails every send.
+  const env = makeEnv({ MAIL_FROM: undefined });
+  for (const mailFrom of [undefined, "", "   "]) {
+    const res = await handleSendEmailRequest(
+      authed({ to: "person@example.com", kind: "welcome" }),
+      makeEnv({ MAIL_FROM: mailFrom }),
+    );
+    assert.equal(res.status, 503, `MAIL_FROM: ${mailFrom}`);
+    assert.match((await res.json()).error, /MAIL_FROM is not set/);
+  }
+  assert.equal(env.EMAIL.sent.length, 0);
+});
+
 test("a deployment with no EMAIL binding says so, and sends nothing", async () => {
   const res = await handleSendEmailRequest(
     authed({ to: "person@example.com", kind: "welcome" }),
@@ -587,7 +612,7 @@ test("the route sends each of the five kinds through the one lane", async () => 
     assert.equal(res.status, 202, `kind: ${kind}`);
     assert.equal(env.EMAIL.sent.length, 1, `kind: ${kind}`);
     const message = env.EMAIL.sent[0];
-    assert.equal(message.from.email, FROM_ADDRESS);
+    assert.equal(message.from.email, MAIL_FROM);
     assert.ok(message.text.includes("-- Drive"), `kind: ${kind} text sign-off`);
     assert.ok(message.html.includes("-- Drive"), `kind: ${kind} html sign-off`);
   }
