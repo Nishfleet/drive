@@ -233,3 +233,174 @@ func TestBsdMountHasMountPoint(t *testing.T) {
 		}
 	}
 }
+
+// The storage secret has three safe sources and no unsafe one (issue #75).
+// Each path is covered here, with the config file's mode, because a secret read
+// from a file other users can read is the same leak as a secret in argv.
+func TestReadSecretKeyFromStdin(t *testing.T) {
+	got, err := ReadSecretKey("", true, strings.NewReader("SECRETFROMSTDIN\n"))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != "SECRETFROMSTDIN" {
+		t.Errorf("secret = %q, want the piped value with the newline trimmed", got)
+	}
+}
+
+func TestReadSecretKeyFromEmptyStdinIsAnError(t *testing.T) {
+	if _, err := ReadSecretKey("", true, strings.NewReader("  \n")); err == nil {
+		t.Fatal("an empty secret on stdin must not read as a missing secret")
+	}
+}
+
+func TestReadSecretKeyFromTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "SECRETFROMENV")
+	got, err := ReadSecretKey("", false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != "SECRETFROMENV" {
+		t.Errorf("secret = %q, want the environment value", got)
+	}
+}
+
+func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
+	home := t.TempDir()
+	path := RcloneConfigPath(home)
+	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	got, err := ReadSecretKey(path, false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if want := testStorage().SecretKey; got != want {
+		t.Errorf("secret = %q, want %q from the config file", got, want)
+	}
+}
+
+func TestReadSecretKeyRefusesAConfigFileOthersCanRead(t *testing.T) {
+	home := t.TempDir()
+	path := RcloneConfigPath(home)
+	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	secret, err := ReadSecretKey(path, false, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("a world-readable secret file must not be read")
+	}
+	if secret != "" {
+		t.Errorf("secret = %q, want nothing returned with the refusal", secret)
+	}
+	if !strings.Contains(err.Error(), "644") || !strings.Contains(err.Error(), "chmod 600") {
+		t.Errorf("error %q does not name the mode and the fix", err)
+	}
+}
+
+func TestReadSecretKeyPrefersAnExplicitRequestOverTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "SECRETFROMENV")
+	got, err := ReadSecretKey("", true, strings.NewReader("SECRETFROMSTDIN\n"))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != "SECRETFROMSTDIN" {
+		t.Errorf("secret = %q, want the value the command asked for", got)
+	}
+}
+
+func TestReadSecretKeyWithNoSourceIsEmptyNotAnError(t *testing.T) {
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	got, err := ReadSecretKey(RcloneConfigPath(t.TempDir()), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != "" {
+		t.Errorf("secret = %q, want empty", got)
+	}
+}
+
+func TestParseRcloneConfigReadsBackWhatRcloneConfigWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseRcloneConfig(path)
+	if err != nil {
+		t.Fatalf("ParseRcloneConfig: %v", err)
+	}
+	want := testStorage()
+	if got.AccessKey != want.AccessKey || got.SecretKey != want.SecretKey ||
+		got.Endpoint != want.Endpoint || got.Region != want.Region {
+		t.Errorf("round trip = %+v, want the fields RcloneConfig wrote", got)
+	}
+}
+
+func TestParseRcloneConfigRejectsAFileThatIsNotTheDriveConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := os.WriteFile(path, []byte("[other]\naccess_key_id = A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseRcloneConfig(path); err == nil {
+		t.Fatal("a config with no [drive] section must not parse as this device's key")
+	}
+}
+
+func TestParseAPIBaseRefusesCredentialsInTheURL(t *testing.T) {
+	if _, err := parseAPIBase("https://user:secretkey@example.com"); err == nil {
+		t.Fatal("a URL carrying credentials must be refused: it is a secret on the command line and in every error line that prints it")
+	}
+}
+
+// The secret flag is the finding this issue opens with. It must be an error
+// that names the ways that are safe, not a silently ignored flag.
+func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"--secret-key", "SECRETVALUE", "--endpoint", "http://x", "--bucket", "b", "--access-key", "a"},
+		{"--secret-key=SECRETVALUE"},
+		{"-secret-key=SECRETVALUE"},
+	} {
+		err := runMount(args)
+		if err == nil {
+			t.Errorf("runMount(%q) = nil, want the refusal", args)
+			continue
+		}
+		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.conf"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
+			}
+		}
+	}
+}
+
+func TestMissingSecretNamesTheSafeSources(t *testing.T) {
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	_, err := LoadStorageConfig("http://x", "b", "", "", "a", "")
+	if err == nil {
+		t.Fatal("want an error when no secret source has one")
+	}
+	for _, want := range []string{"DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "config file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing-config error %q is missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "--secret-key ") {
+		t.Errorf("missing-config error %q still points at the removed flag", err)
+	}
+}
+
+// A URL that will not parse still must not print itself: url.Error quotes the
+// URL it was given, and that URL can carry a credential.
+func TestParseAPIBaseDoesNotEchoAURLThatCarriesCredentials(t *testing.T) {
+	_, err := parseAPIBase("https://user:secretkey@example.com:notaport")
+	if err == nil {
+		t.Fatal("want an error for a URL that cannot parse")
+	}
+	if strings.Contains(err.Error(), "secretkey") {
+		t.Errorf("error %q carries the credential", err)
+	}
+	if !strings.Contains(err.Error(), "does not parse") {
+		t.Errorf("error %q does not name the fault", err)
+	}
+}

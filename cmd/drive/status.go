@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -243,9 +244,13 @@ func USD(amount float64) string {
 
 // parseAPIBase checks the api Worker URL and drops its trailing slash, so the
 // endpoint path is appended the same way every time. A URL is operator
-// config, but it is printed and put in an error, so the same rejection
-// config.go applies to a rclone config value applies here: a newline would
-// break the line it is printed on, and a NUL byte is never a URL.
+// config, but it is printed and put in an error, so it is held to the same
+// rule as the secret itself (issue #75): user:password@ in a URL is a
+// credential on the command line and in every line that prints it, so it is
+// refused rather than carried, and no branch of this function prints a URL it
+// has not already cleared. The same rejection config.go applies to a rclone
+// config value applies here: a newline would break the line it is printed on,
+// and a NUL byte is never a URL.
 func parseAPIBase(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
@@ -253,13 +258,25 @@ func parseAPIBase(raw string) (string, error) {
 	}
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("api Worker URL %q: %w", trimmed, err)
+		// url.Error's message quotes the URL it was given, and that URL may
+		// carry a credential. The inner error names the actual fault (a bad
+		// port, a bad escape) without repeating the value, so that is what is
+		// reported.
+		if inner := errors.Unwrap(err); inner != nil {
+			return "", fmt.Errorf("api Worker URL does not parse: %v", inner)
+		}
+		return "", errors.New("api Worker URL does not parse")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("api Worker URL %q must be http or https", trimmed)
 	}
 	if u.Host == "" {
 		return "", fmt.Errorf("api Worker URL %q has no host", trimmed)
+	}
+	// Refused before it can be printed anywhere: the key store takes the key
+	// in the Authorization header, so a credential in the URL is never needed.
+	if u.User != nil {
+		return "", fmt.Errorf("api Worker URL %q carries credentials; the key is sent in the Authorization header, not in the URL", u.Host)
 	}
 	return strings.TrimSuffix(trimmed, "/"), nil
 }

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +60,125 @@ const (
 	RcloneRemoteName = "drive"
 )
 
+// secretEnvName is the environment variable that carries the storage secret.
+// It is the one the mount has always read; a flag alongside it is what this
+// issue removed, because a flag is in the shell history and in ps for every
+// user on the machine for as long as the process lives.
+const secretEnvName = "DRIVE_S3_SECRET_ACCESS_KEY"
+
+// ReadSecretKey resolves the storage secret from the safe sources, in the
+// order the caller asked for them, and only from those (issue #75). The three
+// sources are a pipe, the environment, and the config file this CLI itself
+// wrote, and there is no fourth: no flag, so the secret can never be read out
+// of /proc/<pid>/cmdline or out of a shell history file, which is the finding
+// this issue opened with.
+//
+// configPath is the config file to fall back to, and an absent file is not an
+// error (there is no key on this machine yet). wantStdin says the caller piped
+// a secret in, and a pipe that carries nothing is a mistake rather than a
+// missing value: a silent empty secret would mount with no credential and fail
+// later with a confusing 403.
+func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, error) {
+	if wantStdin {
+		// A pipe is a stream, so read it to the end. The trailing newline a
+		// shell echo or a file adds is not part of the secret and is trimmed;
+		// anything else is the secret and is left alone.
+		raw, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", fmt.Errorf("read the storage secret from stdin: %w", err)
+		}
+		secret := strings.TrimRight(string(raw), "\r\n")
+		if strings.TrimSpace(secret) == "" {
+			return "", errors.New("no storage secret on stdin: --secret-key-stdin reads one line from the pipe")
+		}
+		return secret, nil
+	}
+	if env := os.Getenv(secretEnvName); env != "" {
+		return env, nil
+	}
+	if configPath == "" {
+		return "", nil
+	}
+	if err := checkSecretFileMode(configPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	c, err := ParseRcloneConfig(configPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return c.SecretKey, nil
+}
+
+// checkSecretFileMode refuses a config file other users can read before the
+// secret in it is read. A 0644 rclone.conf is the storage secret in every
+// shell's reach on the machine, the same exposure as the flag this issue
+// removed, so the error names the mode and the fix.
+func checkSecretFileMode(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf("%s is mode %04o, so the storage secret in it is readable by "+
+			"every user on this machine; chmod 600 %s", path, perm, path)
+	}
+	return nil
+}
+
+// ParseRcloneConfig reads the drive remote back out of the rclone config this
+// CLI wrote. It is the same INI the tool uses (sections in brackets, `key =
+// value`, comments with # or ;) and only the fields the drive owns are taken,
+// so nothing in the file can be talked into handing over another remote's
+// credentials. A config that names no key is an error, not an empty struct:
+// logout must not call a half-read key this device's.
+func ParseRcloneConfig(path string) (StorageConfig, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return StorageConfig{}, err
+	}
+	c := StorageConfig{}
+	section := ""
+	for lineNo, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return StorageConfig{}, fmt.Errorf("%s line %d: %q is not a key = value line", path, lineNo+1, line)
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		value = strings.TrimSpace(value)
+		if section != RcloneRemoteName {
+			continue
+		}
+		switch name {
+		case "access_key_id":
+			c.AccessKey = value
+		case "secret_access_key":
+			c.SecretKey = value
+		case "endpoint":
+			c.Endpoint = value
+		case "region":
+			c.Region = value
+		}
+	}
+	if c.AccessKey == "" || c.SecretKey == "" {
+		return StorageConfig{}, fmt.Errorf("%s: the [%s] remote carries no access key id and secret key", path, RcloneRemoteName)
+	}
+	return c, nil
+}
+
 // LoadStorageConfig resolves the storage endpoint and keys from flags first,
 // then environment variables, and fails loudly when a required value is
 // missing. Endpoint, bucket and keys are config, not code: the same binary
@@ -81,7 +203,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey st
 		missing = append(missing, "access key (--access-key or DRIVE_S3_ACCESS_KEY_ID)")
 	}
 	if c.SecretKey == "" {
-		missing = append(missing, "secret key (--secret-key or DRIVE_S3_SECRET_ACCESS_KEY)")
+		missing = append(missing, fmt.Sprintf("secret key (%s, --secret-key-stdin, or the config file)", secretEnvName))
 	}
 	if len(missing) > 0 {
 		return c, fmt.Errorf("missing storage config: %s", strings.Join(missing, ", "))

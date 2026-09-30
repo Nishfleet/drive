@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,7 +21,7 @@ Usage:
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
-  drive logout [flags]     stop the mount and delete this device's key and config
+  drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive version            print the version
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
@@ -33,11 +34,19 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --access-key  access key id (env DRIVE_S3_ACCESS_KEY_ID)
-  --secret-key  secret access key (env DRIVE_S3_SECRET_ACCESS_KEY)
+  --secret-key-stdin  read the secret access key from stdin, one line of it
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
+
+The storage secret is read from the config file (mode 0600), the environment
+variable DRIVE_S3_SECRET_ACCESS_KEY, or stdin; it is never accepted on the
+command line, where the shell history and ps output would keep a copy.
+
+Logout flags:
+  --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
+  --force       discard files waiting to upload instead of refusing to logout
 `
 
 const version = "0.1.0"
@@ -102,15 +111,22 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 }
 
 func runMount(args []string) error {
+	// The storage secret is refused before the FlagSet parses, because the
+	// parse would stop at "flag provided but not defined" and name neither the
+	// reason nor the ways that are safe. The secret itself is never held: only
+	// the flag's presence is read here.
+	if flag := secretFlagArg(args); flag != "" {
+		return fmt.Errorf("%s is not accepted: %s", flag, secretWays(RcloneConfigPath(homeFromArgs(args))))
+	}
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region, accessKey, secretKey string
-	var foreground, dryRun bool
+	var endpoint, bucket, prefix, region, accessKey string
+	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
 	fs.StringVar(&accessKey, "access-key", "", "access key id")
-	fs.StringVar(&secretKey, "secret-key", "", "secret access key")
+	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read the secret access key from stdin")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -119,6 +135,10 @@ func runMount(args []string) error {
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
+	if err != nil {
+		return err
 	}
 	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey)
 	if err != nil {
@@ -129,6 +149,42 @@ func runMount(args []string) error {
 		rclone = DefaultRcloneBin(common.home)
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
+}
+
+// secretFlagArg returns the command line's own --secret-key argument when it
+// is present in any spelling the flag package would accept (-secret-key,
+// --secret-key, or either with =value), and empty when it is not. The value
+// after = is not returned: it is a secret, and nothing here prints it.
+func secretFlagArg(args []string) string {
+	for _, a := range args {
+		name := strings.TrimLeft(a, "-")
+		if name == "secret-key" || strings.HasPrefix(name, "secret-key=") {
+			return "--secret-key"
+		}
+	}
+	return ""
+}
+
+// homeFromArgs reads the --home value the flag package would use, so a message
+// about the config file names the file this run would actually read. The flags
+// have not parsed yet, so this scans only the one flag it needs, in both the
+// `--home X` and `--home=X` spellings; anything malformed falls back to $HOME,
+// which is what a failed parse would have failed on anyway.
+func homeFromArgs(args []string) string {
+	for i, a := range args {
+		if a == "--home" || a == "-home" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return os.Getenv("HOME")
+		}
+		for _, prefix := range []string{"--home=", "-home="} {
+			if v, ok := strings.CutPrefix(a, prefix); ok {
+				return v
+			}
+		}
+	}
+	return os.Getenv("HOME")
 }
 
 func runUnmount(args []string) error {

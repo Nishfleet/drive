@@ -18,6 +18,13 @@ func configOnlyHome(t *testing.T) string {
 	return home
 }
 
+// testRevoker is the key store stand-in every logout test that has a config
+// file needs, keyed to the pair configOnlyHome writes.
+func testRevoker(t *testing.T, home string) *keyServer {
+	t.Helper()
+	return newKeyServer(t, home, testStorage().AccessKey, testStorage().SecretKey)
+}
+
 func configWithLoginItem(t *testing.T) string {
 	t.Helper()
 	home := configOnlyHome(t)
@@ -34,7 +41,7 @@ func configWithLoginItem(t *testing.T) string {
 func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 	home := configOnlyHome(t)
 
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -51,7 +58,7 @@ func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 	home := configWithLoginItem(t)
 
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -68,19 +75,107 @@ func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 
 func TestLogoutIsSafeToRunTwice(t *testing.T) {
 	home := configOnlyHome(t)
-	if err := Logout("linux", home, false); err != nil {
+	ks := testRevoker(t, home)
+	if err := Logout("linux", home, false, ks); err != nil {
 		t.Fatal(err)
 	}
-	if err := Logout("linux", home, false); err != nil {
+	// The key is gone, so the second run has nothing to revoke and needs no
+	// server: a nil revoker must not turn "nothing to revoke" into a failure.
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatalf("second logout: %v", err)
+	}
+	if got := ks.count(); got != 1 {
+		t.Errorf("revoke attempts = %d, want exactly 1 (no key is left to revoke)", got)
+	}
+}
+
+// The headline finding of issue #75: the key must be turned off on the server
+// before the local copy is deleted. The stand-in server records whether the
+// config file still existed when the revoke arrived, which is the ordering
+// proof, not a hope.
+func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
+	home := configOnlyHome(t)
+	ks := testRevoker(t, home)
+
+	if err := Logout("linux", home, false, ks); err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+	if got := ks.count(); got != 1 {
+		t.Fatalf("revoke attempts = %d, want 1", got)
+	}
+	if !ks.sawConfigAtRequestTime() {
+		t.Error("the revoke was sent after the local key was deleted; it must be sent while the key is still readable")
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(err) {
+		t.Error("the local key must be deleted after the revoke")
+	}
+}
+
+func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
+	home := configOnlyHome(t)
+	// Port 1 on loopback refuses; the revoke cannot get there.
+	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
+
+	err := Logout("linux", home, false, unreachable)
+	if err == nil {
+		t.Fatal("logout must fail, not claim a clean sign-out, when the key is still live")
+	}
+	const sentence = "signed out here; the key is still live, run drive logout again when online"
+	if !strings.Contains(err.Error(), sentence) {
+		t.Errorf("error %q must say %q plainly", err, sentence)
+	}
+	if strings.Contains(err.Error(), testStorage().SecretKey) {
+		t.Errorf("error %q carries the secret", err)
+	}
+	// "keeps nothing secret on disk": the local copy still goes.
+	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
+		t.Error("the local key must be deleted even when the revoke fails, so nothing secret stays on disk")
+	}
+}
+
+func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
+	home := configOnlyHome(t)
+
+	err := Logout("linux", home, false, nil)
+	if err == nil {
+		t.Fatal("a key that cannot be revoked must not read as a clean sign-out")
+	}
+	if !strings.Contains(err.Error(), "signed out here; the key is still live, run drive logout again when online") {
+		t.Errorf("error %q must carry the plain sentence", err)
+	}
+	if !strings.Contains(err.Error(), "DRIVE_API_URL") {
+		t.Errorf("error %q must name what to configure", err)
+	}
+	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
+		t.Error("the local key must be deleted so nothing secret stays on disk")
+	}
+}
+
+// A malformed config is not a silent "no key": logout must not claim the key
+// is gone when it never learned which key it held.
+func TestLogoutNamesAnUnreadableConfigInsteadOfSkippingTheRevoke(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(RcloneConfigPath(home), []byte("not a config at all\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := Logout("linux", home, false, testRevoker(t, home))
+	if err == nil {
+		t.Fatal("an unreadable config must fail logout, not pass as nothing to revoke")
+	}
+	if !strings.Contains(err.Error(), "still live") {
+		t.Errorf("error %q must carry the plain sentence", err)
 	}
 }
 
 func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	home := configOnlyHome(t)
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
+	ks := testRevoker(t, home)
 
-	err := Logout("linux", home, false)
+	err := Logout("linux", home, false, ks)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
@@ -93,19 +188,62 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(DefaultCacheDir(home), "vfsMeta")); statErr != nil {
 		t.Errorf("the refusal must not delete the queued file: %v", statErr)
 	}
+	// The refusal comes first: a key that stays on disk must not be revoked
+	// server-side, or the person would be locked out when the upload resumes.
+	if got := ks.count(); got != 0 {
+		t.Errorf("revoke attempts = %d, want 0 when logout refuses", got)
+	}
 
-	if err := Logout("linux", home, true); err != nil {
+	if err := Logout("linux", home, true, ks); err != nil {
 		t.Fatalf("--force: %v", err)
 	}
 	if _, statErr := os.Stat(DefaultCacheDir(home)); !os.IsNotExist(statErr) {
 		t.Errorf("the cache is still there after --force logout")
 	}
+	if got := ks.count(); got != 1 {
+		t.Errorf("revoke attempts after --force = %d, want 1", got)
+	}
+}
+
+// The exit code is part of the acceptance: the honest message alone is not
+// enough, the shell must see the failure. This runs the built CLI.
+func TestLogoutBinaryExitsNonZeroWhenTheKeyCannotBeRevoked(t *testing.T) {
+	home := configOnlyHome(t)
+	cmd := exec.Command(driveBin(t), "logout", "--home", home)
+	cmd.Env = append(os.Environ(), "DRIVE_API_URL=")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("want a non-zero exit when the key cannot be revoked, got 0 with output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "signed out here; the key is still live, run drive logout again when online") {
+		t.Errorf("output does not say the key is still live:\n%s", out)
+	}
+	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
+		t.Error("the local key must still be deleted on the failing path")
+	}
+}
+
+func TestLogoutBinaryExitsZeroWhenTheServerRevokesTheKey(t *testing.T) {
+	home := configOnlyHome(t)
+	ks := testRevoker(t, home)
+	cmd := exec.Command(driveBin(t), "logout", "--home", home, "--api", ks.BaseURL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("logout --api: %v\n%s", err, out)
+	}
+	if got := ks.count(); got != 1 {
+		t.Errorf("revoke attempts = %d, want 1", got)
+	}
+	if !strings.Contains(string(out), "the key is revoked on the server") {
+		t.Errorf("output does not say the key was revoked:\n%s", out)
+	}
 }
 
 // TestLogoutStopsALiveMount is the end-to-end proof: a real rclone mount, a
 // file written and uploaded, then `drive logout` — after which the mount is
-// down and the config is gone. It runs in the same namespace trick the mount
-// proof uses, so it skips where FUSE is refused rather than failing every PR.
+// down, the key is revoked on the stand-in key server and the config is gone.
+// It runs in the same namespace trick the mount proof uses, so it skips where
+// FUSE is refused rather than failing every PR.
 func TestLogoutStopsALiveMount(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-mount proof skipped in -short mode")
@@ -162,11 +300,13 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	// Start the mount in the foreground so there's no login item to manage;
 	// Logout's stopMount will catch and unmount it. The mount uses the default
-	// 5s write-back so a write lands quickly.
+	// 5s write-back so a write lands quickly. The secret reaches the CLI on
+	// stdin, the way the flag it replaced no longer can (issue #75).
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
-		"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key", secretKey,
+		"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key-stdin",
 		"--foreground")
+	cmd.Stdin = strings.NewReader(secretKey + "\n")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -204,11 +344,16 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		t.Fatalf("the upload did not finish inside the write-back: %d file(s) still queued", q.Files)
 	}
 
-	// Now run `drive logout` against the same home. The mount is a foreground
-	// rclone process with no login item; Unmount will no-op and stopMount
-	// will fusermount it down.
-	if err := Logout("linux", home, false); err != nil {
+	// Now run `drive logout` against the same home, with the key store
+	// stand-in as the revoke endpoint. The mount is a foreground rclone
+	// process with no login item; Unmount will no-op and stopMount will
+	// fusermount it down.
+	ks := newKeyServer(t, home, accessKey, secretKey)
+	if err := Logout("linux", home, false, ks); err != nil {
 		t.Fatalf("logout: %v", err)
+	}
+	if got := ks.count(); got != 1 {
+		t.Errorf("revoke attempts = %d, want 1: logout must turn the key off on the server", got)
 	}
 
 	// The mount must be down and the config gone.
@@ -218,5 +363,5 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
 		t.Fatal("config still present after logout")
 	}
-	t.Logf("logout stopped the mount and deleted %s", RcloneConfigPath(home))
+	t.Logf("logout revoked the key, stopped the mount and deleted %s", RcloneConfigPath(home))
 }

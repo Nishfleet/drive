@@ -10,26 +10,39 @@ import (
 	"strings"
 )
 
-// Logout is `drive logout`: stop the mount, then delete this device's key and
-// its local config (issue #54, build-spec.md "Commands" — "Unmount, delete
-// this device's key and local config"). Nothing outside the CLI's own config
-// and cache directories is touched: the drive folder holds the person's files
-// and is never this command's to delete.
+// Logout is `drive logout`: stop the mount, revoke this device's key on the
+// server, then delete the key and its local config (issue #75, build-spec.md
+// "Commands" — "Unmount, delete this device's key and local config"). Nothing
+// outside the CLI's own config and cache directories is touched: the drive
+// folder holds the person's files and is never this command's to delete.
 //
 // The device key is the `access_key_id` / `secret_access_key` pair in
-// `~/.config/drive/rclone.conf` (config.go `RcloneConfig`), so deleting that
-// file deletes the only local copy of the key, and the login item no longer
-// has a key to mount with. Revoking the key in storage is the api Worker's
-// job (issues #2 and #55, the storage API's key store); the CLI cannot call it
-// until that endpoint exists, and this command does not pretend otherwise.
+// `~/.config/drive/rclone.conf` (config.go `RcloneConfig`). Deleting that file
+// deletes the only local copy; revoke is what turns the copy on the server
+// off, and without it a key that was copied off this machine keeps working
+// after the person believes they signed out. revoke is the key store
+// (drive#2) behind the KeyRevoker interface; revoke_test.go proves this half
+// against a test server.
+//
+// The revoke runs while the config is still readable, and after the mount is
+// stopped, so a live upload cannot be cut off mid-file by a key that just went
+// off. The order the issue sets is kept: the server is asked first, the local
+// copy is deleted second. When the server cannot be reached, the local copy is
+// still deleted — "keeps nothing secret on disk" — and the returned error is
+// the plain sentence that the key is still live, which main turns into a
+// non-zero exit. A clean-looking success is never printed for that case.
 //
 // Files waiting to upload are protected: rclone queues them in the VFS cache
 // and does not flush them on stop (measured on this host 2026-09-30 with
 // rclone v1.75.1: a file written with `--vfs-write-back 120s` stayed `Dirty:
 // true` in the cache after a SIGTERM, and the backend never saw it), so
 // deleting the cache would throw the person's work away. Logout refuses to do
-// that unless `--force` says so in words.
-func Logout(goos, home string, force bool) error {
+// that unless `--force` says so in words, and the refusal happens before the
+// key is revoked or deleted, so a refusal leaves the device exactly as it was.
+func Logout(goos, home string, force bool, revoke KeyRevoker) error {
+	if revoke == nil {
+		revoke = noAPIKeyStore{}
+	}
 	pending, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
 		return err
@@ -61,6 +74,23 @@ func Logout(goos, home string, force bool) error {
 		// item restarting the drive) is already handled. Note it and continue.
 		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
 	}
+	// The server is asked while the config still holds the key. A missing
+	// config is no key at all, which is a complete logout on its own (logout
+	// is safe to run twice). An unreadable config is neither: it is reported,
+	// because a key that cannot be named is a key that may still be live.
+	var revokeErr error
+	var key *KeyPair
+	if pair, err := ReadDeviceKey(home); err != nil {
+		revokeErr = err
+	} else if pair != nil {
+		key = pair
+		revokeErr = revoke.Revoke(*pair)
+	}
+	// The local copy goes even when the revoke failed: the finding is a key
+	// left live on the server, and leaving a second copy on disk would be a
+	// second one. The exit code and the message below carry the truth about
+	// the server side.
+	//
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
 	for _, path := range []string{LoginItemPath(goos, home), DefaultConfigDir(home)} {
@@ -80,8 +110,37 @@ func Logout(goos, home string, force bool) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err)
 	}
+	if revokeErr != nil {
+		// local state is gone, server state is not; say both, and return the
+		// non-zero exit the issue asks for.
+		return fmt.Errorf("%s (%v)", revokeWarning, revokeErr)
+	}
+	if key != nil {
+		fmt.Printf("logged out: the mount is stopped, the key is revoked on the server and %s is deleted\n", DefaultConfigDir(home))
+		return nil
+	}
 	fmt.Printf("logged out: the mount is stopped and %s is deleted\n", DefaultConfigDir(home))
 	return nil
+}
+
+// ReadDeviceKey reads this device's key out of the rclone config. A missing
+// config is no key at all (nil, nil): there is nothing to revoke, and that is
+// not an error. A config that cannot be read is an error, not a missing key —
+// logout would otherwise print a clean sign-out while a key it could not name
+// is still live.
+func ReadDeviceKey(home string) (*KeyPair, error) {
+	path := RcloneConfigPath(home)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	c, err := ParseRcloneConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return &KeyPair{AccessKeyID: c.AccessKey, SecretKey: c.SecretKey}, nil
 }
 
 // stopMount brings the mount point itself down and reports success only once
@@ -170,12 +229,13 @@ func removeIfPresent(path string) error {
 func runLogout(args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	common := addCommonFlags(fs)
-	force := fs.Bool("force", false, "discard files waiting to upload instead of stopping")
+	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL (env DRIVE_API_URL); the key-revoke endpoint")
+	force := fs.Bool("force", false, "discard files waiting to upload instead of refusing")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	return Logout(CurrentGOOS(), common.home, *force)
+	return Logout(CurrentGOOS(), common.home, *force, resolveKeyRevoker(*api))
 }
