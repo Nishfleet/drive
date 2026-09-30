@@ -102,11 +102,13 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // The hourly meter (issue #6): roll the UTC hour that just closed into
-  // usage_minutes, one row per account. A D1 failure throws, so Cloudflare
-  // records the trigger as failed and retries; a failed rollup must never
-  // read as a quiet zero. The schedule string lives in cloudflare.config.ts,
-  // pinned to src/meter.js's METER_CRON by test/meter.test.mjs.
+  // The hourly meter (issue #6): roll every closed UTC hour that has not been
+  // rolled yet into usage_minutes, one row per account per hour, oldest first
+  // (src/meter.js runMeterCron). A D1 failure throws, so Cloudflare records
+  // the trigger as failed and retries, and the catch-up takes the next one
+  // over - a failed rollup must never read as a quiet zero. The schedule
+  // string lives in cloudflare.config.ts, pinned to src/meter.js's METER_CRON
+  // by test/meter.test.mjs.
   async scheduled(controller, env) {
     return runMeterCron(env.METER_DB, controller.scheduledTime);
   },
