@@ -42,7 +42,7 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes } from "./status.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
@@ -424,15 +424,28 @@ const USAGE_HEADERS = Object.freeze({
 
 /**
  * Handles GET /api/usage, the usage page's and the CLI's read. It answers with
- * the month's summary. Until the meter and the account store land (issues #6
- * and #2), an account has no usage rows, so the true answer is the empty
- * month: nothing metered, nothing held, the cap the default. The shape is the
- * one a metered account gets from the real rollup, so the page and the CLI can
- * be written against it now. Any other method is a 405 with the one allowed
- * method named, like the other endpoints.
+ * the month's summary, for the signed-in account and nobody else: the account
+ * is a required argument and a request that cannot prove one is a 401 with the
+ * message table's words, never another account's money (drive issue #73,
+ * north star: Safe). The one gate is signedInAccount() in src/status.js, the
+ * same one /api/first-run-status uses.
+ *
+ * Until the meter and the account store land (issues #6 and #2), a signed-in
+ * account has no usage rows, so the true answer is the empty month: nothing
+ * metered, nothing held, the cap the default. The shape is the one a metered
+ * account gets from the real rollup, so the page and the CLI can be written
+ * against it now. Any other method is a 405 with the one allowed method named,
+ * like the other endpoints — after the gate, so an anonymous request is told
+ * only that it is not signed in, never which methods exist.
  * @param {Request} request
+ * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  */
-export function handleUsageRequest(request) {
+export function handleUsageRequest(request, account) {
+  // The gate is first, before the method: an anonymous request learns nothing
+  // about whether it could write, only that it is not signed in.
+  if (!account) {
+    return unauthorizedResponse();
+  }
   if (request.method !== "GET") {
     return new Response("Method not allowed. GET this endpoint for monthly usage.", {
       status: 405,

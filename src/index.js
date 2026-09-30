@@ -5,7 +5,6 @@ import {
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
-  resolveAccount,
 } from "./files.js";
 import { signedInAccount } from "./status.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
@@ -66,22 +65,25 @@ export default {
     ) {
       return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
-    // The Web Files page's listing, download, upload and restore (issue #31).
+    // The files handler is behind the same account gate as the page's poll
+    // (issue #73): it answers 401 with no data for a request that cannot prove
+    // an account, and scopes every read and write to that account's prefix.
     if (
       url.pathname === FILES_ENDPOINT ||
       url.pathname === `${FILES_ENDPOINT}/` ||
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
-      return handleFilesRequest(request, storeFor(env), resolveAccount(request));
+      return handleFilesRequest(request, storeFor(env), signedInAccount(request));
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
-    // fallthrough.
+    // fallthrough, and the account gate is what keeps one account's numbers
+    // from being shown to another (issue #73).
     if (
       url.pathname === USAGE_ENDPOINT ||
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
-      return handleUsageRequest(request);
+      return handleUsageRequest(request, signedInAccount(request));
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
