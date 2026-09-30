@@ -8,12 +8,17 @@
 //
 // What "what it depends on" means here, and why the list is not the whole env:
 //
-//   - Every D1 database the Worker binds. The trivial read is the one
-//     statement D1 always answers even on an empty table, so a broken or
-//     missing migration and an unreachable database both fail it. The
-//     waitlist is the site's only store today; when the meter's tables land
-//     the same rule picks them up with no change here, because the checks are
-//     derived from the bindings on `env` rather than from a hand-kept list.
+//   - Every D1 database the Worker binds, found by reading the bindings on
+//     `env` rather than from a hand-kept list, so a database added to
+//     cloudflare.config.ts is checked the day it is added. The trivial read is
+//     the one statement D1 answers whatever the schema is, so a database
+//     whose migrations are ahead of the Worker (still healthy) passes and an
+//     unreachable one fails. The waitlist is the site's only store today.
+//
+//   - The bindings named in REQUIRED_BINDINGS below, which discovery cannot
+//     do: a binding the deploy lost is not on `env` at all, and a check that
+//     only saw what was there would answer `ok` for a Worker that cannot
+//     serve a page or accept a sign-up.
 //
 //   - The asset layer. A landing page that 500s while the API is fine is an
 //     outage, and the asset binding is what serves it, so the check is a
@@ -47,15 +52,16 @@
 // A dependency that does not answer in its share reports itself by name, so
 // the alert says which dependency rather than "unhealthy".
 
-/** The path the outside monitor (#36) polls, and this Worker's only route. */
+/** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
 
 /**
- * How long the whole check gets, and so how long each dependency gets: the
- * checks share one deadline, so three dependencies cost three seconds at
- * worst, not six. A monitor that polls every few minutes needs an answer well
- * inside its own timeout, and a Worker that answers nothing is worse than one
- * that answers "down": the first loses the alert, the second raises it.
+ * How long the whole check gets, and so how much of that each dependency
+ * gets: the checks share one deadline, so three slow dependencies still
+ * answer in 2s, not 6s. A monitor that polls every few minutes needs an
+ * answer well inside its own timeout, and a Worker that answers nothing is
+ * worse than one that answers "down": the first loses the alert, the second
+ * raises it.
  */
 export const HEALTH_TIMEOUT_MS = 2000;
 
@@ -125,7 +131,9 @@ class HealthCheckTimeout extends Error {
  * Every D1 database on this Worker, paired with the binding name that reached
  * it. Read from `env` by shape (a `prepare` function) rather than from a
  * hand-kept list, so a binding added to cloudflare.config.ts is checked the
- * day it is added and cannot be forgotten here.
+ * day it is added and cannot be forgotten here. The waitlist's rate limiter,
+ * the asset binding and the secret values do not match this shape, so they
+ * are named in REQUIRED_BINDINGS instead.
  * @param {Record<string, unknown>} env
  * @returns {{name: string, db: {prepare: (sql: string) => unknown}}[]}
  */
