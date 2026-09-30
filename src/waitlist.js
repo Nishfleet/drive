@@ -1,5 +1,6 @@
 // Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
 // so node --test can exercise every branch without a running runtime.
+import { failureMessage } from "./messages.js";
 
 export const SOURCES = ["pricing-page", "business"];
 
@@ -143,20 +144,21 @@ export async function handleWaitlistRequest(request, db) {
     );
   }
   if (!db) {
-    return json(
-      { error: "The waitlist is not configured on this deployment." },
-      503,
-    );
+    // The binding is missing on this deployment: an operator problem, so it
+    // goes to the log by name and the visitor gets the table's storage-down
+    // words, never a binding name or a stack.
+    console.error("waitlist: WAITLIST_DB binding is not configured");
+    return json({ error: failureMessage("storage-down") }, 503);
   }
 
   let signup;
   try {
     signup = await readSignupRequest(request);
   } catch (error) {
-    return json(
-      { error: `Could not read the form: ${error.message}` },
-      400,
-    );
+    // request.formData() throws on a malformed body. The raw parser error is
+    // useful in the log and is never shown to the visitor.
+    console.error("waitlist: could not read the request body", error);
+    return json({ error: failureMessage("unexpected") }, 400);
   }
   if (signup.error) {
     return json({ error: signup.error }, 400);
@@ -176,7 +178,9 @@ export async function handleWaitlistRequest(request, db) {
       already ? 200 : 201,
     );
   } catch (error) {
-    // Storage failure is a 500 with the reason named, never a silent success.
-    return json({ error: `Could not save your email: ${error.message}` }, 500);
+    // Storage failure is the table's storage-down message with the reason in
+    // the log only: the raw error text never reaches the visitor.
+    console.error("waitlist: could not save the signup", error);
+    return json({ error: failureMessage("storage-down") }, 503);
   }
 }

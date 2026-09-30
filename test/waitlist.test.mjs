@@ -9,6 +9,7 @@ import {
   isSameOriginRequest,
   SOURCES,
 } from "../src/waitlist.js";
+import { failureMessage } from "../src/messages.js";
 
 // A minimal in-memory D1Database stub that implements the subset of the API
 // the code actually uses: prepare().bind().first().
@@ -241,7 +242,57 @@ test("handleWaitlistRequest returns 503 when D1 binding is missing", async () =>
   const res = await handleWaitlistRequest(req, null);
   assert.equal(res.status, 503);
   const data = await res.json();
-  assert.match(data.error, /not configured/);
+  // The visitor reads the table's storage-down words, built from the table so
+  // a reword there cannot leave this handler behind.
+  assert.equal(data.error, failureMessage("storage-down"));
+});
+
+test("handleWaitlistRequest turns a storage failure into the storage-down message, never the raw error", async () => {
+  const secret = "d1 blew up: keyId=AKIAIOSFODNN7EXAMPLE path=/u/999/secret.txt";
+  const brokenDb = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async first() {
+              throw new Error(secret);
+            },
+          };
+        },
+      };
+    },
+  };
+  const req = new Request("https://example.com/api/waitlist", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "storage@example.com" }),
+  });
+  const res = await handleWaitlistRequest(req, brokenDb);
+  assert.equal(res.status, 503);
+  const data = await res.json();
+  assert.equal(data.error, failureMessage("storage-down"));
+  // The Safe rule (Nish, 2026-09-30): no raw error text, key material or
+  // another user's path reaches the visitor.
+  assert.ok(!data.error.includes(secret));
+  assert.ok(!data.error.includes("/u/"));
+  assert.ok(!data.error.includes("keyId"));
+});
+
+test("handleWaitlistRequest answers a malformed form body with the table's unexpected message", async () => {
+  const db = makeFakeDB();
+  // A FormData content type with a body that is not multipart, so
+  // request.formData() throws. That is the one read failure a visitor can
+  // cause, and it must be the table's words, not the parser's text.
+  const req = new Request("https://example.com/api/waitlist", {
+    method: "POST",
+    headers: { "content-type": "multipart/form-data" },
+    body: "not a multipart body at all",
+  });
+  const res = await handleWaitlistRequest(req, db);
+  assert.equal(res.status, 400);
+  const data = await res.json();
+  assert.equal(data.error, failureMessage("unexpected"));
+  assert.ok(!data.error.includes("parse"), "the parser text must not be shown");
 });
 
 test("handleWaitlistRequest returns 400 for bad JSON", async () => {
