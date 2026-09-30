@@ -21,10 +21,10 @@ import {
   PREVIEW_COPY,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
-  STAND_IN_ACCOUNT,
   TRASH_PATH,
   UPLOAD_COPY,
   createMemoryStore,
+  scopeStore,
   fileKind,
   fileRows,
   findTrashName,
@@ -37,7 +37,6 @@ import {
   previewContentType,
   previewCopy,
   restorableUntil,
-  resolveAccount,
   sortEntries,
   splitEntries,
   trashName,
@@ -45,6 +44,7 @@ import {
   validatePath,
   withoutTrash,
 } from "../src/files.js";
+import { FAILURE_MESSAGES } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 // The first-run page is a Vite entry at the repo root (issue #70), not a
@@ -57,12 +57,23 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 const iso = (ms) => new Date(now - ms).toISOString();
 const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
 
+// The signed-in account the handler tests run as, until the sign-in flow lands
+// (build step 4, #5). The one account gate is signedInAccount() in
+// src/status.js; test/account-gate.test.mjs walks the routes that answer 401
+// without it.
+const account = Object.freeze({ id: "1", name: "Your drive" });
+
 // One drive per test, and the same store the Worker builds, so every route runs
 // against real bytes rather than a stub.
 function drive() {
   const store = createMemoryStore();
+  // The handler scopes this store to the signed-in account, so the test reads
+  // it through the same scope: a drive path in, the same drive path out. What
+  // the objects are keyed on in storage is scopeStore's business, not the
+  // page's.
+  const scoped = scopeStore(store, account);
   const call = (request) =>
-    handleFilesRequest(request, store, resolveAccount(new Request("https://drive.test")), now);
+    handleFilesRequest(request, store, account, now);
   const upload = (path, name, body, type = "text/plain") =>
     call(
       new Request(
@@ -70,7 +81,7 @@ function drive() {
         { method: "POST", headers: { "content-type": type }, body },
       ),
     );
-  return { store, call, upload };
+  return { store, scoped, call, upload };
 }
 
 // ---------------------------------------------------------------- file kinds
@@ -407,7 +418,7 @@ test("preview: an uploaded page is never a page on our origin", async () => {
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
-  const { call, upload, store } = drive();
+  const { call, upload, scoped } = drive();
   const response = await upload("/Photos", "holiday.jpg", "the-bytes", "image/jpeg");
   assert.equal(response.status, 201);
   assert.deepEqual(await response.json(), {
@@ -415,13 +426,13 @@ test("upload: the bytes land in the folder it was sent to", async () => {
     path: "/Photos/holiday.jpg",
     name: "holiday.jpg",
   });
-  const stored = await store.read("/Photos/holiday.jpg");
+  const stored = await scoped.read("/Photos/holiday.jpg");
   const bytes = new Uint8Array(await new Response(stored.body).arrayBuffer());
   assert.equal(new TextDecoder().decode(bytes), "the-bytes");
 });
 
 test("upload: a name with a path in it stays one file in the folder", async () => {
-  const { call, store } = drive();
+  const { call, scoped } = drive();
   const response = await call(
     new Request(
       `${api("/upload")}?path=%2FPhotos&name=${encodeURIComponent("../../etc/passwd")}`,
@@ -432,8 +443,8 @@ test("upload: a name with a path in it stays one file in the folder", async () =
   const payload = await response.json();
   assert.equal(payload.path, "/Photos/..-..-etc-passwd");
   // The bytes are inside the folder that was asked for, and nowhere else.
-  assert.equal((await store.read(payload.path)) !== null, true);
-  assert.equal((await store.read("/etc/passwd")), null);
+  assert.equal((await scoped.read(payload.path)) !== null, true);
+  assert.equal((await scoped.read("/etc/passwd")), null);
 });
 
 test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
@@ -446,7 +457,7 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
-  const { call, upload, store } = drive();
+  const { call, upload, scoped } = drive();
   await upload("/", "notes.md", "hello", "text/markdown");
   const response = await call(
     new Request(api("/delete"), {
@@ -456,7 +467,7 @@ test("delete: a file leaves the folder and lands in Recently deleted", async () 
     }),
   );
   assert.equal(response.status, 200);
-  assert.equal(await store.read("/notes.md"), null);
+  assert.equal(await scoped.read("/notes.md"), null);
   const trash = await (await call(new Request(api("?view=deleted")))).json();
   assert.equal(trash.view, "deleted");
   assert.equal(trash.rows.length, 1);
@@ -477,7 +488,7 @@ test("delete: a file that is not there is a 404, not a silent success", async ()
 });
 
 test("restore: one tap puts the bytes back where they were", async () => {
-  const { call, upload, store } = drive();
+  const { call, upload, scoped } = drive();
   await upload("/Photos", "holiday.jpg", "the-bytes", "image/jpeg");
   await call(
     new Request(api("/delete"), {
@@ -495,7 +506,7 @@ test("restore: one tap puts the bytes back where they were", async () => {
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, path: "/Photos/holiday.jpg" });
-  const back = await store.read("/Photos/holiday.jpg");
+  const back = await scoped.read("/Photos/holiday.jpg");
   assert.equal(await new Response(back.body).text(), "the-bytes");
   // It is gone from Recently deleted once it is back.
   const trash = await (await call(new Request(api("?view=deleted")))).json();
@@ -522,7 +533,7 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
   // Deleted 31 days before the clock this test reads.
   const deletedAt = now - 31 * day;
   const at = (clock) => (request) =>
-    handleFilesRequest(request, store, resolveAccount(new Request("https://drive.test")), clock);
+    handleFilesRequest(request, store, account, clock);
   await at(deletedAt)(
     new Request(api("/delete"), {
       method: "POST",
@@ -573,7 +584,7 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     remove: async () => {},
   };
   const call = (request) =>
-    handleFilesRequest(request, broken, resolveAccount(new Request("https://drive.test")), now);
+    handleFilesRequest(request, broken, account, now);
   const listing = await call(new Request(api("")));
   assert.equal(listing.status, 500);
   assert.match((await listing.json()).error, /could not read this folder/);
@@ -589,14 +600,18 @@ test("a storage failure is a 500 that names it, never a silent success", async (
 });
 
 test("a deployment with no store says so, rather than serving an empty drive", async () => {
-  const response = await handleFilesRequest(
-    new Request(api("")),
-    undefined,
-    resolveAccount(new Request("https://drive.test")),
-    now,
-  );
+  const response = await handleFilesRequest(new Request(api("")), undefined, account, now);
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /not configured/);
+  // A signed-out request is the gate's 401, not the store's 503: the account
+  // is asked for first, so a stranger learns nothing about the deployment.
+  const signedOut = await handleFilesRequest(
+    new Request(api("")),
+    undefined,
+    null,
+    now,
+  );
+  assert.equal(signedOut.status, 401);
 });
 
 test("each route names the one method it serves", async () => {
@@ -622,12 +637,12 @@ test("each route names the one method it serves", async () => {
 });
 
 test("an account without a store has a name for the masthead", () => {
-  const account = resolveAccount(new Request("https://drive.test"));
-  assert.equal(account.id, STAND_IN_ACCOUNT.id);
-  assert.equal(account.name, STAND_IN_ACCOUNT.name);
-  // The caller gets a copy: a page cannot rewrite the module's account.
-  account.name = "someone else's drive";
-  assert.equal(STAND_IN_ACCOUNT.name, "Your drive");
+  // The account the handlers take is the signed-in one from the gate
+  // (signedInAccount in src/status.js). With no sign-in flow yet no request
+  // can prove one, so the page's masthead falls back to its own wordmark and
+  // this test only pins the shape the handlers accept.
+  assert.equal(account.name, "Your drive");
+  assert.equal(typeof account.id, "string");
 });
 
 // ---------------------------------------------------------------- the S3 stand-in
@@ -665,15 +680,65 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
   assert.equal(typeof store.list, "function");
 });
 
+test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {
+  // The bucket is one namespace for every account, so this is the layer where
+  // a missing prefix would actually cross accounts (drive issue #73). The fake
+  // fetch records the URLs, and the assertion is on the storage keys in them.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const urls = [];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <CommonPrefixes><Prefix>u/acct-a/Photos/</Prefix></CommonPrefixes>
+  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size>
+  <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
+</ListBucketResult>`;
+  const fetchImpl = async (url, init) => {
+    urls.push({ method: (init && init.method) || "GET", url });
+    if (url.includes("list-type=2")) {
+      return new Response(xml, { status: 200 });
+    }
+    return new Response("bytes", {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": "5" },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+  const a = scopeStore(s3, { id: "acct-a", name: "A" });
+  const b = scopeStore(s3, { id: "acct-b", name: "B" });
+
+  // A's listing is one slash, not two, and its rows come back as drive paths.
+  assert.deepEqual(await a.list("/"), [
+    { name: "Photos", path: "/Photos", kind: "folder" },
+    {
+      name: "holiday.jpg",
+      path: "/holiday.jpg",
+      kind: "image",
+      size: 2400,
+      modified: Date.parse("2026-09-30T11:00:00.000Z"),
+    },
+  ]);
+  assert.match(urls[0].url, /prefix=u%2Facct-a%2F&/);
+
+  await a.write("/note.txt", new Blob(["hi"]).stream(), "text/plain");
+  assert.match(urls[1].url, /\/drive\/u\/acct-a\/note.txt$/);
+  await b.read("/holiday.jpg");
+  assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
+});
+
 // ---------------------------------------------------------------- the Worker
 
 test("the Worker routes the page's API to the files handler", async () => {
   const assets = { fetch: async () => new Response("asset") };
+  // The route reaches the handler, and the handler's gate answers 401 with no
+  // sign-in flow yet (issue #73). A 200 here would mean the account gate is
+  // not in front of this route; test/account-gate.test.mjs walks every route.
   const response = await worker.fetch(new Request(`https://drive.test${FILES_ENDPOINT}`), {
     ASSETS: assets,
   });
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).view, "folder");
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
+  });
 
   // A path that is not an API still comes from the asset layer.
   const page = await worker.fetch(new Request("https://drive.test/files"), {
@@ -720,6 +785,26 @@ test("the page's copy is the module's copy", () => {
   assert.ok(page.includes(DELETE_COPY.confirm));
   assert.ok(page.includes(DELETE_COPY.done));
   assert.ok(page.includes(RESTORE_COPY.done));
+});
+
+test("the page shows the sign-in words the 401 sent, and carries no copy", () => {
+  // The page cannot import src/messages.js and must not carry a second copy of
+  // the table's `unauthorized` entry (test/pr-gate.test.mjs pins that): the
+  // API's 401 body IS that entry, so the page renders what the endpoint sent
+  // (drive issue #73). This pins the plumbing, not the words.
+  assert.match(page, /function showSignedOut\(message\)/);
+  assert.match(page, /signedOutWhat\.textContent = message;/);
+  assert.match(page, /showSignedOut\(payload\.error\)/);
+  assert.doesNotMatch(page, /You are not signed in to your drive/);
+  assert.ok(page.includes('id="signed-out"'), "the page needs a sign-in panel");
+  // Both 401 branches stop here with the flagged error, so the catch cannot
+  // print the message a second time into the status line.
+  assert.equal((page.match(/response\.status === 401/g) || []).length, 2);
+  assert.equal((page.match(/throw signedOutError\(\);/g) || []).length, 2);
+  // A read that succeeds takes the panel away again, so the page's own
+  // "this page updates on its own" is true.
+  assert.ok(page.includes("function showSignedIn()"));
+  assert.match(page, /const payload = await api\(url\);\n    showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {
