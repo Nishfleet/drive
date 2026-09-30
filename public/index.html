@@ -659,7 +659,15 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   submit.disabled = true;
   say("Joining the waitlist…", "pending");
+  // The only safe text this page may show on failure: the table's own
+  // fallback, replaced by one of our constants or by the server's
+  // table-built message. The raw Error message is never shown (drive#28).
+  let userMessage = UNEXPECTED_MESSAGE;
   try {
+    // Captured before reset(): the server no longer echoes source, because
+    // the reply must be the same whether the address is new or already on
+    // the list (drive#28).
+    const sentSource = sourceInput.value;
     let response;
     try {
       response = await fetch("/api/waitlist", {
@@ -667,13 +675,14 @@ form.addEventListener("submit", async (event) => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           email: emailInput.value.trim(),
-          source: sourceInput.value,
+          source: sentSource,
         }),
       });
     } catch (networkError) {
       // fetch rejects only when the browser cannot reach the network at all;
       // that is the offline message, never the raw failure text.
-      throw new Error(OFFLINE_MESSAGE, { cause: networkError });
+      userMessage = OFFLINE_MESSAGE;
+      throw networkError;
     }
     let payload;
     try {
@@ -682,25 +691,27 @@ form.addEventListener("submit", async (event) => {
       // A non-JSON reply (an error page, a captive portal) is not something
       // this page can explain; the table's fallback is shown and the raw text
       // stays out of the live region.
-      throw new Error(UNEXPECTED_MESSAGE, { cause: parseError });
+      userMessage = UNEXPECTED_MESSAGE;
+      throw parseError;
     }
     if (!response.ok) {
-      throw new Error(
+      userMessage =
         typeof payload.error === "string" && payload.error.length > 0
           ? payload.error
-          : UNEXPECTED_MESSAGE,
-      );
+          : UNEXPECTED_MESSAGE;
+      throw new Error(userMessage);
     }
-    say(
-      payload.already
-        ? "You are already on the list. Nothing to do."
-        : "You are on the list. One email when the drive is ready.",
-      "done",
-    );
+    // One confirmation for every accepted address: the server answers the
+    // same whether or not it was already on the list, so this page cannot
+    // and must not say which it was (drive#28).
+    say("You are on the list. One email when the drive is ready.", "done");
     form.reset();
-    sourceInput.value = payload.source;
+    sourceInput.value = sentSource;
   } catch (error) {
-    say(error.message, "error");
+    // The raw error goes to the console; the live region only ever shows a
+    // message built from the table.
+    console.error("waitlist: signup failed", error);
+    say(userMessage, "error");
   } finally {
     submit.disabled = false;
   }

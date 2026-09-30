@@ -9,10 +9,11 @@
     "build": "cf build",
     "test": "node --test"
   },
+  "dependencies": {
+    "validator": "^13.15.35"
+  },
   "devDependencies": {
     "@cloudflare/vite-plugin": "beta",
-    "cf": "^1.0.0-beta.5",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "cf": "^1.0.0-beta.5"
   }
 }

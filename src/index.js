@@ -10,7 +10,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(request, env.WAITLIST_DB);
+      return handleWaitlistRequest(
+        request,
+        env.WAITLIST_DB,
+        env.WAITLIST_RATE_LIMITER,
+      );
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
