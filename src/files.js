@@ -507,8 +507,7 @@ export function parseListObjects(xml, prefix, path) {
   }
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const block = match[1];
-    const key = textOf(block, "Key");
-    const name = key.slice(prefix.length);
+    const name = tagValue(block, "Key").slice(prefix.length);
     if (!name || name.includes("/")) {
       continue;
     }
@@ -516,16 +515,23 @@ export function parseListObjects(xml, prefix, path) {
       name,
       path: `${path === "/" ? "" : path}/${name}`,
       kind: fileKind(name),
-      size: Number(textOf(block, "Size") || 0),
-      modified: Date.parse(textOf(block, "LastModified")) || null,
+      size: Number(tagValue(block, "Size") || 0),
+      modified: Date.parse(tagValue(block, "LastModified")) || null,
     });
   }
   return entries;
 }
 
-function textOf(block, tag) {
-  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
-  return match ? match[1].trim() : "";
+// The text inside one tag of an S3 listing: indexOf rather than a pattern built
+// from a string, and the three tags it is called with are S3's own.
+function tagValue(block, tag) {
+  const open = block.indexOf(`<${tag}>`);
+  if (open === -1) {
+    return "";
+  }
+  const from = open + tag.length + 2;
+  const close = block.indexOf(`</${tag}>`, from);
+  return close === -1 ? "" : block.slice(from, close).trim();
 }
 
 /**
