@@ -218,6 +218,23 @@ export function splitEntries(entries) {
 }
 
 /**
+ * A drive listing without the trash folder. Recently deleted is its own tab,
+ * so a person should never meet the `.trash` folder as a folder they can open
+ * and a row they have to walk past; this hides it in the drive root only, so a
+ * file of that name deeper in the tree is still an ordinary folder.
+ * @param {FileEntry[]} entries
+ * @param {string} path the drive path the listing was for
+ */
+export function withoutTrash(entries, path) {
+  if (path !== "/") {
+    return entries;
+  }
+  return entries.filter(
+    (entry) => !(entry.kind === "folder" && entry.name === TRASH_FOLDER),
+  );
+}
+
+/**
  * The child name a file is parked under when deleted. The deleted-at time is
  * in the name so Recently deleted can say when, and the original path is
  * percent-encoded so the name stays one flat object with no subfolders.
@@ -537,6 +554,7 @@ export function trashRows(entries, now = Date.now()) {
       if (!parsed) {
         return null;
       }
+      const restorable = isRestorable(parsed.deletedAt, now);
       return {
         name: parsed.path.split("/").pop(),
         path: parsed.path,
@@ -544,7 +562,10 @@ export function trashRows(entries, now = Date.now()) {
         sizeLabel: formatBytes(entry.size || 0),
         deletedLabel: `Deleted ${formatWhen(parsed.deletedAt, now)}`,
         untilLabel: restorableUntil(parsed.deletedAt),
-        restorable: isRestorable(parsed.deletedAt, now),
+        restorable,
+        // Past the window the button is gone, and the one line says why.
+        restoreLabel: restorable ? "Restore" : "Past the 30 days",
+        goneLabel: restorable ? "" : "This one has been gone 30 days. Restoring it is not possible.",
       };
     })
     .filter(Boolean)
@@ -643,7 +664,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return deleteRequest(request, store, now);
   }
   if (route === `${FILES_ENDPOINT}/restore`) {
-    return restoreRequest(request, store);
+    return restoreRequest(request, store, now);
   }
   return plain("Not found.", 404);
 }
@@ -666,7 +687,7 @@ async function listRequest(request, url, store, now) {
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    const entries = await store.list(checked.path);
+    const entries = withoutTrash(await store.list(checked.path), checked.path);
     const { folders, files } = splitEntries(entries);
     return json({
       view: "folder",
@@ -760,7 +781,7 @@ async function deleteRequest(request, store, now) {
   return json({ ok: true, path: checked.path });
 }
 
-async function restoreRequest(request, store) {
+async function restoreRequest(request, store, now) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
@@ -776,6 +797,12 @@ async function restoreRequest(request, store) {
     const found = findTrashName(await store.list(TRASH_PATH), checked.path);
     if (!found) {
       return json({ error: "That file is not in Recently deleted." }, 404);
+    }
+    if (!isRestorable(found.deletedAt, now)) {
+      return json(
+        { error: "That file has been in Recently deleted for 30 days, so it is gone." },
+        410,
+      );
     }
     const object = await store.read(trashStorePath(found.name));
     if (!object) {

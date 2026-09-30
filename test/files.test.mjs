@@ -42,6 +42,7 @@ import {
   trashName,
   trashRows,
   validatePath,
+  withoutTrash,
 } from "../src/files.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
@@ -214,6 +215,41 @@ test("a deleted file is restorable for 30 days and not one day later", () => {
   assert.equal(isRestorable(now + day, now), false);
 });
 
+test("a file past the 30 days has no Restore button and says why", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const [fresh, stale] = trashRows(
+    [
+      { name: trashName("/fresh.md", now - day), size: 0 },
+      { name: trashName("/stale.md", now - 31 * day), size: 0 },
+    ],
+    now,
+  );
+  assert.equal(fresh.restorable, true);
+  assert.equal(fresh.restoreLabel, "Restore");
+  assert.equal(fresh.goneLabel, "");
+  // The promise is 30 days, so past it the page does not offer what it cannot do.
+  assert.equal(stale.restorable, false);
+  assert.notEqual(stale.restoreLabel, "Restore");
+  assert.match(stale.goneLabel, /30 days/);
+});
+
+test("the trash folder is hidden in the drive root, not deeper in it", () => {
+  const entries = [
+    { name: ".trash", path: "/.trash", kind: "folder" },
+    { name: "Photos", path: "/Photos", kind: "folder" },
+    { name: "todo.txt", path: "/todo.txt", kind: "file" },
+  ];
+  assert.deepEqual(
+    withoutTrash(entries, "/").map((entry) => entry.name),
+    ["Photos", "todo.txt"],
+  );
+  // A folder of that name inside a folder is an ordinary folder.
+  assert.deepEqual(
+    withoutTrash([{ name: ".trash", path: "/Photos/.trash", kind: "folder" }], "/Photos"),
+    [{ name: ".trash", path: "/Photos/.trash", kind: "folder" }],
+  );
+});
+
 test("Recently deleted says when a file was deleted and until when", () => {
   const rows = trashRows(
     [
@@ -273,6 +309,23 @@ test("browse: a path that is not valid is a 400 that says so", async () => {
   const response = await call(new Request(api("?path=%2F..%2Fetc")));
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /not valid/);
+});
+
+test("browse: the drive never lists the trash folder as a folder", async () => {
+  const { call, upload } = drive();
+  await upload("/", "todo.txt", "pack\n", "text/plain");
+  await call(
+    new Request(api("/delete"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/todo.txt" }),
+    }),
+  );
+  const payload = await (await call(new Request(api("")))).json();
+  assert.deepEqual(payload.rows, []);
+  // Recently deleted is its own tab, and it is the only place the file shows.
+  const trash = await (await call(new Request(api("?view=deleted")))).json();
+  assert.equal(trash.rows.length, 1);
 });
 
 test("preview: a picture comes back inline, download comes back as an attachment", async () => {
@@ -409,6 +462,35 @@ test("restore: a file that is not in Recently deleted says so", async () => {
   );
   assert.equal(response.status, 404);
   assert.match((await response.json()).error, /not in Recently deleted/);
+});
+
+test("restore: a file past the 30 days is gone, and the Worker says so", async () => {
+  const { store, upload } = drive();
+  const day = 24 * 60 * 60 * 1000;
+  await upload("/", "old.md", "from a month ago", "text/markdown");
+  // Deleted 31 days before the clock this test reads.
+  const deletedAt = now - 31 * day;
+  const at = (clock) => (request) =>
+    handleFilesRequest(request, store, resolveAccount(new Request("https://drive.test")), clock);
+  await at(deletedAt)(
+    new Request(api("/delete"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/old.md" }),
+    }),
+  );
+  // Listed, so the person can see it went, but with no Restore button.
+  const rows = (await (await at(now)(new Request(api("?view=deleted")))).json()).rows;
+  assert.equal(rows[0].restorable, false);
+  const response = await at(now)(
+    new Request(api("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/old.md" }),
+    }),
+  );
+  assert.equal(response.status, 410);
+  assert.match((await response.json()).error, /30 days/);
 });
 
 test("a body that is not JSON is a 400, not a 500", async () => {
@@ -622,9 +704,28 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("JSON.stringify({ path: row.path })"));
   // Deleting asks first, because Recently deleted is the promise that makes it safe.
   assert.ok(script.includes("window.confirm(DELETE_COPY.confirm)"));
+  // The list reloads under the result line, not over it: an action whose
+  // confirmation is wiped a frame later reads as a silent failure.
+  assert.ok(script.includes("async function refresh(keepStatus)"));
+  assert.ok(script.includes("if (!keepStatus)"));
+  assert.equal(
+    (script.match(/refresh\(true\);/g) || []).length,
+    3,
+    "delete, restore and upload all reload under their own result line",
+  );
   // An upload failure says what happened; it never reads as done.
   assert.ok(script.includes("The upload did not finish. Try again."));
   assert.ok(script.includes("catch (error)"));
+});
+
+test("the page only offers a restore the Worker will actually do", () => {
+  // Past the 30 days the module drops the button and says why; the page reads
+  // that flag rather than deciding for itself, so the page and the Worker can
+  // never disagree about the window.
+  const script = page.slice(page.indexOf("<script>"));
+  assert.ok(script.includes("if (row.restorable)"));
+  assert.ok(script.includes("restore.textContent = row.restoreLabel"));
+  assert.ok(script.includes("row.goneLabel"));
 });
 
 test("the first-run page links to the Files page, so the page has a caller", () => {

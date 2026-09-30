@@ -470,7 +470,7 @@ dialog.viewer::backdrop {
   </nav>
 
   <main>
-    <h1 id="file-list-heading" hidden>Your files</h1>
+    <h1 id="file-list-heading">Your files</h1>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
 
@@ -726,19 +726,28 @@ function trashRowFor(row) {
   sub.className = "sub";
   sub.textContent = [row.sizeLabel, row.deletedLabel].filter(Boolean).join(" · ");
   meta.append(sub);
-  const until = document.createElement("p");
-  until.className = "sub";
-  until.textContent = row.untilLabel;
-  meta.append(until);
+  if (row.goneLabel) {
+    const gone = document.createElement("p");
+    gone.className = "sub";
+    gone.textContent = row.goneLabel;
+    meta.append(gone);
+  } else {
+    const until = document.createElement("p");
+    until.className = "sub";
+    until.textContent = row.untilLabel;
+    meta.append(until);
+  }
   li.append(meta);
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  const restore = document.createElement("button");
-  restore.type = "button";
-  restore.textContent = "Restore";
-  restore.addEventListener("click", () => restoreFile(row));
-  actions.append(restore);
+  if (row.restorable) {
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = row.restoreLabel;
+    restore.addEventListener("click", () => restoreFile(row));
+    actions.append(restore);
+  }
   li.append(actions);
   return li;
 }
@@ -823,8 +832,13 @@ function openViewer(row) {
 
 viewerClose.addEventListener("click", () => viewer.close());
 
-async function refresh() {
-  say("");
+// `keepStatus` is for the actions that just reported a result: the list reloads
+// under them, but the line that says what happened stays put instead of being
+// wiped a frame after it appeared.
+async function refresh(keepStatus) {
+  if (!keepStatus) {
+    say("");
+  }
   const url =
     view === "deleted"
       ? FILES_ENDPOINT + "?view=deleted"
@@ -875,7 +889,7 @@ async function uploadFiles(files) {
   } finally {
     uploadButton.disabled = false;
     fileInput.value = "";
-    refresh();
+    refresh(true);
   }
 }
 
@@ -890,7 +904,7 @@ async function removeFile(row) {
       body: JSON.stringify({ path: row.path }),
     });
     say(DELETE_COPY.done, "done");
-    refresh();
+    refresh(true);
   } catch (error) {
     say(error.message, "error");
   }
@@ -904,7 +918,7 @@ async function restoreFile(row) {
       body: JSON.stringify({ path: row.path }),
     });
     say(RESTORE_COPY.done, "done");
-    refresh();
+    refresh(true);
   } catch (error) {
     say(error.message, "error");
   }
