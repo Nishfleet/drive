@@ -23,6 +23,7 @@ import {
   BYTES_PER_GB,
   EVENTS_SEEN_RETENTION_MS,
   EVENT_ACTIONS,
+  EVENTS_PER_BATCH,
   MAX_CATCHUP_HOURS,
   MINUTE_MS,
   MINIMUM_MINUTES_PER_VERSION,
@@ -436,6 +437,19 @@ test("an event with a bad field is refused with one sentence, never a stack", ()
     [event({ sizeBytes: -1 }), "The event's size is not a whole number of bytes."],
     [event({ sizeBytes: 1.5 }), "The event's size is not a whole number of bytes."],
     [event({ sizeBytes: "lots" }), "The event's size is not a whole number of bytes."],
+    // A missing size is not a zero size. `Number(null)`, `Number("")` and
+    // `Number(true)` are all 0 or 1, so a coercion here would store a create
+    // whose size never arrived as a 0-byte version - a file the customer is
+    // paying to store, billed nothing.
+    [event({ sizeBytes: null }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: undefined }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: "" }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: "  " }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: true }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: [] }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: {} }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: "1.5" }), "The event's size is not a whole number of bytes."],
+    [event({ sizeBytes: "1e3" }), "The event's size is not a whole number of bytes."],
     [event({ createdAt: "whenever" }), "The event has no usable timestamp."],
     [event({ hiddenAt: "soon" }), "The event's hidden time is not a timestamp."],
     [
@@ -854,6 +868,42 @@ test("a provider batch is stored event by event, and a re-sent batch is free", a
   assert.equal(db.tables.events_seen.size, 3);
 });
 
+test("a request larger than one batch chunk stores every event exactly once", async () => {
+  // The intake groups a request's events into batches of EVENTS_PER_BATCH, so
+  // a 256 KB body is a handful of transactions rather than one per event. The
+  // stored count is read per event from its dedup result, so a chunk boundary
+  // must not lose or double-count an event.
+  const db = makeFakeD1();
+  const many = Array.from({ length: EVENTS_PER_BATCH + 7 }, (_, i) =>
+    event({ eventId: `m-${i}`, b2FileId: `f${i}` }),
+  );
+  const post = () =>
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: JSON.stringify(many),
+    });
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: many.length,
+    deduped: 0,
+  });
+  assert.equal(db.tables.file_versions.size, many.length);
+  // The retry: every event is a repeat, across both chunks.
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: 0,
+    deduped: many.length,
+  });
+  assert.equal(db.tables.file_versions.size, many.length);
+});
+
+test("a decimal-string size is accepted, because a webhook may stringify its numbers", () => {
+  // The shape that would be a coercion trap in the other direction: refusing
+  // "1073741824" because it is a string would reject a real event.
+  assert.equal(validateEvent(event({ sizeBytes: String(GB) })).sizeBytes, GB);
+});
+
 test("the intake refuses what it cannot bill, and says why in one sentence", async () => {
   const db = makeFakeD1();
   const post = (body) =>
@@ -1076,6 +1126,38 @@ test("a missed trigger is caught up by the next run, and re-running bills nothin
     "four hours of one 1 GB version, nothing double-counted",
   );
   assert.equal(db.tables.usage_minutes.size, 4);
+});
+
+test("the first run on an empty database does not poison the watermark to 1970", async () => {
+  // SQL's MIN(created_at) over an empty table is NULL, and Number(null) is 0,
+  // which is a finite epoch. A guard written as Number.isFinite(Number(...))
+  // accepted that NULL as the epoch, set the mark to 1970, and then advanced
+  // it 48 hours per run: the trigger reported success every hour while billing
+  // nothing for about a year. Reachable on any deploy whose cron fires before
+  // the first storage event.
+  const db = makeFakeD1();
+  const firedAt = at("2026-09-30T01:05:00.000Z");
+  const result = await runMeterCron(db, firedAt);
+  // Nothing stored, nothing to bill, and the only hour that exists is the one
+  // that just closed.
+  assert.equal(result.from, midnight());
+  assert.equal(result.through, midnight());
+  assert.equal(result.hours, 1);
+  assert.equal(result.accounts, 0);
+  assert.equal(result.gbMinutes, 0);
+  // The mark must be the hour just rolled, never the epoch. This is the
+  // assertion the old coercion failed: rolled_through was 0.
+  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
+  // The next run moves one hour forward, not 48 hours from 1970.
+  const next = await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
+  assert.equal(next.from, midnight());
+  assert.equal(next.through, at("2026-09-30T01:00:00.000Z"));
+  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, at("2026-09-30T01:00:00.000Z"));
+  // An event stored later is billed in full, rather than sitting under a
+  // watermark a year behind.
+  await recordEvent(db, validateEvent(event()), midnight() + 30 * MINUTE_MS);
+  const third = await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
+  assert.ok(third.gbMinutes > 0, "a version stored after an earlier empty run must still bill");
 });
 
 test("one run drains at most MAX_CATCHUP_HOURS, and the next continues where it stopped", async () => {

@@ -417,6 +417,29 @@ class EventBodyTooLargeError extends Error {
 }
 
 /**
+ * A byte count the meter will bill from, or null when the value is not one.
+ * A provider sends JSON, so the size arrives as a number, but a webhook that
+ * stringifies its numbers is a shape the intake should still take rather than
+ * reject a real event over. Everything else is null: a boolean, an array, an
+ * object, null, a blank string, a float, a negative, and a run of digits too
+ * large to be an exact byte count. No coercion beyond the decimal string,
+ * because a coercion is how a missing size becomes a 0-byte version and a
+ * bill of nothing.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function wholeBytes(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const bytes = Number(value.trim());
+    return Number.isSafeInteger(bytes) ? bytes : null;
+  }
+  return null;
+}
+
+/**
  * One storage event as the meter stores it. Every field is checked, because
  * this endpoint is where a provider's webhook lands and where a mistake or an
  * attack would bill an account storage it never used. Returns
@@ -453,8 +476,14 @@ export function validateEvent(input) {
   if (b2FileId === "" || b2FileId.length > 512) {
     return { error: "The event does not name a file version." };
   }
-  const sizeBytes = Number(input.sizeBytes);
-  if (!Number.isInteger(sizeBytes) || sizeBytes < 0) {
+  // The size is only ever set by a create, and it must be a real byte count:
+  // `Number(null)`, `Number("")` and `Number(true)` are all 0 or 1, so a
+  // coercion here would let a create whose size never arrived be stored as a
+  // 0-byte version and bill nothing for a file the customer is paying to
+  // store. A whole number of bytes in, or a decimal string of one, is the only
+  // shape accepted; everything else is refused by name.
+  const sizeBytes = wholeBytes(input.sizeBytes);
+  if (sizeBytes === null) {
     return { error: "The event's size is not a whole number of bytes." };
   }
   // The event's own time, which is what a hide or delete event carries: the
@@ -534,21 +563,22 @@ export function validateEvent(input) {
 }
 
 /**
- * Stores one event: the dedup row and the version row in one batch, so two
- * concurrent deliveries of the same event cannot both insert (the second
- * batch's INSERT OR IGNORE writes nothing, and the version upsert behind it
- * only runs in the same batch, never on a re-run).
+ * The two statements one event needs, in the order they must run: the dedup
+ * row first, then the version row. D1's batch is one transaction, so the pair
+ * lands together or not at all, and two concurrent deliveries of the same
+ * event cannot both insert (the second INSERT OR IGNORE writes nothing).
  *
- * Returns { stored: true } for a first delivery and { stored: false } for a
- * repeat the dedup ate. A repeat is the normal case - storage event delivery
- * repeats events by design - so it is a result, not an error to swallow.
+ * The version upsert runs on EVERY delivery, not only the first: a D1 batch
+ * executes every statement it is handed, so there is no conditional execution
+ * to rely on here. That is safe because the upsert itself is idempotent - it
+ * takes MIN(created_at), keeps the create's size and the earliest hidden time -
+ * so a redelivered event rewrites the row it already wrote and never adds one.
  * @param {D1Database} db
  * @param {ReturnType<typeof validateEvent>} event
- * @param {number|Date|string} now
+ * @param {number} receivedAt
  */
-export async function recordEvent(db, event, now = Date.now()) {
-  const receivedAt = toMillis(now, "now");
-  const results = await db.batch([
+function eventStatements(db, event, receivedAt) {
+  return [
     db
       .prepare(
         "INSERT OR IGNORE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)",
@@ -576,9 +606,67 @@ export async function recordEvent(db, event, now = Date.now()) {
         event.hiddenAt,
         event.effect,
       ),
-  ]);
+  ];
+}
+
+/**
+ * Stores one event: the dedup row and the version row in one batch.
+ *
+ * Returns { stored: true } for a first delivery and { stored: false } for a
+ * repeat the dedup ate. A repeat is the normal case - storage event delivery
+ * repeats events by design - so it is a result, not an error to swallow.
+ * @param {D1Database} db
+ * @param {ReturnType<typeof validateEvent>} event
+ * @param {number|Date|string} now
+ */
+export async function recordEvent(db, event, now = Date.now()) {
+  const receivedAt = toMillis(now, "now");
+  const results = await db.batch(eventStatements(db, event, receivedAt));
   const seen = results?.[0]?.meta?.rows_written ?? 0;
   return { stored: seen > 0 };
+}
+
+// How many events from one request share a batch. Each event is two
+// statements. A provider's retry replays the whole request; the batches
+// already committed are made of repeats the dedup drops, so a retry after a
+// mid-request failure costs a re-read and never a second version row. The
+// batch is chunked because a very large batch (thousands of statements) can
+// hit D1's 30-second invocation timeout and per-statement execution limits.
+// 50 events = 100 statements is a safe, tested bound that reduces a
+// thousand-event request from ~1000 transactions to ~20.
+export const EVENTS_PER_BATCH = 50;
+
+/**
+ * Stores a whole request's valid events, one batch per EVENTS_PER_BATCH
+ * events, sequentially. One batch per event would mean one D1 transaction per
+ * event - a 256 KB body holds well over a thousand - and each is a round trip
+ * inside a Worker invocation whose whole CPU budget is 10 ms on the free
+ * plan. Batching them keeps the same atomicity per group at a fraction of the
+ * transactions.
+ *
+ * Returns { stored, deduped }: `stored` counts events whose dedup row was
+ * new, `deduped` the repeats the dedup ate.
+ * @param {D1Database} db
+ * @param {ReturnType<typeof validateEvent>[]} events
+ * @param {number|Date|string} now
+ */
+export async function recordEvents(db, events, now = Date.now()) {
+  const receivedAt = toMillis(now, "now");
+  let stored = 0;
+  for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
+    const group = events.slice(start, start + EVENTS_PER_BATCH);
+    const statements = [];
+    for (const event of group) {
+      statements.push(...eventStatements(db, event, receivedAt));
+    }
+    const results = await db.batch(statements);
+    for (let i = 0; i < group.length; i += 1) {
+      if ((results?.[i * 2]?.meta?.rows_written ?? 0) > 0) {
+        stored += 1;
+      }
+    }
+  }
+  return { stored, deduped: events.length - stored };
 }
 
 // The header the storage provider's event rule sends. The value is a Worker
@@ -693,14 +781,9 @@ export async function handleStorageEventRequest(request, db, eventToken) {
       events.push(event);
     }
   }
-  let stored = 0;
+  let stored;
   try {
-    for (const event of events) {
-      const result = await recordEvent(db, event);
-      if (result.stored) {
-        stored += 1;
-      }
-    }
+    ({ stored } = await recordEvents(db, events));
   } catch (error) {
     console.error("meter: could not store the storage event", error);
     // The caller retries the batch, and the dedup makes the retry safe: the
@@ -806,6 +889,26 @@ const EARLIEST_VERSION_SQL = "SELECT MIN(created_at) AS earliest FROM file_versi
 const PURGE_EVENTS_SEEN_SQL = "DELETE FROM events_seen WHERE received_at < ?1";
 
 /**
+ * A stored instant as a finite number of milliseconds, or null when the
+ * column holds nothing usable. `rolled_through` and `MIN(created_at)` are both
+ * nullable to SQL - the mark is absent on a deployment that has never rolled,
+ * and MIN over an empty table IS NULL - and `Number(null)` is 0, which is a
+ * perfectly finite epoch. Reading either through `Number.isFinite(Number(x))`
+ * therefore turns "nothing stored" into 1970, and on a watermark that is a
+ * silent year of unbilled hours. null and undefined and "" are refused here,
+ * before any coercion happens.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function stampMillis(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const millis = Number(value);
+  return Number.isFinite(millis) ? millis : null;
+}
+
+/**
  * The hourly Cron Trigger: every closed UTC hour that has not been rolled
  * yet, oldest first, up to MAX_CATCHUP_HOURS of them per run. The hours rolled
  * are written to `meter_rollup_state` as one `rolled_through` mark, so the
@@ -834,20 +937,29 @@ export async function runMeterCron(db, now = Date.now()) {
   // 1-hour minimum in the hour it was created.
   const lastClosed = hourStart(at) - HOUR_MS;
   const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
+  const rolledThrough = stampMillis(mark?.rolled_through);
   let from;
-  if (mark === null || mark === undefined || !Number.isFinite(Number(mark.rolled_through))) {
+  if (rolledThrough === null) {
     // No mark: this deployment has never rolled. The floor is the hour of the
     // oldest version stored, so the catch-up starts at the meter's own data
     // and not at an arbitrary instant; no versions at all means there is
     // nothing but the hour that just closed.
+    //
+    // SQL NULL is "nothing stored", and it must be read as such. `MIN()` over
+    // an empty table returns NULL, and `Number(null)` is 0, so a
+    // `Number.isFinite(Number(...))` guard accepts it and sets the floor to
+    // the epoch. The run then wrote 1970 into the mark, and every later run
+    // advanced it MAX_CATCHUP_HOURS hours at a time: the trigger reported
+    // success every hour while the meter billed nothing for a year. So the
+    // stamp is read through stampMillis, which refuses null before it is ever
+    // a number.
     const earliest = await db.prepare(EARLIEST_VERSION_SQL).first();
-    from = Number.isFinite(Number(earliest?.earliest))
-      ? hourStart(Number(earliest.earliest))
-      : lastClosed;
+    const earliestAt = stampMillis(earliest?.earliest);
+    from = earliestAt === null ? lastClosed : hourStart(earliestAt);
   } else {
     // The mark is the newest hour rolled; with the grace, the same hour is
     // rolled once more and the run continues from there.
-    from = Number(mark.rolled_through) - (REROLL_GRACE_HOURS - 1) * HOUR_MS;
+    from = rolledThrough - (REROLL_GRACE_HOURS - 1) * HOUR_MS;
   }
   // A mark ahead of the newest closed hour (a clock that moved backwards, a
   // manual run with a future instant) must not silence the rollup: the run

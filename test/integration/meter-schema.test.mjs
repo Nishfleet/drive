@@ -153,11 +153,13 @@ test("the real migrations apply cleanly, in filename order", () => {
   }
 });
 
-test("WRITE: an event lands as one version row, and a redelivery writes nothing", () => {
+test("WRITE: an event lands as one version row, and a redelivery writes nothing", async () => {
   const { sqlite, d1 } = makeMeteredDB();
-  const stored = recordEvent(d1, abcEvent(), midnight());
-  // The promise resolves after both statements of the batch ran; make the
-  // assertion read the tables directly.
+  // Awaited: the batch has to have run before the tables are read. The result
+  // says the dedup row was new, and the rows themselves are read back out of
+  // SQLite below, which is the point of an integration test.
+  const first = await recordEvent(d1, abcEvent(), midnight());
+  assert.equal(first.stored, true, "the first delivery stores its event");
   const versions = sqlite
     .prepare("SELECT account_id, b2_file_id, path, size_bytes, created_at, hidden_at FROM file_versions")
     .all();
@@ -169,9 +171,10 @@ test("WRITE: an event lands as one version row, and a redelivery writes nothing"
   const seen = sqlite.prepare("SELECT b2_event_id FROM events_seen").all();
   assert.equal(seen.length, 1);
   // The redelivery: the same event id again. The dedup row is there, so the
-  // version count does not move.
-  void stored;
-  recordEvent(d1, abcEvent(), midnight());
+  // version count does not move, and the upsert (which runs on every delivery,
+  // because a D1 batch executes every statement) rewrites the same row.
+  const repeat = await recordEvent(d1, abcEvent(), midnight());
+  assert.equal(repeat.stored, false, "the dedup eats the repeated event");
   assert.equal(
     sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n,
     1,
@@ -180,12 +183,12 @@ test("WRITE: an event lands as one version row, and a redelivery writes nothing"
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM events_seen").get().n, 1);
 });
 
-test("WRITE: a hidden time reaches the row, and a later bare event cannot un-hide it", () => {
+test("WRITE: a hidden time reaches the row, and a later bare event cannot un-hide it", async () => {
   const { sqlite, d1 } = makeMeteredDB();
-  recordEvent(d1, abcEvent({ hiddenAt: midnight() + 30 * MINUTE_MS }), midnight());
+  await recordEvent(d1, abcEvent({ hiddenAt: midnight() + 30 * MINUTE_MS }), midnight());
   let row = sqlite.prepare("SELECT hidden_at FROM file_versions").get();
   assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS);
-  recordEvent(d1, abcEvent({ eventId: "evt-2" }), midnight() + 40 * MINUTE_MS);
+  await recordEvent(d1, abcEvent({ eventId: "evt-2" }), midnight() + 40 * MINUTE_MS);
   row = sqlite.prepare("SELECT hidden_at FROM file_versions").get();
   assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS, "the COALESCE keeps the hidden time");
 });
@@ -382,9 +385,29 @@ test("READ: a version hidden exactly on the hour's boundary books its minimum in
   );
 });
 
+test("READ+WRITE: an empty database sets the mark to the hour just rolled, not to the epoch", async () => {
+  // MIN(created_at) over an empty table is SQL NULL, and Number(null) is 0. If
+  // the trigger reads that NULL as a number it writes 1970 into
+  // meter_rollup_state and the meter bills nothing for about a year while the
+  // trigger reports success. Proved here against the real tables, where NULL
+  // is what the query actually returns.
+  const { sqlite, d1 } = makeMeteredDB();
+  const first = await runMeterCron(d1, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(first.accounts, 0, "nothing is stored, so nothing is billed");
+  assert.equal(first.gbMinutes, 0);
+  assert.equal(
+    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get().rolled_through,
+    midnight(),
+    "the mark is the hour that just rolled, never 0",
+  );
+  // A version stored after the empty run still bills, which it would not if
+  // the watermark were a year behind.
+  await recordEvent(d1, abcEvent({ createdAt: midnight() + 30 * MINUTE_MS }), midnight());
+  const second = await runMeterCron(d1, at("2026-09-30T02:05:00.000Z"));
+  assert.ok(second.gbMinutes > 0, "a version stored after an empty run must still bill");
+});
+
 test("READ+WRITE: a missed trigger is caught up from the stored mark, through the real schema", async () => {
-  // The review's finding, against the real tables: three closed hours with no
-  // trigger, then one run. Every hour gets its row and the mark is stored.
   // The review's finding, against the real tables: three closed hours with no
   // trigger, then one run. Every hour gets its row and the mark is stored.
   const { sqlite, d1 } = makeMeteredDB();
