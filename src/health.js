@@ -36,7 +36,11 @@
 //
 //   - The waitlist's rate limiter. Missing, the waitlist endpoint fails closed
 //     (src/waitlist.js answers 503 rather than accept unbounded sign-ups), so
-//     it is a binding the Worker needs to serve one of its requests. It has no
+//     it is a binding the Worker needs to serve one of its requests. The
+//     sign-in endpoint's two edge limits (drive issue #147) are the same
+//     argument for the same reason: src/signin.js answers 503 without them
+//     rather than mail an unbounded number of sign-in links, so a deploy that
+//     lost either is an outage this endpoint names. It has no
 //     read, so the check is the one callable operation, `limit()`, on a key
 //     nothing else uses and that changes every call. Two things follow: a real
 //     client key (a client IP) can never collide with the probe, and a
@@ -94,15 +98,16 @@ const LIVENESS_QUERY = "SELECT 1";
  * list pointing at a binding that no longer exists.
  *
  * ASSETS is on the list because every page load goes through it. The rate
- * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). METER_DB is on it because the meter's event intake and
- * the hourly rollup both fail closed without it (src/meter.js), and a deploy
- * that lost it would silently stop billing. DRIVE_DB is on it because a
- * deploy that lost it would serve every page and sign-up while every file,
- * search and branch request failed, which is exactly the outage this
- * endpoint exists to catch (drive issue #170). The email binding is not: only
- * the token-gated internal send route uses it, no customer request needs it,
- * and its one operation would really send mail.
+ * limiters are on it because the waitlist and the sign-in endpoint fail closed
+ * without one (src/waitlist.js, src/signin.js). METER_DB is on it because the
+ * meter's event intake and the hourly rollup both fail closed without it
+ * (src/meter.js), and a deploy that lost it would silently stop billing.
+ * DRIVE_DB is on it because a deploy that lost it
+ * would serve every page and sign-up while every file, search and branch
+ * request failed, which is exactly the outage this endpoint exists to catch
+ * (drive issue #170). The email binding is not: only the token-gated internal
+ * send route uses it, no customer request needs it, and its one operation
+ * would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
@@ -110,6 +115,8 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "DRIVE_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
+  "SIGNIN_RATE_LIMITER",
+  "SIGNIN_GLOBAL_RATE_LIMITER",
 ]);
 
 const JSON_HEADERS = Object.freeze({
@@ -265,10 +272,12 @@ async function checkAssets(assets, timeoutMs) {
 }
 
 /**
- * The waitlist's rate limiter, on a key of its own. The binding has no read,
+ * A rate-limit binding, on a key of its own. The binding has no read,
  * so `limit()` is the only way to know it answers at all: without it the
- * waitlist endpoint fails closed and sign-ups stop (src/waitlist.js), which is
- * an outage this endpoint must be able to report.
+ * endpoint behind it fails closed — sign-ups stop without the waitlist's
+ * (src/waitlist.js), sign-in stops without sign-in's (src/signin.js) — and
+ * that is an outage this endpoint must be able to report. The name is the
+ * binding's, so a probe for one limiter never reports another's.
  *
  * The key changes every call and carries no client IP, for the reason above:
  * a health poll spends one unit of a bucket nobody else holds, so it cannot
@@ -279,13 +288,14 @@ async function checkAssets(assets, timeoutMs) {
  *
  * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
  * @param {number} timeoutMs
+ * @param {string} name the binding's name, reported on failure
  * @returns {Promise<void>}
  */
-async function checkRateLimiter(limiter, timeoutMs) {
+async function checkRateLimiter(limiter, timeoutMs, name) {
   const result = await withTimeout(
     limiter.limit({ key: `health-probe-${crypto.randomUUID()}` }),
     timeoutMs,
-    "WAITLIST_RATE_LIMITER",
+    name,
   );
   if (!result || typeof result.success !== "boolean") {
     throw new Error("the rate limiter did not answer with a verdict");
@@ -356,8 +366,35 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       checkRateLimiter(
         /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (limiter),
         left,
+        "WAITLIST_RATE_LIMITER",
       ),
   });
+  // The sign-in endpoint's two edge limits (drive issue #147), probed the same
+  // way: the route fails closed without either, so a deploy that lost one is an
+  // outage, and a binding that is present but has no `limit` is as broken as a
+  // missing one and gets the same name. The guard is written out rather than
+  // trusting the REQUIRED_BINDINGS pass above, so a future edit that reorders
+  // these checks cannot turn a missing binding into a TypeError.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    const bound = env[name];
+    if (
+      typeof bound !== "object" ||
+      bound === null ||
+      !("limit" in bound) ||
+      typeof bound.limit !== "function"
+    ) {
+      return { ok: false, failing: name };
+    }
+    checks.push({
+      name,
+      run: (left) =>
+        checkRateLimiter(
+          /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (bound),
+          left,
+          name,
+        ),
+    });
+  }
 
   for (const check of checks) {
     // One deadline for the whole check, not one per dependency: a Worker

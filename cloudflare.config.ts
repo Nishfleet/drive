@@ -86,6 +86,41 @@ export default defineConfig({
         namespace: "1001",
         simple: { limit: 5, period: 60 },
       }),
+      // drive issue #147: bound POST /api/signin at the edge, beside the
+      // closed-door posture the sign-in route ships with (src/signin.js).
+      // POST /api/signin mails a real email, so a script walking many
+      // addresses is a mailbomb and a send-cost vector once the route is
+      // open in production. Per IP it is far above the retries a person
+      // makes from their own connection (10 a minute against a couple of
+      // sign-in posts) and far below what a script needs to walk
+      // addresses; the global one bounds the whole service. Both configs
+      // are one minute, the waitlist's period, and both are turned on
+      // before sign-in opens in production.
+      //
+      // The numbers are a pre-production guard, not a capacity answer, and
+      // the honest caveat is shared egress: an office or CGNAT downlink
+      // concentrates people onto one client IP, so `limit: 10` shapes the
+      // whole office to 10 sign-ins a minute, not one person. Acceptable
+      // while the site is behind Cloudflare Access; on the day sign-in
+      // opens, measure the real sign-in rate and raise the per-IP (and the
+      // global above it) first, before a customer shares their login
+      // morning with a landline's worth of neighbours (#147's follow-up).
+      //
+      // The global ceiling is a spend bound, not a traffic shaper: it sits
+      // far above the per-IP world it caps, and it caps the worst case at
+      // 100 sends a minute however many addresses a distributed walk
+      // touches.
+      // Each binding needs its own namespace: Cloudflare wants a positive
+      // integer string, and a namespace another binding already uses fails
+      // the deploy. These are distinct from the waitlist's 1001.
+      SIGNIN_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1002",
+        simple: { limit: 10, period: 60 },
+      }),
+      SIGNIN_GLOBAL_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1003",
+        simple: { limit: 100, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and
