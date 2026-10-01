@@ -34,6 +34,20 @@ import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, signIn } from "./harness.mjs";
 
+/**
+ * A fake rate limiter that always allows (drive issue #147). The sign-in
+ * route fails closed without its two edge bindings, so every dispatch that
+ * reaches it needs them; the fake is the seam a test uses to exercise the
+ * real handler logic the way production runs it.
+ */
+function makeLimiter() {
+  return {
+    async limit() {
+      return { success: true };
+    },
+  };
+}
+
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
 // shaped (`u/<id>/...`) and deliberately different lengths, so a prefix that
@@ -340,6 +354,11 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_MAIL: (link) => {
       emailed.push(link);
     },
+    // The edge limiters (drive issue #147), as pass-through fakes: the route
+    // behaves exactly as production does with the bindings bound, and the
+    // limit's own behaviour is this test's (below, not here).
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
   };
   const call = (cookie, path) =>
     worker.fetch(
@@ -452,6 +471,10 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
+    // The edge limiters (drive issue #147), as pass-through fakes, for the
+    // same reason the sign-in walk above carries them.
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await worker.fetch(
