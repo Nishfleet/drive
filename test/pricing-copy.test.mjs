@@ -45,6 +45,7 @@ const billForAllMonth = monthlyBillForStoredTb;
 // Dollars, the way the page writes them: no cents where there are none, cents
 // where the rule produces them ($12.80). Built from the computed bill, so the
 // example rows and the arithmetic cannot disagree.
+/** @param {number} amount */
 function usd(amount) {
   return `$${amount.toFixed(2).replace(/\.00$/, "")}`;
 }
@@ -52,6 +53,7 @@ function usd(amount) {
 // The bill's own cents, for the worked-example rows the issue prints them in
 // ("$15 after the free $1"): the storage the ceiling charges and what is
 // left after the credit, both from the same call as the rest of the file.
+/** @param {number} tb */
 function billCents(tb) {
   const bill = billForAllMonth(tb);
   return {
@@ -124,11 +126,11 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
   // 5 TB = $40 against Space $63; folded #86 (the bill now takes the $1 off)
   // says the rows show what the bill charges. Both figures are on each row,
   // both computed by src/billing.js's monthBillCents().
-  for (const [label, tb] of [
+  for (const [label, tb] of /** @type {Array<[string, number]>} */ ([
     ["800 GB kept all month", 0.8],
     ["2 TB kept all month", 2],
     ["5 TB kept all month", 5],
-  ]) {
+  ])) {
     const row = exampleRow(label);
     const { storage, afterCredit } = billCents(tb);
     assert.ok(
@@ -142,10 +144,10 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
   }
   // The rival comparison, by the rival's own rule (build-spec.md): $15 a month
   // plus $12 for each TB after the first.
-  for (const [label, tb, space] of [
+  for (const [label, tb, space] of /** @type {Array<[string, number, string]>} */ ([
     ["2 TB kept all month", 2, "$27"],
     ["5 TB kept all month", 5, "$63"],
-  ]) {
+  ])) {
     assert.equal(rivalMonthlyUsd(tb).toFixed(0), space.slice(1));
     assert.ok(exampleRow(label).includes(space), `the ${label} row must carry Space ${space}`);
   }
@@ -185,7 +187,9 @@ test("the ceiling math is the spec's plateau, not per-TB caps", () => {
   // comes off (#76). So the cap is flat at $12 until 1.5 TB and only then
   // rises at $8 a TB. 800 GB meters at $16 and bills the $12 cap; 1.6 TB
   // meters at $32 and caps at $12.80.
+  /** @param {number} tb */
   const storage = (tb) => billForAllMonth(tb).storageUsd;
+  /** @param {number} tb */
   const bill = (tb) => billForAllMonth(tb).billUsd;
   assert.equal(storage(0), 0, "an empty drive bills nothing");
   assert.equal(storage(0.5), 10, "500 GB all month is 2¢/GB");
@@ -287,6 +291,7 @@ test("the bill's figures are exact cents, not a rounding near-miss", () => {
   // monthBillCents(), which is integer cents end to end. Asserting on the
   // cents means a future rounding change fails here with the exact number,
   // instead of a float equality that only holds while the arithmetic lands.
+  /** @param {number} tb */
   const cents = (tb) => {
     const bill = monthlyBillForStoredTb(tb);
     return {
@@ -386,12 +391,12 @@ test("llms.txt's worked examples are the computed bills", () => {
     ),
     "llms.txt's 60%-full figure must be the computed bill",
   );
-  for (const [tb, label] of [
+  for (const [tb, label] of /** @type {Array<[number, string]>} */ ([
     [0.8, "800 GB kept all month"],
     [1.6, "1.6 TB"],
     [2, "2 TB"],
     [5, "5 TB"],
-  ]) {
+  ])) {
     const { storage, afterCredit } = billCents(tb);
     assert.ok(
       llms.includes(`${label} = ${afterCredit}`),
@@ -444,6 +449,7 @@ test("no unsourced claims appear anywhere on the page", () => {
 // The text of one <dd>, for the worked-example rows, as a reader sees it. The
 // label is the row's <dt> as written, so the row is found by what a reader
 // reads rather than by a number re-formatted here.
+/** @param {string} label */
 function exampleRow(label) {
   const from = words.indexOf(label);
   assert.ok(from >= 0, `the ${label} row is missing from the page`);
@@ -451,6 +457,7 @@ function exampleRow(label) {
 }
 
 // The text of a class-marked paragraph, read between its tags.
+/** @param {string} className */
 function paragraph(className) {
   const from = words.indexOf(`<p class="${className}">`);
   assert.ok(from >= 0, `the .${className} paragraph is missing from the page`);
@@ -462,6 +469,7 @@ const examplesNote = () => paragraph("examples-note");
 
 // Every <meta name=... content=...> and <meta property=... content=...> pair,
 // as [name, content], so one assertion covers all of them.
+/** @param {string} html */
 function metaContents(html) {
   return [...html.matchAll(/<meta\s+(name|property)="([^"]+)"\s+content="([^"]*)"/g)].map(
     (match) => [`${match[1]}=${match[2]}`, match[3]],

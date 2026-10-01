@@ -56,6 +56,7 @@ const page = readFileSync(new URL("../public/upload.html", import.meta.url), "ut
 const now = Date.parse("2026-10-01T09:00:00.000Z");
 const account = { id: "acct-1", name: "Your drive" };
 const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
+/** @param {string} path */
 const api = (path) => `https://drive.test${path}`;
 
 // One drive per test: the real in-memory FileStore the Worker builds, plus the
@@ -65,6 +66,12 @@ const api = (path) => `https://drive.test${path}`;
 function drive() {
   const files = createMemoryStore();
   const links = createMemoryLinkStore();
+  /**
+   * @param {string} path
+   * @param {string} name
+   * @param {string} body
+   * @param {string} [type]
+   */
   const upload = async (path, name, body, type = "text/plain") => {
     const response = await handleFilesRequest(
       new Request(
@@ -85,8 +92,12 @@ function drive() {
       now,
     );
     assert.equal(response.status, 200);
-    return (await response.json()).rows;
+    return /** @type {Array<{name: string}>} */ ((await response.json()).rows);
   };
+  /**
+   * @param {string} path
+   * @param {{now?: number, token?: string}} [options]
+   */
   const share = (path, options = {}) =>
     handleShareRequest(
       new Request(api(SHARE_ENDPOINT), {
@@ -99,11 +110,13 @@ function drive() {
       account,
       { now, ...options },
     );
+  /** @param {{now?: number, token?: string}} [options] */
   const shareList = (options = {}) =>
     handleShareRequest(new Request(api(SHARE_ENDPOINT)), files, links, account, {
       now,
       ...options,
     });
+  /** @param {string} token */
   const revoke = (token) =>
     handleShareRequest(
       new Request(api(SHARE_ENDPOINT), {
@@ -116,6 +129,10 @@ function drive() {
       account,
       { now },
     );
+  /**
+   * @param {string} folder
+   * @param {{now?: number, token?: string}} [options]
+   */
   const request = (folder, options = {}) =>
     handleRequestRequest(
       new Request(api(REQUEST_ENDPOINT), {
@@ -128,11 +145,13 @@ function drive() {
       account,
       { now, ...options },
     );
+  /** @param {{now?: number, token?: string}} [options] */
   const requestList = (options = {}) =>
     handleRequestRequest(new Request(api(REQUEST_ENDPOINT)), files, links, account, {
       now,
       ...options,
     });
+  /** @param {string} token */
   const revokeRequest = (token) =>
     handleRequestRequest(
       new Request(api(REQUEST_ENDPOINT), {
@@ -283,7 +302,7 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   const listed = await shareList();
   assert.equal(listed.status, 200);
   assert.deepEqual(
-    (await listed.json()).shares.map((row) => row.name),
+    (await listed.json()).shares.map(/** @param {{name: string}} row */ (row) => row.name),
     ["holiday.jpg"],
   );
 });
@@ -299,11 +318,11 @@ test("GET /api/share lists the account's links, newest first", async () => {
   const response = await shareList();
   const rows = (await response.json()).shares;
   assert.deepEqual(
-    rows.map((row) => row.name),
+    rows.map(/** @param {{name: string}} row */ (row) => row.name),
     ["b.txt", "a.txt"],
   );
   assert.deepEqual(
-    rows.map((row) => row.state),
+    rows.map(/** @param {{state: string}} row */ (row) => row.state),
     ["active", "active"],
   );
 });
@@ -319,6 +338,7 @@ test("DELETE /api/share revokes, is idempotent, and 404s an unknown token", asyn
   const second = await revoke(TOKEN);
   assert.equal(second.status, 200);
   const record = await links.shares.get(TOKEN);
+  assert.ok(record);
   assert.equal(record.revokedAt, now);
   const unknown = await revoke("CCCCCCCCCCCCCCCCCCCCCC");
   assert.equal(unknown.status, 404);
@@ -416,10 +436,12 @@ test("the cap is resolved from the account that minted the token", async () => {
     account,
     { now, token: TOKEN },
   );
+  /** @type {string[]} */
   const asked = [];
   const open = await handleRequestInfoRequest(
     new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
     links,
+    /** @param {string} accountId */
     (accountId) => {
       asked.push(accountId);
       return "active";
@@ -437,6 +459,7 @@ test("the cap is resolved from the account that minted the token", async () => {
     }),
     store,
     links,
+    /** @param {string} accountId */
     (accountId) => (accountId === account.id ? "read_only" : "active"),
     { now },
   );
@@ -470,13 +493,16 @@ test("a link with no usable expiry is expired, not a permanent link", async () =
       ...links,
       requests: {
         ...links.requests,
-        get: async () => ({
-          token: TOKEN,
-          accountId: account.id,
-          folder: "/",
-          createdAt: now,
-          revokedAt: null,
-        }),
+        get: async () =>
+          /** @type {import("../src/share.js").RequestRecord} */ (
+            /** @type {unknown} */ ({
+              token: TOKEN,
+              accountId: account.id,
+              folder: "/",
+              createdAt: now,
+              revokedAt: null,
+            })
+          ),
       },
     },
     () => "active",
@@ -529,7 +555,9 @@ test("one account cannot revoke another account's link", async () => {
     { now },
   );
   assert.equal(otherRevoke.status, 404, "another account's token is not found here");
-  assert.equal((await links.shares.get(TOKEN)).revokedAt, null, "the link is untouched");
+  const afterCross = await links.shares.get(TOKEN);
+  assert.ok(afterCross);
+  assert.equal(afterCross.revokedAt, null, "the link is untouched");
   // The owner's own revoke still works, so the scoping did not break the
   // feature: it only kept it theirs.
   const ownerRevoke = await handleShareRequest(
@@ -544,7 +572,9 @@ test("one account cannot revoke another account's link", async () => {
     { now: now + 1000 },
   );
   assert.equal(ownerRevoke.status, 200);
-  assert.equal((await links.shares.get(TOKEN)).revokedAt, now + 1000);
+  const afterOwner = await links.shares.get(TOKEN);
+  assert.ok(afterOwner);
+  assert.equal(afterOwner.revokedAt, now + 1000);
 
   // And the same on the upload-request side. The request names a folder, so
   // the folder is written to first: an empty folder is not a folder this
@@ -584,13 +614,16 @@ test("one account cannot revoke another account's link", async () => {
     { now },
   );
   assert.equal(crossRevoke.status, 404);
-  assert.equal((await links.requests.get(TOKEN)).revokedAt, null);
+  const afterRequestCross = await links.requests.get(TOKEN);
+  assert.ok(afterRequestCross);
+  assert.equal(afterRequestCross.revokedAt, null);
 });
 
 test("a store failure is logged, and its message is never returned", async () => {
   // The routes here are reachable by a logged-out stranger holding one token,
   // so an internal message (a binding, a path, a query) is never the answer.
   // The table's generic words are, and the cause goes to the log.
+  /** @type {string[]} */
   const logged = [];
   const original = console.error;
   console.error = (line) => logged.push(String(line));
@@ -604,6 +637,9 @@ test("a store failure is logged, and its message is never returned", async () =>
         throw new Error("s3 put failed for key u/acct-a/secret.txt");
       },
       remove: async () => {},
+      copy: async () => {
+        throw new Error("the share upload path does not copy");
+      },
     };
     const { links } = drive();
     await links.requests.create(
@@ -666,6 +702,7 @@ test("done when: a real file opens from a share link, logged out", async () => {
   // The download is counted on the share row, and the row names the owner:
   // that account id is what the dl Worker's byte rollup adds to the month.
   const record = await links.shares.get(TOKEN);
+  assert.ok(record);
   assert.equal(record.downloadCount, 1);
   assert.equal(record.downloadBytes, "the real bytes".length);
   assert.equal(record.accountId, account.id);
@@ -681,12 +718,14 @@ test("done when: a real file opens from a share link, logged out", async () => {
   );
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
-  assert.equal((await links.shares.get(TOKEN)).downloadCount, 2);
+  const afterHead = await links.shares.get(TOKEN);
+  assert.ok(afterHead);
+  assert.equal(afterHead.downloadCount, 2);
   // HEAD is how a browser checks a link, not a download of it: the
   // bytes were never sent, so the byte count stays at the one GET,
   // and the dl Worker's byte rollup (#58) is what measures bytes
   // actually served.
-  assert.equal((await links.shares.get(TOKEN)).downloadBytes, "the real bytes".length);
+  assert.equal(afterHead.downloadBytes, "the real bytes".length);
 });
 
 test("a shared file can never act as a page on our origin", async () => {
@@ -762,7 +801,9 @@ test("done when: a revoked link returns 404", async () => {
   );
   assert.equal(junk.status, 404);
   // Nothing was read out of a revoked link.
-  assert.equal((await links.shares.get(TOKEN)).downloadCount, 1);
+  const afterRevoke = await links.shares.get(TOKEN);
+  assert.ok(afterRevoke);
+  assert.equal(afterRevoke.downloadCount, 1);
 });
 
 test("done when: a file dropped on an upload page appears in the folder", async () => {
@@ -814,6 +855,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   // unprefixed key and find nothing — which is the proof that the drop landed
   // under this account and nowhere else.
   const readBack = await scopeStore(files, account).read("/contract.pdf");
+  assert.ok(readBack);
   assert.equal(readBack.contentType, "application/pdf");
   assert.equal(await new Response(readBack.body).text(), "the contract");
   // The unprefixed key really is empty: the same bytes are not readable

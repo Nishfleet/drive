@@ -36,14 +36,28 @@ import {
 import worker from "../src/index.js";
 import { failureMessage as tableMessage } from "../src/messages.js";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
 const MINUTES_PER_MONTH = 43800;
+/** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
 // past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
 // under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+/** @param {number} gb */
 const monthUsage = (gb) => ({
   gbMinutes: fullMonthGbMinutes(gb),
   peakGb: gb,
@@ -92,6 +106,10 @@ const readOnlyKey = {
 // A key row as the cap left it: read-only, carrying the record of the scope the
 // cap took (issue #74). What a capped account's devices rows look like before
 // the cap is raised again.
+/**
+ * @param {{keyId: string, kind: string, prefix: string, capabilities: readonly string[]}} key
+ * @param {readonly string[]} capabilities
+ */
 const capped = (key, capabilities) => ({
   ...key,
   capabilities: [...READ_ONLY_CAPABILITIES],
@@ -99,21 +117,40 @@ const capped = (key, capabilities) => ({
 });
 
 // A provider that records every call, so order and scope are visible.
+/**
+ * @param {{swapToReadOnly?: boolean}} [options]
+ * @returns {{
+ *   calls: Array<Record<string, unknown>>,
+ *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ *   revoke: (keyId: string) => Promise<void>,
+ *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+ * }}
+ */
 function recordingProvider({ swapToReadOnly = false } = {}) {
+  /** @type {Array<Record<string, unknown>>} */
   const calls = [];
   let minted = 0;
+  /** @type {{
+   *   calls: Array<Record<string, unknown>>,
+   *   mint: (scope: Record<string, unknown>) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   *   revoke: (keyId: string) => Promise<void>,
+   *   swapToReadOnly?: (keyId: string) => Promise<{keyId: string, accessKeyId: string, secret: string}>,
+   * }} */
   const provider = {
     calls,
+    /** @param {Record<string, unknown>} scope */
     async mint(scope) {
       calls.push({ call: "mint", ...scope });
       minted += 1;
       return { keyId: `new-${minted}`, accessKeyId: `id-${minted}`, secret: `s-${minted}` };
     },
+    /** @param {string} keyId */
     async revoke(keyId) {
       calls.push({ call: "revoke", keyId });
     },
   };
   if (swapToReadOnly) {
+    /** @param {string} keyId */
     provider.swapToReadOnly = async (keyId) => {
       calls.push({ call: "swapToReadOnly", keyId });
       minted += 1;
@@ -177,7 +214,10 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   // The rows a capped account holds: every key read-only, each one carrying the
   // record of the scope the cap took from it (`cappedFrom`, which the api
   // Worker stores on the devices row — issue #64's wiring).
-  const capped = (key, capabilities) => ({
+  const capped = (
+    /** @type {{keyId: string, kind: string, prefix: string, capabilities: readonly string[]}} */ key,
+    /** @type {readonly string[]} */ capabilities,
+  ) => ({
     ...key,
     capabilities: ["list", "read"],
     cappedFrom: capabilities,
@@ -205,7 +245,9 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   assert.deepEqual(byId["k-agent"], ["list", "read", "write"], "an agent key never gains delete");
   assert.deepEqual(byId["k-s3"], ["list", "read", "write"]);
   assert.deepEqual(byId["k-branch"], ["list", "read", "write"]);
-  assert.equal(plan.swaps.find((swap) => swap.keyId === "k-branch").prefix, "u/a1/.branches/fix/");
+  const branchSwap = plan.swaps.find((swap) => swap.keyId === "k-branch");
+  assert.ok(branchSwap);
+  assert.equal(branchSwap.prefix, "u/a1/.branches/fix/");
   assert.deepEqual(plan.mount, { restart: true, reason: "cap-raised" });
   // The record is spent once it has been given back, so the wiring clears it
   // on the row it just minted: a later cap starts from what the key holds.
@@ -358,15 +400,16 @@ test("running the job twice changes nothing, in both directions (issue #74)", as
     2,
     "the read-only-by-choice key is not touched by the cap either",
   );
-  const rowsAfterCap = keys.map((key, index) =>
-    first.applied[index]
+  const rowsAfterCap = keys.map((key, index) => {
+    const applied = first.applied[index];
+    return applied
       ? {
           ...key,
-          capabilities: [...first.applied[index].capabilities],
-          cappedFrom: first.applied[index].cappedFrom,
+          capabilities: [...applied.capabilities],
+          cappedFrom: applied.cappedFrom,
         }
-      : key,
-  );
+      : key;
+  });
   const second = await enforceCap({ usage: capUsage(), keys: rowsAfterCap }, recordingProvider());
   assert.equal(second.applied.length, 0, "a second pass at the cap finds nothing to do");
 
@@ -397,7 +440,12 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
   // Every subset, built by adding one name at a time to a growing list of sets
   // rather than by a reduce that copies the whole list on every step: the sets
   // are the test's own scratch space, so mutating one is the cheap answer.
+  /**
+   * @param {readonly string[]} names
+   * @returns {string[][]}
+   */
   const subsets = (names) => {
+    /** @type {string[][]} */
     const sets = [[]];
     for (const name of names) {
       for (const set of [...sets]) {
@@ -408,6 +456,10 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
     // spec's order (list, read, write, delete).
     return sets.map((set) => names.filter((candidate) => set.includes(candidate)));
   };
+  /**
+   * @param {Array<{keyId: string, kind: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}>} keys
+   * @param {{swaps: ReadonlyArray<{keyId: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}>}} plan
+   */
   const applyPlan = (keys, plan) =>
     keys.map((key) => {
       const swap = plan.swaps.find((entry) => entry.keyId === key.keyId);
@@ -590,6 +642,7 @@ test("a key is write-capable when it can write or delete", () => {
 });
 
 test("enforcement reads the month's numbers from src/billing.js capStatus()", async () => {
+  /** @param {number} gb */
   const usage = (gb) => ({
     gbMinutes: fullMonthGbMinutes(gb),
     peakGb: gb,
@@ -735,7 +788,7 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
   // The Worker still routes the path to the handler, and the handler's gate
   // answers 401 to an anonymous request rather than the asset layer's 404.
-  const anonymous = await worker.fetch(new Request("https://drive.test/api/usage"), {
+  const anonymous = await workerFetch(new Request("https://drive.test/api/usage"), {
     ASSETS: { fetch: () => new Response("asset") },
   });
   assert.equal(anonymous.status, 401);

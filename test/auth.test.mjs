@@ -22,6 +22,18 @@ import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/au
 import worker from "../src/index.js";
 import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 const SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 
 const headers = () => new Headers({ origin: TEST_BASE_URL });
@@ -34,23 +46,22 @@ test("the migration file is what Better Auth's own planner generates", async () 
   // (drive issue #200). This pin makes a library upgrade that changes the
   // schema fail here, at the migration, instead of at the first sign-in or
   // rate-limited send.
+  const instance = betterAuth({
+    database: createTestD1({ migrations: [] }),
+    secret: SECRET,
+    baseURL: TEST_BASE_URL,
+    emailAndPassword: { enabled: false },
+    // Mirrors the option in src/auth.js: the rate-limit counters are stored
+    // in D1, so the planner now emits the rateLimit table too.
+    rateLimit: { storage: "database" },
+    plugins: [
+      (await import("better-auth/plugins")).magicLink({
+        sendMagicLink: async () => {},
+      }),
+    ],
+  });
   const plan = await getMigrations(
-    /** @type {any} */ (
-      betterAuth({
-        database: createTestD1({ migrations: [] }),
-        secret: SECRET,
-        baseURL: TEST_BASE_URL,
-        emailAndPassword: { enabled: false },
-        // Mirrors the option in src/auth.js: the rate-limit counters are
-        // stored in D1, so the planner now emits the rateLimit table too.
-        rateLimit: { storage: "database" },
-        plugins: [
-          (await import("better-auth/plugins")).magicLink({
-            sendMagicLink: async () => {},
-          }),
-        ],
-      })
-    ).options,
+    /** @type {Parameters<typeof getMigrations>[0]} */ (/** @type {unknown} */ (instance.options)),
   );
   const generated = await plan.compileMigrations();
   // The shipped migration is split across two files: 0005 holds the four
@@ -63,17 +74,19 @@ test("the migration file is what Better Auth's own planner generates", async () 
   assert.ok(plan.toBeCreated.length > 0, "the planner must have tables to create");
   // The planner returns statements separated by two newlines; the file carries
   // one statement per line. Compare statement sets rather than whitespace.
+  /** @param {string} text */
   const statements = (text) =>
     text
       .split(";")
-      .map((statement) => statement.trim())
+      .map(/** @param {string} statement */ (statement) => statement.trim())
       .filter(Boolean)
-      .map((statement) =>
-        statement
-          .split("\n")
-          .filter((line) => !line.trim().startsWith("--"))
-          .join(" ")
-          .replace(/\s+/g, " "),
+      .map(
+        /** @param {string} statement */ (statement) =>
+          statement
+            .split("\n")
+            .filter(/** @param {string} line */ (line) => !line.trim().startsWith("--"))
+            .join(" ")
+            .replace(/\s+/g, " "),
       );
   assert.deepEqual(
     statements(generated).sort(),
@@ -88,6 +101,7 @@ test("a sign-in link works once", async () => {
   const made = createTestAuth();
   await made.auth.api.signInMagicLink({ body: { email: "once@example.com" }, headers: headers() });
   const token = new URL(made.sent[0].url).searchParams.get("token");
+  assert.ok(token, "a token is a single opaque string");
   assert.match(token, /^[A-Za-z0-9]+$/, "a token is a single opaque string");
   assert.equal(
     made.sent[0].to,
@@ -104,6 +118,7 @@ test("a sign-in link works once", async () => {
   const cookie = first.headers.getSetCookie()[0];
   assert.ok(cookie, "the first follow sets a session cookie");
   const found = await made.auth.api.getSession({ headers: new Headers({ cookie }) });
+  assert.ok(found);
   assert.equal(
     found.user.email,
     "once@example.com",
@@ -125,6 +140,7 @@ test("a sign-in link works once", async () => {
   // used to hold two live sessions against one account (this is the one
   // session that exists below, verified next).
   const kept = await made.auth.api.getSession({ headers: new Headers({ cookie }) });
+  assert.ok(kept);
   assert.equal(
     kept.user.email,
     "once@example.com",
@@ -140,6 +156,7 @@ test("a link expires", async () => {
   const made = createTestAuth();
   await made.auth.api.signInMagicLink({ body: { email: "slow@example.com" }, headers: headers() });
   const token = new URL(made.sent[0].url).searchParams.get("token");
+  assert.ok(token);
   // The link's own timestamp is what Better Auth reads, and the row is what
   // the database holds, so expiry is a database fact the test moves rather
   // than a fake clock: makesignin worked, then the link grew old.
@@ -170,6 +187,7 @@ test("a session survives a Worker restart", async () => {
     new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
     made.auth,
   );
+  assert.ok(before);
   assert.equal(before.email, "persisting@example.com");
 
   // The "restart": the same database, a brand new auth built from scratch, and
@@ -203,6 +221,7 @@ test("sign-out kills the session", async () => {
     new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
     made.auth,
   );
+  assert.ok(before);
   assert.equal(before.email, "leaver@example.com", "the session works before signing out");
   const out = await made.auth.api.signOut({ headers: new Headers({ cookie }), asResponse: true });
   assert.equal(out.status, 200, "sign-out answers ok");
@@ -247,18 +266,19 @@ test("the Worker's gate reads Better Auth's session, not a cookie the browser ch
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: SECRET,
     BETTER_AUTH_URL: TEST_BASE_URL,
+    /** @param {{to: string, url: string}} link */
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
   };
   const { cookie } = await signIn(made, "gated@example.com");
   for (const path of ["/api/files", "/api/usage", "/api/first-run-status"]) {
-    const allowed = await worker.fetch(
+    const allowed = await workerFetch(
       new Request(`${TEST_BASE_URL}${path}`, { headers: { cookie } }),
       env,
     );
     assert.equal(allowed.status, 200, `a signed-in account reaches ${path}`);
-    const denied = await worker.fetch(new Request(`${TEST_BASE_URL}${path}`), env);
+    const denied = await workerFetch(new Request(`${TEST_BASE_URL}${path}`), env);
     assert.equal(denied.status, 401, `an anonymous caller is locked out of ${path}`);
   }
 });

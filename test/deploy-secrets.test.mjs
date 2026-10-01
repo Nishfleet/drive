@@ -19,12 +19,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+/** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 // The pin rides the CLI's own beta line, so a plain version reader is not
 // enough: 1.0.0-beta.10 is later than 1.0.0-beta.7 while "beta.10" sorts
 // before "beta.7" as a string. Both the floor and the candidate go through
 // this one reader, so the shape is the same on both sides.
+/** @param {string} range */
 const parseVersion = (range) => {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(range.replace(/^[\^~]/, ""));
   assert.ok(match, `cf is pinned by a plain version on the beta line, not a range: ${range}`);
@@ -42,6 +44,10 @@ const parseVersion = (range) => {
 // two are meant to be set — was dropped by the next deploy.
 const FIRST_SAFE = parseVersion("1.0.0-beta.7");
 
+/**
+ * @param {ReturnType<typeof parseVersion>} candidate
+ * @param {ReturnType<typeof parseVersion>} floor
+ */
 const candidateAtLeast = (candidate, floor) => {
   if (candidate.major !== floor.major) return candidate.major > floor.major;
   if (candidate.minor !== floor.minor) return candidate.minor > floor.minor;

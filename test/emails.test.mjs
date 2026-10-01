@@ -34,23 +34,32 @@ import {
 // a deployment decision, not a code one).
 const MAIL_FROM = "notifications@drive.example";
 
-// A fake send_email binding: records the message, and can be told to fail.
+/**
+ * A fake send_email binding: records the message, and can be told to fail.
+ * @param {Error | {messageId?: unknown} | null} [result]
+ */
 function makeFakeEmail(result = { messageId: "<fake@drive.example>" }) {
+  /** @type {unknown[]} */
   const sent = [];
   return {
     sent,
+    /**
+     * @param {unknown} message
+     * @returns {Promise<{messageId: string}>}
+     */
     async send(message) {
       sent.push(message);
       if (result instanceof Error) {
         throw result;
       }
-      return result;
+      return /** @type {{messageId: string}} */ (result);
     },
   };
 }
 
 // The route's own token, and an env carrying it.
 const TOKEN = "test-send-token";
+/** @param {Record<string, unknown>} [overrides] */
 function makeEnv(overrides = {}) {
   return {
     EMAIL: makeFakeEmail(),
@@ -60,6 +69,10 @@ function makeEnv(overrides = {}) {
   };
 }
 
+/**
+ * @param {unknown} body
+ * @param {Record<string, string>} [headers]
+ */
 function postRequest(body, headers = {}) {
   return new Request("https://drive.example/api/emails/send", {
     method: "POST",
@@ -68,6 +81,10 @@ function postRequest(body, headers = {}) {
   });
 }
 
+/**
+ * @param {unknown} body
+ * @param {Record<string, string>} [extra]
+ */
 function authed(body, extra = {}) {
   return postRequest(body, { authorization: `Bearer ${TOKEN}`, ...extra });
 }
@@ -214,6 +231,7 @@ test("payment failed never blames the person", () => {
 // 5) monthly receipt, with the "you saved" line
 // ---------------------------------------------------------------------------
 
+/** @param {Record<string, unknown>} [overrides] */
 function receiptData(overrides = {}) {
   return {
     billUsd: 12,
@@ -227,6 +245,7 @@ function receiptData(overrides = {}) {
 // The data each kind actually takes. A kind rendered with another kind's data
 // must fail loudly (see the "no usable cap" test), so the loop tests use this
 // rather than one blob for all five.
+/** @param {string} kind */
 function dataFor(kind) {
   switch (kind) {
     case "welcome":
@@ -364,10 +383,14 @@ test("the rate constant is the spec's 2 cents per GB", () => {
 test("the Worker routes POST /api/emails/send to the send handler with env", async () => {
   // env, not env.EMAIL: the handler reads the token and the sending address.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
   });
-  const res = await worker.fetch(
+  const res = await workerFetch(
     postRequest(
       { to: "person@example.com", kind: "welcome" },
       { authorization: `Bearer ${TOKEN}` },
@@ -384,10 +407,14 @@ test("the Worker routes POST /api/emails/send to the send handler with env", asy
 test("the Worker refuses the send route without the token, and says so", async () => {
   // The gate that keeps the mounted route from being a mail relay.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
   });
-  const res = await worker.fetch(postRequest({ to: "attacker@example.com", kind: "welcome" }), env);
+  const res = await workerFetch(postRequest({ to: "attacker@example.com", kind: "welcome" }), env);
   assert.equal(res.status, 403);
   assert.equal(env.EMAIL.sent.length, 0);
 });
@@ -395,14 +422,18 @@ test("the Worker refuses the send route without the token, and says so", async (
 test("the Worker still serves the waitlist and the assets", async () => {
   // The new branch must not have displaced the existing routes.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
     WAITLIST_DB: null,
   });
-  const asset = await worker.fetch(new Request("https://drive.example/"), env);
+  const asset = await workerFetch(new Request("https://drive.example/"), env);
   assert.equal(asset.status, 200);
   assert.equal(await asset.text(), "asset");
-  const waitlist = await worker.fetch(
+  const waitlist = await workerFetch(
     new Request("https://drive.example/api/waitlist", { method: "GET" }),
     env,
   );
@@ -527,7 +558,10 @@ test("sendEmail refuses an empty recipient and an unknown kind", async () => {
     { to: "person@example.com", kind: "welcome" },
   ]) {
     await assert.rejects(sendEmail(email, request), (error) => {
-      assert.ok(error instanceof TypeError || /Unknown email kind/.test(error.message));
+      assert.ok(
+        error instanceof TypeError ||
+          (error instanceof Error && /Unknown email kind/.test(error.message)),
+      );
       return true;
     });
   }
@@ -776,7 +810,9 @@ test("the route sends each of the five kinds through the one lane", async () => 
     );
     assert.equal(res.status, 202, `kind: ${kind}`);
     assert.equal(env.EMAIL.sent.length, 1, `kind: ${kind}`);
-    const message = env.EMAIL.sent[0];
+    const message = /** @type {{from: {email: string}, text: string, html: string}} */ (
+      env.EMAIL.sent[0]
+    );
     assert.equal(message.from.email, MAIL_FROM);
     assert.ok(message.text.includes("-- Drive"), `kind: ${kind} text sign-off`);
     assert.ok(message.html.includes("-- Drive"), `kind: ${kind} html sign-off`);
