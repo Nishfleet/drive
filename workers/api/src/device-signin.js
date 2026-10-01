@@ -96,14 +96,20 @@ export function createMemoryDeviceSigninStore(options = {}) {
   const randomBytes =
     options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
 
-  /** @type {Map<string, {deviceCode: string, userCode: string, name: string, status: string, account: object|null, createdAt: number, expiresAt: number}>} */
+  /** @type {Map<string, {deviceCode: string, userCode: string, name: string, status: string, accountId: string|null, createdAt: number, expiresAt: number}>} */
   const byDeviceCode = new Map();
   /** @type {Map<string, string>} user code -> device code */
   const byUserCode = new Map();
   /** @type {Map<string, {account: object, createdAt: number}>} token hash -> token */
   const tokens = new Map();
+  /** @type {Map<string, object>} account id -> account the stand-in holds */
+  const accounts = new Map();
 
   return {
+    /** Every account this stand-in holds, so a test can model a row that is
+     * gone (the store restored from a backup) the way the real account store
+     * can lose one. */
+    accounts,
     /**
      * Start a device sign-in: a code the CLI polls with, and a short code the
      * person types on the approval page.
@@ -118,7 +124,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
         userCode,
         name: deviceLabel(request.name),
         status: "pending",
-        account: null,
+        accountId: null,
         createdAt,
         expiresAt: createdAt + DEVICE_CODE_TTL_SECONDS,
       });
@@ -134,8 +140,13 @@ export function createMemoryDeviceSigninStore(options = {}) {
     /**
      * A signed-in person approved the code: attach their account and mark the
      * code ready. Approving twice is a no-op once the account is attached.
+     *
+     * With no account passed (the stand-in's own older call shape) it makes
+     * one, named for the device, so a deployment with no account store can
+     * still walk the flow. The D1 store never takes that path: its account is
+     * always the sign-in flow's.
      * @param {string} userCode
-     * @param {{id: string, name?: string, email?: string}} account
+     * @param {{id: string, name?: string, email?: string}} [account]
      */
     approveDeviceCode(userCode, account) {
       const deviceCode = byUserCode.get(userCode);
@@ -150,16 +161,27 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return { error: "expired-code" };
       }
       if (code.status !== "approved") {
-        code.account = accountFields(account);
+        const own = account === undefined
+          ? { id: newId("acct"), name: code.name, email: null }
+          : accountFields(account);
+        accounts.set(own.id, own);
+        code.accountId = own.id;
         code.status = "approved";
       }
-      return { accountId: code.account.id, name: code.account.name };
+      const accountRow = accounts.get(code.accountId);
+      if (accountRow === undefined) {
+        return { error: "unknown-code" };
+      }
+      return { accountId: accountRow.id, name: accountRow.name };
     },
 
     /**
      * The CLI's poll. `pending` until the page approves, then the device token
      * (shown once) and the account. A code is consumed by the poll that
      * returns the token, so a stolen device code cannot mint a second token.
+     * An approved code whose account row is gone (a store restored from a
+     * backup, say) answers `expired` rather than a token that names no
+     * account: there is nothing for that token to be.
      * @param {string} deviceCode
      */
     async pollDeviceCode(deviceCode) {
@@ -176,13 +198,17 @@ export function createMemoryDeviceSigninStore(options = {}) {
       if (code.status === "used") {
         return { status: "expired" };
       }
+      const account = code.accountId === null ? undefined : accounts.get(code.accountId);
+      if (account === undefined) {
+        return { status: "expired" };
+      }
       const token = newId("dtok");
       tokens.set(await sha256Hex(token), {
-        account: code.account,
+        account,
         createdAt: nowSeconds(now()),
       });
       code.status = "used";
-      return { status: "approved", deviceToken: token, account: code.account };
+      return { status: "approved", deviceToken: token, account };
     },
 
     /**
@@ -302,6 +328,12 @@ export function createD1DeviceSigninStore(db, options = {}) {
     },
 
     /**
+     * The CLI's poll. `pending` until the page approves, then the device token
+     * (shown once) and the account. A code is consumed by the poll that
+     * returns the token, so a stolen device code cannot mint a second token.
+     * An approved code whose account row is gone (a store restored from a
+     * backup, say) answers `expired` rather than a token that names no
+     * account: there is nothing for that token to be.
      * @param {string} deviceCode
      */
     async pollDeviceCode(deviceCode) {
@@ -319,6 +351,9 @@ export function createD1DeviceSigninStore(db, options = {}) {
         return { status: "pending" };
       }
       if (row.status === "used") {
+        return { status: "expired" };
+      }
+      if (row.account.id === "") {
         return { status: "expired" };
       }
       const token = newId("dtok");

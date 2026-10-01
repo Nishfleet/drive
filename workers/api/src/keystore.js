@@ -85,6 +85,11 @@ export function createMemoryStore(options = {}) {
   }
 
   return {
+    /** The stand-in's accounts, for the tests and the stand-in's one query.
+     * The D1 sign-in store has no accounts of its own (the sign-in flow owns
+     * them, src/accounts.js), so the map is the in-memory one's only. */
+    accounts: signin.accounts ?? new Map(),
+
     /**
      * Start a device sign-in: a code the CLI polls with and a short code the
      * person types on the approval page. The CLI's `deviceCode` is a secret;
@@ -110,9 +115,14 @@ export function createMemoryStore(options = {}) {
      * The CLI's poll. `pending` until the page approves, then the device token
      * (shown once) and the account. A code is consumed by the poll that
      * returns the token, so a stolen device code cannot mint a second token.
+     * An approved code whose account row is gone (a store restored from a
+     * backup, say) answers `expired` rather than a token that names no
+     * account: there is nothing for that token to be.
      * @param {string} deviceCode
+     * @returns {Promise<{status: "unknown"|"expired"|"pending"}
+     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null, createdAt: number}}>}
      */
-    pollDeviceCode(deviceCode) {
+pollDeviceCode(deviceCode) {
       return signin.pollDeviceCode(deviceCode);
     },
 

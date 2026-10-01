@@ -19,6 +19,10 @@ import { json, errorResponse } from "./http.js";
 import { failureMessage } from "../../../src/messages.js";
 import { isSameOriginRequest } from "../../../src/email-send.js";
 
+/** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
+ * the key routes take. */
+/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
 const APPROVE_INTRO =
@@ -115,7 +119,7 @@ async function readUserCode(request) {
  * POST /v1/device/code — start a device sign-in. Public: the CLI has no
  * credential yet, which is the point of the flow.
  * @param {Request} request
- * @param {{store: any, url: URL}} ctx
+ * @param {{store: KeyStore, url: URL}} ctx
  */
 export function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -170,7 +174,7 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{store: KeyStore}} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {

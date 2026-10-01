@@ -18,6 +18,7 @@ class BodyTooLargeError extends Error {
 /**
  * Returns { email, source } or { error }.
  * @param {{email?: unknown, source?: unknown}} input
+ * @returns {{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
  */
 export function validateSignup(input) {
   if (typeof input !== "object" || input === null) {
@@ -41,6 +42,10 @@ export function validateSignup(input) {
   return { email, source };
 }
 
+/**
+ * @param {{id?: unknown, email?: unknown, source?: unknown, created_at?: unknown}|null|undefined} result
+ * @returns {{id: unknown, email: unknown, source: unknown, created_at: unknown}|null}
+ */
 function row(result) {
   if (!result) {
     return null;
@@ -88,6 +93,12 @@ export async function recordSignup(db, signup) {
   return { already: true, row: row(existing) };
 }
 
+/**
+ * @param {unknown} body
+ * @param {number} status
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function json(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -103,6 +114,11 @@ function json(body, status, headers = {}) {
 // is checked first so an oversized body is rejected without being read at
 // all, and the stream is counted as it arrives so a request that declares
 // nothing (or lies about a smaller size) is stopped at the same limit.
+/**
+ * @param {Request} request
+ * @param {number} maxBytes
+ * @returns {Promise<Uint8Array>}
+ */
 async function readLimitedBody(request, maxBytes) {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
@@ -137,6 +153,10 @@ async function readLimitedBody(request, maxBytes) {
   return bytes;
 }
 
+/**
+ * @param {Request} request
+ * @returns {Promise<{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}>}
+ */
 async function readSignupRequest(request) {
   const contentType = request.headers.get("content-type") || "";
   const bytes = await readLimitedBody(request, MAX_BODY_BYTES);
@@ -147,8 +167,10 @@ async function readSignupRequest(request) {
       return { error: "The request body is not valid JSON." };
     }
   }
-  // The no-JavaScript form post lands here.
-  const form = await new Response(bytes, {
+  // The no-JavaScript form post lands here. The cast only says what the
+  // runtime already accepts: a Uint8Array is a valid Response body, and the
+  // DOM lib's BodyInit is written against a non-shared ArrayBuffer.
+  const form = await new Response(/** @type {BodyInit} */ (bytes), {
     headers: { "content-type": contentType },
   }).formData();
   return validateSignup({
@@ -177,7 +199,7 @@ export function isSameOriginRequest(request) {
  * Handles every method on /api/waitlist and always returns a Response.
  * @param {Request} request
  * @param {D1Database} db
- * @param {RateLimitBinding|undefined} rateLimiter
+ * @param {RateLimit|undefined} rateLimiter
  */
 export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (request.method !== "POST") {
@@ -258,9 +280,12 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (signup.error) {
     return json({ error: signup.error }, 400);
   }
+  // The guard just proved the accepted shape; the union's other arm is gone,
+  // and this is the one name the write path reads.
+  const accepted = /** @type {{email: string, source: string}} */ (signup);
 
   try {
-    await recordSignup(db, signup);
+    await recordSignup(db, accepted);
     // The response is identical whether the address was already on the list
     // or not — no enumeration oracle, no echo of stored data.
     return json({ ok: true }, 200);

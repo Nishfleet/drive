@@ -92,24 +92,35 @@ export function signinClosedBody() {
 export const SIGNIN_STEPS = Object.freeze(["start", "finish"]);
 
 /**
+ * A checked sign-in post: the start step, the finish step, or the one error
+ * sentence the route returns as a 400. The two steps carry a `step` literal so
+ * the route's `step === "finish"` narrows; the error arm is told apart with
+ * `"error" in read` rather than a property read, because it has no `step`.
+ * @typedef {{step: "start", method: string, email?: string}
+ *   | {step: "finish", email: string, code: string}
+ *   | {error: string}} SigninRequest
+ */
+
+/**
  * Reads and checks the posted body for the start step: the method is checked
  * against SIGNIN_METHODS, and the email method requires an address; the OAuth
  * methods carry none, because the provider is the one that asks.
  * @param {unknown} body
- * @returns {{step: "start", method: string, email?: string}|{error: string}}
+ * @returns {SigninRequest}
  */
 export function readSigninRequest(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { error: "Send a JSON object." };
   }
-  const step = typeof body.step === "string" ? body.step : SIGNIN_STEPS[0];
+  const fields = /** @type {Record<string, unknown>} */ (body);
+  const step = typeof fields.step === "string" ? fields.step : SIGNIN_STEPS[0];
   if (!SIGNIN_STEPS.includes(step)) {
     return { error: `Send step: ${SIGNIN_STEPS.join(" or ")}.` };
   }
   if (step === "finish") {
-    return readFinish(body);
+    return readFinish(fields);
   }
-  return readStart(body);
+  return readStart(fields);
 }
 
 /**
@@ -139,7 +150,7 @@ function readFinish(body) {
  * @returns {{step: "start", method: string, email?: string}|{error: string}}
  */
 function readStart(body) {
-  const method = body.method;
+  const method = typeof body.method === "string" ? body.method : "";
   if (!SIGNIN_METHODS.includes(method)) {
     return { error: `Choose one of: ${SIGNIN_METHODS.join(", ")}.` };
   }
@@ -155,6 +166,15 @@ function readStart(body) {
   }
   return { step: "start", method, email };
 }
+
+/**
+ * The account store the route talks to: the two sign-in steps and nothing
+ * else. src/accounts.js is one implementation, D1 with drive#2 is another, and
+ * a test passes a fake. A step answers the account it acted on or a named
+ * `error` the route turns into a 400.
+ * @typedef {{startSignin: (request: {method: string, email?: string}) => Promise<{account: {id: string, name: string, email: string}, expiresIn: number}|{error: string}>,
+ *   finishSignin: (request: {email?: string, code?: string}) => Promise<{account: {id: string, name: string, email: string}, sessionToken: string}|{error: string}>}} SigninStore
+ */
 
 /**
  * Handles POST /api/signin. Always answers; the page reads the JSON.
@@ -175,7 +195,7 @@ function readStart(body) {
  * message table's words rather than reporting a code sent that no store could
  * hold.
  * @param {Request} request
- * @param {unknown} store the account store, or a falsy value while #2 lands
+ * @param {SigninStore|null|undefined} store the account store, or a falsy value while #2 lands
  * @returns {Promise<Response>}
  */
 export async function handleSigninRequest(request, store) {
@@ -210,7 +230,7 @@ export async function handleSigninRequest(request, store) {
     }
   }
   const read = readSigninRequest(body);
-  if (read.error) {
+  if ("error" in read) {
     return json({ error: read.error }, 400);
   }
   if (!store) {
@@ -223,7 +243,7 @@ export async function handleSigninRequest(request, store) {
   // session, and both report what they did.
   if (read.step === "finish") {
     const signedIn = await store.finishSignin(read);
-    if (signedIn && signedIn.error) {
+    if (signedIn && "error" in signedIn) {
       return json({ error: SIGNIN_ERRORS[signedIn.error] ?? signedIn.error }, 400);
     }
     if (!signedIn || !signedIn.account || !signedIn.sessionToken) {
@@ -249,7 +269,7 @@ export async function handleSigninRequest(request, store) {
     );
   }
   const started = await store.startSignin(read);
-  if (started && started.error) {
+  if (started && "error" in started) {
     // A store error is a named key the copy below turns into a sentence, so
     // the page never shows a raw key to a person. Google and GitHub land here
     // too: their client ids and secrets are Nish's credentials, so the store
@@ -268,6 +288,7 @@ export async function handleSigninRequest(request, store) {
  * expired code vs no code sent): telling a stranger which of the three they hit
  * is telling them about a mailbox they may not own.
  */
+/** @type {Readonly<Record<string, string>>} */
 const SIGNIN_ERRORS = Object.freeze({
   "invalid-code": "That code did not work. Ask for a new one and try again.",
 });
@@ -277,6 +298,12 @@ const JSON_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} status
+ * @param {Record<string, string>} [extraHeaders]
+ * @returns {Response}
+ */
 function json(body, status, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
