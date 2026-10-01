@@ -41,6 +41,7 @@ import {
   linkState,
   linkStateLabel,
   newLinkToken,
+  newRequestRecord,
   newShareRecord,
   requestUrl,
   shareRow,
@@ -247,7 +248,7 @@ test("the two link shapes are absolute and path-safe", () => {
 // ---------------------------------------------------------------- the owner's routes
 
 test("POST /api/share mints a link for a file that is there, and 404s one that is not", async () => {
-  const { upload, share } = drive();
+  const { upload, share, shareList } = drive();
   await upload("/", "holiday.jpg", "jpeg bytes", "image/jpeg");
   const made = await share("/holiday.jpg", { token: TOKEN });
   assert.equal(made.status, 201);
@@ -264,14 +265,14 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   // The root is never a share, and no link is minted for a refused path.
   const root = await share("/", { token: TOKEN });
   assert.equal(root.status, 400);
-  const listed = await handleShareRequest(
-    new Request(api(SHARE_ENDPOINT)),
-    drive().files,
-    drive().links,
-    account,
-    { now },
-  );
+  // The same drive the mints went through: the list shows the one link the
+  // mint made and none of the refused paths (a fresh store here would list
+  // nothing and prove nothing).
+  const listed = await shareList();
   assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json()).shares.map((row) => row.name), [
+    "holiday.jpg",
+  ]);
 });
 
 test("GET /api/share lists the account's links, newest first", async () => {
@@ -289,21 +290,9 @@ test("GET /api/share lists the account's links, newest first", async () => {
 });
 
 test("DELETE /api/share revokes, is idempotent, and 404s an unknown token", async () => {
-  const { upload, share, links } = drive();
+  const { upload, share, links, revoke } = drive();
   await upload("/", "a.txt", "a");
   await share("/a.txt", { token: TOKEN });
-  const revoke = (token) =>
-    handleShareRequest(
-      new Request(api(SHARE_ENDPOINT), {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token }),
-      }),
-      drive().files,
-      links,
-      account,
-      { now },
-    );
   const first = await revoke(TOKEN);
   assert.equal(first.status, 200);
   assert.equal((await first.json()).share.state, "revoked");
@@ -337,14 +326,20 @@ test("only the methods each route offers are allowed", async () => {
   const postInfo = await handleRequestInfoRequest(
     new Request(`https://drive.test/api/request/info?k=${TOKEN}`, { method: "POST" }),
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(postInfo.status, 405);
 });
 
-test("the public routes need a cap state, and refuse a made-up one", async () => {
+test("the public routes need a cap resolver, and refuse a made-up answer", async () => {
   const { links } = drive();
+  await links.requests.create(
+    newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
+  );
+  // A cap passed as a value rather than a resolver is refused: the two routes
+  // resolve the cap per account, so a caller that hands over one global state
+  // is the bug this rejects.
   await assert.rejects(
     () =>
       handleRequestInfoRequest(
@@ -360,14 +355,254 @@ test("the public routes need a cap state, and refuse a made-up one", async () =>
       handleRequestUploadRequest(
         new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
           method: "POST",
+          body: "x",
         }),
         createMemoryStore(),
         links,
-        "nearly",
+        "read_only",
         { now },
       ),
     TypeError,
   );
+  // A resolver that answers a state outside the two is the same failure, on
+  // the open path: a page must not quietly open because the cap was nonsense.
+  await assert.rejects(
+    () =>
+      handleRequestInfoRequest(
+        new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+        links,
+        () => "nearly",
+        { now },
+      ),
+    TypeError,
+  );
+});
+
+test("the cap is resolved from the account that minted the token", async () => {
+  // The cap belongs to the owner, so the resolver is called with the token's
+  // own account id. A second account at its cap does not close this page, and
+  // this owner at their cap closes only their own: the public route is per
+  // token, not per drive, which is what "the owner's spending cap applies"
+  // (issue #19) has to mean once more than one account exists.
+  const store = createMemoryStore();
+  const links = createMemoryLinkStore();
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const asked = [];
+  const open = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    (accountId) => {
+      asked.push(accountId);
+      return "active";
+    },
+    { now },
+  );
+  assert.equal(open.status, 200);
+  assert.equal((await open.json()).open, true);
+  assert.deepEqual(asked, [account.id], "the resolver is asked about the token's own owner");
+  // And a cap of the owner's own account is the one that answers for it.
+  const capped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      body: "x",
+    }),
+    store,
+    links,
+    (accountId) => (accountId === account.id ? "read_only" : "active"),
+    { now },
+  );
+  assert.equal(capped.status, 403);
+});
+
+test("a link with no usable expiry is expired, not a permanent link", async () => {
+  // Failing open would hand out a capability that outlives its own window,
+  // which is the one failure a 7-day link exists to prevent.
+  const opened = { path: "/a.txt", createdAt: now, revokedAt: null, expiresAt: now + DAY_MS };
+  for (const record of [
+    opened,
+    { ...opened, expiresAt: undefined },
+    { ...opened, expiresAt: null },
+    { ...opened, expiresAt: Number.NaN },
+  ]) {
+    assert.equal(
+      linkIsOpen(record, now),
+      Number.isFinite(record.expiresAt),
+      `a record with expiresAt ${String(record.expiresAt)} must not open`,
+    );
+  }
+  // The 404 is the same one, so a stranger learns nothing about the window.
+  const { links } = drive();
+  await links.requests.create(newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }));
+  const info = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    {
+      ...links,
+      requests: {
+        ...links.requests,
+        get: async () => ({ token: TOKEN, accountId: account.id, folder: "/", createdAt: now, revokedAt: null }),
+      },
+    },
+    () => "active",
+    { now },
+  );
+  assert.equal(info.status, 404);
+  assert.equal((await info.json()).error, failureMessage("link-not-found"));
+});
+
+test("one account cannot revoke another account's link", async () => {
+  // The isolation gate (#73) on a capability: a signed-in account holding
+  // another account's token gets the same 404 a token nobody issued gets, so
+  // it cannot turn off someone else's link and cannot learn the token exists.
+  const store = createMemoryStore();
+  const links = createMemoryLinkStore();
+  const other = { id: "acct-other", name: "Other" };
+  const uploaded = await handleFilesRequest(
+    new Request(
+      `${api(FILES_ENDPOINT)}/upload?path=%2F&name=secret.txt`,
+      { method: "POST", headers: { "content-type": "text/plain" }, body: "the owner's bytes" },
+    ),
+    store,
+    account,
+    now,
+  );
+  assert.equal(uploaded.status, 201, "the owner stores a file to share");
+  const made = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/secret.txt" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  assert.equal(made.status, 201);
+
+  const otherRevoke = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: TOKEN }),
+    }),
+    store,
+    links,
+    other,
+    { now },
+  );
+  assert.equal(otherRevoke.status, 404, "another account's token is not found here");
+  assert.equal((await links.shares.get(TOKEN)).revokedAt, null, "the link is untouched");
+  // The owner's own revoke still works, so the scoping did not break the
+  // feature: it only kept it theirs.
+  const ownerRevoke = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: TOKEN }),
+    }),
+    store,
+    links,
+    account,
+    { now: now + 1000 },
+  );
+  assert.equal(ownerRevoke.status, 200);
+  assert.equal((await links.shares.get(TOKEN)).revokedAt, now + 1000);
+
+  // And the same on the upload-request side. The request names a folder, so
+  // the folder is written to first: an empty folder is not a folder this
+  // store can see (src/share.js folderExists).
+  const seeded = await handleFilesRequest(
+    new Request(
+      `${api(FILES_ENDPOINT)}/upload?path=%2FInbox&name=first.txt`,
+      { method: "POST", headers: { "content-type": "text/plain" }, body: "x" },
+    ),
+    store,
+    account,
+    now,
+  );
+  assert.equal(seeded.status, 201, "a file in /Inbox is what makes the folder there");
+  const request = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/Inbox" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  assert.equal(request.status, 201);
+  const crossRevoke = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: TOKEN }),
+    }),
+    store,
+    links,
+    other,
+    { now },
+  );
+  assert.equal(crossRevoke.status, 404);
+  assert.equal((await links.requests.get(TOKEN)).revokedAt, null);
+});
+
+test("a store failure is logged, and its message is never returned", async () => {
+  // The routes here are reachable by a logged-out stranger holding one token,
+  // so an internal message (a binding, a path, a query) is never the answer.
+  // The table's generic words are, and the cause goes to the log.
+  const logged = [];
+  const original = console.error;
+  console.error = (line) => logged.push(String(line));
+  try {
+    const boom = {
+      list: async () => [],
+      read: async () => {
+        throw new Error("d1: no such column: bucket_secret");
+      },
+      write: async () => {
+        throw new Error("s3 put failed for key u/acct-a/secret.txt");
+      },
+      remove: async () => {},
+    };
+    const { links } = drive();
+    await links.requests.create(
+      newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
+    );
+    for (const call of [
+      () => handleRequestUploadRequest(
+        new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+          method: "POST",
+          body: "x",
+        }),
+        boom,
+        links,
+        () => "active",
+        { now },
+      ),
+    ]) {
+      const response = await call();
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
+    }
+    assert.ok(
+      logged.some((line) => line.includes("s3 put failed")),
+      `the cause is logged: ${JSON.stringify(logged)}`,
+    );
+  } finally {
+    console.error = original;
+  }
 });
 
 // ---------------------------------------------------------------- the done-when bullets
@@ -534,7 +769,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   const info = await handleRequestInfoRequest(
     new Request(`${api(REQUEST_ENDPOINT)}/info?k=${TOKEN}`),
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(info.status, 200);
@@ -552,7 +787,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
     }),
     files,
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(dropped.status, 201);
@@ -585,7 +820,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
     ),
     files,
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(traversal.status, 201);
@@ -614,7 +849,7 @@ test("an upload request refuses a file once the owner's cap is reached", async (
   const info = await handleRequestInfoRequest(
     new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
     links,
-    "read_only",
+    () => "read_only",
     { now },
   );
   assert.equal(info.status, 200);
@@ -629,7 +864,7 @@ test("an upload request refuses a file once the owner's cap is reached", async (
     }),
     store,
     links,
-    "read_only",
+    () => "read_only",
     { now },
   );
   assert.equal(upload.status, 403);
@@ -644,7 +879,7 @@ test("an unknown or revoked upload token is 404 on both public routes", async ()
   const info = await handleRequestInfoRequest(
     new Request("https://drive.test/api/request/info?k=not-a-token"),
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(info.status, 404);
@@ -656,7 +891,7 @@ test("an unknown or revoked upload token is 404 on both public routes", async ()
     }),
     store,
     links,
-    "active",
+    () => "active",
     { now },
   );
   assert.equal(upload.status, 404);

@@ -233,6 +233,14 @@ const UPLOAD_PAGE_COPY = {
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
   done: "Uploaded. Drop another whenever you like.",
+  // The closed page's own two lines. They are not the open page's title: a
+  // closed link that says "Drop files here" tells a stranger to do something
+  // that cannot work, and these are the message table's link-not-found words
+  // (src/messages.js), the same answer an unknown, revoked or expired link
+  // gets. The no-token case is its own line because the link was never one.
+  closedTitle: "This link does not open anything.",
+  closedBody: "Ask the person who sent it for a new one.",
+  noToken: "This page needs the link it was sent with. Open the link again to drop files.",
 };
 const UPLOAD_PAGE_LINE = "This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.";
 const REQUEST_INFO_ENDPOINT = "/api/request/info";
@@ -252,7 +260,8 @@ const status = document.getElementById("status");
 document.getElementById("page-title").textContent = UPLOAD_PAGE_COPY.title;
 document.getElementById("lede").textContent = UPLOAD_PAGE_COPY.lede;
 document.getElementById("page-line").textContent = UPLOAD_PAGE_LINE;
-document.getElementById("closed-title").textContent = UPLOAD_PAGE_COPY.title;
+document.getElementById("closed-title").textContent = UPLOAD_PAGE_COPY.closedTitle;
+document.getElementById("closed-body").textContent = UPLOAD_PAGE_COPY.closedBody;
 choose.textContent = UPLOAD_PAGE_COPY.choose;
 document.getElementById("hint").textContent = UPLOAD_PAGE_COPY.hint;
 
@@ -282,7 +291,7 @@ async function callApi(url, init) {
 
 async function open() {
   if (!token) {
-    closePage(UPLOAD_PAGE_COPY.hint);
+    closePage(UPLOAD_PAGE_COPY.noToken);
     return;
   }
   let info;
@@ -320,12 +329,17 @@ async function uploadFiles(files) {
       uploaded += 1;
     }
   } catch (error) {
-    // What is named is what happened: only the uploads that finished are
-    // counted, so the line never claims a file arrived that did not.
+    // What is named is what happened, so the count is the files that did not
+    // arrive: the loop stops at the first failure, so everything after it is
+    // unattempted, and those are the files the line must be talking about.
+    // Counting the successes here (which is what this used to do) told a
+    // stranger one file had failed when one had landed, and invited them to
+    // upload it again.
+    const missing = files.length - uploaded;
     say(
       uploaded === 0
         ? error.message
-        : `${UPLOAD_PAGE_COPY.done} ${uploaded === 1 ? "1 file did not arrive." : `${uploaded} files did not arrive.`}`,
+        : `${UPLOAD_PAGE_COPY.done} ${missing === 1 ? "1 file did not arrive." : `${missing} files did not arrive.`}`,
       uploaded === 0 ? "error" : "ok",
     );
     return;

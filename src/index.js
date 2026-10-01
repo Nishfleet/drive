@@ -75,11 +75,16 @@ function linksFor() {
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
-// same src/billing.js summary the usage page shows. Until the accounts store
-// and the meter land (#6, #55) an account has no usage rows, so this is the
-// empty month the usage endpoint already answers with — the honest cap for a
-// drive with nothing stored. One swap point.
-function capStateFor() {
+// same src/billing.js summary the usage page shows, and resolved per account so
+// the cap answered is always the one belonging to the account that minted the
+// token (src/share.js handleRequestInfoRequest and
+// handleRequestUploadRequest both take a resolver, not a value). Until the
+// accounts store and the meter land (#6, #55) an account has no usage rows, so
+// this is the empty month the usage endpoint already answers with — the honest
+// cap for a drive with nothing stored. When the meter lands, this one function
+// is the swap point: it reads the token owner's usage_minutes rows and answers
+// their cap, and no upload route changes.
+function capStateFor(accountId) {
   const empty = usageSummary({
     gbMinutes: 0,
     peakGb: 0,
@@ -269,10 +274,10 @@ export default {
     // The two public request routes are matched after the owner's /api/request
     // root so the exact root is never mistaken for its own child.
     if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
-      return handleRequestInfoRequest(request, linksFor(), capStateFor());
+      return handleRequestInfoRequest(request, linksFor(), capStateFor);
     }
     if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
-      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor());
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

@@ -149,6 +149,10 @@ export function linkExpiry(now, days = DEFAULT_LINK_DAYS) {
  *   expired  — the window passed.
  * Revoked wins over expired so the owner's list says what they did rather than
  * what the clock did.
+ *
+ * A record with no usable expiry is reported `expired`, not `active`: a
+ * capability URL that has lost its window must not open, and a link that
+ * outlives its own 7 days is the one failure this feature exists to prevent.
  * @param {{expiresAt?: number, revokedAt?: number}|null} record
  * @param {number} now
  * @returns {"active"|"revoked"|"expired"|null}
@@ -160,7 +164,7 @@ export function linkState(record, now = Date.now()) {
   if (record.revokedAt) {
     return "revoked";
   }
-  if (Number.isFinite(record.expiresAt) && now >= record.expiresAt) {
+  if (!Number.isFinite(record.expiresAt) || now >= record.expiresAt) {
     return "expired";
   }
   return "active";
@@ -296,6 +300,13 @@ export const UPLOAD_PAGE_COPY = Object.freeze({
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
   done: "Uploaded. Drop another whenever you like.",
+  // The closed page's own two lines, and the no-token case. They are not the
+  // open page's title: a closed link that still says "Drop files here" tells a
+  // stranger to do something that cannot work. These are the message table's
+  // link-not-found words, which is what the route itself answers (src/messages.js).
+  closedTitle: "This link does not open anything.",
+  closedBody: "Ask the person who sent it for a new one.",
+  noToken: "This page needs the link it was sent with. Open the link again to drop files.",
 });
 
 /** The page's one line about the link itself. */
@@ -317,13 +328,13 @@ export const UPLOAD_PAGE_LINE =
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
  * @property {(token: string) => Promise<ShareRecord|null>} shares.get
  * @property {(accountId: string) => Promise<ShareRecord[]>} shares.list
- * @property {(token: string, at: number) => Promise<ShareRecord|null>} shares.revoke
+ * @property {(token: string, accountId: string, at: number) => Promise<ShareRecord|null>} shares.revoke
  * @property {(token: string, bytes: number) => Promise<void>} shares.addDownload
  * @property {object} requests
  * @property {(record: RequestRecord) => Promise<RequestRecord>} requests.create
  * @property {(token: string) => Promise<RequestRecord|null>} requests.get
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
- * @property {(token: string, at: number) => Promise<RequestRecord|null>} requests.revoke
+ * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  */
 
 /**
@@ -337,9 +348,16 @@ export function createMemoryLinkStore() {
   const shares = new Map();
   const requests = new Map();
 
-  const revokeIn = (map) => async (token, at) => {
+  // Revoking is scoped to the account, the same rule the list is: a token
+  // belonging to another account is not found here, so the owner route answers
+  // the same 404 for "not yours" as for "never existed" and a signed-in
+  // account can never turn off another account's link (issue #73's isolation
+  // gate). The accountId travels into the store rather than being checked in
+  // the handler, so the D1 store this interface becomes enforces it in its
+  // own query instead of every handler remembering to.
+  const revokeIn = (map) => async (token, accountId, at) => {
     const record = map.get(token);
-    if (!record) {
+    if (!record || record.accountId !== accountId) {
       return null;
     }
     // A second revoke is the same answer, and the first time stands: the
@@ -464,6 +482,30 @@ function methodNotAllowed(allowed, action) {
   return plain(`Method not allowed. ${action}`, 405, { allow: allowed });
 }
 
+// A store or storage failure: the cause is logged with the route that hit it
+// and never returned. Every share route here is reachable by a logged-out
+// stranger holding one token, so an internal message (a binding name, a path,
+// a query error) is never a thing to hand back; the caller gets the message
+// table's generic words, which is the same answer any unexpected failure in
+// the Worker gets (src/messages.js `unexpected`).
+function serverFailure(where) {
+  console.error(`drive share: ${where}`);
+  return json({ error: failureMessage("unexpected") }, 500);
+}
+
+// One cap answer for both public upload routes: the resolver is called with
+// the account that minted the token, and a state outside the two is a
+// TypeError rather than a page that quietly opens. A caller that forgets the
+// cap cannot serve a read-only drive, and a drive that is not at its cap is
+// not refused by someone else's.
+async function capStateFor(resolver, accountId) {
+  const state = await resolver(accountId);
+  if (state !== "active" && state !== "read_only") {
+    throw new TypeError(`a cap resolver must answer "active" or "read_only", got ${String(state)}`);
+  }
+  return state;
+}
+
 // The one refusal for a state-changing link request that came from another
 // origin. A specific line rather than the table's generic fallback: "try
 // again in a moment" would be advice to retry a request that will always be
@@ -572,7 +614,11 @@ export async function handleShareRequest(request, files, links, account, options
     try {
       object = await scoped.read(checked.path);
     } catch (cause) {
-      return json({ error: `We could not read that file: ${cause.message}` }, 500);
+      // The store's own message never reaches the caller: a failure that is
+      // not "the file is gone" is the table's generic words, and the cause is
+      // the thing the log keeps. A share route is anonymous, so its error
+      // text is read by strangers.
+      return serverFailure(`minting a share: ${cause.message}`);
     }
     if (!object) {
       return json({ error: "That file is not here." }, 404);
@@ -595,7 +641,7 @@ export async function handleShareRequest(request, files, links, account, options
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    const record = await store.revoke(checked.token, now);
+    const record = await store.revoke(checked.token, account.id, now);
     if (!record) {
       return json({ error: "That link is not one of ours." }, 404);
     }
@@ -649,7 +695,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
   try {
     object = await scoped.read(record.path);
   } catch (cause) {
-    return json({ error: `We could not read that file: ${cause.message}` }, 500);
+    return serverFailure(`reading a shared file: ${cause.message}`);
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
@@ -681,6 +727,11 @@ export async function handleShareFileRequest(request, files, links, options = {}
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
       "content-security-policy": "sandbox",
+      // The token is in the URL, so a page opened from a link must not hand
+      // the address bar's contents to whatever it loads next: no-referrer is
+      // the one header that keeps a capability URL from leaking sideways
+      // through Referer.
+      "referrer-policy": "no-referrer",
     },
   });
 }
@@ -732,7 +783,7 @@ export async function handleRequestRequest(request, files, links, account, optio
     try {
       exists = await folderExists(scoped, checked.path);
     } catch (cause) {
-      return json({ error: `We could not look at that folder: ${cause.message}` }, 500);
+      return serverFailure(`minting an upload request: ${cause.message}`);
     }
     if (!exists) {
       return json({ error: "That folder is not here." }, 404);
@@ -755,7 +806,7 @@ export async function handleRequestRequest(request, files, links, account, optio
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    const record = await store.revoke(checked.token, now);
+    const record = await store.revoke(checked.token, account.id, now);
     if (!record) {
       return json({ error: "That link is not one of ours." }, 404);
     }
@@ -770,11 +821,15 @@ export async function handleRequestRequest(request, files, links, account, optio
  * owner's drive is read-only at its cap — the message table's words for that,
  * so the page says why instead of offering a button that cannot work.
  *
- * `capState` is a src/billing.js capStatus() state string; it is required so a
- * caller cannot forget the cap and silently open a page on a read-only drive.
+ * `capState` is a function of the account that minted the token, so the cap
+ * answered is always that owner's and never a global one: a read-only drive
+ * refuses its own upload pages, and every other drive's pages are unaffected.
+ * It is required, and a resolver that answers a state outside the two is a
+ * TypeError rather than a page that silently opens, so a caller cannot forget
+ * the cap and serve a read-only drive.
  * @param {Request} request
  * @param {LinkStore} links
- * @param {"active"|"read_only"} capState the owner's cap state
+ * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} capState
  * @param {{now?: number}} [options]
  */
 export async function handleRequestInfoRequest(request, links, capState, options = {}) {
@@ -782,8 +837,8 @@ export async function handleRequestInfoRequest(request, links, capState, options
   if (request.method !== "GET") {
     return methodNotAllowed("GET", "GET this endpoint for the upload page's state.");
   }
-  if (capState !== "active" && capState !== "read_only") {
-    throw new TypeError(`handleRequestInfoRequest needs a cap state, got ${String(capState)}`);
+  if (typeof capState !== "function") {
+    throw new TypeError(`handleRequestInfoRequest needs a cap resolver, got ${String(capState)}`);
   }
   const checked = validateToken(new URL(request.url).searchParams.get("k"));
   if (checked.error) {
@@ -793,7 +848,8 @@ export async function handleRequestInfoRequest(request, links, capState, options
   if (!linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
-  if (capState === "read_only") {
+  const state = await capStateFor(capState, record.accountId);
+  if (state === "read_only") {
     return json({
       open: false,
       folder: folderDisplayName(record.folder),
@@ -818,7 +874,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {Request} request
  * @param {object} files a FileStore
  * @param {LinkStore} links
- * @param {"active"|"read_only"} capState the owner's cap state
+ * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} capState
  * @param {{now?: number}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
@@ -826,8 +882,8 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (request.method !== "POST") {
     return methodNotAllowed("POST", "POST a file to upload it.");
   }
-  if (capState !== "active" && capState !== "read_only") {
-    throw new TypeError(`handleRequestUploadRequest needs a cap state, got ${String(capState)}`);
+  if (typeof capState !== "function") {
+    throw new TypeError(`handleRequestUploadRequest needs a cap resolver, got ${String(capState)}`);
   }
   const url = new URL(request.url);
   const checked = validateToken(url.searchParams.get("k"));
@@ -838,7 +894,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (!linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
-  if (capState === "read_only") {
+  if ((await capStateFor(capState, record.accountId)) === "read_only") {
     // The owner's cap is the owner's rule; a stranger gets the table's words
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
@@ -855,7 +911,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
   try {
     await scoped.write(path, request.body, contentType);
   } catch (cause) {
-    return json({ error: `The upload did not finish: ${cause.message}` }, 500);
+    return serverFailure(`storing an uploaded file: ${cause.message}`);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

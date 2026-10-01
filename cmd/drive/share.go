@@ -385,10 +385,13 @@ func deleteJSON(endpoint string, body, out any) error {
 
 // drivePathArg turns what a person typed into the path the api Worker expects:
 // a path inside the drive, starting with a slash (src/files.js validatePath).
-// An absolute path under the mount dir is the copyable form a shell completion
-// or a Finder drag gives (`~/Drive/Photos/cat.jpg`), so it is accepted and the
-// mount dir is dropped; anything else keeps its own segments. The Worker is
-// still the authority on whether the path exists and whether it may be shared.
+// An absolute path under the mount dir is the form a shell's ~ expansion or a
+// Finder drag produces (`/Users/nish/Drive/Photos/cat.jpg`), so it is accepted
+// and the mount dir is dropped; anything else keeps its own segments. A
+// quoted `~/Drive/...` is never expanded here — the CLI does not guess a home
+// from the argument — so it arrives as `/~/Drive/...`, names nothing, and the
+// Worker's 404 says so. The Worker is still the authority on whether the path
+// exists and whether it may be shared.
 func drivePathArg(home, arg string) (string, error) {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {
