@@ -13,7 +13,9 @@
 //     to cloudflare.config.ts is checked the day it is added. The trivial read
 //     is the one statement D1 answers whatever the schema is, so a database
 //     whose migrations are ahead of the Worker (still healthy) passes and an
-//     unreachable one fails. The waitlist is the site's only store today.
+//     unreachable one fails. Two databases today: the waitlist's, holding
+//     only the sign-up table, and the customer drive's, holding the file
+//     index, branches and agent caps (drive issue #170).
 //     Asking which kind it is, rather than looking for one method, is what
 //     makes that discovery safe (drive#144): every binding that is not a
 //     database is a Fetcher, and a Fetcher answers a function to every
@@ -93,12 +95,16 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). The email binding is not: only the token-gated internal
+ * (src/waitlist.js). Both databases are on it: a deploy that lost DRIVE_DB
+ * would serve every page and sign-up while every file, search and branch
+ * request failed, which is exactly the outage this endpoint exists to catch
+ * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
  * would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
+  "DRIVE_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
 ]);

@@ -181,14 +181,15 @@ export default {
     // module keeps the index current by wrapping the store, so an upload, a
     // delete or a restore is in the index before the next search, and the
     // search itself never lists the bucket. The rebuild is not a web route:
-    // it runs from the scheduled handler below.
+    // it runs from the scheduled handler below. The index is customer data, so
+    // it reads DRIVE_DB, never the waitlist's database (issue #170).
     if (
       url.pathname === SEARCH_ENDPOINT ||
       url.pathname === `${SEARCH_ENDPOINT}/`
     ) {
       return handleSearchRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         await signedInAccount(request, accountsStoreFor(env)),
       );
     }
@@ -209,7 +210,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleFilesRequest(
         request,
-        account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
         account,
       );
     }
@@ -224,7 +225,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleBranchesRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         account ? storeFor(env) : null,
         account,
       );
@@ -243,7 +244,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleRewindRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         account ? storeFor(env) : null,
         account,
       );
@@ -298,11 +299,11 @@ export default {
   async scheduled(event, env, context, store = storeFor(env)) {
     context.waitUntil(
       (async () => {
-        if (!env.WAITLIST_DB) {
+        if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
-        for (const account of await indexAccounts(env.WAITLIST_DB)) {
-          await reconcileIndex(env.WAITLIST_DB, scopeStore(store, account), account);
+        for (const account of await indexAccounts(env.DRIVE_DB)) {
+          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);

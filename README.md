@@ -60,7 +60,7 @@ and the invoice disagree.
 | `workers/api/` | the api Worker: health, keys, usage |
 | `docs-site/` | the docs pages and the VitePress build |
 | `docs/` | the build spec and the API notes |
-| `migrations/` | D1 migrations for the waitlist |
+| `migrations/` | D1 migrations, split by database: `waitlist/` for the sign-up table, `drive/` for customer tables |
 
 `npm test` typechecks the JavaScript, builds the docs and runs the test suite.
 `go test ./...` runs the CLI's tests.
