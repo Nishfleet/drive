@@ -64,7 +64,7 @@ function checkedAccountId(accountId) {
  * @param {unknown} name
  * @returns {string}
  */
-function checkedBranchName(name) {
+export function checkedBranchName(name) {
   if (typeof name !== "string" || !BRANCH_NAME_SAFE.test(name) || name.includes("..")) {
     throw new TypeError(
       `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "..", got ${JSON.stringify(name)}.`,

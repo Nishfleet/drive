@@ -73,6 +73,30 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That request did not come from the drive.",
     next: "Open the drive's page and try again there.",
   }),
+  // A branch with that name is still open (build step 7, drive#8). The copy
+  // already exists, so the next step is a different name rather than losing
+  // the work that is in it.
+  "branch-exists": Object.freeze({
+    what: "A branch with that name is still open.",
+    next: "Choose another name, or discard the open branch first.",
+  }),
+  // The branch this call named does not exist on this drive.
+  "branch-not-found": Object.freeze({
+    what: "That branch is not in the list.",
+    next: "Run drive branches to see the branches you have.",
+  }),
+  // The branch was already approved or discarded, so there is nothing left to
+  // apply or throw away.
+  "branch-not-open": Object.freeze({
+    what: "That branch is already closed.",
+    next: "Branch the folder again to make a new one.",
+  }),
+  // The original changed after the branch was taken, so the approve stopped
+  // rather than copy over somebody's edit.
+  "branch-source-moved": Object.freeze({
+    what: "The original changed after that branch was made, so nothing was copied back.",
+    next: "Discard the branch and make it again from the folder as it is now.",
+  }),
   // Sign-in exists as a route, but it is not fully open yet: the account
   // store lands with D1 (drive#2) and a deployment with no mailer refuses
   // rather than reporting a code sent, and no OAuth provider is wired to

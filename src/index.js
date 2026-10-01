@@ -12,6 +12,7 @@ import { handleSendEmailRequest, sendEmail } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
 import { createAccountStore } from "./accounts.js";
+import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
 import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, indexAccounts, withIndex } from "./search.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -159,6 +160,22 @@ export default {
       return handleFilesRequest(
         request,
         account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account,
+      );
+    }
+    // Branches (build step 7, drive#8): the folder copy, the diff, approve and
+    // discard. The same account gate as every other route that names files,
+    // and the store is handed in unscoped (the handler scopes it) and without
+    // withIndex, so a branch's own copies never land in the search index.
+    if (
+      url.pathname === BRANCHES_ENDPOINT ||
+      url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)
+    ) {
+      const account = await signedInAccount(request, accountsStoreFor(env));
+      return handleBranchesRequest(
+        request,
+        env.WAITLIST_DB,
+        account ? storeFor(env) : null,
         account,
       );
     }
