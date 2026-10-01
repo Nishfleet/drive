@@ -192,9 +192,19 @@ let keyStore;
  */
 
 /**
+ * The stand-in key store, until the D1-backed one lands: the same shape
+ * createMemoryStore gives the tests, so a route cannot tell the difference.
+ * The env is what will choose it, and the parameter is named here so the
+ * signature the type check reads and the one the runtime calls are the same
+ * function. Biome's unused-parameter rule reads `env` as unused and wants an
+ * underscore, which would break the JSDoc `@param` it sits under, so the rule
+ * is off for the file and the type check is the one that guards the name.
+ *
  * @param {ApiEnv} env
+ * @returns {KeyStore}
  */
-function storeFor(_env) {
+function storeFor(env) {
+  void env;
   if (keyStore === undefined) {
     keyStore = createMemoryStore();
   }
