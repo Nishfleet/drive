@@ -396,10 +396,14 @@ dialog.viewer::backdrop {
   }
 }
 
+/* Drive#92: the one place the reduced-motion reset reaches a rule that would
+   otherwise win on specificity, so it is spelled with !important on purpose.
+   public/index.html has the same block, with the same comment, and
+   biome.json turns noImportantStyles off for the two of them. */
 @media (prefers-reduced-motion: reduce) {
   * {
-    animation: none;
-    transition: none;
+    animation: none !important;
+    transition: none !important;
   }
 }
   </style>

@@ -1131,7 +1131,10 @@ export async function handleFilesRequest(request, store, account, now = Date.now
  * @param {string} name
  * @returns {string} the name as a single safe path segment
  */
-function safeFileName(name) {
+// Exported for the parity gate in test/files.test.mjs, which runs the Web
+// Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
+// two would store a name differently (drive#92).
+export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
     .replace(CONTROL_OR_SLASH, "-");

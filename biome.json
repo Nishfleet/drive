@@ -19,9 +19,6 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
-      "complexity": {
-        "noImportantStyles": "off"
-      },
       "correctness": {
         "noUnusedImports": "error",
         "noUnusedVariables": "error",
@@ -33,6 +30,18 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["public/files.html", "public/index.html"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noImportantStyles": "off"
+          }
+        }
+      }
+    }
+  ],
   "assist": {
     "actions": {
       "source": {

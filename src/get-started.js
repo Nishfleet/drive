@@ -501,7 +501,15 @@ async function poll() {
     showConnection("unreachable");
     return;
   }
-  render(payload);
+  try {
+    render(payload);
+  } catch {
+    // Every fetch and every body read above is guarded, and so is the render:
+    // this poll runs on a timer and on every tab that comes back, so a payload
+    // this page cannot draw has one home, and it is the unreachable state the
+    // user already knows. A rejection out of here would be an unhandled one.
+    showConnection("unreachable");
+  }
 }
 
 // Copy has to work on a plain http page too, where the async clipboard API is

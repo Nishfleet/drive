@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  CONTROL_OR_BACKSLASH,
+  CONTROL_OR_SLASH,
   createMemoryStore,
   DELETE_COPY,
   EMPTY_STATES,
@@ -34,6 +36,7 @@ import {
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
+  safeFileName,
   scopeStore,
   sortEntries,
   splitEntries,
@@ -183,6 +186,49 @@ test("a path is absolute, and cannot climb out of the drive", () => {
   ]) {
     assert.ok(validatePath(bad).error, `${JSON.stringify(bad)} must be rejected`);
   }
+});
+
+test("the page and the Worker agree on the characters a file name may not carry", () => {
+  // The page is a static asset and cannot import src/files.js, so it builds the
+  // same class from the same String.fromCharCode calls. This compares the two
+  // declarations, text for text, and then runs the module's over the names that
+  // matter. Nothing else in the repo executes the page's own line, so without
+  // this the two copies drift silently (drive#92).
+  //
+  // One class, not two: CONTROL_OR_SLASH is the set the upload path uses, since
+  // a name the browser hands over can carry a slash or a control character.
+  // CONTROL_OR_BACKSLASH is the path validator's set, and a path carrying one of
+  // those is refused rather than rewritten, so the page has no copy of it and
+  // the test below walks the Worker's own for that case.
+  const pattern = /const CONTROL_OR_SLASH = new RegExp\(\s*`([^`]*)`,\s*"([^"]*)",?\s*\);/;
+  const inPage = page.match(pattern);
+  const inModule = readFileSync(new URL("../src/files.js", import.meta.url), "utf8").match(pattern);
+  assert.ok(inPage, "the page must build CONTROL_OR_SLASH the way src/files.js does");
+  assert.ok(inModule, "src/files.js must still build CONTROL_OR_SLASH");
+  assert.equal(inPage[1], inModule[1], "the page's character set must be the module's");
+  assert.equal(inPage[2], inModule[2], "the page's flags must be the module's");
+  // The behaviour, not just the spelling: the module's replacement is what the
+  // page's identical one does for the same names. (".." is the one name the two
+  // deliberately answer differently about: the page hands it over and the
+  // Worker refuses to store it as a name, which is its own rule in safeFileName
+  // and not a character-set disagreement.)
+  for (const name of ["a/b.txt", "a\\b.txt", "a\u0000b.txt", "a\u001fb.txt", "holiday.jpg"]) {
+    assert.equal(
+      name.replace(CONTROL_OR_SLASH, "-"),
+      safeFileName(name),
+      `the page and src/files.js must store ${JSON.stringify(name)} the same way`,
+    );
+  }
+  assert.equal(safeFileName(".."), "upload", "a name that is only dots is never a name");
+  // The path validator's own set: a control character or a backslash is refused
+  // in a path, which is what the two patterns exist to keep out of a key.
+  for (const control of ["\u0000", "\u001f", "\u007f", "\\"]) {
+    assert.ok(
+      validatePath(`/a${control}b`).error,
+      `a path carrying ${JSON.stringify(control)} must be refused`,
+    );
+  }
+  assert.equal(CONTROL_OR_BACKSLASH.test("/a/b c.txt"), false);
 });
 
 test("an unknown name is an error, not a default path", () => {
