@@ -25,8 +25,10 @@ export default defineConfig({
 			// drive issue #28: bound the waitlist endpoint. Five sign-ups a
 			// minute per client IP is far above a person's pace and far below
 			// what a script needs to enumerate addresses or fill the table.
+			// Cloudflare requires the namespace to be a positive integer
+			// string, unique per account; a name fails the deploy with 10021.
 			WAITLIST_RATE_LIMITER: bindings.rateLimit({
-				namespace: "drive-waitlist",
+				namespace: "1001",
 				simple: { limit: 5, period: 60 },
 			}),
 			// Cloudflare Email Sending (drive#33): the stock provider every
