@@ -28,6 +28,19 @@ import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
 export const DEVICE_CODE_TTL_SECONDS = 600;
 export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 
+// How long a minted device token is good for. A device token is the CLI's whole
+// credential for the account gate, so a token that never dies is a credential
+// a leak keeps: the store would hold it until the person deleted their
+// account, and the only way to kill it today would be to delete that account's
+// keys. Thirty days is the session TTL src/auth.js already chose, and for
+// the same reason ("the drive is reached on every visit, so signing in every
+// week would be a support ticket, not a security win"): a month bounds what a
+// leak is worth without asking a person to approve a code every few days. The
+// number is written here rather than imported so this module keeps no
+// dependency on the account store; keystore.test.js pins the two to each other,
+// so they cannot drift into two different months.
+export const DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 // The user code a person types on the approval page. The alphabet leaves out
 // vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
 // (so a code read aloud cannot be mistyped into another valid one).
@@ -103,7 +116,7 @@ export function createMemoryStore(options = {}) {
   const devices = new Map();
   /** @type {Map<string, string>} accessKeyId -> device id */
   const byAccessKeyId = new Map();
-  /** @type {Map<string, {accountId: string, name: string, createdAt: number}>} token hash -> device token */
+  /** @type {Map<string, DeviceToken>} token hash -> device token */
   const deviceTokens = new Map();
   /** @type {Map<string, DeviceCode>} */
   const codes = new Map();
@@ -111,6 +124,28 @@ export function createMemoryStore(options = {}) {
   const userCodes = new Map();
   /** @type {Map<string, Map<string, Uint8Array>>} account id -> full path -> bytes */
   const objects = new Map();
+
+  /**
+   * The token rows that can no longer authenticate: expired or revoked. The
+   * bearer lookup already refuses both, so dropping them is housekeeping and
+   * never the security boundary — a store that never swept would refuse the
+   * same tokens and only hold more rows. It is a closure (not an object
+   * method) so `pollDeviceCode`, which runs before the returned object is
+   * finished being built, can call it without a forward-reference error.
+   * @param {number} [at] epoch seconds to judge the rows at; injected so a
+   *   test can sweep a row it cannot otherwise wait for.
+   * @returns {number} how many rows went
+   */
+  function sweepDeviceTokens(at = nowSeconds(now())) {
+    let dropped = 0;
+    for (const [digest, row] of deviceTokens) {
+      if (row.revokedAt !== null || at >= row.expiresAt) {
+        deviceTokens.delete(digest);
+        dropped++;
+      }
+    }
+    return dropped;
+  }
 
   /** @param {string} accountId */
   function objectTable(accountId) {
@@ -219,10 +254,18 @@ export function createMemoryStore(options = {}) {
         return { status: "expired" };
       }
       const token = newId("dtok");
+      const minted = nowSeconds(now());
+      // Minting is the only moment a new token row appears, so it is where the
+      // dead ones go: a row that can no longer authenticate is not worth
+      // holding, and this stand-in would otherwise grow one per sign-in for
+      // the life of the isolate.
+      sweepDeviceTokens(minted);
       deviceTokens.set(await sha256Hex(token), {
         accountId: account.id,
         name: code.name,
-        createdAt: nowSeconds(now()),
+        createdAt: minted,
+        expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS,
+        revokedAt: null,
       });
       code.status = "used";
       return {
@@ -235,6 +278,13 @@ export function createMemoryStore(options = {}) {
     /**
      * The account a device token belongs to, or null. The token is hashed
      * before lookup, so the store never holds the value the CLI holds.
+     *
+     * This is the one place a bearer token becomes an account, so it is where a
+     * token that is past its expiry or has been revoked stops being one: an
+     * expired or revoked token answers `null`, the same answer a token that was
+     * never minted gets, so the account gate cannot tell a dead credential from
+     * a made-up one. Checking here rather than in each route is the point —
+     * there is one lookup, so there is one place to be wrong.
      * @param {string} token
      */
     async accountForDeviceToken(token) {
@@ -242,7 +292,36 @@ export function createMemoryStore(options = {}) {
       if (row === undefined) {
         return null;
       }
+      if (row.revokedAt !== null) {
+        return null;
+      }
+      if (nowSeconds(now()) >= row.expiresAt) {
+        return null;
+      }
       return accounts.get(row.accountId) ?? null;
+    },
+
+    /**
+     * Revoke one device token: `drive logout`'s server-side half, and the way a
+     * token that leaked is killed without deleting the account's keys. The raw
+     * token is hashed before lookup, exactly as `accountForDeviceToken` hashes
+     * it, so the store never holds the value the CLI holds.
+     *
+     * Revoking is idempotent: a second revoke reports what the first did,
+     * because from here on the token is dead either way. A token the store
+     * never held answers `not-found` rather than claiming a revoke that
+     * changed nothing — that difference is what a caller can promise a person.
+     * @param {string} token
+     */
+    async revokeDeviceToken(token) {
+      const row = deviceTokens.get(await sha256Hex(token));
+      if (row === undefined) {
+        return { error: "not-found" };
+      }
+      if (row.revokedAt === null) {
+        row.revokedAt = nowSeconds(now());
+      }
+      return { revoked: true, expiresAt: row.expiresAt, revokedAt: row.revokedAt };
     },
 
     /**
@@ -341,6 +420,20 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * The token rows that can no longer authenticate: expired or revoked. The
+     * bearer lookup already refuses both, so dropping them is housekeeping and
+     * never the security boundary — a store that never swept would refuse the
+     * same tokens and only hold more rows. Exposed for the tests; the mint
+     * path calls the inner closure on every new token.
+     * @param {number} [at] epoch seconds to judge the rows at; injected so a
+     *   test can sweep a row it cannot otherwise wait for.
+     * @returns {number} how many rows went
+     */
+    sweepDeviceTokens(at) {
+      return sweepDeviceTokens(at);
+    },
+
+    /**
      * Stand-in storage: write bytes at a key's own full path.
      * @param {string} accountId
      * @param {string} path
@@ -398,6 +491,17 @@ export function publicDevice(device) {
     revokedAt: device.revokedAt,
   };
 }
+
+/**
+ * A minted device token as the store holds it. The value the CLI holds is
+ * never in here: the map is keyed by its SHA-256 digest.
+ * @typedef {object} DeviceToken
+ * @property {string} accountId
+ * @property {string} name
+ * @property {number} createdAt
+ * @property {number} expiresAt epoch seconds, minted plus DEVICE_TOKEN_TTL_SECONDS
+ * @property {number|null} revokedAt epoch seconds, or null while the token works
+ */
 
 /**
  * @typedef {object} DeviceCode

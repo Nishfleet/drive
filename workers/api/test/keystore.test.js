@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SESSION_TTL_SECONDS } from "../../../src/auth.js";
 import { CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
 import {
   authorizePath,
@@ -7,9 +8,10 @@ import {
   createMemoryStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
 } from "../src/keystore.js";
 
-// A clock the test owns, so a device code can be expired without sleeping.
+// A clock the test owns, so a device code or token can be expired without sleeping.
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
@@ -168,4 +170,82 @@ test("authorizePath keeps a key inside its own prefix", () => {
   assert.deepEqual(authorizePath(device, "elsewhere"), { error: "outside-prefix" });
   assert.deepEqual(authorizePath(device, ""), { error: "outside-prefix" });
   assert.deepEqual(authorizePath(device, 42), { error: "outside-prefix" });
+});
+
+// ---- device token expiry and revocation (drive#176) ----
+//
+// A device token is the CLI's whole credential for the account gate, so it
+// must die on its own when it leaks: an expiry bounds how long a stolen token
+// stays good, and revocation kills it on demand. The bearer lookup
+// (accountForDeviceToken) enforces both, so a dead token is a 401 before any
+// handler runs.
+
+// The token TTL is the session TTL src/auth.js chose, pinned so the two
+// numbers cannot drift into different lifetimes.
+test("the device token TTL is the session TTL", () => {
+  assert.equal(DEVICE_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);
+});
+
+test("a fresh token resolves and a token past its TTL does not", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken, account } = await signedInAccount(store, clock);
+  // The token resolves to the account it was minted against.
+  assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
+  // One second before the TTL the token still resolves; one second after it is
+  // gone, judged by the clock the store shares.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS - 1);
+  assert.ok(await store.accountForDeviceToken(deviceToken), "still good one second before expiry");
+  clock.advance(2);
+  assert.equal(await store.accountForDeviceToken(deviceToken), null, "expired token is null");
+});
+
+test("a revoked device token does not resolve to an account", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken, account } = await signedInAccount(store, clock);
+  assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
+  const result = await store.revokeDeviceToken(deviceToken);
+  assert.equal(result.revoked, true);
+  assert.equal(result.revokedAt, clock.now() / 1000);
+  assert.equal(await store.accountForDeviceToken(deviceToken), null, "revoked token is null");
+  // Revoking again is a no-op that reports what the first did, not a second kill.
+  assert.deepEqual(await store.revokeDeviceToken(deviceToken), {
+    revoked: true,
+    expiresAt: result.expiresAt,
+    revokedAt: result.revokedAt,
+  });
+  assert.equal(await store.accountForDeviceToken(deviceToken), null);
+  // And a token the store never held is a named refusal.
+  assert.deepEqual(await store.revokeDeviceToken("dtok_never_minted"), { error: "not-found" });
+});
+
+test("the sweep drops expired and revoked device tokens and leaves the live ones", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const first = await signedInAccount(store, clock);
+  // Advance past the first token's TTL. The bearer lookup refuses it now, but
+  // nothing has swept it yet — no new token has been minted, and minting is
+  // the only place the sweep runs automatically.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
+  assert.equal(
+    await store.accountForDeviceToken(first.deviceToken),
+    null,
+    "expired token is refused before any sweep",
+  );
+  assert.equal(store.sweepDeviceTokens(), 1, "the expired row went");
+  assert.equal(await store.accountForDeviceToken(first.deviceToken), null);
+
+  // A freshly minted token is live and survives a sweep. Minting also sweeps
+  // (and dropped nothing live).
+  const second = await signedInAccount(store, clock);
+  assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token resolves");
+  assert.equal(store.sweepDeviceTokens(), 0, "nothing live was swept");
+  assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token survived");
+
+  // A revoked live token is swept too.
+  const revoked = await store.revokeDeviceToken(second.deviceToken);
+  assert.equal(revoked.revoked, true);
+  assert.equal(store.sweepDeviceTokens(), 1, "the revoked live row went");
+  assert.equal(await store.accountForDeviceToken(second.deviceToken), null);
 });

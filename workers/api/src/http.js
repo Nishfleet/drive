@@ -31,6 +31,26 @@ export function errorResponse(status, message, headers) {
 }
 
 /**
+ * The bearer token a request presents, or null. Read with a case-insensitive
+ * scheme (`bearer` is what RFC 6750 writes, `Bearer` what curl sends) and a
+ * trimmed value, and it is the one place that shape is parsed: the account gate
+ * (workers/api/src/index.js `accountForRequest`) and the route that revokes the
+ * caller's own token both read the same header through here, so a second
+ * spelling of "Bearer" cannot end up meaning two different things.
+ * @param {Request} request
+ * @returns {string|null} the token, or null when the header is not a bearer
+ */
+export function bearerToken(request) {
+  const header = request.headers.get("authorization") ?? "";
+  const [scheme, token] = header.split(" ");
+  if (scheme === undefined || token === undefined || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+  const trimmed = token.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
  * Reads a JSON object body, or returns {error} naming what is wrong.
  * @param {Request} request
  * @returns {Promise<{body: Record<string, unknown>} | {error: string}>}

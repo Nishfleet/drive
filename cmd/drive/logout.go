@@ -10,11 +10,22 @@ import (
 	"strings"
 )
 
-// Logout is `drive logout`: stop the mount, then delete this device's key and
-// its local config (issue #54, build-spec.md "Commands" — "Unmount, delete
-// this device's key and local config"). Nothing outside the CLI's own config
-// and cache directories is touched: the drive folder holds the person's files
-// and is never this command's to delete.
+// TokenRevoker revokes this device's own signed-in device token at the api
+// Worker (DELETE /v1/device/token). The pattern mirrors ToolMinter.RevokeKey
+// (cmd/drive/agents.go): the server-side revoke happens first, so a failed
+// revoke leaves a token that still works rather than a token nothing can
+// revoke. An already-dead token (401) is the state logout wants, so it is a
+// note and not a failure.
+type TokenRevoker interface {
+	RevokeDeviceToken() error
+}
+
+// Logout is `drive logout`: stop the mount, revoke this device's token on the
+// api Worker, then delete this device's key and its local config (issue #54,
+// build-spec.md "Commands" — "Unmount, delete this device's key and local
+// config"). Nothing outside the CLI's own config and cache directories is
+// touched: the drive folder holds the person's files and is never this
+// command's to delete.
 //
 // The device key is the `access_key_id` / `secret_access_key` pair in
 // `~/.config/drive/rclone.conf` (config.go `RcloneConfig`), so deleting that
@@ -29,7 +40,7 @@ import (
 // true` in the cache after a SIGTERM, and the backend never saw it), so
 // deleting the cache would throw the person's work away. Logout refuses to do
 // that unless `--force` says so in words.
-func Logout(goos, home string, force bool) error {
+func Logout(goos, home string, force bool, revoker TokenRevoker) error {
 	pending, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
 		return err
@@ -60,6 +71,16 @@ func Logout(goos, home string, force bool) error {
 		// only thing the disable error could have been protecting (a login
 		// item restarting the drive) is already handled. Note it and continue.
 		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
+	}
+	// Revoke the device token server-side before the local credentials file is
+	// removed: the pattern from `drive agents revoke` (cmd/drive/agents.go:266)
+	// is to call the server first, so a failed revoke leaves a token that still
+	// works rather than a token nothing can revoke. If the credentials file is
+	// absent or has no token, there is nothing to revoke.
+	if revoker != nil {
+		if err := revoker.RevokeDeviceToken(); err != nil {
+			return fmt.Errorf("revoke the device token: %w", err)
+		}
 	}
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
@@ -177,5 +198,17 @@ func runLogout(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	return Logout(CurrentGOOS(), common.home, *force)
+	// Load credentials to find the api Worker base and the device token. If the
+	// file is absent or has no token, there is nothing to revoke; a missing file
+	// is the "not signed in" case, not an error.
+	var revoker TokenRevoker
+	creds, _ := LoadCredentials(common.home)
+	if creds.DeviceToken != "" && creds.APIBase != "" {
+		client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+		if err != nil {
+			return fmt.Errorf("build api client: %w", err)
+		}
+		revoker = client
+	}
+	return Logout(CurrentGOOS(), common.home, *force, revoker)
 }

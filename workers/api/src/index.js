@@ -1,5 +1,5 @@
 import { failureMessage } from "../../../src/messages.js";
-import { errorResponse } from "./http.js";
+import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
 
@@ -81,21 +81,24 @@ function matchRoute(route, pathname) {
  * Bearer <device token>` header and nothing else. The token is hashed and
  * looked up in the key store, so a caller cannot name an account, and no
  * cookie, query value or body field is trusted (the same rule
- * src/status.js `signedInAccount` already follows for the site Worker).
+ * src/status.js `signedInAccount` already follows for the site Worker). The
+ * header is read with http.js `bearerToken`, the one place that shape is
+ * parsed, and the expiry and revocation checks live in the store's one lookup
+ * (keystore.js `accountForDeviceToken`), so a dead token fails here for every
+ * route at once rather than in each handler.
  * @param {Request} request
  * @param {any} store the key store, or undefined where there is none
  * @returns {Promise<{id: string, name: string}|null>}
  */
 export async function accountForRequest(request, store) {
-  const header = request.headers.get("authorization") ?? "";
-  const [scheme, token] = header.split(" ");
-  if (scheme === undefined || token === undefined || scheme.toLowerCase() !== "bearer") {
+  const token = bearerToken(request);
+  if (token === null) {
     return null;
   }
   if (store === undefined) {
     return null;
   }
-  return store.accountForDeviceToken(token.trim());
+  return store.accountForDeviceToken(token);
 }
 
 /**
