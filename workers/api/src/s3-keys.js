@@ -33,7 +33,7 @@ import { S3Error, createS3Client, ok, tagValue } from "./s3.js";
  * keyprovider.js, and this is how each capability is spelled to a storage
  * server. An agent key's missing `delete` is visible in the policy the
  * endpoint enforces.
- * @type {Readonly<Record<Capability, ReadonlyArray<string>>>}
+ * @type {Readonly<Partial<Record<Capability, ReadonlyArray<string>>>>}
  */
 const OBJECT_ACTIONS_BY_CAPABILITY = Object.freeze({
   read: Object.freeze(["s3:GetObject", "s3:GetObjectVersion"]),
@@ -63,7 +63,7 @@ const OBJECT_ACTIONS_BY_CAPABILITY = Object.freeze({
  * listing of the whole bucket. rclone's multipart write path uses the
  * object-level write actions above; enumerating in-progress uploads is the
  * reconciler's job under the master credential, not a per-account key's.
- * @type {Readonly<Record<Capability, ReadonlyArray<string>>>}
+ * @type {Readonly<Partial<Record<Capability, ReadonlyArray<string>>>>}
  */
 const BUCKET_ACTIONS_BY_CAPABILITY = Object.freeze({
   // A listing is `ListBucket` on the bucket, and the prefix condition on the

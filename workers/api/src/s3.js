@@ -151,13 +151,20 @@ export function createS3Client(config) {
         headers: target.headers ?? {},
         body: target.body ?? "",
       });
-      // The body is sent exactly as it was hashed: a `Uint8Array` is the bytes
-      // themselves (a binary upload), a string is text, and an absent body is
-      // absent. Sending anything other than the hashed bytes is
-      // SignatureDoesNotMatch.
-      const body = target.body === undefined || target.body === ""
-        ? undefined
-        : target.body;
+      // The body is sent exactly as it was hashed: a `Uint8Array` is copied
+      // into a plain-ArrayBuffer view (the bytes themselves, for a binary
+      // upload), a string is text, and an absent body is absent. Sending
+      // anything other than the hashed bytes is SignatureDoesNotMatch.
+      /** @type {string|Uint8Array<ArrayBuffer>|undefined} */
+      let body;
+      if (target.body === undefined || target.body === "") {
+        body = undefined;
+      } else if (typeof target.body === "string") {
+        body = target.body;
+      } else {
+        body = new Uint8Array(target.body.byteLength);
+        body.set(target.body);
+      }
       const response = await fetchImpl(signed.url, {
         method: method.toUpperCase(),
         headers: signed.headers,

@@ -197,7 +197,7 @@ let keyStore;
  * master credential needs the isolate to restart, the same way the stand-in
  * store does; a redeploy restarts it.)
  * @param {{[key: string]: unknown}} env
- * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => Promise<never>}|null}
+ * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never}|null}
  */
 function keyProviderFor(env) {
   const names = [
