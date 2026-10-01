@@ -281,9 +281,8 @@ button:disabled {
 
       <div class="code-step" id="code-step" hidden>
         <hr class="rule">
-        <form id="code-form" action="/api/signin" method="post">
+        <form id="code-form">
           <input type="hidden" name="step" value="finish">
-          <input type="hidden" name="email" id="code-email">
           <label for="code">The 6-digit code</label>
           <div class="field-row">
             <input id="code" name="code" type="text" inputmode="numeric"
@@ -378,7 +377,6 @@ async function start(method, email) {
   }
   if (method === "email") {
     codeStep.hidden = false;
-    document.getElementById("code-email").value = email ?? "";
     say("Check your email for the 6-digit code.", "done");
     document.getElementById("code").focus();
     return;
