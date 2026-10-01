@@ -476,6 +476,9 @@ main {
   }
 }
 
+/* Drive#92: the one place the reduced-motion reset reaches a rule that would
+   otherwise win on specificity, so it is spelled with !important on
+   purpose. public/files.html has the same block, with the same comment. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

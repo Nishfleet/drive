@@ -21,7 +21,7 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { TRASH_PATH, drivePathFromKey, validatePath } from "./files.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
 /** One account's file store, the shape src/files.js exports and every helper
@@ -121,9 +121,7 @@ export function searchSql(words, { accountId, limit }) {
   const joined = escapeLike(words.join(" "));
   /** @type {Array<string|number>} */
   const params = [accountId, ...words.map((word) => `%${escapeLike(word)}%`)];
-  const clauses = words
-    .map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`)
-    .join(" AND ");
+  const clauses = words.map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`).join(" AND ");
   const exact = params.length + 1;
   const prefix = exact + 1;
   params.push(joined, `${joined}%`, limit + 1);
@@ -162,7 +160,10 @@ export async function searchDrive(db, account, query, options = {}) {
   );
   const { sql, params } = searchSql(parsed.words, { accountId: account.id, limit: want });
   const started = now();
-  const result = await db.prepare(sql).bind(...params).all();
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
+    .all();
   const tookMs = now() - started;
   const rows = result?.results ?? [];
   const truncated = rows.length > want;
@@ -223,15 +224,13 @@ function fileRow(account, path, entry, at) {
   };
 }
 
-const UPSERT_COLUMNS =
-  "(account_id, path, name, parent, size_bytes, modified_at, indexed_at)";
+const UPSERT_COLUMNS = "(account_id, path, name, parent, size_bytes, modified_at, indexed_at)";
 const UPSERT_UPDATE =
   "name = excluded.name, parent = excluded.parent, " +
   "size_bytes = excluded.size_bytes, modified_at = excluded.modified_at, " +
   "indexed_at = excluded.indexed_at";
 // Seven placeholders a row, reused row by row inside one statement.
-const ROW_PLACEHOLDERS =
-  "(" + Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ") + ")";
+const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
 /** The prepared statements that write a chunk of rows. Exported so the test
  * can run them through the D1 shape, and the caller cannot build SQL.
@@ -245,10 +244,7 @@ export function upsertStatements(db, rows) {
     const chunk = rows.slice(start, start + ROWS_PER_STATEMENT);
     const values = chunk
       .map((_, rowIndex) =>
-        ROW_PLACEHOLDERS.replace(
-          /\?(\d+)/g,
-          (_, n) => `?${rowIndex * 7 + Number(n)}`,
-        ),
+        ROW_PLACEHOLDERS.replace(/\?(\d+)/g, (_, n) => `?${rowIndex * 7 + Number(n)}`),
       )
       .join(", ");
     const params = chunk.flatMap((row) => [
@@ -328,9 +324,7 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  await db.batch([
-    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id),
-  ]);
+  await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id)]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * ROWS_PER_STATEMENT);
     await db.batch(upsertStatements(db, slice));

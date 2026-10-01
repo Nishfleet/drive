@@ -52,13 +52,13 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the ceiling's floor and slope, and the free credit are
 // declared there once, so this file's arithmetic and the page's copy cannot
 // disagree. What is added here is operational: the B2 fallback slope, the
 // default cap, and the download allowance.
 import { PRICE } from "./pricing.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
@@ -299,8 +299,16 @@ export function monthBillCents({
     totalCents: Math.max(0, storageCents + downloadCents - creditCents),
     lines: Object.freeze([
       Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
-      Object.freeze({ label: "Downloads", cents: downloadCents, usd: formatUsd(downloadCents / 100) }),
-      Object.freeze({ label: "Free credit", cents: -creditCents, usd: signedUsd(-creditCents / 100) }),
+      Object.freeze({
+        label: "Downloads",
+        cents: downloadCents,
+        usd: formatUsd(downloadCents / 100),
+      }),
+      Object.freeze({
+        label: "Free credit",
+        cents: -creditCents,
+        usd: signedUsd(-creditCents / 100),
+      }),
     ]),
   });
 }
