@@ -290,7 +290,10 @@ func (c *APIClient) RevokeDeviceToken() error {
 
 // doRaw is like do but returns the raw HTTP response without trying to
 // unmarshal a body. Used where the caller must handle specific status codes
-// (e.g. 401 meaning "already dead").
+// (e.g. 401 meaning "already dead"). The Authorization header is set by the
+// caller and MUST NEVER BE LOGGED (fleet-ops secret-leak rule: a request
+// header containing a bearer token is never printed, so no middleware or
+// debug logger may capture the request).
 func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
