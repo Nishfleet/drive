@@ -468,3 +468,36 @@ test("an expired code cannot be approved (drive#136 d)", async () => {
   // Still not approved, and the poll cannot mint a token from it.
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
 });
+
+// The approval is a state change made with the session cookie, so a form
+// another site rendered on the person's behalf must be refused before it can
+// spend the rate-limit quota. The page that served the form is same-origin, so
+// that one still works.
+test("an approval from another site is 403 and a same-origin one is approved", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_csrf", name: "Csrf", email: "c@example.com" });
+  const code = store.requestDeviceCode({ name: "laptop" });
+  const post = (origin) =>
+    dispatch(
+      new Request("https://api.test/v1/device/approve", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${SESSION_COOKIE}=${sessionToken}`,
+          ...(origin === null ? {} : { origin }),
+        },
+        body: `user_code=${encodeURIComponent(code.userCode)}`,
+      }),
+      baseCtx(store, null, { accounts }),
+    );
+
+  const crossSite = await post("https://attacker.test");
+  assert.equal(crossSite.status, 403);
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+
+  const sameSite = await post("https://api.test");
+  assert.equal(sameSite.status, 200);
+  assert.match(await sameSite.text(), /Approved\. Return to the terminal/);
+  assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "approved");
+});

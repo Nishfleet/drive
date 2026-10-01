@@ -13,8 +13,8 @@ The liveness probe is public on purpose: it answers before anyone is signed in, 
 | Route | Auth | Purpose |
 |---|---|---|
 | `GET /v1/health` | public | Liveness. `{ok, time}`. |
-| `POST /v1/device/code` | public | Start a device sign-in. Body `{name?}`; answer `{deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval}`. |
-| `POST /v1/device/token` | public | The CLI's poll. Body `{device_code}`; `{status: "pending"}` until approved, then `{status: "approved", deviceToken, account}`. The token is returned once. |
+| `POST /v1/device/code` | public | Start a device sign-in. Body `{name?}`; answer `{deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval}`. Past the edge limit is `429`. |
+| `POST /v1/device/token` | public | The CLI's poll. Body `{device_code}`; `{status: "pending"}` until approved, then `{status: "approved", deviceToken, account}`. The token is returned once. Past the edge limit is `429`. |
 | `GET /v1/device/approve` | account | The page the person approves the code on. `?user_code=` prefills the form. |
 | `POST /v1/device/approve` | account | Approve a code, as the signed-in person. A form body (`user_code=…`) or `{user_code}`. Anonymous is `401`; past the edge limit is `429`. |
 | `GET /v1/keys` | account | The account's keys: `{keys: [{keyId, name, kind, prefix, capabilities, createdAt, lastSeenAt, revokedAt}]}`. No secret is ever listed. |
@@ -22,7 +22,7 @@ The liveness probe is public on purpose: it answers before anyone is signed in, 
 | `DELETE /v1/keys/:keyId` | account | Revoke one of the account's own keys. `204`; another account's key is `404`. |
 | `GET /v1/storage/list` | public | The stand-in storage API. HTTP Basic with the access key id and secret. `?path=` defaults to the key's prefix. A revoked key is `401`; a path outside the key's own prefix is `403`. The real adapter replaces this behind the same answers (build step 1). |
 
-The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`) and, for the approval page, the sign-in session cookie through `src/status.js` `signedInAccount`; a request with neither, or one that does not resolve, is `401` and no handler runs. The device flow is RFC 8628's device authorization grant: the CLI asks for a code, a signed-in person approves it, and the CLI polls until it holds a token. The pending codes and the minted tokens live in D1 (`migrations/drive/0005_device_codes.sql`, `workers/api/src/device-signin.js`), so a code started on one Worker instance is visible on the next; the device code and the token are stored only as SHA-256 digests.
+The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`) and, for the approval page, the sign-in session cookie through `src/status.js` `signedInAccount`; a request with neither, or one that does not resolve, is `401` and no handler runs. The device flow is RFC 8628's device authorization grant: the CLI asks for a code, a signed-in person approves it, and the CLI polls until it holds a token. The pending codes and the minted tokens live in D1 (`migrations/drive/0005_device_codes.sql`, `workers/api/src/device-signin.js`), so a code started on one Worker instance is visible on the next; the device code and the token are stored only as SHA-256 digests. Each of the three POSTs spends its own per-IP and service-wide edge limit (`DEVICE_RATE_LIMITER` and `DEVICE_GLOBAL_RATE_LIMITER`) before it reaches the database, and answers `503` when either binding is missing: a deployment with no limiter is a closed door, not an open one. Consuming an approved code and writing its token are one D1 transaction, so an approved sign-in is never lost to a failure between the two, and the expiry check is inside the write that changes the row, not only in the read before it.
 
 ## Key scopes
 

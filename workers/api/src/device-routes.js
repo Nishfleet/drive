@@ -15,6 +15,12 @@
 // request before this handler runs. The account is the sign-in flow's
 // (drive#130), copied onto the code row by the store; approving no longer
 // makes an account, it attaches the person who already signed in.
+//
+// All three POSTs are rate limited, one bucket each: the two public ones write
+// or read a row for a caller that holds no credential, so an unlimited
+// version of them is a way to fill the table or burn reads from anywhere. The
+// limit runs before the body is read, so a refused call costs no parse and, on
+// the code route, no row.
 
 import { isSameOriginRequest } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
@@ -129,6 +135,14 @@ export async function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
+  // Public because the CLI holds no credential before it asks for one, which
+  // is also why it is rate limited: every allowed call writes a row, so an
+  // unlimited version of this route is a way to fill the table from anywhere
+  // (drive#136). The limit runs first, so a refused call writes nothing.
+  const limited = await enforceDeviceLimit(request, ctx, "code");
+  if (limited) {
+    return limited;
+  }
   // The device name is optional: the CLI sends its hostname so the approval
   // page and the device list can tell two laptops apart. A body that is
   // absent is fine; one that is present must be a JSON object.
@@ -183,6 +197,13 @@ export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
+  // The poll is public for the same reason the code request is, and costs a
+  // database read per call, so it spends its own bucket rather than the
+  // approval's (drive#136).
+  const limited = await enforceDeviceLimit(request, ctx, "token");
+  if (limited) {
+    return limited;
+  }
   let body;
   try {
     body = await request.json();
@@ -220,38 +241,40 @@ export function approvePageRoute(_request, ctx) {
 }
 
 /**
- * The edge rate limit on the approve POST (drive#136 finding 2): a per-IP
- * bucket and a service-wide one, the same two bindings the waitlist and the
- * sign-in route use. It runs before the body is read, so a denied request
- * costs no parse. It fails closed when a binding is missing — an
- * unrate-limited approve is the case these bindings exist to prevent — and
- * answers 429 past either limit.
+ * The edge rate limit on a device route (drive#136 finding 2): a per-IP bucket
+ * and a service-wide one, the same two bindings the waitlist and the sign-in
+ * route use, one bucket per device operation so a caller cannot spend the
+ * approval's quota asking for codes. It runs before the body is read, so a
+ * denied request costs no parse and, on `/v1/device/code`, no row. It fails
+ * closed when a binding is missing — an unrate-limited device route is the
+ * case these bindings exist to prevent — and answers 429 past either limit.
  * @param {Request} request
  * @param {{env?: Record<string, any>}} ctx
+ * @param {string} scope the bucket this call spends, named in the log lines
  * @returns {Promise<Response|null>} the refusal, or null when the call may run
  */
-async function enforceApproveLimit(request, ctx) {
+async function enforceDeviceLimit(request, ctx, scope) {
   const perIp = ctx.env?.DEVICE_RATE_LIMITER;
   const globalLimit = ctx.env?.DEVICE_GLOBAL_RATE_LIMITER;
   if (!perIp || !globalLimit) {
     console.error(
-      "device approve: DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured",
+      `device ${scope}: DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured`,
     );
     return errorResponse(503, failureMessage("unexpected"));
   }
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp === null) {
     console.warn(
-      "device approve: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
+      `device ${scope}: request arrived without cf-connecting-ip; rate limiting against the shared bucket`,
     );
   }
   let perIpOk;
   let globalOk;
   try {
     ({ success: perIpOk } = await perIp.limit({ key: clientIp ?? "unknown" }));
-    ({ success: globalOk } = await globalLimit.limit({ key: "device-approve" }));
+    ({ success: globalOk } = await globalLimit.limit({ key: `device-${scope}` }));
   } catch (error) {
-    console.error("device approve: the rate limiter call failed", error);
+    console.error(`device ${scope}: the rate limiter call failed`, error);
     return errorResponse(503, failureMessage("unexpected"));
   }
   if (!perIpOk || !globalOk) {
@@ -275,7 +298,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if (!isSameOriginRequest(request)) {
     return errorResponse(403, failureMessage("cross-site"));
   }
-  const limited = await enforceApproveLimit(request, ctx);
+  const limited = await enforceDeviceLimit(request, ctx, "approve");
   if (limited) {
     return limited;
   }

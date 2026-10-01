@@ -21,8 +21,11 @@
 --
 -- `expires_at` is epoch seconds (the one clock format in the api tables,
 -- db.js `nowSeconds`), written once and read by every consume path so an
--- expired code is refused even if nothing ever sweeps it. The index exists so
--- a future sweep can find dead rows without a full scan.
+-- expired code is refused even if nothing ever sweeps it. The index is what
+-- the sweep makes cheap: `/v1/device/code` is a public route, so every code
+-- request deletes the rows already past their TTL in the same transaction as
+-- the insert (workers/api/src/device-signin.js), and without the index that
+-- delete would scan the whole table.
 
 CREATE TABLE IF NOT EXISTS device_codes (
   device_code_hash TEXT PRIMARY KEY NOT NULL,
@@ -35,6 +38,8 @@ CREATE TABLE IF NOT EXISTS device_codes (
   created_at INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes (expires_at);
 
 -- The approval path looks a code up by the short code the person typed; the
 -- UNIQUE constraint above already provides that index.

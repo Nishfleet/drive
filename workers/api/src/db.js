@@ -5,7 +5,7 @@
  * The slice of Cloudflare's D1 database these helpers touch. Declared here
  * (rather than as the ambient D1Database global) so the module type-checks and
  * runs under plain node, where the tests stand it in with the same shape.
- * @typedef {{prepare: (sql: string) => {bind: (...params: unknown[]) => {first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}}}} D1Like
+ * @typedef {{prepare: (sql: string) => {bind: (...params: unknown[]) => {first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}}, run: () => Promise<unknown>}, batch: (statements: Array<{run: () => Promise<unknown>}>) => Promise<unknown[]>}} D1Like
  */
 
 /**
@@ -46,6 +46,20 @@ export function run(db, sql, ...params) {
     .prepare(sql)
     .bind(...params)
     .run();
+}
+
+/**
+ * Statements that must all land or none. D1 runs a `batch()` in one
+ * transaction: a statement that fails rolls the whole set back, so a caller
+ * never has to choose between writing a row and marking a row consumed — a
+ * half-written pair is the shape a lost sign-in or a double token comes from.
+ * The results come back in the order the statements were given.
+ * @param {D1Like} db
+ * @param {Array<{sql: string, params?: unknown[]}>} statements
+ * @returns {Promise<unknown[]>}
+ */
+export function batch(db, statements) {
+  return db.batch(statements.map(({ sql, params = [] }) => db.prepare(sql).bind(...params)));
 }
 
 /** Seconds since the epoch: the one clock format in the api tables. */

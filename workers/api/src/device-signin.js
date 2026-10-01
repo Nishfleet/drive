@@ -23,7 +23,7 @@
 // (`{id, name, email}`, resolved by the src/status.js `signedInAccount` gate);
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
-import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 
 /**
  * Any device sign-in store: the shape the routes read. The in-memory
@@ -282,17 +282,31 @@ export function createD1DeviceSigninStore(db, options = {}) {
       const deviceCode = newId("dev");
       const userCode = newUserCode(randomBytes);
       const createdAt = nowSeconds(now());
-      await run(
-        db,
-        `INSERT INTO device_codes
-           (device_code_hash, user_code, name, status, account_id, account_name, account_email, created_at, expires_at)
-         VALUES (?1, ?2, ?3, 'pending', '', '', '', ?4, ?5)`,
-        await sha256Hex(deviceCode),
-        userCode,
-        deviceLabel(request.name),
-        createdAt,
-        createdAt + DEVICE_CODE_TTL_SECONDS,
-      );
+      // The row and the sweep of the rows that are past their TTL are one
+      // transaction: `/v1/device/code` is public (the CLI holds no credential
+      // before it asks for one), so without the sweep an anonymous caller
+      // could grow the table one dead row per request, forever. The sweep
+      // deletes only rows already expired at this instant, never the row being
+      // inserted, and the edge rate limit on the route (device-routes.js) caps
+      // how fast either can happen.
+      await batch(db, [
+        {
+          sql: "DELETE FROM device_codes WHERE expires_at <= ?1",
+          params: [createdAt],
+        },
+        {
+          sql: `INSERT INTO device_codes
+                  (device_code_hash, user_code, name, status, account_id, account_name, account_email, created_at, expires_at)
+                VALUES (?1, ?2, ?3, 'pending', '', '', '', ?4, ?5)`,
+          params: [
+            await sha256Hex(deviceCode),
+            userCode,
+            deviceLabel(request.name),
+            createdAt,
+            createdAt + DEVICE_CODE_TTL_SECONDS,
+          ],
+        },
+      ]);
       return {
         deviceCode,
         userCode,
@@ -324,18 +338,23 @@ export function createD1DeviceSigninStore(db, options = {}) {
       }
       if (row.status !== "approved") {
         const fields = accountFields(account);
-        // Conditional on `pending`, so two tabs approving at once cannot
-        // attach two accounts: the second update changes nothing and the row
-        // keeps the first account.
+        // Conditional on `pending` and on the code still being inside its TTL,
+        // so two tabs approving at once cannot attach two accounts (the second
+        // update changes nothing and the row keeps the first account) and a
+        // code that expired between the read above and this write is not
+        // approved by a request that started while it was alive. The re-read
+        // below is the authority: it is the row as it is now, not the
+        // predicate's guess.
         await run(
           db,
           `UPDATE device_codes
              SET status = 'approved', account_id = ?1, account_name = ?2, account_email = ?3
-           WHERE user_code = ?4 AND status = 'pending'`,
+           WHERE user_code = ?4 AND status = 'pending' AND expires_at > ?5`,
           fields.id,
           fields.name,
           fields.email,
           userCode,
+          nowSeconds(now()),
         );
         const stored = asCode(
           await first(
@@ -344,9 +363,16 @@ export function createD1DeviceSigninStore(db, options = {}) {
             userCode,
           ),
         );
-        if (stored === null || stored.account.id === "") {
-          // The row vanished between the update and this read, or the update
-          // did not attach an account; say so rather than dereferencing null.
+        if (stored === null) {
+          // The row vanished between the update and this read.
+          return { error: "unknown-code" };
+        }
+        if (stored.expiresAt < nowSeconds(now())) {
+          return { error: "expired-code" };
+        }
+        if (stored.account.id === "") {
+          // The update did not attach an account; say so rather than
+          // dereferencing null.
           return { error: "unknown-code" };
         }
         return { accountId: stored.account.id, name: stored.account.name };
@@ -388,31 +414,43 @@ export function createD1DeviceSigninStore(db, options = {}) {
         return { status: "expired" };
       }
       const token = newId("dtok");
-      // Consume the code first, conditional on it still being `approved`: the
-      // poll that changes the row is the only one that mints a token, so a
-      // stolen device code cannot mint a second one.
-      const consumed = await run(
-        db,
-        "UPDATE device_codes SET status = 'used' WHERE device_code_hash = ?1 AND status = 'approved'",
-        hash,
+      // Consume the code and write the token in one transaction, so a failure
+      // between the two cannot lose a sign-in someone already approved: the
+      // conditional update is the only thing that mints a token, and either
+      // both statements land or the code stays `approved` for the next poll.
+      // The update is conditional on the row still being `approved` and still
+      // inside its TTL, so a poll that crosses the boundary cannot mint a
+      // token for a code that expired.
+      //
+      // A poll that loses the race (two polls of the same approved code) still
+      // runs the insert, because the batch cannot know the update changed no
+      // rows before it runs. That leaves a token row whose plaintext no one
+      // holds: inert, unusable, and bounded by the same edge rate limit. The
+      // token is returned only when this poll is the one that consumed the
+      // code, so no second token is ever handed out.
+      const results = await batch(db, [
+        {
+          sql: "UPDATE device_codes SET status = 'used' WHERE device_code_hash = ?1 AND status = 'approved' AND expires_at > ?2",
+          params: [hash, nowSeconds(now())],
+        },
+        {
+          sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)`,
+          params: [
+            await sha256Hex(token),
+            row.account.id,
+            row.account.name,
+            row.account.email,
+            nowSeconds(now()),
+          ],
+        },
+      ]);
+      const changes = Number(
+        /** @type {{meta?: {changes?: number}}} */ (results[0])?.meta?.changes ?? 0,
       );
-      const changes =
-        consumed && typeof consumed === "object" && "meta" in consumed
-          ? Number(/** @type {{meta?: {changes?: number}}} */ (consumed).meta?.changes ?? 0)
-          : 0;
       if (changes === 0) {
         return { status: "expired" };
       }
-      await run(
-        db,
-        `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)`,
-        await sha256Hex(token),
-        row.account.id,
-        row.account.name,
-        row.account.email,
-        nowSeconds(now()),
-      );
       return { status: "approved", deviceToken: token, account: row.account };
     },
 
