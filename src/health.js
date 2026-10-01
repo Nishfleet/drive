@@ -108,8 +108,14 @@ const JSON_HEADERS = Object.freeze({
  * Rejects with a named timeout if `work` has not settled within `ms`. The
  * work itself keeps a reference to its own signal so a D1 read can be
  * cancelled at the database rather than merely abandoned here.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {string} name
+ * @returns {Promise<T>}
  */
 function withTimeout(promise, ms, name) {
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
   let timer;
   const expiry = new Promise((_resolve, reject) => {
     timer = setTimeout(
@@ -121,6 +127,7 @@ function withTimeout(promise, ms, name) {
 }
 
 class HealthCheckTimeout extends Error {
+  /** @param {string} name */
   constructor(name) {
     super(`${name} did not answer in time`);
     this.name = "HealthCheckTimeout";
@@ -135,7 +142,7 @@ class HealthCheckTimeout extends Error {
  * the asset binding and the secret values do not match this shape, so they
  * are named in REQUIRED_BINDINGS instead.
  * @param {Record<string, unknown>} env
- * @returns {{name: string, db: {prepare: (sql: string) => unknown}}[]}
+ * @returns {{name: string, db: {prepare: (sql: string) => D1PreparedStatement}}[]}
  */
 export function d1Bindings(env) {
   if (typeof env !== "object" || env === null) {
@@ -143,12 +150,20 @@ export function d1Bindings(env) {
   }
   return Object.entries(env)
     .filter(
+      /** @param {[string, unknown]} pair */
       ([, binding]) =>
         typeof binding === "object" &&
         binding !== null &&
+        "prepare" in binding &&
         typeof binding.prepare === "function",
     )
-    .map(([name, db]) => ({ name, db }));
+    .map(
+      /** @param {[string, unknown]} pair */
+      ([name, db]) => ({
+        name,
+        db: /** @type {{prepare: (sql: string) => D1PreparedStatement}} */ (db),
+      }),
+    );
 }
 
 /**
@@ -156,7 +171,9 @@ export function d1Bindings(env) {
  * share. A rejected read is not swallowed: it becomes the failure this check
  * reports, with the binding's name and nothing else.
  * @param {string} name the binding name, safe to show an operator
- * @param {{prepare: (sql: string) => unknown}} db
+ * @param {{prepare: (sql: string) => D1PreparedStatement}} db
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkD1(name, db, timeoutMs) {
   await withTimeout(
@@ -176,6 +193,8 @@ async function checkD1(name, db, timeoutMs) {
  * a document, and a 404 is the expected answer (nothing is served there), so
  * the check is "did we get a response at all", not "was it 200".
  * @param {{fetch: (request: Request) => Promise<Response>}} assets
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkAssets(assets, timeoutMs) {
   const response = await withTimeout(
@@ -213,6 +232,8 @@ async function checkAssets(assets, timeoutMs) {
  * answering at all is.
  *
  * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkRateLimiter(limiter, timeoutMs) {
   const result = await withTimeout(
@@ -248,20 +269,32 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       return { ok: false, failing: name };
     }
   }
-  const checks = [];
+  const checks = /** @type {{name: string, run: (left: number) => Promise<void>}[]} */ ([]);
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
+  // The binding is read off the untyped env and checked by shape, exactly as
+  // d1Bindings does: the cast is the check that was just made, not a default.
   const assets = env.ASSETS;
-  if (typeof assets.fetch !== "function") {
+  if (
+    typeof assets !== "object" ||
+    assets === null ||
+    !("fetch" in assets) ||
+    typeof assets.fetch !== "function"
+  ) {
     // The landing page is served by this binding on every request that is
     // not /api/*, so its absence is an outage, not a configuration nit: a
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({ name: "ASSETS", run: (left) => checkAssets(assets, left) });
+  checks.push({ name: "ASSETS", run: (left) => checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left) });
   const limiter = env.WAITLIST_RATE_LIMITER;
-  if (typeof limiter.limit !== "function") {
+  if (
+    typeof limiter !== "object" ||
+    limiter === null ||
+    !("limit" in limiter) ||
+    typeof limiter.limit !== "function"
+  ) {
     // The waitlist fails closed without this binding (src/waitlist.js), so a
     // binding that is present but has no `limit` is as broken as a missing
     // one and gets the same name.
@@ -269,7 +302,11 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   }
   checks.push({
     name: "WAITLIST_RATE_LIMITER",
-    run: (left) => checkRateLimiter(limiter, left),
+    run: (left) =>
+      checkRateLimiter(
+        /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (limiter),
+        left,
+      ),
   });
 
   for (const check of checks) {

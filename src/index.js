@@ -25,16 +25,32 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 /** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
 /**
+ * The `rclone serve s3` stand-in's two config vars (drive issue #1's build
+ * host). They are set in the environment of a local dev run, never declared
+ * as bindings in cloudflare.config.ts: the deployed Worker has no S3 stand-in,
+ * and a declared binding would also have to be probed by the health check
+ * (test/health.test.mjs) when there is nothing to probe. So they are read off
+ * the worker's own env as the optional pair the dev-only path takes, and the
+ * env is widened with exactly that pair and nothing else.
+ * @param {Env} env
+ * @returns {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}}
+ */
+function devStorage(env) {
+  return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+}
+
+/**
  * @param {Env} env
  * @returns {import("./files.js").FileStore}
  */
 function storeFor(env) {
   if (!filesStore) {
+    const dev = devStorage(env);
     filesStore =
-      env.FILES_S3_ENDPOINT && env.FILES_S3_BUCKET
+      dev.FILES_S3_ENDPOINT && dev.FILES_S3_BUCKET
         ? createS3Store({
-            endpoint: env.FILES_S3_ENDPOINT,
-            bucket: env.FILES_S3_BUCKET,
+            endpoint: dev.FILES_S3_ENDPOINT,
+            bucket: dev.FILES_S3_BUCKET,
           })
         : createMemoryStore();
   }
