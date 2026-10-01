@@ -326,7 +326,7 @@ test("the page posts to the endpoint the Worker routes, with a method the endpoi
   assert.ok(methodNames.length > 0, "the page must post at least one named method");
 });
 
-test("the page offers no provider the server cannot complete (drive#180)", () => {
+test("the page offers no provider the server cannot complete (drive#180)", async () => {
   // The spec's Screens table names Google and GitHub for the finished product,
   // but the server cannot complete either one today: the store refuses them
   // with sign-in-closed (src/accounts.js), because their client ids and
@@ -363,10 +363,41 @@ test("the page offers no provider the server cannot complete (drive#180)", () =>
     );
     assert.equal(read.method, method, `${method} stays readable by the endpoint`);
   }
+  // The offered list is a subset of the accepted list: the screen offers
+  // nothing the endpoint would refuse, and the endpoint reads everything the
+  // screen offers.
+  for (const method of SIGNIN_OFFERED_METHODS) {
+    assert.ok(SIGNIN_METHODS.includes(method), `offered ${method} is accepted`);
+  }
   // Email is the one the store completes today, and its form is the one the
   // page ships.
   assert.ok(SIGNIN_OFFERED_METHODS.includes("email"), "email is offered");
   assert.ok(page.includes(SIGNIN_COPY.emailButton), "the email button stays");
+  // The meta description is user-visible copy this test does not otherwise
+  // pin (it is not in SIGNIN_COPY), so it gets the same rule as the buttons:
+  // it names no provider the server cannot complete.
+  const description = page.match(/<meta name="description" content="([^"]+)"/)?.[1];
+  assert.ok(description, "the page carries a meta description");
+  for (const method of SIGNIN_METHODS) {
+    if (!SIGNIN_OFFERED_METHODS.includes(method)) {
+      assert.equal(
+        description.includes(method[0].toUpperCase() + method.slice(1)),
+        false,
+        `the meta description must not name ${method} while it is unoffered`,
+      );
+    }
+  }
+  // And the server really cannot complete them, which is the fact that keeps
+  // the buttons off the page: an unoffered provider start is read by the
+  // endpoint and answered with the closed door, never a session. A day the
+  // store can finish a provider is when its button comes back.
+  const store = createAccountStore({ sendCode: () => {} });
+  for (const method of SIGNIN_METHODS) {
+    if (SIGNIN_OFFERED_METHODS.includes(method)) continue;
+    const response = await handleSigninRequest(post({ method }), store);
+    assert.equal(response.status, 503, `${method} is answered by the closed door`);
+    assert.deepEqual(await response.json(), signinClosedBody());
+  }
 });
 
 test("the page states the spec's two promises: no card, and the free dollar", () => {

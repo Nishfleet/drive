@@ -53,8 +53,9 @@ export const SIGNIN_METHODS = Object.freeze(["email", "google", "github"]);
  * credentials, never values in this repo), so a button for one would promise
  * a sign-in that ends in the closed door. The page renders one control per
  * offered method and test/signin.test.mjs fails CI when a button returns for
- * a method this list does not carry (drive#180). Moving a method into this
- * list is the whole change that brings its control back.
+ * a method this list does not carry (drive#180). Restoring a provider's
+ * control starts here — add the method to this list — and finishes with its
+ * button markup and copy on the page, whose gate test then binds the two.
  */
 export const SIGNIN_OFFERED_METHODS = Object.freeze(["email"]);
 
