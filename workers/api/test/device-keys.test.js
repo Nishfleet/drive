@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { failureMessage } from "../../../src/messages.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js";
-import { failureMessage } from "../../../src/messages.js";
 
 // A clock the test owns, so a device token can be pushed past its TTL without
 // sleeping; the store reads `now` from the context it is given.
@@ -472,7 +472,13 @@ test("an approve denied by the global edge limit is a 429 and the code stays una
   const store = createMemoryStore({ now: () => 0 });
   const code = store.requestDeviceCode({ name: "Nish's MacBook" });
   const global = makeRateLimiter({ success: false });
-  const ctx = { env: limits(makeRateLimiter(), global), db: null, store, account: null, now: () => 0 };
+  const ctx = {
+    env: limits(makeRateLimiter(), global),
+    db: null,
+    store,
+    account: null,
+    now: () => 0,
+  };
   const response = await dispatch(
     new Request("https://api.test/v1/device/approve", {
       method: "POST",

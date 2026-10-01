@@ -13,8 +13,9 @@
 // lands, approving a code makes the account, and the page says so in plain
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
-import { bearerToken, errorResponse, json } from "./http.js";
+
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
+import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */

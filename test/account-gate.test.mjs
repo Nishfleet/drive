@@ -32,6 +32,7 @@ import { SEARCH_ENDPOINT } from "../src/search.js";
 import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, signIn } from "./harness.mjs";
+
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
  * route fails closed without its two edge bindings, so every dispatch that
@@ -45,7 +46,6 @@ function makeLimiter() {
     },
   };
 }
-
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix

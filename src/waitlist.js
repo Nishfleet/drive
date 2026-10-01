@@ -222,7 +222,13 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   // refusals. Unchanged behaviour: a missing binding, a failed call and a
   // refusal are exactly the three answers this used to give.
   const limited = await enforceEdgeLimits(
-    [{ binding: rateLimiter, key: clientIpKey(request, "waitlist"), name: "WAITLIST_RATE_LIMITER" }],
+    [
+      {
+        binding: rateLimiter,
+        key: clientIpKey(request, "waitlist"),
+        name: "WAITLIST_RATE_LIMITER",
+      },
+    ],
     "waitlist",
   );
   if (limited) {
