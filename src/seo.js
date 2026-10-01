@@ -102,7 +102,10 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "Changelog", path: "/docs/changelog" }),
 ]);
 
-/** The absolute URL of a public page, from its site-relative path. */
+/** The absolute URL of a public page, from its site-relative path.
+ * @param {{title?: string, path: string, indexable?: boolean}} page
+ * @returns {string}
+ */
 export function pageUrl(page) {
   return absoluteUrl(page.path);
 }

@@ -19,25 +19,34 @@
 // every branch without a Worker runtime, like src/waitlist.js and
 // src/status.js.
 
-import {
-  EMAIL_KINDS,
-  FROM_NAME,
-  renderEmail,
-} from "./emails.js";
+import { EMAIL_KINDS, FROM_NAME, renderEmail } from "./emails.js";
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} status
+ * @returns {Response}
+ */
 function json(body, status) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
 /**
+ * The Email Sending binding as this module uses it: `send()` and nothing
+ * else. The message shape is the binding's own; this module fills every field
+ * it sends.
+ * @typedef {{send: (message: {to: string, from: {email: string, name: string}, subject: string, text: string, html: string}) => Promise<{messageId: string}>}} EmailBinding
+ */
+
+/**
  * The Worker binding, as an argument so the test can pass a fake and the
  * shape is checked here rather than at runtime on a live send.
- * @returns {object} the binding, or throws naming what is missing
+ * @param {EmailBinding} emailBinding
+ * @returns {EmailBinding} the binding, or throws naming what is missing
  */
 function requireBinding(emailBinding) {
   if (!emailBinding || typeof emailBinding.send !== "function") {
@@ -52,6 +61,11 @@ function requireBinding(emailBinding) {
 // comparison does not say where the bytes diverge. This token -- not the
 // same-origin rule below, which a curl without an Origin header passes -- is
 // what stops our domain being used as a mail relay.
+/**
+ * @param {string} presented
+ * @param {string} expected
+ * @returns {boolean}
+ */
 function tokenMatches(presented, expected) {
   let diff = presented.length ^ expected.length;
   const length = Math.max(presented.length, expected.length);
@@ -103,8 +117,8 @@ export function isSameOriginRequest(request) {
  * binding's own error: a failed send is never reported as sent, because the
  * caller decides whether to retry and a false "sent" would silently drop a
  * customer's receipt.
- * @param {object} emailBinding the EMAIL binding
- * @param {{to: string, kind: string, data?: object, from: string, fromName?: string, rendered?: {subject: string, text: string, html: string}}} request
+ * @param {EmailBinding} emailBinding the EMAIL binding
+ * @param {{to: string, kind: string, data?: Record<string, unknown>, from: string, fromName?: string, rendered?: {subject: string, text: string, html: string, saved: string|null}}} request
  * @returns {Promise<{messageId: string, subject: string}>}
  */
 export async function sendEmail(emailBinding, request) {
@@ -153,27 +167,39 @@ export async function sendEmail(emailBinding, request) {
 // guessing. The data is rendered here, not inside sendEmail, so a template
 // that cannot be built from the body's data is a request error (400) and not a
 // provider failure (502) the caller would retry forever.
+/**
+ * @param {unknown} body
+ * @returns {{ok: true, kind: string, to: string, data: unknown, rendered: {subject: string, text: string, html: string, saved: string|null}}|{ok: false, error: string}}
+ */
 function readRequest(body) {
   if (typeof body !== "object" || body === null) {
-    return { error: "Send a JSON object with an email kind, an address and its data." };
+    return { ok: false, error: "Send a JSON object with an email kind, an address and its data." };
   }
-  const { kind, to, data } = body;
+  // Narrowed from `unknown` by the check above; the object's own fields are
+  // read by name and each is type-checked before it is used.
+  const { kind, to, data } = /** @type {Record<string, unknown>} */ (body);
   if (typeof kind !== "string" || !EMAIL_KINDS.includes(kind)) {
     return {
+      ok: false,
       error: `Send one of these emails: ${EMAIL_KINDS.join(", ")}.`,
     };
   }
   if (typeof to !== "string" || to.trim().length === 0) {
-    return { error: "An email address is required." };
+    return { ok: false, error: "An email address is required." };
   }
   try {
-    const rendered = renderEmail(kind, typeof data === "object" && data !== null ? data : {});
-    return { kind, to: to.trim(), data, rendered };
+    const rendered = renderEmail(
+      kind,
+      typeof data === "object" && data !== null
+        ? /** @type {Record<string, unknown>} */ (data)
+        : {},
+    );
+    return { ok: true, kind, to: to.trim(), data, rendered };
   } catch (error) {
     // A missing or unusable amount is named, never defaulted: a receipt sent
     // with a $0 bill because the meter lost a number is the worst outcome
     // this lane can produce.
-    return { error: `Cannot build the ${kind} email: ${error.message}` };
+    return { ok: false, error: `Cannot build the ${kind} email: ${String(error)}` };
   }
 }
 
@@ -184,7 +210,7 @@ function readRequest(body) {
  * same-origin rule, so the route cannot be used to mail an arbitrary person
  * from our domain.
  * @param {Request} request
- * @param {{EMAIL?: object, EMAIL_SEND_TOKEN?: string, MAIL_FROM?: string}} env
+ * @param {{EMAIL?: EmailBinding, EMAIL_SEND_TOKEN?: string, MAIL_FROM?: string}} env
  */
 export async function handleSendEmailRequest(request, env) {
   if (request.method !== "POST") {
@@ -196,53 +222,47 @@ export async function handleSendEmailRequest(request, env) {
       },
     });
   }
-  if (!isAuthorizedSend(request, env && env.EMAIL_SEND_TOKEN)) {
-    return json(
-      { error: "Drive emails are only sent from the drive service." },
-      403,
-    );
+  if (!isAuthorizedSend(request, env?.EMAIL_SEND_TOKEN)) {
+    return json({ error: "Drive emails are only sent from the drive service." }, 403);
   }
   if (!isSameOriginRequest(request)) {
-    return json(
-      { error: "Drive emails are only sent from the drive service." },
-      403,
-    );
+    return json({ error: "Drive emails are only sent from the drive service." }, 403);
   }
   let body;
   try {
     body = await request.json();
   } catch (error) {
-    return json(
-      { error: `The request body is not valid JSON: ${error.message}` },
-      400,
-    );
+    return json({ error: `The request body is not valid JSON: ${String(error)}` }, 400);
   }
   const read = readRequest(body);
-  if (read.error) {
+  if (!read.ok) {
     return json({ error: read.error }, 400);
   }
-  if (!env || !env.EMAIL) {
+  // Bound once: the `ok` discriminant narrows the result, and a union property
+  // is not narrowed across the awaits below.
+  const wanted = read;
+  if (!env?.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
   if (typeof env.MAIL_FROM !== "string" || env.MAIL_FROM.trim().length === 0) {
     // A deployment with no sending domain yet: closed, and it says which
     // setting is missing rather than mailing from a placeholder.
-    return json(
-      { error: "MAIL_FROM is not set on this deployment." },
-      503,
-    );
+    return json({ error: "MAIL_FROM is not set on this deployment." }, 503);
   }
+  // Bound once: the check above narrows the field, and a property of a
+  // mutable object is not narrowed across the await below.
+  const mailFrom = env.MAIL_FROM;
   try {
     const sent = await sendEmail(env.EMAIL, {
-      to: read.to,
-      kind: read.kind,
-      from: env.MAIL_FROM,
-      rendered: read.rendered,
+      to: wanted.to,
+      kind: wanted.kind,
+      from: mailFrom,
+      rendered: wanted.rendered,
     });
-    return json({ ok: true, kind: read.kind, to: read.to, ...sent }, 202);
+    return json({ ok: true, kind: wanted.kind, to: wanted.to, ...sent }, 202);
   } catch (error) {
     // Named, never swallowed: the caller retries a failed send, and "sent"
     // for a message nobody received is the one lie this lane must not tell.
-    return json({ error: `Could not send the ${read.kind} email: ${error.message}` }, 502);
+    return json({ error: `Could not send the ${wanted.kind} email: ${String(error)}` }, 502);
   }
 }

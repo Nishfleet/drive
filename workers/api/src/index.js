@@ -1,7 +1,10 @@
-import { routes } from "./routes.js";
-import { errorResponse } from "./http.js";
-import { createMemoryStore } from "./keystore.js";
 import { failureMessage } from "../../../src/messages.js";
+import { bearerToken, errorResponse } from "./http.js";
+import { createMemoryStore } from "./keystore.js";
+import { routes } from "./routes.js";
+
+/** The stand-in key store this Worker hands its routes. */
+/** @typedef {ReturnType<typeof createMemoryStore>} KeyStore */
 // Finding 1 replaced the hand-rolled path matcher with the platform's own
 // URLPattern: matching a path, capturing :params and deciding that `/a/b/c`
 // does not match `/a/:id` are the runtime's job now, not ours. (The review
@@ -24,8 +27,11 @@ import { failureMessage } from "../../../src/messages.js";
  * it.
  * @typedef {{params: Record<string, string>}|{malformed: true}} RouteMatch
  *
- * What a handler gets besides the request.
- * @typedef {{env: object, db?: any, store?: any, now: () => number, account?: {id: string}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * What a handler gets besides the request. `store` is the stand-in key store
+ * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
+ * because a deployment without them answers its closed door rather than
+ * pretending to hold keys.
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, params?: Record<string, string>, url?: URL}} Ctx
  */
 
 /** @type {WeakMap<Route, URLPattern>} */
@@ -75,21 +81,24 @@ function matchRoute(route, pathname) {
  * Bearer <device token>` header and nothing else. The token is hashed and
  * looked up in the key store, so a caller cannot name an account, and no
  * cookie, query value or body field is trusted (the same rule
- * src/status.js `signedInAccount` already follows for the site Worker).
+ * src/status.js `signedInAccount` already follows for the site Worker). The
+ * header is read with http.js `bearerToken`, the one place that shape is
+ * parsed, and the expiry and revocation checks live in the store's one lookup
+ * (keystore.js `accountForDeviceToken`), so a dead token fails here for every
+ * route at once rather than in each handler.
  * @param {Request} request
  * @param {any} store the key store, or undefined where there is none
  * @returns {Promise<{id: string, name: string}|null>}
  */
 export async function accountForRequest(request, store) {
-  const header = request.headers.get("authorization") ?? "";
-  const [scheme, token] = header.split(" ");
-  if (scheme === undefined || token === undefined || scheme.toLowerCase() !== "bearer") {
+  const token = bearerToken(request);
+  if (token === null) {
     return null;
   }
   if (store === undefined) {
     return null;
   }
-  return store.accountForDeviceToken(token.trim());
+  return store.accountForDeviceToken(token);
 }
 
 /**
@@ -101,15 +110,14 @@ export async function accountForRequest(request, store) {
  */
 export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
-  const pathname =
-    url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
+  const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
   // The account is read from the request's own bearer token (drive#55) rather
   // than trusted from the context, so a handler cannot be handed an account
   // the caller never proved. `ctx.account` is honoured only where there is no
   // store to resolve one with, which is the tests' own store-less context; the
   // Worker export always passes a store, so nothing reaches a route that way.
   const bearer = await accountForRequest(request, ctx.store);
-  const account = bearer ?? (ctx.store === undefined ? ctx.account ?? null : null);
+  const account = bearer ?? (ctx.store === undefined ? (ctx.account ?? null) : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];
@@ -180,9 +188,27 @@ export async function dispatch(request, ctx, table = routes) {
 let keyStore;
 
 /**
- * @param {{DB?: any, [key: string]: any}} env
+ * The Worker's own env as this entry reads it: the D1 binding named DB, plus
+ * whatever else the runtime bound (the generated `Env` covers the pricing
+ * Worker's bindings, not this Worker's, so the pair is declared here).
+ * @typedef {{DB?: D1Database, [key: string]: unknown}} ApiEnv
+ */
+
+/**
+ * The stand-in key store, until the D1-backed one lands: the same shape
+ * createMemoryStore gives the tests, so a route cannot tell the difference.
+ * The env is what will choose it, and the parameter is named here so the
+ * signature the type check reads and the one the runtime calls are the same
+ * function. Biome's unused-parameter rule reads `env` as unused and wants an
+ * underscore, which would break the JSDoc `@param` it sits under, so the
+ * parameter is read with a void here and the type check is the one that
+ * guards the name.
+ *
+ * @param {ApiEnv} env
+ * @returns {KeyStore}
  */
 function storeFor(env) {
+  void env;
   if (keyStore === undefined) {
     keyStore = createMemoryStore();
   }
@@ -191,7 +217,7 @@ function storeFor(env) {
 export default {
   /**
    * @param {Request} request
-   * @param {{DB?: any, [key: string]: any}} env
+   * @param {ApiEnv} env
    */
   async fetch(request, env) {
     return dispatch(request, { env, db: env.DB, store: storeFor(env), now: Date.now });

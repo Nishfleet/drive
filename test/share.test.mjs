@@ -13,22 +13,17 @@
 //   - a real file opens from a share link with no account and no cookie;
 //   - a revoked link is a 404;
 //   - a file dropped on an upload page is in the folder's listing afterwards.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createMemoryStore, handleFilesRequest, scopeStore, FILES_ENDPOINT } from "../src/files.js";
+import { test } from "node:test";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { failureMessage } from "../src/messages.js";
 import {
-  DEFAULT_LINK_DAYS,
-  DAY_MS,
-  REQUEST_ENDPOINT,
-  REQUEST_PAGE,
-  SHARE_ENDPOINT,
-  SHARE_LINK_PREFIX,
-  UPLOAD_PAGE_COPY,
-  UPLOAD_PAGE_LINE,
   base64url,
   createMemoryLinkStore,
+  DAY_MS,
+  DEFAULT_LINK_DAYS,
   folderDisplayName,
   folderExists,
   handleRequestInfoRequest,
@@ -43,9 +38,15 @@ import {
   newLinkToken,
   newRequestRecord,
   newShareRecord,
+  REQUEST_ENDPOINT,
+  REQUEST_PAGE,
   requestUrl,
+  SHARE_ENDPOINT,
+  SHARE_LINK_PREFIX,
   shareRow,
   shareUrl,
+  UPLOAD_PAGE_COPY,
+  UPLOAD_PAGE_LINE,
   validateRequestFolder,
   validateShareFile,
   validateToken,
@@ -99,7 +100,10 @@ function drive() {
       { now, ...options },
     );
   const shareList = (options = {}) =>
-    handleShareRequest(new Request(api(SHARE_ENDPOINT)), files, links, account, { now, ...options });
+    handleShareRequest(new Request(api(SHARE_ENDPOINT)), files, links, account, {
+      now,
+      ...options,
+    });
   const revoke = (token) =>
     handleShareRequest(
       new Request(api(SHARE_ENDPOINT), {
@@ -125,13 +129,10 @@ function drive() {
       { now, ...options },
     );
   const requestList = (options = {}) =>
-    handleRequestRequest(
-      new Request(api(REQUEST_ENDPOINT)),
-      files,
-      links,
-      account,
-      { now, ...options },
-    );
+    handleRequestRequest(new Request(api(REQUEST_ENDPOINT)), files, links, account, {
+      now,
+      ...options,
+    });
   const revokeRequest = (token) =>
     handleRequestRequest(
       new Request(api(REQUEST_ENDPOINT), {
@@ -144,7 +145,18 @@ function drive() {
       account,
       { now },
     );
-  return { files, links, upload, list, share, shareList, revoke, request, requestList, revokeRequest };
+  return {
+    files,
+    links,
+    upload,
+    list,
+    share,
+    shareList,
+    revoke,
+    request,
+    requestList,
+    revokeRequest,
+  };
 }
 
 // ---------------------------------------------------------------- tokens
@@ -161,7 +173,7 @@ test("a link token is 22 base64url characters and only that shape is accepted", 
   assert.deepEqual(validateToken(token), { token });
   // A path, a query string, a short guess: none of them is a token, and all
   // are refused before any lookup.
-  for (const bad of ["", "/", "/s/", token + "A", token.slice(1), "has/slash", null, 7]) {
+  for (const bad of ["", "/", "/s/", `${token}A`, token.slice(1), "has/slash", null, 7]) {
     assert.ok(validateToken(bad).error, `${String(bad)} should not validate`);
   }
   assert.throws(() => base64url("not bytes"), TypeError);
@@ -270,9 +282,10 @@ test("POST /api/share mints a link for a file that is there, and 404s one that i
   // nothing and prove nothing).
   const listed = await shareList();
   assert.equal(listed.status, 200);
-  assert.deepEqual((await listed.json()).shares.map((row) => row.name), [
-    "holiday.jpg",
-  ]);
+  assert.deepEqual(
+    (await listed.json()).shares.map((row) => row.name),
+    ["holiday.jpg"],
+  );
 });
 
 test("GET /api/share lists the account's links, newest first", async () => {
@@ -285,8 +298,14 @@ test("GET /api/share lists the account's links, newest first", async () => {
   await share("/b.txt", { token: "BBBBBBBBBBBBBBBBBBBBBB", now });
   const response = await shareList();
   const rows = (await response.json()).shares;
-  assert.deepEqual(rows.map((row) => row.name), ["b.txt", "a.txt"]);
-  assert.deepEqual(rows.map((row) => row.state), ["active", "active"]);
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ["b.txt", "a.txt"],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.state),
+    ["active", "active"],
+  );
 });
 
 test("DELETE /api/share revokes, is idempotent, and 404s an unknown token", async () => {
@@ -442,14 +461,22 @@ test("a link with no usable expiry is expired, not a permanent link", async () =
   }
   // The 404 is the same one, so a stranger learns nothing about the window.
   const { links } = drive();
-  await links.requests.create(newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }));
+  await links.requests.create(
+    newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
+  );
   const info = await handleRequestInfoRequest(
     new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
     {
       ...links,
       requests: {
         ...links.requests,
-        get: async () => ({ token: TOKEN, accountId: account.id, folder: "/", createdAt: now, revokedAt: null }),
+        get: async () => ({
+          token: TOKEN,
+          accountId: account.id,
+          folder: "/",
+          createdAt: now,
+          revokedAt: null,
+        }),
       },
     },
     () => "active",
@@ -467,10 +494,11 @@ test("one account cannot revoke another account's link", async () => {
   const links = createMemoryLinkStore();
   const other = { id: "acct-other", name: "Other" };
   const uploaded = await handleFilesRequest(
-    new Request(
-      `${api(FILES_ENDPOINT)}/upload?path=%2F&name=secret.txt`,
-      { method: "POST", headers: { "content-type": "text/plain" }, body: "the owner's bytes" },
-    ),
+    new Request(`${api(FILES_ENDPOINT)}/upload?path=%2F&name=secret.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "the owner's bytes",
+    }),
     store,
     account,
     now,
@@ -522,10 +550,11 @@ test("one account cannot revoke another account's link", async () => {
   // the folder is written to first: an empty folder is not a folder this
   // store can see (src/share.js folderExists).
   const seeded = await handleFilesRequest(
-    new Request(
-      `${api(FILES_ENDPOINT)}/upload?path=%2FInbox&name=first.txt`,
-      { method: "POST", headers: { "content-type": "text/plain" }, body: "x" },
-    ),
+    new Request(`${api(FILES_ENDPOINT)}/upload?path=%2FInbox&name=first.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "x",
+    }),
     store,
     account,
     now,
@@ -581,16 +610,17 @@ test("a store failure is logged, and its message is never returned", async () =>
       newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
     );
     for (const call of [
-      () => handleRequestUploadRequest(
-        new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
-          method: "POST",
-          body: "x",
-        }),
-        boom,
-        links,
-        () => "active",
-        { now },
-      ),
+      () =>
+        handleRequestUploadRequest(
+          new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+            method: "POST",
+            body: "x",
+          }),
+          boom,
+          links,
+          () => "active",
+          { now },
+        ),
     ]) {
       const response = await call();
       assert.equal(response.status, 500);
@@ -608,18 +638,13 @@ test("a store failure is logged, and its message is never returned", async () =>
 // ---------------------------------------------------------------- the done-when bullets
 
 test("done when: a real file opens from a share link, logged out", async () => {
-  const { upload, share, files, links, list } = drive();
+  const { upload, share, files, links } = drive();
   await upload("/", "holiday.jpg", "the real bytes", "image/jpeg");
   const made = await (await share("/holiday.jpg", { token: TOKEN })).json();
 
   // No cookie, no account, no Authorization header: exactly what a logged-out
   // browser sends to a link someone pasted it.
-  const opened = await handleShareFileRequest(
-    new Request(made.share.url),
-    files,
-    links,
-    { now },
-  );
+  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
   assert.equal(opened.status, 200);
   assert.equal(opened.headers.get("content-type"), "image/jpeg");
   assert.equal(opened.headers.get("content-disposition"), "inline");
@@ -677,12 +702,7 @@ test("a shared file can never act as a page on our origin", async () => {
   for (const [name, token] of Object.entries(byName)) {
     const made = await (await share(`/${name}`, { token })).json();
     assert.equal(made.share.url, `https://drive.test${SHARE_LINK_PREFIX}/${token}`);
-    const opened = await handleShareFileRequest(
-      new Request(made.share.url),
-      files,
-      links,
-      { now },
-    );
+    const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
     assert.equal(opened.status, 200, `share ${name}`);
     assert.equal(
       opened.headers.get("x-content-type-options"),
@@ -712,33 +732,20 @@ test("done when: a revoked link returns 404", async () => {
   await upload("/", "secret.txt", "private");
   const made = await (await share("/secret.txt", { token: TOKEN })).json();
 
-  const live = await handleShareFileRequest(
-    new Request(made.share.url),
-    files,
-    links,
-    { now },
-  );
+  const live = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
   assert.equal(live.status, 200);
 
   await revoke(TOKEN);
-  const revoked = await handleShareFileRequest(
-    new Request(made.share.url),
-    files,
-    links,
-    { now },
-  );
+  const revoked = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
   assert.equal(revoked.status, 404);
   assert.equal(await revoked.text(), failureMessage("link-not-found"));
   assert.equal(revoked.headers.get("cache-control"), "no-store");
 
   // An expired link and a link that never existed answer the same way, so the
   // route never tells a stranger which one it was.
-  const expired = await handleShareFileRequest(
-    new Request(made.share.url),
-    files,
-    links,
-    { now: now + (DEFAULT_LINK_DAYS + 1) * DAY_MS },
-  );
+  const expired = await handleShareFileRequest(new Request(made.share.url), files, links, {
+    now: now + (DEFAULT_LINK_DAYS + 1) * DAY_MS,
+  });
   assert.equal(expired.status, 404);
   const unknown = await handleShareFileRequest(
     new Request(`https://drive.test/s/CCCCCCCCCCCCCCCCCCCCCC`),
@@ -798,7 +805,10 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   // Now the owner's drive: the same listing the Files page and the mount read
   // shows the dropped file, with its real bytes.
   const rows = await list();
-  assert.deepEqual(rows.map((row) => row.name), ["contract.pdf"]);
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ["contract.pdf"],
+  );
   // Read back the way the owner reads it: through scopeStore, the one place
   // the account prefix is applied. A raw store.read() would ask for an
   // unprefixed key and find nothing — which is the proof that the drop landed
@@ -826,10 +836,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
   assert.equal(traversal.status, 201);
   assert.equal((await traversal.json()).path, "/..-evil.txt");
   const after = await list();
-  assert.deepEqual(
-    after.map((row) => row.name).sort(),
-    ["..-evil.txt", "contract.pdf"],
-  );
+  assert.deepEqual(after.map((row) => row.name).sort(), ["..-evil.txt", "contract.pdf"]);
 });
 
 test("an upload request refuses a file once the owner's cap is reached", async () => {
@@ -931,7 +938,10 @@ test("the shipped upload page carries the module's words and endpoints", () => {
   assert.ok(page.includes('URLSearchParams(location.search).get("k")'), "the page must read ?k=");
   // Nothing on the page mints or lists links: it is the stranger's side only.
   assert.ok(!page.includes(SHARE_ENDPOINT), "the public page must not reach the owner API");
-  assert.ok(!page.includes(SHARE_LINK_PREFIX + "/"), "the public page must not carry a share route");
+  assert.ok(
+    !page.includes(`${SHARE_LINK_PREFIX}/`),
+    "the public page must not carry a share route",
+  );
   // No script files and no inline secrets: one inline script, nothing fetched
   // from another origin.
   assert.ok(!/<script src=/.test(page), "the page is one inline script");

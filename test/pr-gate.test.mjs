@@ -10,22 +10,22 @@
 // The one line a program cannot judge is the last one, what the PR body claims
 // was proven on real records. Its pointer is the spec's rule for it
 // (docs/build-spec.md), and the builder answers it in the PR.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import worker from "../src/index.js";
 import { monthBillCents, USAGE_ENDPOINT } from "../src/billing.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
 import {
-  FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
+  FILES_ENDPOINT,
   handleFilesRequest,
-  scopeStore,
 } from "../src/files.js";
+import worker from "../src/index.js";
+import { FAILURE_MESSAGES } from "../src/messages.js";
+import { STATUS_ENDPOINT } from "../src/status.js";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const srcFile = (name) => read(`src/${name}`);
@@ -58,7 +58,10 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   const lines = list.split("\n");
   const checks = lines.filter((line) => line.startsWith("- [ ] "));
   assert.equal(checks.length, 8, "one checkable line per definition-of-done item");
-  assert.ok(lines.filter((line) => line.trim() !== "").length <= 15, "the list stays under 15 lines");
+  assert.ok(
+    lines.filter((line) => line.trim() !== "").length <= 15,
+    "the list stays under 15 lines",
+  );
 
   for (const line of checks) {
     const pointers = pointersOn(line);
@@ -73,7 +76,7 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   // The gates the lines rest on. The line-by-line pointer check above already
   // proves each exists; these prove the *gates* are still wired, so a line
   // cannot name a test that runs but no longer enforces anything.
-  assert.match(srcFile("index.js"), /export default \{\n  async fetch/);
+  assert.match(srcFile("index.js"), /export default \{\n {2}async fetch/);
   const required = [
     ["src/status.js", /export async function signedInAccount\(request, store\)/],
     ["src/files.js", /export function createS3Store\(config\)/],
@@ -166,11 +169,14 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // The send-email route's gate is its deployment token, not a session: only
   // POST is served, and with no token configured every POST is closed.
   assert.match(srcFile("email-send.js"), /EMAIL_SEND_TOKEN/);
-  const send = await worker.fetch(new Request("https://drive.test/api/emails/send", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ to: "nobody@drive.test", subject: "x", text: "x" }),
-  }), env);
+  const send = await worker.fetch(
+    new Request("https://drive.test/api/emails/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ to: "nobody@drive.test", subject: "x", text: "x" }),
+    }),
+    env,
+  );
   assert.equal(send.status, 403, "with no token configured the route is closed");
   // The files route's account comes from the one gate, never from a header the
   // caller sends: the storage prefix is applied by scopeStore from the account
@@ -207,10 +213,9 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
         .filter((name) => name.startsWith(prefix) && name !== prefix)
         .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
         .join("");
-      return new Response(
-        `<?xml version="1.0"?><ListBucketResult>${contents}</ListBucketResult>`,
-        { status: 200 },
-      );
+      return new Response(`<?xml version="1.0"?><ListBucketResult>${contents}</ListBucketResult>`, {
+        status: 200,
+      });
     }
     return objects.has(key)
       ? new Response(objects.get(key), { status: 200 })
@@ -231,16 +236,23 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   const api = (suffix) => `https://drive.test${FILES_ENDPOINT}${suffix}`;
   const put = (store, account, folder, name, body) =>
     handleFilesRequest(
-      new Request(`${api("/upload")}?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}`, {
-        method: "POST",
-        headers: { "content-type": "text/plain" },
-        body,
-      }),
+      new Request(
+        `${api("/upload")}?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body,
+        },
+      ),
       store,
       account,
     );
   const get = (store, account, route, path) =>
-    handleFilesRequest(new Request(`${api(route)}?path=${encodeURIComponent(path)}`), store, account);
+    handleFilesRequest(
+      new Request(`${api(route)}?path=${encodeURIComponent(path)}`),
+      store,
+      account,
+    );
   const who = (id, name) => ({ id, name });
 
   const uploaded = await put(a, who("a", "A"), "/photos", "note.txt", "A's own bytes");
@@ -253,17 +265,17 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   const empty = await (await get(b, who("b", "B"), "", "/photos")).json();
   assert.deepEqual(empty.rows, []);
   const mine = await (await get(a, who("a", "A"), "", "/photos")).json();
-  assert.deepEqual(mine.rows.map((row) => row.name), ["note.txt"]);
+  assert.deepEqual(
+    mine.rows.map((row) => row.name),
+    ["note.txt"],
+  );
   // B's own write is its own key, and A still reads only A's bytes there.
   assert.equal((await put(b, who("b", "B"), "/photos", "note.txt", "B's own bytes")).status, 201);
   assert.equal(
     await (await get(a, who("a", "A"), "/download", "/photos/note.txt")).text(),
     "A's own bytes",
   );
-  assert.deepEqual([...objects.keys()].sort(), [
-    "u/a/photos/note.txt",
-    "u/b/photos/note.txt",
-  ]);
+  assert.deepEqual([...objects.keys()].sort(), ["u/a/photos/note.txt", "u/b/photos/note.txt"]);
   // Every request A made named A's prefix and no other account's.
   for (const request of seen) {
     const prefix = request.includes("u/a") ? "a" : request.includes("u/b") ? "b" : null;
@@ -288,7 +300,9 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
     );
   // A path that climbs out is a 400, and a name with a path in it stays one
   // file. The three separators, the traversal, and a missing name.
-  const climb = await call(new Request(`https://drive.test${FILES_ENDPOINT}?path=%2F..%2F..%2Fetc`));
+  const climb = await call(
+    new Request(`https://drive.test${FILES_ENDPOINT}?path=%2F..%2F..%2Fetc`),
+  );
   assert.equal(climb.status, 400);
   for (const bad of ["a\\b.txt", "..", "%2F%2Fetc"]) {
     const refused = await call(
@@ -297,7 +311,10 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
     assert.equal(refused.status, 400, `${bad} must not be a path`);
   }
   const nameless = await call(
-    new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F`, { method: "POST", body: "x" }),
+    new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F`, {
+      method: "POST",
+      body: "x",
+    }),
   );
   assert.equal(nameless.status, 400, "an upload with no name is refused");
   const named = await upload("a/../b.txt", "x", "text/plain");
@@ -309,9 +326,13 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
   // answer as a document on the origin that holds it.
   const page = await upload("page.html", "<!doctype html><title>a page</title>", "text/html");
   assert.equal(page.status, 201);
-  const download = await call(new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fpage.html`));
+  const download = await call(
+    new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fpage.html`),
+  );
   assert.equal(download.headers.get("content-disposition"), 'attachment; filename="page.html"');
-  const preview = await call(new Request(`https://drive.test${FILES_ENDPOINT}/preview?path=%2Fpage.html`));
+  const preview = await call(
+    new Request(`https://drive.test${FILES_ENDPOINT}/preview?path=%2Fpage.html`),
+  );
   assert.equal(preview.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal(preview.headers.get("content-security-policy"), "sandbox");
@@ -399,12 +420,35 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
   const pkg = JSON.parse(read("package.json"));
   // One command: the types first, then node's own runner over every test file.
   assert.match(pkg.scripts.test, /node --test/, "the command runs node's own test runner");
+  // drive#91: one tsconfig now covers the pricing Worker and the api Worker,
+  // so the check is a single `tsc --noEmit`. `check` is the aggregate gate the
+  // suite runs (drive#92 adds lint beside the type check here), and npm's own
+  // `pretest` lifecycle is what runs it before `node --test`.
   assert.equal(
     pkg.scripts.typecheck,
-    "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
+    "tsc --noEmit",
     "the type check the command runs is the repo's own",
   );
-  assert.match(pkg.scripts.test, /npm run typecheck/, "`npm test` checks the types first");
+  assert.equal(
+    pkg.scripts.lint,
+    "biome check",
+    "`lint` is the one tool's own check: it fails on a lint finding and on an unformatted file",
+  );
+  assert.equal(
+    pkg.scripts.format,
+    "biome format --write .",
+    "`format` is the same tool writing the fix",
+  );
+  assert.equal(
+    pkg.scripts.check,
+    "npm run typecheck && npm run lint",
+    "`check` is the one aggregate gate the suite and the hooks run: types, then lint",
+  );
+  assert.equal(
+    pkg.scripts.pretest,
+    "npm run check",
+    "`npm test` checks the types first, through npm's pretest hook",
+  );
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci, /^\s*-?\s*run:\s*npm test\s*$/m, "CI runs the same command the builder runs");
   // The command's own discovery is what makes it the suite: `node --test`
@@ -418,7 +462,7 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
   for (const name of suites) {
     assert.match(read(`test/${name}`), /from "node:test"/, `${name} is a node:test suite`);
   }
-  assert.ok(pkg.engines && pkg.engines.node, "the runner's version is pinned");
+  assert.ok(pkg.engines?.node, "the runner's version is pinned");
   assert.match(String(pkg.engines.node), /^>=\d+$/, "an engines floor, not a range");
   // The one command must not grow junk flags a worker cannot afford.
   assert.ok(!/coverage|--watch/.test(pkg.scripts.test));

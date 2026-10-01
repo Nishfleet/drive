@@ -36,16 +36,17 @@
 // invents a second path to storage: bytes go through the FileStore interface
 // (src/files.js), so the stand-in, `rclone serve s3` and the real bucket are
 // the same to this file.
+
+import { isSameOriginRequest } from "./email-send.js";
 import {
-  TRASH_PATH,
   joinPath,
   previewContentType,
   safeFileName,
   scopeStore,
+  TRASH_PATH,
   validatePath,
 } from "./files.js";
-import { isSameOriginRequest } from "./email-send.js";
-import { failureMessage } from "./messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -64,7 +65,6 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
 const TOKEN_BYTES = 16;
-const TOKEN_LENGTH = 22;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 // The base64url alphabet. Hand-rolled rather than Buffer/btoa because the same
@@ -72,7 +72,10 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 // enough to pin exactly.
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-/** Encode bytes as base64url, no padding, the alphabet a URL path can carry. */
+/** Encode bytes as base64url, no padding, the alphabet a URL path can carry.
+ *
+ * @param {Uint8Array} bytes
+ */
 export function base64url(bytes) {
   if (!(bytes instanceof Uint8Array)) {
     throw new TypeError(`base64url needs a Uint8Array, got ${String(bytes)}`);
@@ -95,7 +98,7 @@ export function base64url(bytes) {
 /**
  * A fresh link token: 16 random bytes as base64url. The random source is a
  * parameter so a test can pin a token; the Worker leaves the default.
- * @param {(bytes: Uint8Array) => Uint8Array} [getRandomValues]
+ * @param {(bytes: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>} [getRandomValues]
  */
 export function newLinkToken(getRandomValues = (bytes) => crypto.getRandomValues(bytes)) {
   const bytes = new Uint8Array(TOKEN_BYTES);
@@ -107,21 +110,31 @@ export function newLinkToken(getRandomValues = (bytes) => crypto.getRandomValues
  * A token as this module accepts it: the fixed 22-character base64url shape.
  * Anything else — a path, a query string, a token-shaped guess — is not one of
  * ours and is refused before any lookup.
+ *
  * @param {unknown} token
+ * @returns {{token: string, error?: undefined}|{token: "", error: string}}
  */
 export function validateToken(token) {
   if (typeof token !== "string" || !TOKEN_PATTERN.test(token)) {
-    return { error: "That link is not one of ours." };
+    return { token: "", error: "That link is not one of ours." };
   }
   return { token };
 }
 
-/** The URL a share link opens: `<base>/s/<token>`. */
+/** The URL a share link opens: `<base>/s/<token>`.
+ *
+ * @param {string} base
+ * @param {string} token
+ */
 export function shareUrl(base, token) {
   return `${String(base).replace(/\/$/, "")}${SHARE_LINK_PREFIX}/${token}`;
 }
 
-/** The URL the upload page a request opens: `<base>/upload.html?k=<token>`. */
+/** The URL the upload page a request opens: `<base>/upload.html?k=<token>`.
+ *
+ * @param {string} base
+ * @param {string} token
+ */
 export function requestUrl(base, token) {
   return `${String(base).replace(/\/$/, "")}${REQUEST_PAGE}?k=${token}`;
 }
@@ -153,7 +166,7 @@ export function linkExpiry(now, days = DEFAULT_LINK_DAYS) {
  * A record with no usable expiry is reported `expired`, not `active`: a
  * capability URL that has lost its window must not open, and a link that
  * outlives its own 7 days is the one failure this feature exists to prevent.
- * @param {{expiresAt?: number, revokedAt?: number}|null} record
+ * @param {{expiresAt: number, revokedAt?: number|null}|null} record
  * @param {number} now
  * @returns {"active"|"revoked"|"expired"|null}
  */
@@ -170,7 +183,11 @@ export function linkState(record, now = Date.now()) {
   return "active";
 }
 
-/** Whether a record is the one state a stranger's request may act on. */
+/** Whether a record is the one state a stranger's request may act on.
+ *
+ * @param {ShareRecord|RequestRecord|null} record
+ * @param {number} [now]
+ */
 export function linkIsOpen(record, now = Date.now()) {
   return linkState(record, now) === "active";
 }
@@ -188,10 +205,10 @@ export function validateShareFile(path) {
     return checked;
   }
   if (checked.path === "/") {
-    return { error: "Share one file, not the whole drive." };
+    return { path: "", error: "Share one file, not the whole drive." };
   }
   if (checked.path === TRASH_PATH || checked.path.startsWith(`${TRASH_PATH}/`)) {
-    return { error: "That file is in Recently deleted." };
+    return { path: "", error: "That file is in Recently deleted." };
   }
   return checked;
 }
@@ -208,7 +225,7 @@ export function validateRequestFolder(path) {
     return checked;
   }
   if (checked.path === TRASH_PATH || checked.path.startsWith(`${TRASH_PATH}/`)) {
-    return { error: "That folder is Recently deleted." };
+    return { path: "", error: "That folder is Recently deleted." };
   }
   return checked;
 }
@@ -220,16 +237,24 @@ const LINK_STATE_LABELS = Object.freeze({
   expired: "Expired",
 });
 
-/** The label for a state, or a programmer error for one this file forgot. */
+/** The label for a state, or a programmer error for one this file forgot.
+ *
+ * @param {"active"|"revoked"|"expired"|null} state
+ */
 export function linkStateLabel(state) {
-  const label = LINK_STATE_LABELS[state];
+  const label = typeof state === "string" ? LINK_STATE_LABELS[state] : undefined;
   if (!label) {
-    throw new Error(`no label for link state "${state}"; add it to LINK_STATE_LABELS in src/share.js`);
+    throw new Error(
+      `no label for link state "${state}"; add it to LINK_STATE_LABELS in src/share.js`,
+    );
   }
   return label;
 }
 
-/** The day a link stops working, in words, for the owner's list. */
+/** The day a link stops working, in words, for the owner's list.
+ *
+ * @param {number} expiresAt
+ */
 export function expiresLabel(expiresAt) {
   if (!Number.isFinite(expiresAt)) {
     throw new TypeError(`expiresLabel needs an expiry time, got ${String(expiresAt)}`);
@@ -243,7 +268,7 @@ export function expiresLabel(expiresAt) {
 /**
  * A share as the owner's list renders it: where it points, the link to copy,
  * its state, and how much has been downloaded through it.
- * @param {object} record
+ * @param {ShareRecord} record
  * @param {number} now
  * @param {string} base
  */
@@ -262,13 +287,15 @@ export function shareRow(record, now, base) {
     expiresLabel: expiresLabel(record.expiresAt),
     downloads: count,
     downloadsLabel:
-      count === 0 ? "No downloads yet" : `${count} download${count === 1 ? "" : "s"}, ${formatBytes(bytes)}`,
+      count === 0
+        ? "No downloads yet"
+        : `${count} download${count === 1 ? "" : "s"}, ${formatBytes(bytes)}`,
   });
 }
 
 /**
  * An upload request as the owner's list renders it.
- * @param {object} record
+ * @param {RequestRecord} record
  * @param {number} now
  * @param {string} base
  */
@@ -302,10 +329,11 @@ export const UPLOAD_PAGE_COPY = Object.freeze({
   done: "Uploaded. Drop another whenever you like.",
   // The closed page's own two lines, and the no-token case. They are not the
   // open page's title: a closed link that still says "Drop files here" tells a
-  // stranger to do something that cannot work. These are the message table's
-  // link-not-found words, which is what the route itself answers (src/messages.js).
-  closedTitle: "This link does not open anything.",
-  closedBody: "Ask the person who sent it for a new one.",
+  // stranger to do something that cannot work. The two lines are the message
+  // table's link-not-found entry read through, not a second copy — the same
+  // words the route itself answers with (drive#193: one table, no drift).
+  closedTitle: FAILURE_MESSAGES["link-not-found"].what,
+  closedBody: FAILURE_MESSAGES["link-not-found"].next,
   noToken: "This page needs the link it was sent with. Open the link again to drop files.",
 });
 
@@ -338,23 +366,31 @@ export const UPLOAD_PAGE_LINE =
  */
 
 /**
+/**
  * The in-memory stand-in: two Maps keyed by token. The deployment runs on it
  * until the accounts store lands (#55), the same way the Files page runs on
  * createMemoryStore() until #2; the interface is what the D1 rows will
  * implement, so no handler changes when they arrive.
+ *
  * @returns {LinkStore}
  */
 export function createMemoryLinkStore() {
   const shares = new Map();
   const requests = new Map();
 
-  // Revoking is scoped to the account, the same rule the list is: a token
-  // belonging to another account is not found here, so the owner route answers
-  // the same 404 for "not yours" as for "never existed" and a signed-in
-  // account can never turn off another account's link (issue #73's isolation
-  // gate). The accountId travels into the store rather than being checked in
-  // the handler, so the D1 store this interface becomes enforces it in its
-  // own query instead of every handler remembering to.
+  /**
+   * Revoking is scoped to the account, the same rule the list is: a token
+   * belonging to another account is not found here, so the owner route answers
+   * the same 404 for "not yours" as for "never existed" and a signed-in
+   * account can never turn off another account's link (issue #73's isolation
+   * gate). The accountId travels into the store rather than being checked in
+   * the handler, so the D1 store this interface becomes enforces it in its
+   * own query instead of every handler remembering to.
+   *
+   * @template {ShareRecord|RequestRecord} T
+   * @param {Map<string, T>} map
+   * @returns {(token: string, accountId: string, at: number) => Promise<T|null>}
+   */
   const revokeIn = (map) => async (token, accountId, at) => {
     const record = map.get(token);
     if (!record || record.accountId !== accountId) {
@@ -425,14 +461,16 @@ export function createMemoryLinkStore() {
  * The record for a new share. Kept separate from the handler so a test mints
  * links with a pinned token and clock, and so nothing but the store persists
  * it.
+ *
  * @param {{accountId: string, path: string, now: number, token: string, days?: number}} input
+ * @returns {ShareRecord}
  */
 export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LINK_DAYS }) {
   return {
     token,
     accountId,
     path,
-    name: path.split("/").pop(),
+    name: path.slice(path.lastIndexOf("/") + 1),
     createdAt: now,
     expiresAt: linkExpiry(now, days),
     revokedAt: null,
@@ -443,7 +481,9 @@ export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LIN
 
 /**
  * The record for a new upload request.
+ *
  * @param {{accountId: string, folder: string, now: number, token: string, days?: number}} input
+ * @returns {RequestRecord}
  */
 export function newRequestRecord({ accountId, folder, now, token, days = DEFAULT_LINK_DAYS }) {
   return {
@@ -463,10 +503,19 @@ const LINK_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} [status]
+ */
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: LINK_HEADERS });
 }
 
+/**
+ * @param {string} message
+ * @param {number} status
+ * @param {Record<string, string>} [extraHeaders]
+ */
 function plain(message, status, extraHeaders = {}) {
   return new Response(message, {
     status,
@@ -478,6 +527,10 @@ function plain(message, status, extraHeaders = {}) {
   });
 }
 
+/**
+ * @param {string} allowed
+ * @param {string} action
+ */
 function methodNotAllowed(allowed, action) {
   return plain(`Method not allowed. ${action}`, 405, { allow: allowed });
 }
@@ -488,6 +541,9 @@ function methodNotAllowed(allowed, action) {
 // a query error) is never a thing to hand back; the caller gets the message
 // table's generic words, which is the same answer any unexpected failure in
 // the Worker gets (src/messages.js `unexpected`).
+/**
+ * @param {string} where
+ */
 function serverFailure(where) {
   console.error(`drive share: ${where}`);
   return json({ error: failureMessage("unexpected") }, 500);
@@ -498,6 +554,10 @@ function serverFailure(where) {
 // TypeError rather than a page that quietly opens. A caller that forgets the
 // cap cannot serve a read-only drive, and a drive that is not at its cap is
 // not refused by someone else's.
+/**
+ * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} resolver
+ * @param {string} accountId
+ */
 async function capStateFor(resolver, accountId) {
   const state = await resolver(accountId);
   if (state !== "active" && state !== "read_only") {
@@ -518,6 +578,13 @@ function crossSiteRefused() {
   );
 }
 
+/**
+ * The POST body every owner route reads: one JSON object, or the sentence to
+ * show. The two arms are named so the `if (error)` check is the narrowing.
+ *
+ * @param {Request} request
+ * @returns {Promise<{body: Record<string, unknown>, error?: undefined}|{error: string, body?: undefined}>}
+ */
 async function readJsonObject(request) {
   let body;
   try {
@@ -531,7 +598,10 @@ async function readJsonObject(request) {
   return { body };
 }
 
-/** The request's own origin: the links are absolute so they can be copied. */
+/** The request's own origin: the links are absolute so they can be copied.
+ *
+ * @param {Request} request
+ */
 export function baseFromRequest(request) {
   return new URL(request.url).origin;
 }
@@ -542,7 +612,7 @@ export function baseFromRequest(request) {
  * answer comes from the same interface every other read uses. The root always
  * exists. This is the paved path: the Files page asks the same listing the
  * same way, so there is no second way to know a folder is there.
- * @param {object} files a FileStore
+ * @param {import("./files.js").FileStore} files a FileStore
  * @param {string} path a validated folder path
  */
 export async function folderExists(files, path) {
@@ -556,7 +626,10 @@ export async function folderExists(files, path) {
   return entries.some((entry) => entry.kind === "folder" && entry.name === name);
 }
 
-/** The one folder name a stranger is shown: the folder's own last segment. */
+/** The one folder name a stranger is shown: the folder's own last segment.
+ *
+ * @param {string} folder
+ */
 export function folderDisplayName(folder) {
   return folder === "/" ? "Your drive" : folder.split("/").pop();
 }
@@ -579,7 +652,7 @@ export function folderDisplayName(folder) {
  * Reading is safe to repeat, so only the two that change the drive — minting
  * and revoking — carry the cross-site rule src/files.js already uses.
  * @param {Request} request
- * @param {object} files a FileStore
+ * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
@@ -603,7 +676,10 @@ export async function handleShareRequest(request, files, links, account, options
   }
   if (request.method === "POST") {
     const { body, error } = await readJsonObject(request);
-    if (error) {
+    if (body === undefined) {
+      // The `if` is the narrowing: readJsonObject's error arm is the only one
+      // without a body, so error is a string here and there is nothing to
+      // fall back to (the same shape src/files.js reads its POST bodies with).
       return json({ error }, 400);
     }
     const checked = validateShareFile(body.path);
@@ -618,10 +694,10 @@ export async function handleShareRequest(request, files, links, account, options
       // not "the file is gone" is the table's generic words, and the cause is
       // the thing the log keeps. A share route is anonymous, so its error
       // text is read by strangers.
-      return serverFailure(`minting a share: ${cause.message}`);
+      return serverFailure(`minting a share: ${String(cause)}`);
     }
     if (!object) {
-      return json({ error: "That file is not here." }, 404);
+      return json({ error: failureMessage("file-not-found") }, 404);
     }
     const record = newShareRecord({
       accountId: account.id,
@@ -634,7 +710,10 @@ export async function handleShareRequest(request, files, links, account, options
   }
   if (request.method === "DELETE") {
     const { body, error } = await readJsonObject(request);
-    if (error) {
+    if (body === undefined) {
+      // The `if` is the narrowing: readJsonObject's error arm is the only one
+      // without a body, so error is a string here and there is nothing to
+      // fall back to (the same shape src/files.js reads its POST bodies with).
       return json({ error }, 400);
     }
     const checked = validateToken(body.token);
@@ -647,7 +726,10 @@ export async function handleShareRequest(request, files, links, account, options
     }
     return json({ ok: true, share: shareRow(record, now, base) });
   }
-  return methodNotAllowed("GET, POST, DELETE", "GET the links, POST a file path, or DELETE a token.");
+  return methodNotAllowed(
+    "GET, POST, DELETE",
+    "GET the links, POST a file path, or DELETE a token.",
+  );
 }
 
 /**
@@ -670,7 +752,7 @@ export async function handleShareRequest(request, files, links, account, options
  * still opens in the tab for a picture or a PDF, which is what "a link that
  * opens the file" means; what it cannot do is run as a page on our domain.
  * @param {Request} request
- * @param {object} files a FileStore
+ * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{now?: number}} [options]
  */
@@ -685,7 +767,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
     return plain(failureMessage("link-not-found"), 404);
   }
   const record = await links.shares.get(checked.token);
-  if (!linkIsOpen(record, now)) {
+  if (record === null || !linkIsOpen(record, now)) {
     return plain(failureMessage("link-not-found"), 404);
   }
   // The one scoping place: the share row names the owner, so the row is what
@@ -695,7 +777,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
   try {
     object = await scoped.read(record.path);
   } catch (cause) {
-    return serverFailure(`reading a shared file: ${cause.message}`);
+    return serverFailure(`reading a shared file: ${String(cause)}`);
   }
   if (!object) {
     return plain(failureMessage("link-not-found"), 404);
@@ -706,10 +788,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // (#58) is what measures the bytes actually served. A HEAD is counted as an
   // open but carries no bytes, so it cannot inflate the owner's allowance for
   // a body nobody received.
-  await links.shares.addDownload(
-    checked.token,
-    request.method === "HEAD" ? 0 : object.size,
-  );
+  await links.shares.addDownload(checked.token, request.method === "HEAD" ? 0 : object.size);
   // The served type is the file's own kind, never the claim the uploader made
   // of it, through the same previewContentType() /api/files/preview uses: text
   // leaves as text/plain, an unknown type as octet-stream, and an .html named
@@ -748,7 +827,7 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * folder is looked at through scopeStore(files, account), so a request can
  * only ever open an upload page for a folder inside the signed-in account.
  * @param {Request} request
- * @param {object} files a FileStore
+ * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {{now?: number, token?: string}} [options]
@@ -772,7 +851,10 @@ export async function handleRequestRequest(request, files, links, account, optio
   }
   if (request.method === "POST") {
     const { body, error } = await readJsonObject(request);
-    if (error) {
+    if (body === undefined) {
+      // The `if` is the narrowing: readJsonObject's error arm is the only one
+      // without a body, so error is a string here and there is nothing to
+      // fall back to (the same shape src/files.js reads its POST bodies with).
       return json({ error }, 400);
     }
     const checked = validateRequestFolder(body.folder);
@@ -783,7 +865,7 @@ export async function handleRequestRequest(request, files, links, account, optio
     try {
       exists = await folderExists(scoped, checked.path);
     } catch (cause) {
-      return serverFailure(`minting an upload request: ${cause.message}`);
+      return serverFailure(`minting an upload request: ${String(cause)}`);
     }
     if (!exists) {
       return json({ error: "That folder is not here." }, 404);
@@ -799,7 +881,10 @@ export async function handleRequestRequest(request, files, links, account, optio
   }
   if (request.method === "DELETE") {
     const { body, error } = await readJsonObject(request);
-    if (error) {
+    if (body === undefined) {
+      // The `if` is the narrowing: readJsonObject's error arm is the only one
+      // without a body, so error is a string here and there is nothing to
+      // fall back to (the same shape src/files.js reads its POST bodies with).
       return json({ error }, 400);
     }
     const checked = validateToken(body.token);
@@ -812,7 +897,10 @@ export async function handleRequestRequest(request, files, links, account, optio
     }
     return json({ ok: true, request: requestRow(record, now, base) });
   }
-  return methodNotAllowed("GET, POST, DELETE", "GET the requests, POST a folder, or DELETE a token.");
+  return methodNotAllowed(
+    "GET, POST, DELETE",
+    "GET the requests, POST a folder, or DELETE a token.",
+  );
 }
 
 /**
@@ -845,7 +933,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
     return json({ error: failureMessage("link-not-found") }, 404);
   }
   const record = await links.requests.get(checked.token);
-  if (!linkIsOpen(record, now)) {
+  if (record === null || !linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
   const state = await capStateFor(capState, record.accountId);
@@ -872,7 +960,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * goes through scopeStore(files, the request row's account), so a dropped
  * file lands inside the owner's prefix and nowhere else.
  * @param {Request} request
- * @param {object} files a FileStore
+ * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} capState
  * @param {{now?: number}} [options]
@@ -891,7 +979,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
     return json({ error: failureMessage("link-not-found") }, 404);
   }
   const record = await links.requests.get(checked.token);
-  if (!linkIsOpen(record, now)) {
+  if (record === null || !linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
   if ((await capStateFor(capState, record.accountId)) === "read_only") {
@@ -909,9 +997,9 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
   try {
-    await scoped.write(path, request.body, contentType);
+    await scoped.write(path, /** @type {ReadableStream} */ (request.body), contentType);
   } catch (cause) {
-    return serverFailure(`storing an uploaded file: ${cause.message}`);
+    return serverFailure(`storing an uploaded file: ${String(cause)}`);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

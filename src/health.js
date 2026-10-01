@@ -9,11 +9,19 @@
 // What "what it depends on" means here, and why the list is not the whole env:
 //
 //   - Every D1 database the Worker binds, found by reading the bindings on
-//     `env` rather than from a hand-kept list, so a database added to
-//     cloudflare.config.ts is checked the day it is added. The trivial read is
-//     the one statement D1 answers whatever the schema is, so a database
+//     `env` and asking which kind of binding each one is, so a database added
+//     to cloudflare.config.ts is checked the day it is added. The trivial read
+//     is the one statement D1 answers whatever the schema is, so a database
 //     whose migrations are ahead of the Worker (still healthy) passes and an
-//     unreachable one fails. The waitlist is the site's only store today.
+//     unreachable one fails. Two databases today: the waitlist's, holding
+//     only the sign-up table, and the customer drive's, holding the file
+//     index, branches and agent caps (drive issue #170).
+//     Asking which kind it is, rather than looking for one method, is what
+//     makes that discovery safe (drive#144): every binding that is not a
+//     database is a Fetcher, and a Fetcher answers a function to every
+//     property name, so looking only for `prepare` collected the asset binding
+//     as a database and every poll answered 503 {"failing":"ASSETS"} with a
+//     DataCloneError in the log.
 //
 //   - The bindings named in REQUIRED_BINDINGS below, which discovery cannot
 //     do: a binding the deploy lost is not on `env` at all, and a check that
@@ -87,12 +95,16 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). The email binding is not: only the token-gated internal
+ * (src/waitlist.js). Both databases are on it: a deploy that lost DRIVE_DB
+ * would serve every page and sign-up while every file, search and branch
+ * request failed, which is exactly the outage this endpoint exists to catch
+ * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
  * would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
+  "DRIVE_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
 ]);
@@ -108,19 +120,23 @@ const JSON_HEADERS = Object.freeze({
  * Rejects with a named timeout if `work` has not settled within `ms`. The
  * work itself keeps a reference to its own signal so a D1 read can be
  * cancelled at the database rather than merely abandoned here.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {string} name
+ * @returns {Promise<T>}
  */
 function withTimeout(promise, ms, name) {
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
   let timer;
   const expiry = new Promise((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new HealthCheckTimeout(name)),
-      ms,
-    );
+    timer = setTimeout(() => reject(new HealthCheckTimeout(name)), ms);
   });
   return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
 }
 
 class HealthCheckTimeout extends Error {
+  /** @param {string} name */
   constructor(name) {
     super(`${name} did not answer in time`);
     this.name = "HealthCheckTimeout";
@@ -128,27 +144,63 @@ class HealthCheckTimeout extends Error {
 }
 
 /**
+ * Whether a binding is a D1 database, which is a question about the kind of
+ * binding and not about one method. drive#144: the live /api/health answered
+ * 503 {"failing":"ASSETS"} on every poll, and the D1 read in checkD1 was the
+ * code that threw `DataCloneError: AbortSignal serialization is not enabled`.
+ *
+ * The cause was that predicate asking only "is `prepare` a function". Every
+ * binding that is not a database is a Fetcher (the static-assets binding, the
+ * email binding, every service binding), and a Fetcher is an RPC stub: it
+ * answers a function to every property name, `prepare` included, and to names
+ * that do not exist at all. So ASSETS matched, was collected as a database,
+ * and the check ran a D1 statement against the asset binding, which the
+ * runtime refuses to carry across the stub.
+ *
+ * What separates the two is documented rather than guessed. A database is
+ * `env.MY_DB.prepare(...)` with `batch`, `exec` and `withSession` beside it
+ * and no `fetch` (https://developers.cloudflare.com/d1/worker-api/); a Fetcher
+ * is `env.ASSETS.fetch(request)`
+ * (https://developers.cloudflare.com/workers/static-assets/). A database
+ * answers `undefined` to a name it does not have and a Fetcher answers a
+ * function, so `prepare` here is "a database" and no `fetch` is "not a
+ * Fetcher". Both halves are load-bearing: `prepare` alone matches a Fetcher,
+ * and some other method would miss a database whose runtime moved that one.
+ * @param {unknown} binding one value off `env`
+ * @returns {binding is {prepare: (sql: string) => unknown}}
+ */
+function isDatabaseBinding(binding) {
+  if (typeof binding !== "object" || binding === null) {
+    return false;
+  }
+  const candidate = /** @type {{prepare?: unknown, fetch?: unknown}} */ (binding);
+  return typeof candidate.prepare === "function" && typeof candidate.fetch !== "function";
+}
+
+/**
  * Every D1 database on this Worker, paired with the binding name that reached
- * it. Read from `env` by shape (a `prepare` function) rather than from a
+ * it. Read from `env` by binding kind (isDatabaseBinding above) rather than from a
  * hand-kept list, so a binding added to cloudflare.config.ts is checked the
- * day it is added and cannot be forgotten here. The waitlist's rate limiter,
- * the asset binding and the secret values do not match this shape, so they
- * are named in REQUIRED_BINDINGS instead.
+ * day it is added and cannot be forgotten here. A Fetcher is not a database
+ * however it is spelled — the static-assets binding and the email binding
+ * both answer `prepare` — so those are not discovered here, and the asset
+ * layer is checked on its own terms instead (checkHealth fetches it; the email
+ * binding deliberately is not, for the reason in this module's header).
  * @param {Record<string, unknown>} env
- * @returns {{name: string, db: {prepare: (sql: string) => unknown}}[]}
+ * @returns {{name: string, db: {prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}}[]}
  */
 export function d1Bindings(env) {
   if (typeof env !== "object" || env === null) {
     return [];
   }
   return Object.entries(env)
-    .filter(
-      ([, binding]) =>
-        typeof binding === "object" &&
-        binding !== null &&
-        typeof binding.prepare === "function",
-    )
-    .map(([name, db]) => ({ name, db }));
+    .filter(([, binding]) => isDatabaseBinding(binding))
+    .map(([name, db]) => ({
+      name,
+      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (
+        db
+      ),
+    }));
 }
 
 /**
@@ -156,7 +208,15 @@ export function d1Bindings(env) {
  * share. A rejected read is not swallowed: it becomes the failure this check
  * reports, with the binding's name and nothing else.
  * @param {string} name the binding name, safe to show an operator
- * @param {{prepare: (sql: string) => unknown}} db
+ * @param {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} db
+ *   the binding, once its `prepare` shape was checked. The `all` signature is
+ *   spelled out rather than using the runtime's own `D1PreparedStatement`
+ *   because that type's `all()` takes no options, while the platform and the
+ *   test's fake both read the cancellation signal off this call: the type is
+ *   narrower than the API, and saying what this call actually passes is
+ *   truer than a cast around it.
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkD1(name, db, timeoutMs) {
   await withTimeout(
@@ -176,6 +236,8 @@ async function checkD1(name, db, timeoutMs) {
  * a document, and a 404 is the expected answer (nothing is served there), so
  * the check is "did we get a response at all", not "was it 200".
  * @param {{fetch: (request: Request) => Promise<Response>}} assets
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkAssets(assets, timeoutMs) {
   const response = await withTimeout(
@@ -213,6 +275,8 @@ async function checkAssets(assets, timeoutMs) {
  * answering at all is.
  *
  * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkRateLimiter(limiter, timeoutMs) {
   const result = await withTimeout(
@@ -248,20 +312,36 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       return { ok: false, failing: name };
     }
   }
-  const checks = [];
+  const checks = /** @type {{name: string, run: (left: number) => Promise<void>}[]} */ ([]);
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
+  // The binding is read off the untyped env and checked by shape, exactly as
+  // d1Bindings does: the cast is the check that was just made, not a default.
   const assets = env.ASSETS;
-  if (typeof assets.fetch !== "function") {
+  if (
+    typeof assets !== "object" ||
+    assets === null ||
+    !("fetch" in assets) ||
+    typeof assets.fetch !== "function"
+  ) {
     // The landing page is served by this binding on every request that is
     // not /api/*, so its absence is an outage, not a configuration nit: a
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({ name: "ASSETS", run: (left) => checkAssets(assets, left) });
+  checks.push({
+    name: "ASSETS",
+    run: (left) =>
+      checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left),
+  });
   const limiter = env.WAITLIST_RATE_LIMITER;
-  if (typeof limiter.limit !== "function") {
+  if (
+    typeof limiter !== "object" ||
+    limiter === null ||
+    !("limit" in limiter) ||
+    typeof limiter.limit !== "function"
+  ) {
     // The waitlist fails closed without this binding (src/waitlist.js), so a
     // binding that is present but has no `limit` is as broken as a missing
     // one and gets the same name.
@@ -269,7 +349,11 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   }
   checks.push({
     name: "WAITLIST_RATE_LIMITER",
-    run: (left) => checkRateLimiter(limiter, left),
+    run: (left) =>
+      checkRateLimiter(
+        /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (limiter),
+        left,
+      ),
   });
 
   for (const check of checks) {

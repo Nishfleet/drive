@@ -206,7 +206,7 @@ input[type="file"] {
     </div>
 
     <div class="closed" id="closed" hidden>
-      <h2 id="closed-title">This link does not open anything.</h2>
+      <h2 id="closed-title">That link does not open anything.</h2>
       <p id="closed-body">Ask the person who sent it for a new one.</p>
     </div>
 
@@ -218,6 +218,14 @@ input[type="file"] {
 // page is a static asset and cannot import that module, so test/share.test.mjs
 // reads this file and fails CI when a sentence or an endpoint drifts from it
 // (the same gate test/files.test.mjs runs for public/files.html).
+// The closed page's sentence: the message table's link-not-found pair, what
+// then next — the same string the route's 404 answers with (src/messages.js
+// through src/share.js). One string, split into the heading and the line
+// under it when the copy object below is built; test/share.test.mjs pins the
+// exact words against the module.
+const CLOSED_COPY =
+  "That link does not open anything. Ask the person who sent it for a new one.";
+const CLOSED_CUT = CLOSED_COPY.indexOf(". ") + 1;
 const UPLOAD_PAGE_COPY = {
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
@@ -226,13 +234,15 @@ const UPLOAD_PAGE_COPY = {
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
   done: "Uploaded. Drop another whenever you like.",
-  // The closed page's own two lines. They are not the open page's title: a
+  // The closed page's own two lines, from CLOSED_COPY below — the message
+  // table's link-not-found pair, carried as the one string the route's 404
+  // answers with (src/messages.js through src/share.js) and split here into
+  // the heading and the line under it. They are not the open page's title: a
   // closed link that says "Drop files here" tells a stranger to do something
-  // that cannot work, and these are the message table's link-not-found words
-  // (src/messages.js), the same answer an unknown, revoked or expired link
-  // gets. The no-token case is its own line because the link was never one.
-  closedTitle: "This link does not open anything.",
-  closedBody: "Ask the person who sent it for a new one.",
+  // that cannot work. The no-token case is its own line because the link was
+  // never one.
+  closedTitle: CLOSED_COPY.slice(0, CLOSED_CUT),
+  closedBody: CLOSED_COPY.slice(CLOSED_CUT + 1),
   noToken: "This page needs the link it was sent with. Open the link again to drop files.",
 };
 const UPLOAD_PAGE_LINE = "This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.";
@@ -260,7 +270,7 @@ document.getElementById("hint").textContent = UPLOAD_PAGE_COPY.hint;
 
 function say(message, kind) {
   status.textContent = message || "";
-  status.className = "status" + (kind ? " " + kind : "");
+  status.className = kind ? `status ${kind}` : "status";
 }
 
 function closePage(reason) {

@@ -34,7 +34,9 @@ export const KEY_KINDS = ["device", "agent", "s3", "branch"];
  * @type {Readonly<Record<KeyKind, ReadonlyArray<Capability>>>}
  */
 export const CAPABILITIES_BY_KIND = Object.freeze({
-  device: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write", "delete"])),
+  device: Object.freeze(
+    /** @type {ReadonlyArray<Capability>} */ (["list", "read", "write", "delete"]),
+  ),
   agent: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
   s3: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
   branch: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
@@ -64,7 +66,7 @@ function checkedAccountId(accountId) {
  * @param {unknown} name
  * @returns {string}
  */
-function checkedBranchName(name) {
+export function checkedBranchName(name) {
   if (typeof name !== "string" || !BRANCH_NAME_SAFE.test(name) || name.includes("..")) {
     throw new TypeError(
       `A branch name is 1 to 64 characters of letters, digits, dot, dash or underscore, without "..", got ${JSON.stringify(name)}.`,

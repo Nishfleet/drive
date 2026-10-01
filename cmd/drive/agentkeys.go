@@ -56,13 +56,10 @@ func saveAgentKey(home, tool string, key MintedKey) error {
 	if err != nil {
 		return err
 	}
-	keys[tool] = agentKey{
-		KeyID:        key.KeyID,
-		AccessKeyID:  key.AccessKeyID,
-		Secret:       key.Secret,
-		Prefix:       key.Prefix,
-		Capabilities: key.Capabilities,
-	}
+	// MintedKey and agentKey are field-for-field the same shape, so the
+	// conversion is a plain type conversion: one less field list to keep in
+	// step when a key gains a field.
+	keys[tool] = agentKey(key)
 	return writeAgentKeys(home, keys)
 }
 
