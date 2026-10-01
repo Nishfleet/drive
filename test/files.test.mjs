@@ -478,7 +478,7 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
   assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
-  assert.throws(() => previewContentType(/** @type {null} */ (/** @type {unknown} */ (null)), "text/plain"), TypeError);
+  assert.throws(() => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"), TypeError);
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -650,6 +650,7 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     remove: async () => {},
     copy: async () => {},
   };
+  /** @param {Request} request */
   const call = (request) => handleFilesRequest(request, broken, account, now);
   const listing = await call(new Request(api("")));
   assert.equal(listing.status, 500);
@@ -729,13 +730,13 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
   assert.equal(photo.size, 2400);
   assert.equal(photo.modified, Date.parse("2026-09-30T11:00:00.000Z"));
   assert.equal(photo.path, "/holiday.jpg");
-  assert.throws(() => parseListObjects(null, "u/1/", "/"), TypeError);
+  assert.throws(() => parseListObjects(/** @type {string} */ (/** @type {unknown} */ (null)), "u/1/", "/"), TypeError);
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
   const { createS3Store } = await import("../src/files.js");
   assert.throws(
-    () => createS3Store({ endpoint: /** @type {unknown} */ (undefined), bucket: "drive" }),
+    () => createS3Store({ endpoint: /** @type {string} */ (/** @type {unknown} */ (undefined)), bucket: "drive" }),
     /endpoint and a bucket/,
   );
   const store = createS3Store({ endpoint: "http://127.0.0.1:9000/", bucket: "drive" });
@@ -755,9 +756,10 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size><ETag>66dbbbc6491a376540bacd33bdf2cc0f</ETag>
   <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
 </ListBucketResult>`;
+  /** @type {typeof fetch} */
   const fetchImpl = async (url, init) => {
-    urls.push({ method: init?.method || "GET", url });
-    if (url.includes("list-type=2")) {
+    urls.push({ method: init?.method || "GET", url: String(url) });
+    if (String(url).includes("list-type=2")) {
       return new Response(xml, { status: 200 });
     }
     return new Response("bytes", {
@@ -819,8 +821,9 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   /** @type {string[]} */
   const seen = [];
   let calls = 0;
+  /** @type {typeof fetch} */
   const fetchImpl = async (url) => {
-    seen.push(url);
+    seen.push(String(url));
     calls++;
     if (calls === 1) return new Response(page(first, "token-1"), { status: 200 });
     return new Response(page(second, null), { status: 200 });
@@ -847,7 +850,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // An empty token element ends the listing, it does not ask for "".
   assert.equal(nextContinuationToken("<ListBucketResult></ListBucketResult>"), null);
   assert.equal(nextContinuationToken("<NextContinuationToken>t</NextContinuationToken>"), "t");
-  assert.throws(() => nextContinuationToken(null), TypeError);
+  assert.throws(() => nextContinuationToken(/** @type {string} */ (/** @type {unknown} */ (null))), TypeError);
 });
 
 // ---------------------------------------------------------------- the Worker
@@ -857,12 +860,19 @@ test("the Worker routes the page's API to the files handler", async () => {
   // The route reaches the handler, and the handler's gate answers 401 with no
   // sign-in flow yet (issue #73). A 200 here would mean the account gate is
   // not in front of this route; test/account-gate.test.mjs walks every route.
-  const workerFetch = /** @type {NonNullable<typeof worker.fetch>} */ (/** @type {unknown} */ (worker.fetch));
-  const ctx = /** @type {ExecutionContext} */ (/** @type {unknown} */ ({ waitUntil() {}, passThroughOnException() {} }));
+  // The ExportedHandler type makes fetch optional and declares the runtime's
+  // three arguments. The tests drive the Worker directly, so one wrapper
+  // supplies the execution context the platform would and keeps those facts
+  // out of every call site.
+  /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
   const response = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}`),
-    /** @type {unknown} */ ({ ASSETS: assets }),
-    /** @type {ExecutionContext} */ (/** @type {unknown} */ (ctx)),
+    { ASSETS: assets },
+    ctx,
   );
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), {
@@ -872,8 +882,8 @@ test("the Worker routes the page's API to the files handler", async () => {
   // A path that is not an API still comes from the asset layer.
   const page = await workerFetch(
     new Request("https://drive.test/files"),
-    /** @type {unknown} */ ({ ASSETS: assets }),
-    /** @type {ExecutionContext} */ (/** @type {unknown} */ (ctx)),
+    { ASSETS: assets },
+    ctx,
   );
   assert.equal(await page.text(), "asset");
 });
@@ -1028,10 +1038,11 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   const { createS3Store, scopeStore } = await import("../src/files.js");
   /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
+  /** @type {typeof fetch} */
   const fetchImpl = async (url, init) => {
     /** @type {Record<string, string>} */
     const headers = /** @type {Record<string, string>} */ (init?.headers || {});
-    calls.push({ method: init?.method || "GET", url, headers });
+    calls.push({ method: init?.method || "GET", url: String(url), headers });
     return new Response("<CopyObjectResult></CopyObjectResult>", { status: 200 });
   };
   const store = scopeStore(
