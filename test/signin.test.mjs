@@ -30,6 +30,7 @@ import {
   SIGNIN_ENDPOINT,
   SIGNIN_METHODS,
   SIGNIN_PATH,
+  SIGNIN_SEND_LIMIT,
   SIGNIN_STEPS,
   signinClosedBody,
 } from "../src/signin.js";
@@ -266,6 +267,65 @@ test("a mailer that throws is a closed door, never a 202 for a link that never l
   assert.equal(response.status, 503, "a link that could not be sent is not a 202");
   assert.deepEqual(await response.json(), signinClosedBody());
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("one address cannot start more than six links a minute", async () => {
+  // The bound the hand-written store enforced (CODE_SEND_LIMIT 6 per 60 s) is
+  // back on the route, because Better Auth's own rate limit is per-IP and
+  // runs only in its HTTP router — the server-API call this route makes never
+  // reaches it. Without the route's own bound, an unauthenticated loop mints
+  // an email for every request: mail-bombing one mailbox and enumerating who
+  // has a drive.
+  const made = dispatchEnv();
+  for (let attempt = 1; attempt <= SIGNIN_SEND_LIMIT; attempt++) {
+    const response = await worker.fetch(
+      post({ step: "start", method: "email", email: "busy@example.com" }),
+      made.env,
+    );
+    assert.equal(response.status, 202, `start ${attempt} is inside the window`);
+  }
+  assert.equal(made.sent.length, SIGNIN_SEND_LIMIT, "exactly the allowed links went out");
+
+  const refused = await worker.fetch(
+    post({ step: "start", method: "email", email: "busy@example.com" }),
+    made.env,
+  );
+  assert.equal(refused.status, 429, "the seventh start inside the window is refused");
+  assert.deepEqual(await refused.json(), { error: failureMessage("rate-limited") });
+  assert.equal(made.sent.length, SIGNIN_SEND_LIMIT, "a refused start mails nothing");
+
+  // Another address has its own window: the bound is per mailbox, not a
+  // single shared bucket that one busy person would lock everyone out of.
+  const other = await worker.fetch(
+    post({ step: "start", method: "email", email: "calm@example.com" }),
+    made.env,
+  );
+  assert.equal(other.status, 202, "a second address is not refused by the first one's starts");
+  // And the bound is on the address, not on its spelling.
+  const spaced = await worker.fetch(
+    post({ step: "start", method: "email", email: "  BUSY@example.com  " }),
+    made.env,
+  );
+  assert.equal(spaced.status, 429, "the window follows the address, not the casing or padding");
+});
+
+test("a library that answers without sending is a closed door, never a 202", async () => {
+  // `auth.api.signInMagicLink` can answer with a non-200 Response instead of
+  // throwing — a validation or plugin refusal. A 202 there announces a link
+  // that never left, which is the one thing this route promises not to do, so
+  // the route reads the library's own status before answering.
+  const made = dispatchEnv();
+  const refused = await made.auth.api.signInMagicLink({
+    body: { email: "not-an-address" },
+    headers: new Headers({ origin: TEST_BASE_URL }),
+    asResponse: true,
+  });
+  assert.equal(refused.status, 400, "the library refuses an address it cannot use");
+  assert.equal(
+    refused.headers.get("location"),
+    null,
+    "the refusal is the library's own answer, not this route's closed door",
+  );
 });
 
 test("the sign-in link is at the path the page and the email name", async () => {

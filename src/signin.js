@@ -35,6 +35,52 @@ import { PRICE } from "./pricing.js";
 
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
+
+/**
+ * Per-address send bound, the same shape the hand-written store enforced
+ * (CODE_SEND_LIMIT 6, CODE_SEND_WINDOW_SECONDS 60). Better Auth's default
+ * rate limit is per-IP and only runs inside its HTTP router, which the
+ * server-API call `auth.api.signInMagicLink` bypasses, so without this the
+ * route mails a link on every request with no bound. Six a minute is far
+ * above a person retyping their address and far below a script enumerating
+ * addresses. It is per address, so it bounds one mailbox and not the
+ * service: a script walking many addresses is a per-IP bound that belongs at
+ * the edge beside the waitlist's limiter (cloudflare.config.ts), the same
+ * follow-up the deleted code named.
+ */
+export const SIGNIN_SEND_LIMIT = 6;
+export const SIGNIN_SEND_WINDOW_SECONDS = 60;
+
+/**
+ * The addresses started recently, so the per-address window can be checked
+ * without a database round trip on a path that must answer before any mailer
+ * call. Keyed by the lower-cased address the mailer would use.
+ * @type {Map<string, number[]>}
+ */
+const sendsByAddress = new Map();
+
+/**
+ * True when this address may start another sign-in now, and records the
+ * attempt when it may. False once the address has started
+ * SIGNIN_SEND_LIMIT sends inside the window, so the caller answers the
+ * message table's rate-limited line rather than mailing again.
+ * @param {string} address
+ * @returns {boolean}
+ */
+function startAllowed(address) {
+  const key = address.trim().toLowerCase();
+  const now = Date.now();
+  const windowStart = now - SIGNIN_SEND_WINDOW_SECONDS * 1000;
+  const recent = (sendsByAddress.get(key) ?? []).filter((at) => at > windowStart);
+  if (recent.length >= SIGNIN_SEND_LIMIT) {
+    // Keep the pruned list so the window still rolls off rather than sticking.
+    sendsByAddress.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  sendsByAddress.set(key, recent);
+  return true;
+}
 /** The one endpoint the page posts to. */
 export const SIGNIN_ENDPOINT = "/api/signin";
 
@@ -219,17 +265,20 @@ export async function handleSigninRequest(request, env) {
   if (read.step === "signout") {
     // Better Auth's own sign-out: the session row is deleted and the cookies
     // are cleared, so a later request carrying the same cookie reads as
-    // signed out rather than trusting a token the database has forgotten. A
-    // library failure here is not a 500 for a person who only asked to leave:
-    // no cookie is set and the answer says signed out, which is what a browser
-    // with a dead session already is.
+    // signed out rather than trusting a token the database has forgotten.
+    // A library failure here is not a 500 for a person who only asked to
+    // leave: the person is signed out either way, because the answer they get
+    // sets no cookie and the route answers signed out. The failure is logged,
+    // because a session row that outlived its sign-out is an operator's fact
+    // and a silent `ok` hides it.
     try {
       const signedOut = await auth.api.signOut({
         headers: request.headers,
         asResponse: true,
       });
       return json({ ok: true, step: "signout" }, 200, cookieHeaders(signedOut));
-    } catch {
+    } catch (error) {
+      console.error?.("signin: sign-out failed, so no session cookie was cleared", error);
       return json({ ok: true, step: "signout" }, 200);
     }
   }
@@ -239,16 +288,37 @@ export async function handleSigninRequest(request, env) {
   if (read.method !== "email") {
     return json(signinClosedBody(), 503);
   }
+  // The per-address window the hand-written store enforced, put back: the
+  // library's own limit is per-IP and does not run on this server-API call.
+  if (!startAllowed(/** @type {string} */ (read.email))) {
+    return json({ error: failureMessage("rate-limited") }, 429);
+  }
+  let started;
   try {
-    await auth.api.signInMagicLink({
+    // `asResponse` makes the library answer with the Response it would have
+    // sent, so a non-200 that is not a throw (a plugin refusing the send, a
+    // validation failure) is read here instead of being announced as a sent
+    // link. A mailer that throws still rejects this await, caught below.
+    started = await auth.api.signInMagicLink({
       body: { email: /** @type {string} */ (read.email) },
       headers: request.headers,
+      asResponse: true,
     });
   } catch (error) {
     // A mailer that threw has not sent the link, so the failure is the
     // route's answer: the person is told sign-in did not happen rather than
     // shown a screen that waits for an email that is not coming.
     if (isTooManyRequests(error)) {
+      return json({ error: failureMessage("rate-limited") }, 429);
+    }
+    console.error?.("signin: the sign-in link could not be sent", error);
+    return json(signinClosedBody(), 503);
+  }
+  if (started.status !== 200) {
+    // The library answered with a non-200 and did not throw: a send it
+    // refused. That is the closed door (or the rate-limit line), never a 202
+    // for a link that never left.
+    if (started.status === 429) {
       return json({ error: failureMessage("rate-limited") }, 429);
     }
     return json(signinClosedBody(), 503);
@@ -302,8 +372,15 @@ export async function handleSigninLinkVerify(request, env) {
       headers: request.headers,
       asResponse: true,
     });
-  } catch {
-    return redirect(`${SIGNIN_PATH}?error=invalid-link`);
+  } catch (error) {
+    // The library's own answer for a token that is spent, expired or was
+    // never minted is a non-200 Response (checked below), so a throw here is
+    // the backend failing rather than the link failing. Telling a person to
+    // ask for a new email because our database was busy sends a second email
+    // to a mailbox that was never the problem, so this one is the message
+    // table's unexpected line and a log line, not "that link did not work".
+    console.error?.("signin: verifying a sign-in link threw", error);
+    return redirect(`${SIGNIN_PATH}?error=unexpected`);
   }
   if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);

@@ -375,7 +375,17 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   );
   const firstList = await call(cookie, FILES_ENDPOINT);
   assert.equal((await firstList.json()).rows.length, 1, "the first account still has its own file");
-  assert.notEqual(other.account.id, "newperson@example.com");
+  // The two accounts are really two rows: different ids, each named by the
+  // address its own link was mailed to, so the gate cannot have collapsed both
+  // sessions onto one account row. (The id the first link minted is read back
+  // through the same library lookup the gate uses.)
+  const madeSignedIn = await signIn(
+    { auth: made.auth, db: made.db, sent: emailed },
+    "newperson@example.com",
+  );
+  assert.notEqual(other.account.id, madeSignedIn.account.id);
+  assert.equal(other.account.email, "other@example.com");
+  assert.match(String(other.account.id), /^\S+$/, "the account id is a value, not empty");
 });
 
 test("sign-out revokes the session the cookie names", async () => {

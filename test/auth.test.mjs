@@ -26,6 +26,54 @@ const SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 
 const headers = () => new Headers({ origin: TEST_BASE_URL });
 
+// -------------------------------------------------------------- the adapter
+
+test("the test D1 binding binds values on every read, or it proves nothing", async () => {
+  // The adapter stands in for D1, so a read that quietly ran the statement
+  // with no values on it would answer "no such row" for every query — and
+  // every test built on it would still be green while the deployed path was
+  // broken. This is the shape a session lookup takes, bound by value.
+  const db = createTestD1();
+  // The D1 value coercion this adapter exists for: a boolean and a Date bind
+  // as the integers SQLite stores.
+  await db
+    .prepare(
+      'insert into "user" ("id","name","email","emailVerified","createdAt","updatedAt") values (?,?,?,?,?,?)',
+    )
+    .bind(
+      "u1",
+      "Someone",
+      "u1@example.com",
+      false,
+      new Date(1750000000000),
+      new Date(1750000000000),
+    )
+    .run();
+  const user = await db
+    .prepare('select "emailVerified" from "user" where "id" = ?')
+    .bind("u1")
+    .first();
+  assert.equal(user?.emailVerified, 0, "a boolean binds as the integer SQLite stores");
+  // A session row, the shape a session lookup takes: bound by value, not read
+  // by an unfiltered statement.
+  await db
+    .prepare(
+      'insert into "session" ("id","expiresAt","token","createdAt","updatedAt","userId") values (?,?,?,?,?,?)',
+    )
+    .bind("s1", 4102444800000, "tok-1", 1750000000000, 1750000000000, "u1")
+    .run();
+  const found = await db
+    .prepare('select "token" from "session" where "token" = ?')
+    .bind("tok-1")
+    .first();
+  assert.equal(found?.token, "tok-1", "a bound read finds the row it asked for");
+  const missing = await db
+    .prepare('select "token" from "session" where "token" = ?')
+    .bind("other")
+    .first();
+  assert.equal(missing, null, "a bound read for a value that is not there is null, not a crash");
+});
+
 // --------------------------------------------------------------- the schema
 
 test("the migration file is what Better Auth's own planner generates", async () => {

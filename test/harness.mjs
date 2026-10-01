@@ -94,7 +94,11 @@ export function createTestD1(options = {}) {
   for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const statement = (sql, params = []) => ({
+  // There is no second parameter list: `prepare` hands back the statement with
+  // no values on it, and `bind` is the one call that gives it any, so a read
+  // cannot accidentally run the statement empty — the mistake that would make
+  // a test pass while the deployed query carries no values at all.
+  const statement = (sql) => ({
     bind: (...values) => ({
       sql,
       params: values,
@@ -102,7 +106,7 @@ export function createTestD1(options = {}) {
         return runOne(sqlite, sql, values);
       },
       async first() {
-        const row = sqlite.prepare(sql).get(...params.map(sqliteValue));
+        const row = sqlite.prepare(sql).get(...values.map(sqliteValue));
         return row === undefined ? null : row;
       },
       async run() {
