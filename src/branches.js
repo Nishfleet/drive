@@ -107,7 +107,9 @@ const NAMED_FILES_LIMIT = 20;
 
 /**
  * The body of a POST as an object, or the one sentence to send back. A branch
- * request is a JSON object and nothing else; a form or an array is a 400.
+ * request is a JSON object and nothing else; a form or an array is a 400. The
+ * sentence is the table's, so a branch refuses the same request in the same
+ * words as the file and sign-in routes (drive#158).
  * @param {Request} request
  */
 async function readJsonBody(request) {
@@ -115,10 +117,10 @@ async function readJsonBody(request) {
   try {
     body = await request.json();
   } catch {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   return { body };
 }
