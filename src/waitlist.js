@@ -1,7 +1,8 @@
 // Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
 // so node --test can exercise every branch without a running runtime.
-import { failureMessage } from "./messages.js";
+
 import isEmail from "validator/lib/isEmail.js";
+import { failureMessage } from "./messages.js";
 
 export const SOURCES = ["pricing-page", "business"];
 
@@ -78,17 +79,13 @@ export async function recordSignup(db, signup) {
     return { already: false, row: row(inserted) };
   }
   const existing = await db
-    .prepare(
-      "SELECT id, email, source, created_at FROM waitlist WHERE email = ?1",
-    )
+    .prepare("SELECT id, email, source, created_at FROM waitlist WHERE email = ?1")
     .bind(signup.email)
     .first();
   if (!existing) {
     // The conflict fired but the row is gone: concurrent delete, or a schema
     // that does not match. Fail loud rather than pretend the sign-up landed.
-    throw new Error(
-      `waitlist insert reported a conflict for ${signup.email} but no row exists`,
-    );
+    throw new Error(`waitlist insert reported a conflict for ${signup.email} but no row exists`);
   }
   return { already: true, row: row(existing) };
 }
@@ -213,10 +210,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     // Checked before the limiter: a cross-site POST is rejected without
     // reading a body or touching D1, so it does no work and must not spend
     // the caller's quota (drive#28 review).
-    return json(
-      { error: "Sign-ups are only accepted from the drive page." },
-      403,
-    );
+    return json({ error: "Sign-ups are only accepted from the drive page." }, 403);
   }
 
   // Rate limit next: it bounds the work that actually costs something (a body
@@ -250,11 +244,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     return json({ error: failureMessage("unexpected") }, 503);
   }
   if (!success) {
-    return json(
-      { error: failureMessage("rate-limited") },
-      429,
-      { "retry-after": "60" },
-    );
+    return json({ error: failureMessage("rate-limited") }, 429, { "retry-after": "60" });
   }
 
   if (!db) {

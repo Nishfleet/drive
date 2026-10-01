@@ -225,12 +225,7 @@ export function paymentFailedTemplate({ amountUsd } = {}) {
  * @param {{billUsd?: number, meteredUsd?: number, ceilingUsd?: number, capped?: boolean}} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function monthlyReceiptTemplate({
-  billUsd,
-  meteredUsd,
-  ceilingUsd,
-  capped,
-} = {}) {
+export function monthlyReceiptTemplate({ billUsd, meteredUsd, ceilingUsd, capped } = {}) {
   const bill = requireMoney(billUsd, "billUsd");
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a

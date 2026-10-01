@@ -9,29 +9,10 @@
 //    read by calling the builders rather than by grepping a shipped HTML file
 //    for a sentence. The old drift tests are gone with the second copy of the
 //    words they policed.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import {
-  CONNECTED_WINDOW_MS,
-  CONNECTION_COPY,
-  EMPTY_STATES,
-  FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
-  POLL_INTERVAL_MS,
-  STATUS_ENDPOINT,
-  SYNCED_WINDOW_MS,
-  SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
-  connectionStatus,
-  formatBytes,
-  handleFirstRunStatusRequest,
-  signedInAccount,
-  syncStatus,
-  uploadProgress,
-} from "../src/status.js";
+import { test } from "node:test";
 import { createAccountStore } from "../src/accounts.js";
 import {
   ageMs,
@@ -51,14 +32,31 @@ import {
   uploadFragments,
   uploadLine,
 } from "../src/get-started.js";
+import worker from "../src/index.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import {
+  CONNECTED_WINDOW_MS,
+  CONNECTION_COPY,
+  connectionStatus,
+  EMPTY_STATES,
+  FIRST_RUN_STEPS,
+  formatBytes,
+  handleFirstRunStatusRequest,
+  INSTALL_COMMAND,
+  POLL_INTERVAL_MS,
+  STATUS_ENDPOINT,
+  SYNC_ERROR_NOTIFICATION,
+  SYNCED_WINDOW_MS,
+  signedInAccount,
+  syncStatus,
+  UPLOAD_LABEL,
+  uploadProgress,
+} from "../src/status.js";
 
 // The page's shell, read for the structure the module fills and the script tag
 // that loads it. Its copy is not read here: there is no copy in it to drift.
 const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
-const pricingPage = readFileSync(
-  new URL("../public/index.html", import.meta.url),
-  "utf8",
-);
+const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 const iso = (ms) => new Date(now - ms).toISOString();
 
@@ -83,10 +81,7 @@ test("a device that has not signed in reads as waiting, not connected", () => {
   assert.equal(connectionStatus({}, now).state, "waiting");
   assert.equal(connectionStatus({ lastSeenAt: null }, now).state, "waiting");
   // A sign-in from an hour ago is not the sign-in the page is waiting for.
-  assert.equal(
-    connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state,
-    "waiting",
-  );
+  assert.equal(connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state, "waiting");
 });
 
 test("a device inside the connected window flips the page to connected", () => {
@@ -95,10 +90,7 @@ test("a device inside the connected window flips the page to connected", () => {
   assert.equal(status.what, CONNECTION_COPY.connected.what);
   assert.equal(status.next, CONNECTION_COPY.connected.next);
   // The window's edge belongs to connected, one millisecond past it does not.
-  assert.equal(
-    connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state,
-    "connected",
-  );
+  assert.equal(connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state, "connected");
   assert.equal(
     connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS + 1) }, now).state,
     "waiting",
@@ -130,10 +122,11 @@ test("every connection state carries one what and one next", () => {
 });
 
 test("each sync state is named, with a sync error above everything", () => {
-  assert.deepEqual(
-    syncStatus({ syncError: "storage down" }, now),
-    { state: "error", label: "Sync error", detail: "storage down" },
-  );
+  assert.deepEqual(syncStatus({ syncError: "storage down" }, now), {
+    state: "error",
+    label: "Sync error",
+    detail: "storage down",
+  });
   assert.equal(syncStatus({ pendingBytes: 12 }, now).state, "syncing");
   assert.equal(syncStatus({ lastSyncAt: null }, now).state, "never");
   assert.equal(syncStatus({}, now).state, "never");
@@ -151,10 +144,7 @@ test("'Synced' only stays true inside the sync window", () => {
     "Quiet for a while",
   );
   // A pending upload outranks a recent sync: the drive is still working.
-  assert.equal(
-    syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state,
-    "syncing",
-  );
+  assert.equal(syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state, "syncing");
 });
 
 test("upload progress reads as a person reads it", () => {
@@ -282,10 +272,7 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // sign-in flow yet the Worker's gate is closed, so the route answers 401.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
-    const response = await worker.fetch(
-      new Request(`https://drive.test${path}`),
-      env,
-    );
+    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
     assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
   }
@@ -302,7 +289,7 @@ test("the pricing page links to the first-run page", () => {
   assert.ok(link > 0, "the pricing page must link to /get-started");
   const formEnd = pricingPage.indexOf("</form>");
   assert.ok(
-    pricingPage.indexOf("<nav class=\"footer-nav\"") > formEnd,
+    pricingPage.indexOf('<nav class="footer-nav"') > formEnd,
     "the get-started link must sit outside the waitlist form",
   );
 });
@@ -362,7 +349,13 @@ test("an unreadable device date is reported, never shown as a number", () => {
 
 test("the page's Devices table has a last-sync column and its empty states", () => {
   assert.match(shell, /<th scope="col">Last sync<\/th>/);
-  for (const id of ["devices", "devices-body", "devices-empty", "activity-empty", "activity-progress"]) {
+  for (const id of [
+    "devices",
+    "devices-body",
+    "devices-empty",
+    "activity-empty",
+    "activity-progress",
+  ]) {
     assert.ok(shell.includes(`id="${id}"`), `the shell must carry #${id}`);
   }
 });
@@ -384,10 +377,16 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
     assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
   }
   for (const step of FIRST_RUN_STEPS) {
-    assert.ok(!shell.includes(step.body), `the shell must not carry the step text for "${step.title}"`);
+    assert.ok(
+      !shell.includes(step.body),
+      `the shell must not carry the step text for "${step.title}"`,
+    );
   }
   for (const fragment of Object.values(UPLOAD_LABEL)) {
-    assert.ok(!shell.includes(fragment), `the shell must not carry the upload fragment "${fragment}"`);
+    assert.ok(
+      !shell.includes(fragment),
+      `the shell must not carry the upload fragment "${fragment}"`,
+    );
   }
   assert.ok(
     !shell.includes(SYNC_ERROR_NOTIFICATION.title),
@@ -422,7 +421,10 @@ test("the renderer shows the module's words: command, steps, states, fragments",
   assert.equal(installCommand(), INSTALL_COMMAND);
   assert.equal(statusEndpoint(), STATUS_ENDPOINT);
   assert.equal(pollIntervalMs(), POLL_INTERVAL_MS);
-  assert.deepEqual(stepLines(), FIRST_RUN_STEPS.map((s) => ({ title: s.title, body: s.body })));
+  assert.deepEqual(
+    stepLines(),
+    FIRST_RUN_STEPS.map((s) => ({ title: s.title, body: s.body })),
+  );
   assert.deepEqual(emptyState("devices"), EMPTY_STATES.devices);
   assert.deepEqual(emptyState("activity"), EMPTY_STATES.activity);
   assert.deepEqual(syncErrorNotification(), SYNC_ERROR_NOTIFICATION);
@@ -541,9 +543,6 @@ test("the page raises one desktop notification per sync error", () => {
   const functionStart = source.indexOf("function maybeAskToNotify");
   assert.ok(functionStart > 0, "the renderer must gate its notification prompt");
   for (const match of source.matchAll(/Notification\.requestPermission\(\)/g)) {
-    assert.ok(
-      match.index > functionStart,
-      "the prompt is a function, not a load-time prompt",
-    );
+    assert.ok(match.index > functionStart, "the prompt is a function, not a load-time prompt");
   }
 });

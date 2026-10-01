@@ -396,6 +396,10 @@ dialog.viewer::backdrop {
   }
 }
 
+/* Drive#92: the one place the reduced-motion reset reaches a rule that would
+   otherwise win on specificity, so it is spelled with !important on purpose.
+   public/index.html has the same block, with the same comment, and
+   biome.json turns noImportantStyles off for the two of them. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -445,7 +449,7 @@ dialog.viewer::backdrop {
   <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
     <div class="viewer-head">
       <h2 class="title" id="viewer-title">File</h2>
-      <a id="viewer-download" href="#" download>Download</a>
+      <a id="viewer-download" href="/api/files/download" download>Download</a>
       <button type="button" id="viewer-close">Close</button>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
@@ -462,7 +466,11 @@ const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
 const RESTORE_ENDPOINT = "/api/files/restore";
-const RECENTLY_DELETED_DAYS = 30;
+// The window is src/files.js's number and nothing in this script reads it:
+// test/files.test.mjs reads it out of this line so the page cannot drift
+// from the module. The underscore says the reader is the test, not the
+// script, so a linter leaves the line alone (drive#92).
+const _RECENTLY_DELETED_DAYS = 30;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 
 // The page's copy for a preview, one entry per kind src/files.js names. A kind
@@ -615,7 +623,7 @@ function crumbsForParts(parts) {
     sep.textContent = "/";
     sep.setAttribute("aria-hidden", "true");
     crumbs.append(sep);
-    walked += "/" + part;
+    walked += `/${part}`;
     if (index === parts.length - 1) {
       const here = document.createElement("span");
       here.className = "here";
@@ -695,7 +703,7 @@ function rowFor(row) {
     actions.append(open);
   } else {
     const download = document.createElement("a");
-    download.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    download.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
     download.download = row.name;
     download.textContent = "Download";
     actions.append(download);
@@ -729,7 +737,7 @@ function trashRowFor(row) {
   name.textContent = row.name;
   name.addEventListener("click", () => {
     viewerTitle.textContent = row.name;
-    viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    viewerDownload.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
     showBody(noPreview("This file is in Recently deleted. Restore it to preview it."));
     viewer.showModal();
   });
@@ -793,13 +801,13 @@ function noPreview(message) {
 
 function openViewer(row) {
   viewerTitle.textContent = row.name;
-  viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  viewerDownload.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (!isPreviewable(row.kind)) {
     showBody(noPreview(PREVIEW_COPY.file.fallback));
     viewer.showModal();
     return;
   }
-  const src = PREVIEW_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  const src = `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "image") {
     const img = document.createElement("img");
     img.src = src;
@@ -853,8 +861,8 @@ async function refresh(keepStatus) {
   }
   const url =
     view === "deleted"
-      ? FILES_ENDPOINT + "?view=deleted"
-      : FILES_ENDPOINT + "?path=" + encodeURIComponent(path);
+      ? `${FILES_ENDPOINT}?view=deleted`
+      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}`;
   try {
     const payload = await api(url);
     showSignedIn();
@@ -879,12 +887,15 @@ async function uploadFiles(files) {
   let uploaded = 0;
   try {
     for (const file of files) {
-      const url =
-        UPLOAD_ENDPOINT +
-        "?path=" +
-        encodeURIComponent(path) +
-        "&name=" +
-        encodeURIComponent(file.name);
+      // The name goes over the wire as the browser knows it, and what to store
+      // is the Worker's one decision: src/files.js's safeFileName trims it,
+      // turns a slash, a backslash or a control character into a dash, and
+      // refuses a name left empty. The page has no second copy of that rule to
+      // drift (drive#92), and test/files.test.mjs is the gate that watches both
+      // sides of it.
+      const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
+        file.name,
+      )}`;
       const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": file.type || "application/octet-stream" },
@@ -908,7 +919,7 @@ async function uploadFiles(files) {
     if (error.signedOut) {
       reportFailure(error);
     } else {
-      say(uploaded > 0 ? uploaded + " uploaded. " + error.message : error.message, "error");
+      say(uploaded > 0 ? `${uploaded} uploaded. ${error.message}` : error.message, "error");
     }
   } finally {
     uploadButton.disabled = signedOut.hidden === false;

@@ -16,22 +16,23 @@
 // 4. The spec's words: the screen the build spec's "Screens" table describes,
 //    named here so a page that drops one of the three methods fails here with
 //    the line the spec carries, and nothing that only a parser would accept.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { createAccountStore, MAX_FINISH_ATTEMPTS } from "../src/accounts.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
 import {
+  handleSigninRequest,
+  readSigninRequest,
   SIGNIN_COPY,
   SIGNIN_ENDPOINT,
   SIGNIN_METHODS,
   SIGNIN_PATH,
-  handleSigninRequest,
-  readSigninRequest,
   signinClosedBody,
 } from "../src/signin.js";
-import { MAX_FINISH_ATTEMPTS, createAccountStore } from "../src/accounts.js";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
@@ -58,9 +59,15 @@ test("the Worker routes the sign-in start and serves no other method", async () 
     ACCOUNTS_STORE: createAccountStore({ sendCode: () => {} }),
   };
   for (const path of ["/api/signin", "/api/signin/"]) {
-    const response = await worker.fetch(post({ method: "email", email: "a@b.co" }, {
-      url: `https://drive.test${path}`,
-    }), routedEnv);
+    const response = await worker.fetch(
+      post(
+        { method: "email", email: "a@b.co" },
+        {
+          url: `https://drive.test${path}`,
+        },
+      ),
+      routedEnv,
+    );
     assert.equal(response.status, 202, `${path} must reach the sign-in handler`);
     const payload = await response.json();
     assert.equal(payload.ok, true);
@@ -74,10 +81,7 @@ test("the Worker routes the sign-in start and serves no other method", async () 
 });
 
 test("with no account store the route is a closed door, not a fake success", async () => {
-  const response = await handleSigninRequest(
-    post({ method: "email", email: "a@b.co" }),
-    null,
-  );
+  const response = await handleSigninRequest(post({ method: "email", email: "a@b.co" }), null);
   assert.equal(response.status, 503);
   const payload = await response.json();
   assert.deepEqual(payload, signinClosedBody());
@@ -122,7 +126,11 @@ test("a store that returns nothing on finish is a closed door, not a session", a
   // A finish that stores nothing must not take the cookie-setting branch.
   const response = await handleSigninRequest(
     post({ step: "finish", email: "you@example.com", code: "012345" }),
-    { async finishSignin() { return undefined; } },
+    {
+      async finishSignin() {
+        return undefined;
+      },
+    },
   );
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("set-cookie"), null);
@@ -257,7 +265,9 @@ test("the closed door's words come from the message table, once", async () => {
   // One entry, read through failureMessage() like every other surface, so
   // the words cannot fork between the endpoint and anything else that names it.
   const built = signinClosedBody();
-  assert.deepEqual(built, { error: FAILURE_MESSAGES["sign-in-closed"].what + " " + FAILURE_MESSAGES["sign-in-closed"].next });
+  assert.deepEqual(built, {
+    error: `${FAILURE_MESSAGES["sign-in-closed"].what} ${FAILURE_MESSAGES["sign-in-closed"].next}`,
+  });
   // The endpoint never invents a second draft of the sentence.
   const storeless = await handleSigninRequest(
     new Request("https://drive.test/api/signin", {
@@ -288,7 +298,10 @@ test("the page carries every string from src/signin.js verbatim", () => {
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
-  assert.ok(page.includes(`action="${SIGNIN_ENDPOINT}"`), "the no-JavaScript post must reach the route");
+  assert.ok(
+    page.includes(`action="${SIGNIN_ENDPOINT}"`),
+    "the no-JavaScript post must reach the route",
+  );
   // The page builds one body with a method field and an optional email.
   assert.ok(/body: JSON\.stringify\(/.test(page), "the page posts JSON");
   for (const method of SIGNIN_METHODS) {

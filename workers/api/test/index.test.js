@@ -1,7 +1,7 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { dispatch } from "../src/index.js";
-import { routes, AUTH_RULES } from "../src/routes.js";
+import { AUTH_RULES, routes } from "../src/routes.js";
 
 const ctx = { env: {}, db: null, now: () => 0 };
 
@@ -38,7 +38,14 @@ test("every declared rule behaves as it says", async () => {
 test("deny by default: a route with no auth rule is not reachable without an account", async () => {
   let called = false;
   const table = [
-    { method: "GET", path: "/secret", handler: () => { called = true; return Response.json({ leaked: true }); } },
+    {
+      method: "GET",
+      path: "/secret",
+      handler: () => {
+        called = true;
+        return Response.json({ leaked: true });
+      },
+    },
   ];
   const res = await dispatch(new Request("https://x.test/secret"), ctx, table);
   assert.equal(res.status, 401);
@@ -46,14 +53,29 @@ test("deny by default: a route with no auth rule is not reachable without an acc
 });
 
 test("a misspelt auth rule fails closed, not open", async () => {
-  const table = [{ method: "GET", path: "/secret", auth: "accont", handler: () => Response.json({ leaked: true }) }];
+  const table = [
+    {
+      method: "GET",
+      path: "/secret",
+      auth: "accont",
+      handler: () => Response.json({ leaked: true }),
+    },
+  ];
   assert.equal((await dispatch(new Request("https://x.test/secret"), ctx, table)).status, 401);
 });
 
 test("an account route answers 401 when no account is signed in, and never runs the handler", async () => {
   let called = false;
   const table = [
-    { method: "GET", path: "/v1/me", auth: "account", handler: () => { called = true; return Response.json({}); } },
+    {
+      method: "GET",
+      path: "/v1/me",
+      auth: "account",
+      handler: () => {
+        called = true;
+        return Response.json({});
+      },
+    },
   ];
   const res = await dispatch(new Request("https://x.test/v1/me"), ctx, table);
   assert.equal(res.status, 401);
@@ -64,7 +86,9 @@ test("an account route answers 401 when no account is signed in, and never runs 
 });
 
 test("the 401 names no account data and carries a bearer challenge", async () => {
-  const table = [{ method: "GET", path: "/v1/keys", auth: "account", handler: () => Response.json({}) }];
+  const table = [
+    { method: "GET", path: "/v1/keys", auth: "account", handler: () => Response.json({}) },
+  ];
   const res = await dispatch(new Request("https://x.test/v1/keys"), ctx, table);
   assert.equal(res.headers.get("www-authenticate"), 'Bearer realm="drive"');
 });
@@ -77,9 +101,18 @@ test("a public route answers with no account", async () => {
 
 test("an account route runs with the signed-in account on ctx", async () => {
   const table = [
-    { method: "GET", path: "/v1/me", auth: "account", handler: (_r, c) => Response.json({ account: c.account.id }) },
+    {
+      method: "GET",
+      path: "/v1/me",
+      auth: "account",
+      handler: (_r, c) => Response.json({ account: c.account.id }),
+    },
   ];
-  const res = await dispatch(new Request("https://x.test/v1/me"), { ...ctx, account: { id: "acct_1" } }, table);
+  const res = await dispatch(
+    new Request("https://x.test/v1/me"),
+    { ...ctx, account: { id: "acct_1" } },
+    table,
+  );
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { account: "acct_1" });
 });
@@ -94,19 +127,25 @@ test("unknown path is 404 and wrong method is 405 with the allowed method named"
 });
 
 test("path params are decoded", async () => {
-  const table = [{ method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) }];
+  const table = [
+    { method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) },
+  ];
   const res = await dispatch(new Request("https://x.test/a/b%20c"), ctx, table);
   assert.deepEqual(await res.json(), { id: "b c" });
 });
 
 test("a malformed percent-escape in a path param is a 400, not an uncaught crash", async () => {
-  const table = [{ method: "GET", path: "/a/:id", auth: "public", handler: () => Response.json({ ok: true }) }];
+  const table = [
+    { method: "GET", path: "/a/:id", auth: "public", handler: () => Response.json({ ok: true }) },
+  ];
   const res = await dispatch(new Request("https://x.test/a/%E0%A4%A"), ctx, table);
   assert.equal(res.status, 400);
 });
 
 test("a slash inside a param does not fall through to the next route", async () => {
-  const table = [{ method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) }];
+  const table = [
+    { method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) },
+  ];
   assert.equal((await dispatch(new Request("https://x.test/a/b/c"), ctx, table)).status, 404);
 });
 

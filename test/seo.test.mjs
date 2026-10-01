@@ -9,20 +9,21 @@
 // file also states are read from src/pricing.js (PRICE), the one price source
 // src/seo.js builds BILLING from (issue #23), so a re-priced product moves the
 // tags, the JSON-LD and llms.txt together with the visible copy.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { test } from "node:test";
+import { monthlyBillForStoredTb } from "../src/billing.js";
+import { PRICE } from "../src/pricing.js";
 import {
+  absoluteUrl,
   BILLING,
   DOC_PAGES,
   PAGES,
-  SITE,
-  absoluteUrl,
   pageUrl,
+  SITE,
   softwareApplicationLd,
 } from "../src/seo.js";
-import { PRICE } from "../src/pricing.js";
-import { monthlyBillForStoredTb } from "../src/billing.js";
 
 const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
@@ -53,9 +54,7 @@ const fileFor = (page) => page.path.replace(/^\//, "") || "index.html";
 // a claim that the repo uses an HTML parser; the shipped markup is stable and
 // the pricing-copy gate reads the same file the same way.
 function meta(page, attribute, name) {
-  const match = page.match(
-    new RegExp(`<meta\\s+${attribute}="${name}"\\s+content="([^"]*)"`, "i"),
-  );
+  const match = page.match(new RegExp(`<meta\\s+${attribute}="${name}"\\s+content="([^"]*)"`, "i"));
   return match ? match[1] : null;
 }
 
@@ -90,16 +89,9 @@ test("every public page has a unique title and meta description", () => {
     const description = meta(html, "name", "description");
     assert.ok(description, `${name} must have a meta description`);
     assert.ok(title[1].trim().length > 0, `${name} needs a non-empty title`);
-    assert.ok(
-      description.trim().length > 0,
-      `${name} needs a non-empty meta description`,
-    );
+    assert.ok(description.trim().length > 0, `${name} needs a non-empty meta description`);
     assert.equal(titles.has(title[1]), false, `duplicate title on ${name}`);
-    assert.equal(
-      descriptions.has(description),
-      false,
-      `duplicate meta description on ${name}`,
-    );
+    assert.equal(descriptions.has(description), false, `duplicate meta description on ${name}`);
     titles.add(title[1]);
     descriptions.add(description);
   }
@@ -125,10 +117,7 @@ test("every indexable page carries a complete Open Graph card that resolves", ()
     assert.equal(meta(html, "property", "og:description"), SITE.description);
     assert.equal(meta(html, "property", "og:url"), pageUrl(page));
     assert.equal(meta(html, "property", "og:type"), "website");
-    assert.equal(
-      meta(html, "property", "og:image"),
-      absoluteUrl(SITE.ogImagePath),
-    );
+    assert.equal(meta(html, "property", "og:image"), absoluteUrl(SITE.ogImagePath));
     assert.equal(meta(html, "property", "og:image:width"), "1200");
     assert.equal(meta(html, "property", "og:image:height"), "630");
     assert.ok(
@@ -138,10 +127,7 @@ test("every indexable page carries a complete Open Graph card that resolves", ()
   }
   // The share card is one shared asset, so it only has to exist once.
   const image = SITE.ogImagePath.replace(/^\//, "");
-  assert.ok(
-    existsSync(new URL(image, publicDir)),
-    `og:image must ship as public/${image}`,
-  );
+  assert.ok(existsSync(new URL(image, publicDir)), `og:image must ship as public/${image}`);
 });
 
 test("every indexable page carries a Twitter summary_large_image card", () => {
@@ -149,10 +135,7 @@ test("every indexable page carries a Twitter summary_large_image card", () => {
     const html = readPage(fileFor(page));
     assert.equal(meta(html, "name", "twitter:card"), "summary_large_image");
     assert.equal(meta(html, "name", "twitter:title"), SITE.title);
-    assert.equal(
-      meta(html, "name", "twitter:image"),
-      absoluteUrl(SITE.ogImagePath),
-    );
+    assert.equal(meta(html, "name", "twitter:image"), absoluteUrl(SITE.ogImagePath));
   }
 });
 
@@ -160,17 +143,12 @@ test("every indexable page carries a JSON-LD SoftwareApplication matching the co
   for (const page of indexablePages) {
     const name = fileFor(page);
     const html = readPage(name);
-    const block = html.match(
-      /<script type="application\/ld\+json">([\s\S]*?)<\/script>/i,
-    );
+    const block = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
     assert.ok(block, `${name} must carry a JSON-LD block`);
     let parsed;
-    assert.doesNotThrow(
-      () => {
-        parsed = JSON.parse(block[1]);
-      },
-      `${name} JSON-LD must be valid JSON, not JS with a JSON content type`,
-    );
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(block[1]);
+    }, `${name} JSON-LD must be valid JSON, not JS with a JSON content type`);
     // The whole object, so a stale or invented field fails rather than passing
     // because the two types happen to agree.
     assert.deepStrictEqual(parsed, softwareApplicationLd());
@@ -214,9 +192,7 @@ test("the JSON-LD offer carries the ceiling as a real per-unit price", () => {
 
 test("sitemap.xml lists exactly the indexable pages, on the canonical origin", () => {
   const sitemap = read("sitemap.xml");
-  const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
-    (match) => match[1],
-  );
+  const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]);
   // The docs pages (drive issue #98) are read from the same config, so a docs
   // page that ships without being listed here fails this test.
   const expected = [
@@ -232,10 +208,7 @@ test("sitemap.xml lists exactly the indexable pages, on the canonical origin", (
     assert.equal(new URL(location).origin, SITE.origin);
   }
   // Google's parser rejects the file outright if the namespace is missing.
-  assert.match(
-    sitemap,
-    /<urlset[^>]+xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"/,
-  );
+  assert.match(sitemap, /<urlset[^>]+xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"/);
 });
 
 test("robots.txt allows the crawl and points at the sitemap", () => {
@@ -243,10 +216,7 @@ test("robots.txt allows the crawl and points at the sitemap", () => {
   // This file ships as an asset so it is served ahead of Cloudflare's managed
   // content-signal robots.txt; a syntax error here is what would break that.
   assert.match(robots, /^User-agent: \*\nAllow: \/$/m);
-  assert.match(
-    robots,
-    new RegExp(`^Sitemap: ${absoluteUrl(SITE.sitemapPath)}$`, "m"),
-  );
+  assert.match(robots, new RegExp(`^Sitemap: ${absoluteUrl(SITE.sitemapPath)}$`, "m"));
   // A robots.txt that blocks the page it is meant to advertise fails the SEO
   // audit, so nothing may disallow the site root.
   assert.doesNotMatch(robots, /^Disallow: \/$/m);
@@ -257,14 +227,8 @@ test("llms.txt describes the drive and the current price rule", () => {
   // The llmstxt.org shape: an H1 name, a blockquote summary, then sections.
   assert.match(llms, /^# Drive$/m);
   assert.match(llms, /^> /m);
-  assert.ok(
-    llms.includes(BILLING.ceiling),
-    "llms.txt must state the ceiling sentence from config",
-  );
-  assert.ok(
-    llms.includes(BILLING.freeLine),
-    "llms.txt must state the free line from config",
-  );
+  assert.ok(llms.includes(BILLING.ceiling), "llms.txt must state the ceiling sentence from config");
+  assert.ok(llms.includes(BILLING.freeLine), "llms.txt must state the free line from config");
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The spec's own worked figures, so an answer engine cannot quote a number
   // the pricing page contradicts. Each is min(metered, max($12, $8 x TB))

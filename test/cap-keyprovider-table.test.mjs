@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { WRITE_SCOPE_BY_KIND } from "../src/cap.js";
 import { CAPABILITIES_BY_KIND as KEYPROVIDER_TABLE } from "../workers/api/src/keyprovider.js";
 
@@ -15,19 +15,10 @@ test("src/cap.js holds the api Worker's table itself, not a second copy", () => 
 });
 
 test("the shared table covers the four kinds once, with delete only on a device key", () => {
-  assert.deepEqual(Object.keys(KEYPROVIDER_TABLE).sort(), [
-    "agent",
-    "branch",
-    "device",
-    "s3",
-  ]);
+  assert.deepEqual(Object.keys(KEYPROVIDER_TABLE).sort(), ["agent", "branch", "device", "s3"]);
   for (const [kind, capabilities] of Object.entries(KEYPROVIDER_TABLE)) {
     assert.ok(capabilities.includes("list"), `${kind} can list`);
     assert.ok(capabilities.includes("read"), `${kind} can read`);
-    assert.equal(
-      capabilities.includes("delete"),
-      kind === "device",
-      `${kind} must not delete`,
-    );
+    assert.equal(capabilities.includes("delete"), kind === "device", `${kind} must not delete`);
   }
 });
