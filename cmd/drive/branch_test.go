@@ -176,10 +176,11 @@ func TestBranchCommandsNeedASignedInDevice(t *testing.T) {
 
 func TestDefaultBranchName(t *testing.T) {
 	for in, want := range map[string]string{
-		"/Photos":       "Photos",
-		"/Photos/2024/": "2024",
-		"/":             "root",
-		"":              "root",
+		"/Photos":    "Photos",
+		"/Photos/2":  "2",
+		"/":          "root",
+		"":           "root",
+		"/My Photos": "branch", // the space is not a legal branch name
 	} {
 		if got := defaultBranchName(in); got != want {
 			t.Errorf("defaultBranchName(%q) = %q, want %q", in, got, want)

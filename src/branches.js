@@ -12,35 +12,49 @@
 //
 // The copy is a server-side copy (`FileStore.copy`): S3's CopyObject on the
 // real store, so a branch never streams the bytes through the Worker. The
-// snapshot is one entry per file, `{size, etag}`, taken from the storage
-// listing at branch time; the etag is the content fingerprint, so an approve
-// can tell a file the agent changed from one the original changed under it —
-// the done-when's "an approve where the original changed after branching stops
-// and names the file".
+// snapshot is one entry per file, `{size, etag, modified}` at branch time, so
+// an approve can tell a file the agent changed from one the original changed
+// under it — the done-when's "an approve where the original changed after
+// branching stops and names the file".
+//
+// Two rules make that safe:
+//
+//   * the drive root and the `.branches` folder itself cannot be branched
+//     (a copy must never walk into the copy it is making), and
+//   * approve re-reads each file it is about to overwrite and records each
+//     file it did copy back before the next one, so a failure or a person's
+//     edit part-way through stops the run and a retry resumes from where it
+//     left off instead of wedging the branch.
 //
 // The route is /api/branches* (docs/api.md): GET lists an account's branches,
 // POST makes one, and GET/POST on /<name> reads the diff, applies it, or
 // throws it away. Every route needs the signed-in account, exactly like every
 // other drive read that names files (src/index.js gates it with
-// signedInAccount()).
+// signedInAccount()). The `checkedBranchName` rule is shared with the api
+// Worker's key scoping (workers/api/src/keyprovider.js), so a branch name and
+// a branch key prefix can never accept a different shape of name.
 import { unauthorizedResponse } from "./status.js";
-import { BRANCHES_FOLDER, scopeStore, validatePath } from "./files.js";
+import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
+import { failureMessage } from "./messages.js";
 
 /** The route family the CLI and the Branches screen read. */
 export const BRANCHES_ENDPOINT = "/api/branches";
-/** The drive path branches live under. */
-export const BRANCHES_ROOT = `/${BRANCHES_FOLDER}`;
-/** The states a branch can be in. `open` is the only one that can change. */
-export const BRANCH_STATES = Object.freeze(["open", "approved", "discarded"]);
+/** The drive path branches live under — taken from files.js so there is one
+ * definition of where branches live (the `.branches` folder), not two.
+ */
+export const BRANCHES_ROOT = BRANCHES_PATH;
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 });
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+function json(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...headers },
+  });
 }
 
 function plain(message, status, headers = {}) {
@@ -54,6 +68,11 @@ function plain(message, status, headers = {}) {
   });
 }
 
+// A failure that names a file can name up to this many; the rest are counted
+// behind an "and N more", so the message cannot balloon for a 10,000-file
+// branch.
+const NAMED_FILES_LIMIT = 20;
+
 /**
  * The body of a POST as an object, or the one sentence to send back. A branch
  * request is a JSON object and nothing else; a form or an array is a 400.
@@ -64,7 +83,7 @@ async function readJsonBody(request) {
   try {
     body = await request.json();
   } catch {
-    return { error: "The request body is not valid JSON." };
+    return { error: "Send a JSON object." };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { error: "Send a JSON object." };
@@ -95,8 +114,11 @@ export function relativePath(root, path) {
 function fingerprint(entry) {
   return {
     size: Number.isFinite(entry.size) && entry.size >= 0 ? Math.floor(entry.size) : 0,
-    etag: typeof entry.etag === "string" && entry.etag.length > 0 ? entry.etag : null,
-    modified: entry.modified ?? null,
+    etag:
+      typeof entry.etag === "string" && entry.etag.length > 0
+        ? entry.etag.replace(/"/g, "")
+        : null,
+    modified: typeof entry.modified === "number" ? entry.modified : null,
   };
 }
 
@@ -122,12 +144,14 @@ export function sameFile(a, b) {
 /**
  * Every file under a folder, keyed by its path relative to it. The walk is
  * breadth-first over the store's own listings, so it sees exactly what a
- * person would see and nothing the store did not return.
+ * person would see and nothing the store did not return. The drive root is
+ * never walked here: `createBranch` refuses to branch it, so the walk cannot
+ * step into the `.branches` folder the copy writes into.
  * @param {import("./files.js").FileStore} store a scoped store: drive paths in and out
  * @param {string} root
  * @returns {Promise<Map<string, {size: number, etag: string|null, modified: number|null}>>}
  */
-export async function listFiles(store, root) {
+async function listFiles(store, root) {
   const files = new Map();
   const queue = [root];
   const seen = new Set();
@@ -151,16 +175,29 @@ export async function listFiles(store, root) {
   return files;
 }
 
+/** The fingerprint of one file, or null when it is not there. One listing of
+ * its parent, so reading a fingerprint never downloads the bytes. */
+async function fileFingerprint(store, path) {
+  const cut = path.lastIndexOf("/");
+  const parent = cut <= 0 ? "/" : path.slice(0, cut);
+  for (const entry of await store.list(parent)) {
+    if (entry.path === path && entry.kind !== "folder") {
+      return fingerprint(entry);
+    }
+  }
+  return null;
+}
+
 /**
  * Copies every file under `source` into `dest` with one server-side copy each,
- * returning the snapshot of the original: the files' `{size, etag}` at the
- * moment the branch was taken. This is what `drive branch` does and what
- * `approve` diffs against.
+ * returning the snapshot of the original: the files' `{size, etag, modified}`
+ * at the moment the branch was taken. This is what `drive branch` does and
+ * what `approve` diffs against.
  * @param {import("./files.js").FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
  */
-export async function copyFolder(store, source, dest) {
+async function copyFolder(store, source, dest) {
   const snapshot = {};
   const queue = [source];
   const seen = new Set();
@@ -171,12 +208,12 @@ export async function copyFolder(store, source, dest) {
     }
     seen.add(folder);
     for (const entry of await store.list(folder)) {
-      const rel = relativePath(source, entry.path);
-      if (rel === null) {
-        continue;
-      }
       if (entry.kind === "folder") {
         queue.push(entry.path);
+        continue;
+      }
+      const rel = relativePath(source, entry.path);
+      if (rel === null) {
         continue;
       }
       await store.copy(entry.path, `${dest}/${rel}`);
@@ -184,6 +221,28 @@ export async function copyFolder(store, source, dest) {
     }
   }
   return snapshot;
+}
+
+/**
+ * Whether a drive path is a folder, a file, or not there. A missing folder and
+ * an empty folder are different answers, and only a listing of the parent can
+ * tell them apart on a store keyed by prefix.
+ * @param {import("./files.js").FileStore} store a scoped store
+ * @param {string} path
+ * @returns {Promise<"folder"|"file"|"missing">}
+ */
+async function folderState(store, path) {
+  if (path === "/") {
+    return "folder";
+  }
+  const cut = path.lastIndexOf("/");
+  const parent = cut <= 0 ? "/" : path.slice(0, cut);
+  for (const entry of await store.list(parent)) {
+    if (entry.path === path) {
+      return entry.kind === "folder" ? "folder" : "file";
+    }
+  }
+  return "missing";
 }
 
 /**
@@ -270,17 +329,14 @@ async function getBranch(db, account, name) {
   return row === undefined || row === null ? null : toBranch(row);
 }
 
-const BRANCH_COLUMNS =
-  "(id, account_id, name, source_prefix, branch_prefix, snapshot, state, created_at)";
-
 // --------------------------------------------------------------- the actions
 
 /**
  * `drive branch <folder>`: the server-side copy into `.branches/<name>/` and
  * the snapshot row. The folder must be a folder of the signed-in account's own
- * drive (the store is already scoped), and a branch name is unique per
- * account, so a second branch of the same name is a 409 rather than a silent
- * overwrite of the first branch's snapshot.
+ * drive (the store is already scoped) and not the drive root, and a branch
+ * name is unique while it is open, so a second open branch of the same name is
+ * a 409 rather than a silent overwrite of the first branch's snapshot.
  *
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
@@ -294,8 +350,17 @@ export async function createBranch(db, store, account, request, now = () => Date
     return { error: `That folder cannot be branched: ${folder.error}`, status: 400 };
   }
   const folderPath = folder.path;
-  if (folderPath === BRANCHES_ROOT || folderPath.startsWith(`${BRANCHES_ROOT}/`)) {
-    return { error: "A branch cannot be made of the branches folder.", status: 400 };
+  if (
+    folderPath === "/" ||
+    folderPath === BRANCHES_ROOT ||
+    folderPath.startsWith(`${BRANCHES_ROOT}/`)
+  ) {
+    return {
+      error:
+        "The drive root and the branches folder cannot be branched; " +
+        "branch a folder of your own.",
+      status: 400,
+    };
   }
   let name;
   try {
@@ -303,33 +368,59 @@ export async function createBranch(db, store, account, request, now = () => Date
   } catch (error) {
     return { error: error.message, status: 400 };
   }
+  const kind = await folderState(store, folderPath);
+  if (kind === "file") {
+    return { error: "That is a file, not a folder. Branch a folder.", status: 400 };
+  }
+  if (kind === "missing") {
+    return { error: "That folder is not in the drive.", status: 404 };
+  }
   const existing = await getBranch(db, account, name);
-  if (existing) {
-    return {
-      error: `A branch named "${name}" already exists. Pass --name with a different one.`,
-      status: 409,
-    };
+  if (existing && existing.state === "open") {
+    return { error: failureMessage("branch-exists"), status: 409 };
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   let snapshot;
   try {
     snapshot = await copyFolder(store, folderPath, branchPrefix);
   } catch (error) {
-    return { error: `The branch copy failed: ${error.message}`, status: 500 };
+    console.error?.(`branch copy failed for ${account.id}/${name}: ${error.message}`);
+    return { error: failureMessage("storage-down"), status: 500 };
   }
   const createdAt = new Date(now()).toISOString();
-  await db
-    .prepare(`INSERT INTO branches ${BRANCH_COLUMNS} VALUES (?1,?2,?3,?4,?5,?6,'open',?7)`)
-    .bind(
-      crypto.randomUUID(),
-      account.id,
-      name,
-      folderPath,
-      branchPrefix,
-      JSON.stringify(snapshot),
-      createdAt,
-    )
-    .run();
+  try {
+    await db
+      .prepare(
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at) " +
+          "VALUES (?1,?2,?3,?4,?5,'open',?6)",
+      )
+      .bind(
+        account.id,
+        name,
+        folderPath,
+        branchPrefix,
+        JSON.stringify(snapshot),
+        createdAt,
+      )
+      .run();
+  } catch (error) {
+    // The copy is on disk but the row did not land, so the branch would be
+    // invisible and a retry would see the name as free. Clean the copy up, then
+    // report the failure rather than returning 201 for a half-made branch.
+    console.error?.(`branch insert failed for ${account.id}/${name}: ${error.message}`);
+    try {
+      for (const rel of Object.keys(snapshot)) {
+        await store.remove(`${branchPrefix}/${rel}`);
+      }
+      await db
+        .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'")
+        .bind(account.id, name)
+        .run();
+    } catch {
+      /* best-effort cleanup; the 500 is the answer */
+    }
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
   return {
     name,
     sourcePrefix: folderPath,
@@ -344,7 +435,7 @@ export async function createBranch(db, store, account, request, now = () => Date
  * `drive branches`: the account's branches, each with the number of files it
  * changed and whether the original moved under it. The count is the live diff,
  * so it is the number `drive diff` would print, not a number taken on trust
- * from branch time.
+ * from branch time. Closed branches report zero; they need no store walk.
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
@@ -375,49 +466,97 @@ export async function listBranches(db, store, account) {
 /**
  * `drive approve <branch>`: the branch's changes are copied back into the
  * original. Before anything is touched, the original is checked against the
- * snapshot; if it moved, this stops and names the files (409), because copying
- * over a change made after the branch was taken is the one thing approve must
- * never do silently.
+ * snapshot; a file this approve would overwrite that moved stops the whole
+ * run and names the files (409), because copying over a change made after the
+ * branch was taken is the one thing approve must never do silently. Each file
+ * copied back is recorded in the snapshot before the next one, so a retry
+ * resumes from where a partial run left off instead of re-reporting applied
+ * files as drift and locking the branch forever.
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
- * @param {() => number} now
  */
-export async function approveBranch(db, store, account, name, now = () => Date.now()) {
+export async function approveBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
   if (!branch) {
-    return { error: "No such branch.", status: 404 };
+    return { error: failureMessage("branch-not-found"), status: 404 };
   }
   if (branch.state !== "open") {
-    return { error: `That branch was already ${branch.state}.`, status: 409 };
+    return { error: failureMessage("branch-not-open"), status: 409 };
   }
   const diff = await diffBranch(store, branch);
-  if (diff.sourceChanged.length > 0) {
-    const list = diff.sourceChanged.join(", ");
-    return {
-      error:
-        `The original changed after this branch was made, so nothing was copied back. ` +
-        `Changed since: ${list}. Review those files, then discard the branch, or branch the folder again.`,
-      status: 409,
-      files: diff.sourceChanged,
-    };
+  // The files the original moved that an overwrite would clobber: only those
+  // stop the run. A file the original changed at a path the branch did not
+  // touch is left for a follow-up branch.
+  const touched = new Set([...diff.added, ...diff.changed, ...diff.removed]);
+  const initialClashes = diff.sourceChanged.filter((rel) => touched.has(rel));
+  if (initialClashes.length > 0) {
+    return sourceMoved(initialClashes, diff.sourceChanged.length);
   }
-  const applied = { added: diff.added, changed: diff.changed, removed: diff.removed };
+  const snapshot = { ...branch.snapshot };
+  const applied = { added: [], changed: [], removed: [] };
+  let appliedAny = false;
+  let failure = null;
   try {
-    for (const rel of [...diff.added, ...diff.changed]) {
+    for (const rel of diff.added) {
+      const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+      if (current !== null) {
+        failure = sourceMoved([rel], rel === diff.sourceChanged[0] ? 1 : 1);
+        break;
+      }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
+      snapshot[rel] = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+      applied.added.push(rel);
+      appliedAny = true;
     }
-    for (const rel of diff.removed) {
-      await store.remove(`${branch.sourcePrefix}/${rel}`);
+    if (failure === null) {
+      for (const rel of diff.changed) {
+        const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+        if (!sameFile(current, snapshot[rel])) {
+          failure = sourceMoved([rel], 1);
+          break;
+        }
+        await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
+        snapshot[rel] = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+        applied.changed.push(rel);
+        appliedAny = true;
+      }
+    }
+    if (failure === null) {
+      for (const rel of diff.removed) {
+        const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+        if (!sameFile(current, snapshot[rel])) {
+          failure = sourceMoved([rel], 1);
+          break;
+        }
+        await store.remove(`${branch.sourcePrefix}/${rel}`);
+        delete snapshot[rel];
+        applied.removed.push(rel);
+        appliedAny = true;
+      }
     }
   } catch (error) {
-    return { error: `The approve copy failed: ${error.message}`, status: 500 };
+    console.error?.(`approve failed for ${account.id}/${name}: ${error.message}`);
+    failure = { error: failureMessage("storage-down"), status: 500 };
   }
-  await db
+  if (appliedAny && failure === null) {
+    await saveSnapshot(db, account, name, snapshot);
+  }
+  if (failure !== null) {
+    // Record what was applied so a retry resumes; the caller sees the clash.
+    if (appliedAny) {
+      await saveSnapshot(db, account, name, snapshot);
+    }
+    return failure;
+  }
+  const result = await db
     .prepare("UPDATE branches SET state = 'approved' WHERE account_id = ?1 AND name = ?2")
     .bind(account.id, name)
     .run();
+  if (!result?.success) {
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
   return { name, state: "approved", applied };
 }
 
@@ -434,10 +573,10 @@ export async function approveBranch(db, store, account, name, now = () => Date.n
 export async function discardBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
   if (!branch) {
-    return { error: "No such branch.", status: 404 };
+    return { error: failureMessage("branch-not-found"), status: 404 };
   }
   if (branch.state !== "open") {
-    return { error: `That branch was already ${branch.state}.`, status: 409 };
+    return { error: failureMessage("branch-not-open"), status: 409 };
   }
   let removed = 0;
   try {
@@ -446,13 +585,43 @@ export async function discardBranch(db, store, account, name) {
       removed++;
     }
   } catch (error) {
-    return { error: `The discard failed: ${error.message}`, status: 500 };
+    console.error?.(`discard failed for ${account.id}/${name}: ${error.message}`);
+    return { error: failureMessage("storage-down"), status: 500 };
   }
-  await db
+  const result = await db
     .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2")
     .bind(account.id, name)
     .run();
+  if (!result?.success) {
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
   return { name, state: "discarded", removed };
+}
+
+// Persists one account's branch snapshot, so an approve that is retried after
+// a partial run sees each file it already copied back as no longer changed.
+async function saveSnapshot(db, account, name, snapshot) {
+  await db
+    .prepare("UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2")
+    .bind(account.id, name, JSON.stringify(snapshot))
+    .run();
+}
+
+/**
+ * Builds the 409 a source that moved under an approve returns. The named list
+ * is capped so the message cannot balloon; the JSON carries the full list so a
+ * caller can reason over it.
+ */
+function sourceMoved(named, total) {
+  const shown = named.slice(0, NAMED_FILES_LIMIT);
+  const more = total - shown.length;
+  return {
+    error:
+      `${failureMessage("branch-source-moved")} Changed since: ` +
+      `${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}`,
+    status: 409,
+    files: shown,
+  };
 }
 
 // ---------------------------------------------------------------- the route
@@ -474,18 +643,12 @@ export async function discardBranch(db, store, account, name) {
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
  */
-export async function handleBranchesRequest(
-  request,
-  db,
-  store,
-  account,
-  now = () => Date.now(),
-) {
+export async function handleBranchesRequest(request, db, store, account, now = () => Date.now()) {
   if (!account) {
     return unauthorizedResponse();
   }
   if (!db || !store) {
-    return json({ error: "Branches are not configured on this deployment." }, 503);
+    return json({ error: failureMessage("unexpected") }, 503);
   }
   const scoped = scopeStore(store, account);
   const url = new URL(request.url);
@@ -501,7 +664,7 @@ export async function handleBranchesRequest(
       }
       const result = await createBranch(db, scoped, account, read.body, now);
       if (result.error) {
-        return json({ error: result.error, files: result.files }, result.status);
+        return json(result, result.status);
       }
       return json({ branch: result }, 201);
     }
@@ -509,15 +672,24 @@ export async function handleBranchesRequest(
       allow: "GET, POST",
     });
   }
-  const parts = rest.replace(/^\//, "").split("/");
-  const name = decodeURIComponent(parts[0]);
-  if (parts.length === 1) {
+  // A branch name is decoded here where a malformed escape is a 400 rather
+  // than an uncaught URIError (the same rule the api Worker's router follows,
+  // docs/api.md).
+  let name;
+  const tail = rest.replace(/^\//, "");
+  const [rawName, action] = tail.split("/");
+  try {
+    name = decodeURIComponent(rawName);
+  } catch {
+    return json({ error: "That branch name is not valid." }, 400);
+  }
+  if (!action) {
     if (request.method !== "GET") {
       return plain("Method not allowed. GET the branch's diff.", 405, { allow: "GET" });
     }
     const branch = await getBranch(db, account, name);
     if (!branch) {
-      return json({ error: "No such branch." }, 404);
+      return json({ error: failureMessage("branch-not-found") }, 404);
     }
     const diff = await diffBranch(scoped, branch);
     return json({
@@ -525,19 +697,19 @@ export async function handleBranchesRequest(
       diff,
     });
   }
-  if (parts.length === 2 && parts[1] === "approve" && request.method === "POST") {
-    const result = await approveBranch(db, scoped, account, name, now);
+  if (action === "approve" && request.method === "POST") {
+    const result = await approveBranch(db, scoped, account, name);
     if (result.error) {
-      return json({ error: result.error, files: result.files }, result.status);
+      return json(result, result.status);
     }
     return json(result);
   }
-  if (parts.length === 2 && parts[1] === "discard" && request.method === "POST") {
+  if (action === "discard" && request.method === "POST") {
     const result = await discardBranch(db, scoped, account, name);
     if (result.error) {
-      return json({ error: result.error }, result.status);
+      return json(result, result.status);
     }
     return json(result);
   }
-  return plain("Not found.", 404);
+  return json({ error: "Not found." }, 404);
 }

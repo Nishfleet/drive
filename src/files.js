@@ -29,9 +29,10 @@ export const TRASH_PATH = `/${TRASH_FOLDER}`;
  * The folder every branch of this drive is copied into (build step 7,
  * drive#8). It lives here beside the trash folder because this is the one
  * module that knows which folders are the drive's own rather than a person's:
- * both are hidden in the drive root and both are an ordinary folder deeper in
- * the tree. src/branches.js builds the branch prefix from this name, so the
- * path a branch lands in and the path the listing hides are one string.
+ * both are hidden in the drive root, and deeper in the tree both are an
+ * ordinary folder. `BRANCHES_PATH` is the drive path, and src/branches.js copies
+ * folders there and walks `.branches` on its own side, so a branch's own copy
+ * can never be walked into a copy of itself.
  */
 export const BRANCHES_FOLDER = ".branches";
 /** The drive path branches are copied into. */
@@ -260,8 +261,10 @@ export function splitEntries(entries) {
   return { folders: sortEntries(folders), files: sortEntries(files) };
 }
 
-/** The folders the drive keeps for itself and hides from the drive root. */
-const SYSTEM_FOLDERS = new Set([TRASH_FOLDER, BRANCHES_FOLDER]);
+/** The folders the drive keeps for itself: hidden in the drive root, and
+ * skipped by every walk that builds a copy of a person's files
+ * (src/branches.js) or an index of them (src/search.js). */
+export const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
 
 /**
  * A drive listing without the folders the drive keeps for itself.
@@ -278,7 +281,7 @@ export function withoutTrash(entries, path) {
     return entries;
   }
   return entries.filter(
-    (entry) => !(entry.kind === "folder" && SYSTEM_FOLDERS.has(entry.name)),
+    (entry) => !(entry.kind === "folder" && SYSTEM_FOLDERS.includes(entry.name)),
   );
 }
 
@@ -536,8 +539,20 @@ export function scopeStore(store, account) {
   const toKeys = (from, to) => [toKey(from), toKey(to)];
   return {
     async list(path) {
-      const entries = await store.list(toKey(path));
-      return entries.map(toDriveEntry);
+      const entries = (await store.list(toKey(path))).map(toDriveEntry);
+      // The drive keeps `.branches` and `.trash` for itself. They are hidden
+      // in the drive root and nowhere else, the same rule the Files page's
+      // withoutTrash() applies: a folder of that name deeper in the tree is a
+      // person's own folder. Every walk that copies or indexes the drive goes
+      // through here, so a branch copy never steps into `.branches` (the
+      // folder it writes its own copies into) and the index never rows one up.
+      if (path !== "/") {
+        return entries;
+      }
+      return entries.filter(
+        (entry) =>
+          entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
+      );
     },
     // async, so a refused path is a rejected promise on every method rather
     // than a synchronous throw from three of the four.
@@ -742,17 +757,28 @@ export function createS3Store(config) {
       }
     },
     async copy(from, to) {
-      // A server-side copy: S3's CopyObject, named by the x-amz-copy-source
-      // header, so the bytes never leave storage and never pass through this
-      // Worker. The source is the bucket-qualified key, percent-encoded, the
-      // form S3 requires (proven against `rclone serve s3`, 2026-10-01).
+      // S3's CopyObject can answer 200 with an <Error> body for a refused copy
+      // (a multi-part copy that is still running is the other 200), so the
+      // answer is read and checked rather than trusted on its status alone:
+      // `drive branch` must never report success for a copy S3 refused.
+      // Proven against `rclone serve s3`, 2026-10-01.
       const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
       const response = await fetchImpl(urlFor(to), {
         method: "PUT",
         headers: { "x-amz-copy-source": source },
       });
+      const body = await response.text();
       if (!response.ok) {
         throw new Error(`storage copy failed with ${response.status}`);
+      }
+      if (body.includes("<Error>")) {
+        const code = (body.match(/<Code>([^<]*)<\/Code>/) || [])[1] || "unknown";
+        throw new Error(`storage copy was refused: ${code}`);
+      }
+      if (!body.includes("<CopyObjectResult")) {
+        throw new Error(
+          "storage copy did not answer with a CopyObjectResult; the copy may still be running",
+        );
       }
     },
   };

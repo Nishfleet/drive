@@ -20,6 +20,7 @@ import {
   relativePath,
   sameFile,
 } from "../src/branches.js";
+import { BRANCHES_FOLDER } from "../src/files.js";
 import { createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -145,20 +146,29 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
 test("a branch never shows up as a folder in the drive root", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  // The scoped store hides the drive's own folders at the root, so a
+  // branch is never met as a folder on the drive root (or in the index
+  // that walks it): the walk that makes a copy cannot step into the copy
+  // it is making.
   const entries = await scoped.list("/");
-  assert.ok(entries.some((entry) => entry.name === BRANCHES_ROOT.slice(1)));
-  const shown = withoutTrash(entries, "/");
-  assert.ok(!shown.some((entry) => entry.name === BRANCHES_ROOT.slice(1)));
-  // A folder of that name deeper in the tree is still a person's folder.
-  assert.equal(withoutTrash([{ name: BRANCHES_ROOT.slice(1), kind: "folder" }], "/Photos").length, 1);
+  assert.ok(!entries.some((entry) => entry.name === BRANCHES_FOLDER));
+  assert.deepEqual(
+    withoutTrash(entries, "/").filter((entry) => entry.name === BRANCHES_FOLDER),
+    [],
+  );
+  // withoutTrash() agrees with the scoped store. A folder of that name
+  // deeper in the tree is still a person's folder and is not hidden there.
+  assert.equal(withoutTrash([{ name: BRANCHES_FOLDER, kind: "folder" }], "/Photos").length, 1);
 });
 
 test("a second branch of the same name is refused, not silently overwritten", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  const again = await createBranch(db, scoped, ACCOUNT, { folder: "/Notes.md", name: "work" });
+  // The name is still open, so a second branch of a folder is refused on the
+  // conflict rather than clobbering the copy that is already there.
+  const again = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(again.status, 409);
-  assert.match(again.error, /already exists/);
+  assert.match(again.error, /still open/i);
 });
 
 test("createBranch refuses a bad folder, a bad name and the branches folder", async () => {
@@ -305,7 +315,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   assert.equal((await approved.json()).state, "approved");
 
   const second = await handleBranchesRequest(
-    request("POST", BRANCHES_ENDPOINT, { folder: "/Notes.md", name: "second" }),
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "second" }),
     db,
     raw,
     account,

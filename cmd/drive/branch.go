@@ -20,57 +20,56 @@ import (
 	"strings"
 )
 
-// BranchSummary is one branch as /api/branches lists it (src/branches.js).
+// BranchSummary is one branch as /api/branches lists it (src/branches.js). A
+// failure is an APIError from the client, whose message already carries the
+// server's sentence, so there is no error field to decode here.
 type BranchSummary struct {
-	Name          string `json:"name"`
-	SourcePrefix  string `json:"sourcePrefix"`
-	BranchPrefix  string `json:"branchPrefix"`
-	State         string `json:"state"`
-	CreatedAt     string `json:"createdAt"`
-	Files         int    `json:"files"`
-	Changed       int    `json:"changed"`
-	SourceChanged int    `json:"sourceChanged"`
-	Error         string `json:"error"`
+	Name          string
+	SourcePrefix  string
+	BranchPrefix  string
+	State         string
+	CreatedAt     string
+	Files         int
+	Changed       int
+	SourceChanged int
 }
 
 // BranchDiff is the file lists /api/branches/<name> answers with.
 type BranchDiff struct {
-	Added         []string `json:"added"`
-	Changed       []string `json:"changed"`
-	Removed       []string `json:"removed"`
-	SourceChanged []string `json:"sourceChanged"`
+	Added         []string
+	Changed       []string
+	Removed       []string
+	SourceChanged []string
 }
 
 type branchListAnswer struct {
-	Branches []BranchSummary `json:"branches"`
-	Error    string          `json:"error"`
+	Branches []BranchSummary
 }
 
 type branchCreateAnswer struct {
-	Branch BranchSummary `json:"branch"`
-	Error  string        `json:"error"`
+	Branch BranchSummary
 }
 
 type branchDiffAnswer struct {
-	Branch BranchSummary `json:"branch"`
-	Diff   BranchDiff    `json:"diff"`
-	Error  string        `json:"error"`
+	Branch BranchSummary
+	Diff   BranchDiff
 }
 
 type branchApproveAnswer struct {
-	Name    string     `json:"name"`
-	State   string     `json:"state"`
-	Applied BranchDiff `json:"applied"`
-	Files   []string   `json:"files"`
-	Error   string     `json:"error"`
+	Name    string
+	State   string
+	Applied BranchDiff
 }
 
 type branchDiscardAnswer struct {
-	Name    string `json:"name"`
-	State   string `json:"state"`
-	Removed int    `json:"removed"`
-	Error   string `json:"error"`
+	Name    string
+	State   string
+	Removed int
 }
+
+// BRANCHES_PATH is the CLI's one copy of the route family (src/branches.js
+// BRANCHES_ENDPOINT), so the commands and the server cannot drift.
+const BRANCHES_PATH = "/api/branches"
 
 // branchClient builds the client every branch command uses. The api base is
 // the deployment's own (--api / DRIVE_API_URL), falling back to the base
@@ -100,13 +99,12 @@ func branchPathFor(name string) string {
 	return BRANCHES_PATH + "/" + url.PathEscape(name)
 }
 
-// BRANCHES_PATH is the CLI's one copy of the route family (src/branches.js
-// BRANCHES_ENDPOINT), so the commands and the server cannot drift.
-const BRANCHES_PATH = "/api/branches"
-
 // defaultBranchName is the branch name a folder gets when --name is not given:
 // the folder's own name, the way a person would say it. The root has no name
-// of its own, so it becomes "root".
+// of its own, so it becomes "root". A folder name that is not a legal branch
+// name (a space, say) falls back to "branch", so `drive branch "/My Photos"`
+// works and the person can still pass --name for the one they want; the
+// server's own checkedBranchName is the only place a name is judged.
 func defaultBranchName(folder string) string {
 	trimmed := strings.TrimRight(folder, "/")
 	if trimmed == "" {
@@ -116,6 +114,17 @@ func defaultBranchName(folder string) string {
 	if name == "/" || name == "." || name == "" {
 		return "root"
 	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '_':
+		default:
+			return "branch"
+		}
+	}
+	if strings.Contains(name, "..") || len(name) > 64 {
+		return "branch"
+	}
 	return name
 }
 
@@ -123,7 +132,7 @@ func runBranch(args []string) error {
 	fs := flag.NewFlagSet("branch", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
 	home := fs.String("home", os.Getenv("HOME"), "home directory")
-	name := fs.String("name", "", "branch name (default: the folder's name)")
+	name := fs.String("name", "", "branch name (the folder's own name unless given)")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -175,9 +184,11 @@ func runBranches(args []string) error {
 		return nil
 	}
 	for _, branch := range answer.Branches {
-		line := fmt.Sprintf("%s\t%s\t%d changed\tfrom %s", branch.Name, branch.State, branch.Changed, branch.SourcePrefix)
+		line := fmt.Sprintf("%s\t%s\t%d changed\tfrom %s",
+			branch.Name, branch.State, branch.Changed, branch.SourcePrefix)
 		if branch.SourceChanged > 0 {
-			line += fmt.Sprintf("\t(the original changed: %d %s)", branch.SourceChanged, pluralFiles(branch.SourceChanged))
+			line += fmt.Sprintf("\t(the original changed: %d %s)",
+				branch.SourceChanged, pluralFiles(branch.SourceChanged))
 		}
 		fmt.Println(line)
 	}
@@ -207,8 +218,7 @@ func runDiff(args []string) error {
 }
 
 // printBranchDiff renders the four lists the diff carries. The source-changed
-// list is the clash approve will stop on, so it is printed first and named,
-// not buried.
+// list is the clash approve will stop on, so it is printed last and named.
 func printBranchDiff(name string, diff BranchDiff) {
 	changed := len(diff.Added) + len(diff.Changed) + len(diff.Removed)
 	if changed == 0 && len(diff.SourceChanged) == 0 {

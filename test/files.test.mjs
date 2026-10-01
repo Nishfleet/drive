@@ -943,7 +943,7 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ method: (init && init.method) || "GET", url, headers: (init && init.headers) || {} });
-    return new Response("", { status: 200 });
+    return new Response("<CopyObjectResult></CopyObjectResult>", { status: 200 });
   };
   const store = scopeStore(
     createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
