@@ -1,4 +1,4 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // drive issue #11: the pricing and landing page, served as Worker static
@@ -16,6 +16,12 @@ export default defineConfig({
 			runWorkerFirst: ["/api/*"],
 			notFoundHandling: "404-page",
 		},
+		// drive issue #18: the file index's nightly reconciler. `scheduled` in
+		// src/index.js rebuilds one account's rows from a full store walk; the
+		// schedule is the only way a rebuild starts, so no web request can spend
+		// the walk (the safety review: reindex is not a public route). 03:00 UTC
+		// is the spec's quiet hour, before the meter's first hourly run.
+		triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
 		env: {
 			ASSETS: bindings.assets(),
 			WAITLIST_DB: bindings.d1({
