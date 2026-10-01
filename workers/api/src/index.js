@@ -1,6 +1,7 @@
 import { routes } from "./routes.js";
 import { errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
+import { createS3KeyProvider } from "./s3-keys.js";
 import { failureMessage } from "../../../src/messages.js";
 // Finding 1 replaced the hand-rolled path matcher with the platform's own
 // URLPattern: matching a path, capturing :params and deciding that `/a/b/c`
@@ -180,11 +181,47 @@ export async function dispatch(request, ctx, table = routes) {
 let keyStore;
 
 /**
+ * The storage configuration a deployment carries, or null when it carries
+ * none. All five values or none: a half-configured deployment would mint keys
+ * the storage endpoint has never heard of, which reads at the user as "your
+ * new key does not work", so the missing names are thrown instead.
+ * @param {{[key: string]: unknown}} env
+ */
+function keyProviderFor(env) {
+  const names = [
+    "STORAGE_ENDPOINT",
+    "STORAGE_REGION",
+    "STORAGE_BUCKET",
+    "STORAGE_MASTER_ACCESS_KEY_ID",
+    "STORAGE_MASTER_SECRET_ACCESS_KEY",
+  ];
+  const values = names.map((name) => env[name]).filter(
+    (value) => typeof value === "string" && value.length > 0,
+  );
+  if (values.length === 0) {
+    return null;
+  }
+  if (values.length < names.length) {
+    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
+    throw new Error(
+      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
+    );
+  }
+  return createS3KeyProvider({
+    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
+    region: /** @type {string} */ (env.STORAGE_REGION),
+    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
+    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
+    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
+  });
+}
+
+/**
  * @param {{DB?: any, [key: string]: any}} env
  */
 function storeFor(env) {
   if (keyStore === undefined) {
-    keyStore = createMemoryStore();
+    keyStore = createMemoryStore({ keyProvider: keyProviderFor(env) ?? undefined });
   }
   return keyStore;
 }

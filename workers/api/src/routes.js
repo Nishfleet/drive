@@ -16,6 +16,7 @@ import {
   revokeKeyRoute,
   storageListRoute,
 } from "./key-routes.js";
+import { storageEventsRoute } from "./event-routes.js";
 
 /**
  * The auth rules a route may carry. The account gate is deny by default:
@@ -106,5 +107,18 @@ export const routes = [
     path: "/v1/storage/list",
     auth: "public",
     handler: storageListRoute,
+  },
+
+  // ---- the bucket's own notifications (build step 1, drive#2) ----
+  //
+  // Public in the registry because the caller is the storage server, which
+  // holds no device token; the route itself requires the shared bucket token
+  // (a Worker secret) and answers 503 when no token is configured, so a
+  // deployment cannot leave it open by forgetting a variable (event-routes.js).
+  {
+    method: "POST",
+    path: "/v1/events",
+    auth: "public",
+    handler: storageEventsRoute,
   },
 ];

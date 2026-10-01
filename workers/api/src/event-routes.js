@@ -1,0 +1,141 @@
+// The storage event intake (build step 1, drive#2): the endpoint the bucket's
+// own notifications are pointed at, and the first place a saved file becomes
+// something the drive knows about.
+//
+// The bucket sends an S3 event notification — the same shape from MinIO's
+// webhook, iDrive e2's notification rule or B2's event rule — so this route
+// reads the one JSON envelope every provider pads `Records` in. The meter
+// (build step 5, drive#6) is what turns these into GB-minutes; this route
+// exists so step 1 can prove that a saved file reaches the Worker at all, and
+// it logs the line the proof quotes.
+//
+// The endpoint is public in the registry because the caller is the storage
+// server, which holds no device token — but it is not open: it requires the
+// shared token the bucket was configured with (a Worker secret), and refuses
+// to run at all when that token is missing rather than accepting anything.
+import { errorResponse, json } from "./http.js";
+import { sha256Hex } from "./db.js";
+
+/**
+ * Constant-time comparison of two hex digests: a plain `===` on a shared
+ * secret leaks its prefix through timing, and the two lengths are fixed by
+ * SHA-256.
+ * @param {string} left
+ * @param {string} right
+ */
+function digestsEqual(left, right) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+/**
+ * One event from an S3 notification envelope, and the bucket and key it names.
+ * @typedef {object} StorageEvent
+ * @property {string} eventName e.g. s3:ObjectCreated:Put
+ * @property {string} bucket
+ * @property {string} key the object key, percent-decoded
+ * @property {string} versionId
+ * @property {string} eventTime
+ */
+
+/**
+ * Reads the records out of a notification body, or names why it will not. Both
+ * envelope shapes are read: AWS/others put the record under `Records`, and
+ * MinIO repeats the first record's name at the top level.
+ * @param {unknown} body
+ * @returns {{events: StorageEvent[]}|{error: string}}
+ */
+export function parseStorageEvents(body) {
+  if (typeof body !== "object" || body === null) {
+    return { error: "The notification body is not an object." };
+  }
+  const records = /** @type {{Records?: unknown}} */ (body).Records;
+  if (!Array.isArray(records) || records.length === 0) {
+    return { error: "The notification body carried no Records." };
+  }
+  /** @type {StorageEvent[]} */
+  const events = [];
+  for (const record of records) {
+    if (typeof record !== "object" || record === null) {
+      return { error: "A notification record is not an object." };
+    }
+    const typed = /** @type {{eventName?: unknown, eventTime?: unknown, s3?: {bucket?: {name?: unknown}, object?: {key?: unknown, versionId?: unknown}}}} */ (record);
+    const eventName = typed.eventName;
+    const bucket = typed.s3?.bucket?.name;
+    const rawKey = typed.s3?.object?.key;
+    if (typeof eventName !== "string" || typeof bucket !== "string" || typeof rawKey !== "string") {
+      return { error: "A notification record is missing its event name, bucket or key." };
+    }
+    let key = rawKey;
+    try {
+      // S3 percent-encodes the key in a notification; a key with a literal
+      // `%` that is not an escape is kept as it arrived.
+      key = decodeURIComponent(rawKey);
+    } catch {
+      key = rawKey;
+    }
+    events.push({
+      eventName,
+      bucket,
+      key,
+      versionId: typeof typed.s3?.object?.versionId === "string" ? typed.s3.object.versionId : "",
+      eventTime: typeof typed.eventTime === "string" ? typed.eventTime : "",
+    });
+  }
+  return { events };
+}
+
+/**
+ * POST /v1/events — the bucket's notifications. The token is the whole
+ * credential, and the answer is what the bucket will retry on, so a body this
+ * route cannot read is a 400 it names rather than a 202 it ignores.
+ * @param {Request} request
+ * @param {{env: Record<string, unknown>}} ctx
+ */
+export async function storageEventsRoute(request, ctx) {
+  if (request.method !== "POST") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  const token = ctx.env.STORAGE_EVENT_TOKEN;
+  if (typeof token !== "string" || token.length === 0) {
+    // Without the secret the endpoint cannot tell the storage server from
+    // anyone else on the internet, so it does not answer at all.
+    return errorResponse(503, "Storage events are not configured on this deployment.");
+  }
+  const [scheme, presented] = (request.headers.get("authorization") ?? "").split(" ");
+  if (scheme === undefined || presented === undefined || scheme.toLowerCase() !== "bearer") {
+    return errorResponse(401, "Storage events need the bucket's token.", {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  if (!digestsEqual(await sha256Hex(presented), await sha256Hex(token))) {
+    return errorResponse(401, "Storage events need the bucket's token.", {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse(400, "The notification body is not valid JSON.");
+  }
+  const parsed = parseStorageEvents(body);
+  if ("error" in parsed) {
+    return errorResponse(400, parsed.error);
+  }
+  for (const event of parsed.events) {
+    // The line the step 1 proof quotes: the event's own name, the object it
+    // names and the version the bucket created. No bytes and no secret.
+    console.log(
+      `[api] storage event ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
+    );
+  }
+  return json({ received: parsed.events.length, events: parsed.events }, 202);
+}
