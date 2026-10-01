@@ -293,8 +293,23 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   );
   assert.equal(response.status, 429, "the walk must hit the edge limit, not the mailer");
   assert.equal(response.headers.get("retry-after"), "60");
+  // The shared refusal's shape (src/rate-limit.js): exactly the header set the
+  // waitlist's own limiter answers with, so the two endpoints cannot differ.
+  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
   assert.equal(made.sent.length, before, "a rate-limited start mails nothing");
+});
+
+test("the edge limit runs before the body is read: a refused sign-in is a 429, not a 400", async () => {
+  // Pinned, not trusted: an implementation that parsed the body first would
+  // answer 400 on this request and still pass every outcome test above, but
+  // the limit exists to make a refused request cost no parse.
+  const made = dispatchEnv();
+  made.env.SIGNIN_RATE_LIMITER = makeRateLimiter({ success: false });
+  const response = await worker.fetch(post("not json"), made.env);
+  assert.equal(response.status, 429, "a invalid body behind a spent bucket is still a 429");
+  assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
 });
 
 test("a start denied by the global edge limit is a 429 and mails nothing", async () => {

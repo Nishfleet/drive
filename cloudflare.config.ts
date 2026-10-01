@@ -61,17 +61,26 @@ export default defineConfig({
       // closed-door posture the sign-in route ships with (src/signin.js).
       // POST /api/signin mails a real email, so a script walking many
       // addresses is a mailbomb and a send-cost vector once the route is
-      // open in production. The per-IP one is far above a person signing
-      // in (even behind a shared office NAT) and far below what a script
-      // needs to walk addresses; the global one bounds the whole service.
-      // Both configs are one minute, the waitlist's period, and both are
-      // turned on before sign-in opens in production.
+      // open in production. Per IP it is far above the retries a person
+      // makes from their own connection (10 a minute against a couple of
+      // sign-in posts) and far below what a script needs to walk
+      // addresses; the global one bounds the whole service. Both configs
+      // are one minute, the waitlist's period, and both are turned on
+      // before sign-in opens in production.
+      //
+      // The numbers are a pre-production guard, not a capacity answer, and
+      // the honest caveat is shared egress: an office or CGNAT downlink
+      // concentrates people onto one client IP, so `limit: 10` shapes the
+      // whole office to 10 sign-ins a minute, not one person. Acceptable
+      // while the site is behind Cloudflare Access; on the day sign-in
+      // opens, measure the real sign-in rate and raise the per-IP (and the
+      // global above it) first, before a customer shares their login
+      // morning with a landline's worth of neighbours (#147's follow-up).
       //
       // The global ceiling is a spend bound, not a traffic shaper: it sits
-      // far above any plausible sign-in demand, so it never shapes a real
-      // person's sign-in, and it caps the worst case at 100 sends a minute
-      // however many addresses a distributed walk touches. Revisit the
-      // number the day sign-in opens (issue #147).
+      // far above the per-IP world it caps, and it caps the worst case at
+      // 100 sends a minute however many addresses a distributed walk
+      // touches.
       // Each binding needs its own namespace: Cloudflare wants a positive
       // integer string, and a namespace another binding already uses fails
       // the deploy. These are distinct from the waitlist's 1001.
