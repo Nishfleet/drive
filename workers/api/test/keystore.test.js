@@ -20,7 +20,7 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   };
 }
 
-async function signedInAccount(store, clock) {
+async function signedInAccount(store, _clock) {
   const code = store.requestDeviceCode({ name: "Nish's MacBook" });
   store.approveDeviceCode(code.userCode);
   const poll = await store.pollDeviceCode(code.deviceCode);

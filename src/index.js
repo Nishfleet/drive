@@ -282,7 +282,7 @@ export default {
   // an account the drive has never served has nothing to rebuild, and no
   // invented identity is indexed. Each account's rows are rebuilt from its own
   // prefix (scopeStore), the same scoping a request path gets.
-  async scheduled(event, env, context, store = storeFor(env)) {
+  async scheduled(_event, env, context, store = storeFor(env)) {
     context.waitUntil(
       (async () => {
         if (!env.WAITLIST_DB) {

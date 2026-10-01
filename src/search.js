@@ -230,7 +230,7 @@ const UPSERT_UPDATE =
   "size_bytes = excluded.size_bytes, modified_at = excluded.modified_at, " +
   "indexed_at = excluded.indexed_at";
 // Seven placeholders a row, reused row by row inside one statement.
-const ROW_PLACEHOLDERS = "(" + Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ") + ")";
+const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
 /** The prepared statements that write a chunk of rows. Exported so the test
  * can run them through the D1 shape, and the caller cannot build SQL.

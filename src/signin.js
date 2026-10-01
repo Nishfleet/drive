@@ -247,7 +247,7 @@ export async function handleSigninRequest(request, store) {
     if (signedIn && "error" in signedIn) {
       return json({ error: SIGNIN_ERRORS[signedIn.error] ?? signedIn.error }, 400);
     }
-    if (!signedIn || !signedIn.account || !signedIn.sessionToken) {
+    if (!signedIn?.account || !signedIn.sessionToken) {
       // A store that answered nothing is a failed sign-in, not a session: the
       // route never mints a cookie from a shape it does not understand.
       return json(signinClosedBody(), 503);

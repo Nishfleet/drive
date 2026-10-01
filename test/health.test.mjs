@@ -51,7 +51,7 @@ function fakeD1(mode = "ok") {
           if (mode === "hang") {
             // Never settles on its own. The signal is what must end it, or
             // the race must — that is the whole point of the bound.
-            return new Promise((resolve, reject) => {
+            return new Promise((_resolve, reject) => {
               options.signal?.addEventListener("abort", () => {
                 reject(new Error("The operation was aborted."));
               });

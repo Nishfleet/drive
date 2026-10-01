@@ -194,7 +194,7 @@ let keyStore;
 /**
  * @param {ApiEnv} env
  */
-function storeFor(env) {
+function storeFor(_env) {
   if (keyStore === undefined) {
     keyStore = createMemoryStore();
   }

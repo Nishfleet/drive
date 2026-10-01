@@ -22,7 +22,6 @@ import {
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
-  scopeStore,
 } from "../src/files.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
@@ -453,7 +452,7 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
   for (const name of suites) {
     assert.match(read(`test/${name}`), /from "node:test"/, `${name} is a node:test suite`);
   }
-  assert.ok(pkg.engines && pkg.engines.node, "the runner's version is pinned");
+  assert.ok(pkg.engines?.node, "the runner's version is pinned");
   assert.match(String(pkg.engines.node), /^>=\d+$/, "an engines floor, not a range");
   // The one command must not grow junk flags a worker cannot afford.
   assert.ok(!/coverage|--watch/.test(pkg.scripts.test));

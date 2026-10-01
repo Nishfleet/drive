@@ -435,7 +435,7 @@ test("preview: an uploaded page is never a page on our origin", async () => {
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
-  const { call, upload, scoped } = drive();
+  const { upload, scoped } = drive();
   const response = await upload("/Photos", "holiday.jpg", "the-bytes", "image/jpeg");
   assert.equal(response.status, 201);
   assert.deepEqual(await response.json(), {
@@ -690,7 +690,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
 </ListBucketResult>`;
   const fetchImpl = async (url, init) => {
-    urls.push({ method: (init && init.method) || "GET", url });
+    urls.push({ method: init?.method || "GET", url });
     if (url.includes("list-type=2")) {
       return new Response(xml, { status: 200 });
     }
@@ -875,7 +875,15 @@ test("the page's script reads the same endpoints and the same window", () => {
   ]) {
     assert.ok(page.includes(`const ${name} = "${endpoint}";`), `the page must call ${endpoint}`);
   }
-  assert.ok(page.includes(`const RECENTLY_DELETED_DAYS = ${RECENTLY_DELETED_DAYS};`));
+  // The 30-day window is src/files.js's number, and the page carries it only so
+  // this gate can read it back: nothing in the page's own script touches it, so
+  // a linter reads the line as dead and renames it. The underscore is the
+  // standard "deliberately unread in the module it is declared in" marker, and
+  // the test below is the reader (drive#92).
+  assert.ok(
+    page.includes(`const _RECENTLY_DELETED_DAYS = ${RECENTLY_DELETED_DAYS};`),
+    "the page must carry the module's recently-deleted window for this gate",
+  );
   // The trash folder is the module's, not a second name for it.
   assert.ok(!page.includes(TRASH_PATH.slice(1, -1)) || page.includes("Recently deleted"));
 });
@@ -885,8 +893,16 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // One listing call for the folder, one for Recently deleted.
   assert.ok(script.includes("view=deleted"));
   // Preview and download both go through the api, never to storage directly.
-  assert.ok(script.includes('PREVIEW_ENDPOINT + "?path="'));
-  assert.ok(script.includes('DOWNLOAD_ENDPOINT + "?path="'));
+  assert.ok(script.includes("PREVIEW_ENDPOINT}?path="));
+  assert.ok(script.includes("DOWNLOAD_ENDPOINT}?path="));
+  // The Download link in the viewer is a real URL from the first byte, not a
+  // placeholder: the page's own script sets it the moment a row opens, and a
+  // bare # would send a no-JS browser to the top of the page (drive#92).
+  assert.ok(page.includes('<a id="viewer-download" href="/api/files/download" download>'));
+  // The upload path carries one name: the browser hands over whatever the file
+  // is called, and src/files.js turns a slash or a control character into a
+  // dash, so the page does the same and the two agree on the stored name.
+  assert.ok(script.includes('file.name.replace(CONTROL_OR_SLASH, "-")'));
   // A folder opens in place; a file opens the viewer.
   assert.ok(script.includes('row.kind === "folder"'));
   // One tap restores: the Restore button posts the path and the list reloads.
@@ -937,9 +953,9 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({
-      method: (init && init.method) || "GET",
+      method: init?.method || "GET",
       url,
-      headers: (init && init.headers) || {},
+      headers: init?.headers || {},
     });
     return new Response("<CopyObjectResult></CopyObjectResult>", { status: 200 });
   };

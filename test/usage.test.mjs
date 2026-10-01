@@ -26,8 +26,7 @@ import {
   usageSummary,
 } from "../src/billing.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
-import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 // The signed-in account the handler tests run as, until the sign-in flow lands

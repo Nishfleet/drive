@@ -394,14 +394,20 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
   // scope that kind gets (plus the read-only pair and the empty set): cap, then
   // uncap, and the capabilities equal the ones the key started with. No run ever
   // widens a key, and no run ever leaves one narrower than it found it.
-  const subsets = (names) =>
-    names
-      .reduce((all, name) => [...all, ...all.map((set) => [...set, name])], [[]])
-      .map((set) => {
-        // A stable order makes a failure readable: the plan's own order is the
-        // spec's order (list, read, write, delete).
-        return names.filter((candidate) => set.includes(candidate));
-      });
+  // Every subset, built by adding one name at a time to a growing list of sets
+  // rather than by a reduce that copies the whole list on every step: the sets
+  // are the test's own scratch space, so mutating one is the cheap answer.
+  const subsets = (names) => {
+    const sets = [[]];
+    for (const name of names) {
+      for (const set of [...sets]) {
+        sets.push([...set, name]);
+      }
+    }
+    // A stable order makes a failure readable: the plan's own order is the
+    // spec's order (list, read, write, delete).
+    return sets.map((set) => names.filter((candidate) => set.includes(candidate)));
+  };
   const applyPlan = (keys, plan) =>
     keys.map((key) => {
       const swap = plan.swaps.find((entry) => entry.keyId === key.keyId);

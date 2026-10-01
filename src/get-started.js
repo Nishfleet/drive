@@ -479,7 +479,7 @@ async function poll() {
     response = await fetch(statusEndpoint(), {
       headers: { accept: "application/json" },
     });
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -493,7 +493,7 @@ async function poll() {
   let payload;
   try {
     payload = await response.json();
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -530,7 +530,7 @@ function wireCopyButton() {
       }
       note.textContent = "Copied. Paste it into your terminal.";
       button.textContent = "Copied";
-    } catch (error) {
+    } catch (_error) {
       note.textContent = "Could not copy it for you. Select the command and copy it by hand.";
       button.textContent = "Copy";
     }
@@ -548,13 +548,16 @@ function start() {
   renderConnection();
   wireCopyButton();
 
-  poll();
-  timer = window.setInterval(poll, pollIntervalMs());
+  // poll() owns its own failures: every fetch and every body read is guarded
+  // and renders the unreachable state, so it cannot reject. The `void` says
+  // that out loud for the linter (drive issue #92) and keeps it true.
+  void poll();
+  timer = window.setInterval(() => void poll(), pollIntervalMs());
   document.addEventListener("visibilitychange", () => {
     // A tab in the background has the browser's own cadence; check the moment
     // it comes back so the line is never stale on return.
     if (document.visibilityState === "visible" && timer !== null) {
-      poll();
+      void poll();
     }
   });
 }

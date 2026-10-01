@@ -380,8 +380,14 @@ async function proof(t, workDir) {
   };
   t.after(cleanup);
 
-  const cfg = (standin =
-    configuredStorage() ?? (await startStandin(path.join(workDir, "standin"))));
+  // Two lines instead of one, so nothing runs inside the call to standin(): the
+  // right-hand side can await, and an assignment inside a call reads like a
+  // side effect the function might not perform (drive issue #92).
+  let cfg = configuredStorage();
+  if (!cfg) {
+    standin = await startStandin(path.join(workDir, "standin"));
+    cfg = standin;
+  }
 
   // Started one at a time so a half-started pair is still torn down: each
   // machine joins `running` as soon as it is up.

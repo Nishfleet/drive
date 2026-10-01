@@ -222,7 +222,7 @@ export async function handleSendEmailRequest(request, env) {
       },
     });
   }
-  if (!isAuthorizedSend(request, env && env.EMAIL_SEND_TOKEN)) {
+  if (!isAuthorizedSend(request, env?.EMAIL_SEND_TOKEN)) {
     return json({ error: "Drive emails are only sent from the drive service." }, 403);
   }
   if (!isSameOriginRequest(request)) {
@@ -241,7 +241,7 @@ export async function handleSendEmailRequest(request, env) {
   // Bound once: the `ok` discriminant narrows the result, and a union property
   // is not narrowed across the awaits below.
   const wanted = read;
-  if (!env || !env.EMAIL) {
+  if (!env?.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
   if (typeof env.MAIL_FROM !== "string" || env.MAIL_FROM.trim().length === 0) {

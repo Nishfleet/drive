@@ -6,7 +6,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");

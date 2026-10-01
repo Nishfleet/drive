@@ -29,7 +29,7 @@ import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
-import { handleSigninRequest, SIGNIN_ENDPOINT } from "../src/signin.js";
+import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");

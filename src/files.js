@@ -20,6 +20,23 @@ import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
+/**
+ * The characters a path may not carry: the ASCII control range and DEL plus a
+ * backslash, spelled with String.fromCharCode rather than a `` escape in a
+ * literal, because a control range in a regex literal is exactly the thing
+ * that is unreadable in review and easy to typo into the wrong range (drive
+ * issue #92). The Web Files page cannot import this module and builds the same
+ * class from the same call; test/files.test.mjs reads the shipped page and
+ * fails when the two drift apart.
+ */
+export const CONTROL_OR_BACKSLASH = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}\\\\]`,
+);
+/** The same control range with a slash in it, for a name the browser hands over. */
+export const CONTROL_OR_SLASH = new RegExp(
+  `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
+  "g",
+);
 /** The listing, download, upload and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
@@ -287,7 +304,7 @@ export function validatePath(path) {
   if (path === "/") {
     return { path: "/" };
   }
-  if (/[\u0000-\u001f\u007f\\]/.test(path)) {
+  if (CONTROL_OR_BACKSLASH.test(path)) {
     return { path: "", error: "That path contains a character we cannot use." };
   }
   const segments = path.split("/").slice(1);
@@ -1117,7 +1134,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
 function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
-    .replace(/[/\\\u0000-\u001f]/g, "-");
+    .replace(CONTROL_OR_SLASH, "-");
   return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : "upload";
 }
 

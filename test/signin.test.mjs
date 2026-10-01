@@ -266,7 +266,7 @@ test("the closed door's words come from the message table, once", async () => {
   // the words cannot fork between the endpoint and anything else that names it.
   const built = signinClosedBody();
   assert.deepEqual(built, {
-    error: FAILURE_MESSAGES["sign-in-closed"].what + " " + FAILURE_MESSAGES["sign-in-closed"].next,
+    error: `${FAILURE_MESSAGES["sign-in-closed"].what} ${FAILURE_MESSAGES["sign-in-closed"].next}`,
   });
   // The endpoint never invents a second draft of the sentence.
   const storeless = await handleSigninRequest(
