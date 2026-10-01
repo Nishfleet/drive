@@ -14,9 +14,11 @@
 // have (drive#2; the account model is docs/build-spec.md's `accounts` table),
 // so the email one-time code signs a person in for real today and swapping the
 // store for D1 is one factory, not a route change. The route stays a closed
-// door (503, the message table's words) when no store is passed at all, which
-// is the same posture POST /api/emails/send takes with EMAIL_SEND_TOKEN unset
-// (src/email-send.js) and what a deployment with no accounts answers.
+// door (503, the message table's words) when no store is passed at all, and
+// the store itself refuses the same way when it has no mailer — so a
+// deployment with no email binding never reports a code sent that no mailbox
+// will receive. That is the same posture POST /api/emails/send takes with
+// EMAIL_SEND_TOKEN unset (src/email-send.js).
 //
 // Third-party sign-in (Google, GitHub) is present as the spec's screen shows
 // it and answered the same closed way. The OAuth client ids and secrets are
@@ -68,13 +70,9 @@ export const SIGNIN_COPY = Object.freeze({
   // endpoint rather than two endpoints, because a person signing in is one
   // action with a step in the middle, and the page already keeps the address
   // from the first step to send with the second.
-  step: "start",
   stepStart: "start",
   stepFinish: "finish",
   sending: "Sending…",
-  // Shown under the buttons, before anything is submitted: the drive is not
-  // open yet, so nobody is left guessing why no code arrives.
-  closedNote: "The drive is not open yet. One email when it is.",
   signupNote: "New here? Signing in makes your drive, and $1 a month of storage is free.",
 });
 
@@ -193,10 +191,23 @@ export async function handleSigninRequest(request, store) {
     return json({ error: failureMessage("cross-site") }, 403);
   }
   let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "The request body is not valid JSON." }, 400);
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    // The no-JavaScript path: a plain <form> posts form-encoded fields, not
+    // JSON. The fields are the same ones the JSON path reads, so the route
+    // accepts the form it documents rather than answering a 400 to a browser
+    // with its script off.
+    try {
+      body = Object.fromEntries((await request.formData()).entries());
+    } catch {
+      return json({ error: "The request body is not a form." }, 400);
+    }
+  } else {
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "The request body is not valid JSON." }, 400);
+    }
   }
   const read = readSigninRequest(body);
   if (read.error) {
@@ -214,6 +225,11 @@ export async function handleSigninRequest(request, store) {
     const signedIn = await store.finishSignin(read);
     if (signedIn && signedIn.error) {
       return json({ error: SIGNIN_ERRORS[signedIn.error] ?? signedIn.error }, 400);
+    }
+    if (!signedIn || !signedIn.account || !signedIn.sessionToken) {
+      // A store that answered nothing is a failed sign-in, not a session: the
+      // route never mints a cookie from a shape it does not understand.
+      return json(signinClosedBody(), 503);
     }
     return json(
       {
@@ -235,16 +251,12 @@ export async function handleSigninRequest(request, store) {
   const started = await store.startSignin(read);
   if (started && started.error) {
     // A store error is a named key the copy below turns into a sentence, so
-    // the page never shows a raw key to a person.
+    // the page never shows a raw key to a person. Google and GitHub land here
+    // too: their client ids and secrets are Nish's credentials, so the store
+    // refuses them and the route answers the closed door.
     if (started.error === "rate-limited") {
       return json({ error: failureMessage("rate-limited") }, 429);
     }
-    return json(signinClosedBody(), 503);
-  }
-  if (started.method === "google" || started.method === "github") {
-    // Third-party sign-in is on the screen as the spec shows it and answered
-    // the closed way: their client ids and secrets are Nish's credentials,
-    // never values in this repo, so there is no client to redirect to.
     return json(signinClosedBody(), 503);
   }
   return json({ ok: true, step: "start", method: read.method, expiresIn: started.expiresIn }, 202);

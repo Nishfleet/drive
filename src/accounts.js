@@ -39,12 +39,23 @@ const CODE_DIGITS = 6;
 /**
  * The most codes one address may start, and how long the block lasts after the
  * limit is reached. Six a minute is far above a person retyping their address
- * and far below a script enumerating addresses to fill an accounts table.
- * This is the one bounded form in the sign-in flow, and the same posture
- * WAITLIST_RATE_LIMITER takes for the waitlist (cloudflare.config.ts).
+ * and far below a script enumerating addresses. It is per address, held in the
+ * store's own memory, so it bounds one mailbox and not the service: a script
+ * walking many addresses is a per-IP bound, which belongs at the edge beside
+ * the waitlist's limiter (cloudflare.config.ts) and is a follow-up, not
+ * something this in-memory store can see.
  */
 export const CODE_SEND_LIMIT = 6;
 export const CODE_SEND_WINDOW_SECONDS = 60;
+
+/**
+ * How many wrong codes one pending sign-in accepts before the code is thrown
+ * away. A 6-digit code is 1,000,000 values, so without a cap an unlimited
+ * `step: "finish"` loop could walk it inside the ten-minute life. Five tries is
+ * far above a person mistyping and far below a brute-force budget, and the
+ * person simply asks for a new code when they run out.
+ */
+export const MAX_FINISH_ATTEMPTS = 5;
 
 /**
  * The cookie the session rides in, and its flags. `HttpOnly` because no script
@@ -85,16 +96,6 @@ export function sessionCookie(token, maxAgeSeconds = SESSION_TTL_SECONDS) {
 }
 
 /**
- * The one cookie a request clears: same name, same flags, zero age. A sign-out
- * that spells the flags differently leaves a cookie the browser keeps, which
- * reads as a sign-out that did not take.
- * @returns {string}
- */
-export function clearedSessionCookie() {
-  return sessionCookie("", 0);
-}
-
-/**
  * The session token a request carries, or null. Reads the `Cookie` header
  * rather than a parsed cookie jar: there is one cookie this app sets, and a
  * parser that accepts arbitrary names would be a second source of truth about
@@ -129,20 +130,30 @@ export function readSessionCookie(request) {
  */
 function newSigninCode(randomBytes) {
   let out = "";
-  for (let i = 0; i < CODE_DIGITS; i++) {
-    let byte = randomBytes()[0] % 256;
-    while (byte >= 250) {
-      byte = randomBytes()[0] % 256;
+  // 250 is the largest multiple of 10 that fits in a byte, so a byte above it
+  // is rejected rather than folded back onto a low digit. The guard is a broken
+  // random source, not chance: a source that only returns bytes >= 250 must
+  // fail loudly, never spin forever.
+  let guard = 0;
+  while (out.length < CODE_DIGITS) {
+    const byte = randomBytes()[0];
+    if (byte < 250) {
+      out += String(byte % 10);
     }
-    out += String(byte % 10);
+    guard += 1;
+    if (guard > 1000) {
+      throw new Error("the random source produced no usable byte for a sign-in code");
+    }
   }
   return out;
 }
 
 /**
- * Constant-time comparison of two equal-length codes. A plain `===` on a code
- * leaks through timing how many leading digits were right, and the code is the
- * only thing between an address and a session.
+ * Constant-time comparison of the stored code digest and the digest of what
+ * the person typed. A plain `===` leaks through timing how many leading hex
+ * characters matched, and the code is the only thing between an address and a
+ * session. Both sides are 64-char SHA-256 hex, so the length check never
+ * short-circuits a real comparison.
  * @param {string} left
  * @param {string} right
  */
@@ -158,12 +169,14 @@ function codesEqual(left, right) {
 }
 
 /**
- * An in-memory account store with the four methods the sign-in route and the
- * account gate need. The real one is D1 (drive#2, the accounts table); this is
- * the same interface over Maps, so a D1 factory drops in without a route or a
- * test changing. Isolates each hold their own store, so a session is good in
- * the isolate that minted it — which is why the deployment this runs in is
- * pinned to one isolate (docs/ARCHITECTURE.md) or the store moves to D1 first.
+ * An in-memory account store with the three methods the sign-in route and the
+ * account gate need (startSignin, finishSignin, accountForSession). The real
+ * one is D1 (drive#2, the accounts table); this is the same interface over
+ * Maps, so a D1 factory drops in without a route or a test changing. Isolates
+ * each hold their own store, so a session is good in the isolate that minted
+ * it. That is fine for the tests and for a deployment pinned to one isolate;
+ * a multi-isolate deployment needs the D1 store first, because a session the
+ * next isolate never saw would read as signed out.
  *
  * @param {{now?: () => number, randomBytes?: () => Uint8Array, sendCode?: (code: object) => Promise<unknown>|unknown}} [options]
  *   `sendCode` is the mailer: it is given the address and the code, and its
@@ -179,12 +192,30 @@ export function createAccountStore(options = {}) {
   const accounts = new Map();
   /** @type {Map<string, {id: string, email: string, name: string, createdAt: number}>} account id -> account */
   const byId = new Map();
-  /** @type {Map<string, {digest: string, accountId: string, expiresAt: number}>} code digest -> pending code */
+  /** @type {Map<string, {digest: string, expiresAt: number, failures: number}>} account id -> the one pending code */
   const codes = new Map();
-  /** @type {Map<string, {accountId: string, name: string, expiresAt: number}>} session digest -> session */
+  /** @type {Map<string, {accountId: string, expiresAt: number}>} session digest -> session */
   const sessions = new Map();
   /** @type {Map<string, number[]>} address -> epoch seconds of each code start */
   const sentCodes = new Map();
+
+  /**
+   * Drops codes and sessions whose time is up, on the paths that read them, so
+   * a long-lived isolate's maps do not grow without bound.
+   */
+  function purgeExpired() {
+    const seconds = now() / 1000;
+    for (const [accountId, pending] of codes) {
+      if (pending.expiresAt < seconds) {
+        codes.delete(accountId);
+      }
+    }
+    for (const [digest, session] of sessions) {
+      if (session.expiresAt < seconds) {
+        sessions.delete(digest);
+      }
+    }
+  }
 
   /**
    * @param {string} address
@@ -244,27 +275,35 @@ export function createAccountStore(options = {}) {
         // to redirect to. Naming the missing credential is the honest error.
         return { error: "sign-in-closed" };
       }
+      if (!options.sendCode) {
+        // No mailer, so no code can leave, so the store refuses rather than
+        // reporting a code sent to a mailbox that will never receive it. This
+        // is the state a deployment is in until the email binding is set, and
+        // it reads exactly like the route's own closed door.
+        return { error: "sign-in-closed" };
+      }
       const address = String(request.email ?? "").trim().toLowerCase();
       const wait = blockedUntil(address);
       if (wait > 0) {
         return { error: "rate-limited" };
       }
       const account = accountFor(address);
+      purgeExpired();
       const code = newSigninCode(randomBytes);
-      codes.set(await sha256Hex(code), {
+      // One pending code per account: a second start replaces the first, so a
+      // person who asks again does not leave a second live code behind.
+      codes.set(account.id, {
         digest: await sha256Hex(code),
-        accountId: account.id,
         expiresAt: now() / 1000 + SIGNIN_CODE_TTL_SECONDS,
+        failures: 0,
       });
       const attempts = sentCodes.get(address) ?? [];
       attempts.push(Math.floor(now() / 1000));
       sentCodes.set(address, attempts);
-      if (options.sendCode) {
-        // A mailer that throws has not sent the code, so the failure is the
-        // route's answer: the person is told the email did not go out rather
-        // than shown a screen that waits forever.
-        await options.sendCode({ to: address, code, account });
-      }
+      // A mailer that throws has not sent the code, so the failure is the
+      // route's answer: the person is told the email did not go out rather
+      // than shown a screen that waits forever.
+      await options.sendCode({ to: address, code, account });
       return { account, expiresIn: SIGNIN_CODE_TTL_SECONDS };
     },
 
@@ -285,19 +324,32 @@ export function createAccountStore(options = {}) {
         // reads, so the address is not the secret.
         return { error: "invalid-code" };
       }
+      purgeExpired();
+      const pending = codes.get(account.id);
+      if (
+        pending === undefined ||
+        pending.expiresAt < now() / 1000 ||
+        pending.failures >= MAX_FINISH_ATTEMPTS
+      ) {
+        codes.delete(account.id);
+        return { error: "invalid-code" };
+      }
       const digest = await sha256Hex(String(request.code ?? "").trim());
-      const pending = codes.get(digest);
-      if (pending === undefined || pending.expiresAt < now() / 1000) {
+      if (!codesEqual(pending.digest, digest)) {
+        // A wrong guess burns one of a small number of tries, so the 6-digit
+        // code cannot be walked in the ten minutes it is alive. The code is
+        // thrown away once the tries are used, and the person asks for a new
+        // one — the send limit above bounds how often that can be tried.
+        pending.failures += 1;
+        if (pending.failures >= MAX_FINISH_ATTEMPTS) {
+          codes.delete(account.id);
+        }
         return { error: "invalid-code" };
       }
-      if (pending.accountId !== account.id) {
-        return { error: "invalid-code" };
-      }
-      codes.delete(digest);
+      codes.delete(account.id);
       const sessionToken = newId("sess");
       sessions.set(await sha256Hex(sessionToken), {
         accountId: account.id,
-        name: account.name,
         expiresAt: now() / 1000 + SESSION_TTL_SECONDS,
       });
       return { account, sessionToken };
@@ -315,12 +367,14 @@ export function createAccountStore(options = {}) {
       if (typeof token !== "string" || token === "") {
         return null;
       }
-      const session = sessions.get(await sha256Hex(token));
+      purgeExpired();
+      const key = await sha256Hex(token);
+      const session = sessions.get(key);
       if (session === undefined) {
         return null;
       }
       if (session.expiresAt < now() / 1000) {
-        sessions.delete(await sha256Hex(token));
+        sessions.delete(key);
         return null;
       }
       const account = byId.get(session.accountId);

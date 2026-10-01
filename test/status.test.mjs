@@ -260,7 +260,7 @@ test("a request can only prove an account through a session the store minted", a
   // only digests, so there is no session token to read back out of it. The
   // finish step is the only way to get one, and the full round trip is proved
   // through the Worker in test/account-gate.test.mjs.
-  const store = createAccountStore();
+  const store = createAccountStore({ sendCode: () => {} });
   const started = await store.startSignin({ method: "email", email: "someone@example.com" });
   assert.ok(started.account.id, "a start makes or finds the account");
   assert.equal(await store.accountForSession("made-up"), null);

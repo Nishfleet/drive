@@ -73,9 +73,10 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That request did not come from the drive.",
     next: "Open the drive's page and try again there.",
   }),
-  // Sign-in exists as a route but the account store does not yet (build step
-  // 1 / drive#2), and no OAuth provider is wired to secrets (Nish's). This is
-  // the closed door's words, not a fake success.
+  // Sign-in exists as a route, but it is not fully open yet: the account
+  // store lands with D1 (drive#2) and a deployment with no mailer refuses
+  // rather than reporting a code sent, and no OAuth provider is wired to
+  // secrets (Nish's). This is the closed door's words, not a fake success.
   "sign-in-closed": Object.freeze({
     what: "Signing in is not open yet.",
     next: "Join the waitlist, and your first email will carry a sign-in code.",

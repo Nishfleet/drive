@@ -31,7 +31,7 @@ import {
   readSigninRequest,
   signinClosedBody,
 } from "../src/signin.js";
-import { createAccountStore } from "../src/accounts.js";
+import { MAX_FINISH_ATTEMPTS, createAccountStore } from "../src/accounts.js";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
@@ -50,12 +50,17 @@ function post(body, { url = "https://drive.test/api/signin", headers = {} } = {}
 
 test("the Worker routes the sign-in start and serves no other method", async () => {
   assert.equal(SIGNIN_ENDPOINT, "/api/signin");
+  // The Worker's dispatch is driven with a store that has a mailer, because a
+  // store with no mailer refuses a start (a code that cannot be sent is never
+  // reported as sent). The mailer captures what left by email.
+  const routedEnv = {
+    ...env,
+    ACCOUNTS_STORE: createAccountStore({ sendCode: () => {} }),
+  };
   for (const path of ["/api/signin", "/api/signin/"]) {
     const response = await worker.fetch(post({ method: "email", email: "a@b.co" }, {
       url: `https://drive.test${path}`,
-    }), env);
-    // The Worker's own store is bound, so a start is a real 202 with a code
-    // emailed and no code in the reply.
+    }), routedEnv);
     assert.equal(response.status, 202, `${path} must reach the sign-in handler`);
     const payload = await response.json();
     assert.equal(payload.ok, true);
@@ -63,7 +68,7 @@ test("the Worker routes the sign-in start and serves no other method", async () 
   }
   // GET is not served: a GET must not be answered by the handler's POST
   // body, and must not fall through to the asset layer either.
-  const get = await worker.fetch(new Request("https://drive.test/api/signin"), env);
+  const get = await worker.fetch(new Request("https://drive.test/api/signin"), routedEnv);
   assert.equal(get.status, 405, "GET must be refused, not read as a sign-in");
   assert.equal(get.headers.get("allow"), "POST");
 });
@@ -81,6 +86,66 @@ test("with no account store the route is a closed door, not a fake success", asy
   assert.equal("ok" in payload, false, "a closed sign-in must not answer ok");
   assert.equal("code" in payload, false, "a closed sign-in must not answer a code");
   assert.equal(response.headers.get("set-cookie"), null, "a closed sign-in sets no session");
+});
+
+test("a store with no mailer refuses a start instead of reporting a code sent", async () => {
+  // A store that cannot send a code must not answer 202: the person would
+  // wait for an email that is not coming, which is a fake success.
+  const response = await handleSigninRequest(
+    post({ method: "email", email: "you@example.com" }),
+    createAccountStore(),
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), signinClosedBody());
+});
+
+test("the no-JavaScript form post is read as a form, not refused as JSON", async () => {
+  // A plain <form> posts application/x-www-form-urlencoded with the same field
+  // names the JSON path uses. The route reads it, so the no-JS path the page
+  // documents actually reaches the endpoint.
+  const store = createAccountStore({ sendCode: () => {} });
+  const response = await handleSigninRequest(
+    new Request("https://drive.test/api/signin", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ step: "start", method: "email", email: "you@example.com" }),
+    }),
+    store,
+  );
+  assert.equal(response.status, 202);
+  const payload = await response.json();
+  assert.equal(payload.ok, true);
+  assert.equal("code" in payload, false, "the code leaves by email, never in the reply");
+});
+
+test("a store that returns nothing on finish is a closed door, not a session", async () => {
+  // A finish that stores nothing must not take the cookie-setting branch.
+  const response = await handleSigninRequest(
+    post({ step: "finish", email: "you@example.com", code: "012345" }),
+    { async finishSignin() { return undefined; } },
+  );
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("a pending code is thrown away after five wrong guesses", async () => {
+  // The store's own test: the 6-digit code cannot be walked with unlimited
+  // finish posts. Five wrong guesses discard it, so the real code no longer
+  // works and the person must ask for a new one.
+  let emailed;
+  const store = createAccountStore({
+    sendCode: ({ code }) => {
+      emailed = code;
+    },
+  });
+  await store.startSignin({ method: "email", email: "someone@example.com" });
+  for (let i = 0; i < MAX_FINISH_ATTEMPTS; i++) {
+    const wrong = String((Number(emailed) + i + 1) % 1_000_000).padStart(6, "0");
+    const result = await store.finishSignin({ email: "someone@example.com", code: wrong });
+    assert.equal(result.error, "invalid-code", `wrong guess ${i + 1} must be refused`);
+  }
+  const after = await store.finishSignin({ email: "someone@example.com", code: emailed });
+  assert.equal(after.error, "invalid-code", "the real code is dead once the tries are spent");
 });
 
 test("a request that did not come from the site is refused before anything is stored", async () => {

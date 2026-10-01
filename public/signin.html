@@ -229,14 +229,6 @@ button:disabled {
   display: none;
 }
 
-.closed {
-  margin: 22px 0 0;
-  padding-top: 18px;
-  border-top: 1px solid var(--rule);
-  color: var(--ink-soft);
-  font-size: 15px;
-}
-
 .footer {
   max-width: 640px;
   margin: 40px auto 0;
@@ -277,6 +269,7 @@ button:disabled {
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
+        <input type="hidden" name="method" value="email">
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -288,8 +281,9 @@ button:disabled {
 
       <div class="code-step" id="code-step" hidden>
         <hr class="rule">
-        <form id="code-form">
+        <form id="code-form" action="/api/signin" method="post">
           <input type="hidden" name="step" value="finish">
+          <input type="hidden" name="email" id="code-email">
           <label for="code">The 6-digit code</label>
           <div class="field-row">
             <input id="code" name="code" type="text" inputmode="numeric"
@@ -308,8 +302,6 @@ button:disabled {
       </div>
 
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
-
-      <p class="closed">The drive is not open yet. One email when it is.</p>
     </div>
   </main>
 
@@ -319,11 +311,14 @@ button:disabled {
   </footer>
 
   <script>
-// Sign-in submit. Without JavaScript the form still posts to /api/signin, so
-// this only upgrades the reply from a page reload to a line in the live
-// region. Every path writes a line: the server's own message when it sends
-// one, the message table's words when the browser never reached the service,
-// and never a raw error string (drive#28's rule for the pricing page).
+// Sign-in submit. This script upgrades the reply from a page reload to a line
+// in the live region. Without JavaScript the email form still posts the address
+// to /api/signin (an ordinary form post, which the route reads as
+// application/x-www-form-urlencoded) and shows the route's JSON; the code step
+// is revealed by this script, so a browser with JavaScript off cannot finish
+// the two-step sign-in. Every path writes a line: the server's own message when
+// it sends one, the message table's words when the browser never reached the
+// service, and never a raw error string (drive#28's rule for the pricing page).
 const SIGNIN_ENDPOINT = "/api/signin";
 const METHODS = ["email", "google", "github"];
 // Where a person lands once they are signed in. The drive itself, not a
@@ -383,6 +378,7 @@ async function start(method, email) {
   }
   if (method === "email") {
     codeStep.hidden = false;
+    document.getElementById("code-email").value = email ?? "";
     say("Check your email for the 6-digit code.", "done");
     document.getElementById("code").focus();
     return;
@@ -454,8 +450,12 @@ async function finish(email, code) {
 codeForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const code = document.getElementById("code").value.trim();
+  const codeButton = codeForm.querySelector("button");
+  codeButton.disabled = true;
   say("Signing in…", "pending");
-  finish(emailInput.value.trim(), code);
+  finish(emailInput.value.trim(), code).finally(() => {
+    codeButton.disabled = false;
+  });
 });
   </script>
 </body>

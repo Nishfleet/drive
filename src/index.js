@@ -48,8 +48,9 @@ function storeFor(env) {
 let accountsStore;
 function accountsStoreFor(env) {
   // A store passed on the env wins, and that is how a test drives the real
-  // dispatch (test/account-gate.test.mjs reads the emailed code through the
-  // fake EMAIL binding and the store it builds). A deployment never sets it,
+  // dispatch (test/account-gate.test.mjs builds a store with a mailer that
+  // captures the code, so it can read what left by email). A deployment never
+  // sets it,
   // so the one-isolate cache below is what production uses.
   if (env.ACCOUNTS_STORE) {
     return env.ACCOUNTS_STORE;

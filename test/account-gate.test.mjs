@@ -146,7 +146,8 @@ test("every route src/index.js registers is either public or behind the gate", a
     const fromConstant =
       route.startsWith(`${HEALTH_PATH}/`) ||
       route === HEALTH_PATH ||
-      route.startsWith(SIGNIN_ENDPOINT);
+      route === SIGNIN_ENDPOINT ||
+      route.startsWith(`${SIGNIN_ENDPOINT}/`);
     assert.ok(
       literals.includes(route) ||
         (fromConstant &&
@@ -278,7 +279,6 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   const code = emailed[0].code;
   assert.match(String(code), /^[0-9]{6}$/, "the emailed code is the 6 digits the screen names");
   assert.equal(emailed[0].to, "newperson@example.com");
-  assert.match(emailed[0].code, /^[0-9]{6}$/, "the code is the 6 digits the screen names");
 
   // 2. Finish: the code, and the session cookie it mints.
   const finish = await signin({ step: "finish", email: "newperson@example.com", code });
