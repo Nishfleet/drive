@@ -108,15 +108,14 @@ export async function accountForRequest(request, store) {
  */
 export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
-  const pathname =
-    url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
+  const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
   // The account is read from the request's own bearer token (drive#55) rather
   // than trusted from the context, so a handler cannot be handed an account
   // the caller never proved. `ctx.account` is honoured only where there is no
   // store to resolve one with, which is the tests' own store-less context; the
   // Worker export always passes a store, so nothing reaches a route that way.
   const bearer = await accountForRequest(request, ctx.store);
-  const account = bearer ?? (ctx.store === undefined ? ctx.account ?? null : null);
+  const account = bearer ?? (ctx.store === undefined ? (ctx.account ?? null) : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];
@@ -250,9 +249,19 @@ function keyProviderFor(env) {
  */
 
 /**
+ * The stand-in key store, until the D1-backed one lands: the same shape
+ * createMemoryStore gives the tests, so a route cannot tell the difference.
+ * The env is what will choose it, and the parameter is named here so the
+ * signature the type check reads and the one the runtime calls are the same
+ * function. Biome's unused-parameter rule reads `env` as unused and wants an
+ * underscore, which would break the JSDoc `@param` it sits under, so the rule
+ * is off for the file and the type check is the one that guards the name.
+ *
  * @param {ApiEnv} env
+ * @returns {KeyStore}
  */
 function storeFor(env) {
+  void env;
   if (keyStore === undefined) {
     keyStore = createMemoryStore({ keyProvider: keyProviderFor(env) ?? undefined });
   }

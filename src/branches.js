@@ -33,10 +33,11 @@
 // signedInAccount()). The `checkedBranchName` rule is shared with the api
 // Worker's key scoping (workers/api/src/keyprovider.js), so a branch name and
 // a branch key prefix can never accept a different shape of name.
-import { unauthorizedResponse } from "./status.js";
-import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
+
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
+import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
+import { unauthorizedResponse } from "./status.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
@@ -151,9 +152,7 @@ function fingerprint(entry) {
         ? Math.floor(entry.size)
         : 0,
     etag:
-      typeof entry.etag === "string" && entry.etag.length > 0
-        ? entry.etag.replace(/"/g, "")
-        : null,
+      typeof entry.etag === "string" && entry.etag.length > 0 ? entry.etag.replace(/"/g, "") : null,
     modified: typeof entry.modified === "number" ? entry.modified : null,
   };
 }
@@ -486,7 +485,9 @@ export async function createBranch(db, store, account, request, now = () => Date
         await store.remove(`${branchPrefix}/${rel}`);
       }
       await db
-        .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'")
+        .prepare(
+          "UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
+        )
         .bind(account.id, name)
         .run();
     } catch {
@@ -782,7 +783,12 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     }
     const diff = await diffBranch(scoped, branch);
     return json({
-      branch: { name, sourcePrefix: branch.sourcePrefix, state: branch.state, changedBy: branch.changedBy },
+      branch: {
+        name,
+        sourcePrefix: branch.sourcePrefix,
+        state: branch.state,
+        changedBy: branch.changedBy,
+      },
       diff,
     });
   }

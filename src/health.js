@@ -130,10 +130,7 @@ function withTimeout(promise, ms, name) {
   /** @type {ReturnType<typeof setTimeout>|undefined} */
   let timer;
   const expiry = new Promise((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new HealthCheckTimeout(name)),
-      ms,
-    );
+    timer = setTimeout(() => reject(new HealthCheckTimeout(name)), ms);
   });
   return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
 }
@@ -200,7 +197,9 @@ export function d1Bindings(env) {
     .filter(([, binding]) => isDatabaseBinding(binding))
     .map(([name, db]) => ({
       name,
-      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (db),
+      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (
+        db
+      ),
     }));
 }
 
@@ -331,7 +330,11 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({ name: "ASSETS", run: (left) => checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left) });
+  checks.push({
+    name: "ASSETS",
+    run: (left) =>
+      checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left),
+  });
   const limiter = env.WAITLIST_RATE_LIMITER;
   if (
     typeof limiter !== "object" ||
