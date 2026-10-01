@@ -39,7 +39,7 @@ Search flags:
 
 Branch flags:
   --api    drive api base URL (env DRIVE_API_URL)
-  --name   branch name (default: the folder's own name)
+  --name   branch name (the folder's own name unless given)
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
