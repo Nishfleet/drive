@@ -45,28 +45,32 @@ export const SAVED_COPY = Object.freeze({
  * Capped month: saving = metered - bill. Uncapped month: saving = ceiling -
  * bill. drive#39 fixed both baselines; the caller passes the three numbers it
  * already has, so this stays a pure comparison rather than a second bill.
- * @param {{meteredUsd: number, billUsd: number, ceilingUsd: number, capped: boolean|undefined}} month
+ * @param {unknown} month
  * @returns {string | null}
  */
 export function savedLine(month) {
   if (typeof month !== "object" || month === null) {
     throw new TypeError(`savedLine needs a month object, got ${String(month)}`);
   }
-  const { meteredUsd, billUsd, ceilingUsd, capped } = month;
+  const fields =
+    /** @type {{meteredUsd?: unknown, billUsd?: unknown, ceilingUsd?: unknown, capped?: unknown}} */ (
+      month
+    );
+  const { meteredUsd, billUsd, ceilingUsd, capped } = fields;
   // Required, and a real boolean: the flag picks the saving's baseline, so a
   // truthy string would silently move a customer's receipt from one sentence
   // to another.
   if (typeof capped !== "boolean") {
     throw new TypeError(`capped must be true or false, got ${String(capped)}`);
   }
-  for (const [name, value] of /** @type {Array<[string, number]>} */ ([
-    ["meteredUsd", meteredUsd],
-    ["billUsd", billUsd],
-    ["ceilingUsd", ceilingUsd],
-  ])) {
-    if (!Number.isFinite(value) || value < 0) {
-      throw new TypeError(`${name} must be 0 or more, got ${value}`);
-    }
+  if (typeof meteredUsd !== "number" || !Number.isFinite(meteredUsd) || meteredUsd < 0) {
+    throw new TypeError(`meteredUsd must be 0 or more, got ${meteredUsd}`);
+  }
+  if (typeof billUsd !== "number" || !Number.isFinite(billUsd) || billUsd < 0) {
+    throw new TypeError(`billUsd must be 0 or more, got ${billUsd}`);
+  }
+  if (typeof ceilingUsd !== "number" || !Number.isFinite(ceilingUsd) || ceilingUsd < 0) {
+    throw new TypeError(`ceilingUsd must be 0 or more, got ${ceilingUsd}`);
   }
   const saved = capped ? meteredUsd - billUsd : ceilingUsd - billUsd;
   if (saved <= 0) {
@@ -145,10 +149,11 @@ export function welcomeTemplate(_data) {
 // 2) Cap warning -- 80% of the spending cap reached. { capUsd }
 // ---------------------------------------------------------------------------
 /**
- * @param {{capUsd?: number}} [data]
+ * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function capWarningTemplate({ capUsd } = {}) {
+export function capWarningTemplate(data = {}) {
+  const { capUsd } = data;
   const cap = requireMoney(capUsd, "capUsd");
   const percent = 80;
   const subject = `You've used ${percent}% of your spending cap`;
@@ -171,10 +176,11 @@ export function capWarningTemplate({ capUsd } = {}) {
 // 3) Read-only reached -- the cap has been hit. { capUsd }
 // ---------------------------------------------------------------------------
 /**
- * @param {{capUsd?: number}} [data]
+ * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function readOnlyTemplate({ capUsd } = {}) {
+export function readOnlyTemplate(data = {}) {
+  const { capUsd } = data;
   const cap = requireMoney(capUsd, "capUsd");
   const subject = "Your drive is read-only at your spending cap";
   const lines = [
@@ -196,10 +202,11 @@ export function readOnlyTemplate({ capUsd } = {}) {
 // 4) Payment failed -- a charge did not go through. { amountUsd }
 // ---------------------------------------------------------------------------
 /**
- * @param {{amountUsd?: number}} [data]
+ * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function paymentFailedTemplate({ amountUsd } = {}) {
+export function paymentFailedTemplate(data = {}) {
+  const { amountUsd } = data;
   const amount = requireMoney(amountUsd, "amountUsd");
   const subject = "Your last payment did not go through";
   const lines = [
@@ -222,10 +229,11 @@ export function paymentFailedTemplate({ amountUsd } = {}) {
 //    line. { billUsd, meteredUsd, ceilingUsd, capped }
 // ---------------------------------------------------------------------------
 /**
- * @param {{billUsd?: number, meteredUsd?: number, ceilingUsd?: number, capped?: boolean}} [data]
+ * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function monthlyReceiptTemplate({ billUsd, meteredUsd, ceilingUsd, capped } = {}) {
+export function monthlyReceiptTemplate(data = {}) {
+  const { billUsd, meteredUsd, ceilingUsd, capped } = data;
   const bill = requireMoney(billUsd, "billUsd");
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
@@ -295,8 +303,8 @@ const TEMPLATES = Object.freeze({
  * silently sending the wrong message. Object.hasOwn, not a plain lookup: an
  * inherited name such as "constructor" must stay unknown, or it renders
  * nothing and the send goes out with empty parts.
- * @param {string} kind
- * @param {Record<string, unknown>} data
+ * @param {unknown} kind
+ * @param {Record<string, unknown>} [data]
  */
 export function renderEmail(kind, data = {}) {
   if (typeof kind !== "string" || !Object.hasOwn(TEMPLATES, kind)) {

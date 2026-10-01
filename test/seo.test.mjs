@@ -26,11 +26,13 @@ import {
 } from "../src/seo.js";
 
 const publicDir = new URL("../public/", import.meta.url);
+/** @param {string} name */
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 
 // Dollars the way the page and llms.txt write them: no cents where there are
 // none, cents where the rule produces them ($12.80). The same shape
 // test/pricing-copy.test.mjs uses, so the two gates quote identical strings.
+/** @param {number} usd */
 const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
 
 // The first-run page is a Vite entry at the repo root (issue #70): it is built
@@ -39,25 +41,38 @@ const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
 // Every other page is still a verbatim public/ asset.
 const ROOT_PAGES = new Set(["get-started.html"]);
 const rootDir = new URL("../", import.meta.url);
+/** @param {string} name */
 const pageUrlFor = (name) =>
   ROOT_PAGES.has(name) ? new URL(name, rootDir) : new URL(name, publicDir);
+/** @param {string} name */
 const readPage = (name) => readFileSync(pageUrlFor(name), "utf8");
+/** @param {string} name */
 const pageExists = (name) => existsSync(pageUrlFor(name));
 
 // Every shipped HTML page, from the config, not from the directory, so a page
 // that ships without being added to src/seo.js fails the first test below.
 const indexablePages = PAGES.filter((page) => page.indexable);
+/** @param {{path: string}} page */
 const fileFor = (page) => page.path.replace(/^\//, "") || "index.html";
 
 // These read hand-maintained HTML, so they assume double-quoted attributes in
 // a fixed order. That is a real (small) coupling to the file's formatting, not
 // a claim that the repo uses an HTML parser; the shipped markup is stable and
 // the pricing-copy gate reads the same file the same way.
+/**
+ * @param {string} page
+ * @param {string} attribute
+ * @param {string} name
+ */
 function meta(page, attribute, name) {
   const match = page.match(new RegExp(`<meta\\s+${attribute}="${name}"\\s+content="([^"]*)"`, "i"));
   return match ? match[1] : null;
 }
 
+/**
+ * @param {string} page
+ * @param {string} rel
+ */
 function link(page, rel) {
   const match = page.match(new RegExp(`<link\\s+rel="${rel}"\\s+href="([^"]*)"`, "i"));
   return match ? match[1] : null;

@@ -43,6 +43,7 @@ const REQUIRED_PATHS = [
 const REQUIRED_KEYS = ["next", "what"];
 
 // A single-sentence test: split on sentence endings followed by whitespace.
+/** @param {string} text */
 function countSentences(text) {
   return text
     .trim()
@@ -74,7 +75,7 @@ test("every entry has exactly { what, next }", () => {
       `${key} must have exactly what and next`,
     );
     for (const k of REQUIRED_KEYS) {
-      const v = entry[k];
+      const v = k === "what" ? entry.what : entry.next;
       assert.ok(typeof v === "string" && v.length > 0, `${key}.${k} must be a non-empty string`);
       assert.equal(v.trim(), v, `${key}.${k} must not have leading/trailing whitespace`);
       assert.equal(countSentences(v), 1, `${key}.${k} must be exactly one sentence`);
@@ -96,7 +97,9 @@ test("no entry contains secrets, keys, other-user paths, or raw error text", () 
 });
 
 test("failureMessage joins what and next with a single space", () => {
-  for (const key of Object.keys(FAILURE_MESSAGES)) {
+  for (const key of /** @type {(keyof typeof FAILURE_MESSAGES)[]} */ (
+    Object.keys(FAILURE_MESSAGES)
+  )) {
     const expected = `${FAILURE_MESSAGES[key].what} ${FAILURE_MESSAGES[key].next}`;
     assert.equal(failureMessage(key), expected, `${key} message must be the exact join`);
   }
@@ -132,6 +135,10 @@ const now = Date.parse("2026-10-01T12:00:00.000Z");
 // The signed-in account the routes take, the same stand-in test/files.test.mjs
 // runs the file routes as.
 const account = Object.freeze({ id: "1", name: "Your drive" });
+/**
+ * @param {string} path
+ * @param {RequestInit} [init]
+ */
 const filesApi = (path, init) => new Request(`https://drive.test${FILES_ENDPOINT}${path}`, init);
 
 test("the file routes answer each failure path with the table's words", async () => {
@@ -141,6 +148,7 @@ test("the file routes answer each failure path with the table's words", async ()
   assert.equal(unconfigured.status, 503);
   assert.deepEqual(await unconfigured.json(), { error: failureMessage("drive-not-configured") });
 
+  /** @param {Request} request */
   const call = (request) => handleFilesRequest(request, createMemoryStore(), account, now);
 
   // A file this account does not have. The read path answers plain text.
@@ -194,6 +202,7 @@ test("the sign-in route refuses a body that is not a JSON object in the table's 
 });
 
 test("the branch route refuses a body that is not a JSON object in the table's words", async () => {
+  /** @param {string} body */
   const call = (body) =>
     handleBranchesRequest(
       new Request(`https://drive.test${BRANCHES_ENDPOINT}`, { method: "POST", body }),
@@ -221,8 +230,13 @@ test("no module under src/ carries a second copy of a table sentence", () => {
   // src/ is the drift this exists to stop.
   const src = new URL("../src/", import.meta.url);
   const modules = readdirSync(src, { recursive: true })
-    .filter((name) => name.endsWith(".js") && !name.split("/").includes("messages.js"))
-    .map((name) => [name, readFileSync(new URL(name, src), "utf8")]);
+    .filter(
+      (name) =>
+        typeof name === "string" &&
+        name.endsWith(".js") &&
+        !name.split("/").includes("messages.js"),
+    )
+    .map((name) => [String(name), readFileSync(new URL(String(name), src), "utf8")]);
   for (const [key, entry] of Object.entries(FAILURE_MESSAGES)) {
     for (const sentence of [entry.what, entry.next]) {
       for (const [name, text] of modules) {

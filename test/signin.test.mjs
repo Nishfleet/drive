@@ -35,6 +35,18 @@ import {
 } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
 
@@ -52,6 +64,7 @@ function dispatchEnv() {
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
     BETTER_AUTH_URL: TEST_BASE_URL,
+    /** @param {{to: string, url: string}} link */
     SIGNIN_MAIL: (link) => {
       sent.push(link);
     },
@@ -59,6 +72,10 @@ function dispatchEnv() {
   return { ...made, env };
 }
 
+/**
+ * @param {unknown} body
+ * @param {{url?: string, headers?: Record<string, string>}} [options]
+ */
 const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) =>
   new Request(url, {
     method: "POST",
@@ -72,7 +89,7 @@ test("the Worker routes the sign-in start and serves no other method", async () 
   assert.equal(SIGNIN_ENDPOINT, "/api/signin");
   const made = dispatchEnv();
   for (const path of ["/api/signin", "/api/signin/"]) {
-    const response = await worker.fetch(
+    const response = await workerFetch(
       post(
         { step: "start", method: "email", email: "a@b.co" },
         {
@@ -89,7 +106,7 @@ test("the Worker routes the sign-in start and serves no other method", async () 
   }
   // GET is not served: a GET must not be answered by the handler's POST
   // body, and must not fall through to the asset layer either.
-  const get = await worker.fetch(new Request(`${TEST_BASE_URL}/api/signin`), made.env);
+  const get = await workerFetch(new Request(`${TEST_BASE_URL}/api/signin`), made.env);
   assert.equal(get.status, 405, "GET must be refused, not read as a sign-in");
   assert.equal(get.headers.get("allow"), "POST");
 });
@@ -101,7 +118,7 @@ test("with no auth the route is a closed door, not a fake success", async () => 
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     SIGNIN_MAIL: () => {},
   };
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     env,
   );
@@ -131,7 +148,7 @@ test("a missing signing secret or public address is a closed door", async () => 
     { ...partial, BETTER_AUTH_URL: TEST_BASE_URL },
     { ...partial, BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite" },
   ]) {
-    const response = await worker.fetch(
+    const response = await workerFetch(
       post({ step: "start", method: "email", email: "a@b.co" }),
       env,
     );
@@ -145,7 +162,7 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
   // names the JSON path uses. The route reads it, so the no-JS path the page
   // documents actually reaches the endpoint.
   const made = dispatchEnv();
-  const response = await worker.fetch(
+  const response = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/signin`, {
       method: "POST",
       headers: {
@@ -172,7 +189,7 @@ test("a request that did not come from the site is refused before anything is ma
     { step: "start", method: "email", email: "a@b.co" },
     { headers: { origin: "https://elsewhere.example" } },
   );
-  const response = await worker.fetch(cross, made.env);
+  const response = await workerFetch(cross, made.env);
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: failureMessage("cross-site") });
   assert.equal(made.sent.length, 0, "a refused cross-site sign-in mails nothing");
@@ -181,7 +198,7 @@ test("a request that did not come from the site is refused before anything is ma
 test("a body that is not JSON, or not an object, is a 400 and never a 202", async () => {
   const made = dispatchEnv();
   for (const body of ["not json", '["email"]', '"email"', "null"]) {
-    const response = await worker.fetch(post(body), made.env);
+    const response = await workerFetch(post(body), made.env);
     assert.equal(response.status, 400, `body ${body} must be refused`);
   }
 });
@@ -201,18 +218,19 @@ test("the three methods the spec's screen names are the three it accepts", () =>
         ? { step: "start", method, email: "you@example.com" }
         : { step: "start", method };
     const read = readSigninRequest(body);
-    assert.equal(read.method, method, `${method} must be accepted`);
     assert.equal("error" in read, false, `${method} must not be refused`);
+    assert.ok("method" in read, `${method} must be accepted`);
+    assert.equal(read.method, method, `${method} must be accepted`);
   }
   // A method the spec does not name is refused, by name, so the caller can
   // see which three are allowed.
   const refused = readSigninRequest({ step: "start", method: "sms" });
-  assert.ok(refused.error);
-  assert.match(refused.error, /email, google, github/);
+  assert.ok("error" in refused);
+  assert.match("error" in refused ? refused.error : "", /email, google, github/);
   // A body that carries none is refused too, not defaulted: the method is the
   // one thing this request must name.
-  assert.ok(readSigninRequest({ step: "start", email: "you@example.com" }).error);
-  assert.ok(readSigninRequest().error);
+  assert.ok("error" in readSigninRequest({ step: "start", email: "you@example.com" }));
+  assert.ok("error" in readSigninRequest());
   // The two steps are the route's, documented above each endpoint.
   assert.deepEqual([...SIGNIN_STEPS], ["start", "signout"]);
 });
@@ -223,7 +241,7 @@ test("the OAuth methods are a closed door, not a 202 for a redirect to nowhere",
   // says the closed door rather than opening a browser onto nothing.
   const made = dispatchEnv();
   for (const method of ["google", "github"]) {
-    const response = await worker.fetch(post({ step: "start", method }), made.env);
+    const response = await workerFetch(post({ step: "start", method }), made.env);
     assert.equal(response.status, 503, `${method} has no client configured`);
     assert.deepEqual(await response.json(), signinClosedBody());
   }
@@ -238,7 +256,7 @@ test("the closed door's words come from the message table, once", async () => {
   });
   // A closed method never invents a second draft of the sentence.
   const made = dispatchEnv();
-  const refused = await worker.fetch(post({ step: "start", method: "github" }), made.env);
+  const refused = await workerFetch(post({ step: "start", method: "github" }), made.env);
   assert.deepEqual(await refused.json(), built);
 });
 
@@ -259,7 +277,7 @@ test("a mailer that throws is a closed door, never a 202 for a link that never l
       throw new Error("the mail server is down");
     },
   };
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     env,
   );
@@ -279,19 +297,19 @@ test("the sign-in link is at the path the page and the email name", async () => 
 
 test("the verify route is GET only, and a link without a token answers the screen", async () => {
   const made = dispatchEnv();
-  const posted = await worker.fetch(
+  const posted = await workerFetch(
     new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`, { method: "POST" }),
     made.env,
   );
   assert.equal(posted.status, 405);
-  const noToken = await worker.fetch(new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`), made.env);
+  const noToken = await workerFetch(new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`), made.env);
   assert.equal(noToken.status, 302, "an empty verify is a redirect, not a 500");
-  assert.match(noToken.headers.get("location"), /error=no-token/);
+  assert.match(String(noToken.headers.get("location")), /error=no-token/);
 });
 
 test("a good link mints the session and lands on the drive; a used one does not", async () => {
   const made = dispatchEnv();
-  await worker.fetch(
+  await workerFetch(
     post({ step: "start", method: "email", email: "newperson@example.com" }),
     made.env,
   );
@@ -300,7 +318,7 @@ test("a good link mints the session and lands on the drive; a used one does not"
   assert.match(String(token), /^[A-Za-z0-9]+$/, "the token is a single opaque string");
   assert.doesNotMatch(made.sent[0].url, /callbackURL=/, "the built link needs no second parameter");
 
-  const followed = await worker.fetch(new Request(made.sent[0].url), made.env);
+  const followed = await workerFetch(new Request(made.sent[0].url), made.env);
   assert.equal(followed.status, 302, "a good link redirects into the drive");
   assert.equal(followed.headers.get("location"), "/files");
   const setCookie = followed.headers.getSetCookie()[0];
@@ -315,9 +333,9 @@ test("a good link mints the session and lands on the drive; a used one does not"
 
   // The same link again is spent: Better Auth consumed it on the first
   // verification, so it answers the screen rather than a second session.
-  const replay = await worker.fetch(new Request(made.sent[0].url), made.env);
+  const replay = await workerFetch(new Request(made.sent[0].url), made.env);
   assert.equal(replay.status, 302);
-  assert.match(replay.headers.get("location"), /error=invalid-link/);
+  assert.match(String(replay.headers.get("location")), /error=invalid-link/);
   assert.equal(replay.headers.getSetCookie().length, 0, "a spent link mints no session");
 
   // A token that was never minted is a failed link too, and so is a mangled
@@ -328,9 +346,9 @@ test("a good link mints the session and lands on the drive; a used one does not"
     `${TEST_BASE_URL}${SIGNIN_LINK_PATH}?token=never-minted`,
     `${TEST_BASE_URL}${SIGNIN_LINK_PATH}?token=`,
   ]) {
-    const failed = await worker.fetch(new Request(url), made.env);
+    const failed = await workerFetch(new Request(url), made.env);
     assert.equal(failed.status, 302, `${url} still answers, never a 500`);
-    assert.match(failed.headers.get("location"), /error=invalid-link|error=no-token/);
+    assert.match(String(failed.headers.get("location")), /error=invalid-link|error=no-token/);
     assert.equal(failed.headers.getSetCookie().length, 0, "a failed link mints no session");
   }
 });
@@ -338,13 +356,13 @@ test("a good link mints the session and lands on the drive; a used one does not"
 test("sign-out through the route revokes the session the cookie names", async () => {
   const made = dispatchEnv();
   const { cookie } = await signIn(made, "leaver@example.com");
-  const before = await worker.fetch(
+  const before = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
     made.env,
   );
   assert.equal(before.status, 200, "the session works before signing out");
 
-  const out = await worker.fetch(
+  const out = await workerFetch(
     new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie },
@@ -354,7 +372,7 @@ test("sign-out through the route revokes the session the cookie names", async ()
   );
   assert.equal(out.status, 200, "sign-out answers ok");
   assert.deepEqual(await out.json(), { ok: true, step: "signout" });
-  const after = await worker.fetch(
+  const after = await workerFetch(
     new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
     made.env,
   );
@@ -438,7 +456,7 @@ test("the page is at the path the module names, and the Worker serves it as an a
   // The asset layer owns the page; a path it does not have is its 404. What
   // this pins is that the Worker's own routing does not answer it: sign-in's
   // API is /api/signin, and the page is a different path.
-  const pageFetch = await worker.fetch(new Request(`${TEST_BASE_URL}/signin`), {
+  const pageFetch = await workerFetch(new Request(`${TEST_BASE_URL}/signin`), {
     ASSETS: { fetch: () => new Response("the sign-in page", { status: 200 }) },
   });
   assert.equal(pageFetch.status, 200);

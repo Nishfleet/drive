@@ -184,7 +184,7 @@ const PREVIEW_CONTENT_TYPES = Object.freeze({
  * @returns {string}
  */
 export function previewContentType(name, storedContentType = "") {
-  const kind = /** @type {string} */ (/** @type {unknown} */ (name), fileKind(name, storedContentType));
+  const kind = fileKind(name, storedContentType);
   const stored = String(storedContentType).split(";")[0].trim().toLowerCase();
   // Only text and pdf are pinned here; the media kinds have no entry and fall
   // through to the kind-matched check below, so the lookup is asked only for
@@ -1079,7 +1079,7 @@ function plain(message, status) {
  * use. A caller with no Origin (curl, the CLI) passes that check; the gate
  * above is what actually keeps a stranger out.
  * @param {Request} request
- * @param {import("./files.js").FileStore|null} store the shared, unscoped store,
+ * @param {import("./files.js").FileStore|null|undefined} store the shared, unscoped store,
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now

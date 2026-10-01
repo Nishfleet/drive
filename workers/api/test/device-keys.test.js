@@ -5,10 +5,15 @@ import { createMemoryStore, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js"
 
 // A clock the test owns, so a device token can be pushed past its TTL without
 // sleeping; the store reads `now` from the context it is given.
+/**
+ * @param {number} [startMs]
+ * @returns {{now: () => number, advance: (seconds: number) => void}}
+ */
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
+    /** @param {number} seconds */
     advance: (seconds) => {
       now += seconds * 1000;
     },
@@ -351,6 +356,11 @@ test("a storage request with no or bad Basic auth is a 401 with a challenge", as
 // and the revoke route lets `drive logout` kill it server-side. Both land in
 // the bearer lookup, so a dead token is a 401 on /v1/keys before any handler.
 
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now: () => number}} clock
+ */
 function clockCtx(store, account, clock) {
   return { env: {}, db: null, store, account, now: clock.now };
 }

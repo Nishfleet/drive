@@ -46,9 +46,10 @@ const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 // supplies the execution context the platform would and keeps those facts out
 // of every call site; `worker.fetch` is optional and carries the runtime's
 // strict Request generic, which a `new Request(...)` literal cannot express.
-const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
-  /** @type {unknown} */ (worker.fetch)
-);
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // ------------------------------------------------------------------ the walk
@@ -292,6 +293,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
     BETTER_AUTH_URL: "https://drive.test",
+    /** @param {{to: string, url: string}} link */
     SIGNIN_MAIL: (link) => {
       emailed.push(link);
     },
@@ -331,7 +333,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   );
 
   // 2. Follow the link: the session cookie it mints.
-  const followed = await worker.fetch(
+  const followed = await workerFetch(
     new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
     env,
   );
@@ -362,13 +364,13 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   // account, and a used link cannot mint a second session.
   const forged = await call("__Secure-drive.session_token=sess_never_minted", FILES_ENDPOINT);
   assert.equal(forged.status, 401, "a cookie auth never minted is not a session");
-  const replay = await worker.fetch(
+  const replay = await workerFetch(
     new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
     env,
   );
   assert.equal(replay.status, 302, "a reused link still answers with a redirect");
   assert.match(
-    replay.headers.get("location"),
+    String(replay.headers.get("location")),
     /error=invalid-link/,
     "a used link cannot mint a second session",
   );
@@ -409,18 +411,19 @@ test("sign-out revokes the session the cookie names", async () => {
     DRIVE_DB: made.db,
     BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
     BETTER_AUTH_URL: "https://drive.test",
+    /** @param {{to: string, url: string}} link */
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
   };
   const { cookie } = await signIn(made, "leaver@example.com");
-  const before = await worker.fetch(
+  const before = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
     env,
   );
   assert.equal(before.status, 200, "the session works before signing out");
 
-  const out = await worker.fetch(
+  const out = await workerFetch(
     new Request("https://drive.test/api/signin", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://drive.test", cookie },
@@ -433,7 +436,7 @@ test("sign-out revokes the session the cookie names", async () => {
   const cleared = out.headers.getSetCookie().join("\n");
   assert.match(cleared, /__Secure-drive\.session_token=;/, "sign-out clears the session cookie");
 
-  const after = await worker.fetch(
+  const after = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
     env,
   );
@@ -716,7 +719,10 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(
-    handleUsageRequest(new Request("https://drive.test/api/usage"), /** @type {null} */ (/** @type {unknown} */ (undefined))).status,
+    handleUsageRequest(
+      new Request("https://drive.test/api/usage"),
+      /** @type {null} */ (/** @type {unknown} */ (undefined)),
+    ).status,
     401,
   );
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);

@@ -125,7 +125,23 @@ export function absoluteUrl(path) {
  * opposite of the page. UnitPriceSpecification carries the unit, and the
  * description carries the full rule, so nothing in the markup is a bare number
  * a reader could take at face value.
- * @returns {Record<string, unknown>}
+ * @returns {{
+ *   "@context": string,
+ *   "@type": string,
+ *   name: string,
+ *   applicationCategory: string,
+ *   operatingSystem: string,
+ *   description: string,
+ *   url: string,
+ *   image: string,
+ *   offers: {
+ *     "@type": string,
+ *     price: string,
+ *     priceCurrency: string,
+ *     priceSpecification: { "@type": string, price: string, priceCurrency: string, unitText: string },
+ *     description: string,
+ *   },
+ * }}
  */
 export function softwareApplicationLd() {
   const price = BILLING.capFloorUsd.toFixed(2);

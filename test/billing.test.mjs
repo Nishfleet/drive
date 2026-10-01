@@ -36,12 +36,26 @@ import {
 } from "../src/billing.js";
 import worker from "../src/index.js";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 // Minutes in an average month, the spec's divisor. Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
 const MINUTES_PER_MONTH = 43800;
+/** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 /** The same dollars the module formats, for a label assertion. */
+/** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
 test("the six storage figures Nish named, for data held all month", () => {
@@ -117,11 +131,13 @@ test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
 test("the two 'you saved' lines, each with its copy", () => {
   // A capped month (metered over the ceiling): saved = metered - bill.
   const capped = savedLine(fullMonthGbMinutes(2000), 2000);
+  assert.ok(capped);
   assert.equal(capped.usd, 24, "2 TB held all month: metered $40, bill $16");
   assert.equal(capped.copy, "Our price cap saved you $24.00.");
   // An uncapped month (metered under the ceiling): saved = ceiling - bill,
   // because the ceiling is what the drive would have cost on a flat plan.
   const uncapped = savedLine(fullMonthGbMinutes(300), 300);
+  assert.ok(uncapped);
   assert.equal(uncapped.usd, 6, "300 GB: ceiling $12, bill $6");
   assert.equal(uncapped.copy, "You paid $6.00 less than a flat plan.");
   // Hidden when there is no saving: a metered bill exactly at the ceiling.
@@ -288,11 +304,11 @@ test("the Worker routes the usage read to the handler", async () => {
   // reached the handler rather than the asset layer.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/usage", "/api/usage/"]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
   }
   // A stray path is still the asset layer's 404, not a hand-rolled page.
-  const asset = await worker.fetch(new Request("https://drive.test/nope"), env);
+  const asset = await workerFetch(new Request("https://drive.test/nope"), env);
   assert.equal(asset.status, 200);
 });
 
@@ -388,7 +404,12 @@ test("every line is integer cents, whatever the meter recorded", () => {
         downloadBytes: 987654321,
         averageStoredGb: 42.7,
       });
-      for (const key of ["storageCents", "downloadCents", "creditCents", "totalCents"]) {
+      for (const key of /** @type {const} */ ([
+        "storageCents",
+        "downloadCents",
+        "creditCents",
+        "totalCents",
+      ])) {
         assert.equal(Number.isInteger(bill[key]), true, `${key} is ${bill[key]}`);
       }
       for (const line of bill.lines) {
