@@ -38,7 +38,17 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // is not cut at a segment boundary would show up.
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
-const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+/** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+
+// The ExportedHandler type makes fetch optional and declares the runtime's
+// three arguments. The tests drive the Worker directly, so one wrapper
+// supplies the execution context the platform would and keeps those facts out
+// of every call site; `worker.fetch` is optional and carries the runtime's
+// strict Request generic, which a `new Request(...)` literal cannot express.
+const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+  /** @type {unknown} */ (worker.fetch)
+);
+const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // ------------------------------------------------------------------ the walk
 
@@ -98,10 +108,15 @@ const ACCOUNT_ROUTES = [
   `${REWIND_ENDPOINT}/`,
 ];
 
+/** @param {Request} request */
 function anonymous(request) {
-  return worker.fetch(request, {
-    ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
-  });
+  return workerFetch(
+    request,
+    {
+      ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+    },
+    ctx,
+  );
 }
 
 test("every route src/index.js registers is either public or behind the gate", async () => {
@@ -254,7 +269,9 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   // The store's mailer is how this test reads the code that left by email: the
   // code is never in a reply, so the mail is the only place it can be seen,
   // which is the whole point of the flow.
+  /** @type {{to: string, code: string, from?: string}[]} */
   const emailed = [];
+  /** @type {Record<string, unknown>} */
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     // The store the Worker uses, so the session the sign-in route mints is the
@@ -267,19 +284,23 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
       },
     }),
   };
+  /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
-    worker.fetch(
+    workerFetch(
       new Request(`https://drive.test${path}`, { headers: cookie ? { cookie } : {} }),
       env,
+      ctx,
     );
+  /** @param {unknown} body */
   const signin = (body) =>
-    worker.fetch(
+    workerFetch(
       new Request("https://drive.test/api/signin", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       }),
       env,
+      ctx,
     );
 
   // 1. Start: an address, and a code that leaves by email and nowhere else.
@@ -326,13 +347,14 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
 
   // 5. One account's files stay in that account's own prefix: a second person
   // who signs in sees an empty drive, not the first one's bytes.
-  const upload = await worker.fetch(
+  const upload = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F&name=mine.txt`, {
       method: "POST",
       headers: { "content-type": "text/plain", cookie },
       body: "first person's bytes",
     }),
     env,
+    ctx,
   );
   assert.equal(upload.status, 201, "the signed-in account can store a file");
   const other = await signin({ step: "start", method: "email", email: "other@example.com" });
@@ -343,8 +365,9 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     code: emailed[1].code,
   });
   assert.equal(otherFinish.status, 200);
-  const otherCookie = otherFinish.headers.get("set-cookie").split(";")[0];
-  const otherList = await call(otherCookie, FILES_ENDPOINT);
+  const otherCookie = otherFinish.headers.get("set-cookie");
+  assert.ok(otherCookie, "a finished sign-in sets the session cookie");
+  const otherList = await call(otherCookie.split(";")[0], FILES_ENDPOINT);
   assert.equal(otherList.status, 200);
   assert.equal(
     (await otherList.json()).rows.length,
@@ -373,21 +396,31 @@ test("an anonymous files request never reaches the store", async () => {
 // ----------------------------------------------------- one store, two accounts
 
 test("scopeStore puts every drive path under the account's own prefix", async () => {
+  /** @type {Array<string[]>} */
   const seen = [];
+  /** @type {import("../src/files.js").FileStore} */
   const recorder = {
+    /** @param {string} path */
     async list(path) {
       seen.push(["list", path]);
       return [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
     },
+    /** @param {string} path */
     async read(path) {
       seen.push(["read", path]);
       return null;
     },
-    async write(path) {
+    /** @param {string} path @param {BodyInit} _body @param {string} _contentType */
+    async write(path, _body, _contentType) {
       seen.push(["write", path]);
     },
+    /** @param {string} path */
     async remove(path) {
       seen.push(["remove", path]);
+    },
+    /** @param {string} from @param {string} to @returns {Promise<void>} */
+    async copy(from, to) {
+      seen.push(["copy", from, to]);
     },
   };
   const scoped = scopeStore(recorder, { id: "acct-9", name: "Nine" });
@@ -417,7 +450,20 @@ test("account A cannot list, read, write or delete account B's path", async () =
   // One shared store, the way the Worker's in-memory stand-in is one store
   // per isolate: both accounts read and write through the same object.
   const store = createMemoryStore();
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {Request} request
+   * @returns {Promise<Response>}
+   */
   const call = (account, request) => handleFilesRequest(request, store, account, now);
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {string} path
+   * @param {string} name
+   * @param {BodyInit} body
+   * @param {string} [type]
+   * @returns {Promise<Response>}
+   */
   const upload = (account, path, name, body, type = "text/plain") =>
     call(
       account,
@@ -483,7 +529,9 @@ test("account A cannot list, read, write or delete account B's path", async () =
 
 test("an uploaded .html and .svg come back as downloads, never as pages", async () => {
   const store = createMemoryStore();
+  /** @param {Request} request @returns {Promise<Response>} */
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
+  /** @param {string} name @param {string} type @param {BodyInit} body */
   const upload = (name, type, body) =>
     call(
       new Request(`${api("/upload")}?path=%2F&name=${encodeURIComponent(name)}`, {
@@ -539,7 +587,7 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
   const download = await call(new Request(api("/download?path=%2Fphoto.png")));
   assert.equal(download.headers.get("content-type"), "image/png");
   assert.equal(download.headers.get("x-content-type-options"), "nosniff");
-  assert.match(download.headers.get("content-disposition"), /^attachment;/);
+  assert.match(download.headers.get("content-disposition") ?? "", /^attachment;/);
   const preview = await call(new Request(api("/preview?path=%2Fphoto.png")));
   assert.equal(preview.headers.get("content-type"), "image/png");
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
@@ -550,7 +598,9 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
 
 test("upload, delete and restore refuse a cross-site request", async () => {
   const store = createMemoryStore();
+  /** @param {Request} request @returns {Promise<Response>} */
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
+  /** @param {string|undefined} origin @returns {Promise<Response>} */
   const upload = (origin) =>
     call(
       new Request(`${api("/upload")}?path=%2F&name=a.txt`, {
@@ -559,6 +609,8 @@ test("upload, delete and restore refuse a cross-site request", async () => {
         body: "bytes",
       }),
     );
+  /** @param {string} path @param {BodyInit} body @param {string|undefined} origin @returns {Promise<Response>} */
+  /** @param {string} path @param {unknown} body @param {string|undefined} origin @returns {Promise<Response>} */
   const stateChange = (path, body, origin) =>
     call(
       new Request(api(path), {
@@ -601,7 +653,7 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 
 test("the usage read is behind the same gate", async () => {
   assert.equal(
-    handleUsageRequest(new Request("https://drive.test/api/usage"), undefined).status,
+    handleUsageRequest(new Request("https://drive.test/api/usage"), /** @type {null} */ (/** @type {unknown} */ (undefined))).status,
     401,
   );
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
