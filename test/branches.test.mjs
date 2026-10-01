@@ -31,7 +31,12 @@ const OTHER = { id: "acct-2", name: "Someone else" };
 // table's writes are single statements.
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["0001_waitlist.sql", "0002_file_index.sql", "0003_branches.sql"]) {
+  for (const name of [
+    "0001_waitlist.sql",
+    "0002_file_index.sql",
+    "0003_branches.sql",
+    "0004_agent_undo.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const runOne = (sql, params) => {
