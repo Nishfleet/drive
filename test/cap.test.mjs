@@ -23,7 +23,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { BILLING_CONFIG, capLine, capStatus } from "../src/billing.js";
+import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../src/billing.js";
 import { failureMessage as tableMessage } from "../src/messages.js";
 import {
   READ_ONLY_CAPABILITIES,
@@ -543,18 +543,26 @@ test("the cap line is one line while writing and two at the cap", () => {
 
 test("the usage response carries the cap line, and the Worker routes it", async () => {
   // `drive status` is Go: it cannot import src/billing.js, so the line has to
-  // travel in the response for the CLI to print the same words.
-  const response = await worker.fetch(
+  // travel in the response for the CLI to print the same words. The handler is
+  // behind the account gate (issue #73), so the line is proven by calling it
+  // as a signed-in request until the sign-in flow lands (build step 4, #5).
+  const response = handleUsageRequest(
     new Request("https://drive.test/api/usage"),
-    { ASSETS: { fetch: () => new Response("asset") } },
+    { id: "1", name: "Your drive" },
   );
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
   assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
-  const posted = await worker.fetch(
+  // The Worker still routes the path to the handler, and the handler's gate
+  // answers 401 to an anonymous request rather than the asset layer's 404.
+  const anonymous = await worker.fetch(new Request("https://drive.test/api/usage"), {
+    ASSETS: { fetch: () => new Response("asset") },
+  });
+  assert.equal(anonymous.status, 401);
+  const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
-    { ASSETS: { fetch: () => new Response("asset") } },
+    { id: "1", name: "Your drive" },
   );
   assert.equal(posted.status, 405);
 });

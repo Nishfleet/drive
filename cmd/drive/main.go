@@ -32,16 +32,14 @@ Mount flags:
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
-  --access-key  access key id (env DRIVE_S3_ACCESS_KEY_ID)
-  --secret-key-stdin  read the secret access key from stdin, one line of it
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
-The storage secret is read from the config file (mode 0600), the environment
-variable DRIVE_S3_SECRET_ACCESS_KEY, or stdin; it is never accepted on the
-command line, where the shell history and ps output would keep a copy.
+The device keys are read from the environment, never a flag, so they stay out
+of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
+DRIVE_S3_SECRET_ACCESS_KEY.
 
 Logout flags:
   --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
@@ -49,7 +47,6 @@ Logout flags:
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
 `
-
 const version = "0.1.0"
 
 func main() {
@@ -113,13 +110,13 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region, accessKey, refusedSecret string
+	var refusedSecret string
+	var endpoint, bucket, prefix, region string
 	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
-	fs.StringVar(&accessKey, "access-key", "", "access key id")
 	// The old secret flag is registered only so the flag package consumes it
 	// correctly and can report whether it was passed; the value lands in a
 	// variable that is never read or printed, and any use is refused with the
@@ -127,7 +124,7 @@ func runMount(args []string) error {
 	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
 	// is, and nothing after the first `--` reaches it.
 	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
-	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read the secret access key from stdin")
+	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read the secret access key from stdin, one line of it")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -150,17 +147,20 @@ func runMount(args []string) error {
 		// a value that has been through argv is a value that has been exposed.
 		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
 	}
+	// The secret's sources are the config file this CLI wrote (mode 0600), the
+	// environment, or stdin (--secret-key-stdin). None of them is argv, which is
+	// world-readable in ps for the life of the process.
 	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
 	if err != nil {
 		return err
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey)
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, secretKey)
 	if err != nil {
 		return err
 	}
-	rclone := common.rclone
-	if rclone == "" {
-		rclone = DefaultRcloneBin(common.home)
+	rclone, err := ResolveRclone(common.rclone)
+	if err != nil {
+		return err
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
 }

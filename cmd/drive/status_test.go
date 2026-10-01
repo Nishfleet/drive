@@ -111,12 +111,9 @@ func TestUploadLabel(t *testing.T) {
 }
 
 // TestUploadLabelMatchesThePageWords pins the CLI's queue words to the ones
-// the status page uses (src/status.js UPLOAD_LABEL). The page and the Go cannot
-// import each other, so this test is the join between the two copies.
-//
-// The join point is the module that now holds the words, not the shipped HTML:
-// the first-run page became a Vite entry, so the copy it renders is src/status.js
-// and a grep of a built asset would be pinning a build product (drive#90).
+// the first-run page uses (src/status.js UPLOAD_LABEL). The page is JavaScript
+// and cannot import the Go, and the Go cannot import the page, so this
+// test is the join between the two copies.
 func TestUploadLabelMatchesThePageWords(t *testing.T) {
 	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
 	if err != nil {

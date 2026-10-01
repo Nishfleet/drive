@@ -1,9 +1,12 @@
 package main
 
 import (
+	"html"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -52,12 +55,20 @@ func TestRemoteForTrimsPrefix(t *testing.T) {
 }
 
 func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
-	if _, err := LoadStorageConfig("", "", "", "", "", ""); err == nil {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	if _, err := LoadStorageConfig("", "", "", "", ""); err == nil {
 		t.Fatal("expected an error when no storage config is given")
 	} else if !strings.Contains(err.Error(), "missing storage config") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "", "", "a", "s")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
+	secret, err := ReadSecretKey("", false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	c, err := LoadStorageConfig("http://x", "b", "", "", secret)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,9 +77,78 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	}
 }
 
+// The access key is read from the environment only, and the secret from the
+// safe sources ReadSecretKey resolves (environment here): a flag would put a
+// device key in `ps` output and the shell history.
+func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
+	secret, err := ReadSecretKey("", false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	c, err := LoadStorageConfig("http://x", "b", "p", "", secret)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.AccessKey != "envaccess" || c.SecretKey != "envsecret" {
+		t.Errorf("keys = %q/%q, want the environment values", c.AccessKey, c.SecretKey)
+	}
+}
+
+// There is no secret flag to put a key in, so a key cannot be smuggled in as
+// one. The refusal names the three safe ways and tells the person the value
+// they typed is already exposed by having been in argv.
+func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"--secret-key", "SECRETVALUE", "--endpoint", "http://x", "--bucket", "b"},
+		{"--secret-key=SECRETVALUE"},
+		{"-secret-key=SECRETVALUE"},
+	} {
+		err := runMount(args)
+		if err == nil {
+			t.Errorf("runMount(%q) = nil, want the refusal", args)
+			continue
+		}
+		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.conf"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "SECRETVALUE") {
+			t.Errorf("runMount(%q) error %q echoes the value it refused", args, err)
+		}
+		if !strings.Contains(err.Error(), "roll") {
+			t.Errorf("runMount(%q) error %q does not say to roll the key that was in argv", args, err)
+		}
+	}
+}
+
+// There is no flag to put a key in, so a key cannot be smuggled in as one. The
+// access key id has no flag either (drive#122): it is read from the environment.
+func TestMountRefusesAKeyFlag(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
+	out, err := exec.Command(driveBin(t), "mount",
+		"--endpoint", "http://x", "--bucket", "b",
+		"--access-key", "leaked", "--dry-run").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a usage error for the removed access-key flag, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "flag provided but not defined: -access-key") {
+		t.Errorf("expected a flag-not-defined usage error, got:\n%s", out)
+	}
+}
+
 func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
 	t.Setenv("DRIVE_S3_ENDPOINT", "http://from-env")
-	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "a", "s")
+	secret, err := ReadSecretKey("", false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", secret)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,8 +157,11 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	}
 }
 
-// The mount must carry the three VFS flags docs/build-spec.md names, on both
-// platforms, and use the platform's own rclone subcommand.
+// The mount must carry every VFS flag the product mounts with, on both
+// platforms, and use the platform's own rclone subcommand. --dir-cache-time is
+// the fourth: S3 sends no change notifications, so without it a save from the
+// other machine waits out rclone's 5-minute default (issue #62; the step-3
+// proof in PR #61 carries the same flag into docs/build-spec.md).
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -90,10 +173,17 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-cache-mode full",
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
+			"--dir-cache-time 5s",
 		} {
 			if !strings.Contains(line, want) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
 			}
+		}
+		// The flag and its value are one pair: a plan that emitted
+		// --dir-cache-time with no value would still match the substring
+		// above, and rclone would take the next argument as the duration.
+		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
+			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
 		}
 		if !strings.Contains(line, "drive:drive-standin/u/1234") {
 			t.Errorf("%s: command line missing the device remote:\n%s", tc.goos, line)
@@ -116,9 +206,37 @@ func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
 			t.Errorf("launchd plist missing %q:\n%s", want, plist)
 		}
 	}
+	// ProgramArguments is an argv array: the flag and its value are two
+	// adjacent elements, and rclone would read the next element as the
+	// duration if the value were dropped.
+	args := plistProgramArguments(t, plist)
+	if !hasArgPair(args, "--dir-cache-time", "5s") {
+		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time 5s:\n%v", args)
+	}
 	if p := LaunchdPlistPath("/Users/test"); p != "/Users/test/Library/LaunchAgents/com.nishfleet.drive.plist" {
 		t.Errorf("LaunchdPlistPath = %q", p)
 	}
+}
+
+// plistProgramArguments returns the <string> elements of the plist's
+// ProgramArguments array, in order, as argv elements.
+func plistProgramArguments(t *testing.T, plist string) []string {
+	t.Helper()
+	start := strings.Index(plist, "<key>ProgramArguments</key>")
+	if start < 0 {
+		t.Fatal("plist has no ProgramArguments:" + plist)
+	}
+	open := strings.Index(plist[start:], "<array>")
+	closee := strings.Index(plist[start:], "</array>")
+	if open < 0 || closee < 0 {
+		t.Fatal("plist ProgramArguments is not an array:" + plist)
+	}
+	body := plist[start+open : start+closee]
+	var args []string
+	for _, m := range regexp.MustCompile(`<string>(.*?)</string>`).FindAllStringSubmatch(body, -1) {
+		args = append(args, html.UnescapeString(m[1]))
+	}
+	return args
 }
 
 func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
@@ -127,15 +245,35 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 	for _, want := range []string{
 		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
 		"--vfs-cache-mode full",
+		"--dir-cache-time 5s",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
 		}
 	}
+	// rclone has no `umount` subcommand; stopping is rclone's own SIGTERM
+	// handling, which is what systemd sends by default.
+	if strings.Contains(unit, "ExecStop") {
+		t.Errorf("systemd unit has an ExecStop line rclone cannot run:\n%s", unit)
+	}
+	// The flag and value must be adjacent on the ExecStart line (not in a comment).
+	execStart := extractExecStart(unit)
+	if !hasArgPair(strings.Fields(execStart), "--dir-cache-time", "5s") {
+		t.Errorf("ExecStart line missing adjacent --dir-cache-time 5s:\n%s", execStart)
+	}
 	if p := SystemdUnitPath("/home/test"); p != "/home/test/.config/systemd/user/drive-mount.service" {
 		t.Errorf("SystemdUnitPath = %q", p)
 	}
+}
+
+func extractExecStart(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
@@ -167,6 +305,18 @@ func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
 	}
 }
 
+// hasArgPair reports whether args carries flag immediately followed by value,
+// which is the shape rclone's flag parser requires: a flag whose value is a
+// separate argv element, not one string.
+func hasArgPair(args []string, flag, value string) bool {
+	for i, a := range args {
+		if a == flag {
+			return i+1 < len(args) && args[i+1] == value
+		}
+	}
+	return false
+}
+
 func TestRcloneConfigRedactedHidesBothKeys(t *testing.T) {
 	c := testStorage()
 	got := RcloneConfigRedacted(c)
@@ -188,17 +338,31 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 		{"newline in secret", func(c *StorageConfig) { c.SecretKey = "SECRET\nno_check_certificate = true" }},
 		{"cr in endpoint", func(c *StorageConfig) { c.Endpoint = "http://x\r\nprovider = Other" }},
 		{"nul in bucket", func(c *StorageConfig) { c.Bucket = "bucket\x00x" }},
+		{"parent segment in prefix", func(c *StorageConfig) { c.Prefix = "u/1/../2" }},
+		{"prefix above the bucket root", func(c *StorageConfig) { c.Prefix = "../other-device" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testStorage()
 			tc.mutate(&c)
 			// LoadStorageConfig is the gate: feed the mutated value through as
 			// the flag, which wins over env.
-			_, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.AccessKey, c.SecretKey)
-			if err == nil {
+			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", c.AccessKey)
+			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", c.SecretKey)
+			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.SecretKey); err == nil {
 				t.Fatal("want an error for a value that breaks out of its config line")
 			}
 		})
+	}
+}
+
+// A prefix that only walks down is fine, and an empty one is the whole bucket.
+func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
+	for _, prefix := range []string{"", "/", "u/1", "/u/1/branches/", "u/1/...hidden"} {
+		if _, err := LoadStorageConfig("http://x", "b", prefix, "", "s"); err != nil {
+			t.Errorf("prefix %q rejected: %v", prefix, err)
+		}
 	}
 }
 
@@ -232,6 +396,101 @@ func TestBsdMountHasMountPoint(t *testing.T) {
 		if bsdMountHasMountPoint(listing, dir) {
 			t.Errorf("mount point %q reported mounted but is not a mount point", dir)
 		}
+	}
+}
+
+// `drive mount --dry-run` renders the config it would write; it must never
+// print either device key, so a dry run on a shared screen or in a terminal
+// transcript cannot leak the key even though it was in the environment.
+func TestMountDryRunNeverPrintsAKey(t *testing.T) {
+	const access, secret = "DRYRUNACCESSKEY", "dryrun-secret-value"
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", access)
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
+	out, err := exec.Command(driveBin(t), "mount",
+		"--endpoint", "http://127.0.0.1:1", "--bucket", "drive-dry-run",
+		"--prefix", "u/dryrun", "--home", t.TempDir(), "--dry-run").CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry run failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Errorf("dry-run output carries the secret key:\n%s", out)
+	}
+	if strings.Contains(string(out), access) {
+		t.Errorf("dry-run output carries the access key:\n%s", out)
+	}
+}
+
+// A login item has no shell PATH, so the plan must carry an absolute rclone
+// path (Homebrew's is /opt/homebrew/bin/rclone) rather than a bare name.
+func TestResolveRcloneReturnsAnAbsolutePath(t *testing.T) {
+	got, err := ResolveRclone("")
+	if err != nil {
+		t.Skipf("rclone is not installed on this host: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("ResolveRclone(\"\") = %q, want an absolute path", got)
+	}
+	if got, err := ResolveRclone("rclone"); err != nil || !filepath.IsAbs(got) {
+		t.Errorf("ResolveRclone(\"rclone\") = %q, %v; want an absolute path", got, err)
+	}
+	if _, err := ResolveRclone("rclone-that-is-not-installed"); err == nil {
+		t.Error("a named rclone that is not installed should fail here, not at the next login")
+	}
+	t.Setenv("DRIVE_RCLONE", "rclone")
+	if got, err := ResolveRclone(""); err != nil || !filepath.IsAbs(got) {
+		t.Errorf("DRIVE_RCLONE was ignored: %q, %v", got, err)
+	}
+}
+
+// The launchctl verbs are bootstrap/bootout, not the deprecated load/unload
+// that also fail when the item is already in the requested state.
+func TestLaunchctlUsesBootstrapNotDeprecatedLoad(t *testing.T) {
+	const target = "gui/501"
+	cases := []struct {
+		action string
+		item   string
+		want   string
+	}{
+		{"print", "", "print gui/501/" + LaunchdLabel},
+		{"bootout", "", "bootout gui/501/" + LaunchdLabel},
+		{"bootstrap", "/Users/test/Library/LaunchAgents/" + LaunchdLabel + ".plist",
+			"bootstrap gui/501 /Users/test/Library/LaunchAgents/" + LaunchdLabel + ".plist"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(launchctlArgv(tc.action, target, tc.item), " "); got != tc.want {
+			t.Errorf("launchctlArgv(%q) = %q, want %q", tc.action, got, tc.want)
+		}
+	}
+	for _, gone := range []string{"load", "unload"} {
+		if launchctlArgv(gone, target, "/p.plist") != nil {
+			t.Errorf("deprecated launchctl action %q is still built", gone)
+		}
+	}
+}
+
+// A relative path from LookPath is not usable in a login item, which is not
+// started from a working directory.
+func TestAbsPathMakesARelativeLookPathAbsolute(t *testing.T) {
+	got, err := absPath("./rclone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("absPath(./rclone) = %q, want an absolute path", got)
+	}
+	if got, err := absPath("/usr/bin/rclone"); err != nil || got != "/usr/bin/rclone" {
+		t.Errorf("absPath(/usr/bin/rclone) = %q, %v", got, err)
+	}
+}
+
+// The Linux start path must apply the unit it just wrote, not leave a running
+// unit with the old configuration: enable --now does not restart an active
+// unit, so the caller has to restart.
+func TestMountLinuxRestartsAnAlreadyRunningUnit(t *testing.T) {
+	got := mountSystemctlActions()
+	want := []string{"daemon-reload", "enable", "restart"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("systemctl actions = %v, want %v", got, want)
 	}
 }
 
@@ -391,51 +650,6 @@ func TestParseAPIBaseRefusesCredentialsInTheURL(t *testing.T) {
 // that names the ways that are safe, not a silently ignored flag — and because
 // the typed value is already in this process's argv, the refusal also has to say
 // that the key it exposed should be rolled.
-func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
-	for _, args := range [][]string{
-		{"--secret-key", "SECRETVALUE", "--endpoint", "http://x", "--bucket", "b", "--access-key", "a"},
-		{"--secret-key=SECRETVALUE"},
-		{"-secret-key=SECRETVALUE"},
-	} {
-		err := runMount(args)
-		if err == nil {
-			t.Errorf("runMount(%q) = nil, want the refusal", args)
-			continue
-		}
-		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.conf"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
-			}
-		}
-		// The refusal must not echo the value it refused, and must tell the
-		// person their key is exposed by having been typed.
-		if strings.Contains(err.Error(), "SECRETVALUE") {
-			t.Errorf("runMount(%q) error %q echoes the value it refused", args, err)
-		}
-		if !strings.Contains(err.Error(), "roll") {
-			t.Errorf("runMount(%q) error %q does not say to roll the key that was in argv", args, err)
-		}
-	}
-}
-
-func TestMissingSecretNamesTheSafeSources(t *testing.T) {
-	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
-	_, err := LoadStorageConfig("http://x", "b", "", "", "a", "")
-	if err == nil {
-		t.Fatal("want an error when no secret source has one")
-	}
-	for _, want := range []string{"DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "config file"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("missing-config error %q is missing %q", err, want)
-		}
-	}
-	if strings.Contains(err.Error(), "--secret-key ") {
-		t.Errorf("missing-config error %q still points at the removed flag", err)
-	}
-}
-
-// A URL that will not parse still must not print itself: url.Error quotes the
-// URL it was given, and that URL can carry a credential.
 func TestParseAPIBaseDoesNotEchoAURLThatCarriesCredentials(t *testing.T) {
 	_, err := parseAPIBase("https://user:secretkey@example.com:notaport")
 	if err == nil {

@@ -13,8 +13,11 @@ import (
 )
 
 // StorageConfig is the storage endpoint and keys, kept as config so switching
-// to the real storage (iDrive e2, step 1) needs no code change. It is read
-// from flags or environment variables; nothing here is provider-specific.
+// to the real storage (iDrive e2, step 1) needs no code change. Everything but
+// the keys is read from flags, falling back to the environment; the keys are
+// read from the environment only, because a command-line argument is visible
+// in `ps` output and in the shell history for as long as the process lives, and
+// a device key does not belong in either. Nothing here is provider-specific.
 type StorageConfig struct {
 	Endpoint  string // S3 endpoint URL, e.g. http://127.0.0.1:8080 (stand-in) or https://s3.eu-west-3.idrivee2-<n>.com
 	AccessKey string
@@ -24,16 +27,16 @@ type StorageConfig struct {
 	Region    string // S3 region name; stand-ins accept any
 }
 
-// MountFlags are the stock rclone VFS flags this product mounts with. They are
-// the same on Mac (nfsmount) and Linux (mount): the docs describe them.
+// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
+// vfsChunkStreamSize are the stock rclone VFS flags this product mounts with.
+// They are the same on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs
+// is the one place that turns them into an argument vector.
 const (
-	VFSFlagCacheMode   = "--vfs-cache-mode full"
-	VFSFlagWriteBack   = "--vfs-write-back 5s"
-	VFSFlagCacheMax    = "--vfs-cache-max-size 20G"
-	vfsCacheModeValue  = "full"
-	vfsWriteBackValue  = "5s"
-	vfsCacheMaxValue   = "20G"
-	vfsChunkStreamSize = "32M" // streaming read-ahead for big files
+	vfsCacheModeValue    = "full"
+	vfsWriteBackValue    = "5s"
+	vfsCacheMaxValue     = "20G"
+	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
+	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
 )
 
 // Default paths, overridable for tests.
@@ -48,9 +51,6 @@ func LaunchdPlistPath(home string) string {
 }
 func SystemdUnitPath(home string) string {
 	return filepath.Join(home, ".config", "systemd", "user", SystemdUnitName)
-}
-func RcloneBinOverride(home string) string {
-	return filepath.Join(DefaultConfigDir(home), "rclone-bin")
 }
 
 const (
@@ -265,20 +265,21 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 	return c, nil
 }
 
-// LoadStorageConfig resolves the storage endpoint and keys and fails loudly
-// when a required value is missing. Flags win over the environment for every
-// value except the storage secret, which has no flag at all (issue #75) and
-// arrives already resolved from config.go `ReadSecretKey`. Endpoint, bucket
-// and keys are config, not code: the same binary talks to the local stand-in
-// or to iDrive e2.
-func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey string) (StorageConfig, error) {
+// LoadStorageConfig resolves the storage endpoint, bucket, prefix and region
+// from flags first, then environment variables, and the device keys from the
+// environment alone (DRIVE_S3_ACCESS_KEY_ID) and the resolved secret the caller
+// resolved through ReadSecretKey — config file (mode 0600), environment, or
+// stdin, and never a flag (issue #75). It fails loudly when a required value is
+// missing. Endpoint, bucket and keys are config, not code: the same binary
+// talks to the local stand-in or to iDrive e2.
+func LoadStorageConfig(endpoint, bucket, prefix, region, secretKey string) (StorageConfig, error) {
 	c := StorageConfig{
 		Endpoint:  firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
 		Bucket:    firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
 		Prefix:    firstNonEmpty(prefix, os.Getenv("DRIVE_S3_PREFIX")),
 		Region:    firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
-		AccessKey: firstNonEmpty(accessKey, os.Getenv("DRIVE_S3_ACCESS_KEY_ID")),
-		SecretKey: firstNonEmpty(secretKey, os.Getenv("DRIVE_S3_SECRET_ACCESS_KEY")),
+		AccessKey: os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
+		SecretKey: secretKey,
 	}
 	var missing []string
 	if c.Endpoint == "" {
@@ -288,7 +289,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey st
 		missing = append(missing, "bucket (--bucket or DRIVE_S3_BUCKET)")
 	}
 	if c.AccessKey == "" {
-		missing = append(missing, "access key (--access-key or DRIVE_S3_ACCESS_KEY_ID)")
+		missing = append(missing, "access key (DRIVE_S3_ACCESS_KEY_ID)")
 	}
 	if c.SecretKey == "" {
 		missing = append(missing, fmt.Sprintf("secret key (%s, --secret-key-stdin, or the config file)", secretEnvName))
@@ -316,7 +317,28 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey st
 			return c, err
 		}
 	}
+	// The prefix is the device's own folder inside the bucket. A `..` segment in
+	// it would mount a parent's contents, so one device's mount could read or
+	// write another device's prefix; nothing legitimate needs to walk up, so it
+	// is refused here rather than normalized away.
+	if err := checkPrefix(c.Prefix); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// checkPrefix refuses a key prefix that walks out of the device's own folder.
+func checkPrefix(prefix string) error {
+	trimmed := strings.Trim(prefix, "/")
+	if trimmed == "" {
+		return nil
+	}
+	for _, seg := range strings.Split(trimmed, "/") {
+		if seg == ".." {
+			return fmt.Errorf("invalid prefix: %q walks out of this device's folder", prefix)
+		}
+	}
+	return nil
 }
 
 // checkConfigValue rejects a value that would break out of its line in the

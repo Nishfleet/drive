@@ -1,46 +1,69 @@
-# node-repo-template
+# Drive
 
-Template for new Node/JS repos. Already wired to the canonical reusable CI in
-[nish3451/shared-workflows](https://github.com/nish3451/shared-workflows) — the
-CI standard applies by construction, with no per-repo setup.
+A Finder drive for people and their agents: a folder on macOS or Linux that
+holds more than the laptop does. Your files live in object storage and open on
+demand, so a 5 GB video starts without a 5 GB download. Your agents read and
+write the same folder.
 
-## Use it
+- **Plain files.** Real names, opened by the apps you already use. Nothing is
+  packed into a database.
+- **Every save keeps a version.** Every change for a day, then one a day for 30
+  days, and a delete can be undone.
+- **Agents cannot delete.** An agent gets its own key, and that key cannot
+  remove a file. Only you can.
+- **Billed by the minute, with a ceiling.** 2¢ per GB a month, and the bill is
+  cut off at $12 up to 1.5 TB, then $8 a TB. $1 is free every month and no
+  card is needed to start.
+- **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
+  the bill stops.
 
-1. Click **"Use this template"** on
-   [nish3451/node-repo-template](https://github.com/nish3451/node-repo-template)
-   → "Create a new repository".
-2. Clone your new repo.
-3. Edit `package.json` (`name`, add your `scripts`).
-4. The first PR runs the standard CI automatically:
-   - changed-files gate (docs-only PRs skip install/test/build, still scan secrets)
-   - `npm ci` (cached)
-   - `npm test` (or whatever you set as `verify-command`)
-   - gitleaks secret scan
-   - timeout-minutes, concurrency + cancel-in-progress, 7-day SARIF retention
+**Not open yet.** Sign-ups on the pricing page go to a waitlist.
 
-## Customize CI without leaving this repo
+## Docs
 
-Edit `.github/workflows/pr-checks.yml` inputs only — never copy the workflow
-body. Available inputs:
+The docs are the reference, built from this repository so the numbers on a page
+and the numbers on the invoice cannot drift apart. Each page is also served as
+Markdown (add `.md` to the address), and the whole set is in one file for
+agents.
 
-| input | default | purpose |
-|---|---|---|
-| `node-version` | `24` | Node version. |
-| `install-command` | `npm ci` | Install command. Empty string skips install + npm cache (no lockfile). |
-| `verify-command` | `npm test` | Test/build command. Empty string skips. |
-| `python-version` | `""` | Python version. Empty skips Python setup. |
+- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
+  five steps to a mounted drive
+- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
+  plain files, versions, restore
+- [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
+  `drive init` per tool, and what an agent key cannot do
+- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —
+  the rate, the ceiling and four worked sizes
+- [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
+  we can answer with a measured number
+- [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
+  version 1 does not do
+- [Security](https://drive-pricing.nishant345.workers.dev/docs/security) — who
+  can see your files
+- [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
+  one line per shipped thing
+- [`llms.txt`](https://drive-pricing.nishant345.workers.dev/llms.txt) and
+  [`llms-full.txt`](https://drive-pricing.nishant345.workers.dev/llms-full.txt)
+  — the same words, for an agent
 
-Example — a repo that builds:
+The docs pages are authored in [`docs-site/`](docs-site/) and built by VitePress
+into the site's static assets: `npm run docs:build`. Every number on a page
+comes from `src/billing.js` at build time, so a test fails the build if a page
+and the invoice disagree.
 
-```yaml
-    with:
-      node-version: "22"
-      install-command: npm ci
-      verify-command: npm test && npm run build
-```
+## The repository
 
-## What you inherit automatically
+| Path | What it is |
+| --- | --- |
+| `cmd/drive/` | the `drive` CLI (Go) |
+| `src/` | the pricing Worker: the pages, the waitlist, the cap, the usage read, and the money in `billing.js` |
+| `workers/api/` | the api Worker: health, keys, usage |
+| `docs-site/` | the docs pages and the VitePress build |
+| `docs/` | the build spec and the API notes |
+| `migrations/` | D1 migrations for the waitlist |
 
-Every improvement to `nish3451/shared-workflows` on the `v1` branch reaches this
-repo's CI with no action from you. That is the whole point: the standard is
-defined once and enforced everywhere, current and future.
+`npm test` typechecks the JavaScript, builds the docs and runs the test suite.
+`go test ./...` runs the CLI's tests.
+
+The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
+step) and [`docs/spec.md`](docs/spec.md) (why: prices, rivals).

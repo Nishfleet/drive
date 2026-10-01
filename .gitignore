@@ -15,3 +15,10 @@ dist/
 /drive
 /cmd/drive/drive
 *.test
+
+# The docs site (issue #98): generated, never committed. `npm run docs:build`
+# renders the {{MARKER}}s from src/billing.js into docs-site/.rendered and
+# builds the HTML, the per-page .md copies and llms.txt / llms-full.txt into
+# public/docs, which is the Worker's static asset directory.
+docs-site/.rendered/
+public/docs/

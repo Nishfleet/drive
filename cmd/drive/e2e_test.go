@@ -123,12 +123,13 @@ func TestStandinMountProof(t *testing.T) {
 	mount := func() *exec.Cmd {
 		cmd := exec.Command(driveBin(t), "mount",
 			"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
-			"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key-stdin",
-			"--foreground")
-		// The secret reaches the CLI on stdin, the safe source that replaced the
-		// flag (issue #75): it is never in this test's argv or this process's
-		// command line.
-		cmd.Stdin = strings.NewReader(secretKey + "\n")
+			"--prefix", cfg.Prefix, "--foreground")
+		// The keys reach the child through the environment, never argv: a
+		// command line is world-readable in `ps` for the life of the process.
+		cmd.Env = append(os.Environ(),
+			"DRIVE_S3_ACCESS_KEY_ID="+accessKey,
+			"DRIVE_S3_SECRET_ACCESS_KEY="+secretKey,
+		)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)

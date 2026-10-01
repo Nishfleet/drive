@@ -319,13 +319,15 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	// Start the mount in the foreground so there's no login item to manage;
 	// Logout's stopMount will catch and unmount it. The mount uses the default
-	// 5s write-back so a write lands quickly. The secret reaches the CLI on
-	// stdin, the way the flag it replaced no longer can (issue #75).
+	// 5s write-back so a write lands quickly. The keys go to the child through
+	// the environment, never argv (a command line is world-readable in `ps`).
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
-		"--prefix", cfg.Prefix, "--access-key", accessKey, "--secret-key-stdin",
-		"--foreground")
-	cmd.Stdin = strings.NewReader(secretKey + "\n")
+		"--prefix", cfg.Prefix, "--foreground")
+	cmd.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+accessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+secretKey,
+	)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

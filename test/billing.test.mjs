@@ -263,7 +263,11 @@ test("the usage summary is the empty month before the meter lands", () => {
 });
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"));
+  const account = { id: "1", name: "Your drive" };
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -273,6 +277,7 @@ test("the usage endpoint answers the empty month, and names its one method", asy
 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
+    account,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");
@@ -280,13 +285,13 @@ test("the usage endpoint answers the empty month, and names its one method", asy
 
 test("the Worker routes the usage read to the handler", async () => {
   // /api/* runs the Worker, so an unrouted path would fall through to the
-  // assets and 404 on every read of the usage page.
+  // assets and 404 on every read of the usage page. The handler's gate answers
+  // 401 with no sign-in flow yet (issue #73), which is what proves the route
+  // reached the handler rather than the asset layer.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/usage", "/api/usage/"]) {
     const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
-    assert.equal(response.status, 200, `${path} must reach the handler`);
-    const body = await response.json();
-    assert.equal(body.billUsd, 0);
+    assert.equal(response.status, 401, `${path} must reach the handler`);
   }
   // A stray path is still the asset layer's 404, not a hand-rolled page.
   const asset = await worker.fetch(new Request("https://drive.test/nope"), env);
