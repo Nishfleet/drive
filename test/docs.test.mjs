@@ -516,18 +516,19 @@ test("the README describes the drive and points at the docs", () => {
 });
 
 test("the docs carry the pricing page's design tokens, not a different palette", () => {
-  // The pricing page inlines its own stylesheet (public/index.html), so the
-  // docs cannot import it; the tokens are copied. This reads the shipped page
-  // and the shipped theme, so a colour edited in one place without the other
-  // fails here rather than shipping two products.
-  const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  // The site palette lives in the shared stylesheet (public/site.css, drive
+  // #71), which the pricing page links; the docs site cannot import a served
+  // asset, so the tokens are copied. This reads the shipped stylesheet and the
+  // shipped theme, so a colour edited in one place without the other fails
+  // here rather than shipping two products.
+  const page = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
   const theme = readFileSync(
     new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
     "utf8",
   );
   for (const token of ["--paper", "--ink", "--ink-soft", "--rule", "--accent"]) {
     const from = page.match(new RegExp(`${token}:\\s*([^;]+);`));
-    assert.ok(from, `the pricing page must define ${token}`);
+    assert.ok(from, `the shared stylesheet must define ${token}`);
     assert.ok(
       theme.includes(`${token.replace("--", "--vp-")}`) ||
         theme.includes(`#${from[1].trim().replace("#", "")}`),
