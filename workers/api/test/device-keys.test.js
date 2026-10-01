@@ -9,10 +9,11 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
-    advance: (seconds) => { now += seconds * 1000; },
+    advance: (seconds) => {
+      now += seconds * 1000;
+    },
   };
 }
-
 
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,

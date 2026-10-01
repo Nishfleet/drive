@@ -32,7 +32,7 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // credential for the account gate, so a token that never dies is a credential
 // a leak keeps: the store would hold it until the person deleted their
 // account, and the only way to kill it today would be to delete that account's
-// keys. Thirty days is the session TTL src/accounts.js already chose, and for
+// keys. Thirty days is the session TTL src/auth.js already chose, and for
 // the same reason ("the drive is reached on every visit, so signing in every
 // week would be a support ticket, not a security win"): a month bounds what a
 // leak is worth without asking a person to approve a code every few days. The
