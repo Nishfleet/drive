@@ -75,7 +75,11 @@ export default defineConfig({
       // dev/deploy, and the handler fails closed with 503 until it is set. Set
       // it once, the same way the email token is set (it persists across
       // deploys):
-      //   npx wrangler secret put METER_EVENT_TOKEN
+      //   cf workers secrets update METER_EVENT_TOKEN --type secret_text \
+      //     --text <token> --worker drive-pricing
+      // (--type is required: cf refuses the update without it. #189: the
+      // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
+      // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
