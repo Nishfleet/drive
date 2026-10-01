@@ -111,10 +111,15 @@ export const B2_FALLBACK_CONFIG = Object.freeze({
 });
 
 /**
- * A frozen billing config: the metered rate and the ceiling formula. Functions
- * that take one default to BILLING_CONFIG, so the type is `typeof BILLING_CONFIG`
- * and a caller cannot hand a config missing a field the arithmetic needs.
- * @typedef {typeof BILLING_CONFIG} BillingConfig
+ * A frozen billing config: the metered rate and the ceiling formula. Every
+ * field is `number` rather than the literal in BILLING_CONFIG: a caller that
+ * takes a whole-month alternative (B2_FALLBACK_CONFIG, whose perTbUsd is the
+ * $10 fallback, not the $8 primary) passes a config whose values differ from
+ * the default's literals, and a literal type would refuse exactly the
+ * substitution the fallback exists to make. Still no missing field: the
+ * arithmetic below reads every one of them, so a partial config fails here
+ * rather than as NaN in an invoice.
+ * @typedef {Readonly<Record<keyof typeof BILLING_CONFIG, number>>} BillingConfig
  */
 
 // The usage read's route (drive issue #53): the one path the api Worker routes
