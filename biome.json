@@ -32,7 +32,8 @@
         "noMisusedPromises": "error"
       }
     }
-  },  "assist": {
+  },
+  "assist": {
     "actions": {
       "source": {
         "organizeImports": "on"
