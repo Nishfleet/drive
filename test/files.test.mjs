@@ -200,8 +200,9 @@ test("the Worker owns the stored file name, and the page does not hold a second 
     "the page must not declare its own copy of the module's name rule",
   );
   const pageScript = page.slice(page.indexOf("<script>"));
-  assert.ok(
-    pageScript.includes("encodeURIComponent(\n        file.name,\n      )"),
+  assert.match(
+    pageScript,
+    /encodeURIComponent\(\s*file\.name,?\s*\)/,
     "the page sends the name as the browser knows it",
   );
 
@@ -907,7 +908,7 @@ test("the page shows the sign-in words the 401 sent, and carries no copy", () =>
   // A read that succeeds takes the panel away again, so the page's own
   // "this page updates on its own" is true.
   assert.ok(page.includes("function showSignedIn()"));
-  assert.match(page, /const payload = await api\(url\);\n {4}showSignedIn\(\);/);
+  assert.match(page, /const payload = await api\(url\);\s{2,}showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {
