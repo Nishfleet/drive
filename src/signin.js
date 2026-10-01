@@ -127,7 +127,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
  * Reads and checks the posted body for the start step: the method is checked
  * against SIGNIN_METHODS, and the email method requires an address; the OAuth
  * methods carry none, because the provider is the one that asks.
- * @param {unknown} body
+ * @param {unknown} [body]
  * @returns {SigninRequest}
  */
 export function readSigninRequest(body) {

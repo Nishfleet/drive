@@ -74,7 +74,7 @@ const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 
 /** Encode bytes as base64url, no padding, the alphabet a URL path can carry.
  *
- * @param {Uint8Array} bytes
+ * @param {unknown} bytes
  */
 export function base64url(bytes) {
   if (!(bytes instanceof Uint8Array)) {
@@ -142,17 +142,19 @@ export function requestUrl(base, token) {
 /**
  * Where a link stops working, in epoch milliseconds. `days` is validated
  * rather than clamped: an expiry nobody can compute is not a link to hand out.
- * @param {number} now
- * @param {number} [days]
+ * @param {unknown} now
+ * @param {unknown} [days]
  */
 export function linkExpiry(now, days = DEFAULT_LINK_DAYS) {
-  if (!Number.isFinite(now) || now <= 0) {
+  if (typeof now !== "number" || !Number.isFinite(now) || now <= 0) {
     throw new TypeError(`linkExpiry needs a start time, got ${String(now)}`);
   }
-  if (!Number.isFinite(days) || days <= 0) {
+  if (typeof days !== "number" || !Number.isFinite(days) || days <= 0) {
     throw new TypeError(`linkExpiry needs a positive number of days, got ${String(days)}`);
   }
-  return now + Math.round(days * DAY_MS);
+  const start = now;
+  const window = days;
+  return start + Math.round(window * DAY_MS);
 }
 
 /**
@@ -166,7 +168,7 @@ export function linkExpiry(now, days = DEFAULT_LINK_DAYS) {
  * A record with no usable expiry is reported `expired`, not `active`: a
  * capability URL that has lost its window must not open, and a link that
  * outlives its own 7 days is the one failure this feature exists to prevent.
- * @param {{expiresAt: number, revokedAt?: number|null}|null} record
+ * @param {{expiresAt?: unknown, revokedAt?: unknown}|null} record
  * @param {number} now
  * @returns {"active"|"revoked"|"expired"|null}
  */
@@ -177,7 +179,8 @@ export function linkState(record, now = Date.now()) {
   if (record.revokedAt) {
     return "revoked";
   }
-  if (!Number.isFinite(record.expiresAt) || now >= record.expiresAt) {
+  const expiresAt = record.expiresAt;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || now >= expiresAt) {
     return "expired";
   }
   return "active";
@@ -185,7 +188,7 @@ export function linkState(record, now = Date.now()) {
 
 /** Whether a record is the one state a stranger's request may act on.
  *
- * @param {ShareRecord|RequestRecord|null} record
+ * @param {{expiresAt?: unknown, revokedAt?: unknown}|null} record
  * @param {number} [now]
  */
 export function linkIsOpen(record, now = Date.now()) {
@@ -239,10 +242,13 @@ const LINK_STATE_LABELS = Object.freeze({
 
 /** The label for a state, or a programmer error for one this file forgot.
  *
- * @param {"active"|"revoked"|"expired"|null} state
+ * @param {unknown} state
  */
 export function linkStateLabel(state) {
-  const label = typeof state === "string" ? LINK_STATE_LABELS[state] : undefined;
+  const label =
+    typeof state === "string" && Object.hasOwn(LINK_STATE_LABELS, state)
+      ? LINK_STATE_LABELS[/** @type {keyof typeof LINK_STATE_LABELS} */ (state)]
+      : undefined;
   if (!label) {
     throw new Error(
       `no label for link state "${state}"; add it to LINK_STATE_LABELS in src/share.js`,
@@ -555,10 +561,13 @@ function serverFailure(where) {
 // cap cannot serve a read-only drive, and a drive that is not at its cap is
 // not refused by someone else's.
 /**
- * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} resolver
+ * @param {unknown} resolver
  * @param {string} accountId
  */
 async function capStateFor(resolver, accountId) {
+  if (typeof resolver !== "function") {
+    throw new TypeError(`a cap resolver must be a function, got ${String(resolver)}`);
+  }
   const state = await resolver(accountId);
   if (state !== "active" && state !== "read_only") {
     throw new TypeError(`a cap resolver must answer "active" or "read_only", got ${String(state)}`);
@@ -917,7 +926,7 @@ export async function handleRequestRequest(request, files, links, account, optio
  * the cap and serve a read-only drive.
  * @param {Request} request
  * @param {LinkStore} links
- * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} capState
+ * @param {unknown} capState
  * @param {{now?: number}} [options]
  */
 export async function handleRequestInfoRequest(request, links, capState, options = {}) {
@@ -962,7 +971,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {(accountId: string) => ("active"|"read_only"|Promise<"active"|"read_only">)} capState
+ * @param {unknown} capState
  * @param {{now?: number}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {

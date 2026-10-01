@@ -31,12 +31,15 @@ const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */
 export const TEST_BASE_URL = "https://drive.test";
 
+/** @typedef {import("node:sqlite").SQLInputValue} SQLInputValue */
+/** @typedef {import("node:sqlite").StatementResultingChanges} StatementResultingChanges */
+
 /**
  * The bind values D1 accepts and node:sqlite does not, turned into what
  * SQLite stores. Anything else passes through untouched, so a test that binds
  * a string still binds that string.
  * @param {unknown} value
- * @returns {unknown}
+ * @returns {SQLInputValue}
  */
 function sqliteValue(value) {
   if (typeof value === "boolean") {
@@ -48,7 +51,19 @@ function sqliteValue(value) {
   if (value === undefined) {
     return null;
   }
-  return value;
+  return /** @type {SQLInputValue} */ (value);
+}
+
+/**
+ * D1 numbered placeholders (`?1`, `?2`, …) as node:sqlite can bind them.
+ * node:sqlite only accepts anonymous `?`; the product SQL in src/search.js is
+ * numbered because D1 is. One rewrite, used by every test adapter that speaks
+ * SQLite, so a second bind path cannot drift.
+ * @param {string} sql
+ * @returns {string}
+ */
+export function sqlitePlaceholders(sql) {
+  return sql.replace(/\?\d+/g, "?");
 }
 
 /**
@@ -66,15 +81,19 @@ function sqliteValue(value) {
  * @param {unknown[]} params
  */
 function runOne(sqlite, sql, params) {
-  const statement = sqlite.prepare(sql);
+  const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = params.map(sqliteValue);
   const results = statement.all(...bound);
+  // Node's StatementSync types put change counts on `run()`, not `all()`. The
+  // adapter speaks D1's one-method `all()` for both reads and `returning`
+  // writes, so the counts are read through the result type `run()` documents.
+  const ran = /** @type {StatementResultingChanges} */ (/** @type {unknown} */ (statement));
   return {
     results,
     success: true,
     meta: {
-      changes: Number(statement.changes ?? 0),
-      last_row_id: Number(statement.lastInsertRowid ?? 0),
+      changes: Number(ran.changes ?? 0),
+      last_row_id: Number(ran.lastInsertRowid ?? 0),
     },
   };
 }
@@ -86,44 +105,70 @@ function runOne(sqlite, sql, params) {
  * how the session-survives-a-restart proof checks the session really is on
  * disk rather than in a Map this object happens to close over.
  *
+ * D1's types are the runtime's `declare abstract class`, so the adapter is
+ * typed here in full and handed to that interface through one documented
+ * cast. `sqlite` is the real engine a test can read a row off of.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} TestD1
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {object} a D1Database-shaped binding
+ * @returns {TestD1}
  */
 export function createTestD1(options = {}) {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   */
   const statement = (sql, params = []) => ({
-    bind: (...values) => ({
-      sql,
-      params: values,
-      async all() {
-        return runOne(sqlite, sql, values);
-      },
-      async first() {
-        const row = sqlite.prepare(sql).get(...params.map(sqliteValue));
-        return row === undefined ? null : row;
-      },
-      async run() {
-        return runOne(sqlite, sql, values);
-      },
-      raw() {
-        return { columnNames: [], rows: [] };
-      },
-    }),
+    sql,
+    params,
+    /**
+     * @param {...unknown} values
+     */
+    bind(...values) {
+      return statement(sql, values);
+    },
+    async all() {
+      return runOne(sqlite, sql, params);
+    },
+    async first() {
+      const bound = params.map(sqliteValue);
+      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
+      return row === undefined ? null : row;
+    },
+    async run() {
+      return runOne(sqlite, sql, params);
+    },
+    raw() {
+      return { columnNames: [], rows: [] };
+    },
   });
-  return {
-    sqlite,
-    prepare: (sql) => statement(sql),
-    exec: (sql) => {
-      sqlite.exec(sql);
-      return { count: 0, duration: 0 };
-    },
-    async batch(statements) {
-      return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
-    },
-  };
+  return /** @type {TestD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+      /**
+       * @param {string} sql
+       */
+      prepare(sql) {
+        return statement(sql);
+      },
+      /**
+       * @param {string} sql
+       */
+      exec(sql) {
+        sqlite.exec(sql);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * @param {Array<{sql: string, params?: unknown[]}>} statements
+       */
+      async batch(statements) {
+        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+      },
+    })
+  );
 }
 
 /**
@@ -135,18 +180,19 @@ export function createTestD1(options = {}) {
  * in a reply, so the mail is the only place it can be seen — which is the whole
  * point of the flow.
  *
+ * @typedef {{to: string, url: string}} SentLink
  * @param {{migrations?: readonly string[]}} [options]
- * @returns {{auth: import("../src/auth.js").Auth, db: object, sent: {to: string, url: string}[]}}
+ * @returns {{auth: import("../src/auth.js").Auth, db: TestD1, sent: SentLink[]}}
  */
 export function createTestAuth(options = {}) {
   const db = createTestD1(options);
-  /** @type {{to: string, url: string}[]} */
+  /** @type {SentLink[]} */
   const sent = [];
   const auth = createAuth({
     database: db,
     secret: TEST_SECRET,
     baseURL: TEST_BASE_URL,
-    sendLink: (link) => {
+    sendLink: async (link) => {
       sent.push(link);
     },
   });
@@ -165,14 +211,28 @@ export function createTestAuth(options = {}) {
 export async function signIn(made, email) {
   const headers = () => new Headers({ origin: TEST_BASE_URL });
   await made.auth.api.signInMagicLink({ body: { email }, headers: headers() });
-  const token = new URL(made.sent.at(-1).url).searchParams.get("token");
+  const mailed = made.sent.at(-1);
+  if (mailed === undefined) {
+    throw new Error("sign-in mailed no link");
+  }
+  const token = new URL(mailed.url).searchParams.get("token");
+  if (token === null) {
+    throw new Error("sign-in link had no token");
+  }
   const verified = await made.auth.api.magicLinkVerify({
     query: { token },
     headers: headers(),
     asResponse: true,
   });
-  const cookie = verified.headers.getSetCookie()[0].split(";")[0];
+  const setCookie = verified.headers.getSetCookie()[0];
+  if (setCookie === undefined) {
+    throw new Error("sign-in set no session cookie");
+  }
+  const cookie = setCookie.split(";")[0];
   const found = await made.auth.api.getSession({ headers: new Headers({ cookie }) });
+  if (found === null || found.user === undefined) {
+    throw new Error("signed-in session was missing");
+  }
   return {
     cookie,
     account: { id: found.user.id, name: found.user.name, email: found.user.email },

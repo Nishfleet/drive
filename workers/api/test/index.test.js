@@ -3,6 +3,15 @@ import { test } from "node:test";
 import { createApp, dispatch } from "../src/index.js";
 import { AUTH_RULES, routes } from "../src/routes.js";
 
+/** @typedef {import("../src/index.js").Ctx} Ctx */
+// `Route.handler` is `Function` in the product (its real handlers assume a
+// non-null account on account routes, so a strict ctx would be over-checked),
+// so the tests define their own route shape: one typed handler gives the fake
+// handlers' params types without widening `auth` to `string`.
+/**
+ * @typedef {{method: string, path: string, auth?: "public"|"account", handler: (request: Request, ctx: Ctx) => Response | Promise<Response>}} TestRoute
+ */
+
 const ctx = { env: {}, db: null, now: () => 0 };
 
 // ---- the registry and the deny-by-default account gate (drive#77) ----
@@ -133,6 +142,7 @@ test("every declared rule behaves as it says", async () => {
   // the exact string "public", so a rule that is declared but read as something
   // else is a false green.
   for (const rule of AUTH_RULES) {
+    /** @type {TestRoute[]} */
     const table = [
       { method: "GET", path: "/r", auth: rule, handler: () => Response.json({ ok: true }) },
     ];
@@ -147,6 +157,7 @@ test("every declared rule behaves as it says", async () => {
 
 test("deny by default: a route with no auth rule is not reachable without an account", async () => {
   let called = false;
+  /** @type {TestRoute[]} */
   const table = [
     {
       method: "GET",
@@ -163,11 +174,12 @@ test("deny by default: a route with no auth rule is not reachable without an acc
 });
 
 test("a misspelt auth rule fails closed, not open", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     {
       method: "GET",
       path: "/secret",
-      auth: "accont",
+      auth: /** @type {"public"|"account"} */ (/** @type {unknown} */ ("accont")),
       handler: () => Response.json({ leaked: true }),
     },
   ];
@@ -176,6 +188,7 @@ test("a misspelt auth rule fails closed, not open", async () => {
 
 test("an account route answers 401 when no account is signed in, and never runs the handler", async () => {
   let called = false;
+  /** @type {TestRoute[]} */
   const table = [
     {
       method: "GET",
@@ -196,6 +209,7 @@ test("an account route answers 401 when no account is signed in, and never runs 
 });
 
 test("the 401 names no account data and carries a bearer challenge", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     { method: "GET", path: "/v1/keys", auth: "account", handler: () => Response.json({}) },
   ];
@@ -210,17 +224,19 @@ test("a public route answers with no account", async () => {
 });
 
 test("an account route runs with the signed-in account on ctx", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     {
       method: "GET",
       path: "/v1/me",
       auth: "account",
-      handler: (_r, c) => Response.json({ account: c.account.id }),
+      handler /** @param {Request} _r @param {Ctx} c */: (_r, c) =>
+        Response.json({ account: /** @type {{id: string}} */ (c.account).id }),
     },
   ];
   const res = await dispatch(
     new Request("https://x.test/v1/me"),
-    { ...ctx, account: { id: "acct_1" } },
+    { ...ctx, account: { id: "acct_1", name: "Account" } },
     table,
   );
   assert.equal(res.status, 200);
@@ -237,6 +253,7 @@ test("unknown path is 404 and wrong method is 405 with the allowed method named"
 });
 
 test("path params are decoded", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     { method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) },
   ];
@@ -245,6 +262,7 @@ test("path params are decoded", async () => {
 });
 
 test("a malformed percent-escape in a path param is a 400, not an uncaught crash", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     { method: "GET", path: "/a/:id", auth: "public", handler: () => Response.json({ ok: true }) },
   ];
@@ -253,6 +271,7 @@ test("a malformed percent-escape in a path param is a 400, not an uncaught crash
 });
 
 test("a slash inside a param does not fall through to the next route", async () => {
+  /** @type {TestRoute[]} */
   const table = [
     { method: "GET", path: "/a/:id", auth: "public", handler: (_r, c) => Response.json(c.params) },
   ];
@@ -261,6 +280,7 @@ test("a slash inside a param does not fall through to the next route", async () 
 
 test("a handler error is a 500 the caller cannot learn from, and the real error is logged once", async () => {
   const secret = "connection string: postgres://user:pw@host/db";
+  /** @type {TestRoute[]} */
   const table = [
     {
       method: "GET",
@@ -271,6 +291,7 @@ test("a handler error is a 500 the caller cannot learn from, and the real error 
       },
     },
   ];
+  /** @type {Array<unknown>} */
   const logged = [];
   const original = console.error;
   console.error = (...args) => logged.push(args);
@@ -280,10 +301,14 @@ test("a handler error is a 500 the caller cannot learn from, and the real error 
     const body = await res.text();
     assert.ok(!body.includes(secret), "raw error text must never reach the caller");
     assert.equal(logged.length, 1, "the real error is logged once, server-side");
-    const loggedErrors = logged.flat().filter((entry) => entry instanceof Error);
+    /** @type {unknown[]} */
+    const loggedErrors = /** @type {Error[]} */ (
+      logged.flat().filter((entry) => entry instanceof Error)
+    );
     assert.equal(loggedErrors.length, 1, "the real error itself is logged");
-    assert.ok(loggedErrors[0].message.includes(secret), "the log carries the real error");
-    assert.ok(String(loggedErrors[0].stack).length > 0, "with a stack to trace it from");
+    const firstLogged = /** @type {Error} */ (/** @type {unknown} */ (loggedErrors[0]));
+    assert.ok(firstLogged.message.includes(secret), "the log carries the real error");
+    assert.ok(String(firstLogged.stack).length > 0, "with a stack to trace it from");
   } finally {
     console.error = original;
   }

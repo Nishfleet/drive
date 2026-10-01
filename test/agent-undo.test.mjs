@@ -36,6 +36,7 @@ import {
   rewindBranch,
   rewindPreview,
 } from "../src/rewind.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -47,9 +48,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ------------------------------------------------------------ the rewind
 
-// The D1 shape over a real SQLite database with the shipped migrations, the
-// same adapter test/branches.test.mjs uses, so the rewind runs against the SQL
-// the Worker runs — including the attribution column migration 0004 added.
+// `rewindBranch` and `discardBranch` answer a union of the worked object and a
+// failure carrying a status; the helper below reads the status only from an
+// arm that has one, so each assertion states its own expectation.
+const failedStatus = (/** @type {unknown} */ result) => {
+  assert.equal(
+    typeof result === "object" && result !== null && "status" in result,
+    true,
+    `expected a failure, got ${JSON.stringify(result)}`,
+  );
+  return /** @type {{status: number}} */ (result).status;
+};
+
+/**
+ * D1's types are the runtime's `declare abstract class` — its `raw` carries two
+ * generic overloads no JS object can express — so the adapter is typed here in
+ * full, every method named and JSDoc'd, and handed to the interface the modules
+ * import through one documented cast. Nothing inside hides an error: each
+ * method below checks on its own, and a method the modules call that is missing
+ * would fail at run time, not silently pass.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+ * @returns {SqliteD1}
+ */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of [
@@ -60,45 +80,166 @@ function makeD1() {
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const runOne = (sql, params) => {
+  /** The D1 meta a run answers with: every required field of the runtime's
+   * D1Meta, so a `D1Result` check is not fought.
+   * @returns {D1Meta & Record<string, unknown>} */
+  const meta = () => ({
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: 0,
+    last_row_id: 0,
+    changed_db: false,
+    changes: 0,
+  });
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {{results: Record<string, unknown>[], changes: number}}
+   */
+  const runOne = (sql, params = []) => {
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: sqlite.prepare(sql).all(...params) };
-    }
-    const info = sqlite.prepare(sql).run(...params);
-    return { success: true, meta: { changes: info.changes } };
-  };
-  return {
-    sqlite,
-    prepare(sql) {
       return {
-        bind(...params) {
-          return {
-            sql,
-            params,
-            async all() {
-              return runOne(sql, params);
-            },
-            async first() {
-              const row = sqlite.prepare(sql).get(...params);
-              return row === undefined ? null : row;
-            },
-            async run() {
-              return runOne(sql, params);
-            },
-          };
-        },
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
       };
-    },
-    async batch(statements) {
-      for (const statement of statements) {
-        runOne(statement.sql, statement.params);
-      }
-      return [];
-    },
+    }
+    const info = sqlite.prepare(prepared).run(...values);
+    return { results: [], changes: Number(info.changes) };
   };
+  /** The SQL and parameters each prepared statement carries, so batch() can
+   * run the statements the caller built and not re-derive them.
+   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
+  /**
+   * One prepared statement, the way D1 hands it back: bind() returns a
+   * statement carrying its own parameters, so the rest of the chain
+   * (all/first/run) runs the bound SQL.
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {D1PreparedStatement}
+   */
+  const statementFor = (sql, params = []) => {
+    const statement = /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        sql,
+        params,
+        /** @param {...unknown} values */
+        bind(...values) {
+          return statementFor(sql, values);
+        },
+        /**
+         * @template T
+         * @param {string} [colName]
+         * @returns {Promise<T|null>}
+         */
+        async first(colName) {
+          void colName;
+          const row = runOne(sql, params).results[0];
+          return row === undefined ? null : /** @type {T} */ (row);
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async all() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async run() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+      })
+    );
+    bound.set(statement, { sql, params });
+    return statement;
+  };
+  return /** @type {SqliteD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+      /** @param {string} sql */
+      prepare(sql) {
+        return statementFor(sql, []);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      async batch(statements) {
+        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
+        const results = [];
+        sqlite.exec("BEGIN");
+        try {
+          for (const statement of statements) {
+            const state = bound.get(statement);
+            if (!state) {
+              throw new Error("a statement was batch-ran that this adapter did not prepare");
+            }
+            results.push(runOne(state.sql, state.params));
+          }
+        } finally {
+          sqlite.exec("COMMIT");
+        }
+        return /** @type {D1Result<T>[]} */ (
+          results.map((result) => ({
+            results: /** @type {T[]} */ (result.results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          }))
+        );
+      },
+      /**
+       * D1's exec runs a multi-statement string; the tests never call it, but
+       * the adapter speaks the interface rather than being cast silent.
+       * @param {string} query
+       */
+      async exec(query) {
+        sqlite.exec(query);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * D1's session API is not part of what the modules under test use; a
+       * call would be a real bug, so it throws rather than standing in silently.
+       * @param {string} [constraintOrBookmark]
+       */
+      withSession(constraintOrBookmark) {
+        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+      },
+      async dump() {
+        throw new Error("a test adapter has no dump");
+      },
+    })
+  );
 }
 
-const text = (store, path) => store.read(path).then((found) => new Response(found.body).text());
+/**
+ * The bytes a scoped store holds at `path`, as text. A read that answers null
+ * is a real miss, so it throws rather than resolving an empty string the
+ * assertions below could not tell from a genuinely empty file.
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+const text = (store, path) =>
+  store
+    .read(path)
+    .then((found) =>
+      found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
+    );
 
 /** A drive with a folder an agent branched and then changed. */
 async function agentBranch({ changedBy = "k-claude" } = {}) {
@@ -168,7 +309,9 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const result = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(result.error, undefined);
+  // `rewindBranch` answers a union; `"error" in result` is its discriminator
+  // and the success arm above carries state/rewound/changedBy, not error.
+  assert.ok(!("error" in result));
   assert.equal(result.state, "discarded");
   assert.equal(result.rewound, 2);
   assert.equal(result.changedBy, "k-claude");
@@ -181,8 +324,8 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   // And a second click is refused rather than re-removing nothing: the branch
   // is closed, and "already closed" is its own message.
   const again = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(again.status, 409);
-  assert.equal(again.error, failureMessage("branch-not-open"));
+  assert.equal(failedStatus(again), 409);
+  assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
 });
 
 test("the 30-day window is the server's, not a hidden button", async () => {
@@ -192,6 +335,9 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const row = await rewindBranchRowFor(db, raw, "fix");
+  // The branch above was just created, so the list that reads it back has it;
+  // `assert.ok` narrows the null the lookup honestly returns.
+  assert.ok(row);
 
   const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS);
   assert.equal(inside.canRewind, true);
@@ -207,8 +353,11 @@ test("the 30-day window is the server's, not a hidden button", async () => {
 
   // And the POST is refused with the message table's own sentence.
   const refused = await rewindBranch(db, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
-  assert.equal(refused.status, 409);
-  assert.equal(refused.error, failureMessage("rewind-window-closed"));
+  assert.equal(failedStatus(refused), 409);
+  assert.equal(
+    /** @type {{error: string}} */ (refused).error,
+    failureMessage("rewind-window-closed"),
+  );
   // Nothing was removed: the refusal happens before the discard.
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
   assert.ok("rewind-window-closed" in FAILURE_MESSAGES);
@@ -222,8 +371,8 @@ test("one account can never read or rewind another account's branch", async () =
   const otherRaw = createMemoryStore();
   assert.equal(await rewindBranchRowFor(db, raw, "nope"), null);
   const other = await rewindBranch(db, scopeStore(otherRaw, OTHER), OTHER, "fix", AT);
-  assert.equal(other.status, 404);
-  assert.equal(other.error, failureMessage("branch-not-found"));
+  assert.equal(failedStatus(other), 404);
+  assert.equal(/** @type {{error: string}} */ (other).error, failureMessage("branch-not-found"));
   // The list an account sees is its own: account B sees no branches at all.
   const listed = await handleRewindRequest(
     new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
@@ -240,6 +389,7 @@ test("one account can never read or rewind another account's branch", async () =
 
 test("the rewind route lists, previews, rewinds and refuses the rest", async () => {
   const { raw, db } = await agentBranch();
+  /** @param {string} path @param {RequestInit} [init] */
   const call = (path, init) =>
     handleRewindRequest(
       new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init),
@@ -296,7 +446,14 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 });
 
 // The one branch row a test needs by name, through the same list the screen
-// reads, so a test cannot reach a row the screen would not show.
+// reads, so a test cannot reach a row the screen would not show. `listBranches`
+// answers each row with the branch plus the two diff counts the screen shows.
+/**
+ * @param {D1Database} db
+ * @param {import("../src/files.js").FileStore} raw
+ * @param {string} name
+ * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
+ */
 async function rewindBranchRowFor(db, raw, name) {
   const branches = await handleBranchesRequest(
     new Request(`https://drive.test/api/branches`, { method: "GET" }),
@@ -305,5 +462,9 @@ async function rewindBranchRowFor(db, raw, name) {
     ACCOUNT,
     () => AT,
   );
-  return (await branches.json()).branches.find((row) => row.name === name) ?? null;
+  // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
+  // read through one bound local carrying the list's own shape.
+  /** @type {{branches: Array<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}>}} */
+  const body = await branches.json();
+  return body.branches.find((row) => row.name === name) ?? null;
 }

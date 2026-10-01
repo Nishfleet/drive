@@ -29,17 +29,33 @@ import {
 } from "../src/health.js";
 import worker from "../src/index.js";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 /**
  * A D1Database stub answering only what the check uses. `mode` decides how
  * the trivial read resolves, so one fake covers healthy, broken and hung.
  */
+/** @param {"ok"|"error"|"hang"} [mode] */
 function fakeD1(mode = "ok") {
+  /** @type {string[]} */
   const calls = [];
   return {
     calls,
+    /** @param {string} sql */
     prepare(sql) {
       calls.push(sql);
       return {
+        /** @param {{signal?: AbortSignal}} [options] */
         all(options = {}) {
           if (mode === "error") {
             return Promise.reject(
@@ -70,9 +86,11 @@ function fakeD1(mode = "ok") {
  * response of any kind, so the 404 is the expected answer there.
  */
 function fakeAssets() {
+  /** @type {Request[]} */
   const requests = [];
   return {
     requests,
+    /** @param {Request} request */
     async fetch(request) {
       requests.push(request);
       return request.url.includes("__health_probe__")
@@ -105,6 +123,10 @@ function fakeAssets() {
  */
 function fakeFetcher(assets = fakeAssets()) {
   return new Proxy(assets, {
+    /**
+     * @param {object} target
+     * @param {string | symbol} property
+     */
     get(target, property) {
       // `fetch` and the recorded requests are the real asset layer; anything
       // else is the stub answering a function, which is what caught the bug.
@@ -136,6 +158,7 @@ function fakeLimiter() {
  * The bindings a healthy deploy has, by the names cloudflare.config.ts
  * declares. A test that wants an unhealthy Worker drops or breaks one of
  * these, so every test starts from the real shape.
+ * @returns {Record<string, unknown>}
  */
 const HEALTHY_ENV = () => ({
   WAITLIST_DB: fakeD1("ok"),
@@ -163,7 +186,9 @@ test("the health answer is never cached", async () => {
   // monitor: it says all clear while the site is down.
   const response = await handleHealthRequest(GET(), HEALTHY_ENV());
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.match(response.headers.get("content-type"), /^application\/json/);
+  const type = response.headers.get("content-type");
+  assert.ok(type);
+  assert.match(type, /^application\/json/);
 });
 
 // --- the failing answer names the part -----------------------------------
@@ -437,10 +462,12 @@ test("the bound is a deadline shared by every dependency, not one per check", as
   // answer names the one that was still waiting.
   const hang = () => ({
     prepare: () => ({
-      all: ({ signal }) =>
-        new Promise((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(new Error("aborted")));
-        }),
+      /** @param {{signal?: AbortSignal}} [options] */
+      all({ signal } = {}) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
     }),
   });
   const env = {
@@ -524,13 +551,13 @@ test("the Worker routes the health path to the handler", async () => {
   // the monitor forever. Both spellings are checked, as the sibling routes do.
   const env = HEALTHY_ENV();
   for (const path of [HEALTH_PATH, `${HEALTH_PATH}/`]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 200, `${path} must reach the handler`);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.deepEqual(await response.json(), { ok: true });
   }
   // A path that is not health is still the asset layer's, untouched.
-  const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
+  const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
 });
 
@@ -539,12 +566,14 @@ test("the health check never spends a real caller's rate limit quota", async () 
   // probe has to be checked somehow and `limit()` is the only call it has, so
   // the key is asserted to carry no IP: a health poll must not eat the quota
   // of the very sign-ups the limiter exists to protect.
+  /** @type {string[]} */
   const keys = [];
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
+      /** @param {{key: string}} options */
       limit({ key }) {
         keys.push(key);
         return Promise.resolve({ success: true });
@@ -564,12 +593,14 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
   // /api/health is public, so its limiter key has to change per call: a
   // stranger calling it in a loop must not exhaust one bucket and turn the
   // health answer red while everything else is fine.
+  /** @type {string[]} */
   const keys = [];
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
+      /** @param {{key: string}} options */
       limit({ key }) {
         keys.push(key);
         return Promise.resolve({ success: true });
@@ -717,8 +748,13 @@ test("either sign-in limiter that throws is a 503 naming that one, not the other
 test("each sign-in limiter is probed on a key of its own, never a client IP", async () => {
   // The probe must not spend a real caller's quota (the same rule the
   // waitlist's limiter probe follows), and each binding's key changes per call.
+  /** @type {{SIGNIN_RATE_LIMITER: string[], SIGNIN_GLOBAL_RATE_LIMITER: string[]}} */
   const keys = { SIGNIN_RATE_LIMITER: [], SIGNIN_GLOBAL_RATE_LIMITER: [] };
+  /**
+   * @param {keyof typeof keys} name
+   */
   const make = (name) => ({
+    /** @param {{key: string}} options */
     limit({ key }) {
       keys[name].push(key);
       return Promise.resolve({ success: true });
@@ -731,7 +767,9 @@ test("each sign-in limiter is probed on a key of its own, never a client IP", as
   const second = await handleHealthRequest(GET(), env);
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
-  for (const name of Object.keys(keys)) {
+  /** @type {Array<keyof typeof keys>} */
+  const names = ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"];
+  for (const name of names) {
     assert.equal(keys[name].length, 2, `${name} is probed once per poll`);
     assert.match(keys[name][0], /^health-probe-/);
     assert.ok(!keys[name][0].includes("."), `${name}'s probe key must not be a client IP`);

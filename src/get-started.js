@@ -54,14 +54,17 @@ export function pollIntervalMs() {
 /**
  * The connection line for one state: the module's `what` and `next`, in that
  * order, so the live line and the CLI's words are the same words.
- * @param {"waiting"|"connected"|"unreachable"} state
+ * @param {unknown} state
  * @returns {{what: string, next: string}}
  */
 export function connectionLine(state) {
-  const entry = CONNECTION_COPY[state];
+  const entry =
+    typeof state === "string" && Object.hasOwn(CONNECTION_COPY, state)
+      ? CONNECTION_COPY[/** @type {keyof typeof CONNECTION_COPY} */ (state)]
+      : undefined;
   if (!entry) {
     throw new TypeError(
-      `no connection copy for "${state}"; add it to CONNECTION_COPY in src/status.js`,
+      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in src/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -95,13 +98,18 @@ export function stepLines() {
 
 /**
  * The empty-state words for one screen, so "nothing here" never stands alone.
- * @param {"devices"|"activity"} screen
+ * @param {unknown} screen
  * @returns {{what: string, next: string}}
  */
 export function emptyState(screen) {
-  const entry = EMPTY_STATES[screen];
+  const entry =
+    typeof screen === "string" && Object.hasOwn(EMPTY_STATES, screen)
+      ? EMPTY_STATES[/** @type {keyof typeof EMPTY_STATES} */ (screen)]
+      : undefined;
   if (!entry) {
-    throw new TypeError(`no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`);
+    throw new TypeError(
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
+    );
   }
   return { what: entry.what, next: entry.next };
 }
@@ -160,17 +168,21 @@ export function deviceSyncState(device) {
  * The page's state cell: the label alone, or the label and the detail. The
  * em dash joining them is the page's own punctuation, so it is applied here
  * and never lands in the module's words.
- * @param {{label: string, detail: string|null}} status
+ * @param {unknown} status
  * @returns {string}
  */
 export function stateCellText(status) {
-  if (!status || typeof status.label !== "string") {
+  if (typeof status !== "object" || status === null) {
     throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  if (status.detail === null || status.detail === undefined) {
-    return status.label;
+  const cell = /** @type {{label?: unknown, detail?: unknown}} */ (status);
+  if (typeof cell.label !== "string") {
+    throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  return `${status.label} — ${status.detail}`;
+  if (cell.detail === null || cell.detail === undefined) {
+    return cell.label;
+  }
+  return `${cell.label} — ${cell.detail}`;
 }
 
 // The module's words for a device that has never synced, resolved once, so the
@@ -183,11 +195,11 @@ const NO_SYNC_LABEL = syncStatus({}, 0).label;
  * is a report, and the page's own poll failure is the `unreachable` state,
  * not a device's.
  * @param {string|number|Date|null|undefined} value
- * @param {number} now
+ * @param {unknown} now
  * @returns {number|null}
  */
 export function ageMs(value, now = Date.now()) {
-  if (!Number.isFinite(now)) {
+  if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
   }
   // A Date's own epoch value; Date.parse takes the string form, and an absent
@@ -232,7 +244,7 @@ export function lastSyncText(device) {
  * on this page is the waiting state — the Mac has not signed in — and the
  * waiting line names the real next step. It is never `unreachable`: the
  * service answered. Any other non-ok status is.
- * @param {number} status
+ * @param {unknown} status
  * @returns {"waiting"|"unreachable"}
  */
 export function connectionStateForStatus(status) {
@@ -246,7 +258,7 @@ export function connectionStateForStatus(status) {
  * Whether a poll payload means the Mac has connected: a device signed in
  * inside the module's window, or the service's own `connected` state. The
  * page stops its timer when this is true.
- * @param {StatusPayload} payload
+ * @param {unknown} payload
  * @param {number} now
  * @returns {boolean}
  */
@@ -254,10 +266,11 @@ export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
     throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
-  if (payload.state === "connected") {
+  const body = /** @type {{state?: unknown, devices?: unknown}} */ (payload);
+  if (body.state === "connected") {
     return true;
   }
-  const devices = Array.isArray(payload.devices) ? payload.devices : [];
+  const devices = Array.isArray(body.devices) ? body.devices : [];
   return devices.some(
     /** @param {DeviceRow} device */
     (device) => {

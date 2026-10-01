@@ -96,7 +96,9 @@ const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
 // string pass.
 const RIVAL_NAME_FILES = new Set(["src/docs.js", "src/pricing.js"]);
 
-/** Drop the price-comparison forms issue #195 leaves in place. */
+/** Drop the price-comparison forms issue #195 leaves in place.
+ * @param {string} text
+ */
 function stripAllowedComparisons(text) {
   return text
     .replace(/\(Space \$[\d.]+\)/g, "")
@@ -104,6 +106,7 @@ function stripAllowedComparisons(text) {
     .replace(/\bname:\s*["']Space["']/g, "");
 }
 
+/** @param {string} text */
 function dropExactRivalName(text) {
   return text
     .split("\n")
@@ -111,6 +114,11 @@ function dropExactRivalName(text) {
     .join("\n");
 }
 
+/**
+ * @param {string} path
+ * @param {string} text
+ * @param {{allowRivalName?: boolean}} [options]
+ */
 function hitsIn(path, text, options = {}) {
   let scanned = stripAllowedComparisons(text);
   if (options.allowRivalName) {
@@ -126,6 +134,10 @@ function hitsIn(path, text, options = {}) {
   return hits;
 }
 
+/**
+ * @param {string} source
+ * @param {number} i
+ */
 function isRegexStart(source, i) {
   let k = i - 1;
   while (k >= 0 && /[ \t\r\n]/.test(source[k])) {
@@ -143,6 +155,10 @@ function isRegexStart(source, i) {
   );
 }
 
+/**
+ * @param {string} source
+ * @param {number} i
+ */
 function skipRegex(source, i) {
   let j = i + 1;
   let inClass = false;
@@ -171,7 +187,10 @@ function skipRegex(source, i) {
   return i + 1;
 }
 
-/** Quoted strings in JS or Go, skipping comments, so identifiers like `pinned` are not copy. */
+/** Quoted strings in JS or Go, skipping comments, so identifiers like `pinned` are not copy.
+ * @param {string} source
+ * @param {{backtickRaw?: boolean}} [options]
+ */
 function quotedStrings(source, options = {}) {
   const backtickRaw = options.backtickRaw === true;
   const out = [];
@@ -232,6 +251,7 @@ function quotedStrings(source, options = {}) {
   return out;
 }
 
+/** @param {string} text */
 function stripMarkupComments(text) {
   return text
     .replace(/<!--[\s\S]*?-->/g, "")
@@ -239,6 +259,10 @@ function stripMarkupComments(text) {
     .replace(/^\s*\/\/.*$/gm, "");
 }
 
+/**
+ * @param {string} dir
+ * @param {string[]} [files]
+ */
 function walkFiles(dir, files = []) {
   for (const ent of readdirSync(dir, { withFileTypes: true })) {
     if (ent.name === "node_modules" || ent.name === ".git" || ent.name === ".rendered") {
