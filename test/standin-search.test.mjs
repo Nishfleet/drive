@@ -207,14 +207,23 @@ function makeD1() {
   );
 }
 
+/** @param {string} bin @returns {boolean} */
 function rcloneRuns(bin) {
   return spawnSync(bin, ["version"], { stdio: "ignore" }).status === 0;
 }
 
+/** @returns {Promise<number>} */
 async function freePort() {
   const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  // `listen`'s callback receives the bound address, which this promise ignores,
+  // so the callback discards it; the promise carries no value, so `resolve` takes
+  // no argument either.
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  // `server.address()` answers the bound address, a string for a pipe and an
+  // AddressInfo for the TCP socket this asked for; only the latter has a port.
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string", "the stand-in listens on TCP");
+  const { port } = address;
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
@@ -222,11 +231,13 @@ async function freePort() {
 /** The files the stand-in drive holds, and the name one of them is found by.
  * Names are built so one word (`invoice`) matches every file and a second
  * (`needle`) matches exactly one: the common search and the precise one. */
+/** @param {number} i @returns {string} */
 function fileName(i) {
   const stem = `file-${String(i).padStart(6, "0")}`;
   return i === FILES - 1 ? `${stem}-invoice-needle.pdf` : `${stem}-invoice.pdf`;
 }
 
+/** @param {number} i @returns {string} */
 function filePath(i) {
   return `/folder-${i % FOLDERS}/${fileName(i)}`;
 }
@@ -234,6 +245,7 @@ function filePath(i) {
 /** One account's files in a folder rclone serve s3 will list. Written straight
  * into the served directory: the stand-in is a local folder, so the files are
  * the bucket's objects without 100,000 round trips of setup. */
+/** @param {string} dir @param {string} bucket @returns {Promise<void>} */
 async function seedDrive(dir, bucket) {
   const root = path.join(dir, bucket, `u/${ACCOUNT.id}`);
   for (let f = 0; f < FOLDERS; f++) {
@@ -250,6 +262,10 @@ async function seedDrive(dir, bucket) {
 
 /** A local `rclone serve s3` on a fresh folder, or the configured endpoint when
  * the environment names real storage. */
+/**
+ * @param {import("node:test").TestContext} t
+ * @returns {Promise<{endpoint: string, bucket: string, stop: () => Promise<void>}|null>}
+ */
 async function startStorage(t) {
   if (process.env.DRIVE_STANDIN_ENDPOINT) {
     return {
