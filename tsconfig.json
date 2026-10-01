@@ -13,11 +13,11 @@
 		"module": "preserve",
 		"moduleResolution": "bundler",
 		// The runtime types are the generated `.cloudflare/types/index.d.ts`
-		// pulled in by the include list below, not an @types package, so no
-		// `types` are auto-loaded. `node:*` builtins and the `process` global
-		// that the node:test trees and src/render-docs.js use are declared by
-		// the compiler's own node module support.
-		"types": [],
+		// pulled in by the include list below, and Node's own types for the
+		// node:test trees and src/render-docs.js (the docs build script). Both
+		// are named here rather than auto-loaded by package name, so the set is
+		// this list rather than whatever is installed.
+		"types": ["node"],
 		"strict": true,
 		"noEmit": true,
 		"allowImportingTsExtensions": true,

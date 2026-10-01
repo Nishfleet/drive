@@ -64,7 +64,7 @@ export const USAGE_LABELS = Object.freeze({
 // field named rather than rendered as "undefined". The keys are the summary's
 // own label names, so the check below indexes the labels with a key they
 // actually hold rather than with an arbitrary string.
-/** @type {ReadonlyArray<keyof typeof USAGE_LABELS>} */
+/** @type {ReadonlyArray<keyof ReturnType<typeof import("./billing.js").usageSummary>["labels"]>} */
 const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
 
 /**
