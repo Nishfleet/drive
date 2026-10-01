@@ -161,12 +161,25 @@ test("the file routes answer each failure path with the table's words", async ()
   assert.deepEqual(await unnamed.json(), { error: failureMessage("upload-needs-name") });
 
   // A body that is not a JSON object is the same refusal on both file routes
-  // that read one, and on every account route: the array and the form are the
-  // one failure path, not two.
+  // that read one, and on every account route: the array and the bare value
+  // are the one failure path, not two.
   for (const body of ["[]", '"a string"', "null"]) {
     const refused = await call(filesApi("/delete", { method: "POST", body }));
     assert.equal(refused.status, 400, `${body} must be refused`);
     assert.deepEqual(await refused.json(), { error: failureMessage("json-object-needed") });
+  }
+
+  // A body that is not JSON at all is that same failure, not a second one:
+  // the file route and the branch route refuse a mangled body in the same
+  // words, so neither route carries its own sentence for it.
+  for (const body of ["=", "a form", '{"path": ']) {
+    const mangled = await call(filesApi("/delete", { method: "POST", body }));
+    assert.equal(mangled.status, 400, `${body} must be refused`);
+    assert.deepEqual(await mangled.json(), { error: failureMessage("json-object-needed") });
+    // The restore route reads a body exactly as the delete route does.
+    const restored = await call(filesApi("/restore", { method: "POST", body }));
+    assert.equal(restored.status, 400, `${body} must be refused`);
+    assert.deepEqual(await restored.json(), { error: failureMessage("json-object-needed") });
   }
 });
 
@@ -190,7 +203,7 @@ test("the branch route refuses a body that is not a JSON object in the table's w
       createMemoryStore(),
       account,
     );
-  for (const body of ["[]", "null", "a form"]) {
+  for (const body of ["[]", "null", "a form", "="]) {
     const refused = await call(body);
     assert.equal(refused.status, 400, `${body} must be refused`);
     assert.deepEqual(await refused.json(), { error: failureMessage("json-object-needed") });
@@ -201,9 +214,14 @@ test("no module under src/ carries a second copy of a table sentence", () => {
   // The other half of the same rule, and the one that catches the drift the
   // route assertions above cannot see: the words live in src/messages.js, so
   // every other module under src/ reaches them through failureMessage(key).
+  // The whole tree is read, not just the top of it, and every sentence is
+  // looked for in the file text rather than in the code the parser can see: a
+  // sentence pasted into a handler reads the same to the next person whether
+  // it is code or a comment, and a table sentence quoted in a comment under
+  // src/ is the drift this exists to stop.
   const src = new URL("../src/", import.meta.url);
-  const modules = readdirSync(src)
-    .filter((name) => name.endsWith(".js") && name !== "messages.js")
+  const modules = readdirSync(src, { recursive: true })
+    .filter((name) => name.endsWith(".js") && !name.split("/").includes("messages.js"))
     .map((name) => [name, readFileSync(new URL(name, src), "utf8")]);
   for (const [key, entry] of Object.entries(FAILURE_MESSAGES)) {
     for (const sentence of [entry.what, entry.next]) {

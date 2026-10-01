@@ -630,7 +630,9 @@ test("a body that is not JSON is a 400, not a 500", async () => {
       }),
     );
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /not valid JSON/);
+    // A body that is not JSON is the same failure as one that is JSON but not
+    // an object, and both are the table's (drive#158).
+    assert.equal((await response.json()).error, failureMessage("json-object-needed"));
   }
 });
 

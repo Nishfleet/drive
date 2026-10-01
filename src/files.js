@@ -1164,7 +1164,12 @@ async function readJsonObject(request) {
   try {
     body = await request.json();
   } catch {
-    return { error: "The request body is not valid JSON." };
+    // A body that is not JSON at all is the same failure as a body that is
+    // JSON but not an object: both are "this request did not carry a JSON
+    // object", and both routes that read a body say it in the table's words, so
+    // a form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return { error: failureMessage("json-object-needed") };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { error: failureMessage("json-object-needed") };
@@ -1329,7 +1334,10 @@ async function deleteRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The `if` is the narrowing: readJsonObject's error arm is the only one
+    // without a body, so error is a string here and there is nothing to fall
+    // back to, and no second copy of the sentence to keep in step.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {
@@ -1364,7 +1372,9 @@ async function restoreRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The same narrowing as the delete path above, and the same words: the
+    // restore route reads a body exactly as the delete route does.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {
