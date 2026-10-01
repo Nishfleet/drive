@@ -115,7 +115,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
  */
 export function readSigninRequest(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   const fields = /** @type {Record<string, unknown>} */ (body);
   const step = typeof fields.step === "string" ? fields.step : SIGNIN_STEPS[0];
