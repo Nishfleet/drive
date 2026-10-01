@@ -1,10 +1,11 @@
 // Integration test for the meter's D1 schema (drive issue #6): the real
-// migration files under migrations/, applied to a real SQLite database, with
-// the meter's statements run against it and the rows read back out.
+// migration files under migrations/drive/, applied to a real SQLite database,
+// with the meter's statements run against it and the rows read back out.
 //
 // A unit-test fake can only assert the SQL the meter sends; it cannot see the
-// schema. This file applies every migration in migrations/ verbatim (read from
-// disk, the files that ship) and proves both directions of the new tables:
+// schema. This file applies every migration in the drive database's directory
+// verbatim (read from disk, the files that ship) and proves both directions of
+// the new tables:
 //   WRITE - the dedup batch (events_seen + file_versions upsert) and the
 //           rollup upsert land rows a plain SELECT can find;
 //   READ  - the rollup's SELECT finds exactly the versions an hour needs, and
@@ -31,9 +32,11 @@ import {
 } from "../../src/meter.js";
 import { applyMigrations, makeMeteredDB, GB, at, midnight } from "../d1-sqlite.mjs";
 
-// The real migration files, in their filename order: the order the deploy
-// applies them in.
-const migrationFiles = readdirSync(new URL("../../migrations/", import.meta.url))
+// The real migration files of the drive database (drive issue #170: customer
+// tables, the waitlist's sign-up table lives in its own database and is
+// created by migrations/waitlist/0001_waitlist.sql), in the numeric order the
+// deploy applies them in.
+const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
   .filter((name) => name.endsWith(".sql"))
   .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
 
@@ -64,15 +67,16 @@ const otherEvent = (overrides = {}) =>
 test("the real migrations apply cleanly, in filename order", () => {
   // The order the deploy applies them in. No file may depend on something a
   // lower-numbered file does not already have, and none may fail on a database
-  // that already ran the others.
-  assert.ok(migrationFiles.includes("0001_waitlist.sql"), "0001_waitlist.sql is missing");
-  assert.ok(migrationFiles.includes("0002_meter.sql"), "0002_meter.sql is missing");
+  // that already ran the others. Every migration in the drive database is
+  // applied, not just the meter's, so the meter's tables are checked against
+  // the schema it will share with the file index, branches and caps.
+  assert.ok(migrationFiles.includes("0005_meter.sql"), "0005_meter.sql is missing");
   const { sqlite } = makeMeteredDB();
   const tables = sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
     .all()
     .map((row) => row.name);
-  for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state", "waitlist"]) {
+  for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state"]) {
     assert.ok(tables.includes(table), `table ${table} was not created`);
   }
   // The columns the meter's arithmetic assumes: epoch milliseconds in
@@ -437,14 +441,14 @@ test("the migration is additive: it creates tables and changes nothing else", ()
   // rolling the code back, and the check is on the shipped SQL rather than on
   // the intent behind it: a future edit that adds a DROP, a RENAME or an
   // ALTER fails here instead of in production.
-  const sql = readFileSync(new URL("../../migrations/0002_meter.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../migrations/drive/0005_meter.sql", import.meta.url), "utf8");
   for (const destructive of [
     /\bDROP\s+(TABLE|COLUMN|INDEX)\b/i,
     /\bALTER\s+TABLE\b/i,
     /\bRENAME\b/i,
     /\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)/i,
   ]) {
-    assert.equal(destructive.test(sql), false, `0002_meter.sql matches ${destructive}`);
+    assert.equal(destructive.test(sql), false, `0005_meter.sql matches ${destructive}`);
   }
   // The four tables, all new: adding a NOT NULL column to a table that already
   // holds rows is the other way a migration breaks the previous version, and

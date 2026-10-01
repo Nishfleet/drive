@@ -743,13 +743,21 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   );
   assert.equal(posted.status, 200);
   assert.equal(db.tables.file_versions.size, 1);
-  const rolled = await worker.scheduled(
-    { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db },
+  // The trigger's own return value is not what a Cron Trigger reads, and the
+  // platform records success from the promise, so the handler returns nothing
+  // (the reindex half has always returned nothing). What the trigger did is
+  // read back out of the tables it wrote: the mark moved to the hour it
+  // rolled, and that hour holds the create's 1-hour minimum.
+  assert.equal(
+    await worker.scheduled(
+      { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+      { METER_DB: db },
+    ),
+    undefined,
   );
-  assert.equal(rolled.through, midnight());
-  assert.equal(rolled.accounts, 1);
-  assert.equal(rolled.gbMinutes, 60);
+  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
+  const rolled = db.tables.usage_minutes.get(`abc123|${midnight()}`);
+  assert.equal(rolled.gb_minutes_live, 60);
   const waitlist = await worker.fetch(new Request("https://drive.example/api/waitlist", { method: "GET" }), {});
   assert.equal(waitlist.status, 405);
   const status = await worker.fetch(new Request("https://drive.example/api/first-run-status"), {});
@@ -757,7 +765,7 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
 });
 
 test("the migration creates exactly the tables and indexes the meter writes", () => {
-  const migration = readFileSync(new URL("../migrations/0002_meter.sql", import.meta.url), "utf8");
+  const migration = readFileSync(new URL("../migrations/drive/0005_meter.sql", import.meta.url), "utf8");
   for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state"]) {
     assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }

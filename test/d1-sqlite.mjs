@@ -4,6 +4,13 @@
 // migrations. The meter sends the same statements to both backends:
 // a statement the meter adds without this adapter knowing it fails
 // here rather than in production.
+//
+// The migrations applied here are the drive database's own (migrations/drive/,
+// drive issue #170): file_versions, usage_minutes, events_seen and
+// meter_rollup_state are customer data, so they are created by the same
+// migration directory the file index, branches and caps come from. Every file
+// in it is applied, in numeric order, so a statement the meter sends is
+// checked against the whole schema the drive database will actually have.
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -31,14 +38,16 @@ import {
   toVersion,
 } from "../src/meter.js";
 
-const migrationsDir = new URL("../migrations/", import.meta.url);
+// The drive database's migration files, in the numeric order the deploy
+// applies them in.
+const migrationsDir = new URL("../migrations/drive/", import.meta.url);
 const migrationFiles = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
 
 export function applyMigrations(sqlite) {
   for (const name of migrationFiles) {
-    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+    sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
   }
 }
 

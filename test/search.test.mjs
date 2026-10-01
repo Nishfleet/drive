@@ -32,7 +32,10 @@ const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
 // applied, so every test below runs the SQL the Worker will run.
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["0001_waitlist.sql", "0002_file_index.sql"]) {
+  for (const name of [
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+  ]) {
     sqlite.exec(
       readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"),
     );
@@ -477,7 +480,7 @@ test("account A never sees account B's file names", async () => {
 test("no web request can start a reindex: /api/search/index is not a route", async () => {
   const db = makeD1();
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
-  const env = { WAITLIST_DB: db, ASSETS: assets };
+  const env = { DRIVE_DB: db, ASSETS: assets };
   for (const method of ["GET", "POST", "DELETE"]) {
     const response = await worker.fetch(
       new Request("https://drive.test/api/search/index", { method }),
@@ -553,7 +556,7 @@ test("the search route answers 405 with the one allowed method named", async () 
 test("the worker serves /api/search behind the account gate and file writes keep it fresh", async () => {
   const db = makeD1();
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
-  const env = { WAITLIST_DB: db, ASSETS: assets };
+  const env = { DRIVE_DB: db, ASSETS: assets };
   // Anonymous: 401 with the account gate's words, never a name.
   const anonymous = await worker.fetch(
     new Request("https://drive.test/api/search?q=warren-buffet"),
@@ -585,7 +588,7 @@ test("the worker serves /api/search behind the account gate and file writes keep
 
 // --------------------------------------------------------------- migration
 test("the migration is additive: one new table, no drops, every column defaulted", () => {
-  const sql = readFileSync(new URL("../migrations/0002_file_index.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../migrations/drive/0002_file_index.sql", import.meta.url), "utf8");
   assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS file_index"));
   const withoutComments = sql.replace(/--.*$/gm, "");
   assert.ok(!/^DROP (TABLE|COLUMN)/im.test(withoutComments), "no drops");

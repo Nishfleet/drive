@@ -52,10 +52,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of [
-    "0001_waitlist.sql",
-    "0002_file_index.sql",
-    "0003_branches.sql",
-    "0004_agent_undo.sql",
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0003_branches.sql",
+    "drive/0004_agent_undo.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

@@ -58,10 +58,15 @@
 //     decimal GB, so the meter and the invoice cannot disagree about a unit.
 
 // Every timestamp here is epoch MILLISECONDS, matching
-// migrations/0002_meter.sql. Strings are accepted anywhere a number is (Date
-//.parse), so a webhook holding an ISO timestamp needs no conversion, and a
-// value that parses to nothing is a loud TypeError rather than a NaN that
+// migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
+// (Date.parse), so a webhook holding an ISO timestamp needs no conversion, and
+// a value that parses to nothing is a loud TypeError rather than a NaN that
 // quietly bills nothing.
+/**
+ * @param {number|Date|string} value
+ * @param {string} field
+ * @returns {number}
+ */
 export function toMillis(value, field) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
@@ -133,9 +138,13 @@ export function toVersion(row) {
       `version size must be 0 or more bytes, got ${row.size_bytes ?? row.sizeBytes}`,
     );
   }
+  /** @type {{sizeBytes: number, createdAt: number, hiddenAt: number|null}} */
   const version = {
     sizeBytes: size,
-    createdAt: toMillis(row.created_at ?? row.createdAt, "createdAt"),
+    // One of the two spellings always holds: the row is either a D1 row
+    // (created_at) or an already-parsed version (createdAt), and toMillis
+    // throws a named TypeError if neither did.
+    createdAt: toMillis(row.created_at ?? row.createdAt ?? Number.NaN, "createdAt"),
     hiddenAt: null,
   };
   const hidden = row.hidden_at ?? row.hiddenAt;
@@ -149,7 +158,7 @@ export function toVersion(row) {
  * A version's stored minutes across its whole life: created to hidden, or
  * created to now for a version still live. Whole minutes (the spec counts in
  * whole stored minutes), which is what the 60-minute minimum compares against.
- * @param {{createdAt: number, hiddenAt: number|null}} version
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} now
  */
 export function versionLifetimeMinutes(version, now = Date.now()) {
@@ -169,7 +178,7 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
 /**
  * GB-minutes one version contributes to ONE hour, before the minimum: the
  * whole minutes of that hour the version existed, times its size in GB.
- * @param {{createdAt: number, hiddenAt: number|null}} version
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour either hour boundary of the hour
  * @param {number|Date|string} now for a version still live, the instant its
  *   storage stops counting in this hour (the end of a closed hour)
@@ -203,13 +212,17 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
  * always return the same number, whether or not other hours were rolled in
  * between, so a re-run (the reconciler's re-roll, a missed trigger replayed)
  * writes the same total again.
- * @param {{createdAt: number, hiddenAt: number|null}} version
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
  */
 export function versionGbMinutesInHour(version, hour, now = Date.now()) {
   const start = hourStart(hour);
+  // versionOverlapGbMinutes is the one place a version's size is read and
+  // checked, and it books the same GB the shortfall below books, so the two
+  // halves of this hour cannot disagree about a version's size.
   const overlap = versionOverlapGbMinutes(version, start, now);
+  const size = Number(version.sizeBytes);
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
     // Still live when this hour is rolled: book only the overlap. Its shortfall
     // against the minimum, if its life ends young later, is booked by the hour
@@ -235,7 +248,7 @@ export function versionGbMinutesInHour(version, hour, now = Date.now()) {
     // floor, but the total booked never falls under the spec's minimum and
     // never exceeds it by more than that fraction: no under-bill and no
     // double-count, whichever hours were rolled first.
-    booked += (MINIMUM_MINUTES_PER_VERSION - lifetime) * (version.sizeBytes / BYTES_PER_GB);
+    booked += (MINIMUM_MINUTES_PER_VERSION - lifetime) * (size / BYTES_PER_GB);
   }
   return booked;
 }
@@ -359,6 +372,13 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
   await usageStatement(db, accountId, hour, gbMinutes, now).run();
 }
 
+/**
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number|Date|string} hour
+ * @param {number} gbMinutes
+ * @param {number|Date|string} now
+ */
 function usageStatement(db, accountId, hour, gbMinutes, now) {
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
@@ -496,13 +516,19 @@ export function validateEvent(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { error: "Send one storage event as a JSON object." };
   }
+  // A webhook sends JSON, so every field below is unknown until it is checked;
+  // this is the one narrowing of the whole body, and every field is still
+  // read through the checks that follow (no field is trusted on its type).
+  const event = /** @type {Record<string, unknown>} */ (input);
   // The action first, because it is the one question that decides whether
   // the rest of the event matters at all: an action the meter does not bill
   // is refused by name whatever else the event carries, and the checks below
   // never have to reason about an effect that does not exist.
   const action =
-    typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
-  const effect = Object.hasOwn(EVENT_ACTIONS, action) ? EVENT_ACTIONS[action] : null;
+    typeof event.action === "string" ? event.action.trim().toLowerCase() : "uploaded";
+  const effect = action in EVENT_ACTIONS
+    ? EVENT_ACTIONS[/** @type {keyof typeof EVENT_ACTIONS} */ (action)]
+    : null;
   if (effect === null) {
     return { error: `Unknown storage event action: ${action}` };
   }
@@ -512,8 +538,10 @@ export function validateEvent(input) {
   // when it does not (some providers only name the prefix on a create). The
   // folder is read from the root of that path, so a "/u/" deeper in a file's
   // own name is never taken for an account.
-  const named = [input.path, input.keyName].filter(
-    (value) => typeof value === "string" && value !== "",
+  const named = /** @type {string[]} */ (
+    [event.path, event.keyName].filter(
+      (value) => typeof value === "string" && value !== "",
+    )
   );
   const accountId = named.length === 0 ? null : folderAccount(named[0]);
   if (accountId === null) {
@@ -526,14 +554,14 @@ export function validateEvent(input) {
   // left without a path and never carries one that names another account.
   const path = named.find((value) => folderAccount(value) === accountId) ?? named[0];
   const b2FileId =
-    typeof input.b2FileId === "string" ? input.b2FileId.trim() : "";
+    typeof event.b2FileId === "string" ? event.b2FileId.trim() : "";
   if (b2FileId === "" || b2FileId.length > 512) {
     return { error: "The event does not name a file version." };
   }
   // The event's own time, which is what a hide or delete event carries: the
   // version's creation time may not be in the event at all, and the instant
   // the provider saw the change is the honest moment billing stops.
-  const eventTimestamp = input.eventTimestamp;
+  const eventTimestamp = event.eventTimestamp;
   // The size is only ever set by a create, and it must be a real byte count:
   // `Number(null)`, `Number("")` and `Number(true)` are all 0 or 1, so a
   // coercion here would let a create whose size never arrived be stored as a
@@ -548,8 +576,8 @@ export function validateEvent(input) {
   // (the upsert takes the size from a create, or out of a 0 placeholder,
   // only), so both delivery orders end on the same row.
   let sizeBytes;
-  if (effect === "create" || input.sizeBytes !== undefined) {
-    sizeBytes = wholeBytes(input.sizeBytes);
+  if (effect === "create" || event.sizeBytes !== undefined) {
+    sizeBytes = wholeBytes(event.sizeBytes);
     if (sizeBytes === null) {
       return { error: "The event's size is not a whole number of bytes." };
     }
@@ -566,37 +594,58 @@ export function validateEvent(input) {
   // own life and is corrected to the truth by the create that follows, since
   // the upsert's created_at = MIN always takes the earliest time any event
   // for the version carries. Both orders therefore end on the same row.
-  if (effect === "hide" && (input.hiddenAt === undefined || input.hiddenAt === null || input.hiddenAt === "") && (eventTimestamp === undefined || eventTimestamp === null || eventTimestamp === "")) {
+  if (effect === "hide" && (event.hiddenAt === undefined || event.hiddenAt === null || event.hiddenAt === "") && (eventTimestamp === undefined || eventTimestamp === null || eventTimestamp === "")) {
     return { error: "The event does not say when the version stopped being visible." };
   }
   let createdAt;
-  if (effect === "create" && (input.createdAt === undefined || input.createdAt === null || input.createdAt === "")) {
+  if (effect === "create" && (event.createdAt === undefined || event.createdAt === null || event.createdAt === "")) {
     return { error: "The event does not say when the version was written." };
   }
   try {
     // A hide without an explicit createdAt seeds created_at from its own
     // timestamp: hidden_at IS that instant, and file_versions.created_at
     // is NOT NULL. A late create then corrects it backwards via MIN.
-    createdAt = toMillis(input.createdAt ?? (effect === "hide" ? eventTimestamp : undefined), "createdAt");
+    const createdSource = event.createdAt ?? (effect === "hide" ? eventTimestamp : undefined);
+    createdAt = toMillis(
+      typeof createdSource === "number" ||
+        typeof createdSource === "string" ||
+        createdSource instanceof Date
+        ? createdSource
+        : Number.NaN,
+      "createdAt",
+    );
   } catch {
     return { error: "The event has no usable timestamp." };
   }
   let hiddenAt = null;
   if (effect === "hide") {
-    const hiddenSource = input.hiddenAt ?? eventTimestamp;
+    const hiddenSource = event.hiddenAt ?? eventTimestamp;
     try {
-      hiddenAt = toMillis(hiddenSource, "hiddenAt");
+      hiddenAt = toMillis(
+        typeof hiddenSource === "number" ||
+          typeof hiddenSource === "string" ||
+          hiddenSource instanceof Date
+          ? hiddenSource
+          : Number.NaN,
+        "hiddenAt",
+      );
     } catch {
       return { error: "The event's hidden time is not a timestamp." };
     }
     if (hiddenAt < createdAt) {
       return { error: "The event's hidden time is before the version was written." };
     }
-  } else if (input.hiddenAt !== undefined && input.hiddenAt !== null && input.hiddenAt !== "") {
+  } else if (event.hiddenAt !== undefined && event.hiddenAt !== null && event.hiddenAt !== "") {
     // A create that already carries a hidden time (a provider that reports a
     // replaced file in one event) is stored with it.
     try {
-      hiddenAt = toMillis(input.hiddenAt, "hiddenAt");
+      const source = event.hiddenAt;
+      hiddenAt = toMillis(
+        typeof source === "number" || typeof source === "string" || source instanceof Date
+          ? source
+          : Number.NaN,
+        "hiddenAt",
+      );
     } catch {
       return { error: "The event's hidden time is not a timestamp." };
     }
@@ -608,8 +657,8 @@ export function validateEvent(input) {
   // none, the version and its times are the identity: the same version at the
   // same instants is the same event, no matter when it was delivered.
   const eventId =
-    typeof input.eventId === "string" && input.eventId.trim() !== ""
-      ? input.eventId.trim()
+    typeof event.eventId === "string" && event.eventId.trim() !== ""
+      ? event.eventId.trim()
       : `${accountId}:${b2FileId}:${createdAt}:${hiddenAt ?? ""}`;
   if (eventId.length > 512) {
     return { error: "The event's id is too long." };
@@ -759,8 +808,14 @@ export async function tokensMatch(presented, configured) {
     crypto.subtle.digest("SHA-256", encoder.encode(presented)),
     crypto.subtle.digest("SHA-256", encoder.encode(configured)),
   ]);
-  if (typeof crypto.subtle.timingSafeEqual === "function") {
-    return crypto.subtle.timingSafeEqual(left, right);
+  // crypto.subtle.timingSafeEqual is a Workers API, so the generated runtime
+  // types know it and the DOM ones do not; the cast is the platform difference,
+  // and the accumulator below is the answer on a runtime without it.
+  const subtle = /** @type {SubtleCrypto & {timingSafeEqual?: (a: ArrayBuffer, b: ArrayBuffer) => boolean}} */ (
+    crypto.subtle
+  );
+  if (typeof subtle.timingSafeEqual === "function") {
+    return subtle.timingSafeEqual(left, right);
   }
   const a = new Uint8Array(left);
   const b = new Uint8Array(right);
@@ -871,6 +926,10 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   return json({ ok: true, stored, deduped }, 200);
 }
 
+/**
+ * @param {unknown} body
+ * @param {number} status
+ */
 function json(body, status) {
   return new Response(JSON.stringify(body), {
     status,
@@ -885,6 +944,11 @@ function json(body, status) {
 // before the body is read at all, and the stream is counted as it arrives so
 // a request that declares nothing, or lies about a smaller size, stops at the
 // same limit.
+/**
+ * @param {Request} request
+ * @param {number} maxBytes
+ * @returns {Promise<Uint8Array>}
+ */
 async function readLimitedBody(request, maxBytes) {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
@@ -898,6 +962,7 @@ async function readLimitedBody(request, maxBytes) {
     return new Uint8Array(0);
   }
   const reader = stream.getReader();
+  /** @type {Uint8Array[]} */
   const chunks = [];
   let total = 0;
   for (;;) {

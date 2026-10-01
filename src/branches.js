@@ -38,6 +38,25 @@ import { BRANCHES_PATH, scopeStore, validatePath } from "./files.js";
 import { checkedBranchName } from "../workers/api/src/keyprovider.js";
 import { failureMessage } from "./messages.js";
 
+/** @typedef {import("./files.js").FileStore} FileStore */
+/** One file at branch time: what `fingerprint` records and a diff compares. */
+/** @typedef {{size: number, etag: string|null, modified: number|null}} Fingerprint */
+/** One row of the `branches` table as this module uses it. */
+/**
+ * @typedef {{name: string, sourcePrefix: string, branchPrefix: string,
+ *   state: string, createdAt: string, changedBy: string,
+ *   snapshot: Record<string, Fingerprint>}} Branch
+ */
+
+/** The one place an unknown thrown value becomes a message: a caught value is
+ * `unknown`, and only an Error has a `.message` to log.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** The route family the CLI and the Branches screen read. */
 export const BRANCHES_ENDPOINT = "/api/branches";
 /** The drive path branches live under — taken from files.js so there is one
@@ -50,6 +69,12 @@ const JSON_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} [status]
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -57,6 +82,12 @@ function json(body, status = 200, headers = {}) {
   });
 }
 
+/**
+ * @param {string} message
+ * @param {number} status
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function plain(message, status, headers = {}) {
   return new Response(message, {
     status,
@@ -110,10 +141,15 @@ export function relativePath(root, path) {
   return path.slice(root.length + 1);
 }
 
-/** The fingerprint a snapshot stores and a diff compares. */
+/** The fingerprint a snapshot stores and a diff compares.
+ * @param {{size?: number, etag?: string|null, modified?: number|null}} entry
+ * @returns {Fingerprint} */
 function fingerprint(entry) {
   return {
-    size: Number.isFinite(entry.size) && entry.size >= 0 ? Math.floor(entry.size) : 0,
+    size:
+      typeof entry.size === "number" && Number.isFinite(entry.size) && entry.size >= 0
+        ? Math.floor(entry.size)
+        : 0,
     etag:
       typeof entry.etag === "string" && entry.etag.length > 0
         ? entry.etag.replace(/"/g, "")
@@ -128,8 +164,8 @@ function fingerprint(entry) {
  * a store that has none falls back to size and modified time, which is the
  * best a store without content hashes can say. A missing entry is never the
  * same file.
- * @param {{size: number, etag: string|null, modified: number|null}} a
- * @param {{size: number, etag: string|null, modified: number|null}} b
+ * @param {{size: number, etag: string|null, modified: number|null}|null} a
+ * @param {{size: number, etag: string|null, modified: number|null}|null} b
  */
 export function sameFile(a, b) {
   if (!a || !b) {
@@ -147,16 +183,20 @@ export function sameFile(a, b) {
  * person would see and nothing the store did not return. The drive root is
  * never walked here: `createBranch` refuses to branch it, so the walk cannot
  * step into the `.branches` folder the copy writes into.
- * @param {import("./files.js").FileStore} store a scoped store: drive paths in and out
+ * @param {FileStore} store a scoped store: drive paths in and out
  * @param {string} root
- * @returns {Promise<Map<string, {size: number, etag: string|null, modified: number|null}>>}
+ * @returns {Promise<Map<string, Fingerprint>>}
  */
 async function listFiles(store, root) {
+  /** @type {Map<string, Fingerprint>} */
   const files = new Map();
   const queue = [root];
   const seen = new Set();
   while (queue.length > 0) {
     const folder = queue.shift();
+    if (folder === undefined) {
+      continue;
+    }
     if (seen.has(folder)) {
       continue;
     }
@@ -176,7 +216,10 @@ async function listFiles(store, root) {
 }
 
 /** The fingerprint of one file, or null when it is not there. One listing of
- * its parent, so reading a fingerprint never downloads the bytes. */
+ * its parent, so reading a fingerprint never downloads the bytes.
+ * @param {FileStore} store a scoped store
+ * @param {string} path
+ * @returns {Promise<Fingerprint|null>} */
 async function fileFingerprint(store, path) {
   const cut = path.lastIndexOf("/");
   const parent = cut <= 0 ? "/" : path.slice(0, cut);
@@ -193,16 +236,21 @@ async function fileFingerprint(store, path) {
  * returning the snapshot of the original: the files' `{size, etag, modified}`
  * at the moment the branch was taken. This is what `drive branch` does and
  * what `approve` diffs against.
- * @param {import("./files.js").FileStore} store a scoped store
+ * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
+ * @returns {Promise<Record<string, Fingerprint>>}
  */
 async function copyFolder(store, source, dest) {
+  /** @type {Record<string, Fingerprint>} */
   const snapshot = {};
   const queue = [source];
   const seen = new Set();
   while (queue.length > 0) {
     const folder = queue.shift();
+    if (folder === undefined) {
+      continue;
+    }
     if (seen.has(folder)) {
       continue;
     }
@@ -249,8 +297,8 @@ async function folderState(store, path) {
  * The files a branch changed against its own snapshot, and the files the
  * original changed under it since the branch was taken. This is `drive diff`
  * and the check `approve` runs before it touches the original.
- * @param {import("./files.js").FileStore} store a scoped store
- * @param {{sourcePrefix: string, branchPrefix: string, snapshot: object}} branch
+ * @param {FileStore} store a scoped store
+ * @param {{sourcePrefix: string, branchPrefix: string, snapshot: Record<string, Fingerprint>}} branch
  */
 export async function diffBranch(store, branch) {
   const snapshot = branch.snapshot;
@@ -292,13 +340,18 @@ export async function diffBranch(store, branch) {
 
 // ---------------------------------------------------------------- the table
 
-/** A row as this module uses it: a parsed snapshot and camelCase names. */
+/** A row as this module uses it: a parsed snapshot and camelCase names.
+ * A D1 row is untyped (`Record<string, unknown>`), so each column is read by
+ * name and given the shape the schema promises (migration 0003).
+ * @param {Record<string, unknown>} row
+ * @returns {Branch} */
 function toBranch(row) {
+  /** @type {Record<string, Fingerprint>} */
   let snapshot = {};
   try {
-    const parsed = JSON.parse(row.snapshot || "{}");
+    const parsed = JSON.parse(typeof row.snapshot === "string" ? row.snapshot : "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      snapshot = parsed;
+      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
     }
   } catch {
     // A snapshot that cannot be read is treated as empty rather than as "no
@@ -307,24 +360,28 @@ function toBranch(row) {
     snapshot = {};
   }
   return {
-    name: row.name,
-    sourcePrefix: row.source_prefix,
-    branchPrefix: row.branch_prefix,
-    state: row.state,
-    createdAt: row.created_at,
+    name: String(row.name),
+    sourcePrefix: String(row.source_prefix),
+    branchPrefix: String(row.branch_prefix),
+    state: String(row.state),
+    createdAt: String(row.created_at),
     // Whose key made the branch's changes (migration 0004, issue #13). The
     // rewind screen reads it for "Rewind <agent>'s work" and the activity list
     // reads the same value for "changed by <agent or person>" — one column on
     // the one log that already exists, never a second store. Absent on a row
     // written before the migration, it reads as "no key recorded", which is
     // what a branch a person made in the app is.
-    changedBy: row.changed_by_key_id ?? "",
+    changedBy: typeof row.changed_by_key_id === "string" ? row.changed_by_key_id : "",
     snapshot,
   };
 }
 
 /** One of the account's own branches, or null. A name from another account is
- * "no such branch". */
+ * "no such branch".
+ * @param {D1Database} db
+ * @param {{id: string}} account
+ * @param {string} name
+ * @returns {Promise<Branch|null>} */
 async function getBranch(db, account, name) {
   const row = await db
     .prepare(
@@ -348,7 +405,7 @@ async function getBranch(db, account, name) {
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
- * @param {{folder: unknown, name: unknown}} request
+ * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
  * @param {() => number} now
  */
 export async function createBranch(db, store, account, request, now = () => Date.now()) {
@@ -373,7 +430,7 @@ export async function createBranch(db, store, account, request, now = () => Date
   try {
     name = checkedBranchName(request.name);
   } catch (error) {
-    return { error: error.message, status: 400 };
+    return { error: errorText(error), status: 400 };
   }
   const kind = await folderState(store, folderPath);
   if (kind === "file") {
@@ -391,7 +448,7 @@ export async function createBranch(db, store, account, request, now = () => Date
   try {
     snapshot = await copyFolder(store, folderPath, branchPrefix);
   } catch (error) {
-    console.error?.(`branch copy failed for ${account.id}/${name}: ${error.message}`);
+    console.error?.(`branch copy failed for ${account.id}/${name}: ${errorText(error)}`);
     return { error: failureMessage("storage-down"), status: 500 };
   }
   const createdAt = new Date(now()).toISOString();
@@ -423,7 +480,7 @@ export async function createBranch(db, store, account, request, now = () => Date
     // The copy is on disk but the row did not land, so the branch would be
     // invisible and a retry would see the name as free. Clean the copy up, then
     // report the failure rather than returning 201 for a half-made branch.
-    console.error?.(`branch insert failed for ${account.id}/${name}: ${error.message}`);
+    console.error?.(`branch insert failed for ${account.id}/${name}: ${errorText(error)}`);
     try {
       for (const rel of Object.keys(snapshot)) {
         await store.remove(`${branchPrefix}/${rel}`);
@@ -512,6 +569,7 @@ export async function approveBranch(db, store, account, name) {
     return sourceMoved(initialClashes, diff.sourceChanged.length);
   }
   const snapshot = { ...branch.snapshot };
+  /** @type {{added: string[], changed: string[], removed: string[]}} */
   const applied = { added: [], changed: [], removed: [] };
   let appliedAny = false;
   let failure = null;
@@ -523,7 +581,10 @@ export async function approveBranch(db, store, account, name) {
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
-      snapshot[rel] = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+      const copied = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+      if (copied !== null) {
+        snapshot[rel] = copied;
+      }
       applied.added.push(rel);
       appliedAny = true;
     }
@@ -535,7 +596,10 @@ export async function approveBranch(db, store, account, name) {
           break;
         }
         await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
-        snapshot[rel] = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+        const copied = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
+        if (copied !== null) {
+          snapshot[rel] = copied;
+        }
         applied.changed.push(rel);
         appliedAny = true;
       }
@@ -554,7 +618,7 @@ export async function approveBranch(db, store, account, name) {
       }
     }
   } catch (error) {
-    console.error?.(`approve failed for ${account.id}/${name}: ${error.message}`);
+    console.error?.(`approve failed for ${account.id}/${name}: ${errorText(error)}`);
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
   if (appliedAny && failure === null) {
@@ -602,7 +666,7 @@ export async function discardBranch(db, store, account, name) {
       removed++;
     }
   } catch (error) {
-    console.error?.(`discard failed for ${account.id}/${name}: ${error.message}`);
+    console.error?.(`discard failed for ${account.id}/${name}: ${errorText(error)}`);
     return { error: failureMessage("storage-down"), status: 500 };
   }
   const result = await db
@@ -617,6 +681,12 @@ export async function discardBranch(db, store, account, name) {
 
 // Persists one account's branch snapshot, so an approve that is retried after
 // a partial run sees each file it already copied back as no longer changed.
+/**
+ * @param {D1Database} db
+ * @param {{id: string}} account
+ * @param {string} name
+ * @param {Record<string, Fingerprint>} snapshot
+ */
 async function saveSnapshot(db, account, name, snapshot) {
   await db
     .prepare("UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2")
@@ -628,6 +698,8 @@ async function saveSnapshot(db, account, name, snapshot) {
  * Builds the 409 a source that moved under an approve returns. The named list
  * is capped so the message cannot balloon; the JSON carries the full list so a
  * caller can reason over it.
+ * @param {string[]} named
+ * @param {number} total
  */
 function sourceMoved(named, total) {
   const shown = named.slice(0, NAMED_FILES_LIMIT);
@@ -656,7 +728,7 @@ function sourceMoved(named, total) {
  *
  * @param {Request} request
  * @param {D1Database} db the branches table
- * @param {import("./files.js").FileStore} store the shared, unscoped store
+ * @param {import("./files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
  */

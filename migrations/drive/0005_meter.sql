@@ -1,8 +1,17 @@
 -- Step 5, phase 1 of the meter (drive issue #6): the meter's own tables from
--- docs/build-spec.md "Data model (D1)". Additive only, like 0001: four new
--- tables and their indexes, no existing table touched, no column dropped or
--- renamed, so a rollback is rolling the code back. D1 has no down-migrations,
--- so this file is one-way.
+-- docs/build-spec.md "Data model (D1)". Additive only, like 0002-0004: four
+-- new tables and their indexes, no existing table touched, no column dropped
+-- or renamed, so a rollback is rolling the code back. D1 has no
+-- down-migrations, so this file is one-way.
+--
+-- Numbered 0005 and filed under drive/ because these tables are customer data
+-- (drive issue #170): file_versions, usage_minutes and events_seen describe one
+-- account's stored bytes, so they belong to the drive database the meter's
+-- METER_DB binding names, not to the waitlist database the sign-up list lives
+-- in alone. cloudflare.config.ts binds the same database under two names
+-- (DRIVE_DB for the file index, branches and caps; METER_DB for the meter) so
+-- the meter's code says which tables it owns and moving them is a binding
+-- line, not a code change.
 --
 -- Timestamps here are epoch MILLISECONDS in an INTEGER column, not the ISO
 -- text the waitlist table uses for its created_at. The meter's arithmetic is

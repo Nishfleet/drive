@@ -139,6 +139,7 @@ function fakeLimiter() {
 const HEALTHY_ENV = () => ({
   WAITLIST_DB: fakeD1("ok"),
   METER_DB: fakeD1("ok"),
+  DRIVE_DB: fakeD1("ok"),
   ASSETS: fakeAssets(),
   WAITLIST_RATE_LIMITER: fakeLimiter(),
 });
@@ -168,6 +169,7 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
   const env = {
     WAITLIST_DB: fakeD1("error"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
@@ -182,6 +184,7 @@ test("a database that never answers is a 503, not a hung probe", async () => {
   const env = {
     WAITLIST_DB: fakeD1("hang"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
@@ -195,6 +198,7 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
   const response = await handleHealthRequest(GET(), {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   });
   assert.equal(response.status, 503);
@@ -205,6 +209,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: { fetch: () => Promise.reject(new Error("asset manifest missing")) },
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
@@ -221,6 +226,7 @@ test("every bound D1 database is checked, not just the first", async () => {
   const env = {
     WAITLIST_DB: first,
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     BILLING_DB: second,
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
@@ -234,12 +240,13 @@ test("every bound D1 database is checked, not just the first", async () => {
 test("d1Bindings finds the databases and ignores everything else", () => {
   const env = {
     WAITLIST_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: { limit: () => Promise.resolve({ success: true }) },
     EMAIL_SEND_TOKEN: "a-secret-value",
     MAIL_FROM: "drive@example.com",
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB", "DRIVE_DB"]);
 });
 
 test("a binding that is not a database is never read as one", () => {
@@ -251,11 +258,12 @@ test("a binding that is not a database is never read as one", () => {
   // binding kind with `prepare` and no `fetch`, so both tests are asked here.
   const env = {
     WAITLIST_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB", "DRIVE_DB"]);
 });
 
 test("a health poll over the real binding shapes answers ok, not ASSETS", async () => {
@@ -266,6 +274,7 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
@@ -284,6 +293,7 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: assets,
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
@@ -300,6 +310,7 @@ test("no body carries a secret or an internal, healthy or not", async () => {
   const broken = {
     WAITLIST_DB: fakeD1("error"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
@@ -334,6 +345,7 @@ test("the failing body is the name and nothing else", async () => {
   const response = await handleHealthRequest(GET(), {
     WAITLIST_DB: fakeD1("error"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   });
@@ -424,6 +436,7 @@ test("the bound is a deadline shared by every dependency, not one per check", as
   const env = {
     WAITLIST_DB: hang(),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     SECOND_DB: hang(),
     THIRD_DB: hang(),
     ASSETS: fakeAssets(),
@@ -453,6 +466,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
       }),
     },
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     LATER_DB: {
       prepare: () => {
         calls += 1;
@@ -517,6 +531,7 @@ test("the health check never spends a real caller's rate limit quota", async () 
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
       limit({ key }) {
@@ -540,6 +555,7 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
       limit({ key }) {
@@ -573,9 +589,6 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // config is the source of truth, so the test reads its binding keys.
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
-  // Four today: ASSETS, WAITLIST_DB, WAITLIST_RATE_LIMITER, EMAIL. The email
-  // token and sender stay undeclared so the deploy does not require them.
-  assert.ok(declared.length >= 4, `only found ${declared.join(", ")} in the config`);
   for (const name of REQUIRED_BINDINGS) {
     assert.ok(
       declared.includes(name),
@@ -583,18 +596,23 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     );
   }
   // The other direction: a binding in the config that the health check does
-  // not know about is a gap the alert would not cover. The email three are the
-  // documented exception (src/health.js): only the token-gated internal send
-  // route uses them, and none can be probed without side effects.
-  // ...and the meter's event token is the same kind of exception: a secret
-  // no probe can exercise without a storage event to feed it, and whose
+  // not know about is a gap the alert would not cover. Two documented
+  // exceptions (src/health.js), and the count is derived from them rather than
+  // written down, so adding one needs a reason in that module and nothing
+  // else: the email binding can only be exercised by really sending mail (only
+  // the token-gated internal send route uses it), and the meter's event token
+  // is a secret no probe can exercise without a storage event to feed it, whose
   // absence fails closed at the intake (src/meter.js) instead of at the probe.
   const NOT_CHECKED = new Set([
     "EMAIL",
-    "EMAIL_SEND_TOKEN",
-    "MAIL_FROM",
     "METER_EVENT_TOKEN",
   ]);
+  const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
+  assert.equal(
+    declared.length,
+    REQUIRED_BINDINGS.length + exceptions.length,
+    `expected ${REQUIRED_BINDINGS.length + exceptions.length} bindings, found ${declared.join(", ")}`,
+  );
   for (const name of declared) {
     if (NOT_CHECKED.has(name)) {
       assert.ok(
@@ -616,6 +634,7 @@ test("a rate limiter that throws is a 503 naming it", async () => {
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
@@ -639,6 +658,7 @@ test("a limiter that denies the probe is still healthy", async () => {
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.resolve({ success: false }),

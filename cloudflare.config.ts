@@ -39,17 +39,38 @@ export default defineConfig({
 		],
 		env: {
 			ASSETS: bindings.assets(),
+			// Two databases, one purpose each (drive issue #170). The waitlist's
+			// table lives alone in the waitlist database: the sign-up list is
+			// public data and can be exported, reset or handed on without
+			// touching a customer's files. Everything that belongs to a
+			// customer lives in the drive database. The two migration
+			// directories mirror the split — `migrations/waitlist/` applies to
+			// WAITLIST_DB and `migrations/drive/` to DRIVE_DB — and the deploy
+			// must apply both before it ships the Worker; that deploy step is
+			// tracked in the follow-up for #170 (the worker App cannot write
+			// workflow files), so the config alone cannot enforce it here.
 			WAITLIST_DB: bindings.d1({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",
 			}),
-			// The meter reads and writes the api Worker's own tables, so it
-			// binds the same database under a name of its own: the meter's code
-			// says which tables it owns, and when those tables move to their own
-			// database the binding is the only line that changes.
+			// The customer data database (drive issue #170). Everything that
+			// describes an account's own drive lives here: the file index,
+			// branches and agent caps read DRIVE_DB.
+			DRIVE_DB: bindings.d1({
+				name: "drive-data",
+				id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
+			}),
+			// The meter binds the same database under a name of its own (drive
+			// issue #6): src/meter.js says which tables it owns and which
+			// binding carries them, so the customer-data split is a binding line
+			// here rather than a code change in the meter. Same database, so
+			// same id: file_versions, usage_minutes, events_seen and
+			// meter_rollup_state (migrations/drive/0005_meter.sql) are created
+			// and read beside the file index, and moving them into a database of
+			// their own is this line alone.
 			METER_DB: bindings.d1({
-				name: "drive-waitlist",
-				id: "93c9f523-159c-4261-8541-d4c059906df3",
+				name: "drive-data",
+				id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
 			}),
 			// The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
 			// from a Worker secret. The secret binding declares the name so the

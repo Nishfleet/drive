@@ -1,7 +1,7 @@
 -- Phase 1 of file-name search (drive issue #18). One new table, additive
 -- only: no existing table is touched, no column is dropped or renamed, and
--- drive's first D1 database (drive-waitlist) is the one this lands in, so the
--- waitlist code that predates it never reads it. Rollback is a DROP TABLE,
+-- this lands in the customer database (drive-data, bound as DRIVE_DB), which
+-- the waitlist code that predates it never reads. Rollback is a DROP TABLE,
 -- but D1 has no down-migrations, so this file is one-way.
 --
 -- One row per file the drive knows about, written by the same two feeds
