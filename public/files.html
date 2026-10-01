@@ -471,16 +471,6 @@ const RESTORE_ENDPOINT = "/api/files/restore";
 // from the module. The underscore says the reader is the test, not the
 // script, so a linter leaves the line alone (drive#92).
 const _RECENTLY_DELETED_DAYS = 30;
-// A control character, a slash or a backslash in a name, spelled with
-// String.fromCharCode rather than a \u escape inside a literal: the set is a
-// control range, which is exactly what a stored name may not carry, and a
-// range written as code cannot be mistyped into the wrong one. src/files.js
-// exports the same two patterns and the Worker builds storage keys from them,
-// so the page hands over a name the Worker will accept as one path segment.
-const CONTROL_OR_SLASH = new RegExp(
-  `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
-  "g",
-);
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 
 // The page's copy for a preview, one entry per kind src/files.js names. A kind
@@ -897,8 +887,14 @@ async function uploadFiles(files) {
   let uploaded = 0;
   try {
     for (const file of files) {
+      // The name goes over the wire as the browser knows it, and what to store
+      // is the Worker's one decision: src/files.js's safeFileName trims it,
+      // turns a slash, a backslash or a control character into a dash, and
+      // refuses a name left empty. The page has no second copy of that rule to
+      // drift (drive#92), and test/files.test.mjs is the gate that watches both
+      // sides of it.
       const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
-        file.name.replace(CONTROL_OR_SLASH, "-"),
+        file.name,
       )}`;
       const response = await fetch(url, {
         method: "POST",

@@ -188,38 +188,38 @@ test("a path is absolute, and cannot climb out of the drive", () => {
   }
 });
 
-test("the page and the Worker agree on the characters a file name may not carry", () => {
-  // The page is a static asset and cannot import src/files.js, so it builds the
-  // same class from the same String.fromCharCode calls. This compares the two
-  // declarations, text for text, and then runs the module's over the names that
-  // matter. Nothing else in the repo executes the page's own line, so without
-  // this the two copies drift silently (drive#92).
-  //
-  // One class, not two: CONTROL_OR_SLASH is the set the upload path uses, since
-  // a name the browser hands over can carry a slash or a control character.
-  // CONTROL_OR_BACKSLASH is the path validator's set, and a path carrying one of
-  // those is refused rather than rewritten, so the page has no copy of it and
-  // the test below walks the Worker's own for that case.
-  const pattern = /const CONTROL_OR_SLASH = new RegExp\(\s*`([^`]*)`,\s*"([^"]*)",?\s*\);/;
-  const inPage = page.match(pattern);
-  const inModule = readFileSync(new URL("../src/files.js", import.meta.url), "utf8").match(pattern);
-  assert.ok(inPage, "the page must build CONTROL_OR_SLASH the way src/files.js does");
-  assert.ok(inModule, "src/files.js must still build CONTROL_OR_SLASH");
-  assert.equal(inPage[1], inModule[1], "the page's character set must be the module's");
-  assert.equal(inPage[2], inModule[2], "the page's flags must be the module's");
-  // The behaviour, not just the spelling: the module's replacement is what the
-  // page's identical one does for the same names. (".." is the one name the two
-  // deliberately answer differently about: the page hands it over and the
-  // Worker refuses to store it as a name, which is its own rule in safeFileName
-  // and not a character-set disagreement.)
-  for (const name of ["a/b.txt", "a\\b.txt", "a\u0000b.txt", "a\u001fb.txt", "holiday.jpg"]) {
-    assert.equal(
-      name.replace(CONTROL_OR_SLASH, "-"),
-      safeFileName(name),
-      `the page and src/files.js must store ${JSON.stringify(name)} the same way`,
-    );
+test("the Worker owns the stored file name, and the page does not hold a second copy", () => {
+  // src/files.js is the one place a name is decided. The Web Files page is a
+  // static asset that cannot import it, and drive#92 removed the copy it used
+  // to have: two copies of the same rule is how a slash comes to be a dash in
+  // one path and a 400 in the other. This gate is where both sides are visible,
+  // so a change to the module that the page does not get fails here rather
+  // than on someone's upload (drive#92).
+  assert.ok(
+    !page.includes("CONTROL_OR_SLASH"),
+    "the page must not declare its own copy of the module's name rule",
+  );
+  const pageScript = page.slice(page.indexOf("<script>"));
+  assert.ok(
+    pageScript.includes("encodeURIComponent(\n        file.name,\n      )"),
+    "the page sends the name as the browser knows it",
+  );
+
+  // What every uploaded byte passes through, whatever the page sent: it trims,
+  // turns a slash, a backslash or a control character into a dash, and refuses
+  // a name left empty or left as only dots.
+  assert.equal(safeFileName("holiday.jpg"), "holiday.jpg");
+  assert.equal(safeFileName("  holiday.jpg  "), "holiday.jpg");
+  assert.equal(safeFileName("a/b.txt"), "a-b.txt");
+  assert.equal(safeFileName("a\\b.txt"), "a-b.txt");
+  assert.equal(safeFileName("a\u0000b.txt"), "a-b.txt");
+  assert.equal(safeFileName("a\u001fb.txt"), "a-b.txt");
+  for (const unusable of ["", "   ", "\n", ".", ".."]) {
+    assert.equal(safeFileName(unusable), "upload", `${JSON.stringify(unusable)} is not a name`);
   }
-  assert.equal(safeFileName(".."), "upload", "a name that is only dots is never a name");
+  // And the module's own pattern is what does the replacing.
+  assert.equal("a/b\\\u0000c".replace(CONTROL_OR_SLASH, "-"), "a-b--c");
+
   // The path validator's own set: a control character or a backslash is refused
   // in a path, which is what the two patterns exist to keep out of a key.
   for (const control of ["\u0000", "\u001f", "\u007f", "\\"]) {
@@ -945,10 +945,12 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // placeholder: the page's own script sets it the moment a row opens, and a
   // bare # would send a no-JS browser to the top of the page (drive#92).
   assert.ok(page.includes('<a id="viewer-download" href="/api/files/download" download>'));
-  // The upload path carries one name: the browser hands over whatever the file
-  // is called, and src/files.js turns a slash or a control character into a
-  // dash, so the page does the same and the two agree on the stored name.
-  assert.ok(script.includes('file.name.replace(CONTROL_OR_SLASH, "-")'));
+  // The upload path carries one name, and it is the name the browser knows:
+  // src/files.js's safeFileName is the single place a stored name is decided,
+  // and the page deliberately does not have a second copy of that rule (the
+  // gate above is where the page's character set is compared with the
+  // module's).
+  assert.ok(script.includes("encodeURIComponent(\n        file.name,\n      )"));
   // A folder opens in place; a file opens the viewer.
   assert.ok(script.includes('row.kind === "folder"'));
   // One tap restores: the Restore button posts the path and the list reloads.
