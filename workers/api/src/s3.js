@@ -128,7 +128,14 @@ export function createS3Client(config) {
     async send(method, target = {}) {
       const url = new URL(`${origin}/${target.bucket ?? ""}`);
       if (target.key !== undefined && target.key !== "") {
-        url.pathname = `${url.pathname}/${target.key}`;
+        // Each path segment is percent-encoded before it goes on the URL, and
+        // the slashes are kept. A key from a Finder drive can legally contain
+        // `?`, `#` or a space, and the URL pathname setter would otherwise read
+        // `?` as the start of the query and `#` as a fragment, so a file named
+        // `report#2.txt` would sign and fetch `<prefix>report`. The URL is then
+        // what signRequest canonicalises and returns, so the address signed and
+        // the address sent are the same string.
+        url.pathname = `${url.pathname}/${target.key.split("/").map(encodeURIComponent).join("/")}`;
       }
       for (const [name, value] of Object.entries(target.query ?? {})) {
         url.searchParams.set(name, value);
@@ -144,23 +151,22 @@ export function createS3Client(config) {
         headers: target.headers ?? {},
         body: target.body ?? "",
       });
+      // The body is sent exactly as it was hashed: a `Uint8Array` is the bytes
+      // themselves (a binary upload), a string is text, and an absent body is
+      // absent. Sending anything other than the hashed bytes is
+      // SignatureDoesNotMatch.
+      const body = target.body === undefined || target.body === ""
+        ? undefined
+        : target.body;
       const response = await fetchImpl(signed.url, {
         method: method.toUpperCase(),
         headers: signed.headers,
-        body: typeof target.body === "string" && target.body !== "" ? target.body : undefined,
+        body,
       });
       return { status: response.status, headers: response.headers, text: await response.text() };
     },
   };
 }
-
-/**
- * The server-side-encryption header. SSE is on by default for the drive
- * (docs/build-spec.md, "Encryption"), and naming it on the bucket rather than
- * on every write keeps the guarantee in one place: a client that forgets it
- * still cannot store plaintext.
- */
-export const SSE_ALGORITHM = "AES256";
 
 /**
  * The bucket build step 1 asks for: versioning on, hidden versions kept for a
@@ -170,6 +176,12 @@ export const SSE_ALGORITHM = "AES256";
  * The lifecycle rule is the hidden-version rule from docs/build-spec.md: a
  * version that is no longer current is kept `hiddenVersionDays` days and then
  * gone, and a delete marker left on a file nobody re-saves is gone with it.
+ *
+ * Server-side encryption is NOT set here. It is the provider's own bucket
+ * setting (SSE-B2 in the spec), not a property the stand-in can host: a stock
+ * S3 server refuses SSE-S3 without a KMS (measured 2026-10-01 against the
+ * pinned stand-in: 501 "KMS is not configured"). It is configured with the
+ * vendor on the real bucket in #173, with no code change here.
  * @param {ReturnType<typeof createS3Client>} client
  * @param {{bucket: string, notificationQueueArn?: string, hiddenVersionDays?: number}} config
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null}>}
@@ -244,7 +256,6 @@ export async function contentMd5(text) {
   /** @type {Int32Array} */
   const state = new Int32Array([
     0x67452301, -0x10325477, -0x67452302, 0x10325476,
-    -0x3c2d1e10, 0x3c2d1e10,
   ]);
   const shifts = [
     [7, 12, 17, 22], [5, 9, 14, 20], [4, 11, 16, 23], [6, 10, 15, 21],
@@ -258,7 +269,7 @@ export async function contentMd5(text) {
     for (let i = 0; i < 16; i++) {
       words[i] = view.getInt32(offset + i * 4, true);
     }
-    let [a, b, c, d, e, f] = state;
+    let [a, b, c, d] = state;
     for (let i = 0; i < 64; i++) {
       // Each round takes a different function of the same four variables, a
       // different message word and a different rotation, in four groups of
@@ -295,14 +306,11 @@ export async function contentMd5(text) {
     state[1] = (state[1] + b) | 0;
     state[2] = (state[2] + c) | 0;
     state[3] = (state[3] + d) | 0;
-    state[4] = (state[4] + e) | 0;
-    state[5] = (state[5] + f) | 0;
   }
 
-  // The digest is the first four state words; `e` and `f` are the leftovers of
-  // the rounds and are not part of it.
+  // The digest is the four state words in little-endian order.
   let out = "";
-  for (const word of state.slice(0, 4)) {
+  for (const word of state) {
     for (let i = 0; i < 4; i++) {
       const byte = (word >>> (i * 8)) & 0xff;
       out += String.fromCharCode(byte);

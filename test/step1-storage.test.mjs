@@ -8,17 +8,22 @@
 //
 // The storage is a stock S3-compatible server — MinIO in a container — with
 // the bucket build step 1 asks for (versioning, a one-day hidden-version
-// lifecycle rule, event notifications to the Worker). The same proof runs
-// against iDrive e2 or B2 with DRIVE_STANDIN_ENDPOINT set and no code change,
-// which is the point of speaking stock S3.
+// lifecycle rule, event notifications to the Worker). Every call below is
+// stock S3, so the endpoint, region, bucket and root credential are the whole
+// of the difference; pointing this at iDrive e2 or B2 uses the same code
+// (`DRIVE_STANDIN_ENDPOINT` + the credential variables), but a real account's
+// bucket is the vendor's to configure and that is #173's step, not this test's.
 //
 // Keys are minted the way the product mints them: through the api Worker's own
 // POST /v1/keys route, which hands the scope to the storage endpoint as an STS
 // session policy. So the refusals below are the endpoint's, not the Worker's —
 // which is what makes a key's scope a guarantee rather than a promise.
 //
-//   DRIVE_STANDIN_ENDPOINT      S3 endpoint. Set: use it (CI starts it from the
-//                               workflow). Unset: start one here (docker/podman).
+//   DRIVE_STANDIN_ENDPOINT      S3 endpoint. Set: use it (nothing is started
+//                               here, and its health is proved by the first
+//                               signed call). Unset: start one here
+//                               (docker/podman) — the same code path in CI
+//                               (`npm test` runs this file) and on a laptop.
 //   DRIVE_STANDIN_PORT          port when this test starts it (default 8743,
 //                               where the VPS's `tests3` rclone remote points)
 //   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO below)
@@ -32,7 +37,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { spawnSync, spawn } from "node:child_process";
@@ -59,19 +64,22 @@ const IMAGE = process.env.DRIVE_STANDIN_IMAGE ?? "bitnamilegacy/minio:2025.7.23-
 const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-standin";
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 8743);
-// A fixed stand-in credential: it exists only for this test's own container on
-// this host and is never a real storage account. MinIO refuses a root password
-// shorter than 8 characters, which is why the VPS's `tests3` rclone pair (6)
-// cannot be this stand-in's root credential.
-const ROOT_ACCESS_KEY = process.env.DRIVE_STANDIN_ACCESS_KEY ?? "drive-standin-access";
-const ROOT_SECRET_KEY = process.env.DRIVE_STANDIN_SECRET_KEY ?? "drive-standin-secret-0123456789abcdef";
+// The stand-in credential is generated fresh for every run, never a literal in
+// this file: a secret-looking string committed to the repo is a secret-shaped
+// thing for gitleaks to read, and this one only ever addresses this test's own
+// throwaway container. MinIO refuses a root password shorter than 8 characters,
+// which is why the VPS's `tests3` rclone pair (6) cannot be a stand-in root.
+const ROOT_ACCESS_KEY = process.env.DRIVE_STANDIN_ACCESS_KEY ?? `drive-standin-${randomBytes(6).toString("hex")}`;
+const ROOT_SECRET_KEY = process.env.DRIVE_STANDIN_SECRET_KEY ?? randomBytes(24).toString("hex");
 // The suffix names the notification target inside MinIO; the ARN below and the
 // MINIO_NOTIFY_WEBHOOK_* variables both use it.
 const NOTIFICATION_NAME = "drive";
 const NOTIFICATION_ARN = `arn:minio:sqs::${NOTIFICATION_NAME}:webhook`;
 const CONFIGURED_ENDPOINT = process.env.DRIVE_STANDIN_ENDPOINT ?? null;
 const CONFIGURED_WEBHOOK = process.env.DRIVE_STANDIN_WEBHOOK_URL ?? null;
-const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? "drive-standin-event-token-0123456789";
+// The bucket's shared token, generated per run for the same reason as the root
+// credential above; it is what the Worker's POST /v1/events demands.
+const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? randomBytes(24).toString("hex");
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -121,15 +129,16 @@ async function waitForHealth(endpoint, seconds, t) {
 
 /**
  * Start the container when this test owns it, or attach to the one the caller
- * started. The root credential and the notification endpoint reach the
- * container through the engine's own environment (`-e NAME` with no value)
+ * started. A caller's endpoint is never health-probed here: the first signed
+ * S3 call below is the health check, so a non-Minio endpoint is not asked for
+ * a MinIO-only route. The root credential and the notification endpoint reach
+ * the container through the engine's own environment (`-e NAME` with no value)
  * rather than through argv, so no credential is ever on a command line.
  * @param {{webhookUrl: string}} config
  */
 async function startStandin(config, t) {
   if (CONFIGURED_ENDPOINT) {
-    await waitForHealth(CONFIGURED_ENDPOINT, 60, t);
-    t.diagnostic(`using the caller's stand-in at ${CONFIGURED_ENDPOINT}`);
+    t.diagnostic(`attaching to the caller's stand-in at ${CONFIGURED_ENDPOINT}`);
     return { endpoint: CONFIGURED_ENDPOINT };
   }
   if (ROOT_SECRET_KEY.length < 8) {
@@ -472,6 +481,61 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     assert.equal(event.bucket, BUCKET, "the event names the bucket");
     assert.ok(event.versionId, "the event carries the saved version's id");
     t.diagnostic(`event at ${event.eventTime}: ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId}`);
+  });
+
+  await t.test("a key with a space, a hash and a question mark round-trips and its event decodes", async () => {
+    // The three places a real Finder filename breaks a naive S3 call: the URL
+    // (`?` starts the query, `#` starts the fragment, a space is not a legal
+    // path character), the request body (a binary save is bytes, not text), and
+    // the notification (S3 form-encodes a space as `+`). The three are one
+    // proof because the same save has to survive all of them.
+    const account = await signIn(keyStore, "awkward-name-account");
+    const deviceKey = await mintKey(keyStore, account.token, { kind: "device", name: "awkward-laptop" });
+    const client = s3For(endpoint, deviceKey);
+    const key = `${deviceKey.prefix}q3 report#2?.bin`;
+    const bytes = new Uint8Array([0, 1, 2, 250, 251, 252, 253, 254, 255]);
+
+    const savedAt = new Date().toISOString();
+    const saved = await client.send("PUT", {
+      bucket: BUCKET,
+      key,
+      body: bytes,
+      headers: { "content-type": "application/octet-stream" },
+    });
+    assert.equal(saved.status, 200, `a binary save under an awkward name must succeed: ${saved.text}`);
+    t.diagnostic(`awkward save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
+
+    const back = await client.send("GET", { bucket: BUCKET, key });
+    assert.equal(back.status, 200, `the awkward key must read back: ${back.text}`);
+    // The ETag of a single-part save is the MD5 of exactly the bytes stored, so
+    // this is the binary round-trip check: the bytes that went out are the
+    // bytes that came back, under a name the URL had to encode.
+    assert.equal(
+      (back.headers.get("etag") ?? "").replace(/"/g, ""),
+      createHash("md5").update(bytes).digest("hex"),
+      "the stored bytes must be the bytes that were sent",
+    );
+
+    const deadline = Date.now() + 30_000;
+    let line = null;
+    for (;;) {
+      const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
+      // The log line carries the key the FILE has, not the `+`-encoded one the
+      // notification arrived as.
+      line = lines.find(
+        (candidate) =>
+          candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
+      ) ?? null;
+      if (line !== null) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        t.diagnostic(`worker log lines after 30s: ${JSON.stringify(lines)}`);
+        throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
+      }
+      await sleep(500);
+    }
+    t.diagnostic(`worker log: ${line}`);
   });
 
   await t.test("the session policy is derived from the one capabilities table", () => {

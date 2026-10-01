@@ -28,30 +28,47 @@ import { S3Error, createS3Client, ok, tagValue } from "./s3.js";
  */
 
 /**
- * The S3 actions a drive capability needs. There is no second table of powers
- * by kind: the capabilities come from the one table in keyprovider.js, and
- * this is how each capability is spelled to a storage server. An agent key's
- * missing `delete` is visible in the policy the endpoint enforces.
+ * The S3 actions a drive capability needs on an OBJECT. There is no second
+ * table of powers by kind: the capabilities come from the one table in
+ * keyprovider.js, and this is how each capability is spelled to a storage
+ * server. An agent key's missing `delete` is visible in the policy the
+ * endpoint enforces.
  * @type {Readonly<Record<Capability, ReadonlyArray<string>>>}
  */
-const ACTIONS_BY_CAPABILITY = Object.freeze({
-  // A listing is `ListBucket` on the bucket, and the prefix condition on the
-  // statement below is what keeps it inside one account's folder.
-  list: Object.freeze(["s3:ListBucket", "s3:ListBucketVersions"]),
+const OBJECT_ACTIONS_BY_CAPABILITY = Object.freeze({
   read: Object.freeze(["s3:GetObject", "s3:GetObjectVersion"]),
   // Multipart is what rclone writes a large file with, so a write that could
   // not finish a multipart upload would fail on the big files, not the small
-  // ones.
-  write: Object.freeze([
-    "s3:PutObject",
-    "s3:AbortMultipartUpload",
-    "s3:ListBucketMultipartUploads",
-    "s3:ListMultipartUploadParts",
-  ]),
-  // Only the marker a plain delete leaves. Removing a named version is a
-  // different power (`s3:DeleteObjectVersion`) and is not granted: it is how a
-  // hidden version would be destroyed instead of kept for a day.
-  delete: Object.freeze(["s3:DeleteObject"]),
+  // ones. These three all act on the object; the bucket-wide multipart listing
+  // is explained in BUCKET_ACTIONS_BY_CAPABILITY.
+  write: Object.freeze(["s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]),
+  // `s3:DeleteObject` is the marker a plain delete leaves; `s3:DeleteObject`
+  // with a version id is what `drive restore` uses to lift that marker and
+  // bring the last save back (build step 1's done-when). Both are the delete
+  // capability, and only a device key has it — an agent key is refused either
+  // one by the endpoint, so an agent can never destroy the hidden version a
+  // delete left behind.
+  delete: Object.freeze(["s3:DeleteObject", "s3:DeleteObjectVersion"]),
+});
+
+/**
+ * The S3 actions a capability needs on the BUCKET, which are the ones whose
+ * resource is the bucket rather than an object. They go in their own
+ * statement with the prefix condition; granted on an object resource they
+ * would be inert. `s3:ListBucketMultipartUploads` is deliberately NOT here: it
+ * is a bucket-wide listing that no prefix condition can narrow — a stock S3
+ * server answers "unsupported condition keys '[s3:prefix]' used for action
+ * 's3:ListBucketMultipartUploads'" (measured 2026-10-01 against the pinned
+ * stand-in) — so granting it would either be inert or hand one account a
+ * listing of the whole bucket. rclone's multipart write path uses the
+ * object-level write actions above; enumerating in-progress uploads is the
+ * reconciler's job under the master credential, not a per-account key's.
+ * @type {Readonly<Record<Capability, ReadonlyArray<string>>>}
+ */
+const BUCKET_ACTIONS_BY_CAPABILITY = Object.freeze({
+  // A listing is `ListBucket` on the bucket, and the prefix condition on the
+  // statement is what keeps it inside one account's folder.
+  list: Object.freeze(["s3:ListBucket", "s3:ListBucketVersions"]),
 });
 
 /**
@@ -64,8 +81,21 @@ const ACTIONS_BY_CAPABILITY = Object.freeze({
  * @returns {{Version: string, Statement: Array<Record<string, unknown>>}}
  */
 export function policyForScope(scope, bucket) {
-  const actions = scope.capabilities.flatMap((capability) => ACTIONS_BY_CAPABILITY[capability]);
-  if (actions.length === 0) {
+  if (!scope.prefix.endsWith("/")) {
+    // A prefix without its trailing slash would make `u/a*` also match
+    // `u/ab/…` — a cross-account widening. scopeFor() always ends the prefix
+    // with a slash; this refuses a scope that does not rather than widening.
+    throw new TypeError(
+      `A key prefix must end with "/", got ${JSON.stringify(scope.prefix)}.`,
+    );
+  }
+  const objectActions = scope.capabilities.flatMap(
+    (capability) => OBJECT_ACTIONS_BY_CAPABILITY[capability] ?? [],
+  );
+  const bucketActions = scope.capabilities.flatMap(
+    (capability) => BUCKET_ACTIONS_BY_CAPABILITY[capability] ?? [],
+  );
+  if (objectActions.length === 0 && bucketActions.length === 0) {
     throw new TypeError(
       `A key with no capabilities (${JSON.stringify(scope.capabilities)}) would be refused by every request; refusing to mint it.`,
     );
@@ -73,10 +103,10 @@ export function policyForScope(scope, bucket) {
   const folder = scope.prefix.replace(/\/*$/, "");
   /** @type {Array<Record<string, unknown>>} */
   const statements = [];
-  if (scope.capabilities.includes("list")) {
+  if (bucketActions.length > 0) {
     statements.push({
       Effect: "Allow",
-      Action: ACTIONS_BY_CAPABILITY.list,
+      Action: [...new Set(bucketActions)],
       Resource: [`arn:aws:s3:::${bucket}`],
       // The bucket is the resource, so the prefix cannot be a resource
       // string: it is the condition. `folder/*` is everything inside the
@@ -84,11 +114,13 @@ export function policyForScope(scope, bucket) {
       Condition: { StringLike: { "s3:prefix": [`${folder}/*`, folder] } },
     });
   }
-  statements.push({
-    Effect: "Allow",
-    Action: [...new Set(actions)],
-    Resource: [`arn:aws:s3:::${bucket}/${scope.prefix}*`],
-  });
+  if (objectActions.length > 0) {
+    statements.push({
+      Effect: "Allow",
+      Action: [...new Set(objectActions)],
+      Resource: [`arn:aws:s3:::${bucket}/${scope.prefix}*`],
+    });
+  }
   return { Version: "2012-10-17", Statement: statements };
 }
 
@@ -101,6 +133,10 @@ export function policyForScope(scope, bucket) {
  * @property {string} masterSecretAccessKey
  * @property {number} [sessionSeconds] how long a minted credential lives
  * @property {string} [sessionName]
+ * @property {string} [roleArn] the ARN the provider's STS wants in the
+ *   AssumeRole call. MinIO and B2 do not need one; AWS-compatible providers
+ *   such as iDrive e2 may. Omitted when unset (#173 verifies against the
+ *   real provider and sets it if needed).
  * @property {typeof fetch} [fetchImpl]
  */
 
@@ -126,6 +162,7 @@ export function createS3KeyProvider(config) {
     masterSecretAccessKey,
     sessionSeconds = 3600,
     sessionName = "drive-key",
+    roleArn,
     fetchImpl = fetch,
   } = config;
   if (!bucket || !masterAccessKeyId || !masterSecretAccessKey) {
@@ -162,6 +199,7 @@ export function createS3KeyProvider(config) {
         DurationSeconds: String(sessionSeconds),
         RoleSessionName: sessionName,
         Policy: JSON.stringify(policy),
+        ...(roleArn === undefined || roleArn === "" ? {} : { RoleArn: roleArn }),
       }).toString();
       const answer = await master.send("POST", {
         headers: { "content-type": "application/x-www-form-urlencoded" },

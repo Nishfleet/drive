@@ -13,6 +13,13 @@
 // server, which holds no device token — but it is not open: it requires the
 // shared token the bucket was configured with (a Worker secret), and refuses
 // to run at all when that token is missing rather than accepting anything.
+//
+// The failure words here are machine-facing, not the person's: the only caller
+// is the storage server, and these strings are the api Worker's own error
+// shape (the same inline sentences index.js uses for 404/405/400), so they are
+// deliberately NOT the one user-facing table in src/messages.js. The one gate
+// that table drives, test/messages.test.mjs, covers the table and the shipped
+// page; a bucket reading an XML/`{"error"}` body is not a person.
 import { errorResponse, json } from "./http.js";
 import { sha256Hex } from "./db.js";
 
@@ -39,15 +46,38 @@ function digestsEqual(left, right) {
  * @typedef {object} StorageEvent
  * @property {string} eventName e.g. s3:ObjectCreated:Put
  * @property {string} bucket
- * @property {string} key the object key, percent-decoded
+ * @property {string} key the object key, form-decoded
  * @property {string} versionId
  * @property {string} eventTime
  */
 
 /**
- * Reads the records out of a notification body, or names why it will not. Both
- * envelope shapes are read: AWS/others put the record under `Records`, and
- * MinIO repeats the first record's name at the top level.
+ * The object key from a notification, decoded. S3 event notifications are
+ * form-encoded, not just percent-encoded: a space arrives as `+` and a literal
+ * `+` as `%2B` (AWS's own documented example is `"key":"red+flower.jpg"` for
+ * `red flower.jpg`; MinIO reproduces it, measured 2026-10-01: `q3 report.txt`
+ * arrives as `q3+report.txt`). Decoding `+` as a space first is what makes the
+ * meter (build step 5) see the key the file actually has.
+ * @param {string} rawKey
+ * @returns {string}
+ */
+export function decodeNotificationKey(rawKey) {
+  try {
+    return decodeURIComponent(rawKey.replace(/\+/g, " "));
+  } catch {
+    // A key that is not a valid escape is kept exactly as it arrived: the
+    // bucket sent bytes this cannot read, and inventing a key is worse than a
+    // raw one.
+    return rawKey;
+  }
+}
+
+/**
+ * Reads the records out of a notification body, or names why it will not. The
+ * record list is under `Records` on every provider (AWS, MinIO, B2, iDrive);
+ * the top-level fields MinIO repeats (EventName, Key) are not a second
+ * envelope and are not read, so a body with only top-level fields and no
+ * Records is a 400 naming what was missing.
  * @param {unknown} body
  * @returns {{events: StorageEvent[]}|{error: string}}
  */
@@ -72,18 +102,10 @@ export function parseStorageEvents(body) {
     if (typeof eventName !== "string" || typeof bucket !== "string" || typeof rawKey !== "string") {
       return { error: "A notification record is missing its event name, bucket or key." };
     }
-    let key = rawKey;
-    try {
-      // S3 percent-encodes the key in a notification; a key with a literal
-      // `%` that is not an escape is kept as it arrived.
-      key = decodeURIComponent(rawKey);
-    } catch {
-      key = rawKey;
-    }
     events.push({
       eventName,
       bucket,
-      key,
+      key: decodeNotificationKey(rawKey),
       versionId: typeof typed.s3?.object?.versionId === "string" ? typed.s3.object.versionId : "",
       eventTime: typeof typed.eventTime === "string" ? typed.eventTime : "",
     });

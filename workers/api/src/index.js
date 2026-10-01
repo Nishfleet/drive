@@ -190,8 +190,14 @@ let keyStore;
  * The storage configuration a deployment carries, or null when it carries
  * none. All five values or none: a half-configured deployment would mint keys
  * the storage endpoint has never heard of, which reads at the user as "your
- * new key does not work", so the missing names are thrown instead.
+ * new key does not work". A half-configured deployment is therefore refused
+ * at the MINT, not at every route: the error comes back as a provider whose
+ * `mint` throws, so the one operation that needs the storage credential is
+ * the one that fails and every other route keeps answering. (Rotating the
+ * master credential needs the isolate to restart, the same way the stand-in
+ * store does; a redeploy restarts it.)
  * @param {{[key: string]: unknown}} env
+ * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => Promise<never>}|null}
  */
 function keyProviderFor(env) {
   const names = [
@@ -209,9 +215,14 @@ function keyProviderFor(env) {
   }
   if (values.length < names.length) {
     const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
-    throw new Error(
+    const problem = new Error(
       `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
     );
+    return {
+      mint() {
+        throw problem;
+      },
+    };
   }
   return createS3KeyProvider({
     endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
@@ -219,6 +230,9 @@ function keyProviderFor(env) {
     bucket: /** @type {string} */ (env.STORAGE_BUCKET),
     masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
     masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
+    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
+      ? { roleArn: env.STORAGE_ROLE_ARN }
+      : {}),
   });
 }
 

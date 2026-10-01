@@ -11,8 +11,6 @@ import { parseStorageEvents } from "../src/event-routes.js";
 
 const TOKEN = "event-token-for-the-test";
 const ENVELOPE = {
-  EventName: "s3:ObjectCreated:Put",
-  Key: "u/acct-a/report.txt",
   Records: [
     {
       eventVersion: "2.0",
@@ -112,4 +110,26 @@ test("a delete marker is read as the delete event it is", () => {
   assert.ok(!("error" in parsed));
   assert.equal(parsed.events[0].eventName, "s3:ObjectRemoved:DeleteMarkerCreated");
   assert.equal(parsed.events[0].key, "/odd key/✓.txt");
+});
+
+test("a key that arrives form-encoded decodes the way S3 sends it", () => {
+  // S3 event notifications are form-encoded, not just percent-encoded: a space
+  // is `+` and a literal `+` is `%2B` (AWS's own documented example is
+  // `"key":"red+flower.jpg"` for `red flower.jpg`; MinIO reproduces it). A
+  // meter (step 5) that read `+` as itself would bill a different key than the
+  // file has.
+  const parsed = parseStorageEvents({
+    Records: [
+      {
+        eventName: "s3:ObjectCreated:Put",
+        eventTime: "2026-10-01T16:13:31.921Z",
+        s3: {
+          bucket: { name: "drive-standin" },
+          object: { key: "u%2Facct-a%2Fq3+report.txt", versionId: "v-1" },
+        },
+      },
+    ],
+  });
+  assert.ok(!("error" in parsed));
+  assert.equal(parsed.events[0].key, "u/acct-a/q3 report.txt");
 });
