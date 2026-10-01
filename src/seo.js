@@ -75,6 +75,11 @@ export const PAGES = Object.freeze([
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+  // The upload-request page is a stranger's one-folder drop box, reached only
+  // from a link the owner minted: noindex so a crawler never finds one
+  // (issue #19). It carries its own title and description rather than
+  // inheriting the pricing page's.
+  Object.freeze({ path: "/upload.html", indexable: false }),
   // The sign-in screen is where a person starts a session, so it is noindex
   // and out of the sitemap: a crawler has no session and nothing to read
   // there (drive#10).

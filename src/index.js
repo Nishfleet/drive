@@ -1,5 +1,5 @@
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
-import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
+import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
@@ -18,6 +18,17 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
+import {
+  createMemoryLinkStore,
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleRequestUploadRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+  REQUEST_ENDPOINT,
+  SHARE_ENDPOINT,
+  SHARE_LINK_PREFIX,
+} from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
@@ -67,6 +78,52 @@ function storeFor(env) {
         : createMemoryStore();
   }
   return filesStore;
+}
+
+// One link store per Worker isolate, the same stand-in shape storeFor() uses
+// for files: the in-memory LinkStore stands in until the accounts store lands
+// (#55), where the shares and upload_requests rows move to D1 behind the same
+// interface (src/share.js). Sharing the FileStore above is what makes a file
+// dropped through an upload page appear on the owner's drive at its next
+// listing.
+/** @type {import("./share.js").LinkStore|undefined} */
+let linksStore;
+function linksFor() {
+  if (!linksStore) {
+    linksStore = createMemoryLinkStore();
+  }
+  return linksStore;
+}
+
+// The owner's spending-cap state for the public upload routes, read from the
+// same src/billing.js summary the usage page shows, and resolved per account so
+// the cap answered is always the one belonging to the account that minted the
+// token (src/share.js handleRequestInfoRequest and
+// handleRequestUploadRequest both take a resolver, not a value). Until the
+// meter lands (#6) an account has no usage rows, so this is the empty month
+// the usage endpoint already answers with — the honest cap for a drive with
+// nothing stored. When the meter lands, this one function is the swap point:
+// it reads the token owner's usage_minutes rows and answers their cap, and no
+// upload route changes.
+/**
+ * The `_accountId` is the swap point's seam: the meter (issue #6) will read
+ * the named account's usage_minutes rows here, and until it lands every
+ * account gets the empty month the usage endpoint answers with.
+ *
+ * @param {string} _accountId
+ */
+function capStateFor(_accountId) {
+  const empty = usageSummary({
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  });
+  return empty.cap.state;
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -182,6 +239,41 @@ export default {
     // behind.
     if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
       return handleSigninLinkVerify(request, env);
+    }
+    // Share links and upload requests (issue #19). The share/request roots
+    // are the owner's side and stand behind the same gate as /api/files
+    // (issue #73): a caller that cannot prove an account gets 401 with no
+    // link, no file and no list. /s/<token>, the request info and the upload
+    // route are the logged-out side and carry the token in the path or the
+    // query instead of a session, so they do not ask the gate for an account
+    // — the token is the whole proof, and one that expires or is revoked
+    // answers 404 (src/share.js).
+    if (url.pathname === SHARE_ENDPOINT || url.pathname === `${SHARE_ENDPOINT}/`) {
+      return handleShareRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
+      return handleShareFileRequest(request, storeFor(env), linksFor());
+    }
+    if (url.pathname === REQUEST_ENDPOINT || url.pathname === `${REQUEST_ENDPOINT}/`) {
+      return handleRequestRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    // The two public request routes are matched after the owner's /api/request
+    // root so the exact root is never mistaken for its own child.
+    if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
+      return handleRequestInfoRequest(request, linksFor(), capStateFor);
+    }
+    if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
