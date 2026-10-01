@@ -42,6 +42,11 @@
 //     key and push the endpoint into a false 503. The one name the result
 //     reports is the binding, never the key.
 //
+//   - The sign-in endpoint's two edge limits (issue #147). Both fail closed
+//     without them (src/signin.js answers 503 rather than send unbounded), so
+//     a deploy that lost either is an outage this endpoint reports by name. The
+//     probe is the same `limit()` call on a key nothing else holds.
+//
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
 //   - Secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
@@ -92,15 +97,17 @@ const LIVENESS_QUERY = "SELECT 1";
  * list pointing at a binding that no longer exists.
  *
  * ASSETS is on the list because every page load goes through it. The rate
- * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). The email binding is not: only the token-gated internal
- * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * limiters are on it because the waitlist and the sign-in endpoint fail
+ * closed without one (src/waitlist.js, src/signin.js). The email binding is
+ * not: only the token-gated internal send route uses it, no customer request
+ * needs it, and its one operation would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
+  "SIGNIN_RATE_LIMITER",
+  "SIGNIN_GLOBAL_RATE_LIMITER",
 ]);
 
 const JSON_HEADERS = Object.freeze({
@@ -237,25 +244,28 @@ async function checkAssets(assets, timeoutMs) {
 }
 
 /**
- * The waitlist's rate limiter, on a key of its own. The binding has no read,
- * so `limit()` is the only way to know it answers at all: without it the
- * waitlist endpoint fails closed and sign-ups stop (src/waitlist.js), which is
- * an outage this endpoint must be able to report.
+ * A rate-limit binding, on a key of its own. The binding has no read,
+ * so `limit()` is the only way to know it answers at all: without it
+ * the endpoint behind it fails closed (src/waitlist.js,
+ * src/signin.js), which is an outage this endpoint must be able to
+ * report.
  *
- * The key changes every call and carries no client IP, for the reason above:
- * a health poll spends one unit of a bucket nobody else holds, so it cannot
- * eat a real client's quota, and a stranger hammering this public endpoint
- * cannot exhaust the probe's bucket and turn the health answer into a false
- * 503. Whether the limiter allows this call is not the question — the binding
- * answering at all is.
+ * The key changes every call and carries no client IP, for the reason
+ * above: a health poll spends one unit of a bucket nobody else holds,
+ * so it cannot eat a real client's quota, and a stranger hammering a
+ * public endpoint cannot exhaust the probe's bucket and turn the
+ * health answer into a false 503. Whether the limiter allows this
+ * call is not the question — the binding answering at all is.
  *
  * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
+ * @param {number} timeoutMs
+ * @param {string} name the binding's name, reported on failure
  */
-async function checkRateLimiter(limiter, timeoutMs) {
+async function checkRateLimiter(limiter, timeoutMs, name) {
   const result = await withTimeout(
     limiter.limit({ key: `health-probe-${crypto.randomUUID()}` }),
     timeoutMs,
-    "WAITLIST_RATE_LIMITER",
+    name,
   );
   if (!result || typeof result.success !== "boolean") {
     throw new Error("the rate limiter did not answer with a verdict");
@@ -306,8 +316,19 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   }
   checks.push({
     name: "WAITLIST_RATE_LIMITER",
-    run: (left) => checkRateLimiter(limiter, left),
+    run: (left) => checkRateLimiter(limiter, left, "WAITLIST_RATE_LIMITER"),
   });
+  // The sign-in endpoint's two edge limits (issue #147). The endpoint
+  // fails closed without either (src/signin.js), so a deploy that lost
+  // one is an outage, and a binding present but without `limit` is as
+  // broken as a missing one and gets the same name.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    const bound = env[name];
+    if (typeof bound.limit !== "function") {
+      return { ok: false, failing: name };
+    }
+    checks.push({ name, run: (left) => checkRateLimiter(bound, left, name) });
+  }
 
   for (const check of checks) {
     // One deadline for the whole check, not one per dependency: a Worker

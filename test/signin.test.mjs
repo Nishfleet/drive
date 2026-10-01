@@ -46,6 +46,25 @@ function post(body, { url = "https://drive.test/api/signin", headers = {} } = {}
   });
 }
 
+// The edge limits (issue #147): the binding's whole contract is
+// limit({ key }) -> { success }, the same fake test/waitlist.test.mjs drives.
+// Every call is recorded, so a test can assert the bucket a limit was spent
+// on — the client IP for the per-IP binding, one shared bucket for the global
+// one — and that a refused request never reaches the store.
+function makeRateLimiter({ success = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async limit(options) {
+      calls.push(options);
+      return { success };
+    },
+  };
+}
+function openLimits() {
+  return { ipLimiter: makeRateLimiter(), globalLimiter: makeRateLimiter() };
+}
+
 // ------------------------------------------------------------ the dispatch
 
 test("the Worker routes the sign-in start and serves no other method", async () => {
@@ -56,6 +75,8 @@ test("the Worker routes the sign-in start and serves no other method", async () 
   const routedEnv = {
     ...env,
     ACCOUNTS_STORE: createAccountStore({ sendCode: () => {} }),
+    SIGNIN_RATE_LIMITER: makeRateLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeRateLimiter(),
   };
   for (const path of ["/api/signin", "/api/signin/"]) {
     const response = await worker.fetch(post({ method: "email", email: "a@b.co" }, {
@@ -77,6 +98,7 @@ test("with no account store the route is a closed door, not a fake success", asy
   const response = await handleSigninRequest(
     post({ method: "email", email: "a@b.co" }),
     null,
+    openLimits(),
   );
   assert.equal(response.status, 503);
   const payload = await response.json();
@@ -94,6 +116,7 @@ test("a store with no mailer refuses a start instead of reporting a code sent", 
   const response = await handleSigninRequest(
     post({ method: "email", email: "you@example.com" }),
     createAccountStore(),
+    openLimits(),
   );
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), signinClosedBody());
@@ -111,6 +134,7 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
       body: new URLSearchParams({ step: "start", method: "email", email: "you@example.com" }),
     }),
     store,
+    openLimits(),
   );
   assert.equal(response.status, 202);
   const payload = await response.json();
@@ -123,6 +147,7 @@ test("a store that returns nothing on finish is a closed door, not a session", a
   const response = await handleSigninRequest(
     post({ step: "finish", email: "you@example.com", code: "012345" }),
     { async finishSignin() { return undefined; } },
+    openLimits(),
   );
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("set-cookie"), null);
@@ -153,14 +178,111 @@ test("a request that did not come from the site is refused before anything is st
     { method: "email", email: "a@b.co" },
     { headers: { origin: "https://elsewhere.example" } },
   );
-  const response = await handleSigninRequest(cross, createAccountStore());
+  const limits = openLimits();
+  const response = await handleSigninRequest(cross, createAccountStore(), limits);
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: failureMessage("cross-site") });
+  // A refused cross-site request must not spend the caller's edge quota, the
+  // same ordering the waitlist's review fixed (drive#28 review).
+  assert.equal(limits.ipLimiter.calls.length, 0);
+  assert.equal(limits.globalLimiter.calls.length, 0);
+});
+
+// ------------------------------------------- the edge limits (issue #147)
+
+test("a start denied by the per-IP edge limit is a 429 and never reaches the store", async () => {
+  const storeCalls = [];
+  const store = {
+    async startSignin(read) {
+      storeCalls.push(read);
+      return { expiresIn: 600 };
+    },
+  };
+  const limits = {
+    ipLimiter: makeRateLimiter({ success: false }),
+    globalLimiter: makeRateLimiter(),
+  };
+  const response = await handleSigninRequest(
+    post({ method: "email", email: "a@b.co" }),
+    store,
+    limits,
+  );
+  assert.equal(response.status, 429, "the walk must hit the edge limit, not the store");
+  assert.equal(response.headers.get("retry-after"), "60");
+  assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
+  assert.deepEqual(storeCalls, [], "a rate-limited start must not mint a code or an email");
+});
+
+// The two buckets the issue asks for: one per client, one for the service.
+// The walk that motivated the limit hits many addresses from one connection,
+// so the per-IP bucket is the one that stops it; the global bucket bounds the
+// send cost of whatever the per-IP bucket cannot see.
+test("the per-IP limit keys on cf-connecting-ip and the global limit on one shared bucket", async () => {
+  const limits = openLimits();
+  const response = await handleSigninRequest(
+    post(
+      { method: "email", email: "a@b.co" },
+      { headers: { "cf-connecting-ip": "203.0.113.7" } },
+    ),
+    createAccountStore({ sendCode: () => {} }),
+    limits,
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(limits.ipLimiter.calls, [{ key: "203.0.113.7" }]);
+  assert.deepEqual(limits.globalLimiter.calls, [{ key: "global" }]);
+});
+
+test("the finish step is bounded by the same edge limits, before the code is read", async () => {
+  const limits = {
+    ipLimiter: makeRateLimiter(),
+    globalLimiter: makeRateLimiter({ success: false }),
+  };
+  const finishCalls = [];
+  const response = await handleSigninRequest(
+    post({ step: "finish", email: "you@example.com", code: "012345" }),
+    { async finishSignin(read) { finishCalls.push(read); return { error: "invalid-code" }; } },
+    limits,
+  );
+  assert.equal(response.status, 429, "a guessing loop is bounded like a sending loop");
+  assert.deepEqual(finishCalls, [], "a rate-limited finish must not read the store");
+});
+
+test("with no edge limiters the route fails closed, not open", async () => {
+  const storeCalls = [];
+  const store = {
+    async startSignin(read) {
+      storeCalls.push(read);
+      return { expiresIn: 600 };
+    },
+  };
+  // No third argument: the dispatch hands over no binding. An unrate-limited
+  // sign-in endpoint is the case the bindings exist to prevent, so the route
+  // answers the table's unexpected words rather than sending anything.
+  const response = await handleSigninRequest(post({ method: "email", email: "a@b.co" }), store);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
+  assert.deepEqual(storeCalls, [], "a closed route must not report a code sent");
+});
+
+test("a limiter that throws fails closed with the table's words, never the error", async () => {
+  const limits = {
+    ipLimiter: { async limit() { throw new Error("rate limiter backend exploded"); } },
+    globalLimiter: makeRateLimiter(),
+  };
+  const response = await handleSigninRequest(
+    post({ method: "email", email: "a@b.co" }),
+    createAccountStore({ sendCode: () => {} }),
+    limits,
+  );
+  assert.equal(response.status, 503);
+  const payload = await response.json();
+  assert.equal(payload.error, failureMessage("unexpected"));
+  assert.ok(!payload.error.includes("exploded"), "the raw error must not reach the caller");
 });
 
 test("a body that is not JSON, or not an object, is a 400 and never a 202", async () => {
   for (const body of ["not json", '["email"]', '"email"', "null"]) {
-    const response = await handleSigninRequest(post(body), createAccountStore());
+    const response = await handleSigninRequest(post(body), createAccountStore(), openLimits());
     assert.equal(response.status, 400, `body ${body} must be refused`);
   }
 });
@@ -214,7 +336,7 @@ test("the route hands the store the method and address, once, and reports failur
       return { expiresIn: 600 };
     },
   };
-  const ok = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), store);
+  const ok = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), store, openLimits());
   assert.equal(ok.status, 202);
   assert.deepEqual(await ok.json(), { ok: true, step: "start", method: "email", expiresIn: 600 });
   assert.deepEqual(calls, [{ step: "start", method: "email", email: "you@example.com" }]);
@@ -225,7 +347,7 @@ test("the route hands the store the method and address, once, and reports failur
     async startSignin() {
       return { error: "rate-limited" };
     },
-  });
+  }, openLimits());
   assert.equal(broken.status, 429, "a store that failed must not answer 202");
   assert.equal((await broken.json()).error, failureMessage("rate-limited"));
 });
@@ -266,6 +388,7 @@ test("the closed door's words come from the message table, once", async () => {
       body: JSON.stringify({ method: "github" }),
     }),
     null,
+    openLimits(),
   );
   assert.deepEqual(await storeless.json(), built);
 });

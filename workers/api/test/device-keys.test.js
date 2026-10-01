@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
+import { failureMessage } from "../../../src/messages.js";
 
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,
@@ -11,7 +12,27 @@ import { createMemoryStore } from "../src/keystore.js";
 //   - each connected tool has its own key, and reading another user's prefix
 //     fails.
 
+function makeRateLimiter({ success = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async limit(options) {
+      calls.push(options);
+      return { success };
+    },
+  };
+}
+function deviceEnv(limits = { ip: makeRateLimiter(), global: makeRateLimiter() }) {
+  return {
+    DEVICE_RATE_LIMITER: limits.ip,
+    DEVICE_GLOBAL_RATE_LIMITER: limits.global,
+  };
+}
+
 function baseCtx(store, account) {
+  return { env: deviceEnv(), db: null, store, account, now: () => 0 };
+}
+function baseCtxNoLimits(store, account) {
   return { env: {}, db: null, store, account, now: () => 0 };
 }
 
@@ -116,6 +137,62 @@ test("an anonymous /v1/keys is 401, and a made-up token stays 401", async () => 
     baseCtx(store, null),
   );
   assert.equal(forged.status, 401);
+});
+
+test("the device approve route is rate-limited before the store is touched", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const limits = { ip: makeRateLimiter({ success: false }), global: makeRateLimiter() };
+  const res = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "cf-connecting-ip": "203.0.113.7",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    { env: deviceEnv(limits), db: null, store, account: null, now: () => 0 },
+  );
+  assert.equal(res.status, 429, "the walk hit the edge limit, not the store");
+  assert.equal(res.headers.get("retry-after"), "60");
+  assert.equal((await res.json()).error, failureMessage("rate-limited"));
+});
+
+test("the device poll is rate-limited on two buckets", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const limits = { ip: makeRateLimiter({ success: false }), global: makeRateLimiter({ success: false }) };
+  const res = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.9",
+      },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    { env: deviceEnv(limits), db: null, store, account: null, now: () => 0 },
+  );
+  assert.equal(res.status, 429);
+});
+
+test("a device deployment with no limiter bindings fails closed, not open", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  // No DEVICE_RATE_LIMITER / DEVICE_GLOBAL_RATE_LIMITER on env: an
+  // unrate-limited approve is the case the bindings exist to prevent, so the
+  // route answers the table's unexpected words rather than approving.
+  const res = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    baseCtxNoLimits(store, null),
+  );
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, failureMessage("unexpected"));
 });
 
 test("each connected tool gets its own key: two mints are two different keys", async () => {

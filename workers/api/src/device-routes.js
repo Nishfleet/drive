@@ -14,6 +14,43 @@
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
 import { json, errorResponse } from "./http.js";
+import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
+
+// The edge limits the device flow answers behind (drive issue #147, raised in
+// the code review that read the sign-in's send vector: "Covers /api/signin and
+// device approve/poll"). The stock rate-limit binding keyed on the client IP,
+// plus one global bucket: approving makes an account and a poll mints a device
+// token, so an unbounded loop from one connection is both a token factory and
+// a guessing lane for the short user code.
+//
+// The bindings belong to the deployment, the way cloudflare.config.ts declares
+// the waitlist's and the sign-in's. With no binding on env these two routes
+// fail closed — the same closed door src/email-send.js shows with
+// EMAIL_SEND_TOKEN unset and src/signin.js shows with no mailer: an
+// unrate-limited public route is the case the binding exists to prevent, so a
+// deployment that has not declared it does not run the flow.
+const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
+const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
+
+/**
+ * The limiter refusal a device route answers with, or null when the request
+ * is allowed through. The 429's and the 503's words are the message table's
+ * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * state two different rate-limit answers.
+ * @param {Request} request
+ * @param {{env?: Record<string, any>}} ctx
+ * @param {string} log
+ * @returns {Promise<Response|null>}
+ */
+async function deviceLimitRefused(request, ctx, log) {
+  return enforceEdgeLimits(
+    [
+      { binding: ctx.env?.[DEVICE_IP_LIMIT], key: clientIpKey(request, log), name: DEVICE_IP_LIMIT },
+      { binding: ctx.env?.[DEVICE_GLOBAL_LIMIT], key: "global", name: DEVICE_GLOBAL_LIMIT },
+    ],
+    log,
+  );
+}
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
@@ -166,11 +203,18 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{store: any, env?: Record<string, any>}} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  // Bounded before the store is touched: the poll is the request a CLI sends
+  // on an interval, so the bound has to sit in front of the lookup rather
+  // than behind it (issue #147).
+  const refused = await deviceLimitRefused(request, ctx, "device poll");
+  if (refused) {
+    return refused;
   }
   let body;
   try {
@@ -213,9 +257,16 @@ export function approvePageRoute(_request, ctx) {
  * reason as the page: the person is doing the signing in. Until the account
  * sign-in flow lands, approving is what makes the account.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{store: any, env?: Record<string, any>}} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
+  // The approval is the step that makes an account, so it is bounded at the
+  // edge before the code is read (issue #147). The page itself (GET) stays
+  // unbounded: it renders a form and changes nothing.
+  const refused = await deviceLimitRefused(request, ctx, "device approve");
+  if (refused) {
+    return refused;
+  }
   const read = await readUserCode(request);
   if ("error" in read) {
     return errorResponse(400, read.error);

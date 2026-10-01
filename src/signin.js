@@ -28,6 +28,7 @@ import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { sessionCookie } from "./accounts.js";
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
@@ -157,6 +158,19 @@ function readStart(body) {
 }
 
 /**
+ * The edge limits POST /api/signin answers behind, beside the store's own
+ * per-address one. `ipLimiter` bounds one client: a script walking many
+ * addresses is per-IP, which the store's memory cannot see (its
+ * `CODE_SEND_LIMIT` is per address only). `globalLimiter` bounds the whole
+ * service, so no walking pattern can spend a real email send on every
+ * address at once — the mailbomb and send-cost vector the issue names. Both
+ * are the stock rate-limit binding the waitlist uses
+ * (cloudflare.config.ts); the start step costs a real email, and the finish
+ * step costs a guess at a code, so both are bounded, not only the send.
+ * @typedef {{ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, globalLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} SigninLimiters
+ */
+
+/**
  * Handles POST /api/signin. Always answers; the page reads the JSON.
  *
  *   POST /api/signin  {"step":"start","method":"email","email":"you@example.com"}
@@ -174,11 +188,16 @@ function readStart(body) {
  * pass a fake. With no store the route answers its closed door: a 503 with the
  * message table's words rather than reporting a code sent that no store could
  * hold.
+ *
+ * The edge limiters are arguments for the same reason bindings are read in
+ * the dispatch (src/index.js hands them off env): the check they enforce runs
+ * before the body is read, so the limit a request spends is spent on nothing.
  * @param {Request} request
  * @param {unknown} store the account store, or a falsy value while #2 lands
+ * @param {SigninLimiters} [limiters] the two edge limits (per-IP and global)
  * @returns {Promise<Response>}
  */
-export async function handleSigninRequest(request, store) {
+export async function handleSigninRequest(request, store, limiters = {}) {
   if (request.method !== "POST") {
     return new Response("Method not allowed. POST to sign in.", {
       status: 405,
@@ -189,6 +208,25 @@ export async function handleSigninRequest(request, store) {
   // made on the visitor's behalf, the same rule the send route uses.
   if (!isSameOriginRequest(request)) {
     return json({ error: failureMessage("cross-site") }, 403);
+  }
+  // The edge limits, checked before the body is read: a denied request costs
+  // no parse and no store work, the same ordering the waitlist's review fixed
+  // (the limiter bounds the work that actually costs something). A refusal is
+  // the table's rate-limited words, with the reason in the log only, via one
+  // shared helper (src/rate-limit.js) so the waitlist and this route cannot
+  // state two different answers. A call with no limiters fails closed (a 503,
+  // the waitlist's own posture): an unrate-limited sign-in endpoint is
+  // exactly the case these bindings exist to prevent, so a dispatch that
+  // forgets to pass them cannot ship the endpoint open.
+  const denied = await enforceEdgeLimits(
+    [
+      { binding: limiters.ipLimiter, key: clientIpKey(request, "signin"), name: "SIGNIN_RATE_LIMITER" },
+      { binding: limiters.globalLimiter, key: "global", name: "SIGNIN_GLOBAL_RATE_LIMITER" },
+    ],
+    "signin",
+  );
+  if (denied) {
+    return denied;
   }
   let body;
   const contentType = request.headers.get("content-type") ?? "";

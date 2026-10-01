@@ -176,9 +176,15 @@ export default {
     // account store (src/accounts.js) records the one-time code against the
     // address and, on the finish step, mints the session cookie every account
     // route above is gated on. It is registered here, ahead of the asset
-    // fallthrough, because /api/signin must reach the Worker.
+    // fallthrough, because /api/signin must reach the Worker. The two edge
+    // limits (issue #147) are the per-IP and the global bound beside the
+    // store's per-address one: the start step mails a real email, so the
+    // whole route is bounded at the edge before its body is even read.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, accountsStoreFor(env));
+      return handleSigninRequest(request, accountsStoreFor(env), {
+        ipLimiter: env.SIGNIN_RATE_LIMITER,
+        globalLimiter: env.SIGNIN_GLOBAL_RATE_LIMITER,
+      });
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

@@ -43,6 +43,27 @@ export default defineConfig({
 				namespace: "1001",
 				simple: { limit: 5, period: 60 },
 			}),
+			// drive issue #147: bound POST /api/signin at the edge, beside the
+			// store's per-address CODE_SEND_LIMIT. The store's limit lives in the
+			// isolate's own memory and keys on one address, so a script walking
+			// many addresses is invisible to it; these two bindings are the edge
+			// bound the issue asks for. The per-IP one is far above a person
+			// signing in (even behind a shared office NAT) and far below what a
+			// script needs to walk addresses; the global one bounds the whole
+			// service so a distributed walk cannot spend a real email send on
+			// every address at once. Both configs are one minute, the waitlist's
+			// period, and both are turned on before sign-in opens in production.
+			// The namespaces are distinct from the waitlist's: Cloudflare wants a
+			// positive integer string, unique per account, and reusing 1001 with a
+			// second config would fail the deploy with 10021.
+			SIGNIN_RATE_LIMITER: bindings.rateLimit({
+				namespace: "1002",
+				simple: { limit: 10, period: 60 },
+			}),
+			SIGNIN_GLOBAL_RATE_LIMITER: bindings.rateLimit({
+				namespace: "1003",
+				simple: { limit: 100, period: 60 },
+			}),
 			// Cloudflare Email Sending (drive#33): the stock provider every
 			// drive email goes through, in src/email-send.js. No options: the
 			// binding is restricted by the domains onboarded for sending, and

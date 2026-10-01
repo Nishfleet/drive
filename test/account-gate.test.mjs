@@ -242,6 +242,19 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   // code is never in a reply, so the mail is the only place it can be seen,
   // which is the whole point of the flow.
   const emailed = [];
+  // Edge limiters (issue #147): the fake pass-through that every test in this
+  // file's sign-in walk uses, so the sign-in route behaves as it will in
+  // production with the bindings configured.
+  function makeRateLimiter({ success = true } = {}) {
+    const calls = [];
+    return {
+      calls,
+      async limit(options) {
+        calls.push(options);
+        return { success };
+      },
+    };
+  }
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     // The store the Worker uses, so the session the sign-in route mints is the
@@ -253,6 +266,8 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
         emailed.push({ to, code, from: "noreply@drive.test" });
       },
     }),
+    SIGNIN_RATE_LIMITER: makeRateLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeRateLimiter(),
   };
   const call = (cookie, path) =>
     worker.fetch(

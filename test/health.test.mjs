@@ -140,6 +140,11 @@ const HEALTHY_ENV = () => ({
   WAITLIST_DB: fakeD1("ok"),
   ASSETS: fakeAssets(),
   WAITLIST_RATE_LIMITER: fakeLimiter(),
+  // The sign-in endpoint's two edge limits (issue #147): on the
+  // required list because a deploy that lost either answers 503
+  // there (src/signin.js).
+  SIGNIN_RATE_LIMITER: fakeLimiter(),
+  SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
 });
 
 const GET = (path = HEALTH_PATH) =>
@@ -168,6 +173,8 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     WAITLIST_DB: fakeD1("error"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -181,6 +188,8 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     WAITLIST_DB: fakeD1("hang"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -192,6 +201,8 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
   const response = await handleHealthRequest(GET(), {
     WAITLIST_DB: fakeD1("ok"),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -202,6 +213,8 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: { fetch: () => Promise.reject(new Error("asset manifest missing")) },
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -218,6 +231,8 @@ test("every bound D1 database is checked, not just the first", async () => {
     BILLING_DB: second,
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -248,6 +263,8 @@ test("a binding that is not a database is never read as one", () => {
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
 });
@@ -262,6 +279,8 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -278,6 +297,8 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: assets,
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -293,6 +314,8 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     WAITLIST_DB: fakeD1("error"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -326,6 +349,8 @@ test("the failing body is the name and nothing else", async () => {
     WAITLIST_DB: fakeD1("error"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -417,6 +442,8 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     THIRD_DB: hang(),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -449,6 +476,8 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     },
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -497,46 +526,58 @@ test("the Worker routes the health path to the handler", async () => {
 });
 
 test("the health check never spends a real caller's rate limit quota", async () => {
-  // The limiter keys real callers on their client IP (src/waitlist.js). The
-  // probe has to be checked somehow and `limit()` is the only call it has, so
-  // the key is asserted to carry no IP: a health poll must not eat the quota
-  // of the very sign-ups the limiter exists to protect.
+  // The limiters key real callers on their client IP (src/waitlist.js,
+  // src/signin.js). The probe has to be checked somehow and `limit()`
+  // is the only call it has, so the key is asserted to carry no IP: a
+  // health poll must not eat the quota of the very sign-ups and
+  // sign-ins the limiters exist to protect.
   const keys = [];
+  const recordingLimiter = {
+    limit({ key }) {
+      keys.push(key);
+      return Promise.resolve({ success: true });
+    },
+  };
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
-    WAITLIST_RATE_LIMITER: {
-      limit({ key }) {
-        keys.push(key);
-        return Promise.resolve({ success: true });
-      },
-    },
+    WAITLIST_RATE_LIMITER: recordingLimiter,
+    SIGNIN_RATE_LIMITER: recordingLimiter,
+    SIGNIN_GLOBAL_RATE_LIMITER: recordingLimiter,
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
-  assert.equal(keys.length, 1, "the limiter is checked when it is bound");
-  assert.match(keys[0], /^health-probe-/);
-  assert.ok(!keys[0].includes("."), "the probe key must not be a client IP");
+  assert.equal(keys.length, 3, "every bound limiter is checked");
+  for (const key of keys) {
+    assert.match(key, /^health-probe-/);
+    assert.ok(!key.includes("."), "the probe key must not be a client IP");
+  }
 });
 
 test("the probe key is not shared, so a hammered endpoint cannot force a false 503", async () => {
-  // /api/health is public, so its limiter key has to change per call: a
-  // stranger calling it in a loop must not exhaust one bucket and turn the
-  // health answer red while everything else is fine.
+  // /api/health is public, so its limiter keys have to change per
+  // call: a stranger calling it in a loop must not exhaust one bucket
+  // and turn the health answer red while everything else is fine.
   const keys = [];
+  const recordingLimiter = {
+    limit({ key }) {
+      keys.push(key);
+      return Promise.resolve({ success: true });
+    },
+  };
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
-    WAITLIST_RATE_LIMITER: {
-      limit({ key }) {
-        keys.push(key);
-        return Promise.resolve({ success: true });
-      },
-    },
+    WAITLIST_RATE_LIMITER: recordingLimiter,
+    SIGNIN_RATE_LIMITER: recordingLimiter,
+    SIGNIN_GLOBAL_RATE_LIMITER: recordingLimiter,
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
-  assert.notEqual(keys[0], keys[1], "each poll spends a bucket of its own");
+  // Two polls, three limiters each, every bucket its own.
+  assert.equal(keys.length, 6);
+  assert.notEqual(keys[0], keys[3], "each poll spends a bucket of its own");
+  assert.equal(new Set(keys).size, keys.length, "no probe key is reused");
 });
 
 test("a binding that is not bound at all is a 503 naming it", async () => {
@@ -559,9 +600,11 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // config is the source of truth, so the test reads its binding keys.
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
-  // Four today: ASSETS, WAITLIST_DB, WAITLIST_RATE_LIMITER, EMAIL. The email
-  // token and sender stay undeclared so the deploy does not require them.
-  assert.ok(declared.length >= 4, `only found ${declared.join(", ")} in the config`);
+  // Six today: ASSETS, WAITLIST_DB, WAITLIST_RATE_LIMITER,
+  // SIGNIN_RATE_LIMITER, SIGNIN_GLOBAL_RATE_LIMITER, EMAIL. The
+  // email token and sender stay undeclared so the deploy does not
+  // require them.
+  assert.ok(declared.length >= 6, `only found ${declared.join(", ")} in the config`);
   for (const name of REQUIRED_BINDINGS) {
     assert.ok(
       declared.includes(name),
@@ -597,6 +640,8 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -619,7 +664,60 @@ test("a limiter that denies the probe is still healthy", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.resolve({ success: false }),
     },
+    SIGNIN_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: false }),
+    },
+    SIGNIN_GLOBAL_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: false }),
+    },
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
+});
+
+// The sign-in endpoint's two edge limits (issue #147): a deploy that
+// lost either is an outage the monitor has to name, exactly as the
+// waitlist's limiter is named.
+test("a sign-in limiter that throws is a 503 naming it", async () => {
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    const env = {
+      WAITLIST_DB: fakeD1("ok"),
+      ASSETS: fakeAssets(),
+      WAITLIST_RATE_LIMITER: {
+        limit: () => Promise.resolve({ success: true }),
+      },
+      SIGNIN_RATE_LIMITER: {
+        limit: () => Promise.resolve({ success: true }),
+      },
+      SIGNIN_GLOBAL_RATE_LIMITER: {
+        limit: () => Promise.resolve({ success: true }),
+      },
+    };
+    env[name] = {
+      limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+    };
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503, `${name} throwing must be a 503`);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { ok: false, failing: name });
+    assert.ok(!body.includes("exploded"), "the raw error text never reaches the body");
+  }
+});
+
+test("a sign-in limiter that denies the probe is still healthy", async () => {
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: true }),
+    },
+    SIGNIN_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: false }),
+    },
+    SIGNIN_GLOBAL_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: false }),
+    },
+  };
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 200, "a denied probe is a working limiter");
 });
