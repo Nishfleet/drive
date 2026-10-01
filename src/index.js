@@ -69,12 +69,10 @@ function storeFor(env) {
 // answers 403, so the deployment is closed until the token is set, and the
 // first producers are the meter's cap emails and the billing webhook
 // (build step 6, drive#7).
+/**
+ * @type {ExportedHandler<Env>}
+ */
 export default {
-  /**
-   * @param {Request} request
-   * @param {Env} env
-   * @returns {Promise<Response>}
-   */
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {

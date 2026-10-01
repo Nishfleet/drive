@@ -390,12 +390,25 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
   const pkg = JSON.parse(read("package.json"));
   // One command: the types first, then node's own runner over every test file.
   assert.match(pkg.scripts.test, /node --test/, "the command runs node's own test runner");
+  // drive#91: one tsconfig now covers the pricing Worker and the api Worker,
+  // so the check is a single `tsc --noEmit`. `check` is the aggregate gate the
+  // suite runs (drive#92 adds lint beside the type check here), and npm's own
+  // `pretest` lifecycle is what runs it before `node --test`.
   assert.equal(
     pkg.scripts.typecheck,
-    "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
+    "tsc --noEmit",
     "the type check the command runs is the repo's own",
   );
-  assert.match(pkg.scripts.test, /npm run typecheck/, "`npm test` checks the types first");
+  assert.equal(
+    pkg.scripts.check,
+    "npm run typecheck",
+    "`check` is the one aggregate gate the suite and the hooks run",
+  );
+  assert.equal(
+    pkg.scripts.pretest,
+    "npm run check",
+    "`npm test` checks the types first, through npm's pretest hook",
+  );
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci, /^\s*-?\s*run:\s*npm test\s*$/m, "CI runs the same command the builder runs");
   // The command's own discovery is what makes it the suite: `node --test`
