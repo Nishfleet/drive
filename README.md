@@ -62,7 +62,7 @@ and the invoice disagree.
 | `docs/` | the build spec and the API notes |
 | `migrations/` | D1 migrations for the waitlist |
 
-`npm test` typechecks the JavaScript, builds the docs and runs the test suite.
+`npm test` typechecks, lints, builds the docs and runs the test suite.
 `go test ./...` runs the CLI's tests.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
