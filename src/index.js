@@ -249,7 +249,7 @@ export default {
         request,
         storeFor(env),
         linksFor(),
-        signedInAccount(request),
+        await signedInAccount(request, accountsStoreFor(env)),
       );
     }
     if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
@@ -263,7 +263,7 @@ export default {
         request,
         storeFor(env),
         linksFor(),
-        signedInAccount(request),
+        await signedInAccount(request, accountsStoreFor(env)),
       );
     }
     // The two public request routes are matched after the owner's /api/request
