@@ -42,11 +42,12 @@ export default defineConfig({
 			// file: with the token unset the route answers 403 (a closed
 			// door), and with no MAIL_FROM it answers 503, so it cannot be
 			// used as a mail relay and cannot send from a placeholder domain
-			// before drive has one. Set at deploy time:
+			// before drive has one. They are not declared here: a declared
+			// secret is required, so the deploy refused to ship until both
+			// were set, which contradicts the closed-door design. Set them
+			// once drive has a sending domain (they persist across deploys):
 			//   npx wrangler secret put EMAIL_SEND_TOKEN
 			//   npx wrangler secret put MAIL_FROM
-			EMAIL_SEND_TOKEN: bindings.secret(),
-			MAIL_FROM: bindings.secret(),
 		},
 	},
 });
