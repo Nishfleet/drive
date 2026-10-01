@@ -26,6 +26,21 @@ import {
 
 /** @typedef {import("../src/files.js").FileStore} FileStore */
 
+// The ExportedHandler type makes fetch optional and declares the runtime's
+// three arguments. The tests drive the Worker directly, so one wrapper
+// supplies the execution context the platform would and keeps those facts
+// out of every call site.
+/** The Worker's own Request, env, ctx. Tests drive it directly, so one wrapper
+ * supplies the no-op execution context the platform passes and the permissive
+ * env/context shapes; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+  /** @type {unknown} */ (worker.fetch)
+);
+const ctx = { waitUntil() {}, passThroughOnException() {} };
+
 const ACCOUNT = { id: "1", name: "Your drive" };
 const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
 
@@ -82,6 +97,10 @@ function makeD1() {
     const info = sqlite.prepare(sql).run(...values);
     return { results: [], changes: Number(info.changes) };
   };
+  /** The SQL and parameters each prepared statement carries, so batch() can
+   * run the statements the caller built and not re-derive them.
+   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
   /**
    * One prepared statement, the way D1 hands it back: bind() returns a
    * statement carrying its own parameters, so the rest of the chain
@@ -90,8 +109,8 @@ function makeD1() {
    * @param {unknown[]} [params]
    * @returns {D1PreparedStatement}
    */
-  const statementFor = (sql, params = []) =>
-    /** @type {D1PreparedStatement} */ (
+  const statementFor = (sql, params = []) => {
+    const statement = /** @type {D1PreparedStatement} */ (
       /** @type {unknown} */ ({
         sql,
         params,
@@ -133,8 +152,9 @@ function makeD1() {
         },
       })
     );
-  /** @type {WeakMap<object, {sql: string, params: unknown[]}>} */
-  const bound = new WeakMap();
+    bound.set(statement, { sql, params });
+    return statement;
+  };
   return /** @type {SqliteD1} */ (
     /** @type {unknown} */ ({
       sqlite,
@@ -143,9 +163,7 @@ function makeD1() {
      * @returns {D1PreparedStatement}
      */
     prepare(sql) {
-      const statement = statementFor(sql, []);
-      bound.set(statement, { sql, params: [] });
-      return statement;
+      return statementFor(sql, []);
     },
     /**
      * @template T
@@ -306,9 +324,11 @@ test("search never touches the bucket: the store is not a search parameter", asy
   await seed(store, [["/notes.txt", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
   const hostile = {
+    /** @returns {never} */
     list() {
       throw new Error("a search listed the bucket");
     },
+    /** @returns {never} */
     read() {
       throw new Error("a search read the bucket");
     },
@@ -335,7 +355,11 @@ test("search honours limit and reports truncation", async () => {
 });
 
 test("searchDrive without a database says the index is not configured", async () => {
-  const found = await searchDrive(/** @type {null} */ (null), ACCOUNT, "notes");
+  const found = await searchDrive(
+    /** @type {D1Database} */ (/** @type {unknown} */ (null)),
+    ACCOUNT,
+    "notes",
+  );
   assert.equal(found.status, 503);
 });
 
@@ -349,14 +373,14 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
     ["/deep/er/one.md", "x"],
     ["/deep/two.md", "x"],
   ]);
-  await store.write("/.trash/1__/a.txt", "x", "text/plain");
+  await store.write("/.trash/1__/a.txt", new Blob(["x"]).stream(), "text/plain");
   const built = await reconcileIndex(db, store, ACCOUNT);
-  assert.equal(built.error, undefined);
   assert.equal(built.folders, 3, "root, /deep, /deep/er");
   assert.equal(built.indexed, 3, "the trashed copy is not indexed");
   const found = await searchDrive(db, ACCOUNT, "a.txt");
+  assert.equal(found.error, undefined);
   assert.deepEqual(
-    found.results.map((r) => r.path),
+    /** @type {{results: Array<{path: string}>}} */ (found).results.map((r) => r.path),
     ["/a.txt"],
   );
 });
@@ -382,6 +406,7 @@ test("withIndex keeps the index current on write, delete and restore, without li
   let listed = 0;
   const watched = {
     ...raw,
+    /** @param {string} path */
     list(path) {
       listed++;
       return raw.list(path);
@@ -392,7 +417,7 @@ test("withIndex keeps the index current on write, delete and restore, without li
   // that scope and records the drive path after scopeStore rewrites
   // to the account's own key.
   const scoped = scopeStore(withIndex(watched, db, ACCOUNT), ACCOUNT);
-  await scoped.write("/fresh/report.txt", "hello", "text/plain");
+  await scoped.write("/fresh/report.txt", new Blob(["hello"]).stream(), "text/plain");
   let found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1, "the write is searchable at once");
   assert.equal(listed, 0, "indexing a write never listed the bucket");
@@ -401,20 +426,23 @@ test("withIndex keeps the index current on write, delete and restore, without li
   assert.equal(found.count, 0, "the delete removed the row");
   // A restore is a write of the original path plus a remove of the parked
   // name, so the wrapped store keeps both halves right with no new code.
-  await scoped.write("/.trash/1__%2Ffresh%2Freport.txt", "hello", "text/plain");
-  await scoped.write("/fresh/report.txt", "hello", "text/plain");
+  await scoped.write("/.trash/1__%2Ffresh%2Freport.txt", new Blob(["hello"]).stream(), "text/plain");
+  await scoped.write("/fresh/report.txt", new Blob(["hello"]).stream(), "text/plain");
   await scoped.remove("/.trash/1__%2Ffresh%2Freport.txt");
   found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1, "the restore is searchable");
   const trashRows = db.sqlite
     .prepare("SELECT count(*) c FROM file_index WHERE path LIKE '/.trash/%'")
     .get();
-  assert.equal(trashRows.c, 0, "parked copies are never indexed");
+  assert.equal(trashRows?.c, 0, "parked copies are never indexed");
 });
 
 test("withIndex passes the store through unchanged when there is no database", () => {
   const raw = createMemoryStore();
-  assert.equal(withIndex(raw, /** @type {null} */ (null), ACCOUNT), raw);
+  assert.equal(
+    withIndex(raw, /** @type {D1Database} */ (/** @type {unknown} */ (null)), ACCOUNT),
+    raw,
+  );
 });
 
 // ------------------------------------------------------------------ timing
@@ -425,6 +453,7 @@ test("withIndex passes the store through unchanged when there is no database", (
 test("100,000 files: a search returns in well under one second", async () => {
   const db = makeD1();
   const TOTAL = 100_000;
+  /** @type {Array<{account_id: string, path: string, name: string, parent: string, size_bytes: number, modified_at: string, indexed_at: string}>} */
   const rows = [];
   for (let i = 0; i < TOTAL; i++) {
     const bucket = i % 20;
@@ -471,7 +500,7 @@ test("100,000 files: a search returns in well under one second", async () => {
     await db.batch(statements);
   }
   const indexMs = performance.now() - started;
-  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get().c, TOTAL);
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, TOTAL);
 
   // The plan must be the account+name index, not a scan that degrades with
   // table size beyond the LIKE scan itself.
@@ -499,7 +528,7 @@ test("100,000 files: a search returns in well under one second", async () => {
 
 // ------------------------------------------------------------------ routes
 
-function request(path, options = {}) {
+/** @param {string} path */ function request(path, options = {}) {
   return new Request(`https://drive.test${path}`, options);
 }
 
@@ -525,7 +554,7 @@ test("an empty query is a 400 with the one next step", async () => {
 test("a search without an index binding is a 503", async () => {
   const response = await handleSearchRequest(
     request(`${SEARCH_ENDPOINT}?q=x`),
-    /** @type {null} */ (null),
+    /** @type {D1Database} */ (/** @type {unknown} */ (null)),
     ACCOUNT,
   );
   assert.equal(response.status, 503);
@@ -542,11 +571,13 @@ test("an anonymous request is a 401 and no names leave the index", async () => {
   const store = createMemoryStore();
   await seed(store, [["/secret-contract.pdf", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
-  for (const account of [null, undefined]) {
+  /** @type {Array<{id: string, name: string}|null|undefined>} */
+  const nullishAccounts = [null, undefined];
+  for (const account of nullishAccounts) {
     const response = await handleSearchRequest(
       request(`${SEARCH_ENDPOINT}?q=secret-contract`),
       db,
-      account,
+      /** @type {{id: string, name: string}|null} */ (account),
     );
     assert.equal(response.status, 401);
     const body = await response.json();
@@ -554,7 +585,11 @@ test("an anonymous request is a 401 and no names leave the index", async () => {
     assert.ok(!JSON.stringify(body).includes("secret-contract"), "no name in a 401");
   }
   // A forgotten account argument is the same 401, not a stand-in account.
-  const forgot = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=secret-contract`), db);
+  const forgot = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=secret-contract`),
+    db,
+    /** @type {{id: string, name: string}|null} */ (/** @type {unknown} */ (undefined)),
+  );
   assert.equal(forgot.status, 401);
 });
 
@@ -600,9 +635,10 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
   const env = { DRIVE_DB: db, ASSETS: assets };
   for (const method of ["GET", "POST", "DELETE"]) {
-    const response = await worker.fetch(
+    const response = await workerFetch(
       new Request("https://drive.test/api/search/index", { method }),
       env,
+      ctx,
     );
     assert.equal(
       await response.text(),
@@ -617,24 +653,34 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   const raw = createMemoryStore();
   await scopeStore(withIndex(raw, db, ACCOUNT), ACCOUNT).write(
     "/early-bird.txt",
-    "x",
+    new Blob(["x"]).stream(),
     "text/plain",
   );
   await scopeStore(withIndex(raw, db, ACCOUNT_B), ACCOUNT_B).write(
     "/b-only.txt",
-    "x",
+    new Blob(["x"]).stream(),
     "text/plain",
   );
   // Two files the write path never touched, one per account.
-  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", "x", "text/plain");
-  await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", "x", "text/plain");
+  await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
+  await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", new Blob(["x"]).stream(), "text/plain");
 
+  /** @type {Promise<any>[]} */
   const waits = [];
-  await worker.scheduled(
-    { cron: REINDEX_SCHEDULE },
+  const workerScheduled = /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
+    /** @type {unknown} */ (worker.scheduled)
+  );
+  const scheduledEvent = /** @type {ScheduledController} */ (
+    /** @type {unknown} */ ({ cron: REINDEX_SCHEDULE })
+  );
+  await workerScheduled(
+    scheduledEvent,
     env,
     {
-      waitUntil: (promise) => waits.push(promise),
+      /** @param {Promise<unknown>} promise */
+      waitUntil(promise) {
+        waits.push(promise);
+      },
     },
     raw,
   );
@@ -679,9 +725,10 @@ test("the worker serves /api/search behind the account gate and file writes keep
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
   const env = { DRIVE_DB: db, ASSETS: assets };
   // Anonymous: 401 with the account gate's words, never a name.
-  const anonymous = await worker.fetch(
+  const anonymous = await workerFetch(
     new Request("https://drive.test/api/search?q=warren-buffet"),
     env,
+    ctx,
   );
   assert.equal(anonymous.status, 401);
   const anonymousBody = await anonymous.json();
@@ -689,7 +736,7 @@ test("the worker serves /api/search behind the account gate and file writes keep
   // The write path is the scoped store the Worker routes through, so the row
   // is keyed to that account's own prefix and read back as a drive path.
   const store = scopeStore(withIndex(createMemoryStore(), db, ACCOUNT), ACCOUNT);
-  await store.write("/warren-buffet.txt", "x", "text/plain");
+  await store.write("/warren-buffet.txt", new Blob(["x"]).stream(), "text/plain");
   const rows = db.sqlite
     .prepare("SELECT account_id, name FROM file_index")
     .all()
