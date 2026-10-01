@@ -35,8 +35,15 @@ const SITE_CSS = new URL("site.css", PUBLIC_DIR);
 // look, so it has to be a deliberate edit here too.
 const TOKENS = {
   "--paper": "#faf6ee",
+  "--paper-raised": "#fffdf8",
   "--ink": "#21201c",
+  "--ink-soft": "#56514a",
+  "--ink-faint": "#6f6a5f",
+  "--rule": "#ddd5c5",
   "--accent": "#1f3a5f",
+  "--accent-soft": "#e6ecf3",
+  "--good": "#1d5c3a",
+  "--bad": "#8a2b2b",
   "--serif":
     'ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif',
   "--sans":
