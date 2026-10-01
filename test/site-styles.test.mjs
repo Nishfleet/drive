@@ -12,9 +12,10 @@
 //    a page-by-page edit gets wrong, so a page is allowed only the page-local
 //    tokens listed in PAGE_LOCAL, and any other --* declaration fails — even
 //    one that does not exist yet.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
+import { test } from "node:test";
 
 const PUBLIC_DIR = new URL("../public/", import.meta.url);
 // Every shipped page, walked the way test/seo.test.mjs walks them: the
@@ -23,8 +24,8 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const PAGES = [
   ...readdirSync(PUBLIC_DIR)
     .filter((name) => name.endsWith(".html"))
-    .map((name) => [ `public/${name}`, new URL(name, PUBLIC_DIR) ]),
-  [ "get-started.html", new URL("../get-started.html", import.meta.url) ],
+    .map((name) => [`public/${name}`, new URL(name, PUBLIC_DIR)]),
+  ["get-started.html", new URL("../get-started.html", import.meta.url)],
 ];
 
 const SITE_CSS = new URL("site.css", PUBLIC_DIR);

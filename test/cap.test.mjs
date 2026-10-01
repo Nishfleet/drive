@@ -20,20 +20,21 @@
 // forever, because the cap records the capabilities it took and the restore
 // reads them from the key row (issue #64's wiring) rather than guessing from
 // the key's kind.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import { BILLING_CONFIG, capLine, capStatus, handleUsageRequest } from "../src/billing.js";
-import { failureMessage as tableMessage } from "../src/messages.js";
 import {
-  READ_ONLY_CAPABILITIES,
-  WRITE_SCOPE_BY_KIND,
   applyCapSwap,
   capSwapPlan,
   enforceCap,
   isWriteCapable,
   parseCapUsd,
+  READ_ONLY_CAPABILITIES,
+  WRITE_SCOPE_BY_KIND,
 } from "../src/cap.js";
+import worker from "../src/index.js";
+import { failureMessage as tableMessage } from "../src/messages.js";
 
 // Minutes in an average month, so a test can say "2 TB held all month" and
 // mean the metered bill and the peak are the same number.
@@ -57,11 +58,36 @@ const capUsage = () => monthUsage(2000);
 const underCapUsage = () => monthUsage(1200);
 
 // The four kinds of key the spec mints, in the shape the plan reads.
-const deviceKey = { keyId: "k-device", kind: "device", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] };
-const agentKey = { keyId: "k-agent", kind: "agent", prefix: "u/a1/", capabilities: ["list", "read", "write"] };
-const s3Key = { keyId: "k-s3", kind: "s3", prefix: "u/a1/", capabilities: ["list", "read", "write"] };
-const branchKey = { keyId: "k-branch", kind: "branch", prefix: "u/a1/.branches/fix/", capabilities: ["list", "read", "write"] };
-const readOnlyKey = { keyId: "k-ro", kind: "agent", prefix: "u/a1/", capabilities: ["list", "read"] };
+const deviceKey = {
+  keyId: "k-device",
+  kind: "device",
+  prefix: "u/a1/",
+  capabilities: ["list", "read", "write", "delete"],
+};
+const agentKey = {
+  keyId: "k-agent",
+  kind: "agent",
+  prefix: "u/a1/",
+  capabilities: ["list", "read", "write"],
+};
+const s3Key = {
+  keyId: "k-s3",
+  kind: "s3",
+  prefix: "u/a1/",
+  capabilities: ["list", "read", "write"],
+};
+const branchKey = {
+  keyId: "k-branch",
+  kind: "branch",
+  prefix: "u/a1/.branches/fix/",
+  capabilities: ["list", "read", "write"],
+};
+const readOnlyKey = {
+  keyId: "k-ro",
+  kind: "agent",
+  prefix: "u/a1/",
+  capabilities: ["list", "read"],
+};
 
 // A key row as the cap left it: read-only, carrying the record of the scope the
 // cap took (issue #74). What a capped account's devices rows look like before
@@ -102,7 +128,11 @@ test("at the cap every write-capable key is replaced by a read-only one on its o
   const plan = capSwapPlan(keys, { state: "read_only" });
 
   assert.equal(plan.state, "read_only");
-  assert.equal(plan.swaps.length, 4, "the four write-capable keys swap; the read-only one is left alone");
+  assert.equal(
+    plan.swaps.length,
+    4,
+    "the four write-capable keys swap; the read-only one is left alone",
+  );
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap]));
   assert.equal(byId["k-ro"], undefined, "a key that already cannot write is not churned");
   // A swap names the key, the scope that replaces it, and the scope it took
@@ -118,7 +148,11 @@ test("at the cap every write-capable key is replaced by a read-only one on its o
     cappedFrom: Object.freeze(["list", "read", "write", "delete"]),
   });
   assert.deepEqual(byId["k-agent"].capabilities, READ_ONLY_CAPABILITIES);
-  assert.equal(byId["k-branch"].prefix, "u/a1/.branches/fix/", "a branch key narrows to itself, never to the account");
+  assert.equal(
+    byId["k-branch"].prefix,
+    "u/a1/.branches/fix/",
+    "a branch key narrows to itself, never to the account",
+  );
   // The mount holds the old key until it restarts, so a swap is a restart.
   assert.deepEqual(plan.mount, { restart: true, reason: "cap-reached" });
   assert.equal(Object.isFrozen(plan), true);
@@ -157,9 +191,17 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   ];
   const plan = capSwapPlan(keys, { state: "active" });
 
-  assert.equal(plan.swaps.length, 4, "the write-capable key is already right and stays out of the plan");
+  assert.equal(
+    plan.swaps.length,
+    4,
+    "the write-capable key is already right and stays out of the plan",
+  );
   const byId = Object.fromEntries(plan.swaps.map((swap) => [swap.keyId, swap.capabilities]));
-  assert.deepEqual(byId["k-device"], ["list", "read", "write", "delete"], "a device key gets delete back");
+  assert.deepEqual(
+    byId["k-device"],
+    ["list", "read", "write", "delete"],
+    "a device key gets delete back",
+  );
   assert.deepEqual(byId["k-agent"], ["list", "read", "write"], "an agent key never gains delete");
   assert.deepEqual(byId["k-s3"], ["list", "read", "write"]);
   assert.deepEqual(byId["k-branch"], ["list", "read", "write"]);
@@ -172,17 +214,23 @@ test("raising the cap gives back exactly what the cap took, and nothing more", (
   }
   // Once restored, a second pass has nothing to do either: the keys on file
   // are the ones the first pass minted, not the read-only ones it replaced.
-  const restored = keys.filter((key) => key !== agentKey).map((key) => ({
-    ...key,
-    capabilities: byId[key.keyId],
-    cappedFrom: null,
-  }));
+  const restored = keys
+    .filter((key) => key !== agentKey)
+    .map((key) => ({
+      ...key,
+      capabilities: byId[key.keyId],
+      cappedFrom: null,
+    }));
   assert.equal(capSwapPlan(restored, { state: "active" }).swaps.length, 0);
   // A kind with no scope is a data error, not a guess, and a record cannot be
   // restored without it. A key with no record is left alone before any kind is
   // consulted: there is nothing the cap took, so there is nothing to give back.
   assert.throws(
-    () => capSwapPlan([{ ...agentKey, kind: "mystery", capabilities: ["list", "read"], cappedFrom: ["write"] }], { state: "active" }),
+    () =>
+      capSwapPlan(
+        [{ ...agentKey, kind: "mystery", capabilities: ["list", "read"], cappedFrom: ["write"] }],
+        { state: "active" },
+      ),
     /No write scope for key kind "mystery"/,
   );
 });
@@ -201,10 +249,19 @@ test("a key the customer made read-only stays read-only, forever (issue #74)", (
   // The same holds below the cap for a key the customer narrowed itself, and
   // for a row with no record at all (a key minted before devices.capabilities
   // was ever swapped): nothing is taken, so nothing comes back.
-  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps, []);
-  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps, []);
+  assert.deepEqual(
+    capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps,
+    [],
+  );
+  assert.deepEqual(
+    capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "active" }).swaps,
+    [],
+  );
   // A capped key is a different thing entirely: it carries the record.
-  assert.deepEqual(capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "read_only" }).swaps, []);
+  assert.deepEqual(
+    capSwapPlan([{ ...deviceKey, capabilities: ["list", "read"] }], { state: "read_only" }).swaps,
+    [],
+  );
 });
 
 test("the cap takes, records, and gives back one key's own scope (issue #74)", () => {
@@ -218,11 +275,23 @@ test("the cap takes, records, and gives back one key's own scope (issue #74)", (
 
   // The row the api Worker writes after that swap (issue #64 persists the new
   // key id, the capabilities and this record).
-  const cappedRow = { ...start, capabilities: [...capped.swaps[0].capabilities], cappedFrom: capped.swaps[0].cappedFrom };
+  const cappedRow = {
+    ...start,
+    capabilities: [...capped.swaps[0].capabilities],
+    cappedFrom: capped.swaps[0].cappedFrom,
+  };
   const raised = capSwapPlan([cappedRow], { state: "active" });
-  assert.deepEqual(raised.swaps[0].capabilities, ["list", "read", "write"], "delete was never taken, so it never comes back");
+  assert.deepEqual(
+    raised.swaps[0].capabilities,
+    ["list", "read", "write"],
+    "delete was never taken, so it never comes back",
+  );
 
-  const restoredRow = { ...cappedRow, capabilities: [...raised.swaps[0].capabilities], cappedFrom: raised.swaps[0].cappedFrom };
+  const restoredRow = {
+    ...cappedRow,
+    capabilities: [...raised.swaps[0].capabilities],
+    cappedFrom: raised.swaps[0].cappedFrom,
+  };
   assert.deepEqual(restoredRow.capabilities, start.capabilities);
 });
 
@@ -230,23 +299,42 @@ test("a record cannot widen a key past the scope its kind gets (issue #74)", () 
   // A corrupt or hand-edited row that claims an agent key was taken down from a
   // delete scope: the restore is held to the kind's own scope, so the agent key
   // gets back what an agent key can have and no more.
-  const plan = capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["list", "read", "write", "delete"] }], {
-    state: "active",
-  });
-  assert.deepEqual(plan.swaps[0].capabilities, ["list", "read", "write"], "an agent key never gains delete");
+  const plan = capSwapPlan(
+    [
+      {
+        ...agentKey,
+        capabilities: ["list", "read"],
+        cappedFrom: ["list", "read", "write", "delete"],
+      },
+    ],
+    {
+      state: "active",
+    },
+  );
+  assert.deepEqual(
+    plan.swaps[0].capabilities,
+    ["list", "read", "write"],
+    "an agent key never gains delete",
+  );
   // A record with nothing this kind could ever have had gives back nothing and
   // the key stays read-only: one bad row must not crash the hourly enforcement
   // run that is holding every other capped account's key read-only.
-  const stuck = capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["delete"] }], {
-    state: "active",
-  });
+  const stuck = capSwapPlan(
+    [{ ...agentKey, capabilities: ["list", "read"], cappedFrom: ["delete"] }],
+    {
+      state: "active",
+    },
+  );
   assert.deepEqual(stuck.swaps, [], "a record outside the kind's scope never widens the key");
   assert.deepEqual(stuck.mount, { restart: false, reason: null });
   // The record is a list of capability names or nothing: a half-written row is
   // a data error, never a silent "no record, carry on".
   for (const bad of [[], "write", [null], [""], 7]) {
     assert.throws(
-      () => capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: bad }], { state: "active" }),
+      () =>
+        capSwapPlan([{ ...agentKey, capabilities: ["list", "read"], cappedFrom: bad }], {
+          state: "active",
+        }),
       /cappedFrom must be a non-empty list of capability names/,
       `rejects ${JSON.stringify(bad)}`,
     );
@@ -258,13 +346,25 @@ test("running the job twice changes nothing, in both directions (issue #74)", as
   // the cap must not mint a second read-only key, and a raise must not mint a
   // second write key.
   const provider = recordingProvider();
-  const keys = [deviceKey, agentKey, { ...branchKey, keyId: "k-ro", capabilities: ["list", "read"] }];
+  const keys = [
+    deviceKey,
+    agentKey,
+    { ...branchKey, keyId: "k-ro", capabilities: ["list", "read"] },
+  ];
   const first = await enforceCap({ usage: capUsage(), keys }, provider);
   assert.equal(first.state, "read_only");
-  assert.equal(first.applied.length, 2, "the read-only-by-choice key is not touched by the cap either");
+  assert.equal(
+    first.applied.length,
+    2,
+    "the read-only-by-choice key is not touched by the cap either",
+  );
   const rowsAfterCap = keys.map((key, index) =>
     first.applied[index]
-      ? { ...key, capabilities: [...first.applied[index].capabilities], cappedFrom: first.applied[index].cappedFrom }
+      ? {
+          ...key,
+          capabilities: [...first.applied[index].capabilities],
+          cappedFrom: first.applied[index].cappedFrom,
+        }
       : key,
   );
   const second = await enforceCap({ usage: capUsage(), keys: rowsAfterCap }, recordingProvider());
@@ -276,9 +376,14 @@ test("running the job twice changes nothing, in both directions (issue #74)", as
   assert.equal(raised.applied.length, 2, "both keys the cap touched are restored");
   const rowsAfterRaise = rowsAfterCap.map((key) => {
     const applied = raised.applied.find((entry) => entry.keyId === key.keyId);
-    return applied ? { ...key, capabilities: [...applied.capabilities], cappedFrom: applied.cappedFrom } : key;
+    return applied
+      ? { ...key, capabilities: [...applied.capabilities], cappedFrom: applied.cappedFrom }
+      : key;
   });
-  const again = await enforceCap({ usage: underCapUsage(), keys: rowsAfterRaise }, recordingProvider());
+  const again = await enforceCap(
+    { usage: underCapUsage(), keys: rowsAfterRaise },
+    recordingProvider(),
+  );
   assert.equal(again.applied.length, 0, "a second pass below the cap finds nothing to do");
   // And the read-only-by-choice key is still exactly as it was at the end.
   assert.deepEqual(rowsAfterRaise[2].capabilities, ["list", "read"]);
@@ -290,11 +395,13 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
   // uncap, and the capabilities equal the ones the key started with. No run ever
   // widens a key, and no run ever leaves one narrower than it found it.
   const subsets = (names) =>
-    names.reduce((all, name) => [...all, ...all.map((set) => [...set, name])], [[]]).map((set) => {
-      // A stable order makes a failure readable: the plan's own order is the
-      // spec's order (list, read, write, delete).
-      return names.filter((candidate) => set.includes(candidate));
-    });
+    names
+      .reduce((all, name) => [...all, ...all.map((set) => [...set, name])], [[]])
+      .map((set) => {
+        // A stable order makes a failure readable: the plan's own order is the
+        // spec's order (list, read, write, delete).
+        return names.filter((candidate) => set.includes(candidate));
+      });
   const applyPlan = (keys, plan) =>
     keys.map((key) => {
       const swap = plan.swaps.find((entry) => entry.keyId === key.keyId);
@@ -328,11 +435,27 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
         );
       }
       const restoredRow = applyPlan([cappedRow], belowCap)[0];
-      assert.deepEqual(restoredRow.capabilities, capabilities, `${kind} key does not survive a cap and a raise`);
-      assert.equal(restoredRow.cappedFrom ?? null, null, `${kind} ${JSON.stringify(capabilities)} keeps a spent record`);
+      assert.deepEqual(
+        restoredRow.capabilities,
+        capabilities,
+        `${kind} key does not survive a cap and a raise`,
+      );
+      assert.equal(
+        restoredRow.cappedFrom ?? null,
+        null,
+        `${kind} ${JSON.stringify(capabilities)} keeps a spent record`,
+      );
       // Both directions are idempotent, which is what makes an hourly timer safe.
-      assert.deepEqual(capSwapPlan([restoredRow], { state: "active" }).swaps, [], `${kind} restored twice`);
-      assert.deepEqual(capSwapPlan([cappedRow], { state: "read_only" }).swaps, [], `${kind} capped twice`);
+      assert.deepEqual(
+        capSwapPlan([restoredRow], { state: "active" }).swaps,
+        [],
+        `${kind} restored twice`,
+      );
+      assert.deepEqual(
+        capSwapPlan([cappedRow], { state: "read_only" }).swaps,
+        [],
+        `${kind} capped twice`,
+      );
     }
   }
   assert.ok(cases >= 40, `every kind and every subset ran: ${cases} cases`);
@@ -368,14 +491,21 @@ test("the provider call order keeps the write key from outliving the cap", async
   ]);
   assert.equal(result.state, "read_only");
   assert.equal(result.applied.length, 2);
-  assert.deepEqual(result.applied[0].minted, { keyId: "new-1", accessKeyId: "id-1", secret: "s-1" });
+  assert.deepEqual(result.applied[0].minted, {
+    keyId: "new-1",
+    accessKeyId: "id-1",
+    secret: "s-1",
+  });
   assert.equal(result.mount.restart, true, "the CLI restarts the mount with the key in `applied`");
   // Raising the cap flips the order: the write key is minted first, because
   // revoking the read-only one first would leave the mount with no key at all.
   // The key carries the cap's own record (issue #74): a read-only key with no
   // record was never capped and stays read-only, so it mints nothing.
   const raised = recordingProvider();
-  await applyCapSwap(capSwapPlan([capped(agentKey, ["list", "read", "write"])], { state: "active" }), raised);
+  await applyCapSwap(
+    capSwapPlan([capped(agentKey, ["list", "read", "write"])], { state: "active" }),
+    raised,
+  );
   assert.deepEqual(raised.calls, [
     { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write"] },
     { call: "revoke", keyId: "k-agent" },
@@ -390,7 +520,10 @@ test("a provider's own swapToReadOnly is used for the cap swap, never for a rest
   assert.deepEqual(provider.calls, [{ call: "swapToReadOnly", keyId: "k-device" }]);
 
   const raised = recordingProvider({ swapToReadOnly: true });
-  await applyCapSwap(capSwapPlan([capped(deviceKey, ["list", "read", "write", "delete"])], { state: "active" }), raised);
+  await applyCapSwap(
+    capSwapPlan([capped(deviceKey, ["list", "read", "write", "delete"])], { state: "active" }),
+    raised,
+  );
   assert.deepEqual(raised.calls, [
     { call: "mint", prefix: "u/a1/", capabilities: ["list", "read", "write", "delete"] },
     { call: "revoke", keyId: "k-device" },
@@ -418,13 +551,23 @@ test("a provider failure is raised, never swallowed, and the plan stays re-runna
   );
   assert.throws(() => capSwapPlan(null, { state: "read_only" }), /keys as an array/);
   assert.throws(() => capSwapPlan([], { state: "sideways" }), /"active" or "read_only"/);
-  assert.throws(() => capSwapPlan([{ kind: "device", prefix: "u/a1/", capabilities: [] }], { state: "read_only" }), /needs keyId/);
   assert.throws(
-    () => capSwapPlan([{ keyId: "k", kind: "device", prefix: "", capabilities: [] }], { state: "read_only" }),
+    () =>
+      capSwapPlan([{ kind: "device", prefix: "u/a1/", capabilities: [] }], { state: "read_only" }),
+    /needs keyId/,
+  );
+  assert.throws(
+    () =>
+      capSwapPlan([{ keyId: "k", kind: "device", prefix: "", capabilities: [] }], {
+        state: "read_only",
+      }),
     /needs prefix/,
   );
   assert.throws(
-    () => capSwapPlan([{ keyId: "k", kind: "device", prefix: "u/a1/", capabilities: "write" }], { state: "read_only" }),
+    () =>
+      capSwapPlan([{ keyId: "k", kind: "device", prefix: "u/a1/", capabilities: "write" }], {
+        state: "read_only",
+      }),
     /needs capabilities as a list/,
   );
 });
@@ -511,10 +654,32 @@ test("drive cap takes a dollar amount and nothing else", () => {
   assert.equal(parseCapUsd("12.5"), 12.5);
   assert.equal(parseCapUsd(".5"), 0.5);
   assert.equal(parseCapUsd("0"), 0, "a stricter cap than the default is honoured, not rejected");
-  assert.equal(parseCapUsd(20), 20, "the api endpoint passes the JSON number through the same parse");
+  assert.equal(
+    parseCapUsd(20),
+    20,
+    "the api endpoint passes the JSON number through the same parse",
+  );
   assert.equal(parseCapUsd(" 15 "), 15);
-  for (const bad of ["", " ", "abc", "twenty", "-5", "1.234", "1,000", "$", "20 dollars", null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.throws(() => parseCapUsd(bad), /A spending cap is a dollar amount like 20 or 12\.50/, `rejects ${String(bad)}`);
+  for (const bad of [
+    "",
+    " ",
+    "abc",
+    "twenty",
+    "-5",
+    "1.234",
+    "1,000",
+    "$",
+    "20 dollars",
+    null,
+    undefined,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ]) {
+    assert.throws(
+      () => parseCapUsd(bad),
+      /A spending cap is a dollar amount like 20 or 12\.50/,
+      `rejects ${String(bad)}`,
+    );
   }
   // The error tells the person what to type, not just that the input was bad.
   assert.throws(() => parseCapUsd("abc"), /Run: drive cap 20/);
@@ -535,8 +700,16 @@ test("the cap line is one line while writing and two at the cap", () => {
       "Uploads waiting in the cache stay on this Mac and go up once the cap is raised.",
   );
   // Raised again: the line goes back to one line and says there is room.
-  assert.equal(capLine(capStatus(fullMonthGbMinutes(2000), 2000, 20)), "Cap $20.00: $16.00 counted this month, $4.00 left.");
-  for (const bad of [null, {}, { state: "paused", capUsd: 1, countedUsd: 0, remainingUsd: 1 }, { state: "active", capUsd: "12", countedUsd: 0, remainingUsd: 0 }]) {
+  assert.equal(
+    capLine(capStatus(fullMonthGbMinutes(2000), 2000, 20)),
+    "Cap $20.00: $16.00 counted this month, $4.00 left.",
+  );
+  for (const bad of [
+    null,
+    {},
+    { state: "paused", capUsd: 1, countedUsd: 0, remainingUsd: 1 },
+    { state: "active", capUsd: "12", countedUsd: 0, remainingUsd: 0 },
+  ]) {
     assert.throws(() => capLine(bad), TypeError);
   }
 });
@@ -546,10 +719,10 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   // travel in the response for the CLI to print the same words. The handler is
   // behind the account gate (issue #73), so the line is proven by calling it
   // as a signed-in request until the sign-in flow lands (build step 4, #5).
-  const response = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    { id: "1", name: "Your drive" },
-  );
+  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), {
+    id: "1",
+    name: "Your drive",
+  });
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");

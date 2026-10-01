@@ -185,8 +185,7 @@ function codesEqual(left, right) {
  */
 export function createAccountStore(options = {}) {
   const now = options.now ?? (() => Date.now());
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
 
   /** @type {Map<string, {id: string, name: string, email: string, createdAt: number}>} address (lowercased) -> account */
   const accounts = new Map();
@@ -282,7 +281,9 @@ export function createAccountStore(options = {}) {
         // it reads exactly like the route's own closed door.
         return { error: "sign-in-closed" };
       }
-      const address = String(request.email ?? "").trim().toLowerCase();
+      const address = String(request.email ?? "")
+        .trim()
+        .toLowerCase();
       const wait = blockedUntil(address);
       if (wait > 0) {
         return { error: "rate-limited" };
@@ -316,7 +317,9 @@ export function createAccountStore(options = {}) {
      * @returns {Promise<{account: {id: string, name: string, email: string}, sessionToken: string}|{error: string}>}
      */
     async finishSignin(request) {
-      const address = String(request.email ?? "").trim().toLowerCase();
+      const address = String(request.email ?? "")
+        .trim()
+        .toLowerCase();
       const account = accounts.get(address);
       if (account === undefined) {
         // Refusing without a lookup difference the caller can time: the same
@@ -378,7 +381,9 @@ export function createAccountStore(options = {}) {
         return null;
       }
       const account = byId.get(session.accountId);
-      return account === undefined ? null : { id: account.id, name: account.name, email: account.email };
+      return account === undefined
+        ? null
+        : { id: account.id, name: account.name, email: account.email };
     },
   };
 }

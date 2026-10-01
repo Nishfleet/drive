@@ -15,18 +15,19 @@
 // Fakes stand in for the runtime: a D1 database whose read resolves, one
 // whose read rejects, and one whose read never settles (the hang case). No
 // network, no Worker runtime, matching the rest of the suite.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
-  HEALTH_PATH,
-  HEALTH_TIMEOUT_MS,
-  REQUIRED_BINDINGS,
   checkHealth,
   d1Bindings,
+  HEALTH_PATH,
+  HEALTH_TIMEOUT_MS,
   handleHealthRequest,
+  REQUIRED_BINDINGS,
 } from "../src/health.js";
+import worker from "../src/index.js";
 
 /**
  * A D1Database stub answering only what the check uses. `mode` decides how
@@ -56,7 +57,7 @@ function fakeD1(mode = "ok") {
               });
             });
           }
-          return Promise.resolve({ results: [{ "1": 1 }] });
+          return Promise.resolve({ results: [{ 1: 1 }] });
         },
       };
     },
@@ -142,12 +143,11 @@ const HEALTHY_ENV = () => ({
   WAITLIST_RATE_LIMITER: fakeLimiter(),
 });
 
-const GET = (path = HEALTH_PATH) =>
-  new Request(`https://drive.test${path}`, { method: "GET" });
+const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
 
 // --- the healthy answer ---------------------------------------------------
 
-test("a healthy Worker answers 200 with {\"ok\":true}", async () => {
+test('a healthy Worker answers 200 with {"ok":true}', async () => {
   const response = await handleHealthRequest(GET(), HEALTHY_ENV());
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
@@ -233,7 +233,10 @@ test("d1Bindings finds the databases and ignores everything else", () => {
     EMAIL_SEND_TOKEN: "a-secret-value",
     MAIL_FROM: "drive@example.com",
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+  assert.deepEqual(
+    d1Bindings(env).map((b) => b.name),
+    ["WAITLIST_DB"],
+  );
 });
 
 test("a binding that is not a database is never read as one", () => {
@@ -249,7 +252,10 @@ test("a binding that is not a database is never read as one", () => {
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+  assert.deepEqual(
+    d1Bindings(env).map((b) => b.name),
+    ["WAITLIST_DB"],
+  );
 });
 
 test("a health poll over the real binding shapes answers ok, not ASSETS", async () => {
@@ -347,10 +353,7 @@ test("the failing body is the name and nothing else", async () => {
  * account and an outage has to be observable to something that has none; the
  * route reads no account data, so being public exposes nothing.
  */
-const PUBLIC_API_ROUTES = Object.freeze([
-  "/api/waitlist",
-  HEALTH_PATH,
-]);
+const PUBLIC_API_ROUTES = Object.freeze(["/api/waitlist", HEALTH_PATH]);
 
 test("the endpoint needs no account, session or cookie", async () => {
   // Public by design and on the deny-by-default test's public allow-list
@@ -385,15 +388,8 @@ test("an account route is not on the public allow-list", () => {
   // The point of an explicit list: the account routes stay off it, so a
   // future deny-by-default test reading this list cannot accidentally treat
   // one of them as public.
-  for (const accountRoute of [
-    "/api/first-run-status",
-    "/api/files",
-    "/api/usage",
-  ]) {
-    assert.ok(
-      !PUBLIC_API_ROUTES.includes(accountRoute),
-      `${accountRoute} must not be public`,
-    );
+  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage"]) {
+    assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
   }
 });
 

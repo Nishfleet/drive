@@ -3,25 +3,26 @@
 // measured on the same SQL the Worker runs, with the shipped migrations
 // applied. The adapter at the bottom is the only test-only code: it speaks
 // the subset of the D1 API the module uses (prepare/bind/all/first, batch).
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+import { createMemoryStore, scopeStore } from "../src/files.js";
+import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
+  handleSearchRequest,
   MAX_LIMIT,
   MAX_WORDS,
-  REINDEX_SCHEDULE,
-  SEARCH_ENDPOINT,
-  handleSearchRequest,
   parseQuery,
+  REINDEX_SCHEDULE,
   reconcileIndex,
+  SEARCH_ENDPOINT,
   searchDrive,
   searchSql,
   withIndex,
 } from "../src/search.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
-import worker from "../src/index.js";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
@@ -33,9 +34,7 @@ const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of ["0001_waitlist.sql", "0002_file_index.sql"]) {
-    sqlite.exec(
-      readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"),
-    );
+    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const runOne = (sql, params) => {
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
@@ -244,7 +243,10 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
 test("reconcileIndex is a rebuild: rows for files the store no longer has are dropped", async () => {
   const db = makeD1();
   const store = seededStore();
-  await seed(store, [["/keep.txt", "x"], ["/gone.txt", "x"]]);
+  await seed(store, [
+    ["/keep.txt", "x"],
+    ["/gone.txt", "x"],
+  ]);
   await reconcileIndex(db, store, ACCOUNT);
   await store.remove("/gone.txt");
   const second = await reconcileIndex(db, store, ACCOUNT);
@@ -283,7 +285,9 @@ test("withIndex keeps the index current on write, delete and restore, without li
   await scoped.remove("/.trash/1__%2Ffresh%2Freport.txt");
   found = await searchDrive(db, ACCOUNT, "report");
   assert.equal(found.count, 1, "the restore is searchable");
-  const trashRows = db.sqlite.prepare("SELECT count(*) c FROM file_index WHERE path LIKE '/.trash/%'").get();
+  const trashRows = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index WHERE path LIKE '/.trash/%'")
+    .get();
   assert.equal(trashRows.c, 0, "parked copies are never indexed");
 });
 
@@ -314,26 +318,33 @@ test("100,000 files: a search returns in well under one second", async () => {
     });
   }
   const started = performance.now();
-  await db.batch([
-    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id),
-  ]);
+  await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(ACCOUNT.id)]);
   for (let start = 0; start < rows.length; start += 14 * 64) {
     const slice = rows.slice(start, start + 14 * 64);
     const statements = [];
     for (let s = 0; s < slice.length; s += 14) {
       const chunk = slice.slice(s, s + 14);
       const values = chunk
-        .map((_, rowIndex) =>
-          `(?${rowIndex * 7 + 1}, ?${rowIndex * 7 + 2}, ?${rowIndex * 7 + 3}, ?${rowIndex * 7 + 4}, ?${rowIndex * 7 + 5}, ?${rowIndex * 7 + 6}, ?${rowIndex * 7 + 7})`,
+        .map(
+          (_, rowIndex) =>
+            `(?${rowIndex * 7 + 1}, ?${rowIndex * 7 + 2}, ?${rowIndex * 7 + 3}, ?${rowIndex * 7 + 4}, ?${rowIndex * 7 + 5}, ?${rowIndex * 7 + 6}, ?${rowIndex * 7 + 7})`,
         )
         .join(", ");
       const params = chunk.flatMap((r) => [
-        r.account_id, r.path, r.name, r.parent, r.size_bytes, r.modified_at, r.indexed_at,
+        r.account_id,
+        r.path,
+        r.name,
+        r.parent,
+        r.size_bytes,
+        r.modified_at,
+        r.indexed_at,
       ]);
       statements.push(
-        db.prepare(
-          `INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) VALUES ${values}`,
-        ).bind(...params),
+        db
+          .prepare(
+            `INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) VALUES ${values}`,
+          )
+          .bind(...params),
       );
     }
     await db.batch(statements);
@@ -376,11 +387,7 @@ test("GET /api/search answers with the found rows", async () => {
   const store = seededStore();
   await seed(store, [["/pictures/np-2024.png", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
-  const response = await handleSearchRequest(
-    request(`${SEARCH_ENDPOINT}?q=np-2024`),
-    db,
-    ACCOUNT,
-  );
+  const response = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=np-2024`), db, ACCOUNT);
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.count, 1);
@@ -389,21 +396,13 @@ test("GET /api/search answers with the found rows", async () => {
 });
 
 test("an empty query is a 400 with the one next step", async () => {
-  const response = await handleSearchRequest(
-    request(SEARCH_ENDPOINT),
-    makeD1(),
-    ACCOUNT,
-  );
+  const response = await handleSearchRequest(request(SEARCH_ENDPOINT), makeD1(), ACCOUNT);
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error, "Type one or more words to search for.");
 });
 
 test("a search without an index binding is a 503", async () => {
-  const response = await handleSearchRequest(
-    request(`${SEARCH_ENDPOINT}?q=x`),
-    null,
-    ACCOUNT,
-  );
+  const response = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=x`), null, ACCOUNT);
   assert.equal(response.status, 503);
 });
 
@@ -430,10 +429,7 @@ test("an anonymous request is a 401 and no names leave the index", async () => {
     assert.ok(!JSON.stringify(body).includes("secret-contract"), "no name in a 401");
   }
   // A forgotten account argument is the same 401, not a stand-in account.
-  const forgot = await handleSearchRequest(
-    request(`${SEARCH_ENDPOINT}?q=secret-contract`),
-    db,
-  );
+  const forgot = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=secret-contract`), db);
   assert.equal(forgot.status, 401);
 });
 
@@ -509,9 +505,14 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", "x", "text/plain");
 
   const waits = [];
-  await worker.scheduled({ cron: REINDEX_SCHEDULE }, env, {
-    waitUntil: (promise) => waits.push(promise),
-  }, raw);
+  await worker.scheduled(
+    { cron: REINDEX_SCHEDULE },
+    env,
+    {
+      waitUntil: (promise) => waits.push(promise),
+    },
+    raw,
+  );
   await Promise.all(waits);
 
   const forA = await searchDrive(db, ACCOUNT, "late");
@@ -526,13 +527,12 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
 });
 
 test("the deployed cron schedule is the one the module names", () => {
-  const config = readFileSync(
-    new URL("../cloudflare.config.ts", import.meta.url),
-    "utf8",
-  );
+  const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   assert.match(
     config,
-    new RegExp(`triggers\\.scheduled\\(\\{ schedule: "${REINDEX_SCHEDULE.replace(/\*/g, "\\*")}" \\}\\)`),
+    new RegExp(
+      `triggers\\.scheduled\\(\\{ schedule: "${REINDEX_SCHEDULE.replace(/\*/g, "\\*")}" \\}\\)`,
+    ),
     "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
   );
 });

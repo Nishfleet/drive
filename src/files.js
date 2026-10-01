@@ -14,8 +14,9 @@
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
 // test and no-configuration stand-in, and renders every state for a screenshot.
-import { formatBytes, unauthorizedResponse } from "./status.js";
+
 import { isSameOriginRequest } from "./email-send.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
@@ -51,14 +52,49 @@ const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "m4v", "ogv"];
 const AUDIO_EXTENSIONS = ["mp3", "m4a", "aac", "ogg", "oga", "wav", "flac"];
 const PDF_EXTENSIONS = ["pdf"];
 const TEXT_EXTENSIONS = [
-  "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
-  "toml", "ini", "log", "html", "htm", "css", "js", "mjs", "cjs", "ts", "tsx",
-  "jsx", "sh", "bash", "py", "rb", "go", "rs", "java", "c", "h", "sql", "xml",
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "tsv",
+  "json",
+  "jsonl",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "html",
+  "htm",
+  "css",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "tsx",
+  "jsx",
+  "sh",
+  "bash",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "java",
+  "c",
+  "h",
+  "sql",
+  "xml",
 ];
 
 /** The value neighbors read: what a file's extension or type says it is. */
 export const FILE_KINDS = Object.freeze([
-  "folder", "image", "video", "audio", "pdf", "text", "file",
+  "folder",
+  "image",
+  "video",
+  "audio",
+  "pdf",
+  "text",
+  "file",
 ]);
 
 /**
@@ -135,8 +171,7 @@ export function previewContentType(name, storedContentType = "") {
   // Only text and pdf are pinned here; the media kinds have no entry and fall
   // through to the kind-matched check below, so the lookup is asked only for
   // the two kinds that are in it.
-  const pinned =
-    kind === "text" || kind === "pdf" ? PREVIEW_CONTENT_TYPES[kind] : undefined;
+  const pinned = kind === "text" || kind === "pdf" ? PREVIEW_CONTENT_TYPES[kind] : undefined;
   if (pinned) {
     return pinned;
   }
@@ -179,13 +214,11 @@ export function previewCopy(kind) {
   // throw below rather than be a type error at the call site: the page asks
   // for copy by kind, so the check is what keeps a new kind from shipping
   // silent. The fallback is the shape of a miss, never a return.
-  const entry = /** @type {Record<string, {open: string, fallback: string}>} */ (
-    PREVIEW_COPY
-  )[kind];
+  const entry = /** @type {Record<string, {open: string, fallback: string}>} */ (PREVIEW_COPY)[
+    kind
+  ];
   if (!entry) {
-    throw new Error(
-      `no preview copy for "${kind}"; add it to PREVIEW_COPY in src/files.js`,
-    );
+    throw new Error(`no preview copy for "${kind}"; add it to PREVIEW_COPY in src/files.js`);
   }
   return entry;
 }
@@ -417,11 +450,7 @@ export function formatWhen(value, now = Date.now()) {
   // A Date's own epoch value; a number is already epoch milliseconds. Date.parse
   // takes the string, so the union is narrowed to the form it can parse.
   const time =
-    typeof value === "number"
-      ? value
-      : value instanceof Date
-        ? value.getTime()
-        : Date.parse(value);
+    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(time)) {
     throw new TypeError(`formatWhen needs a date, got ${String(value)}`);
   }
@@ -501,9 +530,7 @@ export function accountPrefix(account) {
   if (account.id.length === 0 || account.id.includes("/")) {
     // A prefix cut mid-segment would put one account's root inside another's
     // folder, so the id is checked rather than escaped.
-    throw new TypeError(
-      `an account id is one path segment, got "${account.id}"`,
-    );
+    throw new TypeError(`an account id is one path segment, got "${account.id}"`);
   }
   return `u/${account.id}`;
 }
@@ -611,8 +638,7 @@ export function scopeStore(store, account) {
         return entries;
       }
       return entries.filter(
-        (entry) =>
-          entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
+        (entry) => entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
       );
     },
     // async, so a refused path is a rejected promise on every method rather
@@ -642,9 +668,7 @@ export function scopeStore(store, account) {
  */
 async function memoryEtag(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -742,8 +766,7 @@ export function createS3Store(config) {
   }
   const base = `${String(endpoint).replace(/\/$/, "")}/${bucket}`;
   /** @param {string} path */
-  const urlFor = (path) =>
-    `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const urlFor = (path) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
   return {
     /** @param {string} path */
@@ -940,7 +963,8 @@ export function fileRows(entries, now = Date.now()) {
   const row = (entry) => ({
     name: entry.name,
     path: entry.path || "",
-    kind: entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
+    kind:
+      entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
     sizeLabel: entry.kind === "folder" ? "" : formatBytes(entry.size || 0),
     whenLabel: entry.modified ? formatWhen(entry.modified, now) : "",
   });
@@ -973,7 +997,9 @@ export function trashRows(entries, now = Date.now()) {
         restorable,
         // Past the window the button is gone, and the one line says why.
         restoreLabel: restorable ? "Restore" : "Past the 30 days",
-        goneLabel: restorable ? "" : "This one has been gone 30 days. Restoring it is not possible.",
+        goneLabel: restorable
+          ? ""
+          : "This one has been gone 30 days. Restoring it is not possible.",
       };
     })
     .filter(Boolean)
@@ -1091,7 +1117,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
 function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
-    .replace(/[\/\\\u0000-\u001f]/g, "-");
+    .replace(/[/\\\u0000-\u001f]/g, "-");
   return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : "upload";
 }
 
@@ -1293,7 +1319,11 @@ async function deleteRequest(request, store, now) {
     if (!object) {
       return json({ error: "That file is not here." }, 404);
     }
-    await store.write(trashStorePath(trashName(checked.path, now)), object.body, object.contentType);
+    await store.write(
+      trashStorePath(trashName(checked.path, now)),
+      object.body,
+      object.contentType,
+    );
     await store.remove(checked.path);
   } catch (cause) {
     return json({ error: `We could not delete that file: ${String(cause)}` }, 500);

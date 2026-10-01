@@ -13,7 +13,7 @@
 // lands, approving a code makes the account, and the page says so in plain
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
-import { json, errorResponse } from "./http.js";
+import { errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
@@ -46,14 +46,17 @@ const HTML_ESCAPES = Object.freeze({
  * @param {unknown} text
  */
 function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)]);
+  return String(text).replace(
+    /[&<>"']/g,
+    (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)],
+  );
 }
 
 /**
  * The approval page. A static shell with the code from the query string
  * echoed into the form, escaped; nothing else is rendered from the request.
  * @param {{userCode?: string, notice?: string}} [options]
- */function approvePage({ userCode = "", notice = "" } = {}) {
+ */ function approvePage({ userCode = "", notice = "" } = {}) {
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -224,7 +227,9 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  const userCode = String(read.userCode ?? "").trim().toUpperCase();
+  const userCode = String(read.userCode ?? "")
+    .trim()
+    .toUpperCase();
   if (userCode === "") {
     return approvePageError("", "Type the code from the terminal.");
   }

@@ -22,8 +22,8 @@ import {
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
   syncStatus,
+  UPLOAD_LABEL,
   uploadProgress,
 } from "./status.js";
 
@@ -76,9 +76,7 @@ export function connectionStates() {
   // The keys are the module's own three states; the annotation is the union
   // the rest of the page switches on, which the page and this list must agree
   // on or a rendered line would have no arm to show.
-  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (
-    Object.keys(CONNECTION_COPY)
-  );
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
 /**
@@ -89,9 +87,7 @@ export function connectionStates() {
 export function stepLines() {
   return FIRST_RUN_STEPS.map((step, index) => {
     if (typeof step.title !== "string" || typeof step.body !== "string") {
-      throw new TypeError(
-        `step ${index} needs a title and a body, got ${JSON.stringify(step)}`,
-      );
+      throw new TypeError(`step ${index} needs a title and a body, got ${JSON.stringify(step)}`);
     }
     return { title: step.title, body: step.body };
   });
@@ -105,9 +101,7 @@ export function stepLines() {
 export function emptyState(screen) {
   const entry = EMPTY_STATES[screen];
   if (!entry) {
-    throw new TypeError(
-      `no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`,
-    );
+    throw new TypeError(`no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`);
   }
   return { what: entry.what, next: entry.next };
 }
@@ -243,9 +237,7 @@ export function lastSyncText(device) {
  */
 export function connectionStateForStatus(status) {
   if (!Number.isInteger(status)) {
-    throw new TypeError(
-      `connectionStateForStatus needs a status code, got ${String(status)}`,
-    );
+    throw new TypeError(`connectionStateForStatus needs a status code, got ${String(status)}`);
   }
   return status === 401 ? "waiting" : "unreachable";
 }
@@ -260,9 +252,7 @@ export function connectionStateForStatus(status) {
  */
 export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
-    throw new TypeError(
-      `isConnected needs a payload object, got ${String(payload)}`,
-    );
+    throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
   if (payload.state === "connected") {
     return true;

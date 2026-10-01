@@ -9,7 +9,7 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
-import { json, errorResponse, readJsonObject } from "./http.js";
+import { errorResponse, json, readJsonObject } from "./http.js";
 import { authorizePath } from "./keystore.js";
 
 /** The stand-in store: what src/keystore.js `createMemoryStore` returns and
@@ -46,9 +46,8 @@ export async function mintKeyRoute(request, ctx) {
     return errorResponse(400, read.error);
   }
   const kind = typeof read.body.kind === "string" ? read.body.kind : "agent";
-  const name = typeof read.body.name === "string" && read.body.name.length > 0
-    ? read.body.name
-    : undefined;
+  const name =
+    typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : undefined;
   let minted;
   try {
     minted = await ctx.store.mintKey(ctx.account, { kind, name });

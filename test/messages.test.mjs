@@ -2,16 +2,14 @@
 // the web pages show. These tests pin its shape, the "one next step" rule and
 // the safety rules (no secrets, no keys, no other-user paths, no raw error
 // text) so a new entry cannot ship a stack, a token or a two-step fix-it list.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
-const page = readFileSync(
-  new URL("../public/index.html", import.meta.url),
-  "utf8",
-);
+const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
 const REQUIRED_PATHS = [
   "offline",
@@ -34,7 +32,10 @@ const REQUIRED_KEYS = ["next", "what"];
 
 // A single-sentence test: split on sentence endings followed by whitespace.
 function countSentences(text) {
-  return text.trim().split(/(?<=[.!?])\s+/).filter(Boolean).length;
+  return text
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean).length;
 }
 
 // Safety regexes: these must NOT appear in either what or next.
@@ -55,7 +56,11 @@ test("the named failure paths exist", () => {
 
 test("every entry has exactly { what, next }", () => {
   for (const [key, entry] of Object.entries(FAILURE_MESSAGES)) {
-    assert.deepEqual(Object.keys(entry).sort(), REQUIRED_KEYS, `${key} must have exactly what and next`);
+    assert.deepEqual(
+      Object.keys(entry).sort(),
+      REQUIRED_KEYS,
+      `${key} must have exactly what and next`,
+    );
     for (const k of REQUIRED_KEYS) {
       const v = entry[k];
       assert.ok(typeof v === "string" && v.length > 0, `${key}.${k} must be a non-empty string`);
@@ -86,10 +91,7 @@ test("failureMessage joins what and next with a single space", () => {
 });
 
 test("failureMessage throws on an unknown key instead of returning a default", () => {
-  assert.throws(
-    () => failureMessage("no-such-path"),
-    /no failure message for "no-such-path"/,
-  );
+  assert.throws(() => failureMessage("no-such-path"), /no failure message for "no-such-path"/);
 });
 
 test("the pricing page embeds the exact offline message from the table", () => {
@@ -107,4 +109,3 @@ test("the pricing page embeds the exact unexpected fallback from the table", () 
     `the pricing page must contain the exact unexpected message: "${expected}"`,
   );
 });
-

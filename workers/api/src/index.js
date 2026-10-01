@@ -1,7 +1,7 @@
-import { routes } from "./routes.js";
+import { failureMessage } from "../../../src/messages.js";
 import { errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
-import { failureMessage } from "../../../src/messages.js";
+import { routes } from "./routes.js";
 
 /** The stand-in key store this Worker hands its routes. */
 /** @typedef {ReturnType<typeof createMemoryStore>} KeyStore */
@@ -107,15 +107,14 @@ export async function accountForRequest(request, store) {
  */
 export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
-  const pathname =
-    url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
+  const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
   // The account is read from the request's own bearer token (drive#55) rather
   // than trusted from the context, so a handler cannot be handed an account
   // the caller never proved. `ctx.account` is honoured only where there is no
   // store to resolve one with, which is the tests' own store-less context; the
   // Worker export always passes a store, so nothing reaches a route that way.
   const bearer = await accountForRequest(request, ctx.store);
-  const account = bearer ?? (ctx.store === undefined ? ctx.account ?? null : null);
+  const account = bearer ?? (ctx.store === undefined ? (ctx.account ?? null) : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];

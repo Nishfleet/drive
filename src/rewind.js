@@ -161,11 +161,7 @@ export async function rewindPreview(store, branch, now) {
     // failures — the screen renders them, so the two reasons stay separate
     // rather than collapsing into one "no".
     canRewind: open && withinWindow,
-    unavailableReason: open
-      ? withinWindow
-        ? null
-        : "window-closed"
-      : "already-closed",
+    unavailableReason: open ? (withinWindow ? null : "window-closed") : "already-closed",
     files,
   });
 }
@@ -210,7 +206,8 @@ export async function rewindBranch(db, store, account, name, now) {
   }
   const preview = await rewindPreview(store, branch, now);
   if (!preview.canRewind) {
-    const key = preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
+    const key =
+      preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
     return { error: failureMessage(key), status: 409, name, rewind: preview };
   }
   const result = await discardBranch(db, store, account, name);

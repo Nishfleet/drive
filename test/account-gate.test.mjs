@@ -16,25 +16,21 @@
 //      an uploaded .html and .svg come back as attachments with a safe type
 //      and nosniff.
 //   4. Upload, delete and restore refuse a cross-site request.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
-import {
-  FILES_ENDPOINT,
-  createMemoryStore,
-  handleFilesRequest,
-  scopeStore,
-} from "../src/files.js";
-import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
+import { test } from "node:test";
 import { createAccountStore } from "../src/accounts.js";
-import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
-import { HEALTH_PATH } from "../src/health.js";
-import { SEARCH_ENDPOINT } from "../src/search.js";
+import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
-import { REWIND_ENDPOINT } from "../src/rewind.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { HEALTH_PATH } from "../src/health.js";
+import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { REWIND_ENDPOINT } from "../src/rewind.js";
+import { SEARCH_ENDPOINT } from "../src/search.js";
+import { handleSigninRequest, SIGNIN_ENDPOINT } from "../src/signin.js";
+import { STATUS_ENDPOINT } from "../src/status.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
@@ -127,9 +123,7 @@ test("every route src/index.js registers is either public or behind the gate", a
   // A route assembled from a constant shows up as `${SOMETHING_ENDPOINT}` in a
   // path, which is also how a config var like FILES_S3_ENDPOINT can be told
   // apart from a route: only a route is interpolated into a pathname.
-  const constants = [...source.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map(
-    (match) => match[1],
-  );
+  const constants = [...source.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map((match) => match[1]);
   assert.ok(literals.length > 0, "the walk must find the Worker's route literals");
   assert.ok(constants.length > 0, "the walk must find the endpoints the Worker imports");
   for (const literal of literals) {
@@ -202,7 +196,10 @@ test("an anonymous request to every account route is 401 and no data", async () 
   const unauthorized = failureMessage("unauthorized");
   // The words are the one message table's (src/messages.js), not a second copy
   // written here, so the page and the endpoint cannot say different things.
-  assert.equal(unauthorized, `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`);
+  assert.equal(
+    unauthorized,
+    `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
+  );
   for (const route of ACCOUNT_ROUTES) {
     for (const method of ["GET", "POST"]) {
       const response = await anonymous(new Request(`https://drive.test${route}`, { method }));
@@ -349,7 +346,11 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   const otherCookie = otherFinish.headers.get("set-cookie").split(";")[0];
   const otherList = await call(otherCookie, FILES_ENDPOINT);
   assert.equal(otherList.status, 200);
-  assert.equal((await otherList.json()).rows.length, 0, "a second account cannot list the first one's files");
+  assert.equal(
+    (await otherList.json()).rows.length,
+    0,
+    "a second account cannot list the first one's files",
+  );
   const firstList = await call(cookie, FILES_ENDPOINT);
   assert.equal((await firstList.json()).rows.length, 1, "the first account still has its own file");
 });
@@ -416,8 +417,7 @@ test("account A cannot list, read, write or delete account B's path", async () =
   // One shared store, the way the Worker's in-memory stand-in is one store
   // per isolate: both accounts read and write through the same object.
   const store = createMemoryStore();
-  const call = (account, request) =>
-    handleFilesRequest(request, store, account, now);
+  const call = (account, request) => handleFilesRequest(request, store, account, now);
   const upload = (account, path, name, body, type = "text/plain") =>
     call(
       account,
@@ -434,10 +434,7 @@ test("account A cannot list, read, write or delete account B's path", async () =
   const listedByB = await call(ACCOUNT_B, new Request(api("?path=%2F")));
   assert.equal(listedByB.status, 200);
   assert.deepEqual((await listedByB.json()).rows, []);
-  const readByB = await call(
-    ACCOUNT_B,
-    new Request(api("/download?path=%2Fsecret.txt")),
-  );
+  const readByB = await call(ACCOUNT_B, new Request(api("/download?path=%2Fsecret.txt")));
   assert.equal(readByB.status, 404);
 
   // B cannot delete or restore A's path, and writing the same path gives B its
@@ -489,10 +486,11 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
   const upload = (name, type, body) =>
     call(
-      new Request(
-        `${api("/upload")}?path=%2F&name=${encodeURIComponent(name)}`,
-        { method: "POST", headers: { "content-type": type }, body },
-      ),
+      new Request(`${api("/upload")}?path=%2F&name=${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: { "content-type": type },
+        body,
+      }),
     );
 
   await upload("report.html", "text/html", "<script>alert(1)</script>");
@@ -520,9 +518,7 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
     );
     await download.arrayBuffer();
 
-    const preview = await call(
-      new Request(api(`/preview?path=${encodeURIComponent(`/${name}`)}`)),
-    );
+    const preview = await call(new Request(api(`/preview?path=${encodeURIComponent(`/${name}`)}`)));
     assert.equal(preview.status, 200, `preview ${name}`);
     assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
     assert.equal(
@@ -604,7 +600,10 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
-  assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), undefined).status, 401);
+  assert.equal(
+    handleUsageRequest(new Request("https://drive.test/api/usage"), undefined).status,
+    401,
+  );
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0);

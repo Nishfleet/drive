@@ -18,8 +18,9 @@
 // Nothing here reads a request or a clock of its own: the clock is injected
 // (now) so a device code can be tested as expired without sleeping, and the
 // routes below own the HTTP shape.
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
+
 import { newId, nowSeconds, sha256Hex } from "./db.js";
+import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
 
 // How long a device code is good for, and how often the CLI may poll
 // (RFC 8628's device_code and interval). Ten minutes is long enough to find a
@@ -94,8 +95,7 @@ function accountName(deviceName) {
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
 
   /** @type {Map<string, {id: string, name: string, email: string|null, createdAt: number}>} */
   const accounts = new Map();
@@ -253,7 +253,7 @@ export function createMemoryStore(options = {}) {
      * @param {{kind?: string, name?: string}} [request]
      */
     async mintKey(account, request = {}) {
-      const kind = (request.kind ?? "agent");
+      const kind = request.kind ?? "agent";
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
@@ -280,7 +280,13 @@ export function createMemoryStore(options = {}) {
       };
       devices.set(device.id, device);
       byAccessKeyId.set(accessKeyId, device.id);
-      return { keyId, accessKeyId, secret, prefix: device.prefix, capabilities: device.capabilities };
+      return {
+        keyId,
+        accessKeyId,
+        secret,
+        prefix: device.prefix,
+        capabilities: device.capabilities,
+      };
     },
 
     /**

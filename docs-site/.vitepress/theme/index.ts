@@ -8,8 +8,9 @@
 // are the same values, and test/docs.test.mjs checks each one against the
 // shipped pricing page, so the two cannot drift apart. The docs' own numbers
 // come from src/billing.js through src/render-docs.js, never from here.
-import DefaultTheme from "vitepress/theme";
+
 import type { Theme } from "vitepress";
+import DefaultTheme from "vitepress/theme";
 import "./site.css";
 
 export default {

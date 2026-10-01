@@ -85,9 +85,7 @@ const MAX_MARKER_ROUNDS = 10;
 export function applyMarkers(source, values = markerValues(), used = new Set()) {
   let text = source;
   for (let round = 0; ; round += 1) {
-    const names = [
-      ...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1])),
-    ];
+    const names = [...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))];
     if (names.length === 0) {
       return text;
     }
@@ -98,9 +96,7 @@ export function applyMarkers(source, values = markerValues(), used = new Set()) 
     }
     for (const name of names) {
       if (!(name in values)) {
-        throw new Error(
-          `docs page uses {{${name}}}, which src/docs.js does not define`,
-        );
+        throw new Error(`docs page uses {{${name}}}, which src/docs.js does not define`);
       }
       used.add(name);
     }
@@ -127,9 +123,7 @@ export function renderDocs(outDir = RENDERED_DIR) {
   // render fails rather than shipping quietly.
   const unused = Object.keys(values).filter((name) => !used.has(name));
   if (unused.length > 0) {
-    throw new Error(
-      `src/docs.js defines markers no page uses: ${unused.join(", ")}`,
-    );
+    throw new Error(`src/docs.js defines markers no page uses: ${unused.join(", ")}`);
   }
   return DOC_PAGES;
 }

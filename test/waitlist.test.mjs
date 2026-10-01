@@ -1,16 +1,17 @@
 // Unit tests for the waitlist sign-up logic, exercising every branch with a
 // fake D1 object and a fake rate limiter so no network is needed.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { failureMessage } from "../src/messages.js";
 import {
-  validateSignup,
-  recordSignup,
   handleWaitlistRequest,
   isSameOriginRequest,
+  recordSignup,
   SOURCES,
+  validateSignup,
 } from "../src/waitlist.js";
-import { failureMessage } from "../src/messages.js";
 
 // A minimal in-memory D1Database stub that implements the subset of the API
 // the code actually uses: prepare().bind().first().
@@ -193,7 +194,7 @@ test("recordSignup throws loud on phantom conflict", async () => {
   });
   // Simulate the INSERT returning null but the SELECT also missing.
   const originalPrepare = db.prepare;
-  db.prepare = function (sql) {
+  db.prepare = (sql) => {
     if (sql.startsWith("INSERT")) {
       return originalPrepare(sql);
     }
@@ -258,11 +259,7 @@ test("handleWaitlistRequest rate limits before touching the database", async () 
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "early@example.com" }),
   });
-  const res = await handleWaitlistRequest(
-    req,
-    db,
-    makeRateLimiter({ success: false }),
-  );
+  const res = await handleWaitlistRequest(req, db, makeRateLimiter({ success: false }));
   assert.equal(res.status, 429);
   assert.equal(prepared, 0, "the database must not be consulted when denied");
 });
@@ -363,11 +360,7 @@ test("handleWaitlistRequest rejects an oversized streamed body with no content-l
     body: stream,
     duplex: "half",
   });
-  assert.equal(
-    req.headers.get("content-length"),
-    null,
-    "a streamed body has no content-length",
-  );
+  assert.equal(req.headers.get("content-length"), null, "a streamed body has no content-length");
   const res = await handleWaitlistRequest(req, db, ALLOWED());
   assert.equal(res.status, 413);
   const data = await res.json();
@@ -458,9 +451,7 @@ test("isSameOriginRequest accepts our own origin and a request without Origin", 
     true,
   );
   assert.equal(
-    isSameOriginRequest(
-      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist"),
-    ),
+    isSameOriginRequest(new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist")),
     true,
   );
   assert.equal(
@@ -622,10 +613,7 @@ test("handleWaitlistRequest reads a urlencoded no-JS form post", async () => {
 // --- the page never shows error.message (bullet 2, client half) -----------
 
 test("the pricing page never prints a raw Error message into the live region", () => {
-  const page = readFileSync(
-    new URL("../public/index.html", import.meta.url),
-    "utf8",
-  );
+  const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.ok(
     !page.includes("error.message"),
     "the page must not show a raw Error.message; map it to the table first",
