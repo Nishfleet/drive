@@ -1,9 +1,9 @@
-import { routes } from "./routes.js";
+import { failureMessage } from "../../../src/messages.js";
+import { signedInAccount } from "../../../src/status.js";
+import { createD1DeviceSigninStore } from "./device-signin.js";
 import { errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
-import { createD1DeviceSigninStore } from "./device-signin.js";
-import { signedInAccount } from "../../../src/status.js";
-import { failureMessage } from "../../../src/messages.js";
+import { routes } from "./routes.js";
 
 /** The stand-in key store this Worker hands its routes. */
 /** @typedef {ReturnType<typeof createMemoryStore>} KeyStore */
@@ -109,8 +109,7 @@ export async function accountForRequest(request, store) {
  */
 export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
-  const pathname =
-    url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
+  const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
   // The account is read from the request's own credentials (drive#55),
   // rather than trusted from the context, so a handler cannot be handed an
   // account the caller never proved. A CLI request proves one with an
@@ -140,7 +139,7 @@ export async function dispatch(request, ctx, table = routes) {
     bearer === null && needsAccount && ctx.accounts
       ? await signedInAccount(request, ctx.accounts)
       : null;
-  const account = bearer ?? session ?? (ctx.store === undefined ? ctx.account ?? null : null);
+  const account = bearer ?? session ?? (ctx.store === undefined ? (ctx.account ?? null) : null);
   if (matches.length === 0) {
     // 404 for nothing registered, 401 for a registered account route: the api
     // contract (docs/api.md) lists every route publicly, so route existence is

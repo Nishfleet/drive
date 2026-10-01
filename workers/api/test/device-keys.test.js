@@ -1,8 +1,8 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
+import { SESSION_COOKIE } from "../../../src/accounts.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore, DEVICE_CODE_TTL_SECONDS } from "../src/keystore.js";
-import { SESSION_COOKIE } from "../../../src/accounts.js";
 
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,
@@ -347,9 +347,12 @@ test("reading another user's prefix fails with a 403, not an empty listing", asy
 
   // A traversal out of its own folder is refused the same way.
   const traversal = await dispatch(
-    new Request(`https://api.test/v1/storage/list?path=${firstKey.prefix}..%2F..%2F${secondKey.prefix}`, {
-      headers: basic(firstKey.accessKeyId, firstKey.secret),
-    }),
+    new Request(
+      `https://api.test/v1/storage/list?path=${firstKey.prefix}..%2F..%2F${secondKey.prefix}`,
+      {
+        headers: basic(firstKey.accessKeyId, firstKey.secret),
+      },
+    ),
     baseCtx(store, null),
   );
   assert.equal(traversal.status, 403);

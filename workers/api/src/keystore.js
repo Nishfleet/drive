@@ -21,14 +21,19 @@
 // Nothing here reads a request or a clock of its own: the clock is injected
 // (now) so a device code can be tested as expired without sleeping, and the
 // routes below own the HTTP shape.
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
-import { createMemoryDeviceSigninStore, DEVICE_CODE_TTL_SECONDS, DEVICE_CODE_INTERVAL_SECONDS } from "./device-signin.js";
+
 import { newId, nowSeconds, sha256Hex } from "./db.js";
+import {
+  createMemoryDeviceSigninStore,
+  DEVICE_CODE_INTERVAL_SECONDS,
+  DEVICE_CODE_TTL_SECONDS,
+} from "./device-signin.js";
+import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
 
 // Kept as keystore re-exports so the one place that named the device-code TTL
 // keeps naming it; the values live with the store that enforces them
 // (device-signin.js), which is the store the D1 deployment uses.
-export { DEVICE_CODE_TTL_SECONDS, DEVICE_CODE_INTERVAL_SECONDS };
+export { DEVICE_CODE_INTERVAL_SECONDS, DEVICE_CODE_TTL_SECONDS };
 
 /**
  * Constant-time string comparison for two equal-length hex digests. A plain
@@ -63,8 +68,7 @@ function digestsEqual(left, right) {
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
   /** @type {Map<string, Device>} */
@@ -122,7 +126,7 @@ export function createMemoryStore(options = {}) {
      * @returns {Promise<{status: "unknown"|"expired"|"pending"}
      *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null, createdAt: number}}>}
      */
-pollDeviceCode(deviceCode) {
+    pollDeviceCode(deviceCode) {
       return signin.pollDeviceCode(deviceCode);
     },
 
@@ -143,7 +147,7 @@ pollDeviceCode(deviceCode) {
      * @param {{kind?: string, name?: string}} [request]
      */
     async mintKey(account, request = {}) {
-      const kind = (request.kind ?? "agent");
+      const kind = request.kind ?? "agent";
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
@@ -170,7 +174,13 @@ pollDeviceCode(deviceCode) {
       };
       devices.set(device.id, device);
       byAccessKeyId.set(accessKeyId, device.id);
-      return { keyId, accessKeyId, secret, prefix: device.prefix, capabilities: device.capabilities };
+      return {
+        keyId,
+        accessKeyId,
+        secret,
+        prefix: device.prefix,
+        capabilities: device.capabilities,
+      };
     },
 
     /**

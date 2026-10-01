@@ -1,12 +1,9 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  DEVICE_CODE_TTL_SECONDS,
-  createD1DeviceSigninStore,
-} from "../src/device-signin.js";
+import { test } from "node:test";
+import { SESSION_COOKIE } from "../../../src/accounts.js";
+import { createD1DeviceSigninStore, DEVICE_CODE_TTL_SECONDS } from "../src/device-signin.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
-import { SESSION_COOKIE } from "../../../src/accounts.js";
 
 // A minimal D1 stand-in for the device sign-in store: it implements the exact
 // statements device-signin.js prepares, over Maps, so two store instances share

@@ -15,9 +15,10 @@
 // request before this handler runs. The account is the sign-in flow's
 // (drive#130), copied onto the code row by the store; approving no longer
 // makes an account, it attaches the person who already signed in.
-import { json, errorResponse } from "./http.js";
-import { failureMessage } from "../../../src/messages.js";
+
 import { isSameOriginRequest } from "../../../src/email-send.js";
+import { failureMessage } from "../../../src/messages.js";
+import { errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
@@ -50,14 +51,17 @@ const HTML_ESCAPES = Object.freeze({
  * @param {unknown} text
  */
 function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)]);
+  return String(text).replace(
+    /[&<>"']/g,
+    (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)],
+  );
 }
 
 /**
  * The approval page. A static shell with the code from the query string
  * echoed into the form, escaped; nothing else is rendered from the request.
  * @param {{userCode?: string, notice?: string}} [options]
- */function approvePage({ userCode = "", notice = "" } = {}) {
+ */ function approvePage({ userCode = "", notice = "" } = {}) {
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -280,7 +284,9 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  const userCode = String(read.userCode ?? "").trim().toUpperCase();
+  const userCode = String(read.userCode ?? "")
+    .trim()
+    .toUpperCase();
   if (userCode === "") {
     return approvePageError("", "Type the code from the terminal.");
   }

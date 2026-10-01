@@ -23,7 +23,7 @@
 // (`{id, name, email}`, resolved by the src/status.js `signedInAccount` gate);
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
-import { newId, nowSeconds, run, first, sha256Hex } from "./db.js";
+import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 
 // How long a device code is good for, and how often the CLI may poll
 // (RFC 8628's device_code and interval). Ten minutes is long enough to find a
@@ -93,8 +93,7 @@ function accountFields(account) {
  */
 export function createMemoryDeviceSigninStore(options = {}) {
   const now = options.now ?? (() => Date.now());
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
 
   /** @type {Map<string, {deviceCode: string, userCode: string, name: string, status: string, accountId: string|null, createdAt: number, expiresAt: number}>} */
   const byDeviceCode = new Map();
@@ -161,9 +160,10 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return { error: "expired-code" };
       }
       if (code.status !== "approved") {
-        const own = account === undefined
-          ? { id: newId("acct"), name: code.name, email: null }
-          : accountFields(account);
+        const own =
+          account === undefined
+            ? { id: newId("acct"), name: code.name, email: null }
+            : accountFields(account);
         accounts.set(own.id, own);
         code.accountId = own.id;
         code.status = "approved";
@@ -235,8 +235,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
  */
 export function createD1DeviceSigninStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
 
   /** @param {unknown} row */
   function asCode(row) {
@@ -288,7 +287,11 @@ export function createD1DeviceSigninStore(db, options = {}) {
      */
     async approveDeviceCode(userCode, account) {
       const row = asCode(
-        await first(db, "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE user_code = ?1", userCode),
+        await first(
+          db,
+          "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE user_code = ?1",
+          userCode,
+        ),
       );
       if (row === null) {
         return { error: "unknown-code" };
@@ -315,7 +318,11 @@ export function createD1DeviceSigninStore(db, options = {}) {
           userCode,
         );
         const stored = asCode(
-          await first(db, "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE user_code = ?1", userCode),
+          await first(
+            db,
+            "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE user_code = ?1",
+            userCode,
+          ),
         );
         if (stored === null || stored.account.id === "") {
           // The row vanished between the update and this read, or the update
@@ -339,7 +346,11 @@ export function createD1DeviceSigninStore(db, options = {}) {
     async pollDeviceCode(deviceCode) {
       const hash = await sha256Hex(deviceCode);
       const row = asCode(
-        await first(db, "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE device_code_hash = ?1", hash),
+        await first(
+          db,
+          "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE device_code_hash = ?1",
+          hash,
+        ),
       );
       if (row === null) {
         return { status: "unknown" };
@@ -365,9 +376,10 @@ export function createD1DeviceSigninStore(db, options = {}) {
         "UPDATE device_codes SET status = 'used' WHERE device_code_hash = ?1 AND status = 'approved'",
         hash,
       );
-      const changes = consumed && typeof consumed === "object" && "meta" in consumed
-        ? Number(/** @type {{meta?: {changes?: number}}} */ (consumed).meta?.changes ?? 0)
-        : 0;
+      const changes =
+        consumed && typeof consumed === "object" && "meta" in consumed
+          ? Number(/** @type {{meta?: {changes?: number}}} */ (consumed).meta?.changes ?? 0)
+          : 0;
       if (changes === 0) {
         return { status: "expired" };
       }
