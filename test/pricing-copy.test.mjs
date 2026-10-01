@@ -10,20 +10,16 @@
 // "live page says $23, meta says $16" split is the two tests at the bottom:
 // every price the page, the tags and llms.txt render is the one
 // monthlyBillUsd() computes, and the whole bill is that rule, not per-TB caps.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { monthlyBillForStoredTb } from "../src/billing.js";
 import { PRICE, rivalMonthlyUsd } from "../src/pricing.js";
-import { monthlyBillForStoredTb } from "../src/billing.js";import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
+import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
-const page = readFileSync(
-  new URL("../public/index.html", import.meta.url),
-  "utf8",
-);
-const llms = readFileSync(
-  new URL("../public/llms.txt", import.meta.url),
-  "utf8",
-);
+const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const llms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
 // HTML entities the spec's plain-text copy is written with, folded so a test
 // asserts on the words a reader sees, not on the markup. &nbsp; becomes a
 // plain space so a sentence is compared as one string; the shipped page may
@@ -49,6 +45,7 @@ const billForAllMonth = monthlyBillForStoredTb;
 // Dollars, the way the page writes them: no cents where there are none, cents
 // where the rule produces them ($12.80). Built from the computed bill, so the
 // example rows and the arithmetic cannot disagree.
+/** @param {number} amount */
 function usd(amount) {
   return `$${amount.toFixed(2).replace(/\.00$/, "")}`;
 }
@@ -56,6 +53,7 @@ function usd(amount) {
 // The bill's own cents, for the worked-example rows the issue prints them in
 // ("$15 after the free $1"): the storage the ceiling charges and what is
 // left after the credit, both from the same call as the rest of the file.
+/** @param {number} tb */
 function billCents(tb) {
   const bill = billForAllMonth(tb);
   return {
@@ -81,11 +79,7 @@ test("the headline is the rate, as the spec says", () => {
     ["public/llms.txt", llms],
     ["the tab title", page.slice(0, page.indexOf("</title>"))],
   ]) {
-    assert.equal(
-      text.includes("$20"),
-      false,
-      `${name} must not carry the dropped "$20" headline`,
-    );
+    assert.equal(text.includes("$20"), false, `${name} must not carry the dropped "$20" headline`);
   }
 });
 
@@ -132,11 +126,11 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
   // 5 TB = $40 against Space $63; folded #86 (the bill now takes the $1 off)
   // says the rows show what the bill charges. Both figures are on each row,
   // both computed by src/billing.js's monthBillCents().
-  for (const [label, tb] of [
+  for (const [label, tb] of /** @type {Array<[string, number]>} */ ([
     ["800 GB kept all month", 0.8],
     ["2 TB kept all month", 2],
     ["5 TB kept all month", 5],
-  ]) {
+  ])) {
     const row = exampleRow(label);
     const { storage, afterCredit } = billCents(tb);
     assert.ok(
@@ -150,20 +144,23 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
   }
   // The rival comparison, by the rival's own rule (build-spec.md): $15 a month
   // plus $12 for each TB after the first.
-  for (const [label, tb, space] of [
+  for (const [label, tb, space] of /** @type {Array<[string, number, string]>} */ ([
     ["2 TB kept all month", 2, "$27"],
     ["5 TB kept all month", 5, "$63"],
-  ]) {
+  ])) {
     assert.equal(rivalMonthlyUsd(tb).toFixed(0), space.slice(1));
-    assert.ok(
-      exampleRow(label).includes(space),
-      `the ${label} row must carry Space ${space}`,
-    );
+    assert.ok(exampleRow(label).includes(space), `the ${label} row must carry Space ${space}`);
   }
   // Pinned, so the rows cannot be quietly re-derived into something else.
   assert.match(words, /800 GB kept all month[\s\S]{0,200}?\$12[\s\S]{0,120}?\$11/);
-  assert.match(words, /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$15[\s\S]{0,80}?\(Space \$27\)/);
-  assert.match(words, /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$39[\s\S]{0,80}?\(Space \$63\)/);
+  assert.match(
+    words,
+    /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$15[\s\S]{0,80}?\(Space \$27\)/,
+  );
+  assert.match(
+    words,
+    /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$39[\s\S]{0,80}?\(Space \$63\)/,
+  );
 });
 
 test("the superseded per-TB caps are gone from the page", () => {
@@ -175,11 +172,7 @@ test("the superseded per-TB caps are gone from the page", () => {
     ["public/llms.txt", llms],
   ]) {
     for (const stale of ["$15 a TB", "$23", "first TB never past", "Extra TBs"]) {
-      assert.equal(
-        text.includes(stale),
-        false,
-        `${file} must not carry the superseded "${stale}"`,
-      );
+      assert.equal(text.includes(stale), false, `${file} must not carry the superseded "${stale}"`);
     }
   }
 });
@@ -194,7 +187,9 @@ test("the ceiling math is the spec's plateau, not per-TB caps", () => {
   // comes off (#76). So the cap is flat at $12 until 1.5 TB and only then
   // rises at $8 a TB. 800 GB meters at $16 and bills the $12 cap; 1.6 TB
   // meters at $32 and caps at $12.80.
+  /** @param {number} tb */
   const storage = (tb) => billForAllMonth(tb).storageUsd;
+  /** @param {number} tb */
   const bill = (tb) => billForAllMonth(tb).billUsd;
   assert.equal(storage(0), 0, "an empty drive bills nothing");
   assert.equal(storage(0.5), 10, "500 GB all month is 2¢/GB");
@@ -262,7 +257,9 @@ test("the page's ceiling prose names the cap from config", () => {
   // And the credit, the same way the bill does it (#76): the rows charge what
   // the cap allows, less the $1, so the note has to say so.
   assert.ok(
-    examplesNote().includes(`less the free $${PRICE.freeMonthlyUsd}, so 2 TB is $${billForAllMonth(2).billUsd}`),
+    examplesNote().includes(
+      `less the free $${PRICE.freeMonthlyUsd}, so 2 TB is $${billForAllMonth(2).billUsd}`,
+    ),
     "the examples note must state the figure the bill charges after the credit",
   );
 });
@@ -274,8 +271,16 @@ test("the worked-example helpers fail closed on a size that cannot be billed", (
   // a NaN, a string. (The pre-#23 test asserted this on cappedMonthlyBillUsd(),
   // which the issue replaced; the guarantee moves with the function.)
   for (const bad of [-1, Number.NaN, "2", undefined, null]) {
-    assert.throws(() => monthlyBillForStoredTb(bad), TypeError, `monthlyBillForStoredTb(${String(bad)}) must throw`);
-    assert.throws(() => rivalMonthlyUsd(bad), TypeError, `rivalMonthlyUsd(${String(bad)}) must throw`);
+    assert.throws(
+      () => monthlyBillForStoredTb(bad),
+      TypeError,
+      `monthlyBillForStoredTb(${String(bad)}) must throw`,
+    );
+    assert.throws(
+      () => rivalMonthlyUsd(bad),
+      TypeError,
+      `rivalMonthlyUsd(${String(bad)}) must throw`,
+    );
   }
   assert.equal(monthlyBillForStoredTb(0).storageUsd, 0, "an empty drive is a size, not an error");
   assert.equal(rivalMonthlyUsd(0), PRICE.rival.monthlyUsd, "an empty drive is the rival's floor");
@@ -286,6 +291,7 @@ test("the bill's figures are exact cents, not a rounding near-miss", () => {
   // monthBillCents(), which is integer cents end to end. Asserting on the
   // cents means a future rounding change fails here with the exact number,
   // instead of a float equality that only holds while the arithmetic lands.
+  /** @param {number} tb */
   const cents = (tb) => {
     const bill = monthlyBillForStoredTb(tb);
     return {
@@ -347,7 +353,11 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
     assert.ok(seen.includes(required), `the page must carry ${required}`);
   }
   // llms.txt, twice: the summary line and the Pricing section.
-  assert.equal(llms.split(PRICE.ceiling).length - 1, 2, "llms.txt must carry the ceiling sentence twice");
+  assert.equal(
+    llms.split(PRICE.ceiling).length - 1,
+    2,
+    "llms.txt must carry the ceiling sentence twice",
+  );
   // The shipped inline JSON-LD, not just the object src/seo.js builds:
   // test/seo.test.mjs deep-equals the whole parsed block against
   // softwareApplicationLd(), and this checks the two price strings on the
@@ -355,7 +365,10 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   // stays right.
   const jsonLd = page.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
   assert.ok(jsonLd, "the page must ship the JSON-LD block");
-  assert.ok(jsonLd[1].includes(PRICE.ceiling), "the shipped JSON-LD must carry the ceiling sentence");
+  assert.ok(
+    jsonLd[1].includes(PRICE.ceiling),
+    "the shipped JSON-LD must carry the ceiling sentence",
+  );
   assert.ok(jsonLd[1].includes(PRICE.rule), "the shipped JSON-LD must carry the bill rule");
   // The JSON-LD offer, which a crawler reads instead of the prose.
   const ld = softwareApplicationLd();
@@ -378,12 +391,12 @@ test("llms.txt's worked examples are the computed bills", () => {
     ),
     "llms.txt's 60%-full figure must be the computed bill",
   );
-  for (const [tb, label] of [
+  for (const [tb, label] of /** @type {Array<[number, string]>} */ ([
     [0.8, "800 GB kept all month"],
     [1.6, "1.6 TB"],
     [2, "2 TB"],
     [5, "5 TB"],
-  ]) {
+  ])) {
     const { storage, afterCredit } = billCents(tb);
     assert.ok(
       llms.includes(`${label} = ${afterCredit}`),
@@ -415,10 +428,7 @@ test("nothing the spec forbids appears anywhere on the page", () => {
 });
 
 test("the sign-up points at the waitlist API and works without JavaScript", () => {
-  assert.match(
-    page,
-    /<form[^>]+action="\/api\/waitlist"[^>]+method="post"/i,
-  );
+  assert.match(page, /<form[^>]+action="\/api\/waitlist"[^>]+method="post"/i);
   assert.match(page, /name="email"/i);
   assert.match(page, /type="email"/i);
 });
@@ -432,17 +442,14 @@ test("no unsourced claims appear anywhere on the page", () => {
   // The owner's review of PR #17: "We have no SOC 2, and unsourced claims
   // are a hold." Single sign-on is marked planned where the Business box
   // names it, since the Business tier is built after v1.
-  assert.equal(
-    words.includes("SOC 2"),
-    false,
-    "the page must not claim a SOC 2 report",
-  );
+  assert.equal(words.includes("SOC 2"), false, "the page must not claim a SOC 2 report");
   assert.match(words, /single sign-on \(planned\)/);
 });
 
 // The text of one <dd>, for the worked-example rows, as a reader sees it. The
 // label is the row's <dt> as written, so the row is found by what a reader
 // reads rather than by a number re-formatted here.
+/** @param {string} label */
 function exampleRow(label) {
   const from = words.indexOf(label);
   assert.ok(from >= 0, `the ${label} row is missing from the page`);
@@ -450,6 +457,7 @@ function exampleRow(label) {
 }
 
 // The text of a class-marked paragraph, read between its tags.
+/** @param {string} className */
 function paragraph(className) {
   const from = words.indexOf(`<p class="${className}">`);
   assert.ok(from >= 0, `the .${className} paragraph is missing from the page`);
@@ -461,6 +469,7 @@ const examplesNote = () => paragraph("examples-note");
 
 // Every <meta name=... content=...> and <meta property=... content=...> pair,
 // as [name, content], so one assertion covers all of them.
+/** @param {string} html */
 function metaContents(html) {
   return [...html.matchAll(/<meta\s+(name|property)="([^"]+)"\s+content="([^"]*)"/g)].map(
     (match) => [`${match[1]}=${match[2]}`, match[3]],

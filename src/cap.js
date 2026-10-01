@@ -44,8 +44,9 @@
 // here is testable now with no storage account, and a provider that already
 // implements swapToReadOnly() is used for the cap swap rather than this module
 // re-doing revoke-then-mint by hand.
-import { usageSummary } from "./billing.js";
+
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
+import { usageSummary } from "./billing.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
 // path too, so a key that has only delete is still a key the cap has to take
@@ -99,12 +100,14 @@ function sameCapabilities(left, right) {
  * Whether a key can change storage. A key with no readable capabilities cannot
  * be proven writable, so it is not one: the plan must never both revoke it and
  * claim the account is safely read-only.
- * @param {{capabilities?: unknown}} key
+ * @param {unknown} key
  */
 export function isWriteCapable(key) {
+  const fields =
+    typeof key === "object" && key !== null ? /** @type {{capabilities?: unknown}} */ (key) : {};
   return (
-    Array.isArray(key?.capabilities) &&
-    key.capabilities.some(
+    Array.isArray(fields.capabilities) &&
+    fields.capabilities.some(
       /** @param {unknown} name */
       (name) => typeof name === "string" && WRITE_CAPABILITIES.includes(name),
     )
@@ -112,33 +115,31 @@ export function isWriteCapable(key) {
 }
 
 /**
- * @param {CapKey} key
- * @returns {CapKey}
- */
-/**
- * @param {CapKey} key
+ * @param {unknown} key
  * @returns {CapKey}
  */
 function checkedKey(key) {
   if (typeof key !== "object" || key === null) {
     throw new TypeError(`A key row must be an object, got ${String(key)}`);
   }
+  const row =
+    /** @type {{keyId?: unknown, kind?: unknown, prefix?: unknown, capabilities?: unknown, cappedFrom?: unknown}} */ (
+      key
+    );
   for (const field of /** @type {const} */ (["keyId", "kind", "prefix"])) {
-    if (typeof key[field] !== "string" || key[field].length === 0) {
-      throw new TypeError(`A key row needs ${field} as a non-empty string, got ${String(key[field])}`);
+    if (typeof row[field] !== "string" || row[field].length === 0) {
+      throw new TypeError(
+        `A key row needs ${field} as a non-empty string, got ${String(row[field])}`,
+      );
     }
   }
-  if (!Array.isArray(key.capabilities)) {
-    throw new TypeError(`A key row needs capabilities as a list, got ${String(key.capabilities)}`);
+  if (!Array.isArray(row.capabilities)) {
+    throw new TypeError(`A key row needs capabilities as a list, got ${String(row.capabilities)}`);
   }
-  // cappedFrom is the cap swap's own record (issue #74) and is optional: a key
-  // the customer narrowed itself has none. When present it must be a real
-  // list of capability names — a half-written row is a data error to surface,
-  // not a "no record, carry on" that would guess a key's scope.
-  if (key.cappedFrom !== undefined && key.cappedFrom !== null) {
-    checkedCappedFrom(key);
+  if (row.cappedFrom !== undefined && row.cappedFrom !== null) {
+    checkedCappedFrom(/** @type {CapKey} */ (/** @type {unknown} */ (row)));
   }
-  return key;
+  return /** @type {CapKey} */ (/** @type {unknown} */ (row));
 }
 
 /**
@@ -147,7 +148,8 @@ function checkedKey(key) {
  */
 function checkedCappedFrom(key) {
   const taken = key.cappedFrom;
-  const names = Array.isArray(taken) && taken.every((name) => typeof name === "string" && name.length > 0);
+  const names =
+    Array.isArray(taken) && taken.every((name) => typeof name === "string" && name.length > 0);
   if (!names || taken.length === 0) {
     throw new TypeError(
       `A key row's cappedFrom must be a non-empty list of capability names, ` +
@@ -199,7 +201,7 @@ function targetCapabilities(key, state) {
   // A kind this table does not know is a data error, and the throw below says
   // so: the lookup is asked only after the kind was checked, so the index is a
   // kind the table holds.
-  const scope = Object.prototype.hasOwnProperty.call(WRITE_SCOPE_BY_KIND, key.kind)
+  const scope = Object.hasOwn(WRITE_SCOPE_BY_KIND, key.kind)
     ? WRITE_SCOPE_BY_KIND[/** @type {keyof typeof WRITE_SCOPE_BY_KIND} */ (key.kind)]
     : undefined;
   if (!scope) {
@@ -228,48 +230,45 @@ function targetCapabilities(key, state) {
  * never keeps a spent record. Keys already in the right shape are left out,
  * which is what makes a second run a no-op.
  *
- * @param {CapKey[]} keys the account's key rows
- * @param {{state: "active"|"read_only"}} cap a capStatus() result
+ * @param {unknown} keys the account's key rows
+ * @param {unknown} cap a capStatus() result
  * @returns {CapSwapPlan}
  */
 export function capSwapPlan(keys, cap) {
   if (!Array.isArray(keys)) {
     throw new TypeError(`capSwapPlan needs the account's keys as an array, got ${String(keys)}`);
   }
-  if (typeof cap !== "object" || cap === null || (cap.state !== "active" && cap.state !== "read_only")) {
+  if (typeof cap !== "object" || cap === null) {
     throw new TypeError(
       `capSwapPlan needs a capStatus result whose state is "active" or "read_only", got ${String(Object(cap)?.state)}`,
     );
   }
+  const capFields = /** @type {{state?: unknown}} */ (cap);
+  if (capFields.state !== "active" && capFields.state !== "read_only") {
+    throw new TypeError(
+      `capSwapPlan needs a capStatus result whose state is "active" or "read_only", got ${String(capFields.state)}`,
+    );
+  }
+  const state = capFields.state;
   const swaps = [];
   for (const key of keys) {
-    checkedKey(key);
-    const capabilities = targetCapabilities(key, cap.state);
+    const row = checkedKey(key);
+    const capabilities = targetCapabilities(row, state);
     if (capabilities) {
       swaps.push(
         Object.freeze({
-          keyId: key.keyId,
-          kind: key.kind,
-          prefix: key.prefix,
+          keyId: row.keyId,
+          kind: row.kind,
+          prefix: row.prefix,
           capabilities,
-          // At the cap the swap records what it took, so the raise below can
-          // give back exactly that. The record is the capabilities the key
-          // actually held, unfiltered: the cap must still stop writes on a row
-          // whose kind has no scope entry, and holding the record to the kind's
-          // scope is the restore's job (grantedCapabilities). Below the cap the
-          // record is spent and cleared, which keeps a second raise from
-          // minting a second key.
-          cappedFrom:
-            cap.state === "read_only"
-              ? Object.freeze([...key.capabilities])
-              : null,
+          cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
         }),
       );
     }
   }
   const changed = swaps.length > 0;
   return Object.freeze({
-    state: cap.state,
+    state,
     swaps: Object.freeze(swaps),
     // The mount holds the old key until it is restarted, so a swap that
     // changed something is also a restart for the CLI to perform. With nothing
@@ -277,13 +276,13 @@ export function capSwapPlan(keys, cap) {
     // account finds exactly that.
     mount: Object.freeze({
       restart: changed,
-      reason: !changed ? null : cap.state === "read_only" ? "cap-reached" : "cap-raised",
+      reason: !changed ? null : state === "read_only" ? "cap-reached" : "cap-raised",
     }),
   });
 }
 
 /**
- * @param {{mint: Function, revoke: Function, swapToReadOnly?: Function}} provider
+ * @param {unknown} provider
  * @returns {{mint: Function, revoke: Function, swapToReadOnly?: Function}} the same
  *   provider, so the caller can hold the narrowed one after the check
  */
@@ -291,13 +290,16 @@ function checkedProvider(provider) {
   if (typeof provider !== "object" || provider === null) {
     throw new TypeError(`applyCapSwap needs a key provider, got ${String(provider)}`);
   }
-  if (typeof provider.mint !== "function" || typeof provider.revoke !== "function") {
+  const fields = /** @type {{mint?: unknown, revoke?: unknown, swapToReadOnly?: unknown}} */ (
+    provider
+  );
+  if (typeof fields.mint !== "function" || typeof fields.revoke !== "function") {
     throw new Error(
       "The key provider needs mint(scope) and revoke(keyId) to swap keys; " +
         "a provider without them would report a swap it did not make",
     );
   }
-  return provider;
+  return /** @type {{mint: Function, revoke: Function, swapToReadOnly?: Function}} */ (fields);
 }
 
 /**
@@ -316,28 +318,29 @@ function checkedProvider(provider) {
  * caller has it; the plan itself is unchanged and re-runnable.
  *
  * @param {CapSwapPlan} plan a capSwapPlan() result
- * @param {{mint: Function, revoke: Function, swapToReadOnly?: Function}} provider
- * @returns {Promise<{state: "active"|"read_only", applied: ReadonlyArray<object>, mount: {restart: boolean, reason: string|null}}>}
+ * @param {unknown} provider
+ * @returns {Promise<{state: "active"|"read_only", applied: ReadonlyArray<CapKey & {minted: unknown}>, mount: {restart: boolean, reason: string|null}}>}
  */
 export async function applyCapSwap(plan, provider) {
   if (typeof plan !== "object" || plan === null || !Array.isArray(plan.swaps)) {
     throw new TypeError("applyCapSwap needs a capSwapPlan result.");
   }
-  checkedProvider(provider);
+  const keys = checkedProvider(provider);
+  /** @type {Array<CapKey & {minted: unknown}>} */
   const applied = [];
   for (const swap of plan.swaps) {
     /** @type {unknown} */
     let minted;
     if (plan.state === "read_only") {
-      if (typeof provider.swapToReadOnly === "function") {
-        minted = await provider.swapToReadOnly(swap.keyId);
+      if (typeof keys.swapToReadOnly === "function") {
+        minted = await keys.swapToReadOnly(swap.keyId);
       } else {
-        await provider.revoke(swap.keyId);
-        minted = await provider.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+        await keys.revoke(swap.keyId);
+        minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
       }
     } else {
-      minted = await provider.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
-      await provider.revoke(swap.keyId);
+      minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+      await keys.revoke(swap.keyId);
     }
     applied.push(Object.freeze({ ...swap, minted }));
   }
@@ -351,12 +354,9 @@ export async function applyCapSwap(plan, provider) {
 /**
  * Enforcement in one call: read the month's numbers the way the usage page
  * reads them, decide the cap from them, swap the keys the state implies.
- * @param {{usage: object, keys: Array<object>}} account `usage` is a
- *   usageSummary() input: gbMinutes, peakGb, storedGb, storedDaily,
- *   downloadBytes, averageStoredGb, capUsd, cardAdded.
- * @param {{usage: Parameters<typeof usageSummary>[0], keys: CapKey[]}} account
- * @param {{mint: Function, revoke: Function, swapToReadOnly?: Function}} provider
- * @returns {Promise<{state: "active"|"read_only", applied: ReadonlyArray<object>, mount: {restart: boolean, reason: string|null}}>}
+ * @param {{usage: Parameters<typeof usageSummary>[0], keys: unknown}} account
+ * @param {unknown} provider
+ * @returns {Promise<{state: "active"|"read_only", applied: ReadonlyArray<CapKey & {minted: unknown}>, mount: {restart: boolean, reason: string|null}}>}
  */
 export async function enforceCap(account, provider) {
   if (typeof account !== "object" || account === null) {
@@ -366,10 +366,7 @@ export async function enforceCap(account, provider) {
   // ceiling), so enforcement reads the same cap status the usage page shows
   // instead of a second version of the rule.
   const summary = usageSummary(/** @type {Parameters<typeof usageSummary>[0]} */ (account.usage));
-  const plan = capSwapPlan(
-    /** @type {CapKey[]} */ (account.keys),
-    summary.cap,
-  );
+  const plan = capSwapPlan(/** @type {CapKey[]} */ (account.keys), summary.cap);
   return applyCapSwap(plan, provider);
 }
 
@@ -387,7 +384,7 @@ const CAP_DOLLARS = /^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/;
  * the default is a stricter choice, and the drive honours a stricter choice
  * (src/billing.js, the card-less $1 cap) — `drive cap 0` is a deliberate way
  * to make a drive read-only with nothing deleted.
- * @param {string|number} input
+ * @param {unknown} input
  */
 export function parseCapUsd(input) {
   if (typeof input === "number") {

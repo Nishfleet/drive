@@ -22,8 +22,8 @@ import {
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
   syncStatus,
+  UPLOAD_LABEL,
   uploadProgress,
 } from "./status.js";
 
@@ -54,14 +54,17 @@ export function pollIntervalMs() {
 /**
  * The connection line for one state: the module's `what` and `next`, in that
  * order, so the live line and the CLI's words are the same words.
- * @param {"waiting"|"connected"|"unreachable"} state
+ * @param {unknown} state
  * @returns {{what: string, next: string}}
  */
 export function connectionLine(state) {
-  const entry = CONNECTION_COPY[state];
+  const entry =
+    typeof state === "string" && Object.hasOwn(CONNECTION_COPY, state)
+      ? CONNECTION_COPY[/** @type {keyof typeof CONNECTION_COPY} */ (state)]
+      : undefined;
   if (!entry) {
     throw new TypeError(
-      `no connection copy for "${state}"; add it to CONNECTION_COPY in src/status.js`,
+      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in src/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -76,9 +79,7 @@ export function connectionStates() {
   // The keys are the module's own three states; the annotation is the union
   // the rest of the page switches on, which the page and this list must agree
   // on or a rendered line would have no arm to show.
-  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (
-    Object.keys(CONNECTION_COPY)
-  );
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
 /**
@@ -89,9 +90,7 @@ export function connectionStates() {
 export function stepLines() {
   return FIRST_RUN_STEPS.map((step, index) => {
     if (typeof step.title !== "string" || typeof step.body !== "string") {
-      throw new TypeError(
-        `step ${index} needs a title and a body, got ${JSON.stringify(step)}`,
-      );
+      throw new TypeError(`step ${index} needs a title and a body, got ${JSON.stringify(step)}`);
     }
     return { title: step.title, body: step.body };
   });
@@ -99,14 +98,17 @@ export function stepLines() {
 
 /**
  * The empty-state words for one screen, so "nothing here" never stands alone.
- * @param {"devices"|"activity"} screen
+ * @param {unknown} screen
  * @returns {{what: string, next: string}}
  */
 export function emptyState(screen) {
-  const entry = EMPTY_STATES[screen];
+  const entry =
+    typeof screen === "string" && Object.hasOwn(EMPTY_STATES, screen)
+      ? EMPTY_STATES[/** @type {keyof typeof EMPTY_STATES} */ (screen)]
+      : undefined;
   if (!entry) {
     throw new TypeError(
-      `no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`,
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -166,17 +168,21 @@ export function deviceSyncState(device) {
  * The page's state cell: the label alone, or the label and the detail. The
  * em dash joining them is the page's own punctuation, so it is applied here
  * and never lands in the module's words.
- * @param {{label: string, detail: string|null}} status
+ * @param {unknown} status
  * @returns {string}
  */
 export function stateCellText(status) {
-  if (!status || typeof status.label !== "string") {
+  if (typeof status !== "object" || status === null) {
     throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  if (status.detail === null || status.detail === undefined) {
-    return status.label;
+  const cell = /** @type {{label?: unknown, detail?: unknown}} */ (status);
+  if (typeof cell.label !== "string") {
+    throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  return `${status.label} — ${status.detail}`;
+  if (cell.detail === null || cell.detail === undefined) {
+    return cell.label;
+  }
+  return `${cell.label} — ${cell.detail}`;
 }
 
 // The module's words for a device that has never synced, resolved once, so the
@@ -189,11 +195,11 @@ const NO_SYNC_LABEL = syncStatus({}, 0).label;
  * is a report, and the page's own poll failure is the `unreachable` state,
  * not a device's.
  * @param {string|number|Date|null|undefined} value
- * @param {number} now
+ * @param {unknown} now
  * @returns {number|null}
  */
 export function ageMs(value, now = Date.now()) {
-  if (!Number.isFinite(now)) {
+  if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
   }
   // A Date's own epoch value; Date.parse takes the string form, and an absent
@@ -238,14 +244,12 @@ export function lastSyncText(device) {
  * on this page is the waiting state — the Mac has not signed in — and the
  * waiting line names the real next step. It is never `unreachable`: the
  * service answered. Any other non-ok status is.
- * @param {number} status
+ * @param {unknown} status
  * @returns {"waiting"|"unreachable"}
  */
 export function connectionStateForStatus(status) {
   if (!Number.isInteger(status)) {
-    throw new TypeError(
-      `connectionStateForStatus needs a status code, got ${String(status)}`,
-    );
+    throw new TypeError(`connectionStateForStatus needs a status code, got ${String(status)}`);
   }
   return status === 401 ? "waiting" : "unreachable";
 }
@@ -254,20 +258,19 @@ export function connectionStateForStatus(status) {
  * Whether a poll payload means the Mac has connected: a device signed in
  * inside the module's window, or the service's own `connected` state. The
  * page stops its timer when this is true.
- * @param {StatusPayload} payload
+ * @param {unknown} payload
  * @param {number} now
  * @returns {boolean}
  */
 export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
-    throw new TypeError(
-      `isConnected needs a payload object, got ${String(payload)}`,
-    );
+    throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
-  if (payload.state === "connected") {
+  const body = /** @type {{state?: unknown, devices?: unknown}} */ (payload);
+  if (body.state === "connected") {
     return true;
   }
-  const devices = Array.isArray(payload.devices) ? payload.devices : [];
+  const devices = Array.isArray(body.devices) ? body.devices : [];
   return devices.some(
     /** @param {DeviceRow} device */
     (device) => {
@@ -489,7 +492,7 @@ async function poll() {
     response = await fetch(statusEndpoint(), {
       headers: { accept: "application/json" },
     });
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -503,7 +506,7 @@ async function poll() {
   let payload;
   try {
     payload = await response.json();
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -511,7 +514,15 @@ async function poll() {
     showConnection("unreachable");
     return;
   }
-  render(payload);
+  try {
+    render(payload);
+  } catch {
+    // Every fetch and every body read above is guarded, and so is the render:
+    // this poll runs on a timer and on every tab that comes back, so a payload
+    // this page cannot draw has one home, and it is the unreachable state the
+    // user already knows. A rejection out of here would be an unhandled one.
+    showConnection("unreachable");
+  }
 }
 
 // Copy has to work on a plain http page too, where the async clipboard API is
@@ -540,7 +551,7 @@ function wireCopyButton() {
       }
       note.textContent = "Copied. Paste it into your terminal.";
       button.textContent = "Copied";
-    } catch (error) {
+    } catch (_error) {
       note.textContent = "Could not copy it for you. Select the command and copy it by hand.";
       button.textContent = "Copy";
     }
@@ -558,13 +569,16 @@ function start() {
   renderConnection();
   wireCopyButton();
 
-  poll();
-  timer = window.setInterval(poll, pollIntervalMs());
+  // poll() owns its own failures: every fetch and every body read is guarded
+  // and renders the unreachable state, so it cannot reject. The `void` says
+  // that out loud for the linter (drive issue #92) and keeps it true.
+  void poll();
+  timer = window.setInterval(() => void poll(), pollIntervalMs());
   document.addEventListener("visibilitychange", () => {
     // A tab in the background has the browser's own cadence; check the moment
     // it comes back so the line is never stale on return.
     if (document.visibilityState === "visible" && timer !== null) {
-      poll();
+      void poll();
     }
   });
 }

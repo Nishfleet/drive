@@ -81,11 +81,11 @@ export const PRICE = Object.freeze({
  * (build-spec.md: Space is $15 a month plus $12 for each TB after the first).
  * Kept beside the config so the worked-example comparison is one rule, not a
  * number typed next to each row.
- * @param {number} tb the stored size in TB
+ * @param {unknown} tb the stored size in TB
  * @param {{monthlyUsd: number, extraTbUsd: number}} [rival]
  */
 export function rivalMonthlyUsd(tb, rival = PRICE.rival) {
-  if (!Number.isFinite(tb) || tb < 0) {
+  if (typeof tb !== "number" || !Number.isFinite(tb) || tb < 0) {
     throw new TypeError(`rivalMonthlyUsd needs a stored size in TB of 0 or more, got ${tb}`);
   }
   return rival.monthlyUsd + rival.extraTbUsd * Math.max(tb - 1, 0);

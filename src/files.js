@@ -14,11 +14,30 @@
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
 // test and no-configuration stand-in, and renders every state for a screenshot.
-import { formatBytes, unauthorizedResponse } from "./status.js";
+
 import { isSameOriginRequest } from "./email-send.js";
+import { failureMessage } from "./messages.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
+/**
+ * The characters a path may not carry: the ASCII control range and DEL plus a
+ * backslash, spelled with String.fromCharCode rather than a `` escape in a
+ * literal, because a control range in a regex literal is exactly the thing
+ * that is unreadable in review and easy to typo into the wrong range (drive
+ * issue #92). The Web Files page cannot import this module and builds the same
+ * class from the same call; test/files.test.mjs reads the shipped page and
+ * fails when the two drift apart.
+ */
+export const CONTROL_OR_BACKSLASH = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}\\\\]`,
+);
+/** The same control range with a slash in it, for a name the browser hands over. */
+export const CONTROL_OR_SLASH = new RegExp(
+  `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
+  "g",
+);
 /** The listing, download, upload and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
@@ -51,14 +70,49 @@ const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "m4v", "ogv"];
 const AUDIO_EXTENSIONS = ["mp3", "m4a", "aac", "ogg", "oga", "wav", "flac"];
 const PDF_EXTENSIONS = ["pdf"];
 const TEXT_EXTENSIONS = [
-  "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml",
-  "toml", "ini", "log", "html", "htm", "css", "js", "mjs", "cjs", "ts", "tsx",
-  "jsx", "sh", "bash", "py", "rb", "go", "rs", "java", "c", "h", "sql", "xml",
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "tsv",
+  "json",
+  "jsonl",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "html",
+  "htm",
+  "css",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "tsx",
+  "jsx",
+  "sh",
+  "bash",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "java",
+  "c",
+  "h",
+  "sql",
+  "xml",
 ];
 
 /** The value neighbors read: what a file's extension or type says it is. */
 export const FILE_KINDS = Object.freeze([
-  "folder", "image", "video", "audio", "pdf", "text", "file",
+  "folder",
+  "image",
+  "video",
+  "audio",
+  "pdf",
+  "text",
+  "file",
 ]);
 
 /**
@@ -135,8 +189,7 @@ export function previewContentType(name, storedContentType = "") {
   // Only text and pdf are pinned here; the media kinds have no entry and fall
   // through to the kind-matched check below, so the lookup is asked only for
   // the two kinds that are in it.
-  const pinned =
-    kind === "text" || kind === "pdf" ? PREVIEW_CONTENT_TYPES[kind] : undefined;
+  const pinned = kind === "text" || kind === "pdf" ? PREVIEW_CONTENT_TYPES[kind] : undefined;
   if (pinned) {
     return pinned;
   }
@@ -179,13 +232,11 @@ export function previewCopy(kind) {
   // throw below rather than be a type error at the call site: the page asks
   // for copy by kind, so the check is what keeps a new kind from shipping
   // silent. The fallback is the shape of a miss, never a return.
-  const entry = /** @type {Record<string, {open: string, fallback: string}>} */ (
-    PREVIEW_COPY
-  )[kind];
+  const entry = /** @type {Record<string, {open: string, fallback: string}>} */ (PREVIEW_COPY)[
+    kind
+  ];
   if (!entry) {
-    throw new Error(
-      `no preview copy for "${kind}"; add it to PREVIEW_COPY in src/files.js`,
-    );
+    throw new Error(`no preview copy for "${kind}"; add it to PREVIEW_COPY in src/files.js`);
   }
   return entry;
 }
@@ -254,7 +305,7 @@ export function validatePath(path) {
   if (path === "/") {
     return { path: "/" };
   }
-  if (/[\u0000-\u001f\u007f\\]/.test(path)) {
+  if (CONTROL_OR_BACKSLASH.test(path)) {
     return { path: "", error: "That path contains a character we cannot use." };
   }
   const segments = path.split("/").slice(1);
@@ -269,7 +320,7 @@ export function validatePath(path) {
 /**
  * A listing as the page shows it: folders first, then files, each sorted by
  * name the way a person reads them (case-insensitive, numbers in order).
- * @param {Array<{name: string, kind?: string}>} entries
+ * @param {unknown} entries
  * @returns {Array<{name: string, kind?: string}>}
  */
 export function sortEntries(entries) {
@@ -344,7 +395,7 @@ export function trashName(path, at) {
 /**
  * The reverse: the drive path and deleted-at time a trash name carries, or
  * null for anything that is not one of ours.
- * @param {string} name
+ * @param {unknown} name
  */
 export function parseTrashName(name) {
   if (typeof name !== "string") {
@@ -417,11 +468,7 @@ export function formatWhen(value, now = Date.now()) {
   // A Date's own epoch value; a number is already epoch milliseconds. Date.parse
   // takes the string, so the union is narrowed to the form it can parse.
   const time =
-    typeof value === "number"
-      ? value
-      : value instanceof Date
-        ? value.getTime()
-        : Date.parse(value);
+    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(time)) {
     throw new TypeError(`formatWhen needs a date, got ${String(value)}`);
   }
@@ -470,7 +517,7 @@ export function restorableUntil(deletedAt) {
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
  * @property {(path: string) => Promise<FileRead>} read
- * @property {(path: string, body: ReadableStream, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
  * @property {(from: string, to: string) => Promise<void>} copy A copy the
  *   storage itself makes, no bytes through this Worker: `drive branch`
@@ -501,9 +548,7 @@ export function accountPrefix(account) {
   if (account.id.length === 0 || account.id.includes("/")) {
     // A prefix cut mid-segment would put one account's root inside another's
     // folder, so the id is checked rather than escaped.
-    throw new TypeError(
-      `an account id is one path segment, got "${account.id}"`,
-    );
+    throw new TypeError(`an account id is one path segment, got "${account.id}"`);
   }
   return `u/${account.id}`;
 }
@@ -611,8 +656,7 @@ export function scopeStore(store, account) {
         return entries;
       }
       return entries.filter(
-        (entry) =>
-          entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
+        (entry) => entry.kind !== "folder" || !SYSTEM_FOLDERS.includes(entry.name),
       );
     },
     // async, so a refused path is a rejected promise on every method rather
@@ -642,9 +686,7 @@ export function scopeStore(store, account) {
  */
 async function memoryEtag(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -742,8 +784,7 @@ export function createS3Store(config) {
   }
   const base = `${String(endpoint).replace(/\/$/, "")}/${bucket}`;
   /** @param {string} path */
-  const urlFor = (path) =>
-    `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const urlFor = (path) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
   return {
     /** @param {string} path */
@@ -924,6 +965,7 @@ export function nextContinuationToken(xml) {
   if (typeof xml !== "string") {
     throw new TypeError("nextContinuationToken needs the XML body");
   }
+  void xml;
   const token = tagValue(xml, "NextContinuationToken");
   return token === "" ? null : token;
 }
@@ -940,7 +982,8 @@ export function fileRows(entries, now = Date.now()) {
   const row = (entry) => ({
     name: entry.name,
     path: entry.path || "",
-    kind: entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
+    kind:
+      entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
     sizeLabel: entry.kind === "folder" ? "" : formatBytes(entry.size || 0),
     whenLabel: entry.modified ? formatWhen(entry.modified, now) : "",
   });
@@ -973,7 +1016,9 @@ export function trashRows(entries, now = Date.now()) {
         restorable,
         // Past the window the button is gone, and the one line says why.
         restoreLabel: restorable ? "Restore" : "Past the 30 days",
-        goneLabel: restorable ? "" : "This one has been gone 30 days. Restoring it is not possible.",
+        goneLabel: restorable
+          ? ""
+          : "This one has been gone 30 days. Restoring it is not possible.",
       };
     })
     .filter(Boolean)
@@ -1034,7 +1079,7 @@ function plain(message, status) {
  * use. A caller with no Origin (curl, the CLI) passes that check; the gate
  * above is what actually keeps a stranger out.
  * @param {Request} request
- * @param {import("./files.js").FileStore|null} store the shared, unscoped store,
+ * @param {import("./files.js").FileStore|null|undefined} store the shared, unscoped store,
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
@@ -1044,7 +1089,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return unauthorizedResponse();
   }
   if (!store) {
-    return json({ error: "The drive is not configured on this deployment." }, 503);
+    return json({ error: failureMessage("drive-not-configured") }, 503);
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
@@ -1088,10 +1133,15 @@ export async function handleFilesRequest(request, store, account, now = Date.now
  * @param {string} name
  * @returns {string} the name as a single safe path segment
  */
-function safeFileName(name) {
+// Exported for the parity gate in test/files.test.mjs, which runs the Web
+// Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
+// two would store a name differently (drive#92). Also for src/share.js: an
+// upload request takes a dropped file's name exactly the way the Files page
+// does, so there is one name cleaner rather than two that can drift.
+export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
-    .replace(/[\/\\\u0000-\u001f]/g, "-");
+    .replace(CONTROL_OR_SLASH, "-");
   return cleaned.length > 0 && cleaned !== "." && cleaned !== ".." ? cleaned : "upload";
 }
 
@@ -1100,7 +1150,9 @@ function safeFileName(name) {
  * @param {string} name
  * @returns {string}
  */
-function joinPath(folder, name) {
+// Exported for src/share.js, for the same one-place reason: an upload request
+// writes into one folder the way the Files page does, not a second way.
+export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
 }
@@ -1117,10 +1169,15 @@ async function readJsonObject(request) {
   try {
     body = await request.json();
   } catch {
-    return { error: "The request body is not valid JSON." };
+    // A body that is not JSON at all is the same failure as a body that is
+    // JSON but not an object: both are "this request did not carry a JSON
+    // object", and both routes that read a body say it in the table's words, so
+    // a form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return { error: failureMessage("json-object-needed") };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   return { body };
 }
@@ -1209,7 +1266,7 @@ async function readRequest(request, url, store, download) {
     return json({ error: `We could not read that file: ${String(error)}` }, 500);
   }
   if (!object) {
-    return plain("That file is not here.", 404);
+    return plain(failureMessage("file-not-found"), 404);
   }
   const name = drivePath.split("/").pop() || "";
   const headers = /** @type {Record<string, string>} */ ({
@@ -1256,7 +1313,7 @@ async function uploadRequest(request, url, store) {
   }
   const name = url.searchParams.get("name") || "";
   if (!name) {
-    return json({ error: "Name the file you are uploading." }, 400);
+    return json({ error: failureMessage("upload-needs-name") }, 400);
   }
   const path = joinPath(checked.path, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
@@ -1282,7 +1339,10 @@ async function deleteRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The `if` is the narrowing: readJsonObject's error arm is the only one
+    // without a body, so error is a string here and there is nothing to fall
+    // back to, and no second copy of the sentence to keep in step.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {
@@ -1291,9 +1351,13 @@ async function deleteRequest(request, store, now) {
   try {
     const object = await store.read(checked.path);
     if (!object) {
-      return json({ error: "That file is not here." }, 404);
+      return json({ error: failureMessage("file-not-found") }, 404);
     }
-    await store.write(trashStorePath(trashName(checked.path, now)), object.body, object.contentType);
+    await store.write(
+      trashStorePath(trashName(checked.path, now)),
+      object.body,
+      object.contentType,
+    );
     await store.remove(checked.path);
   } catch (cause) {
     return json({ error: `We could not delete that file: ${String(cause)}` }, 500);
@@ -1313,7 +1377,9 @@ async function restoreRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The same narrowing as the delete path above, and the same words: the
+    // restore route reads a body exactly as the delete route does.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {

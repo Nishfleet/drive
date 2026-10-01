@@ -1,49 +1,38 @@
 {
-	"compilerOptions": {
-		"target": "es2024",
-		// The Workers runtime is the target, so `dom` covers the fetch platform
-		// globals the Worker code shares with a browser (Request, Response,
-		// URL, crypto, console) and `.cloudflare/types/index.d.ts` — the file
-		// `cf workers types` generates from cloudflare.config.ts and the
-		// toolchain's own workerd build — supplies the Workers-only ones
-		// (D1Database, RateLimit, URLPattern, the bound Env). That is the
-		// runtime type set this issue asks for; there is no hand-rolled copy of
-		// either to drift.
-		"lib": ["es2024", "dom"],
-		"module": "preserve",
-		"moduleResolution": "bundler",
-		// The runtime types are the generated `.cloudflare/types/index.d.ts`
-		// pulled in by the include list below, and Node's own types for
-		// src/render-docs.js (the docs build script) and the node:test trees
-		// once drive#162 brings them into scope. Both are named here rather than
-		// auto-loaded by package name, so the set is this list.
-		"types": ["node"],
-		"strict": true,
-		"noEmit": true,
-		"allowImportingTsExtensions": true,
-		"isolatedModules": true,
-		"verbatimModuleSyntax": true,
-		"skipLibCheck": true,
-		"allowJs": true,
-		// drive issue #91: the repo is JSDoc-typed JavaScript, so this is the
-		// switch that makes those annotations load-bearing instead of comments.
-		"checkJs": true
-	},
-	// The product code — the pricing Worker in src/ and the api Worker in
-	// workers/api/src — checked with checkJs and strict. The two test trees
-	// (test/** and workers/api/test/**) are drive#162's remainder: their fakes
-	// are not yet JSDoc-typed, and the 415 errors are all there, so including
-	// them here would leave `npm run typecheck` (and therefore `npm test`) red
-	// on main instead of green. #162 adds them back to this include list when
-	// they are clean; this is the tracked exclusion, not a silent one.
-	"include": [
-		"src",
-		"workers/api/src",
-		"cloudflare.config.ts",
-		".cloudflare/types/index.d.ts"
-	],
-	"exclude": [
-		"test",
-		"workers/api/test"
-	]
+  "compilerOptions": {
+    "target": "es2024",
+    // The Workers runtime is the target, so `dom` covers the fetch platform
+    // globals the Worker code shares with a browser (Request, Response,
+    // URL, crypto, console) and `.cloudflare/types/index.d.ts` — the file
+    // `cf workers types` generates from cloudflare.config.ts and the
+    // toolchain's own workerd build — supplies the Workers-only ones
+    // (D1Database, RateLimit, URLPattern, the bound Env). That is the
+    // runtime type set this issue asks for; there is no hand-rolled copy of
+    // either to drift.
+    "lib": ["es2024", "dom"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    // The runtime types are the generated `.cloudflare/types/index.d.ts`
+    // pulled in by the include list below, and Node's own types for
+    // src/render-docs.js (the docs build script) and the node:test trees
+    // once drive#162 brings them into scope. Both are named here rather than
+    // auto-loaded by package name, so the set is this list.
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    // drive issue #91: the repo is JSDoc-typed JavaScript, so this is the
+    // switch that makes those annotations load-bearing instead of comments.
+    "checkJs": true
+  },
+  // The product code — the pricing Worker in src/ and the api Worker in
+  // workers/api/src — checked with checkJs and strict. The two test trees
+  // (test/** and workers/api/test/**) were drive#162's remainder: their fakes
+  // are now JSDoc-typed, so including them here leaves `npm run typecheck`
+  // (and therefore `npm test`) green on main. This is the tracked inclusion.
+  "include": ["src", "test", "workers", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"]
 }

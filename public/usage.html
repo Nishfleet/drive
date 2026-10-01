@@ -503,7 +503,7 @@ async function readMonth() {
   let response;
   try {
     response = await fetch(USAGE_ENDPOINT, { headers: { accept: "application/json" } });
-  } catch (error) {
+  } catch (_error) {
     sayUnreachable();
     return;
   }
@@ -521,7 +521,7 @@ async function readMonth() {
   let summary;
   try {
     summary = await response.json();
-  } catch (error) {
+  } catch (_error) {
     sayUnreachable();
     return;
   }

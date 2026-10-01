@@ -9,30 +9,10 @@
 //    read by calling the builders rather than by grepping a shipped HTML file
 //    for a sentence. The old drift tests are gone with the second copy of the
 //    words they policed.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
-import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import {
-  CONNECTED_WINDOW_MS,
-  CONNECTION_COPY,
-  EMPTY_STATES,
-  FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
-  POLL_INTERVAL_MS,
-  STATUS_ENDPOINT,
-  SYNCED_WINDOW_MS,
-  SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
-  connectionStatus,
-  formatBytes,
-  handleFirstRunStatusRequest,
-  signedInAccount,
-  syncStatus,
-  uploadProgress,
-} from "../src/status.js";
-import { createAccountStore } from "../src/accounts.js";
+import { test } from "node:test";
 import {
   ageMs,
   connectionLine,
@@ -51,15 +31,46 @@ import {
   uploadFragments,
   uploadLine,
 } from "../src/get-started.js";
+import worker from "../src/index.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import {
+  CONNECTED_WINDOW_MS,
+  CONNECTION_COPY,
+  connectionStatus,
+  EMPTY_STATES,
+  FIRST_RUN_STEPS,
+  formatBytes,
+  handleFirstRunStatusRequest,
+  INSTALL_COMMAND,
+  POLL_INTERVAL_MS,
+  STATUS_ENDPOINT,
+  SYNC_ERROR_NOTIFICATION,
+  SYNCED_WINDOW_MS,
+  signedInAccount,
+  syncStatus,
+  UPLOAD_LABEL,
+  uploadProgress,
+} from "../src/status.js";
+import { createTestAuth, signIn } from "./harness.mjs";
+
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 
 // The page's shell, read for the structure the module fills and the script tag
 // that loads it. Its copy is not read here: there is no copy in it to drift.
 const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
-const pricingPage = readFileSync(
-  new URL("../public/index.html", import.meta.url),
-  "utf8",
-);
+const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
+/** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
 
 test("the install command is drive init, and the steps walk through it", () => {
@@ -83,10 +94,7 @@ test("a device that has not signed in reads as waiting, not connected", () => {
   assert.equal(connectionStatus({}, now).state, "waiting");
   assert.equal(connectionStatus({ lastSeenAt: null }, now).state, "waiting");
   // A sign-in from an hour ago is not the sign-in the page is waiting for.
-  assert.equal(
-    connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state,
-    "waiting",
-  );
+  assert.equal(connectionStatus({ lastSeenAt: iso(60 * 60 * 1000) }, now).state, "waiting");
 });
 
 test("a device inside the connected window flips the page to connected", () => {
@@ -95,10 +103,7 @@ test("a device inside the connected window flips the page to connected", () => {
   assert.equal(status.what, CONNECTION_COPY.connected.what);
   assert.equal(status.next, CONNECTION_COPY.connected.next);
   // The window's edge belongs to connected, one millisecond past it does not.
-  assert.equal(
-    connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state,
-    "connected",
-  );
+  assert.equal(connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS) }, now).state, "connected");
   assert.equal(
     connectionStatus({ lastSeenAt: iso(CONNECTED_WINDOW_MS + 1) }, now).state,
     "waiting",
@@ -130,10 +135,11 @@ test("every connection state carries one what and one next", () => {
 });
 
 test("each sync state is named, with a sync error above everything", () => {
-  assert.deepEqual(
-    syncStatus({ syncError: "storage down" }, now),
-    { state: "error", label: "Sync error", detail: "storage down" },
-  );
+  assert.deepEqual(syncStatus({ syncError: "storage down" }, now), {
+    state: "error",
+    label: "Sync error",
+    detail: "storage down",
+  });
   assert.equal(syncStatus({ pendingBytes: 12 }, now).state, "syncing");
   assert.equal(syncStatus({ lastSyncAt: null }, now).state, "never");
   assert.equal(syncStatus({}, now).state, "never");
@@ -151,10 +157,7 @@ test("'Synced' only stays true inside the sync window", () => {
     "Quiet for a while",
   );
   // A pending upload outranks a recent sync: the drive is still working.
-  assert.equal(
-    syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state,
-    "syncing",
-  );
+  assert.equal(syncStatus({ lastSyncAt: iso(1000), pendingBytes: 4 }, now).state, "syncing");
 });
 
 test("upload progress reads as a person reads it", () => {
@@ -243,27 +246,41 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
   assert.equal(forgot.status, 401);
 });
 
-test("a request can only prove an account through a session the store minted", async () => {
+test("a request can only prove an account through a session Better Auth minted", async () => {
   // The sign-in flow has landed (build step 9, #10), so signedInAccount() is
   // no longer null for every caller — but it is still closed by default. With
-  // no store a cookie proves nothing, and a made-up one proves nothing either:
-  // the token is looked up by digest, so a value the browser chose is not a
-  // session (north star: Safe).
+  // no auth a cookie proves nothing, and a made-up one proves nothing either:
+  // the token is verified against the database that minted it, so a value the
+  // browser chose is not a session (north star: Safe).
   assert.equal(await signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
   const madeUp = new Request("https://drive.test/api/first-run-status", {
-    headers: { cookie: "drive_session=made-up" },
+    headers: { cookie: "__Secure-drive.session_token=made-up" },
   });
-  assert.equal(await signedInAccount(madeUp, createAccountStore()), null);
-  assert.equal(await signedInAccount(madeUp, null), null, "no store, no account");
+  const other = createTestAuth();
+  assert.equal(await signedInAccount(madeUp, other.auth), null);
+  assert.equal(await signedInAccount(madeUp, null), null, "no auth, no account");
 
-  // The other half: a start makes or finds the account, and the store holds
-  // only digests, so there is no session token to read back out of it. The
-  // finish step is the only way to get one, and the full round trip is proved
-  // through the Worker in test/account-gate.test.mjs.
-  const store = createAccountStore({ sendCode: () => {} });
-  const started = await store.startSignin({ method: "email", email: "someone@example.com" });
-  assert.ok(started.account.id, "a start makes or finds the account");
-  assert.equal(await store.accountForSession("made-up"), null);
+  // The other half: a sign-in link mints a session and the auth holds it, so
+  // the cookie the browser carries reads back as an account. The cookie is
+  // only a session in the database that minted it — an instance over another
+  // database refuses the same value (north star: Safe).
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "someone@example.com");
+  const proved = await signedInAccount(
+    new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+    made.auth,
+  );
+  assert.ok(proved);
+  assert.equal(proved.email, "someone@example.com", "a minted session is an account");
+  assert.equal(proved.id, account.id, "the session names the account that signed in");
+  assert.equal(
+    await signedInAccount(
+      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      other.auth,
+    ),
+    null,
+    "a session belongs to the database that minted it",
+  );
 });
 
 test("the status endpoint names the one method it serves", () => {
@@ -282,15 +299,12 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // sign-in flow yet the Worker's gate is closed, so the route answers 401.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
-    const response = await worker.fetch(
-      new Request(`https://drive.test${path}`),
-      env,
-    );
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
     assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
-  const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
+  const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
 });
 
@@ -302,7 +316,7 @@ test("the pricing page links to the first-run page", () => {
   assert.ok(link > 0, "the pricing page must link to /get-started");
   const formEnd = pricingPage.indexOf("</form>");
   assert.ok(
-    pricingPage.indexOf("<nav class=\"footer-nav\"") > formEnd,
+    pricingPage.indexOf('<nav class="footer-nav"') > formEnd,
     "the get-started link must sit outside the waitlist form",
   );
 });
@@ -362,7 +376,13 @@ test("an unreadable device date is reported, never shown as a number", () => {
 
 test("the page's Devices table has a last-sync column and its empty states", () => {
   assert.match(shell, /<th scope="col">Last sync<\/th>/);
-  for (const id of ["devices", "devices-body", "devices-empty", "activity-empty", "activity-progress"]) {
+  for (const id of [
+    "devices",
+    "devices-body",
+    "devices-empty",
+    "activity-empty",
+    "activity-progress",
+  ]) {
     assert.ok(shell.includes(`id="${id}"`), `the shell must carry #${id}`);
   }
 });
@@ -384,10 +404,16 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
     assert.ok(!shell.includes(entry.next), `the shell must not carry "${entry.next}"`);
   }
   for (const step of FIRST_RUN_STEPS) {
-    assert.ok(!shell.includes(step.body), `the shell must not carry the step text for "${step.title}"`);
+    assert.ok(
+      !shell.includes(step.body),
+      `the shell must not carry the step text for "${step.title}"`,
+    );
   }
   for (const fragment of Object.values(UPLOAD_LABEL)) {
-    assert.ok(!shell.includes(fragment), `the shell must not carry the upload fragment "${fragment}"`);
+    assert.ok(
+      !shell.includes(fragment),
+      `the shell must not carry the upload fragment "${fragment}"`,
+    );
   }
   assert.ok(
     !shell.includes(SYNC_ERROR_NOTIFICATION.title),
@@ -422,7 +448,10 @@ test("the renderer shows the module's words: command, steps, states, fragments",
   assert.equal(installCommand(), INSTALL_COMMAND);
   assert.equal(statusEndpoint(), STATUS_ENDPOINT);
   assert.equal(pollIntervalMs(), POLL_INTERVAL_MS);
-  assert.deepEqual(stepLines(), FIRST_RUN_STEPS.map((s) => ({ title: s.title, body: s.body })));
+  assert.deepEqual(
+    stepLines(),
+    FIRST_RUN_STEPS.map((s) => ({ title: s.title, body: s.body })),
+  );
   assert.deepEqual(emptyState("devices"), EMPTY_STATES.devices);
   assert.deepEqual(emptyState("activity"), EMPTY_STATES.activity);
   assert.deepEqual(syncErrorNotification(), SYNC_ERROR_NOTIFICATION);
@@ -541,9 +570,6 @@ test("the page raises one desktop notification per sync error", () => {
   const functionStart = source.indexOf("function maybeAskToNotify");
   assert.ok(functionStart > 0, "the renderer must gate its notification prompt");
   for (const match of source.matchAll(/Notification\.requestPermission\(\)/g)) {
-    assert.ok(
-      match.index > functionStart,
-      "the prompt is a function, not a load-time prompt",
-    );
+    assert.ok(match.index > functionStart, "the prompt is a function, not a load-time prompt");
   }
 });

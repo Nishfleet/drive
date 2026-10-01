@@ -1,7 +1,9 @@
 // Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
 // so node --test can exercise every branch without a running runtime.
-import { failureMessage } from "./messages.js";
+
 import isEmail from "validator/lib/isEmail.js";
+import { failureMessage } from "./messages.js";
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
 export const SOURCES = ["pricing-page", "business"];
 
@@ -17,17 +19,23 @@ class BodyTooLargeError extends Error {
 
 /**
  * Returns { email, source } or { error }.
- * @param {{email?: unknown, source?: unknown}} input
+ * `input` is the parsed body, which is `unknown`: the guard this function is
+ * exists to reject a body that is not an object at all, so its parameter
+ * cannot be typed as if it already were one. After the by-shape check the
+ * value is bound to one local so each property read below is a plain object
+ * read (drive #162).
+ * @param {unknown} input
  * @returns {{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
  */
 export function validateSignup(input) {
   if (typeof input !== "object" || input === null) {
     return { error: "Send a JSON object with an email." };
   }
-  if (typeof input.email !== "string") {
+  const signup = /** @type {{email?: unknown, source?: unknown}} */ (input);
+  if (typeof signup.email !== "string") {
     return { error: "An email address is required." };
   }
-  const email = input.email.trim().toLowerCase();
+  const email = signup.email.trim().toLowerCase();
   if (email.length === 0) {
     return { error: "An email address is required." };
   }
@@ -37,7 +45,7 @@ export function validateSignup(input) {
   if (!isEmail(email)) {
     return { error: "That does not look like an email address." };
   }
-  const requested = typeof input.source === "string" ? input.source.trim() : "";
+  const requested = typeof signup.source === "string" ? signup.source.trim() : "";
   const source = SOURCES.includes(requested) ? requested : SOURCES[0];
   return { email, source };
 }
@@ -78,17 +86,13 @@ export async function recordSignup(db, signup) {
     return { already: false, row: row(inserted) };
   }
   const existing = await db
-    .prepare(
-      "SELECT id, email, source, created_at FROM waitlist WHERE email = ?1",
-    )
+    .prepare("SELECT id, email, source, created_at FROM waitlist WHERE email = ?1")
     .bind(signup.email)
     .first();
   if (!existing) {
     // The conflict fired but the row is gone: concurrent delete, or a schema
     // that does not match. Fail loud rather than pretend the sign-up landed.
-    throw new Error(
-      `waitlist insert reported a conflict for ${signup.email} but no row exists`,
-    );
+    throw new Error(`waitlist insert reported a conflict for ${signup.email} but no row exists`);
   }
   return { already: true, row: row(existing) };
 }
@@ -213,48 +217,28 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     // Checked before the limiter: a cross-site POST is rejected without
     // reading a body or touching D1, so it does no work and must not spend
     // the caller's quota (drive#28 review).
-    return json(
-      { error: "Sign-ups are only accepted from the drive page." },
-      403,
-    );
+    return json({ error: "Sign-ups are only accepted from the drive page." }, 403);
   }
 
   // Rate limit next: it bounds the work that actually costs something (a body
-  // parse and a D1 write), so it runs before both.
-  if (!rateLimiter) {
-    // The binding is missing on this deployment: an operator problem, so it
-    // goes to the log by name and the visitor gets the table's generic words,
-    // never a binding name or a stack. Fails closed: an unrate-limited
-    // endpoint is the case this binding exists to prevent.
-    console.error("waitlist: WAITLIST_RATE_LIMITER binding is not configured");
-    return json({ error: failureMessage("unexpected") }, 503);
-  }
-  const clientIp = request.headers.get("cf-connecting-ip");
-  if (clientIp === null) {
-    // Cloudflare always sets this header, so a request without it is not one
-    // of ours. It lands in one shared bucket on purpose: without a client IP
-    // there is nothing finer to key on, and the log line is how an operator
-    // sees it.
-    console.warn(
-      "waitlist: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
-    );
-  }
-  const key = clientIp === null ? "unknown" : clientIp;
-  let success;
-  try {
-    ({ success } = await rateLimiter.limit({ key }));
-  } catch (error) {
-    // A rate limiter failure is an operator problem. Fail closed with the
-    // table's generic words; the reason stays in the log.
-    console.error("waitlist: the rate limiter call failed", error);
-    return json({ error: failureMessage("unexpected") }, 503);
-  }
-  if (!success) {
-    return json(
-      { error: failureMessage("rate-limited") },
-      429,
-      { "retry-after": "60" },
-    );
+  // parse and a D1 write), so it runs before both. One shared helper
+  // (src/rate-limit.js) owns the client-IP key, the fail-closed answer and the
+  // 429, so the waitlist, the sign-in route (drive issue #147) and the api
+  // Worker's device routes cannot state two different limits or two different
+  // refusals. Unchanged behaviour: a missing binding, a failed call and a
+  // refusal are exactly the three answers this used to give.
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: rateLimiter,
+        key: clientIpKey(request, "waitlist"),
+        name: "WAITLIST_RATE_LIMITER",
+      },
+    ],
+    "waitlist",
+  );
+  if (limited) {
+    return limited;
   }
 
   if (!db) {

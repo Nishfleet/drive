@@ -15,30 +15,47 @@
 // Fakes stand in for the runtime: a D1 database whose read resolves, one
 // whose read rejects, and one whose read never settles (the hang case). No
 // network, no Worker runtime, matching the rest of the suite.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
-  HEALTH_PATH,
-  HEALTH_TIMEOUT_MS,
-  REQUIRED_BINDINGS,
   checkHealth,
   d1Bindings,
+  HEALTH_PATH,
+  HEALTH_TIMEOUT_MS,
   handleHealthRequest,
+  REQUIRED_BINDINGS,
 } from "../src/health.js";
+import worker from "../src/index.js";
+
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 
 /**
  * A D1Database stub answering only what the check uses. `mode` decides how
  * the trivial read resolves, so one fake covers healthy, broken and hung.
  */
+/** @param {"ok"|"error"|"hang"} [mode] */
 function fakeD1(mode = "ok") {
+  /** @type {string[]} */
   const calls = [];
   return {
     calls,
+    /** @param {string} sql */
     prepare(sql) {
       calls.push(sql);
       return {
+        /** @param {{signal?: AbortSignal}} [options] */
         all(options = {}) {
           if (mode === "error") {
             return Promise.reject(
@@ -50,13 +67,13 @@ function fakeD1(mode = "ok") {
           if (mode === "hang") {
             // Never settles on its own. The signal is what must end it, or
             // the race must — that is the whole point of the bound.
-            return new Promise((resolve, reject) => {
+            return new Promise((_resolve, reject) => {
               options.signal?.addEventListener("abort", () => {
                 reject(new Error("The operation was aborted."));
               });
             });
           }
-          return Promise.resolve({ results: [{ "1": 1 }] });
+          return Promise.resolve({ results: [{ 1: 1 }] });
         },
       };
     },
@@ -69,9 +86,11 @@ function fakeD1(mode = "ok") {
  * response of any kind, so the 404 is the expected answer there.
  */
 function fakeAssets() {
+  /** @type {Request[]} */
   const requests = [];
   return {
     requests,
+    /** @param {Request} request */
     async fetch(request) {
       requests.push(request);
       return request.url.includes("__health_probe__")
@@ -104,6 +123,10 @@ function fakeAssets() {
  */
 function fakeFetcher(assets = fakeAssets()) {
   return new Proxy(assets, {
+    /**
+     * @param {object} target
+     * @param {string | symbol} property
+     */
     get(target, property) {
       // `fetch` and the recorded requests are the real asset layer; anything
       // else is the stub answering a function, which is what caught the bug.
@@ -135,20 +158,24 @@ function fakeLimiter() {
  * The bindings a healthy deploy has, by the names cloudflare.config.ts
  * declares. A test that wants an unhealthy Worker drops or breaks one of
  * these, so every test starts from the real shape.
+ * @returns {Record<string, unknown>}
  */
 const HEALTHY_ENV = () => ({
   WAITLIST_DB: fakeD1("ok"),
   DRIVE_DB: fakeD1("ok"),
   ASSETS: fakeAssets(),
   WAITLIST_RATE_LIMITER: fakeLimiter(),
+  // The sign-in endpoint's two edge limits (drive issue #147): the route fails
+  // closed without either, so a healthy deploy is one with both bound.
+  SIGNIN_RATE_LIMITER: fakeLimiter(),
+  SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
 });
 
-const GET = (path = HEALTH_PATH) =>
-  new Request(`https://drive.test${path}`, { method: "GET" });
+const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
 
 // --- the healthy answer ---------------------------------------------------
 
-test("a healthy Worker answers 200 with {\"ok\":true}", async () => {
+test('a healthy Worker answers 200 with {"ok":true}', async () => {
   const response = await handleHealthRequest(GET(), HEALTHY_ENV());
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
@@ -159,7 +186,9 @@ test("the health answer is never cached", async () => {
   // monitor: it says all clear while the site is down.
   const response = await handleHealthRequest(GET(), HEALTHY_ENV());
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.match(response.headers.get("content-type"), /^application\/json/);
+  const type = response.headers.get("content-type");
+  assert.ok(type);
+  assert.match(type, /^application\/json/);
 });
 
 // --- the failing answer names the part -----------------------------------
@@ -170,6 +199,8 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -184,6 +215,8 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -196,6 +229,8 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -207,6 +242,8 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: { fetch: () => Promise.reject(new Error("asset manifest missing")) },
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -224,6 +261,8 @@ test("every bound D1 database is checked, not just the first", async () => {
     BILLING_DB: second,
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -240,7 +279,10 @@ test("d1Bindings finds the databases and ignores everything else", () => {
     EMAIL_SEND_TOKEN: "a-secret-value",
     MAIL_FROM: "drive@example.com",
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB", "DRIVE_DB"]);
+  assert.deepEqual(
+    d1Bindings(env).map((b) => b.name),
+    ["WAITLIST_DB", "DRIVE_DB"],
+  );
 });
 
 test("a binding that is not a database is never read as one", () => {
@@ -256,8 +298,13 @@ test("a binding that is not a database is never read as one", () => {
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
-  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB", "DRIVE_DB"]);
+  assert.deepEqual(
+    d1Bindings(env).map((b) => b.name),
+    ["WAITLIST_DB", "DRIVE_DB"],
+  );
 });
 
 test("a health poll over the real binding shapes answers ok, not ASSETS", async () => {
@@ -271,6 +318,8 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -288,6 +337,8 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     DRIVE_DB: fakeD1("ok"),
     ASSETS: assets,
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -304,6 +355,8 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -338,6 +391,8 @@ test("the failing body is the name and nothing else", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -359,10 +414,7 @@ test("the failing body is the name and nothing else", async () => {
  * account and an outage has to be observable to something that has none; the
  * route reads no account data, so being public exposes nothing.
  */
-const PUBLIC_API_ROUTES = Object.freeze([
-  "/api/waitlist",
-  HEALTH_PATH,
-]);
+const PUBLIC_API_ROUTES = Object.freeze(["/api/waitlist", HEALTH_PATH]);
 
 test("the endpoint needs no account, session or cookie", async () => {
   // Public by design and on the deny-by-default test's public allow-list
@@ -397,15 +449,8 @@ test("an account route is not on the public allow-list", () => {
   // The point of an explicit list: the account routes stay off it, so a
   // future deny-by-default test reading this list cannot accidentally treat
   // one of them as public.
-  for (const accountRoute of [
-    "/api/first-run-status",
-    "/api/files",
-    "/api/usage",
-  ]) {
-    assert.ok(
-      !PUBLIC_API_ROUTES.includes(accountRoute),
-      `${accountRoute} must not be public`,
-    );
+  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage"]) {
+    assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
   }
 });
 
@@ -417,10 +462,12 @@ test("the bound is a deadline shared by every dependency, not one per check", as
   // answer names the one that was still waiting.
   const hang = () => ({
     prepare: () => ({
-      all: ({ signal }) =>
-        new Promise((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(new Error("aborted")));
-        }),
+      /** @param {{signal?: AbortSignal}} [options] */
+      all({ signal } = {}) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
     }),
   });
   const env = {
@@ -430,6 +477,8 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     THIRD_DB: hang(),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -463,6 +512,8 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     },
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -500,13 +551,13 @@ test("the Worker routes the health path to the handler", async () => {
   // the monitor forever. Both spellings are checked, as the sibling routes do.
   const env = HEALTHY_ENV();
   for (const path of [HEALTH_PATH, `${HEALTH_PATH}/`]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 200, `${path} must reach the handler`);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.deepEqual(await response.json(), { ok: true });
   }
   // A path that is not health is still the asset layer's, untouched.
-  const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
+  const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
 });
 
@@ -515,17 +566,21 @@ test("the health check never spends a real caller's rate limit quota", async () 
   // probe has to be checked somehow and `limit()` is the only call it has, so
   // the key is asserted to carry no IP: a health poll must not eat the quota
   // of the very sign-ups the limiter exists to protect.
+  /** @type {string[]} */
   const keys = [];
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
+      /** @param {{key: string}} options */
       limit({ key }) {
         keys.push(key);
         return Promise.resolve({ success: true });
       },
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -538,17 +593,21 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
   // /api/health is public, so its limiter key has to change per call: a
   // stranger calling it in a loop must not exhaust one bucket and turn the
   // health answer red while everything else is fine.
+  /** @type {string[]} */
   const keys = [];
   const env = {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: {
+      /** @param {{key: string}} options */
       limit({ key }) {
         keys.push(key);
         return Promise.resolve({ success: true });
       },
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
@@ -575,12 +634,12 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // config is the source of truth, so the test reads its binding keys.
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
-  // Five today: ASSETS, WAITLIST_DB, DRIVE_DB, WAITLIST_RATE_LIMITER, EMAIL.
-  // The email token and sender stay undeclared so the deploy does not require
-  // them.
-  // exactly 5: the four required bindings plus the EMAIL three, which are
-  // the documented exception (src/health.js) — only the token-gated
-  // internal send route uses them, and probing would send mail.
+  // Every binding the config declares is declared as `NAME: bindings.x()`, so
+  // the count is the config's own and must equal the required list plus the
+  // EMAIL binding, which is the documented exception (src/health.js): only the
+  // token-gated internal send route uses it, and probing would send mail. The
+  // two sign-in edge limits (drive issue #147) are declared bindings, so they
+  // are on the required list and counted here.
   assert.equal(
     declared.length,
     REQUIRED_BINDINGS.length + 1,
@@ -622,6 +681,8 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -645,7 +706,73 @@ test("a limiter that denies the probe is still healthy", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.resolve({ success: false }),
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
+});
+
+// --- the sign-in endpoint's two edge limits (drive issue #147) -------------
+
+test("the sign-in edge limits are required bindings, so a deploy that lost one is named", async () => {
+  // src/signin.js answers 503 without either binding rather than mail an
+  // unbounded number of links, so a deploy that lost one is an outage this
+  // endpoint must report by name — the same rule the waitlist's limiter has.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    assert.ok(REQUIRED_BINDINGS.includes(name), `${name} must be a required binding`);
+    const env = HEALTHY_ENV();
+    delete env[name];
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503, `${name} missing must be a 503`);
+    assert.deepEqual(await response.json(), { ok: false, failing: name });
+  }
+});
+
+test("either sign-in limiter that throws is a 503 naming that one, not the other", async () => {
+  // The probe carries the binding's own name, so the alert says which of the
+  // two to look at rather than a shared label.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    const env = HEALTHY_ENV();
+    env[name] = {
+      limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+    };
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { ok: false, failing: name });
+    assert.ok(!body.includes("exploded"), "the raw error text never reaches the body");
+  }
+});
+
+test("each sign-in limiter is probed on a key of its own, never a client IP", async () => {
+  // The probe must not spend a real caller's quota (the same rule the
+  // waitlist's limiter probe follows), and each binding's key changes per call.
+  /** @type {{SIGNIN_RATE_LIMITER: string[], SIGNIN_GLOBAL_RATE_LIMITER: string[]}} */
+  const keys = { SIGNIN_RATE_LIMITER: [], SIGNIN_GLOBAL_RATE_LIMITER: [] };
+  /**
+   * @param {keyof typeof keys} name
+   */
+  const make = (name) => ({
+    /** @param {{key: string}} options */
+    limit({ key }) {
+      keys[name].push(key);
+      return Promise.resolve({ success: true });
+    },
+  });
+  const env = HEALTHY_ENV();
+  env.SIGNIN_RATE_LIMITER = make("SIGNIN_RATE_LIMITER");
+  env.SIGNIN_GLOBAL_RATE_LIMITER = make("SIGNIN_GLOBAL_RATE_LIMITER");
+  const first = await handleHealthRequest(GET(), env);
+  const second = await handleHealthRequest(GET(), env);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  /** @type {Array<keyof typeof keys>} */
+  const names = ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"];
+  for (const name of names) {
+    assert.equal(keys[name].length, 2, `${name} is probed once per poll`);
+    assert.match(keys[name][0], /^health-probe-/);
+    assert.ok(!keys[name][0].includes("."), `${name}'s probe key must not be a client IP`);
+    assert.notEqual(keys[name][0], keys[name][1], "each poll spends a bucket of its own");
+  }
 });

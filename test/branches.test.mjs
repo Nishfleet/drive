@@ -4,14 +4,15 @@
 // runs is the SQL these tests run. Storage is the in-memory FileStore
 // (src/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
 // own copy call is pinned separately in test/files.test.mjs.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
 import {
+  approveBranch,
   BRANCHES_ENDPOINT,
   BRANCHES_ROOT,
-  approveBranch,
   createBranch,
   diffBranch,
   discardBranch,
@@ -20,15 +21,22 @@ import {
   relativePath,
   sameFile,
 } from "../src/branches.js";
-import { BRANCHES_FOLDER } from "../src/files.js";
-import { createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
 
-// The D1 shape over a real SQLite database with the shipped migrations, the
-// adapter test/search.test.mjs uses, extended with `run` because the branches
-// table's writes are single statements.
+/**
+ * D1's types are the runtime's `declare abstract class` — its `raw` carries two
+ * generic overloads no JS object can express — so the adapter is typed here in
+ * full, every method named and JSDoc'd, and handed to the interface the modules
+ * import through one documented cast. Nothing inside hides an error: each
+ * method below checks on its own, and a method the modules call that is missing
+ * would fail at run time, not silently pass.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+ * @returns {SqliteD1}
+ */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of [
@@ -39,42 +47,150 @@ function makeD1() {
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const runOne = (sql, params) => {
+  /** The D1 meta a run answers with: every required field of the runtime's
+   * D1Meta, so a `D1Result` check is not fought.
+   * @returns {D1Meta & Record<string, unknown>} */
+  const meta = () => ({
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: 0,
+    last_row_id: 0,
+    changed_db: false,
+    changes: 0,
+  });
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {{results: Record<string, unknown>[], changes: number}}
+   */
+  const runOne = (sql, params = []) => {
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: sqlite.prepare(sql).all(...params) };
-    }
-    const info = sqlite.prepare(sql).run(...params);
-    return { success: true, meta: { changes: info.changes } };
-  };
-  return {
-    sqlite,
-    prepare(sql) {
       return {
-        bind(...params) {
-          return {
-            sql,
-            params,
-            async all() {
-              return runOne(sql, params);
-            },
-            async first() {
-              const row = sqlite.prepare(sql).get(...params);
-              return row === undefined ? null : row;
-            },
-            async run() {
-              return runOne(sql, params);
-            },
-          };
-        },
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
       };
-    },
-    async batch(statements) {
-      for (const statement of statements) {
-        runOne(statement.sql, statement.params);
-      }
-      return [];
-    },
+    }
+    const info = sqlite.prepare(prepared).run(...values);
+    return { results: [], changes: Number(info.changes) };
   };
+  /** The SQL and parameters each prepared statement carries, so batch() can
+   * run the statements the caller built and not re-derive them.
+   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
+  /**
+   * One prepared statement, the way D1 hands it back: bind() returns a
+   * statement carrying its own parameters, so the rest of the chain
+   * (all/first/run) runs the bound SQL.
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {D1PreparedStatement}
+   */
+  const statementFor = (sql, params = []) => {
+    const statement = /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        sql,
+        params,
+        /** @param {...unknown} values */
+        bind(...values) {
+          return statementFor(sql, values);
+        },
+        /**
+         * @template T
+         * @param {string} [colName]
+         * @returns {Promise<T|null>}
+         */
+        async first(colName) {
+          void colName;
+          const row = runOne(sql, params).results[0];
+          return row === undefined ? null : /** @type {T} */ (row);
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async all() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async run() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+      })
+    );
+    bound.set(statement, { sql, params });
+    return statement;
+  };
+  return /** @type {SqliteD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+      /** @param {string} sql */
+      prepare(sql) {
+        return statementFor(sql, []);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      async batch(statements) {
+        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
+        const results = [];
+        sqlite.exec("BEGIN");
+        try {
+          for (const statement of statements) {
+            const state = bound.get(statement);
+            if (!state) {
+              throw new Error("a statement was batch-ran that this adapter did not prepare");
+            }
+            results.push(runOne(state.sql, state.params));
+          }
+        } finally {
+          sqlite.exec("COMMIT");
+        }
+        return /** @type {D1Result<T>[]} */ (
+          results.map((result) => ({
+            results: /** @type {T[]} */ (result.results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          }))
+        );
+      },
+      /**
+       * D1's exec runs a multi-statement string; the tests never call it, but
+       * the adapter speaks the interface rather than being cast silent.
+       * @param {string} query
+       */
+      async exec(query) {
+        sqlite.exec(query);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * D1's session API is not part of what the modules under test use; a
+       * call would be a real bug, so it throws rather than standing in silently.
+       * @param {string} [constraintOrBookmark]
+       */
+      withSession(constraintOrBookmark) {
+        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+      },
+      async dump() {
+        throw new Error("a test adapter has no dump");
+      },
+    })
+  );
 }
 
 /** A fresh scoped drive with a small tree. */
@@ -87,18 +203,47 @@ async function driven() {
   return { raw, scoped, db: makeD1() };
 }
 
+/**
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} path
+ * @returns {Promise<string|null>}
+ */
 async function readText(store, path) {
   const object = await store.read(path);
   return object ? await new Response(object.body).text() : null;
 }
 
+/**
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} [body]
+ * @returns {Request}
+ */
 function request(method, path, body) {
+  /** @type {RequestInit} */
   const init = { method };
   if (body !== undefined) {
     init.headers = { "content-type": "application/json" };
     init.body = JSON.stringify(body);
   }
   return new Request(`https://drive.test${path}`, init);
+}
+
+// `approveBranch` and `discardBranch` each answer a union: the worked object or
+// a failure carrying a status. Every status assertion below is about the
+// failure arm, and `"status" in result` is that arm's discriminator, so the
+// status is read here once instead of through a cast at each call site.
+/**
+ * @param {unknown} result the union `approveBranch`/`discardBranch` answers
+ * @returns {number}
+ */
+function failedStatus(result) {
+  assert.equal(
+    typeof result === "object" && result !== null && "status" in result,
+    true,
+    `expected a failure with a status, got ${JSON.stringify(result)}`,
+  );
+  return /** @type {{status: number}} */ (result).status;
 }
 
 // ------------------------------------------------------------------ the keys
@@ -109,7 +254,7 @@ test("relativePath keys a branch file by its path under the source folder", () =
   assert.equal(relativePath("/", "/a.txt"), "a.txt");
   assert.equal(relativePath("/Photos", "/Notes.md"), null);
   assert.equal(relativePath("/Photos", "/Photos"), null);
-  assert.equal(relativePath("/Photos", 42), null);
+  assert.equal(relativePath("/Photos", /** @type {string} */ (/** @type {unknown} */ (42))), null);
 });
 
 test("sameFile is content first, then size and time, and never a missing file", () => {
@@ -143,7 +288,8 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   const row = db.sqlite
     .prepare("SELECT snapshot, state FROM branches WHERE account_id = ? AND name = ?")
     .get(ACCOUNT.id, "work");
-  const snapshot = JSON.parse(row.snapshot);
+  assert.ok(row, "the branch this test just created has a row");
+  const snapshot = JSON.parse(/** @type {string} */ (row.snapshot));
   assert.deepEqual(Object.keys(snapshot).sort(), ["a.txt", "sub/b.txt"]);
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
 });
@@ -163,7 +309,13 @@ test("a branch never shows up as a folder in the drive root", async () => {
   );
   // withoutTrash() agrees with the scoped store. A folder of that name
   // deeper in the tree is still a person's folder and is not hidden there.
-  assert.equal(withoutTrash([{ name: BRANCHES_FOLDER, kind: "folder" }], "/Photos").length, 1);
+  assert.equal(
+    withoutTrash(
+      [{ name: BRANCHES_FOLDER, kind: "folder", path: `/${BRANCHES_FOLDER}` }],
+      "/Photos",
+    ).length,
+    1,
+  );
 });
 
 test("a second branch of the same name is refused, not silently overwritten", async () => {
@@ -178,12 +330,31 @@ test("a second branch of the same name is refused, not silently overwritten", as
 
 test("createBranch refuses a bad folder, a bad name and the branches folder", async () => {
   const { scoped, db } = await driven();
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "../etc" })).status, 400);
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })).status, 400);
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })).status, 400);
+  // A bad folder is refused whatever else the request carries. The API's own
+  // shape allows an absent `name` (the server validates it), so this request is
+  // the one a client that posted only a folder sends.
+  assert.equal(
+    failedStatus(
+      await createBranch(
+        db,
+        scoped,
+        ACCOUNT,
+        /** @type {{folder: unknown, name: unknown}} */ ({ folder: "../etc" }),
+      ),
+    ),
+    400,
+  );
+  assert.equal(
+    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })),
+    400,
+  );
+  assert.equal(
+    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })),
+    400,
+  );
   const branches = await createBranch(db, scoped, ACCOUNT, { folder: BRANCHES_ROOT, name: "x" });
-  assert.equal(branches.status, 400);
-  assert.match(branches.error, /branches folder/);
+  assert.equal(failedStatus(branches), 400);
+  assert.match(/** @type {{error: string}} */ (branches).error, /branches folder/);
 });
 
 test("listBranches reports the live changed count and the original's drift", async () => {
@@ -207,7 +378,11 @@ test("diffBranch names added, changed and removed files, and the original's drif
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(`${BRANCHES_ROOT}/work/new.txt`, new Blob(["n"]).stream(), "text/plain");
-  await scoped.write(`${BRANCHES_ROOT}/work/sub/b.txt`, new Blob(["edited"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/sub/b.txt`,
+    new Blob(["edited"]).stream(),
+    "text/plain",
+  );
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
   const branch = (await listBranches(db, scoped, ACCOUNT))[0];
@@ -226,6 +401,11 @@ test("approve copies a branch's changes back when the original is untouched", as
   await scoped.remove(`${BRANCHES_ROOT}/work/sub/b.txt`);
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  // `approveBranch` answers a union: either the branch was approved with the
+  // lists it applied, or it failed with a status. The success arm is the one
+  // these assertions are about, and `"error" in result` is the discriminator
+  // the module's own contract gives, so it is read here once.
+  assert.ok(!("error" in result));
   assert.equal(result.state, "approved");
   assert.equal(result.applied.changed.length, 1);
   assert.equal(result.applied.added.length, 1);
@@ -235,17 +415,23 @@ test("approve copies a branch's changes back when the original is untouched", as
   assert.equal(await readText(scoped, "/Photos/sub/b.txt"), null);
 
   // A second approve is refused: the branch is closed, not re-applied.
-  assert.equal((await approveBranch(db, scoped, ACCOUNT, "work")).status, 409);
+  assert.equal(failedStatus(await approveBranch(db, scoped, ACCOUNT, "work")), 409);
 });
 
 test("approve stops and names the file when the original changed after branching", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
   await scoped.write("/Photos/a.txt", new Blob(["person edit"]).stream(), "text/plain");
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
-  assert.equal(result.status, 409);
+  assert.equal(failedStatus(result), 409);
+  // The 409 that names the moved original is its own arm, carrying the files.
+  assert.ok("files" in result);
   assert.deepEqual(result.files, ["a.txt"]);
   assert.match(result.error, /original changed/);
   // Nothing was copied back: the person's edit is intact and the branch is
@@ -258,7 +444,11 @@ test("approve stops and names the file when the original changed after branching
 test("discard throws the branch away and leaves the original untouched", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
 
   const result = await discardBranch(db, scoped, ACCOUNT, "work");
   assert.deepEqual(result, { name: "work", state: "discarded", removed: 2 });
@@ -272,8 +462,8 @@ test("a branch of another account is not found, ever", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   const other = scopeStore(createMemoryStore(), OTHER);
-  assert.equal((await approveBranch(db, other, OTHER, "work")).status, 404);
-  assert.equal((await discardBranch(db, other, OTHER, "work")).status, 404);
+  assert.equal(failedStatus(await approveBranch(db, other, OTHER, "work")), 404);
+  assert.equal(failedStatus(await discardBranch(db, other, OTHER, "work")), 404);
   assert.deepEqual(await listBranches(db, other, OTHER), []);
 });
 
@@ -338,12 +528,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
 
 test("the branch route refuses an anonymous caller, a bad method and a missing branch", async () => {
   const { raw, db } = await driven();
-  const anonymous = await handleBranchesRequest(
-    request("GET", BRANCHES_ENDPOINT),
-    db,
-    raw,
-    null,
-  );
+  const anonymous = await handleBranchesRequest(request("GET", BRANCHES_ENDPOINT), db, raw, null);
   assert.equal(anonymous.status, 401);
   assert.match(await anonymous.text(), /not signed in/);
 

@@ -16,25 +16,37 @@
 //      an uploaded .html and .svg come back as attachments with a safe type
 //      and nosniff.
 //   4. Upload, delete and restore refuse a cross-site request.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
-import {
-  FILES_ENDPOINT,
-  createMemoryStore,
-  handleFilesRequest,
-  scopeStore,
-} from "../src/files.js";
-import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
-import { STATUS_ENDPOINT } from "../src/status.js";
-import { createAccountStore } from "../src/accounts.js";
-import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
-import { HEALTH_PATH } from "../src/health.js";
-import { SEARCH_ENDPOINT } from "../src/search.js";
+import { test } from "node:test";
+import { SIGNIN_LINK_PATH } from "../src/auth.js";
+import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
-import { REWIND_ENDPOINT } from "../src/rewind.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { HEALTH_PATH } from "../src/health.js";
+import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { REWIND_ENDPOINT } from "../src/rewind.js";
+import { SEARCH_ENDPOINT } from "../src/search.js";
+import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
+import { SIGNIN_ENDPOINT } from "../src/signin.js";
+import { STATUS_ENDPOINT } from "../src/status.js";
+import { createTestAuth, signIn } from "./harness.mjs";
+
+/**
+ * A fake rate limiter that always allows (drive issue #147). The sign-in
+ * route fails closed without its two edge bindings, so every dispatch that
+ * reaches it needs them; the fake is the seam a test uses to exercise the
+ * real handler logic the way production runs it.
+ */
+function makeLimiter() {
+  return {
+    async limit() {
+      return { success: true };
+    },
+  };
+}
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
@@ -42,7 +54,22 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // is not cut at a segment boundary would show up.
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
-const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+/** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+// A token in the shape the Worker issues (src/share.js TOKEN_PATTERN), so it
+// passes the shape check and is only unknown — the same shape a viewer's link
+// carries, and the same refusal an unknown one gets.
+const TOKEN_SHAPE = "A".repeat(22);
+
+// The ExportedHandler type makes fetch optional and declares the runtime's
+// three arguments. The tests drive the Worker directly, so one wrapper
+// supplies the execution context the platform would and keeps those facts out
+// of every call site; `worker.fetch` is optional and carries the runtime's
+// strict Request generic, which a `new Request(...)` literal cannot express.
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // ------------------------------------------------------------------ the walk
 
@@ -60,6 +87,11 @@ const PUBLIC_ROUTES = new Set([
   // would be indistinguishable from "your session expired".
   SIGNIN_ENDPOINT,
   `${SIGNIN_ENDPOINT}/`,
+  // The link a sign-in email carries (drive#181). It mints the session, so it
+  // is the other half of the same exception: a person with no session is
+  // exactly who follows it, and a 401 here would lock out the only door in.
+  SIGNIN_LINK_PATH,
+  `${SIGNIN_LINK_PATH}/`,
   // The meter and the billing webhook only; closed with no token set (#73's
   // walk added no account here because this lane's gate is a deployment
   // secret, not a session).
@@ -85,6 +117,10 @@ const ACCOUNT_ROUTES = [
   `${USAGE_ENDPOINT}/`,
   `${STATUS_ENDPOINT}`,
   `${STATUS_ENDPOINT}/`,
+  `${SHARE_ENDPOINT}`,
+  `${SHARE_ENDPOINT}/`,
+  `${REQUEST_ENDPOINT}`,
+  `${REQUEST_ENDPOINT}/`,
   // drive issue #18: the file-name index's read route. It is behind the
   // account gate like every route that names files, so the walk requires
   // it to answer 401 anonymously.
@@ -102,10 +138,27 @@ const ACCOUNT_ROUTES = [
   `${REWIND_ENDPOINT}/`,
 ];
 
+// The routes that serve a stranger on purpose, from a bearer token instead of
+// a session. Each probe carries a token-shaped value, because the handler's
+// own token check must be what is tested rather than a crash on absent input:
+// every name a stranger hits, open or not, is the one 404 the table's
+// `link-not-found` words answer (src/share.js), and never account data.
+const TOKEN_PROBES = [
+  [`${SHARE_LINK_PREFIX}/${TOKEN_SHAPE}`, "GET"],
+  [`${SHARE_LINK_PREFIX}/${TOKEN_SHAPE}/`, "GET"],
+  [`${REQUEST_ENDPOINT}/info?k=${TOKEN_SHAPE}`, "GET"],
+  [`${REQUEST_ENDPOINT}/upload?k=${TOKEN_SHAPE}&name=a.txt`, "POST"],
+];
+
+/** @param {Request} request */
 function anonymous(request) {
-  return worker.fetch(request, {
-    ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
-  });
+  return workerFetch(
+    request,
+    {
+      ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+    },
+    ctx,
+  );
 }
 
 test("every route src/index.js registers is either public or behind the gate", async () => {
@@ -127,9 +180,7 @@ test("every route src/index.js registers is either public or behind the gate", a
   // A route assembled from a constant shows up as `${SOMETHING_ENDPOINT}` in a
   // path, which is also how a config var like FILES_S3_ENDPOINT can be told
   // apart from a route: only a route is interpolated into a pathname.
-  const constants = [...source.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map(
-    (match) => match[1],
-  );
+  const constants = [...source.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map((match) => match[1]);
   assert.ok(literals.length > 0, "the walk must find the Worker's route literals");
   assert.ok(constants.length > 0, "the walk must find the endpoints the Worker imports");
   for (const literal of literals) {
@@ -146,11 +197,15 @@ test("every route src/index.js registers is either public or behind the gate", a
         "STATUS_ENDPOINT",
         "HEALTH_PATH",
         "SIGNIN_ENDPOINT",
+        "SIGNIN_LINK_PATH",
         "SEARCH_ENDPOINT",
         "BRANCHES_ENDPOINT",
         "REWIND_ENDPOINT",
+        "SHARE_ENDPOINT",
+        "REQUEST_ENDPOINT",
+        "SHARE_LINK_PREFIX",
       ].includes(name),
-      `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
+      `src/index.js routes ${name}, which this test does not classify; probe it as an account route, a token probe, or allow-list it here with a reason`,
     );
   }
   // Every public entry is still routed: an allow-list entry whose route was
@@ -161,11 +216,15 @@ test("every route src/index.js registers is either public or behind the gate", a
       route.startsWith(`${HEALTH_PATH}/`) ||
       route === HEALTH_PATH ||
       route === SIGNIN_ENDPOINT ||
-      route.startsWith(`${SIGNIN_ENDPOINT}/`);
+      route.startsWith(`${SIGNIN_ENDPOINT}/`) ||
+      route === SIGNIN_LINK_PATH ||
+      route.startsWith(`${SIGNIN_LINK_PATH}/`);
     assert.ok(
       literals.includes(route) ||
         (fromConstant &&
-          (constants.includes("HEALTH_PATH") || constants.includes("SIGNIN_ENDPOINT"))),
+          (constants.includes("HEALTH_PATH") ||
+            constants.includes("SIGNIN_ENDPOINT") ||
+            constants.includes("SIGNIN_LINK_PATH"))),
       `${route} is allow-listed but not routed`,
     );
   }
@@ -179,7 +238,9 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
-        route.startsWith(REWIND_ENDPOINT),
+        route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(SHARE_ENDPOINT) ||
+        route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,
     );
   }
@@ -202,7 +263,10 @@ test("an anonymous request to every account route is 401 and no data", async () 
   const unauthorized = failureMessage("unauthorized");
   // The words are the one message table's (src/messages.js), not a second copy
   // written here, so the page and the endpoint cannot say different things.
-  assert.equal(unauthorized, `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`);
+  assert.equal(
+    unauthorized,
+    `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
+  );
   for (const route of ACCOUNT_ROUTES) {
     for (const method of ["GET", "POST"]) {
       const response = await anonymous(new Request(`https://drive.test${route}`, { method }));
@@ -228,14 +292,49 @@ test("an anonymous request to every account route is 401 and no data", async () 
   }
 });
 
+test("a link token answers without an account, and never data", async () => {
+  // The stranger's side of issue #19: /s/<token> and the two public
+  // upload-request routes carry the proof in the path or the query, not in a
+  // session, so they are the one place a logged-out caller is served. An
+  // unknown token is not an error to explain but the same 404 a revoked link
+  // answers (src/share.js), which is also why a stranger learns nothing:
+  // open, revoked and expired all say the same words.
+  const notFound = failureMessage("link-not-found");
+  assert.equal(
+    notFound,
+    `${FAILURE_MESSAGES["link-not-found"].what} ${FAILURE_MESSAGES["link-not-found"].next}`,
+  );
+  for (const [path, method] of TOKEN_PROBES) {
+    const response = await anonymous(new Request(`https://drive.test${path}`, { method }));
+    assert.equal(response.status, 404, `${method} ${path} must be 404 for a token nobody issued`);
+    assert.notEqual(response.status, 401, "a token route serves strangers");
+    assert.match(await response.text(), /That link does not open anything/);
+  }
+  // And the owner's roots are the account's: a signed-out caller cannot list,
+  // mint or revoke on either feature, with the shared 401 (src/status.js).
+  const unauthorized = failureMessage("unauthorized");
+  for (const route of [SHARE_ENDPOINT, REQUEST_ENDPOINT]) {
+    for (const method of ["GET", "POST", "DELETE"]) {
+      const response = await anonymous(new Request(`https://drive.test${route}`, { method }));
+      assert.equal(
+        response.status,
+        401,
+        `${method} ${route} must be 401 without a signed-in account`,
+      );
+      assert.deepEqual(await response.json(), { error: unauthorized });
+    }
+  }
+});
+
 test("the gate reads the request, and a signed-out request has no account", async () => {
   // signedInAccount() is the only gate, and a request that cannot prove a
-  // session stays signed out — including one that presents a cookie the store
-  // never minted. The browser chooses the value; only the store's digest map
-  // can say whether it is a session, so a made-up cookie is not an account.
+  // session stays signed out — including one that presents a cookie Better
+  // Auth never minted. The browser chooses the value; only the customer
+  // database can say whether it is a session, so a made-up cookie is not an
+  // account.
   const bare = new Request("https://drive.test/api/files");
   const withCookie = new Request("https://drive.test/api/files", {
-    headers: { cookie: "drive_session=anything" },
+    headers: { cookie: "__Secure-drive.session_token=anything" },
   });
   for (const request of [bare, withCookie]) {
     const response = await anonymous(request);
@@ -248,63 +347,83 @@ test("the gate reads the request, and a signed-out request has no account", asyn
 });
 
 test("a signed-in account reaches its own files and usage; an anonymous one does not", async () => {
-  // The finish line of drive#10 in one test: the sign-in screen mints a
-  // session, and a request carrying that session answers 200 on the account
-  // routes, while the same request without it is still 401. Every step goes
-  // through the Worker's own dispatch and the Worker's own store, so this is
-  // the round trip a new person makes, not a handler called directly.
+  // The finish line of drive#10 in one test, now on Better Auth (#181): the
+  // sign-in screen mails a link, following it mints a session, and a request
+  // carrying that session answers 200 on the account routes while the same
+  // request without it is still 401. Every step goes through the Worker's own
+  // dispatch and the Worker's own auth, so this is the round trip a new person
+  // makes, not a handler called directly.
   //
-  // The store's mailer is how this test reads the code that left by email: the
-  // code is never in a reply, so the mail is the only place it can be seen,
-  // which is the whole point of the flow.
-  const emailed = [];
+  // The mailer is how this test reads the link that left by email: the token is
+  // never in a reply, so the mail is the only place it can be seen, which is
+  // the whole point of the flow.
+  const made = createTestAuth();
+  const emailed = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
-    // The store the Worker uses, so the session the sign-in route mints is the
-    // one the account routes below read. A deployment never sets this (see
-    // accountsStoreFor in src/index.js); it is the seam a test drives the real
-    // dispatch through.
-    ACCOUNTS_STORE: createAccountStore({
-      sendCode: ({ to, code }) => {
-        emailed.push({ to, code, from: "noreply@drive.test" });
-      },
-    }),
+    // The database and the settings the Worker's authFor() reads. A deployment
+    // binds DRIVE_DB and sets the two secrets; the link mailer is the test seam
+    // (SIGNIN_MAIL) that stands in for the EMAIL binding.
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    /** @param {{to: string, url: string}} link */
+    SIGNIN_MAIL: (link) => {
+      emailed.push(link);
+    },
+    // The edge limiters (drive issue #147), as pass-through fakes: the route
+    // behaves exactly as production does with the bindings bound, and the
+    // limit's own behaviour is this test's (below, not here).
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
   };
+  /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
-    worker.fetch(
+    workerFetch(
       new Request(`https://drive.test${path}`, { headers: cookie ? { cookie } : {} }),
       env,
+      ctx,
     );
+  /** @param {unknown} body */
   const signin = (body) =>
-    worker.fetch(
+    workerFetch(
       new Request("https://drive.test/api/signin", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", origin: "https://drive.test" },
         body: JSON.stringify(body),
       }),
       env,
+      ctx,
     );
 
-  // 1. Start: an address, and a code that leaves by email and nowhere else.
+  // 1. Start: an address, and a link that leaves by email and nowhere else.
   const start = await signin({ step: "start", method: "email", email: "newperson@example.com" });
-  assert.equal(start.status, 202, "a start emails a code");
+  assert.equal(start.status, 202, "a start emails a link");
   const accepted = await start.json();
   assert.equal(accepted.ok, true);
-  assert.equal("code" in accepted, false, "the code leaves by email, never in the reply");
+  assert.equal("url" in accepted, false, "the link leaves by email, never in the reply");
+  assert.equal("token" in accepted, false, "the token leaves by email, never in the reply");
   assert.equal(emailed.length, 1, "exactly one email went out");
-  const code = emailed[0].code;
-  assert.match(String(code), /^[0-9]{6}$/, "the emailed code is the 6 digits the screen names");
   assert.equal(emailed[0].to, "newperson@example.com");
+  assert.match(
+    emailed[0].url,
+    /^https:\/\/drive\.test\/api\/signin\/verify\?token=/,
+    "the link points at this Worker's verify path",
+  );
 
-  // 2. Finish: the code, and the session cookie it mints.
-  const finish = await signin({ step: "finish", email: "newperson@example.com", code });
-  assert.equal(finish.status, 200, "the right code finishes the sign-in");
-  const signedIn = await finish.json();
-  assert.equal(signedIn.ok, true);
-  assert.equal(signedIn.account.email, "newperson@example.com", "the address is the account");
-  const setCookie = finish.headers.get("set-cookie");
-  assert.ok(setCookie, "a finished sign-in sets the session cookie");
-  assert.match(setCookie, /^drive_session=sess_/, "the session is a minted id, not the code");
+  // 2. Follow the link: the session cookie it mints.
+  const followed = await workerFetch(
+    new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
+    env,
+  );
+  assert.equal(followed.status, 302, "a good link redirects into the drive");
+  const setCookie = followed.headers.getSetCookie()[0];
+  assert.ok(setCookie, "following the link sets a session cookie");
+  assert.match(
+    setCookie,
+    /^__Secure-drive\.session_token=/,
+    "the session is Better Auth's signed token, not a code",
+  );
   assert.match(setCookie, /HttpOnly/, "no script may read the session");
   assert.match(setCookie, /SameSite=Lax/, "the session does not ride a cross-site post");
   assert.match(setCookie, /Secure/, "the session never travels in clear");
@@ -320,38 +439,92 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     assert.deepEqual(await denied.json(), { error: failureMessage("unauthorized") });
   }
 
-  // 4. The session is a real one. A cookie the store never minted is not an
-  // account, and a used code cannot mint a second session.
-  const forged = await call("drive_session=sess_never_minted", FILES_ENDPOINT);
-  assert.equal(forged.status, 401, "a cookie the store never minted is not a session");
-  const replay = await signin({ step: "finish", email: "newperson@example.com", code });
-  assert.equal(replay.status, 400, "a used code cannot mint a second session");
+  // 4. The session is a real one. A cookie auth never minted is not an
+  // account, and a used link cannot mint a second session.
+  const forged = await call("__Secure-drive.session_token=sess_never_minted", FILES_ENDPOINT);
+  assert.equal(forged.status, 401, "a cookie auth never minted is not a session");
+  const replay = await workerFetch(
+    new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
+    env,
+  );
+  assert.equal(replay.status, 302, "a reused link still answers with a redirect");
+  assert.match(
+    String(replay.headers.get("location")),
+    /error=invalid-link/,
+    "a used link cannot mint a second session",
+  );
 
   // 5. One account's files stay in that account's own prefix: a second person
   // who signs in sees an empty drive, not the first one's bytes.
-  const upload = await worker.fetch(
+  const upload = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F&name=mine.txt`, {
       method: "POST",
       headers: { "content-type": "text/plain", cookie },
       body: "first person's bytes",
     }),
     env,
+    ctx,
   );
   assert.equal(upload.status, 201, "the signed-in account can store a file");
-  const other = await signin({ step: "start", method: "email", email: "other@example.com" });
-  assert.equal(other.status, 202, "a second person can sign in");
-  const otherFinish = await signin({
-    step: "finish",
-    email: "other@example.com",
-    code: emailed[1].code,
-  });
-  assert.equal(otherFinish.status, 200);
-  const otherCookie = otherFinish.headers.get("set-cookie").split(";")[0];
-  const otherList = await call(otherCookie, FILES_ENDPOINT);
+  const other = await signIn(made, "other@example.com");
+  const otherList = await call(other.cookie, FILES_ENDPOINT);
   assert.equal(otherList.status, 200);
-  assert.equal((await otherList.json()).rows.length, 0, "a second account cannot list the first one's files");
+  assert.equal(
+    (await otherList.json()).rows.length,
+    0,
+    "a second account cannot list the first one's files",
+  );
   const firstList = await call(cookie, FILES_ENDPOINT);
   assert.equal((await firstList.json()).rows.length, 1, "the first account still has its own file");
+  assert.notEqual(other.account.id, "newperson@example.com");
+});
+
+test("sign-out revokes the session the cookie names", async () => {
+  // Step 3 of #181's acceptance: a signed-in account that signs out cannot use
+  // the cookie it was carrying. The session row is deleted and the cookies are
+  // cleared, and the account routes answer 401 from then on — a copy of the
+  // cookie is worth nothing, because the database no longer knows the token.
+  const made = createTestAuth();
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    /** @param {{to: string, url: string}} link */
+    SIGNIN_MAIL: (link) => {
+      made.sent.push(link);
+    },
+    // The edge limiters (drive issue #147), as pass-through fakes, for the
+    // same reason the sign-in walk above carries them.
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
+  };
+  const { cookie } = await signIn(made, "leaver@example.com");
+  const before = await workerFetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(before.status, 200, "the session works before signing out");
+
+  const out = await workerFetch(
+    new Request("https://drive.test/api/signin", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://drive.test", cookie },
+      body: JSON.stringify({ step: "signout" }),
+    }),
+    env,
+  );
+  assert.equal(out.status, 200, "sign-out answers ok");
+  assert.deepEqual(await out.json(), { ok: true, step: "signout" });
+  const cleared = out.headers.getSetCookie().join("\n");
+  assert.match(cleared, /__Secure-drive\.session_token=;/, "sign-out clears the session cookie");
+
+  const after = await workerFetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
+  assert.deepEqual(await after.json(), { error: failureMessage("unauthorized") });
 });
 
 test("an anonymous files request never reaches the store", async () => {
@@ -372,21 +545,31 @@ test("an anonymous files request never reaches the store", async () => {
 // ----------------------------------------------------- one store, two accounts
 
 test("scopeStore puts every drive path under the account's own prefix", async () => {
+  /** @type {Array<string[]>} */
   const seen = [];
+  /** @type {import("../src/files.js").FileStore} */
   const recorder = {
+    /** @param {string} path */
     async list(path) {
       seen.push(["list", path]);
       return [{ name: "notes.txt", path: `${path}notes.txt`, kind: "text" }];
     },
+    /** @param {string} path */
     async read(path) {
       seen.push(["read", path]);
       return null;
     },
-    async write(path) {
+    /** @param {string} path @param {BodyInit} _body @param {string} _contentType */
+    async write(path, _body, _contentType) {
       seen.push(["write", path]);
     },
+    /** @param {string} path */
     async remove(path) {
       seen.push(["remove", path]);
+    },
+    /** @param {string} from @param {string} to @returns {Promise<void>} */
+    async copy(from, to) {
+      seen.push(["copy", from, to]);
     },
   };
   const scoped = scopeStore(recorder, { id: "acct-9", name: "Nine" });
@@ -416,8 +599,20 @@ test("account A cannot list, read, write or delete account B's path", async () =
   // One shared store, the way the Worker's in-memory stand-in is one store
   // per isolate: both accounts read and write through the same object.
   const store = createMemoryStore();
-  const call = (account, request) =>
-    handleFilesRequest(request, store, account, now);
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {Request} request
+   * @returns {Promise<Response>}
+   */
+  const call = (account, request) => handleFilesRequest(request, store, account, now);
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {string} path
+   * @param {string} name
+   * @param {BodyInit} body
+   * @param {string} [type]
+   * @returns {Promise<Response>}
+   */
   const upload = (account, path, name, body, type = "text/plain") =>
     call(
       account,
@@ -434,10 +629,7 @@ test("account A cannot list, read, write or delete account B's path", async () =
   const listedByB = await call(ACCOUNT_B, new Request(api("?path=%2F")));
   assert.equal(listedByB.status, 200);
   assert.deepEqual((await listedByB.json()).rows, []);
-  const readByB = await call(
-    ACCOUNT_B,
-    new Request(api("/download?path=%2Fsecret.txt")),
-  );
+  const readByB = await call(ACCOUNT_B, new Request(api("/download?path=%2Fsecret.txt")));
   assert.equal(readByB.status, 404);
 
   // B cannot delete or restore A's path, and writing the same path gives B its
@@ -486,13 +678,16 @@ test("account A cannot list, read, write or delete account B's path", async () =
 
 test("an uploaded .html and .svg come back as downloads, never as pages", async () => {
   const store = createMemoryStore();
+  /** @param {Request} request @returns {Promise<Response>} */
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
+  /** @param {string} name @param {string} type @param {BodyInit} body */
   const upload = (name, type, body) =>
     call(
-      new Request(
-        `${api("/upload")}?path=%2F&name=${encodeURIComponent(name)}`,
-        { method: "POST", headers: { "content-type": type }, body },
-      ),
+      new Request(`${api("/upload")}?path=%2F&name=${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: { "content-type": type },
+        body,
+      }),
     );
 
   await upload("report.html", "text/html", "<script>alert(1)</script>");
@@ -520,9 +715,7 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
     );
     await download.arrayBuffer();
 
-    const preview = await call(
-      new Request(api(`/preview?path=${encodeURIComponent(`/${name}`)}`)),
-    );
+    const preview = await call(new Request(api(`/preview?path=${encodeURIComponent(`/${name}`)}`)));
     assert.equal(preview.status, 200, `preview ${name}`);
     assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
     assert.equal(
@@ -543,7 +736,7 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
   const download = await call(new Request(api("/download?path=%2Fphoto.png")));
   assert.equal(download.headers.get("content-type"), "image/png");
   assert.equal(download.headers.get("x-content-type-options"), "nosniff");
-  assert.match(download.headers.get("content-disposition"), /^attachment;/);
+  assert.match(download.headers.get("content-disposition") ?? "", /^attachment;/);
   const preview = await call(new Request(api("/preview?path=%2Fphoto.png")));
   assert.equal(preview.headers.get("content-type"), "image/png");
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
@@ -554,7 +747,9 @@ test("an uploaded .html and .svg come back as downloads, never as pages", async 
 
 test("upload, delete and restore refuse a cross-site request", async () => {
   const store = createMemoryStore();
+  /** @param {Request} request @returns {Promise<Response>} */
   const call = (request) => handleFilesRequest(request, store, ACCOUNT_A, now);
+  /** @param {string|undefined} origin @returns {Promise<Response>} */
   const upload = (origin) =>
     call(
       new Request(`${api("/upload")}?path=%2F&name=a.txt`, {
@@ -563,6 +758,7 @@ test("upload, delete and restore refuse a cross-site request", async () => {
         body: "bytes",
       }),
     );
+  /** @param {string} path @param {unknown} body @param {string|undefined} origin @returns {Promise<Response>} */
   const stateChange = (path, body, origin) =>
     call(
       new Request(api(path), {
@@ -604,7 +800,13 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
-  assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), undefined).status, 401);
+  assert.equal(
+    handleUsageRequest(
+      new Request("https://drive.test/api/usage"),
+      /** @type {null} */ (/** @type {unknown} */ (undefined)),
+    ).status,
+    401,
+  );
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0);
