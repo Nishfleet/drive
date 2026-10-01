@@ -59,7 +59,6 @@ Link flags (share, request):
   --api         api Worker base URL (env DRIVE_API_URL)
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
-`
 
 The device keys are read from the environment, never a flag, so they stay out
 of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
