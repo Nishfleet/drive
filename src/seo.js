@@ -6,9 +6,11 @@
 // shipped files are hand-written rather than generated: the site is one
 // prebuilt HTML document, not an app that renders a route per request.
 //
-// PRICE, and how it relates to src/pricing.js: the numbers below are the
-// ceiling the site advertises now, from docs/spec.md and docs/build-spec.md
-// ("Bill ceiling", Nish 2026-09-30, issue #29):
+// The price itself is not declared here: src/pricing.js is the one price
+// source, and BILLING below is built from PRICE so the tags, the JSON-LD and
+// llms.txt render the same numbers and sentences the page does (issue #23).
+// The rule (docs/spec.md and docs/build-spec.md, "Bill ceiling", Nish
+// 2026-09-30, issue #29):
 //
 //     bill = min(metered, max($12, $8 x peak TB))
 //
@@ -17,42 +19,33 @@
 // passes 1.5 TB, and only then does it rise at $8 for each TB. So 800 GB bills
 // min(16, 12) = $12, 1.6 TB bills min(32, 12.80) = $12.80, 2 TB bills
 // min(40, 16) = $16, and 5 TB bills min(100, 40) = $40.
-//
-// src/pricing.js still holds the superseded per-TB caps and is issue #23's to
-// fix; that branch is in flight, so this file cannot import it without
-// contradicting it mid-flight. When #23 lands these two collapse into
-// src/pricing.js as the single price home; the follow-up issue filed with this
-// PR carries that, and it names the divergence so nothing hides it.
-const RATE_USD_PER_GB = 0.02;
-const CAP_FLOOR_USD = 12;
-const CAP_USD_PER_TB = 8;
-const FREE_MONTHLY_USD = 1;
+import { PRICE } from "./pricing.js";
+
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
 const SITE_NAME = "Drive";
-const SITE_TITLE = "Drive — about $20 per TB a month";
+const SITE_TITLE = `Drive — ${PRICE.titleLine}`;
 // The same sentence the page's own meta description already carries, so the
 // search result, the share card and the page agree word for word.
-const SITE_DESCRIPTION =
-  "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, then $8.";
+const SITE_DESCRIPTION = `A Finder drive for people and their agents. ${PRICE.ceiling}`;
 
 export const BILLING = Object.freeze({
   // The metered rate, in US dollars per GB per month. Carried as a string
   // because that is the form schema.org documents for a price, so it renders
   // identically in the config, in the inline JSON-LD and to a validator.
-  rateUsdPerGbMonth: RATE_USD_PER_GB.toFixed(2),
+  rateUsdPerGbMonth: PRICE.rateUsdPerGbMonth.toFixed(2),
   // The cap is max(capFloorUsd, capUsdPerTb x TB): a flat floor until the
   // stored size passes capFloorUsd / capUsdPerTb TB, then a per-TB slope. The
   // names say plateau and slope so no reader takes them for per-TB caps.
-  capFloorUsd: CAP_FLOOR_USD,
-  capUsdPerTb: CAP_USD_PER_TB,
-  freeMonthlyUsd: FREE_MONTHLY_USD,
-  // Both sentences interpolated from the numbers above, so one edit moves the
-  // tags, the JSON-LD and llms.txt together.
-  ceiling: `2¢ per GB, billed by the minute. Never more than $${CAP_FLOOR_USD} a TB, then $${CAP_USD_PER_TB}.`,
-  freeLine: `$${FREE_MONTHLY_USD} free every month, no card needed`,
+  capFloorUsd: PRICE.capFloorUsd,
+  capUsdPerTb: PRICE.capUsdPerTb,
+  freeMonthlyUsd: PRICE.freeMonthlyUsd,
+  // Both sentences come from the one price source, so one edit moves the tags,
+  // the JSON-LD and llms.txt together.
+  ceiling: PRICE.ceiling,
+  freeLine: PRICE.freeLine,
   // The ceiling as arithmetic, for the offer description and llms.txt. Stated
   // in words as well as symbols because a crawler reads prose, not a formula.
-  rule: `The bill is the metered cost capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): $${CAP_FLOOR_USD} up to ${CAP_FLOOR_USD / CAP_USD_PER_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
+  rule: PRICE.rule,
 });
 
 export const SITE = Object.freeze({
@@ -82,6 +75,22 @@ export const PAGES = Object.freeze([
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+]);
+
+// The docs pages (drive issue #98), as the URLs a crawler reads. The docs are
+// built by VitePress from docs-site/, which owns their titles and their
+// metadata; this list is the one place the site-level files (the sitemap and
+// the root llms.txt) learn that they exist, and src/render-docs.js reads the
+// same list, so a page cannot be built without being listed here.
+export const DOC_PAGES = Object.freeze([
+  Object.freeze({ title: "Quickstart", path: "/docs/quickstart" }),
+  Object.freeze({ title: "How it works", path: "/docs/how-it-works" }),
+  Object.freeze({ title: "Agents", path: "/docs/agents" }),
+  Object.freeze({ title: "Pricing and your bill", path: "/docs/pricing" }),
+  Object.freeze({ title: "FAQ", path: "/docs/faq" }),
+  Object.freeze({ title: "Limits", path: "/docs/limits" }),
+  Object.freeze({ title: "Security", path: "/docs/security" }),
+  Object.freeze({ title: "Changelog", path: "/docs/changelog" }),
 ]);
 
 /** The absolute URL of a public page, from its site-relative path. */

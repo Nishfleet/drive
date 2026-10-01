@@ -247,6 +247,24 @@ export function signedInAccount(request) {
 }
 
 /**
+ * The 401 every account route answers when the request cannot prove an
+ * account: the message table's one sign-in message, the cookie challenge the
+ * sign-in flow will answer, and no data of any kind. It lives here because
+ * this module owns the account gate (signedInAccount below), and the files and
+ * usage handlers answer with the same shape rather than writing their own
+ * (drive issue #73, north star: Safe).
+ * @returns {Response}
+ */
+export function unauthorizedResponse() {
+  return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
+    status: 401,
+    // A cookie session, so the challenge names the scheme the sign-in flow
+    // mints rather than a bearer token it does not use.
+    headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
+  });
+}
+
+/**
  * Handles GET /api/first-run-status, the page's poll. It answers with the
  * signed-in account's device state; until the api Worker's device store lands
  * (build-spec.md data model `devices`, built with #22/#2), no device can have
@@ -257,24 +275,22 @@ export function signedInAccount(request) {
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401
- * and the message table's `unauthorized` words, never device data. Any other
- * method is a 405 with the one allowed method named, like the waitlist API.
+ * and the message table's `unauthorized` words, never device data. The 401 is
+ * shared with the other account routes through unauthorizedResponse() above
+ * (drive issue #73).
  * @param {Request} request
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  */
 export function handleFirstRunStatusRequest(request, account) {
+  // The gate comes before the method check, so an anonymous request is told
+  // only that it is not signed in and never which methods this route has.
+  if (!account) {
+    return unauthorizedResponse();
+  }
   if (request.method !== "GET") {
     return new Response("Method not allowed. GET this endpoint for drive status.", {
       status: 405,
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  if (!account) {
-    return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
-      status: 401,
-      // A cookie session, so the challenge names the scheme the sign-in flow
-      // mints rather than a bearer token it does not use.
-      headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
     });
   }
   return new Response(

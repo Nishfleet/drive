@@ -24,7 +24,7 @@ import {
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
-  resolveAccount,
+  scopeStore,
 } from "../src/files.js";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -77,7 +77,9 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   const required = [
     ["src/status.js", /export function signedInAccount\(request\)/],
     ["src/files.js", /export function createS3Store\(config\)/],
-    ["src/files.js", /`u\/\$\{account\}\$\{path\}`/],
+    // The account prefix is applied in exactly one place, and it is the place
+    // that keeps one account's keys from another's (issue #73).
+    ["src/files.js", /const toKey = \(path\) => \{/],
     ["src/billing.js", /export function monthBillCents\(/],
     ["src/messages.js", /export function failureMessage\(key\)/],
   ];
@@ -125,7 +127,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // route's branch is named by the constant the switch compares against.
   for (const [usedAs, account] of [
     ["STATUS_ENDPOINT", "signedInAccount(request)"],
-    ["FILES_ENDPOINT", "resolveAccount(request)"],
+    ["FILES_ENDPOINT", "signedInAccount(request)"],
   ]) {
     const at = branch.indexOf(usedAs);
     assert.notEqual(at, -1, `${usedAs} must have its own branch in the fetch switch`);
@@ -142,14 +144,16 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
     error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
   });
   // A route's account is bound by its own module, so each one is checked where
-  // it is decided. /api/usage may sit on the public list only while it reads
-  // no account at all: until the meter and the account store land (issues #2
-  // and #6) it answers the empty month for everyone, and the moment that
-  // changes this tripwire fails and the route has to move behind the gate.
-  assert.match(srcFile("billing.js"), /export function handleUsageRequest\(request\)/);
+  // it is decided. /api/usage reads no account's data until the meter and the
+  // account store land (issues #2 and #6), but it is behind the same gate as
+  // every other account route (issue #73): the one gate, so a request that
+  // cannot prove an account is a 401 rather than an empty month.
+  assert.match(srcFile("billing.js"), /export function handleUsageRequest\(request, account\)/);
   const usage = await worker.fetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env);
-  assert.equal(usage.status, 200);
-  assert.equal((await usage.json()).billUsd, 0, "the public usage read has no account's data");
+  assert.equal(usage.status, 401, "the usage read is behind the account gate");
+  assert.deepEqual(await usage.json(), {
+    error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
+  });
   // The send-email route's gate is its deployment token, not a session: only
   // POST is served, and with no token configured every POST is closed.
   assert.match(srcFile("email-send.js"), /EMAIL_SEND_TOKEN/);
@@ -159,9 +163,10 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
     body: JSON.stringify({ to: "nobody@drive.test", subject: "x", text: "x" }),
   }), env);
   assert.equal(send.status, 403, "with no token configured the route is closed");
-  // The files route's account is the module's stand-in, never a header the
-  // caller sends: the storage prefix comes from the account, not the request.
-  assert.match(srcFile("files.js"), /export function resolveAccount\(request\) \{\n  return \{ \.\.\.STAND_IN_ACCOUNT \};/);
+  // The files route's account comes from the one gate, never from a header the
+  // caller sends: the storage prefix is applied by scopeStore from the account
+  // the gate resolved, and nothing in the request can name it (issue #73).
+  assert.match(srcFile("files.js"), /export function scopeStore\(store, account\)/);
   assert.ok(!index.includes("x-drive-account"), "no caller-supplied account header");
 });
 
@@ -202,12 +207,13 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       ? new Response(objects.get(key), { status: 200 })
       : new Response("no key", { status: 404 });
   };
-  // One endpoint, one fetch, and the account comes from the store's own
-  // config — the same config src/index.js builds from the deployment's.
-  const storeFor = (account) =>
-    createS3Store({ endpoint: "https://s3.test", bucket: "drive", account, fetchImpl: server });
-  const a = storeFor("a");
-  const b = storeFor("b");
+  // One endpoint, one fetch, one store shared by both accounts, and the
+  // account comes from the gate — the same raw store and the same account
+  // argument src/index.js passes. The scoping is the handler's (scopeStore),
+  // so this exercises the real request -> account -> key path including it.
+  const shared = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl: server });
+  const a = shared;
+  const b = shared;
 
   // A real request through the Worker's handler: upload with A, then ask for
   // the same path with B. The handler is given each account the way
@@ -262,7 +268,7 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
 
 test("gate 3: input is validated at the edge and a file never answers as a page", async () => {
   const store = createMemoryStore();
-  const account = resolveAccount(new Request("https://drive.test"));
+  const account = { id: "gate-3", name: "Gate 3" };
   const call = (request) => handleFilesRequest(request, store, account);
   const upload = (name, body, type) =>
     call(

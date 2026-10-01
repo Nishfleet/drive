@@ -1,24 +1,27 @@
 import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest } from "./status.js";import {
+import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT } from "./status.js";
+import {
   FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
-  resolveAccount,
 } from "./files.js";
-import { signedInAccount, STATUS_ENDPOINT } from "./status.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
+import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
 
-// One drive per Worker isolate (build step 1's stand-in). With no storage
-// configured the in-memory store holds what the page uploaded this run, so the
-// Web Files page is real in dev and in the tests; FILES_S3_ENDPOINT and
-// FILES_S3_BUCKET point the same handlers at `rclone serve s3` instead. The
-// real scoped-key adapter lands with #2 behind the same FileStore interface.
+// One store per Worker isolate, holding every account's files under its own
+// prefix. With no storage configured the in-memory store holds what the page
+// uploaded this run, so the Web Files page is real in dev and in the tests;
+// FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
+// `rclone serve s3` instead. The real scoped-key adapter lands with #2 behind
+// the same FileStore interface. Both are plain stores over storage keys: the
+// account prefix and the isolation between accounts are scopeStore's job
+// (src/files.js), so an adapter never has to know about an account.
 let filesStore;
 function storeFor(env) {
   if (!filesStore) {
@@ -66,27 +69,44 @@ export default {
     ) {
       return handleFirstRunStatusRequest(request, signedInAccount(request));
     }
-    // The Web Files page's listing, download, upload and restore (issue #31).
+    // The files handler is behind the same account gate as the page's poll
+    // (issue #73): it answers 401 with no data for a request that cannot prove
+    // an account, and scopes every read and write to that account's prefix.
     if (
       url.pathname === FILES_ENDPOINT ||
       url.pathname === `${FILES_ENDPOINT}/` ||
       url.pathname.startsWith(`${FILES_ENDPOINT}/`)
     ) {
-      return handleFilesRequest(request, storeFor(env), resolveAccount(request));
+      // The gate is asked before the store is built. A request that cannot
+      // prove an account is answered by the handler's own 401 with no store
+      // in the call at all, so a misconfigured deployment fails for its own
+      // signed-in callers and tells a stranger nothing about itself.
+      const account = signedInAccount(request);
+      return handleFilesRequest(request, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
-    // fallthrough.
+    // fallthrough, and the account gate is what keeps one account's numbers
+    // from being shown to another (issue #73).
     if (
       url.pathname === USAGE_ENDPOINT ||
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
-      return handleUsageRequest(request);
+      return handleUsageRequest(request, signedInAccount(request));
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
       // the sending address too (src/email-send.js handleSendEmailRequest).
       return handleSendEmailRequest(request, env);
+    }
+    // The health endpoint the outside monitor polls (issue #96, #36). It
+    // comes before the asset fallthrough and takes the whole env because the
+    // check reads the dependencies off the bindings: a trivially-read D1 on
+    // each database and a fetch of the asset layer. The whole env is the
+    // honest argument — a check that only saw the bindings it was told about
+    // would be a check that could not fail.
+    if (url.pathname === HEALTH_PATH || url.pathname === `${HEALTH_PATH}/`) {
+      return handleHealthRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },

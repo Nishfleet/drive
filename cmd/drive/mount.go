@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // MountPlan is everything needed to mount this device's drive with stock
@@ -31,12 +32,18 @@ type MountPlan struct {
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
-// for rclone's mount command describe each one.
+// for rclone's mount and nfsmount commands describe each one.
 func VFSArgs() []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
 		"--vfs-write-back", vfsWriteBackValue,
 		"--vfs-cache-max-size", vfsCacheMaxValue,
+		// S3 sends no change notifications, so without a short directory cache
+		// a save made on the other machine waits out rclone's 5-minute default
+		// before it is visible here. The step-3 two-machine proof measured it
+		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
+		// flag, still absent after 60 s without.
+		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-streams", "2",
 		"--buffer-size", vfsChunkStreamSize,
 	}
@@ -124,6 +131,9 @@ func LaunchdPlist(p MountPlan) string {
 
 // SystemdUnit renders the Linux login item (step 3). It is generated here so
 // the same plan drives both platforms and `drive mount` is one code path.
+// There is no ExecStop line: rclone unmounts on SIGTERM (its own docs), and
+// SIGTERM is exactly what systemd sends a stopping unit by default, so an
+// rclone command that does not exist would only break the stop.
 func SystemdUnit(p MountPlan) string {
 	return fmt.Sprintf(`[Unit]
 Description=drive: %s mounted with stock rclone
@@ -133,13 +143,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%s
-ExecStop=%s umount %s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdCommandLine(p), systemdEscapeArg(p.RcloneBin), systemdEscapeArg(p.MountDir))
+`, p.Remote, systemdCommandLine(p))
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads
@@ -211,46 +220,174 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if foreground {
-		// rcloneBin comes from operator config only (--rclone, DRIVE_RCLONE or
-		// the rclone-bin override file), never from anything remote, and
-		// LookPath resolves and checks it before it is executed. exec.Command
-		// takes an argument vector and runs no shell, so no remote or stored
-		// value can inject anything at this call site.
-		rclonePath, err := exec.LookPath(rcloneBin)
-		if err != nil {
-			return fmt.Errorf("rclone binary %q not found: %w", rcloneBin, err)
-		}
-		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-		cmd := exec.Command(rclonePath, p.Args()...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		// Forward the usual stop signals to rclone so the mount is taken down
-		// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of
-		// leaving a mount attached behind a dead CLI.
-		stop := make(chan os.Signal, 2)
-		signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-		defer func() { signal.Stop(stop) }()
-		go func() {
-			for sig := range stop {
-				_ = cmd.Process.Signal(sig)
-			}
-		}()
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("rclone mount: %w", err)
-		}
-		return nil
+		return mountForeground(p)
 	}
 	if goos == "darwin" {
-		if err := exec.Command("launchctl", "load", "-w", itemPath).Run(); err != nil {
-			return fmt.Errorf("launchctl load %s: %w", itemPath, err)
+		if err := bootstrapLaunchd(itemPath); err != nil {
+			return err
 		}
+	} else {
+		for _, action := range mountSystemctlActions() {
+			args := []string{"--user", action}
+			if action != "daemon-reload" {
+				args = append(args, SystemdUnitName)
+			}
+			if err := exec.Command("systemctl", args...).Run(); err != nil {
+				return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+			}
+		}
+	}
+	// Starting the login item is a request, not a promise: say the mount is up
+	// only once the kernel says so, so a first run that silently failed is not
+	// mistaken for a working drive.
+	if err := waitMounted(goos, home); err != nil {
+		return err
+	}
+	fmt.Printf("Mounted at %s\n", p.MountDir)
+	return nil
+}
+
+// mountForeground runs rclone in this process until it exits. rclonePath is
+// resolved by ResolveRclone before the call, never from anything remote, and
+// exec.Command takes an argument vector and runs no shell, so no remote or
+// stored value can inject anything at this call site.
+func mountForeground(p MountPlan) error {
+	rclonePath, err := exec.LookPath(p.RcloneBin)
+	if err != nil {
+		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(rclonePath, p.Args()...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// Start the child first, so the signal handler below never sees a nil
+	// Process: a SIGINT between Notify and Run would otherwise panic.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone mount: %w", err)
+	}
+	// Forward the usual stop signals to rclone so the mount is taken down
+	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
+	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
+	// gone, and joined is waited on so no handler outlives the mount.
+	stop := make(chan os.Signal, 2)
+	quit := make(chan struct{})
+	joined := make(chan struct{})
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		defer close(joined)
+		for {
+			select {
+			case sig := <-stop:
+				_ = cmd.Process.Signal(sig)
+			case <-quit:
+				return
+			}
+		}
+	}()
+	runErr := cmd.Wait()
+	signal.Stop(stop)
+	close(quit)
+	<-joined
+	if runErr != nil {
+		return fmt.Errorf("rclone mount: %w", runErr)
+	}
+	return nil
+}
+
+// waitMounted polls Mounted until the kernel reports the mount, then returns
+// nil. A mount that never appears is a named failure with the command that was
+// started, not a success with a warning.
+func waitMounted(goos, home string) error {
+	deadline := time.Now().Add(mountWait)
+	for time.Now().Before(deadline) {
+		on, err := Mounted(goos, home)
+		if err != nil {
+			return err
+		}
+		if on {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("the mount did not come up within %s; check the login item and %s",
+		mountWait, mountLogHint(goos, home))
+}
+
+// mountWait bounds the wait for a freshly started mount to appear.
+const mountWait = 30 * time.Second
+
+// mountLogHint is where to look when the mount did not come up: launchd
+// writes the item's output to the log path from the plan; on Linux the user
+// journal owns a systemd unit's output.
+func mountLogHint(goos, home string) string {
+	if goos == "darwin" {
+		return filepath.Join(DefaultConfigDir(home), "mount.log")
+	}
+	return "journalctl --user -u " + SystemdUnitName
+}
+
+// mountSystemctlActions is the ordered systemctl work a Linux mount does.
+// `enable --now` is deliberately absent: it starts a stopped unit but leaves a
+// running one alone, so a second `drive mount` with a different bucket,
+// prefix, key or rclone path would report success while rclone still served the
+// old one. `restart` applies the unit just written, every time.
+func mountSystemctlActions() []string {
+	return []string{"daemon-reload", "enable", "restart"}
+}
+
+// bootstrapLaunchd loads the login item with the current launchctl verbs.
+// `load`/`unload -w` are deprecated and not idempotent (loading an item that
+// is already loaded errors), so a loaded item is booted out first, then the
+// item is bootstrapped into gui/<uid>, the session the person is logged into.
+func bootstrapLaunchd(itemPath string) error {
+	target := launchctlTarget()
+	if launchctlLoaded(target) {
+		if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+			return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if out, err := exec.Command("launchctl", launchctlArgv("bootstrap", target, itemPath)...).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap %s %s: %w: %s", target, itemPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// bootoutLaunchd stops the login item with the current launchctl verb. An item
+// that is not loaded is already stopped, so bootout does not run.
+func bootoutLaunchd(itemPath string) error {
+	target := launchctlTarget()
+	if !launchctlLoaded(target) {
 		return nil
 	}
-	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
-		return fmt.Errorf("systemctl --user daemon-reload: %w", err)
+	if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
-	if err := exec.Command("systemctl", "--user", "enable", "--now", SystemdUnitName).Run(); err != nil {
-		return fmt.Errorf("systemctl --user enable --now %s: %w", SystemdUnitName, err)
+	return nil
+}
+
+// launchctlTarget is the launchd domain a login item lives in: gui/<uid>, the
+// session the person is logged into.
+func launchctlTarget() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
+
+// launchctlLoaded asks launchd whether the service is loaded. `launchctl
+// print` exits non-zero when it is not, which is exactly the question; the
+// answer only decides whether a bootout runs, so nothing else is read from it.
+func launchctlLoaded(target string) bool {
+	return exec.Command("launchctl", launchctlArgv("print", target, "")...).Run() == nil
+}
+
+// launchctlArgv is the launchctl command line for one action, kept separate so
+// the deprecated load/unload verbs cannot creep back in unnoticed. print and
+// bootout address the service by domain/label; bootstrap takes the domain and
+// then the plist to load.
+func launchctlArgv(action, target, itemPath string) []string {
+	switch action {
+	case "print":
+		return []string{"print", target + "/" + LaunchdLabel}
+	case "bootout":
+		return []string{"bootout", target + "/" + LaunchdLabel}
+	case "bootstrap":
+		return []string{"bootstrap", target, itemPath}
 	}
 	return nil
 }
@@ -266,10 +403,7 @@ func Unmount(goos, home string) error {
 		return fmt.Errorf("stat %s: %w", itemPath, err)
 	}
 	if goos == "darwin" {
-		if err := exec.Command("launchctl", "unload", "-w", itemPath).Run(); err != nil {
-			return fmt.Errorf("launchctl unload %s: %w", itemPath, err)
-		}
-		return nil
+		return bootoutLaunchd(itemPath)
 	}
 	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
 		return fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
@@ -326,18 +460,45 @@ func unescapeMountField(s string) string {
 	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\134`, `\`).Replace(s)
 }
 
-// DefaultRcloneBin returns an explicit rclone path when the operator set one,
-// otherwise the bare name resolved from PATH at run time.
-func DefaultRcloneBin(home string) string {
-	if v := os.Getenv("DRIVE_RCLONE"); v != "" {
-		return v
+// ResolveRclone turns the operator's rclone setting into an absolute binary
+// path. The value comes from --rclone (or DRIVE_RCLONE) only; there is no file
+// override. It is resolved with exec.LookPath here, before the path is written
+// into a launchd plist or a systemd unit, because a login item has no shell
+// PATH and a bare "rclone" (Homebrew installs it at /opt/homebrew/bin) would
+// fail on the item's first run. An empty setting keeps whatever PATH resolves
+// at call time; a named binary that is not installed fails now, at the person's
+// own command, not silently at the next login.
+func ResolveRclone(rclone string) (string, error) {
+	if rclone == "" {
+		rclone = os.Getenv("DRIVE_RCLONE")
 	}
-	if data, err := os.ReadFile(RcloneBinOverride(home)); err == nil {
-		if p := strings.TrimSpace(string(data)); p != "" {
-			return p
+	if rclone == "" {
+		path, err := exec.LookPath("rclone")
+		if err != nil {
+			return "", fmt.Errorf("rclone not found on PATH: %w", err)
 		}
+		return absPath(path)
 	}
-	return "rclone"
+	parent, err := exec.LookPath(rclone)
+	if err != nil {
+		return "", fmt.Errorf("rclone binary %q not found: %w", rclone, err)
+	}
+	return absPath(parent)
+}
+
+// absPath makes a LookPath result absolute. A relative PATH entry or an
+// explicit `./rclone` yields a relative result from LookPath: it only works
+// from one working directory, and a login item is not started from one, so
+// the value written into the plist or the unit must be absolute.
+func absPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", p, err)
+	}
+	return abs, nil
 }
 
 // CurrentGOOS is split out so tests can inject a platform.
