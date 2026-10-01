@@ -9,7 +9,7 @@
 // stripAllowedComparisons drops those before the scan.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -66,7 +66,7 @@ const TERMS = Object.freeze([
     term: "pin",
     source: "https://spacefs.com/",
     date: "2026-10-02",
-    pattern: String.raw`\b(?:un)?pin(?:ned|ning)?\b`,
+    pattern: String.raw`\b(?:un)?pin(?:ned|ning|s)?\b`,
     flags: "gi",
   }),
   Object.freeze({
@@ -90,6 +90,11 @@ const TEXT_EXT = new Set([
   ".txt",
   ".xml",
 ]);
+const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
+// The rival's name lives in these two modules as the data that formats the
+// allowed "(Space $27)" comparisons. Nowhere else in src/ may a "Space"
+// string pass.
+const RIVAL_NAME_FILES = new Set(["src/docs.js", "src/pricing.js"]);
 
 /** Drop the price-comparison forms issue #195 leaves in place. */
 function stripAllowedComparisons(text) {
@@ -99,13 +104,17 @@ function stripAllowedComparisons(text) {
     .replace(/\bname:\s*["']Space["']/g, "");
 }
 
+function dropExactRivalName(text) {
+  return text
+    .split("\n")
+    .filter((line) => line !== "Space")
+    .join("\n");
+}
+
 function hitsIn(path, text, options = {}) {
   let scanned = stripAllowedComparisons(text);
-  // The rival's name in src/pricing.js and src/docs.js is the one word used to
-  // format the allowed "(Space $27)" comparisons. After quoted-string extract
-  // it is a whole string "Space", not customer copy.
   if (options.allowRivalName) {
-    scanned = scanned.replace(/(^|\n)Space(\n|$)/g, "$1$2");
+    scanned = dropExactRivalName(scanned);
   }
   const hits = [];
   for (const term of TERMS) {
@@ -117,8 +126,54 @@ function hitsIn(path, text, options = {}) {
   return hits;
 }
 
+function isRegexStart(source, i) {
+  let k = i - 1;
+  while (k >= 0 && /[ \t\r\n]/.test(source[k])) {
+    k -= 1;
+  }
+  if (k < 0) {
+    return true;
+  }
+  const c = source[k];
+  if ("=,([:!&|?~;{}+-*%^<>".includes(c)) {
+    return true;
+  }
+  return /\b(?:return|throw|typeof|case|void|delete|in|of|new|await|yield)\s*$/.test(
+    source.slice(0, i),
+  );
+}
+
+function skipRegex(source, i) {
+  let j = i + 1;
+  let inClass = false;
+  while (j < source.length) {
+    const c = source[j];
+    if (c === "\n") {
+      return i + 1;
+    }
+    if (c === "\\") {
+      j += 2;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+    } else if (c === "]") {
+      inClass = false;
+    } else if (c === "/" && !inClass) {
+      j += 1;
+      while (j < source.length && /[a-z]/i.test(source[j])) {
+        j += 1;
+      }
+      return j;
+    }
+    j += 1;
+  }
+  return i + 1;
+}
+
 /** Quoted strings in JS or Go, skipping comments, so identifiers like `pinned` are not copy. */
-function quotedStrings(source) {
+function quotedStrings(source, options = {}) {
+  const backtickRaw = options.backtickRaw === true;
   const out = [];
   let i = 0;
   while (i < source.length) {
@@ -134,14 +189,32 @@ function quotedStrings(source) {
       i = end === -1 ? source.length : end + 2;
       continue;
     }
+    if (!backtickRaw && c === "/" && isRegexStart(source, i)) {
+      i = skipRegex(source, i);
+      continue;
+    }
     if (c === '"' || c === "'" || c === "`") {
       const q = c;
+      const raw = q === "`" && backtickRaw;
       let j = i + 1;
       let s = "";
       while (j < source.length) {
-        if (q !== "`" && source[j] === "\\") {
+        if (!raw && source[j] === "\\") {
           s += source[j] + (source[j + 1] ?? "");
           j += 2;
+          continue;
+        }
+        if (!raw && q === "`" && source[j] === "$" && source[j + 1] === "{") {
+          let depth = 1;
+          j += 2;
+          while (j < source.length && depth > 0) {
+            if (source[j] === "{") {
+              depth += 1;
+            } else if (source[j] === "}") {
+              depth -= 1;
+            }
+            j += 1;
+          }
           continue;
         }
         if (source[j] === q) {
@@ -159,24 +232,33 @@ function quotedStrings(source) {
   return out;
 }
 
+function stripMarkupComments(text) {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
+
 function walkFiles(dir, files = []) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".git" || name === ".rendered") {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.name === "node_modules" || ent.name === ".git" || ent.name === ".rendered") {
       continue;
     }
-    const full = join(dir, name);
+    if (ent.isSymbolicLink()) {
+      continue;
+    }
+    const full = join(dir, ent.name);
     const rel = relative(root, full);
     // Generated docs (public/docs, docs-site/.rendered) are not committed;
     // docs-site/*.md is the source customers read after the build.
-    if (rel === "public/docs" || rel.startsWith(`public/docs/`)) {
+    if (rel === "public/docs" || rel.startsWith("public/docs/")) {
       continue;
     }
-    const st = statSync(full);
-    if (st.isDirectory()) {
+    if (ent.isDirectory()) {
       walkFiles(full, files);
       continue;
     }
-    if (TEXT_EXT.has(extname(name))) {
+    if (ent.isFile() && TEXT_EXT.has(extname(ent.name))) {
       files.push(rel);
     }
   }
@@ -186,23 +268,25 @@ function walkFiles(dir, files = []) {
 function scanTree() {
   const hits = [];
   for (const rel of walkFiles(join(root, "public"))) {
-    hits.push(...hitsIn(rel, readFileSync(join(root, rel), "utf8")));
+    hits.push(...hitsIn(rel, stripMarkupComments(readFileSync(join(root, rel), "utf8"))));
   }
   for (const rel of walkFiles(join(root, "docs-site"))) {
     hits.push(...hitsIn(rel, readFileSync(join(root, rel), "utf8")));
   }
   for (const rel of walkFiles(join(root, "src"))) {
-    if (!rel.endsWith(".js")) {
+    if (!SRC_JS_EXT.has(extname(rel))) {
       continue;
     }
     const strings = quotedStrings(readFileSync(join(root, rel), "utf8")).join("\n");
-    hits.push(...hitsIn(rel, strings, { allowRivalName: true }));
+    hits.push(...hitsIn(rel, strings, { allowRivalName: RIVAL_NAME_FILES.has(rel) }));
   }
   for (const rel of walkFiles(join(root, "cmd"))) {
     if (!rel.endsWith(".go")) {
       continue;
     }
-    const strings = quotedStrings(readFileSync(join(root, rel), "utf8")).join("\n");
+    const strings = quotedStrings(readFileSync(join(root, rel), "utf8"), {
+      backtickRaw: true,
+    }).join("\n");
     hits.push(...hitsIn(rel, strings));
   }
   return hits;
@@ -215,11 +299,15 @@ test("the term list names a source URL and the date it was read", () => {
     assert.match(term.date, /^\d{4}-\d{2}-\d{2}$/, `${term.term} must say when it was read`);
     assert.ok(term.pattern.length > 0, `${term.term} must have a pattern`);
   }
+  const spacefs = TERMS.find((term) => term.term === "SpaceFS");
+  assert.ok(spacefs, "SpaceFS stays in the list");
+  assert.match(spacefs.source, /^https:\/\//);
 });
 
 test("a planted rival term fails the scan", () => {
   const planted = [
     "drive pin ./footage",
+    "Drive pins your files",
     "unpin the folder",
     "Zero bytes on disk.",
     "using zero disk space",
@@ -243,6 +331,35 @@ test("a price comparison that names the rival is left alone", () => {
     hitsIn("src/pricing.js", 'rival: Object.freeze({ name: "Space", monthlyUsd: 15 })'),
     [],
   );
+});
+
+test("the rival name constant is allowed only in the two comparison modules", () => {
+  const pricing = quotedStrings(readFileSync(join(root, "src/pricing.js"), "utf8")).join("\n");
+  assert.deepEqual(
+    hitsIn("src/pricing.js", pricing, { allowRivalName: true }).filter(
+      (hit) => hit.term === "Space",
+    ),
+    [],
+  );
+  const other = quotedStrings('export const title = "Space";').join("\n");
+  assert.ok(
+    hitsIn("src/status.js", other).some((hit) => hit.term === "Space"),
+    "a Space title in any other src module must fail",
+  );
+});
+
+test("a quote inside a regex does not hide later copy", () => {
+  const strings = quotedStrings(`const re = /["']/; const msg = "zero bytes on disk";`);
+  assert.ok(strings.some((s) => s.includes("zero bytes on disk")));
+  assert.ok(
+    hitsIn("src/x.js", strings.join("\n")).some((hit) => hit.term === "zero bytes on disk"),
+  );
+});
+
+test("an escaped backtick does not hide later copy", () => {
+  const strings = quotedStrings("const a = `foo \\` bar`; const b = `Clipboard`;");
+  assert.ok(strings.some((s) => s === "Clipboard"));
+  assert.ok(hitsIn("src/x.js", strings.join("\n")).some((hit) => hit.term === "Clipboard"));
 });
 
 test("the customer-facing tree has none of the listed terms", () => {

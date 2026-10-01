@@ -91,8 +91,13 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   }
   assert.match(
     read("test/own-words.test.mjs"),
-    /SpaceFS/,
-    "the own-words gate must still list a rival term, so the line cannot point at an empty file",
+    /term: "SpaceFS"/,
+    "the own-words gate must still list SpaceFS as a term, so the line cannot point at an empty file",
+  );
+  assert.match(
+    read("test/own-words.test.mjs"),
+    /source: "https:\/\/spacefs.com\/"/,
+    "the SpaceFS term must cite the page it was read from",
   );
 });
 
