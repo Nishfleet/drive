@@ -555,7 +555,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
     const response = await worker.fetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
-        { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+        { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
       ),
       env,
     );
@@ -568,7 +568,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const refused = await worker.fetch(
     post(
       { step: "start", method: "email", email: "over@the.ceil.ing" },
-      { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
     ),
     env,
   );
@@ -580,7 +580,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const other = await worker.fetch(
     post(
       { step: "start", method: "email", email: "other@example.com" },
-      { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.2" } },
+      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.2" } },
     ),
     env,
   );
@@ -598,7 +598,7 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
     await worker.fetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
-        { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+        { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
       ),
       env,
     );
@@ -607,11 +607,14 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
   // The "restart": a brand-new Better Auth instance over the same database,
   // as a new Worker isolate would build. It never shares the old instance's
   // objects — only the D1 table they both read and write.
+  const restartedSent = [];
   const restarted = createAuth({
     database: made.db,
     secret: TEST_SECRET,
     baseURL: TEST_BASE_URL,
-    sendLink: async () => {},
+    sendLink: (link) => {
+      restartedSent.push(link);
+    },
   });
 
   // The same address still trips the ceiling, because the counter was written
@@ -622,12 +625,13 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
       headers: {
         "content-type": "application/json",
         origin: TEST_BASE_URL,
-        "x-forwarded-for": "192.0.2.1",
+        "cf-connecting-ip": "192.0.2.1",
       },
       body: JSON.stringify({ email: "still@limited.example" }),
     }),
   );
   assert.equal(stillLimited.status, 429, "a fresh isolate over the same D1 still refuses");
+  assert.equal(restartedSent.length, 0, "the refused restart mails nothing either");
 });
 
 // --------------------------------------------------------- the shipped page

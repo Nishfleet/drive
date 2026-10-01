@@ -294,9 +294,16 @@ export async function handleSigninRequest(request, env) {
     // email the start step validated and the headers the limiter reads IP from.
     const authResponse = await auth.handler(signinLinkRequest(auth, read.email, request));
     // Better Auth answers 429 from its rate limiter; translate that into the
-    // message table's words rather than passing its body through.
+    // message table's words rather than passing its body through, and carry the
+    // library's own retry-after through as the `retry-after` header the edge
+    // limiter sets (src/rate-limit.js), so a client gets one backoff signal.
     if (authResponse.status === 429) {
-      return json({ error: failureMessage("rate-limited") }, 429);
+      const retryAfter = authResponse.headers.get("x-retry-after");
+      return json(
+        { error: failureMessage("rate-limited") },
+        429,
+        retryAfter === null ? {} : { "retry-after": retryAfter },
+      );
     }
     // Any other non-200 is a real failure — a database error, a token that
     // could not be stored, or a mailer that threw: the closed door, never a
@@ -304,13 +311,11 @@ export async function handleSigninRequest(request, env) {
     if (authResponse.status !== 200) {
       return json(signinClosedBody(), 503);
     }
-  } catch (error) {
-    // A rate-limit refusal surfaces as a 429 Response, handled above; this catch
-    // is for anything that throws instead — the closed door, never a 202 for a
+  } catch {
+    // A rate-limit refusal arrives as the 429 Response handled above, never a
+    // throw. This catch is for anything else `auth.handler` lets escape — a torn
+    // D1 binding, a runtime fault — which is the closed door, never a 202 for a
     // send that never landed.
-    if (isTooManyRequests(error)) {
-      return json({ error: failureMessage("rate-limited") }, 429);
-    }
     return json(signinClosedBody(), 503);
   }
   return json(
@@ -384,18 +389,38 @@ export async function handleSigninLinkVerify(request, env) {
  * checked and incremented the same way a browser hit the library route.
  *
  * The URL is the library's own endpoint under the configured auth base path;
- * the body carries only the address the start step already validated, and
- * the headers are the caller's so the limiter can read the IP and the origin
- * check can see the site the request came from.
+ * the body carries only the address the start step already validated. Of the
+ * caller's headers it forwards only what the callee reads — the `origin` its
+ * origin check validates against and the `cf-connecting-ip` its rate limiter
+ * keys on — never the whole header set (see the note in the body below).
  * @param {Auth} auth the Better Auth instance from `authFor`
  * @param {string} email the address the start step validated
- * @param {Request} request the caller's request, whose headers are forwarded
+ * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
  * @returns {Request}
  */
 function signinLinkRequest(auth, email, request) {
   const basePath = /** @type {object} */ (auth.options).basePath || "/api/auth";
   const base = /** @type {string} */ (auth.options.baseURL);
-  const headers = new Headers(request.headers);
+  // Forward only what the callee reads, not the caller's whole header set. The
+  // library validates the origin from `origin` and resolves the per-IP
+  // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
+  // src/auth.js); a JSON body is all it parses. The caller's `content-length`
+  // names this route's body, not the JSON built here, so carrying it across
+  // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
+  // signed-in person a magic-link send has no need to impersonate.
+  const headers = new Headers();
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    headers.set("origin", origin);
+  }
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp !== null) {
+    headers.set("cf-connecting-ip", clientIp);
+  }
+  const accept = request.headers.get("accept");
+  if (accept !== null) {
+    headers.set("accept", accept);
+  }
   // The body is the library's own shape, not the route's `step` wrapper.
   headers.set("content-type", "application/json");
   return new Request(`${base}${basePath}/sign-in/magic-link`, {
@@ -403,29 +428,6 @@ function signinLinkRequest(auth, email, request) {
     headers,
     body: JSON.stringify({ email }),
   });
-}
-
-/**
- * A rate limit is the message table's words and a 429; nothing else from the
- * library becomes a stranger-visible sentence, because an unknown failure is
- * the same closed door a deployment with no auth gives.
- * @param {unknown} error
- * @returns {boolean}
- */
-function isTooManyRequests(error) {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-  const status = /** @type {{status?: unknown, body?: unknown}} */ (error).status;
-  if (status === 429 || status === "TOO_MANY_REQUESTS") {
-    return true;
-  }
-  const body = /** @type {{body?: unknown}} */ (error).body;
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    /** @type {{code?: unknown}} */ (body).code === "TOO_MANY_REQUESTS"
-  );
 }
 
 /**

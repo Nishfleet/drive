@@ -123,13 +123,16 @@ export function createAuth(options) {
       // The site is served over HTTPS only (Cloudflare terminates TLS), so the
       // session cookie is `__Secure-` prefixed and never travels in clear.
       useSecureCookies: true,
-      // Cloudflare sets `cf-connecting-ip` on every request; Better Auth only
-      // looks at `x-forwarded-for` by default, which behind Cloudflare can
-      // hold a chain of proxies and fail to parse as a single IP. Listing the
-      // edge header second lets the per-IP rate limit key resolve to the real
-      // caller on the deployed Worker.
+      // The one trustworthy source of the per-IP rate limit key. Cloudflare sets
+      // `cf-connecting-ip` to the caller's address on every request it serves and
+      // the caller cannot forge it, so the counter keys on the real client.
+      // `x-forwarded-for` is deliberately not consulted: behind the edge it can
+      // hold a caller-supplied chain whose first element an attacker controls, and
+      // a key built from it would let one client reset its own ceiling by choosing
+      // the header. This is the same header the edge per-IP limiter keys on
+      // (src/rate-limit.js), so the two layers bound the same caller.
       ipAddress: {
-        ipAddressHeaders: ["x-forwarded-for", "cf-connecting-ip"],
+        ipAddressHeaders: ["cf-connecting-ip"],
       },
     },
     plugins: [
