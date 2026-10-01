@@ -65,7 +65,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive approve <branch>` | Copy the branch's changes back. Stops and lists files if the original changed since branching |
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
-| `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/v1/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
+| `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
 
 ## Screens (v1)
 

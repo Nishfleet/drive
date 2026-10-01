@@ -117,7 +117,7 @@ export const routes = [
   // holds, so a sign-out needs no session token.
   {
     method: "POST",
-    path: "/v1/keys/revoke",
+    path: "/api/keys/revoke",
     auth: "public",
     handler: revokePresentedKeyRoute,
   },

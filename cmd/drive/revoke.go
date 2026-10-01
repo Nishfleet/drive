@@ -29,7 +29,7 @@ import (
 // request (workers/api/src/routes.js: the key itself is the whole credential,
 // like the storage routes). The path is the one constant the two halves share:
 // the CLI does not guess it and the Worker does not move it.
-const RevokePath = "/v1/keys/revoke"
+const RevokePath = "/api/keys/revoke"
 
 // revokeTimeout bounds the call. `drive logout` is a command someone runs when
 // something is wrong, so a key store that hangs must not hang the terminal.

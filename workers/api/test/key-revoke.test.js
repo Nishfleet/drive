@@ -3,8 +3,26 @@ import { test } from "node:test";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
 
+// The edge limits the device flow answers behind (drive issue #147). The
+// binding's whole contract is `limit({ key }) -> { success }`; a fake that
+// always succeeds, so the device routes do not fail closed.
+function makeRateLimiter({ success = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async limit(options) {
+      calls.push(options);
+      return { success };
+    },
+  };
+}
+
+function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
+  return { DEVICE_RATE_LIMITER: ip, DEVICE_GLOBAL_RATE_LIMITER: global };
+}
+
 function baseCtx(store, account) {
-  return { env: {}, db: null, store, account, now: () => 0 };
+  return { env: limits(), db: null, store, account, now: () => 0 };
 }
 
 async function signIn(store, name) {
@@ -73,7 +91,7 @@ test("the key that presents itself can revoke itself (drive logout's endpoint)",
   assert.equal(before.status, 200);
 
   const revoked = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", {
+    new Request("https://api.test/api/keys/revoke", {
       method: "POST",
       headers: basic(key.accessKeyId, key.secret),
     }),
@@ -91,7 +109,7 @@ test("the key that presents itself can revoke itself (drive logout's endpoint)",
   assert.equal(after.status, 401);
 
   const again = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", {
+    new Request("https://api.test/api/keys/revoke", {
       method: "POST",
       headers: basic(key.accessKeyId, key.secret),
     }),
@@ -104,7 +122,7 @@ test("the key that presents itself can revoke itself (drive logout's endpoint)",
   assert.equal(store.listObjects(account.id, key.prefix).length, 1);
 });
 
-test("a wrong secret, a revoked key, or no credentials refuse through /v1/keys/revoke", async () => {
+test("a wrong secret, a revoked key, or no credentials refuse through /api/keys/revoke", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { deviceToken } = await signIn(store, "Nish's MacBook");
   const minted = await dispatch(
@@ -118,7 +136,7 @@ test("a wrong secret, a revoked key, or no credentials refuse through /v1/keys/r
   const key = await minted.json();
 
   const bad = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", {
+    new Request("https://api.test/api/keys/revoke", {
       method: "POST",
       headers: basic(key.accessKeyId, "not-the-secret"),
     }),
@@ -127,7 +145,7 @@ test("a wrong secret, a revoked key, or no credentials refuse through /v1/keys/r
   assert.equal(bad.status, 401);
 
   const anon = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", { method: "POST" }),
+    new Request("https://api.test/api/keys/revoke", { method: "POST" }),
     baseCtx(store, null),
   );
   assert.equal(anon.status, 401);
@@ -146,7 +164,7 @@ test("a wrong secret, a revoked key, or no credentials refuse through /v1/keys/r
     )
   ).json();
   const crossed = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", {
+    new Request("https://api.test/api/keys/revoke", {
       method: "POST",
       headers: basic(key.accessKeyId, secondKey.secret),
     }),
@@ -162,7 +180,7 @@ test("a wrong secret, a revoked key, or no credentials refuse through /v1/keys/r
   assert.equal(secondStillWorks.status, 200);
 
   const wrongMethod = await dispatch(
-    new Request("https://api.test/v1/keys/revoke", {
+    new Request("https://api.test/api/keys/revoke", {
       method: "GET",
       headers: basic(key.accessKeyId, key.secret),
     }),
