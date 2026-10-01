@@ -32,6 +32,7 @@ import { createAccountStore } from "../src/accounts.js";
 import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
 import { HEALTH_PATH } from "../src/health.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
+import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -88,6 +89,11 @@ const ACCOUNT_ROUTES = [
   // it to answer 401 anonymously.
   `${SEARCH_ENDPOINT}`,
   `${SEARCH_ENDPOINT}/`,
+  // drive issue #8: branches. Every branch route names files in the
+  // signed-in account's own drive, so the walk requires it to answer 401
+  // anonymously like the rest.
+  `${BRANCHES_ENDPOINT}`,
+  `${BRANCHES_ENDPOINT}/`,
 ];
 
 function anonymous(request) {
@@ -135,6 +141,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         "HEALTH_PATH",
         "SIGNIN_ENDPOINT",
         "SEARCH_ENDPOINT",
+        "BRANCHES_ENDPOINT",
       ].includes(name),
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
     );
@@ -163,7 +170,8 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
-        route.startsWith(SEARCH_ENDPOINT),
+        route.startsWith(SEARCH_ENDPOINT) ||
+        route.startsWith(BRANCHES_ENDPOINT),
       `${route} must be a route the Worker really serves`,
     );
   }

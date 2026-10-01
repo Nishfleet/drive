@@ -25,6 +25,17 @@ export const FILES_ENDPOINT = "/api/files";
 export const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
+/**
+ * The folder every branch of this drive is copied into (build step 7,
+ * drive#8). It lives here beside the trash folder because this is the one
+ * module that knows which folders are the drive's own rather than a person's:
+ * both are hidden in the drive root and both are an ordinary folder deeper in
+ * the tree. src/branches.js builds the branch prefix from this name, so the
+ * path a branch lands in and the path the listing hides are one string.
+ */
+export const BRANCHES_FOLDER = ".branches";
+/** The drive path branches are copied into. */
+export const BRANCHES_PATH = `/${BRANCHES_FOLDER}`;
 /** How long a deleted file stays restorable (build-spec.md "Old versions"). */
 export const RECENTLY_DELETED_DAYS = 30;
 
@@ -249,11 +260,16 @@ export function splitEntries(entries) {
   return { folders: sortEntries(folders), files: sortEntries(files) };
 }
 
+/** The folders the drive keeps for itself and hides from the drive root. */
+const SYSTEM_FOLDERS = new Set([TRASH_FOLDER, BRANCHES_FOLDER]);
+
 /**
- * A drive listing without the trash folder. Recently deleted is its own tab,
- * so a person should never meet the `.trash` folder as a folder they can open
- * and a row they have to walk past; this hides it in the drive root only, so a
- * file of that name deeper in the tree is still an ordinary folder.
+ * A drive listing without the folders the drive keeps for itself.
+ * Recently deleted is its own tab, so a person should never meet the `.trash`
+ * folder as a folder they can open and a row they have to walk past, and
+ * `drive branches` is its own command, so `.branches` is not a folder a person
+ * opens. Both are hidden in the drive root only, so a file of that name deeper
+ * in the tree is still an ordinary folder.
  * @param {FileEntry[]} entries
  * @param {string} path the drive path the listing was for
  */
@@ -262,7 +278,7 @@ export function withoutTrash(entries, path) {
     return entries;
   }
   return entries.filter(
-    (entry) => !(entry.kind === "folder" && entry.name === TRASH_FOLDER),
+    (entry) => !(entry.kind === "folder" && SYSTEM_FOLDERS.has(entry.name)),
   );
 }
 
@@ -392,12 +408,16 @@ export function restorableUntil(deletedAt) {
  * into the page.
  *
  * @typedef {{name: string, path: string, kind: string, size?: number,
- *   modified?: number, contentType?: string}} FileEntry
+ *   modified?: number, contentType?: string, etag?: string|null}} FileEntry
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
- * @property {(path: string) => Promise<{body: ReadableStream, contentType: string, size: number}|null>} read
+ * @property {(path: string) => Promise<{body: ReadableStream, contentType: string, size: number, etag?: string|null}|null>} read
  * @property {(path: string, body: ReadableStream, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
+ * @property {(from: string, to: string) => Promise<void>} copy A copy the
+ *   storage itself makes, no bytes through this Worker: `drive branch`
+ *   (build step 7) is a folder copy, and a copy that streamed every byte
+ *   through us would make a 10 GB branch a 10 GB download and upload.
  */
 
 /**
@@ -508,6 +528,12 @@ export function scopeStore(store, account) {
     const path = toDrivePath(entry.path);
     return path === entry.path ? entry : { ...entry, path };
   };
+  /**
+   * A copy is scoped on both ends: the source and the destination are each a
+   * drive path, and the destination is rewritten like any other write, so a
+   * branch copy can only ever write inside this account's own folder.
+   */
+  const toKeys = (from, to) => [toKey(from), toKey(to)];
   return {
     async list(path) {
       const entries = await store.list(toKey(path));
@@ -524,7 +550,25 @@ export function scopeStore(store, account) {
     async remove(path) {
       return store.remove(toKey(path));
     },
+    async copy(from, to) {
+      const [source, dest] = toKeys(from, to);
+      return store.copy(source, dest);
+    },
   };
+}
+
+/**
+ * A content fingerprint for an in-memory object: SHA-256 as hex. The S3
+ * store's ETag plays the same role (an edit changes it); the two are never
+ * compared to each other because a snapshot is always read back through the
+ * same store it was taken from.
+ * @param {Uint8Array} bytes
+ */
+async function memoryEtag(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**
@@ -557,6 +601,7 @@ export function createMemoryStore() {
             size: value.body.byteLength,
             modified: value.modified,
             contentType: value.contentType,
+            etag: value.etag,
           });
         } else {
           const name = rest.slice(0, slash);
@@ -574,14 +619,32 @@ export function createMemoryStore() {
         body: new Blob([value.body]).stream(),
         contentType: value.contentType,
         size: value.body.byteLength,
+        etag: value.etag,
       };
     },
     async write(path, body, contentType) {
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
-      objects.set(path, { body: bytes, contentType, modified: Date.now() });
+      objects.set(path, {
+        body: bytes,
+        contentType,
+        modified: Date.now(),
+        etag: await memoryEtag(bytes),
+      });
     },
     async remove(path) {
       objects.delete(path);
+    },
+    async copy(from, to) {
+      const value = objects.get(from);
+      if (!value) {
+        // A copy of a file that is not there is a real failure (S3 answers
+        // 404), not a silent no-op: `drive branch` must never report success
+        // for a folder it did not copy.
+        throw new Error(`cannot copy ${from}: that file is not in the drive`);
+      }
+      // The bytes and their fingerprint move together; only the modified time
+      // is the copy's own, exactly as S3's CopyObject behaves.
+      objects.set(to, { ...value, modified: Date.now() });
     },
   };
 }
@@ -659,6 +722,7 @@ export function createS3Store(config) {
         body: response.body,
         contentType: response.headers.get("content-type") || "application/octet-stream",
         size: Number(response.headers.get("content-length") || 0),
+        etag: response.headers.get("etag"),
       };
     },
     async write(path, body, contentType) {
@@ -675,6 +739,20 @@ export function createS3Store(config) {
       const response = await fetchImpl(urlFor(path), { method: "DELETE" });
       if (!response.ok && response.status !== 404) {
         throw new Error(`storage delete failed with ${response.status}`);
+      }
+    },
+    async copy(from, to) {
+      // A server-side copy: S3's CopyObject, named by the x-amz-copy-source
+      // header, so the bytes never leave storage and never pass through this
+      // Worker. The source is the bucket-qualified key, percent-encoded, the
+      // form S3 requires (proven against `rclone serve s3`, 2026-10-01).
+      const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
+      const response = await fetchImpl(urlFor(to), {
+        method: "PUT",
+        headers: { "x-amz-copy-source": source },
+      });
+      if (!response.ok) {
+        throw new Error(`storage copy failed with ${response.status}`);
       }
     },
   };
@@ -712,6 +790,11 @@ export function parseListObjects(xml, prefix, path) {
       kind: fileKind(name),
       size: Number(tagValue(block, "Size") || 0),
       modified: Date.parse(tagValue(block, "LastModified")) || null,
+      // S3's ETag is the content fingerprint a branch snapshot compares against
+      // (build step 7): CopyObject preserves it, so a copied file matches and an
+      // edited one does not. The quotes are S3's own and are stripped so two
+      // stores' values compare in one form.
+      etag: tagValue(block, "ETag").replace(/"/g, ""),
     });
   }
   return entries;

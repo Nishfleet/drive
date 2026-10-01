@@ -689,7 +689,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <CommonPrefixes><Prefix>u/acct-a/Photos/</Prefix></CommonPrefixes>
-  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size>
+  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size><ETag>66dbbbc6491a376540bacd33bdf2cc0f</ETag>
   <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
 </ListBucketResult>`;
   const fetchImpl = async (url, init) => {
@@ -715,6 +715,9 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
       kind: "image",
       size: 2400,
       modified: Date.parse("2026-09-30T11:00:00.000Z"),
+      // S3's own ETag, unquoted: the content fingerprint a branch snapshot
+      // compares against (build step 7).
+      etag: "66dbbbc6491a376540bacd33bdf2cc0f",
     },
   ]);
   assert.match(urls[0].url, /prefix=u%2Facct-a%2F&/);
@@ -930,4 +933,28 @@ test("the first-run page links to the Files page, so the page has a caller", () 
 
 test("the Files page is not indexed: it is one person's drive", () => {
   assert.match(page, /<meta name="robots" content="noindex">/);
+});
+
+test("the S3 stand-in copies server-side with CopyObject, so no bytes pass through the Worker", async () => {
+  // `drive branch` calls FileStore.copy (build step 7): on the real store that
+  // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
+  // The header form is the one proven against `rclone serve s3` on 2026-10-01.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ method: (init && init.method) || "GET", url, headers: (init && init.headers) || {} });
+    return new Response("", { status: 200 });
+  };
+  const store = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await store.copy("/Photos/a b.txt", "/.branches/work/a b.txt");
+
+  assert.equal(calls.length, 1, "a copy is one call");
+  const call = calls[0];
+  assert.equal(call.method, "PUT");
+  assert.equal(call.headers["x-amz-copy-source"], "/drive/u/acct-a/Photos/a%20b.txt");
+  assert.equal(call.url, "http://127.0.0.1:9000/drive/u/acct-a/.branches/work/a%20b.txt");
+  assert.equal(call.headers["content-type"], undefined, "a server-side copy sends no body");
 });
