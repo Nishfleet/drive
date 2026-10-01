@@ -1,11 +1,11 @@
 // Tests for the one-click rewind (drive issue #13, build step 11's undo half).
 //
 // The per-agent spending cap and daily-request cap this file used to cover
-// were deleted by drive #169: PR #164 shipped them with no caller outside
-// these tests, so no agent key was ever stopped, and there is no live request
-// path that spends money for an agent key to hook a cap into yet (the meter is
-// still an open PR, and the api Worker's storage route is a read-only
-// stand-in). They come back with the meter, on the real path.
+// were deleted by drive #169: they shipped with no caller outside these tests,
+// so no agent key was ever stopped, and there is no live request path that
+// spends money for an agent key to hook a cap into yet (the meter is still an
+// open PR, and the api Worker's storage route is a read-only stand-in). They
+// come back with the meter, on the real path — tracked in drive #171.
 //
 // The rewind's own acceptance, in the order the tests below walk it:
 //
