@@ -1,7 +1,8 @@
 // Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
 // so node --test can exercise every branch without a running runtime.
-import { failureMessage } from "./messages.js";
+
 import isEmail from "validator/lib/isEmail.js";
+import { failureMessage } from "./messages.js";
 
 export const SOURCES = ["pricing-page", "business"];
 
@@ -18,6 +19,7 @@ class BodyTooLargeError extends Error {
 /**
  * Returns { email, source } or { error }.
  * @param {{email?: unknown, source?: unknown}} input
+ * @returns {{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
  */
 export function validateSignup(input) {
   if (typeof input !== "object" || input === null) {
@@ -41,6 +43,10 @@ export function validateSignup(input) {
   return { email, source };
 }
 
+/**
+ * @param {{id?: unknown, email?: unknown, source?: unknown, created_at?: unknown}|null|undefined} result
+ * @returns {{id: unknown, email: unknown, source: unknown, created_at: unknown}|null}
+ */
 function row(result) {
   if (!result) {
     return null;
@@ -73,21 +79,23 @@ export async function recordSignup(db, signup) {
     return { already: false, row: row(inserted) };
   }
   const existing = await db
-    .prepare(
-      "SELECT id, email, source, created_at FROM waitlist WHERE email = ?1",
-    )
+    .prepare("SELECT id, email, source, created_at FROM waitlist WHERE email = ?1")
     .bind(signup.email)
     .first();
   if (!existing) {
     // The conflict fired but the row is gone: concurrent delete, or a schema
     // that does not match. Fail loud rather than pretend the sign-up landed.
-    throw new Error(
-      `waitlist insert reported a conflict for ${signup.email} but no row exists`,
-    );
+    throw new Error(`waitlist insert reported a conflict for ${signup.email} but no row exists`);
   }
   return { already: true, row: row(existing) };
 }
 
+/**
+ * @param {unknown} body
+ * @param {number} status
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function json(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -103,6 +111,11 @@ function json(body, status, headers = {}) {
 // is checked first so an oversized body is rejected without being read at
 // all, and the stream is counted as it arrives so a request that declares
 // nothing (or lies about a smaller size) is stopped at the same limit.
+/**
+ * @param {Request} request
+ * @param {number} maxBytes
+ * @returns {Promise<Uint8Array>}
+ */
 async function readLimitedBody(request, maxBytes) {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
@@ -137,6 +150,10 @@ async function readLimitedBody(request, maxBytes) {
   return bytes;
 }
 
+/**
+ * @param {Request} request
+ * @returns {Promise<{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}>}
+ */
 async function readSignupRequest(request) {
   const contentType = request.headers.get("content-type") || "";
   const bytes = await readLimitedBody(request, MAX_BODY_BYTES);
@@ -147,8 +164,10 @@ async function readSignupRequest(request) {
       return { error: "The request body is not valid JSON." };
     }
   }
-  // The no-JavaScript form post lands here.
-  const form = await new Response(bytes, {
+  // The no-JavaScript form post lands here. The cast only says what the
+  // runtime already accepts: a Uint8Array is a valid Response body, and the
+  // DOM lib's BodyInit is written against a non-shared ArrayBuffer.
+  const form = await new Response(/** @type {BodyInit} */ (bytes), {
     headers: { "content-type": contentType },
   }).formData();
   return validateSignup({
@@ -177,7 +196,7 @@ export function isSameOriginRequest(request) {
  * Handles every method on /api/waitlist and always returns a Response.
  * @param {Request} request
  * @param {D1Database} db
- * @param {RateLimitBinding|undefined} rateLimiter
+ * @param {RateLimit|undefined} rateLimiter
  */
 export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (request.method !== "POST") {
@@ -191,10 +210,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     // Checked before the limiter: a cross-site POST is rejected without
     // reading a body or touching D1, so it does no work and must not spend
     // the caller's quota (drive#28 review).
-    return json(
-      { error: "Sign-ups are only accepted from the drive page." },
-      403,
-    );
+    return json({ error: "Sign-ups are only accepted from the drive page." }, 403);
   }
 
   // Rate limit next: it bounds the work that actually costs something (a body
@@ -228,11 +244,7 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     return json({ error: failureMessage("unexpected") }, 503);
   }
   if (!success) {
-    return json(
-      { error: failureMessage("rate-limited") },
-      429,
-      { "retry-after": "60" },
-    );
+    return json({ error: failureMessage("rate-limited") }, 429, { "retry-after": "60" });
   }
 
   if (!db) {
@@ -258,9 +270,12 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (signup.error) {
     return json({ error: signup.error }, 400);
   }
+  // The guard just proved the accepted shape; the union's other arm is gone,
+  // and this is the one name the write path reads.
+  const accepted = /** @type {{email: string, source: string}} */ (signup);
 
   try {
-    await recordSignup(db, signup);
+    await recordSignup(db, accepted);
     // The response is identical whether the address was already on the list
     // or not — no enumeration oracle, no echo of stored data.
     return json({ ok: true }, 200);

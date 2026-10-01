@@ -13,7 +13,11 @@
 // lands, approving a code makes the account, and the page says so in plain
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
-import { json, errorResponse } from "./http.js";
+import { bearerToken, errorResponse, json } from "./http.js";
+
+/** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
+ * the key routes take. */
+/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
@@ -42,14 +46,17 @@ const HTML_ESCAPES = Object.freeze({
  * @param {unknown} text
  */
 function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)]);
+  return String(text).replace(
+    /[&<>"']/g,
+    (ch) => HTML_ESCAPES[/** @type {keyof typeof HTML_ESCAPES} */ (ch)],
+  );
 }
 
 /**
  * The approval page. A static shell with the code from the query string
  * echoed into the form, escaped; nothing else is rendered from the request.
  * @param {{userCode?: string, notice?: string}} [options]
- */function approvePage({ userCode = "", notice = "" } = {}) {
+ */ function approvePage({ userCode = "", notice = "" } = {}) {
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -111,7 +118,7 @@ async function readUserCode(request) {
  * POST /v1/device/code — start a device sign-in. Public: the CLI has no
  * credential yet, which is the point of the flow.
  * @param {Request} request
- * @param {{store: any, url: URL}} ctx
+ * @param {{store: KeyStore, url: URL}} ctx
  */
 export function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -166,7 +173,7 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{store: KeyStore}} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -213,14 +220,16 @@ export function approvePageRoute(_request, ctx) {
  * reason as the page: the person is doing the signing in. Until the account
  * sign-in flow lands, approving is what makes the account.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{store: KeyStore}} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
   const read = await readUserCode(request);
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  const userCode = String(read.userCode ?? "").trim().toUpperCase();
+  const userCode = String(read.userCode ?? "")
+    .trim()
+    .toUpperCase();
   if (userCode === "") {
     return approvePageError("", "Type the code from the terminal.");
   }
@@ -236,4 +245,37 @@ export async function approveDeviceCodeRoute(request, ctx) {
     userCode,
     notice: `Approved. Return to the terminal; ${result.name} is signed in.`,
   });
+}
+
+/**
+ * DELETE /v1/device/token — revoke the caller's own device token. The token
+ * is the one in the Authorization header, so a caller can only revoke its own
+ * credential; another device's token on the same account is not touched. The
+ * account gate (auth: "account") already resolved the account from this same
+ * token, so the store row must exist; revoking it marks it dead for every
+ * future bearer lookup.
+ * @param {Request} request
+ * @param {{store: KeyStore}} ctx
+ */
+export async function revokeDeviceTokenRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
+  }
+  const token = bearerToken(request);
+  if (token === null) {
+    // The account gate already 401s a request with no or malformed bearer;
+    // this is a belt-and-braces check for direct handler calls.
+    return errorResponse(401, "Provide a device token to revoke.", {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  const result = await ctx.store.revokeDeviceToken(token);
+  if ("error" in result) {
+    // The gate resolved this token, so the store row exists — this is
+    // unreachable through the dispatcher, but the handler is also unit-testable
+    // without the gate, so the shape is the honest answer: the token the
+    // caller sent is not one this drive knows.
+    return errorResponse(404, "That token is not one this drive knows.");
+  }
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }

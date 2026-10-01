@@ -75,6 +75,10 @@ export const PAGES = Object.freeze([
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+  // The sign-in screen is where a person starts a session, so it is noindex
+  // and out of the sitemap: a crawler has no session and nothing to read
+  // there (drive#10).
+  Object.freeze({ path: "/signin.html", indexable: false }),
 ]);
 
 // The docs pages (drive issue #98), as the URLs a crawler reads. The docs are
@@ -93,7 +97,10 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "Changelog", path: "/docs/changelog" }),
 ]);
 
-/** The absolute URL of a public page, from its site-relative path. */
+/** The absolute URL of a public page, from its site-relative path.
+ * @param {{title?: string, path: string, indexable?: boolean}} page
+ * @returns {string}
+ */
 export function pageUrl(page) {
   return absoluteUrl(page.path);
 }

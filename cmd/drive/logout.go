@@ -10,11 +10,22 @@ import (
 	"strings"
 )
 
-// Logout is `drive logout`: stop the mount, revoke this device's key on the
-// server, then delete the key and its local config (issue #75, build-spec.md
-// "Commands" — "Unmount, delete this device's key and local config"). Nothing
-// outside the CLI's own config and cache directories is touched: the drive
-// folder holds the person's files and is never this command's to delete.
+// TokenRevoker revokes this device's own signed-in device token at the api
+// Worker (DELETE /v1/device/token). The pattern mirrors ToolMinter.RevokeKey
+// (cmd/drive/agents.go): the server-side revoke happens first, so a failed
+// revoke leaves a token that still works rather than a token nothing can
+// revoke. An already-dead token (401) is the state logout wants, so it is a
+// note and not a failure.
+type TokenRevoker interface {
+	RevokeDeviceToken() error
+}
+
+// Logout is `drive logout`: stop the mount, revoke this device's key and its
+// device token on the server, then delete the key and its local config
+// (issue #75, build-spec.md "Commands" — "Unmount, delete this device's key
+// and local config"). Nothing outside the CLI's own config and cache
+// directories is touched: the drive folder holds the person's files and is
+// never this command's to delete.
 //
 // The device key is the `access_key_id` / `secret_access_key` pair in
 // `~/.config/drive/rclone.conf` (config.go `RcloneConfig`). Deleting that file
@@ -39,6 +50,12 @@ import (
 // key is live, and points at the devices page, which is where a key nobody
 // holds can be turned off.
 //
+// The device token (api.go Credentials) is revoked after the storage key: it
+// is revoked over the signed-in client, not the key pair. A token revoke that
+// fails stops the logout with the local files intact (the #176 pattern), so
+// the person can retry; a token revoke that answers 401 is a token that is
+// already dead, which is the state logout wants.
+//
 // Files waiting to upload are protected: rclone queues them in the VFS cache
 // and does not flush them on stop (measured on this host 2026-09-30 with
 // rclone v1.75.1: a file written with `--vfs-write-back 120s` stayed `Dirty:
@@ -46,7 +63,7 @@ import (
 // deleting the cache would throw the person's work away. Logout refuses to do
 // that unless `--force` says so in words, and the refusal happens before the
 // key is revoked or deleted, so a refusal leaves the device exactly as it was.
-func Logout(goos, home string, force bool, revoke KeyRevoker) error {
+func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevoker) error {
 	if revoke == nil {
 		revoke = noAPIKeyStore{}
 	}
@@ -111,16 +128,25 @@ func Logout(goos, home string, force bool, revoke KeyRevoker) error {
 			revokeFailed = err
 		}
 	}
-	// The local copy goes even when the revoke failed: the finding is a key
-	// left live on the server, and leaving a second copy on disk would be a
-	// second one. The exit code and the message below carry the truth about
-	// the server side.
+	// The device token goes second, while the credentials file it authenticates
+	// with is still on disk. A 401 is an already-dead token and answers nil
+	// inside the client. A real failure stops the logout here, with the files
+	// intact, because the token can re-present itself (issue #176's pattern).
+	if revoker != nil {
+		if err := revoker.RevokeDeviceToken(); err != nil {
+			return fmt.Errorf("revoke the device token: %w", err)
+		}
+	}
+	// The local key copy goes even when the storage-key revoke failed: the
+	// finding is a key left live on the server, and leaving a second copy on
+	// disk would be a second one. The exit code and the message below carry
+	// the truth about the server side.
 	//
-	// This deletion is unconditional and comes before any receipt work, because
-	// the acceptance is that a logout keeps nothing secret on disk. A receipt
-	// that cannot be written or cleared is a fact to report on the way out, and
-	// never a reason to leave the storage key on the disk it was trying to
-	// remove.
+	// This deletion is unconditional and comes before any further receipt work,
+	// because the acceptance is that a logout keeps nothing secret on disk. A
+	// receipt that cannot be written or cleared is a fact to report on the way
+	// out, and never a reason to leave the storage key on the disk it was
+	// trying to remove.
 	//
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
@@ -345,7 +371,7 @@ func runLogout(args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	common := addCommonFlags(fs)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL (env DRIVE_API_URL); the key-revoke endpoint")
-	force := fs.Bool("force", false, "discard files waiting to upload instead of refusing")
+	force := fs.Bool("force", false, "discard files waiting to upload instead of stopping")
 	forgetPending := fs.Bool("forget-pending", false, "clear the failed-revoke record after you revoked the key on the devices page")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -369,5 +395,17 @@ func runLogout(args []string) error {
 		fmt.Printf("cleared the failed-revoke record for %s; a later drive logout reports them as still live only if another revoke fails\n", NamedKeyIDs(ids))
 		return nil
 	}
-	return Logout(CurrentGOOS(), common.home, *force, resolveKeyRevoker(*api))
+	// Load credentials to find the api Worker base and the device token. If the
+	// file is absent or has no token, there is nothing to revoke; a missing file
+	// is the "not signed in" case, not an error.
+	var revoker TokenRevoker
+	creds, _ := LoadCredentials(common.home)
+	if creds.DeviceToken != "" && creds.APIBase != "" {
+		client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+		if err != nil {
+			return fmt.Errorf("build api client: %w", err)
+		}
+		revoker = client
+	}
+	return Logout(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api))
 }

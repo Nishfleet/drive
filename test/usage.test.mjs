@@ -12,21 +12,21 @@
 //    endpoint or its poll interval drifts from src/usage.js — the same gate
 //    test/status.test.mjs runs for the first-run page and
 //    test/pricing-copy.test.mjs for the price.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
   BILLING_CONFIG,
+  gbMonths,
+  handleUsageRequest,
   SAVED_COPY,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
-  gbMonths,
-  handleUsageRequest,
   usageSummary,
 } from "../src/billing.js";
-import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
+import worker from "../src/index.js";
+import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 // The signed-in account the handler tests run as, until the sign-in flow lands
@@ -34,10 +34,7 @@ const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf
 const account = Object.freeze({ id: "1", name: "Your drive" });
 // The first-run page is a Vite entry at the repo root (issue #70), not a
 // verbatim asset in public/, so its shell is read from there.
-const getStartedPage = readFileSync(
-  new URL("../get-started.html", import.meta.url),
-  "utf8",
-);
+const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
@@ -189,17 +186,11 @@ test("both saved sentences come from the one table in src/billing.js", () => {
   // so the line is the cap's own sentence.
   const capped = month(2000);
   assert.equal(capped.saved.usd, 24);
-  assert.equal(
-    capped.saved.copy,
-    SAVED_COPY.capped.replace("{amount}", "$24.00"),
-  );
+  assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$24.00"));
   // The uncapped month: the ceiling is what a flat plan would have cost.
   const uncapped = month(300);
   assert.equal(uncapped.saved.usd, 6);
-  assert.equal(
-    uncapped.saved.copy,
-    SAVED_COPY.uncapped.replace("{amount}", "$6.00"),
-  );
+  assert.equal(uncapped.saved.copy, SAVED_COPY.uncapped.replace("{amount}", "$6.00"));
   // No real saving means no line at all: the page hides it and the CLI prints
   // the four lines without it.
   assert.equal(month(600).saved, null);
@@ -253,10 +244,7 @@ test("GB-months are the meter over the spec's 43,800-minute month", () => {
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
-  const response = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -295,10 +283,7 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     const anonymous = await worker.fetch(new Request(`https://drive.test${path}`), env);
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
-  const handler = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal((await handler.json()).billUsd, 0);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
@@ -316,10 +301,7 @@ test("the shipped page carries every label from src/usage.js verbatim", () => {
       continue;
     }
     for (const line of Object.values(value)) {
-      assert.ok(
-        page.includes(line),
-        `the page must carry ${name}: "${line}"`,
-      );
+      assert.ok(page.includes(line), `the page must carry ${name}: "${line}"`);
     }
   }
   for (const sentence of Object.values(SAVED_COPY)) {
@@ -344,13 +326,7 @@ test("no money and no size is worked out on the page", () => {
   // check reads the page's script, so a style rule's -0.02em letter-spacing is
   // not mistaken for the metered rate.
   const script = page.slice(page.indexOf("<script>"));
-  for (const banned of [
-    "0.02",
-    "43800",
-    "MINUTES_PER_MONTH",
-    "rateUsdPerGbMonth",
-    "formatUsd",
-  ]) {
+  for (const banned of ["0.02", "43800", "MINUTES_PER_MONTH", "rateUsdPerGbMonth", "formatUsd"]) {
     assert.equal(
       script.includes(banned),
       false,
@@ -358,7 +334,9 @@ test("no money and no size is worked out on the page", () => {
     );
   }
   // Nothing on the page states a rate or a per-unit price either.
-  const visible = page.replace(page.slice(page.indexOf("<script>")), "").replace(/<style>[\s\S]*?<\/style>/, "");
+  const visible = page
+    .replace(page.slice(page.indexOf("<script>")), "")
+    .replace(/<style>[\s\S]*?<\/style>/, "");
   assert.doesNotMatch(visible, /¢/);
   assert.doesNotMatch(visible, /per GB/i);
   // The chart scales a size to a viewBox unit, and nothing else.
@@ -447,11 +425,18 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
 
 test("the pages' mastheads read as one navigation", () => {
   // The review found the headers disagreeing. The two mastheads that carry a
-  // nav (usage and get-started) list Your files, Pricing, Get started, Usage
-  // in that order (the Web Files link leads since #48 merged), and each marks
-  // itself. The pricing page's masthead is its wordmark alone — its links are
-  // its footer nav, which is issue #11's and is checked below.
-  const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"'];
+  // nav (usage and get-started) list Your files, Pricing, Get started, Usage,
+  // Sign in in that order (the Web Files link leads since #48 merged, and Sign
+  // in closes it since drive#10), and each marks itself. The pricing page's
+  // masthead is its wordmark alone — its links are its footer nav, which is
+  // issue #11's and is checked below.
+  const nav = [
+    '<a href="/files"',
+    '<a href="/"',
+    '<a href="/get-started"',
+    '<a href="/usage"',
+    '<a href="/signin"',
+  ];
   for (const masthead of [page, getStartedPage]) {
     const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
     assert.deepEqual(
@@ -474,7 +459,7 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.dataset\.state = "unreachable";/);
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
-  assert.match(page, /if \(document\.hidden\) \{\n    return;/);
+  assert.match(page, /if \(document\.hidden\) \{\n {4}return;/);
 });
 
 test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {

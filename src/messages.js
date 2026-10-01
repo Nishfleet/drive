@@ -48,10 +48,33 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That request was too large to accept.",
     next: "Send a smaller request and try again.",
   }),
+  // The endpoint needs a JSON object and got a form, an array or a bare value
+  // instead. Every account route refuses it the same way, so the same failure
+  // says the same thing whichever route the caller reached (drive#158): the
+  // account routes in src/files.js, src/signin.js and src/branches.js all call
+  // this one key rather than each carrying their own copy of the sentence.
+  "json-object-needed": Object.freeze({
+    what: "That request did not carry a JSON object.",
+    next: "Send the body as a JSON object and try again.",
+  }),
+  // An upload arrived with no file name, so there is no storage key to write it
+  // under and nothing was stored.
+  "upload-needs-name": Object.freeze({
+    what: "That upload did not name a file.",
+    next: "Send the name of the file you are uploading.",
+  }),
   // The api Worker (or the CLI's call to it) could not reach storage.
   "storage-down": Object.freeze({
     what: "We can't reach storage right now.",
     next: "Wait a few minutes and try again.",
+  }),
+  // This deployment has no drive storage behind it at all, so no file route
+  // can answer. It is a fact about the deployment and not about the call, so
+  // the next step is not "try again": someone has to point this deployment at
+  // a drive before any file route works.
+  "drive-not-configured": Object.freeze({
+    what: "The drive is not configured on this deployment.",
+    next: "Ask whoever runs this deployment to point it at a drive.",
   }),
   // A payment did not go through, so billing is paused.
   "payment-failed": Object.freeze({
@@ -65,6 +88,60 @@ export const FAILURE_MESSAGES = Object.freeze({
   unauthorized: Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
+  }),
+  // A cross-site request a page made on the visitor's behalf, refused by
+  // request.referrer and Origin together; the same-origin rule in
+  // src/email-send.js is the pattern this words.
+  "cross-site": Object.freeze({
+    what: "That request did not come from the drive.",
+    next: "Open the drive's page and try again there.",
+  }),
+  // A branch with that name is still open (build step 7, drive#8). The copy
+  // already exists, so the next step is a different name rather than losing
+  // the work that is in it.
+  "branch-exists": Object.freeze({
+    what: "A branch with that name is still open.",
+    next: "Choose another name, or discard the open branch first.",
+  }),
+  // The branch this call named does not exist on this drive.
+  "branch-not-found": Object.freeze({
+    what: "That branch is not in the list.",
+    next: "Run drive branches to see the branches you have.",
+  }),
+  // The file this call named is not in this account's drive, on the read,
+  // preview, download and delete paths alike. The file may never have been
+  // there, or it may be in the trash under Recently deleted, so the next step
+  // is to look rather than to send the same call again.
+  "file-not-found": Object.freeze({
+    what: "That file is not here.",
+    next: "Open the folder again to see what is in it.",
+  }),
+  // The branch was already approved or discarded, so there is nothing left to
+  // apply or throw away.
+  "branch-not-open": Object.freeze({
+    what: "That branch is already closed.",
+    next: "Branch the folder again to make a new one.",
+  }),
+  // The original changed after the branch was taken, so the approve stopped
+  // rather than copy over somebody's edit.
+  "branch-source-moved": Object.freeze({
+    what: "The original changed after that branch was made, so nothing was copied back.",
+    next: "Discard the branch and make it again from the folder as it is now.",
+  }),
+  // An agent's own rewind is past the drive's 30-day window, so the copy this
+  // would undo and the old versions behind it are both gone (issue #13, "the
+  // 30-day undo"). Nothing was changed: the original folder is as it is.
+  "rewind-window-closed": Object.freeze({
+    what: "That agent's work is more than 30 days old, so it can't be rewound.",
+    next: "Make a new branch for the folder and the agent can work in it again.",
+  }),
+  // Sign-in exists as a route, but it is not fully open yet: the account
+  // store lands with D1 (drive#2) and a deployment with no mailer refuses
+  // rather than reporting a code sent, and no OAuth provider is wired to
+  // secrets (Nish's). This is the closed door's words, not a fake success.
+  "sign-in-closed": Object.freeze({
+    what: "Signing in is not open yet.",
+    next: "Join the waitlist, and your first email will carry a sign-in link.",
   }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback

@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +64,7 @@ func configWithLoginItem(t *testing.T) string {
 func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 	home := configOnlyHome(t)
 
-	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
+	if err := Logout("linux", home, false, nil, testRevoker(t, home)); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -77,7 +81,7 @@ func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 	home := configWithLoginItem(t)
 
-	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
+	if err := Logout("linux", home, false, nil, testRevoker(t, home)); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -95,12 +99,12 @@ func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 func TestLogoutIsSafeToRunTwice(t *testing.T) {
 	home := configOnlyHome(t)
 	ks := testRevoker(t, home)
-	if err := Logout("linux", home, false, ks); err != nil {
+	if err := Logout("linux", home, false, nil, ks); err != nil {
 		t.Fatal(err)
 	}
 	// The key is gone, so the second run has nothing to revoke and needs no
 	// server: a nil revoker must not turn "nothing to revoke" into a failure.
-	if err := Logout("linux", home, false, nil); err != nil {
+	if err := Logout("linux", home, false, nil, nil); err != nil {
 		t.Fatalf("second logout: %v", err)
 	}
 	if got := ks.count(); got != 1 {
@@ -116,7 +120,7 @@ func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
 	home := configOnlyHome(t)
 	ks := testRevoker(t, home)
 
-	if err := Logout("linux", home, false, ks); err != nil {
+	if err := Logout("linux", home, false, nil, ks); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
 	if got := ks.count(); got != 1 {
@@ -135,7 +139,7 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	// Port 1 on loopback refuses; the revoke cannot get there.
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
 
-	err := Logout("linux", home, false, unreachable)
+	err := Logout("linux", home, false, nil, unreachable)
 	if err == nil {
 		t.Fatal("logout must fail, not claim a clean sign-out, when the key is still live")
 	}
@@ -155,7 +159,7 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	home := configOnlyHome(t)
 
-	err := Logout("linux", home, false, nil)
+	err := Logout("linux", home, false, nil, nil)
 	if err == nil {
 		t.Fatal("a key that cannot be revoked must not read as a clean sign-out")
 	}
@@ -180,7 +184,7 @@ func TestLogoutNamesAnUnreadableConfigInsteadOfSkippingTheRevoke(t *testing.T) {
 	if err := os.WriteFile(RcloneConfigPath(home), []byte("not a config at all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Logout("linux", home, false, testRevoker(t, home))
+	err := Logout("linux", home, false, nil, testRevoker(t, home))
 	if err == nil {
 		t.Fatal("an unreadable config must fail logout, not pass as nothing to revoke")
 	}
@@ -194,7 +198,7 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 	ks := testRevoker(t, home)
 
-	err := Logout("linux", home, false, ks)
+	err := Logout("linux", home, false, nil, ks)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
@@ -213,7 +217,7 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 		t.Errorf("revoke attempts = %d, want 0 when logout refuses", got)
 	}
 
-	if err := Logout("linux", home, true, ks); err != nil {
+	if err := Logout("linux", home, true, nil, ks); err != nil {
 		t.Fatalf("--force: %v", err)
 	}
 	if _, statErr := os.Stat(DefaultCacheDir(home)); !os.IsNotExist(statErr) {
@@ -370,7 +374,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	// process with no login item; Unmount will no-op and stopMount will
 	// fusermount it down.
 	ks := newKeyServer(t, home, accessKey, secretKey)
-	if err := Logout("linux", home, false, ks); err != nil {
+	if err := Logout("linux", home, false, nil, ks); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
 	if got := ks.count(); got != 1 {
@@ -395,7 +399,7 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	home := configOnlyHome(t)
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
 
-	if err := Logout("linux", home, false, unreachable); err == nil {
+	if err := Logout("linux", home, false, nil, unreachable); err == nil {
 		t.Fatal("the first logout must fail when the key cannot be revoked")
 	} else if !strings.Contains(err.Error(), revokeWarning) {
 		t.Errorf("first failure = %q, want the issue's sentence", err)
@@ -408,7 +412,7 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	}
 
 	// The retry, offline or not: no key on this device, so nothing to revoke.
-	err := Logout("linux", home, false, nil)
+	err := Logout("linux", home, false, nil, nil)
 	if err == nil {
 		t.Fatal("a retry with a live key and no way to revoke it must not succeed")
 	}
@@ -426,7 +430,7 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	// signs in with is the one the first run left live, so revoking it settles
 	// the receipt.
 	writeDeviceKey(t, home, testStorage().AccessKey, testStorage().SecretKey)
-	if err := Logout("linux", home, false, testRevoker(t, home)); err != nil {
+	if err := Logout("linux", home, false, nil, testRevoker(t, home)); err != nil {
 		t.Fatalf("logout with a fresh key: %v", err)
 	}
 	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
@@ -449,7 +453,7 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	writeDeviceKey(t, home, oldAccess, oldSecret)
 
 	// The revoke of the old key cannot reach the server.
-	if err := Logout("linux", home, false, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
+	if err := Logout("linux", home, false, nil, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("the first logout must fail when the key cannot be revoked")
 	}
 	ids, err := PendingRevoke(home)
@@ -460,7 +464,7 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	// The person signs in again: a new key, and a key server that revokes it.
 	writeDeviceKey(t, home, newAccess, newSecret)
 	ks := newKeyServer(t, home, newAccess, newSecret)
-	err = Logout("linux", home, false, ks)
+	err = Logout("linux", home, false, nil, ks)
 	if got := ks.count(); got != 1 {
 		t.Fatalf("revoke attempts = %d, want 1", got)
 	}
@@ -478,7 +482,7 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	}
 
 	// And the run after that must still refuse to call it a clean sign-out.
-	if err := Logout("linux", home, false, nil); err == nil {
+	if err := Logout("linux", home, false, nil, nil); err == nil {
 		t.Fatal("a logout with an older key still live must not succeed")
 	} else if !strings.Contains(err.Error(), revokePendingWarning) {
 		t.Errorf("failure = %q, want the receipt sentence", err)
@@ -498,11 +502,11 @@ func TestRevokePendingKeepsEveryKeyThatIsStillLive(t *testing.T) {
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
 
 	writeDeviceKey(t, home, firstAccess, "firstsecret")
-	if err := Logout("linux", home, false, unreachable); err == nil {
+	if err := Logout("linux", home, false, nil, unreachable); err == nil {
 		t.Fatal("the first revoke must fail")
 	}
 	writeDeviceKey(t, home, secondAccess, "secondsecret")
-	if err := Logout("linux", home, false, unreachable); err == nil {
+	if err := Logout("linux", home, false, nil, unreachable); err == nil {
 		t.Fatal("the second revoke must fail")
 	}
 
@@ -569,7 +573,7 @@ func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
 	if err := os.WriteFile(RcloneConfigPath(home), []byte("not a config at all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Logout("linux", home, false, testRevoker(t, home)); err == nil {
+	if err := Logout("linux", home, false, nil, testRevoker(t, home)); err == nil {
 		t.Fatal("a key that cannot be named must not read as a clean sign-out")
 	}
 	ids, err := PendingRevoke(home)
@@ -580,7 +584,7 @@ func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
 		t.Errorf("receipt ids = %q, want one unnamed entry for a key that could not be named", ids)
 	}
 	// And the next run must still not succeed over it.
-	if err := Logout("linux", home, false, nil); err == nil {
+	if err := Logout("linux", home, false, nil, nil); err == nil {
 		t.Fatal("an unnamed live key must not read as a clean sign-out on the next run either")
 	} else if !strings.Contains(err.Error(), revokePendingWarning) {
 		t.Errorf("failure = %q, want the receipt sentence", err)
@@ -616,7 +620,7 @@ func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 	home := t.TempDir()
 	writeDeviceKey(t, home, "OLDACCESSKEY", "oldsecretkey")
-	if err := Logout("linux", home, false, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
+	if err := Logout("linux", home, false, nil, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("the revoke must fail against a server that is not there")
 	}
 	if ids, err := PendingRevoke(home); err != nil || len(ids) != 1 {
@@ -624,7 +628,7 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 	}
 
 	// The CLI must name the escape hatch in the failure it reports.
-	err := Logout("linux", home, false, nil)
+	err := Logout("linux", home, false, nil, nil)
 	if err == nil {
 		t.Fatal("a live key must still fail before the record is cleared")
 	}
@@ -647,7 +651,7 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 	}
 	// And with the record cleared, a logout with no key at all is a clean
 	// sign-out again.
-	if err := Logout("linux", home, false, nil); err != nil {
+	if err := Logout("linux", home, false, nil, nil); err != nil {
 		t.Errorf("logout after the record is cleared: %v", err)
 	}
 
@@ -662,7 +666,7 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {
 	home := t.TempDir()
 	out := captureStdout(t, func() {
-		if err := Logout("linux", home, false, nil); err != nil {
+		if err := Logout("linux", home, false, nil, nil); err != nil {
 			t.Errorf("logout with nothing at all: %v", err)
 		}
 	})
@@ -671,5 +675,131 @@ func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {
 	}
 	if !strings.Contains(out, "no key on this device to revoke") {
 		t.Errorf("output %q should say there was nothing to revoke", out)
+	}
+}
+
+// fakeTokenRevoker records whether RevokeDeviceToken was called, and what
+// error it returned. It is the test's stand-in for the api Worker's DELETE
+// /v1/device/token route.
+type fakeTokenRevoker struct {
+	err    error
+	called bool
+}
+
+func (f *fakeTokenRevoker) RevokeDeviceToken() error {
+	f.called = true
+	return f.err
+}
+
+// orderedRevoker wraps a fakeTokenRevoker and asserts the credentials file is
+// still on disk when the revoke is invoked, proving the server-side revoke
+// happens before the local credentials are removed.
+type orderedRevoker struct {
+	fake *fakeTokenRevoker
+	home string
+	t    *testing.T
+}
+
+func (o *orderedRevoker) RevokeDeviceToken() error {
+	o.t.Helper()
+	if _, err := os.Stat(CredentialsPath(o.home)); err != nil {
+		o.t.Errorf("credentials file must still exist when the revoker runs: %v", err)
+	}
+	return o.fake.RevokeDeviceToken()
+}
+
+// TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes proves the
+// three behaviours issue #176 asks for: (1) logout calls the api Worker to
+// revoke the device token before it deletes the local credentials file, (2) a
+// token that is already dead (401) is a note, not a failure, and (3) a real
+// failure leaves the local files intact so the person can retry. Each run also
+// carries a key revoker, so what is under test here is the token and not the
+// storage key this issue (drive#75) is about.
+func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
+	writeCreds := func(t *testing.T, home string) {
+		creds := Credentials{APIBase: "https://api.test", DeviceToken: "test-token"}
+		data, _ := json.MarshalIndent(creds, "", "  ")
+		if err := WriteFileAtomic(CredentialsPath(home), append(data, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Success: revoke runs while the credentials file is still present,
+	// then the files are removed.
+	home := configOnlyHome(t)
+	writeCreds(t, home)
+	revoker := &fakeTokenRevoker{}
+	revoker.called = false
+	ordered := &orderedRevoker{fake: revoker, home: home, t: t}
+	if err := Logout("linux", home, false, ordered, testRevoker(t, home)); err != nil {
+		t.Fatalf("logout with successful revoke: %v", err)
+	}
+	if !revoker.called {
+		t.Fatal("revoke was not called")
+	}
+	for _, gone := range []string{
+		RcloneConfigPath(home),
+		DefaultConfigDir(home),
+		DefaultCacheDir(home),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout with successful revoke", gone)
+		}
+	}
+
+	// 2. A 401 (already dead) is a note, not a failure: build a real client
+	// against a tiny server so the client's own 401 handling is exercised.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/device/token" {
+			http.Error(w, "not the revoke route", http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			http.Error(w, "bad bearer: "+got, http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	home2 := configOnlyHome(t)
+	creds := Credentials{APIBase: server.URL, DeviceToken: "test-token"}
+	data, _ := json.MarshalIndent(creds, "", "  ")
+	if err := WriteFileAtomic(CredentialsPath(home2), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	if err := Logout("linux", home2, false, client, testRevoker(t, home2)); err != nil {
+		t.Fatalf("logout with 401 must not fail: %v", err)
+	}
+	for _, gone := range []string{
+		RcloneConfigPath(home2),
+		DefaultConfigDir(home2),
+		DefaultCacheDir(home2),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout with 401", gone)
+		}
+	}
+
+	// 3. A real error (not 401) stops logout and leaves the local files,
+	// so the person can retry.
+	home3 := configOnlyHome(t)
+	writeCreds(t, home3)
+	revoker3 := &fakeTokenRevoker{err: fmt.Errorf("500 Internal Server Error")}
+	if err := Logout("linux", home3, false, revoker3, testRevoker(t, home3)); err == nil {
+		t.Fatal("logout with 500 must fail")
+	} else if !strings.Contains(err.Error(), "revoke the device token") {
+		t.Fatalf("want the revoke error wrapped, got %v", err)
+	}
+	for _, present := range []string{
+		RcloneConfigPath(home3),
+		DefaultConfigDir(home3),
+	} {
+		if _, err := os.Stat(present); err != nil {
+			t.Errorf("%s was deleted but logout failed: %v", present, err)
+		}
 	}
 }
