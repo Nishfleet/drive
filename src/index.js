@@ -70,11 +70,16 @@ export function createApp(env) {
   // Secure headers on every response (X-Content-Type-Options, X-Frame-Options, etc.).
   app.use("*", secureHeaders());
 
-  // Same-origin / CSRF protection on the public state-changing endpoints,
-  // using Hono's built-in middleware. The waitlist and email-send handlers
-  // keep their own isSameOriginRequest checks as defence-in-depth.
-  app.use("/api/waitlist", csrf());
-  app.use("/api/emails/send", csrf());
+  // Same-origin / CSRF protection on the browser-facing write lane, with
+  // Hono's built-in csrf() middleware. It is registered after the account
+  // gate so an anonymous request is its 401, not a 403: the gate is the
+  // outer rule. It covers exactly the requests a cross-site page can forge —
+  // a form-encoded or multipart POST to the account routes — and reads no
+  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
+  // (curl, the Go CLI) is not a browser, so it passes this check and the
+  // account gate is what holds it. The two public POST routes keep the repo's
+  // own isSameOriginRequest check instead (src/waitlist.js, src/email-send.js):
+  // it answers with the product's own sentence rather than a bare "Forbidden".
 
   // Deny-by-default auth gate on /api/*. Public routes are declared explicitly
   // in PUBLIC_ROUTES above. The gate runs before any handler, so an anonymous
@@ -87,6 +92,14 @@ export function createApp(env) {
     c.set("account", account);
     await next();
   });
+
+  app.use(
+    `${FILES_ENDPOINT}/*`,
+    csrf({
+      origin: (origin, c) => origin === undefined || origin === new URL(c.req.url).origin,
+      secFetchSite: (site) => site === undefined || site === "same-origin",
+    }),
+  );
 
   // Account-gated routes. Each is registered by method so Hono's
   // methodNotAllowed middleware answers 405 with an Allow header; the account

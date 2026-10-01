@@ -154,6 +154,37 @@ test("an anonymous request to every account route is 401 and no data", async () 
   }
 });
 
+test("deny by default, walked from Hono's own route table: every registered non-public route answers 401", async () => {
+  // The hand-written loop above is the probe with real URLs, but it only
+  // covers the routes somebody remembered to list. This loop is the other
+  // direction: it reads Hono's own route registry (the same table the walk
+  // above classifies), skips the routes the export declares public, and asks
+  // every remaining one directly, so a route that shipped without being
+  // added to the hand list still has to answer 401 before a handler runs.
+  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const app = createApp({ ASSETS: { fetch: async () => new Response("asset", { status: 200 }) } });
+  for (const { method, path } of app.routes.filter((r) => r.method !== "ALL")) {
+    if (exportedPublic.includes(path)) {
+      continue;
+    }
+    // The files wildcard route stands for every subroute under /api/files,
+    // so probe it with the one concrete path the hand-written loop uses.
+    const probePath = path.endsWith("/*")
+      ? `${path.slice(0, -1)}upload?path=%2F&name=a.txt`
+      : path;
+    const response = await anonymous(
+      new Request(`https://drive.test${probePath}`, { method }),
+    );
+    assert.equal(
+      response.status,
+      401,
+      `${method} ${probePath} must be 401 without a signed-in account`,
+    );
+    const unauthorized = failureMessage("unauthorized");
+    assert.deepEqual(await response.json(), { error: unauthorized });
+  }
+});
+
 test("the gate reads the request, and a signed-out request has no account", async () => {
   // signedInAccount() is the only gate, and until the sign-in flow lands
   // (build step 4, #5) it answers null for every caller — including a request
