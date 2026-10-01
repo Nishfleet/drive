@@ -37,6 +37,13 @@ export function clientIpKey(request, log) {
   return clientIp;
 }
 
+/**
+ * The one refusal shape every limited endpoint answers with.
+ * @param {number} status
+ * @param {string} message
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function refused(status, message, headers = {}) {
   return new Response(JSON.stringify({ error: message }), {
     status,
