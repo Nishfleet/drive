@@ -209,15 +209,19 @@ export function createMemoryDeviceSigninStore(options = {}) {
       if (code.expiresAt < nowSeconds(now())) {
         return { error: "expired-code" };
       }
-      if (code.status !== "approved") {
-        const own =
-          account === undefined
-            ? { id: newId("acct"), name: code.name, email: null }
-            : accountFields(account);
-        accounts.set(own.id, own);
-        code.accountId = own.id;
-        code.status = "approved";
+      if (code.status === "approved") {
+        // The same rule as the D1 store above: a code that already names an
+        // account is spent, so a second pair of hands cannot attach itself to
+        // somebody else's approved sign-in.
+        return { error: "approved-code" };
       }
+      const own =
+        account === undefined
+          ? { id: newId("acct"), name: code.name, email: null }
+          : accountFields(account);
+      accounts.set(own.id, own);
+      code.accountId = own.id;
+      code.status = "approved";
       const accountId = code.accountId;
       if (!accountId) {
         return { error: "unknown-code" };
@@ -467,7 +471,11 @@ export function createD1DeviceSigninStore(db, options = {}) {
         }
         return { accountId: stored.account.id, name: stored.account.name };
       }
-      return { accountId: row.account.id, name: row.account.name };
+      // Already approved. Somebody else may have got here first, and a code
+      // that already names one account must not be handed to a second one by
+      // the idempotent path below, so the row is reported as spent rather than
+      // re-attached.
+      return { error: "approved-code" };
     },
 
     /**
@@ -505,27 +513,29 @@ export function createD1DeviceSigninStore(db, options = {}) {
       }
       const token = newId("dtok");
       // Consume the code and write the token in one transaction, so a failure
-      // between the two cannot lose a sign-in someone already approved: the
-      // conditional update is the only thing that mints a token, and either
+      // between the two cannot lose a sign-in someone already approved: either
       // both statements land or the code stays `approved` for the next poll.
       // The update is conditional on the row still being `approved` and still
       // inside its TTL, so a poll that crosses the boundary cannot mint a
-      // token for a code that expired.
+      // token for a code that expired, and it stamps `consumed_by` with this
+      // poll's own nonce.
       //
-      // A poll that loses the race (two polls of the same approved code) still
-      // runs the insert, because the batch cannot know the update changed no
-      // rows before it runs. That leaves a token row whose plaintext no one
-      // holds: inert, unusable, and bounded by the same edge rate limit. The
-      // token is returned only when this poll is the one that consumed the
-      // code, so no second token is ever handed out.
-      const results = await batch(db, [
+      // The insert is that nonce's guard: `INSERT ... SELECT ... WHERE EXISTS`
+      // fires only while the row still carries this poll's nonce, and a poll
+      // that lost the race neither changed the nonce nor matches it, so it
+      // inserts nothing. The two racing polls therefore mint exactly one token
+      // row between them — the loser leaves no inert credential behind, which
+      // is what a plain batch (whose statements run either way) would.
+      const nonce = newId("claim");
+      await batch(db, [
         {
-          sql: "UPDATE device_codes SET status = 'used' WHERE device_code_hash = ?1 AND status = 'approved' AND expires_at > ?2",
-          params: [hash, nowSeconds(now())],
+          sql: "UPDATE device_codes SET status = 'used', consumed_by = ?2 WHERE device_code_hash = ?1 AND status = 'approved' AND consumed_by = '' AND expires_at > ?3",
+          params: [hash, nonce, nowSeconds(now())],
         },
         {
           sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at, expires_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+                SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                 WHERE EXISTS (SELECT 1 FROM device_codes WHERE device_code_hash = ?7 AND consumed_by = ?8)`,
           params: [
             await sha256Hex(token),
             row.account.id,
@@ -533,13 +543,22 @@ export function createD1DeviceSigninStore(db, options = {}) {
             row.account.email,
             nowSeconds(now()),
             nowSeconds(now()) + DEVICE_TOKEN_TTL_SECONDS,
+            hash,
+            nonce,
           ],
         },
       ]);
-      const changes = Number(
-        /** @type {{meta?: {changes?: number}}} */ (results[0])?.meta?.changes ?? 0,
+      // The nonce is the authority on who won, not the statement's row count:
+      // the row the update left behind says which poll holds this code.
+      const consumed = await first(
+        db,
+        "SELECT consumed_by FROM device_codes WHERE device_code_hash = ?1",
+        hash,
       );
-      if (changes === 0) {
+      const winner =
+        /** @type {{consumed_by?: string}|null} */ (consumed) !== null &&
+        /** @type {{consumed_by?: string}} */ (consumed).consumed_by === nonce;
+      if (!winner) {
         return { status: "expired" };
       }
       return { status: "approved", deviceToken: token, account: row.account };

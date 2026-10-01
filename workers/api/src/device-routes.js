@@ -330,7 +330,9 @@ export async function approveDeviceCodeRoute(request, ctx) {
     const notice =
       result.error === "expired-code"
         ? "That code has expired. Run `drive init` again for a new one."
-        : "That code was not recognised. Check the terminal and try again.";
+        : result.error === "approved-code"
+          ? "That code has already been approved. Return to the terminal it was printed in."
+          : "That code was not recognised. Check the terminal and try again.";
     return approvePageError(userCode, notice);
   }
   return approvePage({

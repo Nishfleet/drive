@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import { createTestD1 } from "../../../test/harness.mjs";
+import { sha256Hex } from "../src/db.js";
 import {
   createD1DeviceSigninStore,
   DEVICE_CODE_TTL_SECONDS,
@@ -106,6 +108,7 @@ function makeFakeD1(options = {}) {
         account_email: "",
         created_at: createdAt,
         expires_at: expiresAt,
+        consumed_by: "",
       };
       codes.set(hash, row);
       byUserCode.set(userCode, row);
@@ -124,16 +127,24 @@ function makeFakeD1(options = {}) {
       return { success: true, meta: { changes: 1 } };
     }
     if (s.startsWith("UPDATE device_codes SET status = 'used'")) {
-      const [hash, nowSecondsAt] = params;
+      const [hash, nonce, nowSecondsAt] = params;
       const row = codes.get(hash);
-      if (row?.status !== "approved" || row.expires_at <= nowSecondsAt) {
+      if (row?.status !== "approved" || row.consumed_by !== "" || row.expires_at <= nowSecondsAt) {
         return { success: true, meta: { changes: 0 } };
       }
       row.status = "used";
+      row.consumed_by = nonce;
       return { success: true, meta: { changes: 1 } };
     }
     if (s.startsWith("INSERT INTO device_tokens")) {
-      const [hash, accountId, accountName, accountEmail, createdAt, expiresAt] = params;
+      const [hash, accountId, accountName, accountEmail, createdAt, expiresAt, codeHash, nonce] =
+        params;
+      // `INSERT ... SELECT ... WHERE EXISTS (… consumed_by = ?8)`: the row the
+      // insert reads is the row the update above stamped, so a poll that lost
+      // the race matches nothing and writes no token at all.
+      if (codes.get(codeHash)?.consumed_by !== nonce) {
+        return { success: true, meta: { changes: 0 } };
+      }
       tokens.set(hash, {
         token_hash: hash,
         account_id: accountId,
@@ -397,20 +408,12 @@ test("the D1 sweep drops the expired and the revoked token rows and leaves the l
 // deploy config in this tree, drive#168), so this is the check that the SQL the
 // Worker prepares and the DDL the database gets cannot drift apart: a column
 // renamed in the migration, or a table the migration never creates, fails here.
-test("the migrations create every table and column the store's SQL names", () => {
-  // The tables are one file and the token's expiry and revocation are another
-  // (drive#136 kept #176's window when the device half moved to D1, and D1 has
-  // no down-migration, so an applied 0005 cannot be edited), so the schema the
-  // store reads is the two files together.
-  const tables = readFileSync(
+test("the migration creates every table and column the store's SQL names", () => {
+  const ddl = readFileSync(
     new URL("../../../migrations/drive/0005_device_codes.sql", import.meta.url),
     "utf8",
   );
-  const tokenWindow = readFileSync(
-    new URL("../../../migrations/drive/0006_device_token_expiry.sql", import.meta.url),
-    "utf8",
-  );
-  const columnsOf = (ddl, table) => {
+  const columnsOf = (table) => {
     const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\((.*?)\\n\\);`, "s").exec(
       ddl,
     )?.[1];
@@ -423,7 +426,7 @@ test("the migrations create every table and column the store's SQL names", () =>
       .filter((name) => name !== undefined);
   };
 
-  assert.deepEqual(columnsOf(tables, "device_codes"), [
+  assert.deepEqual(columnsOf("device_codes"), [
     "device_code_hash",
     "user_code",
     "name",
@@ -433,45 +436,141 @@ test("the migrations create every table and column the store's SQL names", () =>
     "account_email",
     "created_at",
     "expires_at",
+    "consumed_by",
   ]);
-  assert.deepEqual(
-    [...columnsOf(tables, "device_tokens"), ...addedColumns(tokenWindow, "device_tokens")],
-    [
-      "token_hash",
-      "account_id",
-      "account_name",
-      "account_email",
-      "created_at",
-      "expires_at",
-      "revoked_at",
-    ],
-  );
-  // The sweep the code route runs on every request is a full scan without it.
+  assert.deepEqual(columnsOf("device_tokens"), [
+    "token_hash",
+    "account_id",
+    "account_name",
+    "account_email",
+    "created_at",
+    "expires_at",
+    "revoked_at",
+  ]);
+  // The sweep the code route runs on every request is a full scan without the
+  // first index, and the token sweep is a full scan without the second.
   assert.match(
-    tables,
+    ddl,
     /CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes \(expires_at\)/,
   );
   assert.match(
-    tokenWindow,
+    ddl,
     /CREATE INDEX IF NOT EXISTS device_tokens_expires_at ON device_tokens \(expires_at\)/,
   );
-  // A token minted before the window existed must not read as expired the
-  // instant the migration lands, so the file backfills rather than leaving the
-  // DEFAULT of 0 in place.
-  assert.match(tokenWindow, /UPDATE device_tokens\s+SET expires_at = created_at \+ \d+/);
 });
-
-/** The columns an `ALTER TABLE ... ADD COLUMN` file adds, in file order. */
-function addedColumns(ddl, table) {
-  return [...ddl.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN ([a-z_]+)`, "g"))].map(
-    (match) => match[1],
-  );
-}
-
 // Consuming a code and writing its token are one transaction, so a failure
 // between them cannot lose a sign-in a person already approved: the row is
 // rolled back to `approved` and the next poll mints the token for real. Before
 // this, the two statements were separate and the code was spent either way.
+// Two polls of the same approved code at once (two terminals, or one CLI
+// retrying): the conditional consume stamps the winner's nonce and the token
+// insert is guarded by that nonce, so exactly one token row is written and the
+// loser answers `expired` rather than leaving a credential behind that no
+// caller holds. A plain batch would run both inserts, because a batch cannot
+// branch on what its first statement changed.
+test("two polls of one approved code mint exactly one token row", async () => {
+  const db = makeFakeD1();
+  const store = createD1DeviceSigninStore(db, { now: () => 0 });
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  await store.approveDeviceCode(code.userCode, ACCOUNT);
+
+  const [first, second] = await Promise.all([
+    store.pollDeviceCode(code.deviceCode),
+    createD1DeviceSigninStore(db, { now: () => 0 }).pollDeviceCode(code.deviceCode),
+  ]);
+  const winners = [first, second].filter((result) => result.status === "approved");
+  assert.equal(winners.length, 1, "exactly one poll holds the code");
+  assert.equal(db.tokens.size, 1, "the loser inserted no token row");
+  assert.equal(
+    winners[0].status === "approved" &&
+      (await store.accountForDeviceToken(winners[0].deviceToken)) !== null,
+    true,
+    "the token that was handed out resolves",
+  );
+  // And the loser is `expired`, not a usable answer.
+  const losers = [first, second].filter((result) => result.status !== "approved");
+  assert.equal(losers.length, 1);
+  assert.deepEqual(losers[0], { status: "expired" });
+});
+
+// A code that already names one account is spent, so the idempotent "approving
+// twice" path cannot hand somebody else's approved sign-in to a second pair of
+// hands: a second signed-in user who learns the user code is refused.
+test("a second person cannot approve a code that already names an account", async () => {
+  const db = makeFakeD1();
+  const store = createD1DeviceSigninStore(db, { now: () => 0 });
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  await store.approveDeviceCode(code.userCode, ACCOUNT);
+
+  const intruder = { id: "acct_2", name: "Someone else", email: "other@example.com" };
+  assert.deepEqual(await store.approveDeviceCode(code.userCode, intruder), {
+    error: "approved-code",
+  });
+  // The code still names its first approver, and the poll still mints for them.
+  assert.deepEqual(await store.approveDeviceCode(code.userCode, ACCOUNT), {
+    error: "approved-code",
+  });
+  const polled = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(polled.status, "approved");
+  assert.equal(polled.account.id, ACCOUNT.id);
+});
+
+// The same rule on the stand-in the tests and a database-less deployment use:
+// the two stores must answer the same question the same way.
+test("the in-memory store refuses an already approved code too", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "laptop" });
+  store.approveDeviceCode(code.userCode, ACCOUNT);
+  assert.deepEqual(
+    store.approveDeviceCode(code.userCode, { id: "acct_2", name: "Someone else", email: "" }),
+    { error: "approved-code" },
+  );
+});
+
+// The migrations are data, and data is not rolled back, so the D1 rule is that
+// a migration PR proves its new READ and its new WRITE path against the real
+// schema rather than a stand-in that agrees with itself. This walks the real
+// file in `migrations/drive/0005_device_codes.sql` over a real SQLite engine
+// (test/harness.mjs, the same D1-shaped adapter the site's own tests use), so
+// the SQL the Worker prepares runs against the DDL the deploy applies.
+test("the store's read and write paths run against the real migration", async () => {
+  const db = createTestD1({ migrations: ["drive/0005_device_codes.sql"] });
+  const sqlite = db.sqlite;
+
+  // A code one instance starts, another instance approves and consumes: nothing
+  // here is in memory.
+  const first = createD1DeviceSigninStore(db, { now: () => 0 });
+  const code = await first.requestDeviceCode({ name: "laptop" });
+  const second = createD1DeviceSigninStore(db, { now: () => 0 });
+  assert.deepEqual(await second.pollDeviceCode(code.deviceCode), { status: "pending" });
+  assert.deepEqual(await second.approveDeviceCode(code.userCode, ACCOUNT), {
+    accountId: ACCOUNT.id,
+    name: ACCOUNT.name,
+  });
+  const minted = await second.pollDeviceCode(code.deviceCode);
+  assert.equal(minted.status, "approved");
+  assert.equal(minted.account.id, ACCOUNT.id);
+
+  // The rows are real: the token is on disk as a digest with the window the
+  // schema declares, and the code is spent.
+  const [tokenRow] = sqlite.prepare("SELECT * FROM device_tokens").all();
+  assert.equal(tokenRow.expires_at, DEVICE_TOKEN_TTL_SECONDS);
+  assert.equal(tokenRow.revoked_at, null);
+  assert.equal(tokenRow.token_hash, await sha256Hex(minted.deviceToken));
+  const [codeRow] = sqlite.prepare("SELECT * FROM device_codes").all();
+  assert.equal(codeRow.status, "used");
+
+  // The write path for the window: a revoke lands on the row and the read path
+  // refuses the token from then on, and the sweep drops the spent code row.
+  assert.equal(
+    (await second.revokeDeviceToken(minted.deviceToken)).revoked,
+    true,
+    "the token can be revoked",
+  );
+  assert.equal(await second.accountForDeviceToken(minted.deviceToken), null);
+  assert.equal(await second.sweepDeviceTokens(), 1, "the revoked token row went");
+});
+
 test("a token write that fails leaves the code approved, so no approved sign-in is lost", async () => {
   const nowMs = 0;
   const db = makeFakeD1({ failOn: "INSERT INTO device_tokens" });

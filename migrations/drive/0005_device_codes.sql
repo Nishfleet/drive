@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS device_codes (
   account_name TEXT NOT NULL DEFAULT '',
   account_email TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0,
-  expires_at INTEGER NOT NULL DEFAULT 0
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  -- The poll that consumed this code, as a one-off marker. It is what makes the
+  -- mint exactly once: the token insert is written `SELECT ... WHERE EXISTS`
+  -- on this column, so a second poll of the same code inserts nothing at all
+  -- instead of inserting a token nobody will ever hold.
+  consumed_by TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes (expires_at);
@@ -49,10 +54,23 @@ CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes (expires_at);
 -- later request can name its owner without the api Worker ever holding a
 -- second accounts table of its own (the account store is the sign-in flow's,
 -- src/accounts.js, and moves to D1 with drive#161).
+-- `expires_at` is epoch seconds, the same clock format as the code's: a token
+-- is the CLI's whole credential for the account gate, so it cannot be one for
+-- ever (drive#176, kept when the device half moved to D1 here). `revoked_at` is
+-- set by `DELETE /v1/device/token`, which `drive logout` calls before it
+-- deletes the local credentials. Both are read by the single bearer lookup
+-- (workers/api/src/device-signin.js `accountForDeviceToken`), so an expired or
+-- revoked token is refused at the gate for every route at once.
 CREATE TABLE IF NOT EXISTS device_tokens (
   token_hash TEXT PRIMARY KEY NOT NULL,
   account_id TEXT NOT NULL DEFAULT '',
   account_name TEXT NOT NULL DEFAULT '',
   account_email TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  revoked_at INTEGER
 );
+
+-- The sweep `sweepDeviceTokens` runs reads by expiry, so without this index
+-- every sweep is a full scan of the table.
+CREATE INDEX IF NOT EXISTS device_tokens_expires_at ON device_tokens (expires_at);

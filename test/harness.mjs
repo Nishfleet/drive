@@ -69,18 +69,31 @@ function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sql);
   const bound = params.map(sqliteValue);
   const results = statement.all(...bound);
+  // The change count comes from SQLite's own `changes()`, which is true the
+  // moment the statement runs, rather than a property the prepared statement
+  // does not have: node:sqlite exposes no `changes`, and reading `?.changes`
+  // off a statement would answer 0 for every write — so a test that asserts a
+  // revoke landed would be told it did not, and a caller that trusts
+  // `meta.changes` for a conditional update would see no winner at all.
   return {
     results,
     success: true,
     meta: {
-      changes: Number(statement.changes ?? 0),
-      last_row_id: Number(statement.lastInsertRowid ?? 0),
+      changes: Number(sqlite.prepare("SELECT changes() AS n").get().n),
+      last_row_id: Number(sqlite.prepare("SELECT last_insert_rowid() AS n").get().n),
     },
   };
 }
 
 /**
  * A D1 binding over a real SQLite database with the given migrations applied.
+///
+/// `first` and `run` bind the values handed to `bind()`, like D1's own bound
+/// statement. They read `values`, not the statement's empty `params` default:
+/// a caller that bound nothing and a caller whose parameters were dropped are
+/// the same query with the wrong answer, and D1's `?1` is a named parameter,
+/// so a forgotten binding has to be a failing assertion rather than a silent
+/// `WHERE device_code_hash = ''`.
  *
  * `sqlite` is handed back so a test can read or change a row directly, which is
  * how the session-survives-a-restart proof checks the session really is on
@@ -94,7 +107,7 @@ export function createTestD1(options = {}) {
   for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const statement = (sql, params = []) => ({
+  const statement = (sql) => ({
     bind: (...values) => ({
       sql,
       params: values,
@@ -102,7 +115,7 @@ export function createTestD1(options = {}) {
         return runOne(sqlite, sql, values);
       },
       async first() {
-        const row = sqlite.prepare(sql).get(...params.map(sqliteValue));
+        const row = sqlite.prepare(sql).get(...values.map(sqliteValue));
         return row === undefined ? null : row;
       },
       async run() {
