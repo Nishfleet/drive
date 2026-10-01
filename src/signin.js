@@ -66,6 +66,7 @@ export const SIGNIN_COPY = Object.freeze({
   emailButton: "Email me a link",
   emailNote: "We email a link that signs you in. No password to remember.",
   emailSent: "Check your email — the link signs you in.",
+  linkFailed: "That link did not work. Ask for a new one from the sign-in page.",
   googleButton: "Continue with Google",
   githubButton: "Continue with GitHub",
   // The line the page shows while it waits for the endpoint, and the line it
@@ -78,9 +79,8 @@ export const SIGNIN_COPY = Object.freeze({
   // endpoints because a person signing in is one action, and the one action
   // with a step in the middle is the sign-in itself. The link a person
   // follows is a third path, GET /api/signin/verify, because a link in an
-  // email is a link a browser follows.
-  stepStart: "start",
-  stepSignout: "signout",
+  // email is a link a browser follows. The step names are data the routes
+  // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
   signupNote: "New here? Signing in makes your drive, and $1 a month of storage is free.",
 });
@@ -293,15 +293,19 @@ export async function handleSigninLinkVerify(request, env) {
     return redirect(`${SIGNIN_PATH}?error=no-token`);
   }
   const verified = await auth.api.magicLinkVerify({
-    query: { token, callbackURL: AFTER_SIGNIN_PATH },
+    query: { token },
     headers: request.headers,
     asResponse: true,
   });
-  if (verified.status < 300 || verified.status >= 400) {
+  // Better Auth answers a good link with a 200 and the session cookie when no
+  // `callbackURL` is asked for, and a spent or expired one with a redirect to
+  // the error URL. Asking for no redirect is what makes the two tellable
+  // apart: a 3xx here is always a failure, never a success this route is
+  // supposed to follow.
+  if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
   }
-  // Better Auth answers the good link with its own redirect carrying the
-  // session cookie. The one thing this route does is take that cookie onto a
+  // The one thing this route does is take the cookie Better Auth set onto a
   // same-origin redirect of its own, so a person lands on the drive rather
   // than on a JSON body.
   return redirect(AFTER_SIGNIN_PATH, cookieHeaders(verified));

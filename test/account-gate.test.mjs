@@ -28,7 +28,8 @@ import {
 } from "../src/files.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
-import { createAccountStore } from "../src/accounts.js";
+import { createTestAuth, signIn } from "./harness.mjs";
+import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
 import { HEALTH_PATH } from "../src/health.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
@@ -60,6 +61,11 @@ const PUBLIC_ROUTES = new Set([
   // would be indistinguishable from "your session expired".
   SIGNIN_ENDPOINT,
   `${SIGNIN_ENDPOINT}/`,
+  // The link a sign-in email carries (drive#181). It mints the session, so it
+  // is the other half of the same exception: a person with no session is
+  // exactly who follows it, and a 401 here would lock out the only door in.
+  SIGNIN_LINK_PATH,
+  `${SIGNIN_LINK_PATH}/`,
   // The meter and the billing webhook only; closed with no token set (#73's
   // walk added no account here because this lane's gate is a deployment
   // secret, not a session).
@@ -146,6 +152,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         "STATUS_ENDPOINT",
         "HEALTH_PATH",
         "SIGNIN_ENDPOINT",
+        "SIGNIN_LINK_PATH",
         "SEARCH_ENDPOINT",
         "BRANCHES_ENDPOINT",
         "REWIND_ENDPOINT",
@@ -161,11 +168,15 @@ test("every route src/index.js registers is either public or behind the gate", a
       route.startsWith(`${HEALTH_PATH}/`) ||
       route === HEALTH_PATH ||
       route === SIGNIN_ENDPOINT ||
-      route.startsWith(`${SIGNIN_ENDPOINT}/`);
+      route.startsWith(`${SIGNIN_ENDPOINT}/`) ||
+      route === SIGNIN_LINK_PATH ||
+      route.startsWith(`${SIGNIN_LINK_PATH}/`);
     assert.ok(
       literals.includes(route) ||
         (fromConstant &&
-          (constants.includes("HEALTH_PATH") || constants.includes("SIGNIN_ENDPOINT"))),
+          (constants.includes("HEALTH_PATH") ||
+            constants.includes("SIGNIN_ENDPOINT") ||
+            constants.includes("SIGNIN_LINK_PATH"))),
       `${route} is allow-listed but not routed`,
     );
   }
@@ -248,27 +259,29 @@ test("the gate reads the request, and a signed-out request has no account", asyn
 });
 
 test("a signed-in account reaches its own files and usage; an anonymous one does not", async () => {
-  // The finish line of drive#10 in one test: the sign-in screen mints a
-  // session, and a request carrying that session answers 200 on the account
-  // routes, while the same request without it is still 401. Every step goes
-  // through the Worker's own dispatch and the Worker's own store, so this is
-  // the round trip a new person makes, not a handler called directly.
+  // The finish line of drive#10 in one test, now on Better Auth (#181): the
+  // sign-in screen mails a link, following it mints a session, and a request
+  // carrying that session answers 200 on the account routes while the same
+  // request without it is still 401. Every step goes through the Worker's own
+  // dispatch and the Worker's own auth, so this is the round trip a new person
+  // makes, not a handler called directly.
   //
-  // The store's mailer is how this test reads the code that left by email: the
-  // code is never in a reply, so the mail is the only place it can be seen,
-  // which is the whole point of the flow.
-  const emailed = [];
+  // The mailer is how this test reads the link that left by email: the token is
+  // never in a reply, so the mail is the only place it can be seen, which is
+  // the whole point of the flow.
+  const made = createTestAuth();
+  const emailed = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
-    // The store the Worker uses, so the session the sign-in route mints is the
-    // one the account routes below read. A deployment never sets this (see
-    // accountsStoreFor in src/index.js); it is the seam a test drives the real
-    // dispatch through.
-    ACCOUNTS_STORE: createAccountStore({
-      sendCode: ({ to, code }) => {
-        emailed.push({ to, code, from: "noreply@drive.test" });
-      },
-    }),
+    // The database and the settings the Worker's authFor() reads. A deployment
+    // binds DRIVE_DB and sets the two secrets; the link mailer is the test seam
+    // (SIGNIN_MAIL) that stands in for the EMAIL binding.
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    SIGNIN_MAIL: (link) => {
+      emailed.push(link);
+    },
   };
   const call = (cookie, path) =>
     worker.fetch(
@@ -279,32 +292,32 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     worker.fetch(
       new Request("https://drive.test/api/signin", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", origin: "https://drive.test" },
         body: JSON.stringify(body),
       }),
       env,
     );
 
-  // 1. Start: an address, and a code that leaves by email and nowhere else.
+  // 1. Start: an address, and a link that leaves by email and nowhere else.
   const start = await signin({ step: "start", method: "email", email: "newperson@example.com" });
-  assert.equal(start.status, 202, "a start emails a code");
+  assert.equal(start.status, 202, "a start emails a link");
   const accepted = await start.json();
   assert.equal(accepted.ok, true);
-  assert.equal("code" in accepted, false, "the code leaves by email, never in the reply");
+  assert.equal("url" in accepted, false, "the link leaves by email, never in the reply");
+  assert.equal("token" in accepted, false, "the token leaves by email, never in the reply");
   assert.equal(emailed.length, 1, "exactly one email went out");
-  const code = emailed[0].code;
-  assert.match(String(code), /^[0-9]{6}$/, "the emailed code is the 6 digits the screen names");
   assert.equal(emailed[0].to, "newperson@example.com");
+  assert.match(emailed[0].url, /^https:\/\/drive\.test\/api\/signin\/verify\?token=/, "the link points at this Worker's verify path");
 
-  // 2. Finish: the code, and the session cookie it mints.
-  const finish = await signin({ step: "finish", email: "newperson@example.com", code });
-  assert.equal(finish.status, 200, "the right code finishes the sign-in");
-  const signedIn = await finish.json();
-  assert.equal(signedIn.ok, true);
-  assert.equal(signedIn.account.email, "newperson@example.com", "the address is the account");
-  const setCookie = finish.headers.get("set-cookie");
-  assert.ok(setCookie, "a finished sign-in sets the session cookie");
-  assert.match(setCookie, /^drive_session=sess_/, "the session is a minted id, not the code");
+  // 2. Follow the link: the session cookie it mints.
+  const followed = await worker.fetch(
+    new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
+    env,
+  );
+  assert.equal(followed.status, 302, "a good link redirects into the drive");
+  const setCookie = followed.headers.getSetCookie()[0];
+  assert.ok(setCookie, "following the link sets a session cookie");
+  assert.match(setCookie, /^__Secure-drive\.session_token=/, "the session is Better Auth's signed token, not a code");
   assert.match(setCookie, /HttpOnly/, "no script may read the session");
   assert.match(setCookie, /SameSite=Lax/, "the session does not ride a cross-site post");
   assert.match(setCookie, /Secure/, "the session never travels in clear");
@@ -320,12 +333,20 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     assert.deepEqual(await denied.json(), { error: failureMessage("unauthorized") });
   }
 
-  // 4. The session is a real one. A cookie the store never minted is not an
-  // account, and a used code cannot mint a second session.
-  const forged = await call("drive_session=sess_never_minted", FILES_ENDPOINT);
-  assert.equal(forged.status, 401, "a cookie the store never minted is not a session");
-  const replay = await signin({ step: "finish", email: "newperson@example.com", code });
-  assert.equal(replay.status, 400, "a used code cannot mint a second session");
+  // 4. The session is a real one. A cookie auth never minted is not an
+  // account, and a used link cannot mint a second session.
+  const forged = await call("__Secure-drive.session_token=sess_never_minted", FILES_ENDPOINT);
+  assert.equal(forged.status, 401, "a cookie auth never minted is not a session");
+  const replay = await worker.fetch(
+    new Request(emailed[0].url, { headers: { origin: "https://drive.test" } }),
+    env,
+  );
+  assert.equal(replay.status, 302, "a reused link still answers with a redirect");
+  assert.match(
+    replay.headers.get("location"),
+    /error=invalid-link/,
+    "a used link cannot mint a second session",
+  );
 
   // 5. One account's files stay in that account's own prefix: a second person
   // who signs in sees an empty drive, not the first one's bytes.
@@ -338,20 +359,56 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     env,
   );
   assert.equal(upload.status, 201, "the signed-in account can store a file");
-  const other = await signin({ step: "start", method: "email", email: "other@example.com" });
-  assert.equal(other.status, 202, "a second person can sign in");
-  const otherFinish = await signin({
-    step: "finish",
-    email: "other@example.com",
-    code: emailed[1].code,
-  });
-  assert.equal(otherFinish.status, 200);
-  const otherCookie = otherFinish.headers.get("set-cookie").split(";")[0];
-  const otherList = await call(otherCookie, FILES_ENDPOINT);
+  const other = await signIn(made, "other@example.com");
+  const otherList = await call(other.cookie, FILES_ENDPOINT);
   assert.equal(otherList.status, 200);
   assert.equal((await otherList.json()).rows.length, 0, "a second account cannot list the first one's files");
   const firstList = await call(cookie, FILES_ENDPOINT);
   assert.equal((await firstList.json()).rows.length, 1, "the first account still has its own file");
+  assert.notEqual(other.account.id, "newperson@example.com");
+});
+
+test("sign-out revokes the session the cookie names", async () => {
+  // Step 3 of #181's acceptance: a signed-in account that signs out cannot use
+  // the cookie it was carrying. The session row is deleted and the cookies are
+  // cleared, and the account routes answer 401 from then on — a copy of the
+  // cookie is worth nothing, because the database no longer knows the token.
+  const made = createTestAuth();
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+    SIGNIN_MAIL: (link) => {
+      made.sent.push(link);
+    },
+  };
+  const { cookie } = await signIn(made, "leaver@example.com");
+  const before = await worker.fetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(before.status, 200, "the session works before signing out");
+
+  const out = await worker.fetch(
+    new Request("https://drive.test/api/signin", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://drive.test", cookie },
+      body: JSON.stringify({ step: "signout" }),
+    }),
+    env,
+  );
+  assert.equal(out.status, 200, "sign-out answers ok");
+  assert.deepEqual(await out.json(), { ok: true, step: "signout" });
+  const cleared = out.headers.getSetCookie().join("\n");
+  assert.match(cleared, /__Secure-drive\.session_token=;/, "sign-out clears the session cookie");
+
+  const after = await worker.fetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+  );
+  assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
+  assert.deepEqual(await after.json(), { error: failureMessage("unauthorized") });
 });
 
 test("an anonymous files request never reaches the store", async () => {
