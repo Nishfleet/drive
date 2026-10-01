@@ -169,7 +169,7 @@ function isDatabaseBinding(binding) {
 
 /**
  * Every D1 database on this Worker, paired with the binding name that reached
- * it. Read from `env` by binding kind (isDatabaseBinding above) rather than
+ * it. Read from `env` by binding kind (isDatabaseBinding above) rather than from a
  * hand-kept list, so a binding added to cloudflare.config.ts is checked the
  * day it is added and cannot be forgotten here. A Fetcher is not a database
  * however it is spelled — the static-assets binding and the email binding
