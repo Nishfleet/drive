@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -135,7 +136,11 @@ func runShare(args []string) error {
 		if fs.NArg() > 0 {
 			return fmt.Errorf("--revoke takes no file argument, got %q", fs.Arg(0))
 		}
-		link, err := RevokeShare(endpoint, tokenFromArg(l.revoke))
+		token, err := tokenFromArg(l.revoke)
+		if err != nil {
+			return err
+		}
+		link, err := RevokeShare(endpoint, token)
 		if err != nil {
 			return err
 		}
@@ -191,7 +196,11 @@ func runRequest(args []string) error {
 		if fs.NArg() > 0 {
 			return fmt.Errorf("--revoke takes no folder argument, got %q", fs.Arg(0))
 		}
-		link, err := RevokeRequest(endpoint, tokenFromArg(l.revoke))
+		token, err := tokenFromArg(l.revoke)
+		if err != nil {
+			return err
+		}
+		link, err := RevokeRequest(endpoint, token)
 		if err != nil {
 			return err
 		}
@@ -224,17 +233,37 @@ func printRequestLine(link RequestLink) {
 	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.URL)
 }
 
+// tokenRE is the one token shape the api Worker mints and accepts: 22
+// base64url characters (src/share.js TOKEN_PATTERN). The CLI refuses anything
+// else before it reaches the api, so junk from a mangled or hostile paste
+// never becomes a lookup against the owner's account.
+var tokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+
 // tokenFromArg accepts what a person actually has in hand: the token, or the
 // link it came in, because the link is what they copied.
-func tokenFromArg(arg string) string {
+func tokenFromArg(arg string) (string, error) {
 	trimmed := strings.TrimSpace(arg)
+	var token string
 	if i := strings.Index(trimmed, "/s/"); i >= 0 {
-		return strings.TrimSuffix(trimmed[i+len("/s/"):], "/")
+		// The share-link form: a /s/<token> path segment.
+		token = trimmed[i+len("/s/"):]
+	} else if i := strings.Index(trimmed, "k="); i >= 0 {
+		// The upload-page form: ?k=<token>, possibly among other params.
+		token = trimmed[i+len("k="):]
+	} else {
+		token = trimmed
 	}
-	if i := strings.Index(trimmed, "k="); i >= 0 {
-		return strings.TrimSuffix(trimmed[i+len("k="):], "/")
+	// A token is exactly 22 base64url chars; anything after it — a trailing
+	// slash, a query string, or tracking params (?k=<token>&utm_...) — is
+	// surrounding junk to drop, not the token.
+	if i := strings.IndexAny(token, "?&"); i >= 0 {
+		token = token[:i]
 	}
-	return trimmed
+	token = strings.TrimRight(token, "/")
+	if !tokenRE.MatchString(token) {
+		return "", fmt.Errorf("that is not a drive link token (22 letters, digits, - or _), got %q", arg)
+	}
+	return token, nil
 }
 
 // MintShare mints a share link for one file: POST /api/share {path}. The
