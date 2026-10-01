@@ -24,13 +24,25 @@
 		"allowJs": true,
 		// drive issue #91: the repo is JSDoc-typed JavaScript, so this is the
 		// switch that makes those annotations load-bearing instead of comments.
-		"checkJs": true
+		"checkJs": true,
+		// `types: []` keeps the Workers runtime types to the generated
+		// `.cloudflare/types/index.d.ts` only (see include below) and the
+		// `dom`/`es2024` libs, never an @types package — node-typed build
+		// scripts (src/render-docs.js) and the node:test trees live in their
+		// own check scope (tsconfig.test.json, drive issue #91 remainder).
+		"types": []
 	},
 	"include": [
 		"src",
-		"workers",
-		"test",
 		"cloudflare.config.ts",
 		".cloudflare/types/index.d.ts"
+	],
+	"exclude": [
+		// Node build-time script and the docs site: they import node:fs and use
+		// `process`, which need @types/node; that is drive issue #91's type-test
+		// remainder, not the Worker's check scope here.
+		"src/render-docs.js",
+		"docs-site",
+		"test"
 	]
 }

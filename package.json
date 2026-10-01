@@ -8,7 +8,7 @@
     "dev": "cf dev",
     "build": "cf build",
     "pretypecheck": "cf workers types",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
     "check": "npm run typecheck",
     "pretest": "npm run check",
     "docs:render": "node src/render-docs.js",
