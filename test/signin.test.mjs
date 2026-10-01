@@ -234,6 +234,30 @@ test("the closed door's words come from the message table, once", async () => {
 
 // ---------------------------------------------------------- the verify link
 
+test("a mailer that throws is a closed door, never a 202 for a link that never left", async () => {
+  // The guarantee the hand-written store made ("a code that could not be sent
+  // is never reported as sent") has to hold on the library too: Better Auth
+  // propagates a rejected sendMagicLink, and the route turns that into the
+  // closed door rather than a 202 the person waits on.
+  const db = createTestAuth().db;
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_MAIL: async () => {
+      throw new Error("the mail server is down");
+    },
+  };
+  const response = await worker.fetch(
+    post({ step: "start", method: "email", email: "a@b.co" }),
+    env,
+  );
+  assert.equal(response.status, 503, "a link that could not be sent is not a 202");
+  assert.deepEqual(await response.json(), signinClosedBody());
+  assert.equal(response.headers.get("set-cookie"), null);
+});
+
 test("the sign-in link is at the path the page and the email name", async () => {
   assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
   assert.match(page, new RegExp(SIGNIN_LINK_PATH.replace(/\//g, "\\/")), "the page knows where a failed link lands");

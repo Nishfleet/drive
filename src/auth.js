@@ -111,9 +111,9 @@ export function createAuth(options) {
     plugins: [
       magicLink({
         expiresIn: SIGNIN_LINK_TTL_SECONDS,
-        // A link that has already been used is spent: Better Auth consumes the
-        // token on the first verification, so the second click on the same
-        // email finds nothing. That is what "a link works once" means here.
+        // A first-time address gets an account when it follows its link, and a
+        // returning one is found. Both are sign-in, which is why sign-up is
+        // left on: the spec's screen has no separate registration step.
         disableSignUp: false,
         sendMagicLink: async ({ email, token }) => {
           await options.sendLink({ to: email, url: signinLink(token, options.baseURL) });
@@ -142,7 +142,11 @@ export function signinLink(token, baseURL) {
  * cache is a WeakMap keyed on the binding itself, so a test that builds a
  * fresh in-memory database gets a fresh auth and no two databases ever share
  * one.
- * @type {WeakMap<object, {secret: string, baseURL: string, auth: Auth}>}
+ *
+ * The box is kept stable so `authFor` can update the mailer each time it is
+ * called with a new env object sharing the same binding — the test pattern
+ * where env is rebuilt per request while the database stays alive.
+ * @type {WeakMap<object, {secret: string, baseURL: string, env: {env: object}, auth: Auth}>}
  */
 const AUTH_CACHE = new WeakMap();
 
@@ -172,15 +176,17 @@ export function authFor(env) {
   }
   const cached = AUTH_CACHE.get(database);
   if (cached !== undefined && cached.secret === secret && cached.baseURL === baseURL) {
+    cached.env.env = env;
     return cached.auth;
   }
+  const box = { env };
   const auth = createAuth({
     database,
     secret,
     baseURL,
-    sendLink: (link) => sendSigninLink(env, link),
+    sendLink: (link) => sendSigninLink(box.env, link),
   });
-  AUTH_CACHE.set(database, { secret, baseURL, auth });
+  AUTH_CACHE.set(database, { secret, baseURL, env: box, auth });
   return auth;
 }
 

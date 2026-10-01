@@ -223,12 +223,19 @@ export async function handleSigninRequest(request, env) {
   if (read.step === "signout") {
     // Better Auth's own sign-out: the session row is deleted and the cookies
     // are cleared, so a later request carrying the same cookie reads as
-    // signed out rather than trusting a token the database has forgotten.
-    const signedOut = await auth.api.signOut({
-      headers: request.headers,
-      asResponse: true,
-    });
-    return json({ ok: true, step: "signout" }, 200, cookieHeaders(signedOut));
+    // signed out rather than trusting a token the database has forgotten. A
+    // library failure here is not a 500 for a person who only asked to leave:
+    // no cookie is set and the answer says signed out, which is what a browser
+    // with a dead session already is.
+    try {
+      const signedOut = await auth.api.signOut({
+        headers: request.headers,
+        asResponse: true,
+      });
+      return json({ ok: true, step: "signout" }, 200, cookieHeaders(signedOut));
+    } catch {
+      return json({ ok: true, step: "signout" }, 200);
+    }
   }
   // Google and GitHub land on the closed door before the library is asked:
   // their client ids and secrets are Nish's credentials, so there is no client
@@ -292,16 +299,16 @@ export async function handleSigninLinkVerify(request, env) {
   if (token === null || token === "") {
     return redirect(`${SIGNIN_PATH}?error=no-token`);
   }
-  const verified = await auth.api.magicLinkVerify({
-    query: { token },
-    headers: request.headers,
-    asResponse: true,
-  });
-  // Better Auth answers a good link with a 200 and the session cookie when no
-  // `callbackURL` is asked for, and a spent or expired one with a redirect to
-  // the error URL. Asking for no redirect is what makes the two tellable
-  // apart: a 3xx here is always a failure, never a success this route is
-  // supposed to follow.
+  let verified;
+  try {
+    verified = await auth.api.magicLinkVerify({
+      query: { token },
+      headers: request.headers,
+      asResponse: true,
+    });
+  } catch {
+    return redirect(`${SIGNIN_PATH}?error=invalid-link`);
+  }
   if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
   }
