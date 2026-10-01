@@ -178,7 +178,7 @@ function codesEqual(left, right) {
  * a multi-isolate deployment needs the D1 store first, because a session the
  * next isolate never saw would read as signed out.
  *
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, sendCode?: (code: object) => Promise<unknown>|unknown}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, sendCode?: (message: {to: string, code: string, account: object}) => Promise<unknown>|unknown}} [options]
  *   `sendCode` is the mailer: it is given the address and the code, and its
  *   failure is the sign-in's failure — a code that could not be sent is never
  *   reported as sent, or the page would wait for an email that is not coming.
@@ -265,7 +265,7 @@ export function createAccountStore(options = {}) {
      * leaves by email and nowhere else.
      *
      * @param {{method: string, email?: string}} request
-     * @returns {Promise<{account: object, expiresIn: number}>}
+     * @returns {Promise<{account: {id: string, name: string, email: string}, expiresIn: number}|{error: string}>}
      */
     async startSignin(request) {
       if (request.method !== "email") {
@@ -313,7 +313,7 @@ export function createAccountStore(options = {}) {
      * consumed on use so it cannot mint a second session.
      *
      * @param {{email?: string, code?: string}} request
-     * @returns {Promise<{account: object, sessionToken: string}>}
+     * @returns {Promise<{account: {id: string, name: string, email: string}, sessionToken: string}|{error: string}>}
      */
     async finishSignin(request) {
       const address = String(request.email ?? "").trim().toLowerCase();

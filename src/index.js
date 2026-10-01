@@ -28,14 +28,35 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 // the same FileStore interface. Both are plain stores over storage keys: the
 // account prefix and the isolation between accounts are scopeStore's job
 // (src/files.js), so an adapter never has to know about an account.
+/** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
+/**
+ * The `rclone serve s3` stand-in's two config vars (drive issue #1's build
+ * host). They are set in the environment of a local dev run, never declared
+ * as bindings in cloudflare.config.ts: the deployed Worker has no S3 stand-in,
+ * and a declared binding would also have to be probed by the health check
+ * (test/health.test.mjs) when there is nothing to probe. So they are read off
+ * the worker's own env as the optional pair the dev-only path takes, and the
+ * env is widened with exactly that pair and nothing else.
+ * @param {Env} env
+ * @returns {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}}
+ */
+function devStorage(env) {
+  return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+}
+
+/**
+ * @param {Env} env
+ * @returns {import("./files.js").FileStore}
+ */
 function storeFor(env) {
   if (!filesStore) {
+    const dev = devStorage(env);
     filesStore =
-      env.FILES_S3_ENDPOINT && env.FILES_S3_BUCKET
+      dev.FILES_S3_ENDPOINT && dev.FILES_S3_BUCKET
         ? createS3Store({
-            endpoint: env.FILES_S3_ENDPOINT,
-            bucket: env.FILES_S3_BUCKET,
+            endpoint: dev.FILES_S3_ENDPOINT,
+            bucket: dev.FILES_S3_BUCKET,
           })
         : createMemoryStore();
   }
@@ -47,15 +68,35 @@ function storeFor(env) {
 // hand the handler a fake. One store per Worker isolate, holding the accounts,
 // their one-time codes and their sessions (src/accounts.js). The real D1
 // store is #2; swapping it is one factory with the same three methods.
+/** @type {ReturnType<typeof createAccountStore>|undefined} */
 let accountsStore;
+/**
+ * The two settings this module reads that are not bindings in
+ * cloudflare.config.ts, so they are not on the generated `Env`: `ACCOUNTS_STORE`
+ * is the store a test injects to drive the real dispatch, and `MAIL_FROM` is the
+ * deployment's sending address (a secret, so it never appears in the config).
+ * Widened here as the optional pair they are — the same move `devStorage` makes
+ * for the two dev-only S3 vars.
+ * @param {Env} env
+ * @returns {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}}
+ */
+function accountEnv(env) {
+  return /** @type {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}} */ (env);
+}
+
+/**
+ * @param {Env} env
+ * @returns {ReturnType<typeof createAccountStore>}
+ */
 function accountsStoreFor(env) {
+  const settings = accountEnv(env);
   // A store passed on the env wins, and that is how a test drives the real
   // dispatch (test/account-gate.test.mjs builds a store with a mailer that
   // captures the code, so it can read what left by email). A deployment never
   // sets it,
   // so the one-isolate cache below is what production uses.
-  if (env.ACCOUNTS_STORE) {
-    return env.ACCOUNTS_STORE;
+  if (settings.ACCOUNTS_STORE) {
+    return settings.ACCOUNTS_STORE;
   }
   if (!accountsStore) {
     accountsStore = createAccountStore({
@@ -64,12 +105,12 @@ function accountsStoreFor(env) {
       // without a mailer, and a start that cannot be mailed is reported as
       // failed rather than as a code sent — the route reads the store's answer
       // either way, so nothing here decides what a person is told.
-      sendCode: env.EMAIL
+      sendCode: settings.EMAIL
         ? async ({ to, code }) => {
-            await sendEmail(env.EMAIL, {
+            await sendEmail(settings.EMAIL, {
               to,
               kind: "signin-code",
-              from: env.MAIL_FROM,
+              from: settings.MAIL_FROM ?? "",
               rendered: signinCodeEmail(code),
             });
           }
@@ -84,11 +125,16 @@ function accountsStoreFor(env) {
 // five the spec names for customers (welcome, cap, read-only, payment, receipt)
 // — a secret is not one of them, and a template table that also held codes
 // would be a place to leak one from.
+/**
+ * @param {string} code
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
 function signinCodeEmail(code) {
   return {
     subject: `Your drive sign-in code: ${code}`,
     text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
     html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
+    saved: null,
   };
 }
 
@@ -104,6 +150,9 @@ function signinCodeEmail(code) {
 // answers 403, so the deployment is closed until the token is set, and the
 // first producers are the meter's cap emails and the billing webhook
 // (build step 6, drive#7).
+/**
+ * @type {ExportedHandler<Env>}
+ */
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -132,14 +181,15 @@ export default {
     // module keeps the index current by wrapping the store, so an upload, a
     // delete or a restore is in the index before the next search, and the
     // search itself never lists the bucket. The rebuild is not a web route:
-    // it runs from the scheduled handler below.
+    // it runs from the scheduled handler below. The index is customer data, so
+    // it reads DRIVE_DB, never the waitlist's database (issue #170).
     if (
       url.pathname === SEARCH_ENDPOINT ||
       url.pathname === `${SEARCH_ENDPOINT}/`
     ) {
       return handleSearchRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         await signedInAccount(request, accountsStoreFor(env)),
       );
     }
@@ -160,7 +210,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleFilesRequest(
         request,
-        account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
         account,
       );
     }
@@ -175,7 +225,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleBranchesRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         account ? storeFor(env) : null,
         account,
       );
@@ -194,7 +244,7 @@ export default {
       const account = await signedInAccount(request, accountsStoreFor(env));
       return handleRewindRequest(
         request,
-        env.WAITLIST_DB,
+        env.DRIVE_DB,
         account ? storeFor(env) : null,
         account,
       );
@@ -249,11 +299,11 @@ export default {
   async scheduled(event, env, context, store = storeFor(env)) {
     context.waitUntil(
       (async () => {
-        if (!env.WAITLIST_DB) {
+        if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
-        for (const account of await indexAccounts(env.WAITLIST_DB)) {
-          await reconcileIndex(env.WAITLIST_DB, scopeStore(store, account), account);
+        for (const account of await indexAccounts(env.DRIVE_DB)) {
+          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);

@@ -30,9 +30,23 @@ export default defineConfig({
 		triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
 		env: {
 			ASSETS: bindings.assets(),
+			// Two databases, one purpose each (drive issue #170). The waitlist's
+			// table lives alone in the waitlist database: the sign-up list is
+			// public data and can be exported, reset or handed on without
+			// touching a customer's files. Everything that belongs to a
+			// customer lives in the drive database. The two migration
+			// directories mirror the split — `migrations/waitlist/` applies to
+			// WAITLIST_DB and `migrations/drive/` to DRIVE_DB — and the deploy
+			// must apply both before it ships the Worker; that deploy step is
+			// tracked in the follow-up for #170 (the worker App cannot write
+			// workflow files), so the config alone cannot enforce it here.
 			WAITLIST_DB: bindings.d1({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",
+			}),
+			DRIVE_DB: bindings.d1({
+				name: "drive-data",
+				id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
 			}),
 			// drive issue #28: bound the waitlist endpoint. Five sign-ups a
 			// minute per client IP is far above a person's pace and far below

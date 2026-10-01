@@ -70,10 +70,15 @@ export function connectionLine(state) {
 /**
  * Every state the line can show, in the module's order, so the page can
  * render all three arms before the first poll answers.
- * @returns {"waiting"|"connected"|"unreachable"[]}
+ * @returns {Array<"waiting"|"connected"|"unreachable">}
  */
 export function connectionStates() {
-  return Object.keys(CONNECTION_COPY);
+  // The keys are the module's own three states; the annotation is the union
+  // the rest of the page switches on, which the page and this list must agree
+  // on or a rendered line would have no arm to show.
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (
+    Object.keys(CONNECTION_COPY)
+  );
 }
 
 /**
@@ -137,9 +142,20 @@ export function syncErrorNotification() {
 }
 
 /**
+ * A device as the status poll and the page's rows read it: the fields below
+ * name the ones the renderers touch, and the rest of a row is not read here.
+ * @typedef {{id?: string, name?: string, kind?: string, lastSyncAt?: string|Date|null, lastSeenAt?: string|Date|undefined, pendingBytes?: number|null, syncError?: string|null}} DeviceRow
+ */
+
+/**
+ * The whole poll payload, as the page's render() reads it.
+ * @typedef {{state?: string, devices?: DeviceRow[], upload?: {uploadedBytes: number, totalBytes: number, files?: number}|null}} StatusPayload
+ */
+
+/**
  * One device's sync state, from the module's own table and its own window, so
  * the page's cell cannot read "Synced" for a queue that has been quiet.
- * @param {object} device
+ * @param {DeviceRow} device
  * @returns {{state: string, label: string, detail: string|null}}
  */
 export function deviceSyncState(device) {
@@ -172,7 +188,7 @@ const NO_SYNC_LABEL = syncStatus({}, 0).label;
  * device row that carries an unreadable date is reported, not thrown: the row
  * is a report, and the page's own poll failure is the `unreachable` state,
  * not a device's.
- * @param {string|number|Date|null} value
+ * @param {string|number|Date|null|undefined} value
  * @param {number} now
  * @returns {number|null}
  */
@@ -180,7 +196,16 @@ export function ageMs(value, now = Date.now()) {
   if (!Number.isFinite(now)) {
     throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
   }
-  const time = typeof value === "number" ? value : Date.parse(value);
+  // A Date's own epoch value; Date.parse takes the string form, and an absent
+  // value is as unreadable as a broken one: both report the row as unreadable.
+  const time =
+    typeof value === "number"
+      ? value
+      : value instanceof Date
+        ? value.getTime()
+        : value === null || value === undefined
+          ? Number.NaN
+          : Date.parse(value);
   if (!Number.isFinite(time)) {
     return null;
   }
@@ -229,7 +254,7 @@ export function connectionStateForStatus(status) {
  * Whether a poll payload means the Mac has connected: a device signed in
  * inside the module's window, or the service's own `connected` state. The
  * page stops its timer when this is true.
- * @param {object} payload
+ * @param {StatusPayload} payload
  * @param {number} now
  * @returns {boolean}
  */
@@ -243,10 +268,13 @@ export function isConnected(payload, now = Date.now()) {
     return true;
   }
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
-  return devices.some((device) => {
-    const age = ageMs(device.lastSeenAt, now);
-    return age !== null && age <= CONNECTED_WINDOW_MS;
-  });
+  return devices.some(
+    /** @param {DeviceRow} device */
+    (device) => {
+      const age = ageMs(device.lastSeenAt, now);
+      return age !== null && age <= CONNECTED_WINDOW_MS;
+    },
+  );
 }
 
 // ---- The bottom half: the page wiring the builders above. ----
@@ -254,6 +282,10 @@ export function isConnected(payload, now = Date.now()) {
 // Every element the wiring touches, named once. A missing element is a real
 // error: `required()` throws rather than letting the page half-render, because
 // a blank section is the drift this change exists to remove.
+/**
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
 function required(id) {
   const el = document.getElementById(id);
   if (el === null) {
@@ -262,6 +294,12 @@ function required(id) {
   return el;
 }
 
+/**
+ * @param {string} tag
+ * @param {string|null} [className]
+ * @param {string} [text]
+ * @returns {HTMLElement}
+ */
 function element(tag, className, text) {
   const el = document.createElement(tag);
   if (className) {
@@ -289,10 +327,10 @@ function renderSteps() {
 }
 
 function renderEmptyStates() {
-  for (const [id, screen] of [
+  for (const [id, screen] of /** @type {Array<[string, "devices"|"activity"]>} */ ([
     ["devices-empty", "devices"],
     ["activity-empty", "activity"],
-  ]) {
+  ])) {
     const { what, next } = emptyState(screen);
     required(id).replaceChildren(element("p", "what", what), element("p", "next", next));
   }
@@ -319,6 +357,10 @@ function renderConnection() {
   showConnection("waiting");
 }
 
+/**
+ * @param {"waiting"|"connected"|"unreachable"} state
+ * @returns {void}
+ */
 function showConnection(state) {
   const host = required("connection");
   const current = host.querySelector(`.line[data-state="${state}"]`);
@@ -333,6 +375,10 @@ function showConnection(state) {
   }
 }
 
+/**
+ * @param {DeviceRow} device
+ * @returns {HTMLTableRowElement}
+ */
 function deviceRow(device) {
   const sync = deviceSyncState(device);
   const tr = document.createElement("tr");
@@ -352,6 +398,10 @@ function deviceRow(device) {
 // already on the page; the notification is for the tab you are not looking at.
 const notified = new Set();
 
+/**
+ * @param {DeviceRow} device
+ * @returns {void}
+ */
 function notifySyncError(device) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") {
     return;
@@ -369,6 +419,10 @@ function notifySyncError(device) {
 // never before: the permission prompt is not the first thing a new person
 // meets. Declined or dismissed is not a failure — the error already shows on
 // the page, so there is nothing to retry.
+/**
+ * @param {DeviceRow[]} devices
+ * @returns {void}
+ */
 function maybeAskToNotify(devices) {
   if (
     typeof Notification === "undefined" ||
@@ -385,6 +439,10 @@ function maybeAskToNotify(devices) {
   });
 }
 
+/**
+ * @param {StatusPayload} payload
+ * @returns {void}
+ */
 function render(payload) {
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
 
@@ -422,6 +480,7 @@ function render(payload) {
   showConnection("waiting");
 }
 
+/** @type {number|null} the poll interval, or null once the page is connected */
 let timer = null;
 
 async function poll() {
