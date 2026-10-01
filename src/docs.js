@@ -119,7 +119,9 @@ export function agentCannotDeleteSentence() {
  * @returns {string}
  */
 function keyRow(kind, owner) {
-  const powers = KEY_POWERS[kind];
+  // The four kinds are this module's own table, and keyRow is called with
+  // those four literals below, so the index is a key the table holds.
+  const powers = KEY_POWERS[/** @type {keyof typeof KEY_POWERS} */ (kind)];
   return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${yesNo(powers.canDelete)} |`;
 }
 

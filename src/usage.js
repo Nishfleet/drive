@@ -61,7 +61,10 @@ export const USAGE_LABELS = Object.freeze({
 
 // The summary labels the four `drive usage` lines print, in print order. They
 // are checked one by one, so a summary that is missing one is refused with the
-// field named rather than rendered as "undefined".
+// field named rather than rendered as "undefined". The keys are the summary's
+// own label names, so the check below indexes the labels with a key they
+// actually hold rather than with an arbitrary string.
+/** @type {ReadonlyArray<keyof typeof USAGE_LABELS>} */
 const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
 
 /**
