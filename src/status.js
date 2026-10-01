@@ -97,6 +97,11 @@ export const SYNC_ERROR_NOTIFICATION = Object.freeze({
   body: "Open the drive page to see which file and what to do next.",
 });
 
+/**
+ * @param {number|Date|string} value
+ * @param {string} field the field name the error carries
+ * @returns {number} epoch milliseconds
+ */
 function millis(value, field) {
   // A number is already epoch milliseconds (Date.now() is the default for
   // `now`); a string is an ISO timestamp; a Date is its epoch value.
@@ -149,10 +154,15 @@ export function syncStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
     throw new TypeError(`syncStatus needs a device object, got ${String(device)}`);
   }
-  if (device.syncError) {
+  if (typeof device.syncError === "string" && device.syncError !== "") {
     return { state: "error", label: "Sync error", detail: String(device.syncError) };
   }
-  if (Number.isFinite(device.pendingBytes) && device.pendingBytes > 0) {
+  // `typeof … === "number"` rather than Number.isFinite: the field is
+  // `number|null|undefined` and the question is whether a save is waiting, so
+  // a null or absent count is the same answer as a non-finite one, and this
+  // is the check that narrows the field for the comparison below.
+  const pending = device.pendingBytes;
+  if (typeof pending === "number" && Number.isFinite(pending) && pending > 0) {
     return { state: "syncing", label: "Uploading", detail: null };
   }
   if (!device.lastSyncAt) {
@@ -202,7 +212,11 @@ export function uploadProgress(upload) {
     );
   }
   const percent = Math.round((uploadedBytes / totalBytes) * 100);
-  const files = Number.isInteger(upload.files) && upload.files > 0 ? upload.files : null;
+  // `files` is optional on the payload, so it is read into a local: the count
+  // is null unless it is a positive integer, and the label below switches on
+  // that null rather than on a missing field.
+  const count = upload.files;
+  const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   const head =
     files === null
       ? UPLOAD_LABEL.noCount
@@ -237,7 +251,7 @@ const STATUS_HEADERS = Object.freeze({
  * Every caller awaits it, so the swap point has exactly one shape: an account
  * or null, never a promise of one.
  * @param {Request} request
- * @param {{accountForSession: (token: string|null) => Promise<object|null>}} store
+ * @param {{accountForSession: (token: string|null) => Promise<{id: string, name: string, email: string}|null>}} store
  * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
 export async function signedInAccount(request, store) {

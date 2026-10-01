@@ -10,25 +10,32 @@
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
 import { json, errorResponse, readJsonObject } from "./http.js";
-import { authorizePath, publicDevice } from "./keystore.js";
+import { authorizePath } from "./keystore.js";
+
+/** The stand-in store: what src/keystore.js `createMemoryStore` returns and
+ * what D1's adapter will have to match (drive#2). */
+/** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
 
 /**
  * GET /v1/keys — the account's keys, no secret (the store keeps only a hash).
  * @param {Request} request
- * @param {{store: any, account: {id: string, name: string}}} ctx
+ * @param {{store: KeyStore, account: {id: string, name: string}}} ctx
  */
 export function listKeysRoute(request, ctx) {
   if (request.method !== "GET") {
     return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
   }
-  return json({ keys: ctx.store.listKeys(ctx.account).map(publicDevice) });
+  // `listKeys` already returns the public shape (publicDevice, one map in the
+  // store); mapping here too would read `device.id` off a shape that no longer
+  // has it and answer `keyId: undefined` for every key.
+  return json({ keys: ctx.store.listKeys(ctx.account) });
 }
 
 /**
  * POST /v1/keys — mint a key. The secret is in this response and nowhere
  * else: the store keeps a hash, so it cannot be re-read later.
  * @param {Request} request
- * @param {{store: any, account: {id: string, name: string}}} ctx
+ * @param {{store: KeyStore, account: {id: string, name: string}}} ctx
  */
 export async function mintKeyRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -61,7 +68,7 @@ export async function mintKeyRoute(request, ctx) {
  * key is refused by the storage API from the next request on (keystore.js
  * `authenticate`), which is the acceptance bullet.
  * @param {Request} request
- * @param {{store: any, account: {id: string, name: string}, params: Record<string, string>}} ctx
+ * @param {{store: KeyStore, account: {id: string, name: string}, params: Record<string, string>}} ctx
  */
 export function revokeKeyRoute(request, ctx) {
   if (request.method !== "DELETE") {
@@ -106,7 +113,7 @@ export function basicCredentials(request) {
  * key's own folder is 403, never an empty listing that would read like "your
  * folder is empty".
  * @param {Request} request
- * @param {{store: any, url: URL}} ctx
+ * @param {{store: KeyStore, url: URL}} ctx
  */
 export async function storageListRoute(request, ctx) {
   if (request.method !== "GET") {

@@ -7,10 +7,13 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
+    "pretypecheck": "cf workers types",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
+    "pretest": "npm run check",
     "docs:render": "node src/render-docs.js",
     "docs:build": "npm run docs:render && vitepress build docs-site",
-    "test": "npm run typecheck && npm run docs:build && node --test"
+    "test": "npm run docs:build && node --test"
   },
   "engines": {
     "node": ">=24"
@@ -20,6 +23,8 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-ad79608dd",
+    "@types/node": "^24.19.0",
+    "@types/validator": "^13.15.10",
     "cf": "^1.0.0-beta.5",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

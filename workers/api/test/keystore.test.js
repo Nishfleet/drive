@@ -55,6 +55,17 @@ test("the poll is pending until the page approves, then returns a token exactly 
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
 });
 
+test("an approved device code whose account row is gone polls expired, never a token", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "laptop" });
+  store.approveDeviceCode(code.userCode);
+  // The code is approved and names an account that no longer exists — the row
+  // a store restored from a backup would not carry. A token here would name an
+  // account nobody can sign in to, so the poll is an expiry, not an approval.
+  store.accounts.clear();
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
+});
+
 test("a device code expires, and an expired code is never approved", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
