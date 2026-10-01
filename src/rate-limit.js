@@ -75,6 +75,16 @@ function refused(status, message, headers = {}) {
  * @returns {Promise<Response|null>}
  */
 export async function enforceEdgeLimits(limits, log) {
+  if (limits.length === 0) {
+    // A caller that built the list wrong must not get an unguarded endpoint:
+    // the module's whole posture is that a limit that cannot run is a refusal,
+    // not a pass. No production caller passes an empty list.
+    console.error(
+      "rate-limit: no rate limiters were given; refusing rather than serving unguarded",
+      log,
+    );
+    return refused(503, failureMessage("unexpected"));
+  }
   for (const { binding, key, name } of limits) {
     if (!binding) {
       console.error("rate-limit: a rate-limiter binding is not configured", name, log);

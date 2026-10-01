@@ -24,6 +24,7 @@ import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
+import { enforceEdgeLimits } from "../src/rate-limit.js";
 import {
   readSigninRequest,
   SIGNIN_COPY,
@@ -346,6 +347,34 @@ test("the per-IP limit keys on cf-connecting-ip and the global limit on one shar
   assert.equal(response.status, 202);
   assert.deepEqual(ip.calls, [{ key: "203.0.113.7" }]);
   assert.deepEqual(global.calls, [{ key: "global" }]);
+});
+
+test("a request without cf-connecting-ip shares the one unknown bucket, like the waitlist", async () => {
+  // Cloudflare always sets cf-connecting-ip, so a request without one is not
+  // a real client. There is nothing finer to key on, so it lands in one shared
+  // bucket on purpose (src/rate-limit.js clientIpKey); pinned here so a future
+  // edit cannot turn the missing header into an unmetered request.
+  const made = dispatchEnv();
+  const ip = makeRateLimiter();
+  const global = makeRateLimiter();
+  made.env.SIGNIN_RATE_LIMITER = ip;
+  made.env.SIGNIN_GLOBAL_RATE_LIMITER = global;
+  const response = await worker.fetch(
+    post({ step: "start", method: "email", email: "a@b.co" }),
+    made.env,
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(ip.calls, [{ key: "unknown" }]);
+  assert.deepEqual(global.calls, [{ key: "global" }]);
+});
+
+test("an empty limit list fails closed, never an unguarded endpoint", async () => {
+  // A caller that builds the list wrong must not silently drop every guard.
+  // No production caller passes an empty list; the guard is the same
+  // fail-closed posture the module takes for a missing binding.
+  const response = await enforceEdgeLimits([], "test");
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
 });
 
 test("a request that did not come from the site is refused before it spends any quota", async () => {
