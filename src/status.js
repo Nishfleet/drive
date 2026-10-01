@@ -10,6 +10,7 @@
 // at the bottom serves the page's poll and uses only the standard Response,
 // which node --test provides.
 import { failureMessage } from "./messages.js";
+import { readSessionCookie } from "./accounts.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
 // setup": `drive init` signs you in, mounts the drive and connects every agent
@@ -236,28 +237,37 @@ const STATUS_HEADERS = Object.freeze({
 
 /**
  * The signed-in account a request carries, or null when the request is signed
- * out. The session that would prove the account — the cookie the
- * device-approval screen mints and the store that validates it — is build step
- * 4 (#5), and with neither built no request can be signed in, so this is null
- * for every caller. It is the one swap point: the endpoint's account gate below
- * does not change when the sign-in flow lands, and a request that cannot prove
- * an account never reads one's device data (issue #45, north star: Safe).
+ * out (build step 9, drive#10). The session is a cookie the sign-in screen
+ * mints and the account store validates: `POST /api/signin` proves an address
+ * with a one-time code and hands back a session token, and every account route
+ * is scoped to the account that token names.
  *
- * The parameter is read (not just accepted) so the swap point has exactly one
- * shape to fill in when #5 lands: resolving the account from the request and
- * returning null when it names none.
+ * A cookie the browser chose is not a session: the token is looked up by its
+ * SHA-256 digest in the store that minted it, so a made-up value, a forgotten
+ * one and an expired one all answer null, and a request that cannot prove an
+ * account never reads one's files (issue #45, north star: Safe).
+ *
+ * It is async because validating a token is a digest, and a digest is async.
+ * Every caller awaits it, so the swap point has exactly one shape: an account
+ * or null, never a promise of one.
  * @param {Request} request
- * @returns {{id: string, name: string}|null}
+ * @param {{accountForSession: (token: string|null) => Promise<{id: string, name: string, email: string}|null>}} store
+ * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
-export function signedInAccount(request) {
-  if (request.headers.get("cookie") === null) {
+export async function signedInAccount(request, store) {
+  const token = readSessionCookie(request);
+  if (token === null) {
     // No session presented: signed out, which is the honest answer.
     return null;
   }
-  // A cookie is presented but nothing built can validate it against an
-  // account, so it proves nothing and stays signed out rather than trusting
-  // a value the browser chose.
-  return null;
+  if (!store) {
+    // A cookie is presented but no store is bound to validate it, so it proves
+    // nothing and stays signed out rather than trusting a value the browser
+    // chose. This is the same closed door the sign-in route takes, and it is
+    // what a deployment with no accounts store answers.
+    return null;
+  }
+  return store.accountForSession(token);
 }
 
 /**
@@ -285,7 +295,6 @@ export function unauthorizedResponse() {
  * signed in, so a signed-in account gets `waiting` with an empty device list —
  * the same shape the real store returns for a signed-in account with no
  * devices yet.
- *
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401

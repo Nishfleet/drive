@@ -689,7 +689,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <CommonPrefixes><Prefix>u/acct-a/Photos/</Prefix></CommonPrefixes>
-  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size>
+  <Contents><Key>u/acct-a/holiday.jpg</Key><Size>2400</Size><ETag>66dbbbc6491a376540bacd33bdf2cc0f</ETag>
   <LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>
 </ListBucketResult>`;
   const fetchImpl = async (url, init) => {
@@ -715,6 +715,9 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
       kind: "image",
       size: 2400,
       modified: Date.parse("2026-09-30T11:00:00.000Z"),
+      // S3's own ETag, unquoted: the content fingerprint a branch snapshot
+      // compares against (build step 7).
+      etag: "66dbbbc6491a376540bacd33bdf2cc0f",
     },
   ]);
   assert.match(urls[0].url, /prefix=u%2Facct-a%2F&/);
@@ -723,6 +726,63 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   assert.match(urls[1].url, /\/drive\/u\/acct-a\/note.txt$/);
   await b.read("/holiday.jpg");
   assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
+});
+
+test("the S3 stand-in follows the continuation token, so a folder is never truncated at 1,000", async () => {
+  // S3 caps one ListObjectsV2 answer at 1,000 keys. A store that reads only
+  // the first page silently truncates a big folder: the stand-in proof on a
+  // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
+  // storage here answers two pages, so the test fails on a store that stops at
+  // the first one.
+  const { createS3Store, nextContinuationToken } = await import("../src/files.js");
+  const page = (names, next) => {
+    const contents = names
+      .map(
+        (name) =>
+          `<Contents><Key>u/acct-a/${name}</Key><Size>10</Size>` +
+          `<LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>`,
+      )
+      .join("");
+    return (
+      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>` +
+      contents +
+      (next ? `<NextContinuationToken>${next}</NextContinuationToken>` : "") +
+      `</ListBucketResult>`
+    );
+  };
+  const first = Array.from({ length: 1_000 }, (_, i) => `file-${i}.txt`);
+  const second = Array.from({ length: 37 }, (_, i) => `later-${i}.txt`);
+  const seen = [];
+  let calls = 0;
+  const fetchImpl = async (url) => {
+    seen.push(url);
+    calls++;
+    if (calls === 1) return new Response(page(first, "token-1"), { status: 200 });
+    return new Response(page(second, null), { status: 200 });
+  };
+  const store = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+  const rows = await scopeStore(store, { id: "acct-a" }).list("/");
+  assert.equal(rows.length, 1_037, `both pages are read, got ${rows.length}`);
+  assert.equal(rows.at(-1).name, "later-36.txt");
+  assert.equal(calls, 2, "the second page is asked for with the token");
+  assert.match(seen[1], /continuation-token=token-1/);
+
+  // A server that repeats a token is a broken listing, not a short one: it is
+  // named instead of spun on.
+  const looping = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(page(first, "same-token"), { status: 200 }),
+  });
+  await assert.rejects(
+    () => scopeStore(looping, { id: "acct-a" }).list("/"),
+    /repeated continuation-token/,
+  );
+
+  // An empty token element ends the listing, it does not ask for "".
+  assert.equal(nextContinuationToken("<ListBucketResult></ListBucketResult>"), null);
+  assert.equal(nextContinuationToken("<NextContinuationToken>t</NextContinuationToken>"), "t");
+  assert.throws(() => nextContinuationToken(null), TypeError);
 });
 
 // ---------------------------------------------------------------- the Worker
@@ -873,4 +933,28 @@ test("the first-run page links to the Files page, so the page has a caller", () 
 
 test("the Files page is not indexed: it is one person's drive", () => {
   assert.match(page, /<meta name="robots" content="noindex">/);
+});
+
+test("the S3 stand-in copies server-side with CopyObject, so no bytes pass through the Worker", async () => {
+  // `drive branch` calls FileStore.copy (build step 7): on the real store that
+  // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
+  // The header form is the one proven against `rclone serve s3` on 2026-10-01.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ method: (init && init.method) || "GET", url, headers: (init && init.headers) || {} });
+    return new Response("<CopyObjectResult></CopyObjectResult>", { status: 200 });
+  };
+  const store = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await store.copy("/Photos/a b.txt", "/.branches/work/a b.txt");
+
+  assert.equal(calls.length, 1, "a copy is one call");
+  const call = calls[0];
+  assert.equal(call.method, "PUT");
+  assert.equal(call.headers["x-amz-copy-source"], "/drive/u/acct-a/Photos/a%20b.txt");
+  assert.equal(call.url, "http://127.0.0.1:9000/drive/u/acct-a/.branches/work/a%20b.txt");
+  assert.equal(call.headers["content-type"], undefined, "a server-side copy sends no body");
 });

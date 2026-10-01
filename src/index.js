@@ -5,10 +5,15 @@ import {
   createMemoryStore,
   createS3Store,
   handleFilesRequest,
+  scopeStore,
 } from "./files.js";
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { handleSendEmailRequest, sendEmail } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
+import { createAccountStore } from "./accounts.js";
+import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, indexAccounts, withIndex } from "./search.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -57,6 +62,81 @@ function storeFor(env) {
   return filesStore;
 }
 
+// The account store for sign-in: one place to plug the api Worker's D1 in
+// (#2), so the sign-in route never reads a binding of its own and a test can
+// hand the handler a fake. One store per Worker isolate, holding the accounts,
+// their one-time codes and their sessions (src/accounts.js). The real D1
+// store is #2; swapping it is one factory with the same three methods.
+/** @type {ReturnType<typeof createAccountStore>|undefined} */
+let accountsStore;
+/**
+ * The two settings this module reads that are not bindings in
+ * cloudflare.config.ts, so they are not on the generated `Env`: `ACCOUNTS_STORE`
+ * is the store a test injects to drive the real dispatch, and `MAIL_FROM` is the
+ * deployment's sending address (a secret, so it never appears in the config).
+ * Widened here as the optional pair they are — the same move `devStorage` makes
+ * for the two dev-only S3 vars.
+ * @param {Env} env
+ * @returns {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}}
+ */
+function accountEnv(env) {
+  return /** @type {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}} */ (env);
+}
+
+/**
+ * @param {Env} env
+ * @returns {ReturnType<typeof createAccountStore>}
+ */
+function accountsStoreFor(env) {
+  const settings = accountEnv(env);
+  // A store passed on the env wins, and that is how a test drives the real
+  // dispatch (test/account-gate.test.mjs builds a store with a mailer that
+  // captures the code, so it can read what left by email). A deployment never
+  // sets it,
+  // so the one-isolate cache below is what production uses.
+  if (settings.ACCOUNTS_STORE) {
+    return settings.ACCOUNTS_STORE;
+  }
+  if (!accountsStore) {
+    accountsStore = createAccountStore({
+      // The code leaves by email through the same provider every drive email
+      // uses (src/email-send.js). With no EMAIL binding the store is built
+      // without a mailer, and a start that cannot be mailed is reported as
+      // failed rather than as a code sent — the route reads the store's answer
+      // either way, so nothing here decides what a person is told.
+      sendCode: settings.EMAIL
+        ? async ({ to, code }) => {
+            await sendEmail(settings.EMAIL, {
+              to,
+              kind: "signin-code",
+              from: settings.MAIL_FROM ?? "",
+              rendered: signinCodeEmail(code),
+            });
+          }
+        : undefined,
+    });
+  }
+  return accountsStore;
+}
+
+// The one email the sign-in code arrives in. It is rendered here rather than in
+// src/emails.js because it carries a secret and that module's templates are the
+// five the spec names for customers (welcome, cap, read-only, payment, receipt)
+// — a secret is not one of them, and a template table that also held codes
+// would be a place to leak one from.
+/**
+ * @param {string} code
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+function signinCodeEmail(code) {
+  return {
+    subject: `Your drive sign-in code: ${code}`,
+    text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
+    html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
+    saved: null,
+  };
+}
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
@@ -91,7 +171,25 @@ export default {
       url.pathname === STATUS_ENDPOINT ||
       url.pathname === `${STATUS_ENDPOINT}/`
     ) {
-      return handleFirstRunStatusRequest(request, signedInAccount(request));
+      return handleFirstRunStatusRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+    }
+    // Search reads only the D1 file index (issue #18), behind the same account
+    // gate every drive read that names files goes through (`signedInAccount`,
+    // issues #45 and #73): an anonymous caller gets 401 and no names, and a
+    // signed-in one reads only their own rows. The write half of the same
+    // module keeps the index current by wrapping the store, so an upload, a
+    // delete or a restore is in the index before the next search, and the
+    // search itself never lists the bucket. The rebuild is not a web route:
+    // it runs from the scheduled handler below.
+    if (
+      url.pathname === SEARCH_ENDPOINT ||
+      url.pathname === `${SEARCH_ENDPOINT}/`
+    ) {
+      return handleSearchRequest(
+        request,
+        env.WAITLIST_DB,
+        await signedInAccount(request, accountsStoreFor(env)),
+      );
     }
     // The files handler is behind the same account gate as the page's poll
     // (issue #73): it answers 401 with no data for a request that cannot prove
@@ -104,9 +202,31 @@ export default {
       // The gate is asked before the store is built. A request that cannot
       // prove an account is answered by the handler's own 401 with no store
       // in the call at all, so a misconfigured deployment fails for its own
-      // signed-in callers and tells a stranger nothing about itself.
-      const account = signedInAccount(request);
-      return handleFilesRequest(request, account ? storeFor(env) : null, account);
+      // signed-in callers and tells a stranger nothing about itself. The
+      // index wrapper sits outside the scope the handler applies, so it sees
+      // the account's own storage keys and writes only that account's rows.
+      const account = await signedInAccount(request, accountsStoreFor(env));
+      return handleFilesRequest(
+        request,
+        account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account,
+      );
+    }
+    // Branches (build step 7, drive#8): the folder copy, the diff, approve and
+    // discard. The same account gate as every other route that names files,
+    // and the store is handed in unscoped (the handler scopes it) and without
+    // withIndex, so a branch's own copies never land in the search index.
+    if (
+      url.pathname === BRANCHES_ENDPOINT ||
+      url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)
+    ) {
+      const account = await signedInAccount(request, accountsStoreFor(env));
+      return handleBranchesRequest(
+        request,
+        env.WAITLIST_DB,
+        account ? storeFor(env) : null,
+        account,
+      );
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
@@ -116,7 +236,15 @@ export default {
       url.pathname === USAGE_ENDPOINT ||
       url.pathname === `${USAGE_ENDPOINT}/`
     ) {
-      return handleUsageRequest(request, signedInAccount(request));
+      return handleUsageRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+    }
+    // The sign-in screen's start and finish (build step 9, issue #10). The
+    // account store (src/accounts.js) records the one-time code against the
+    // address and, on the finish step, mints the session cookie every account
+    // route above is gated on. It is registered here, ahead of the asset
+    // fallthrough, because /api/signin must reach the Worker.
+    if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
+      return handleSigninRequest(request, accountsStoreFor(env));
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
@@ -133,5 +261,32 @@ export default {
       return handleHealthRequest(request, env);
     }
     return env.ASSETS.fetch(request);
+  },
+
+  // The nightly reconciler (build-spec.md piece 6, drive issue #18):
+  // `reconcileIndex` walks one account's store once and rebuilds its rows, so
+  // an event the write path missed is corrected within a day. The schedule is
+  // the only way a rebuild starts: it is invoked by the platform and cannot be
+  // started by a browser request, which a route on /api/search/index would
+  // have allowed (issue #18 safety review). The accounts to walk are the ones
+  // the index already holds rows for — a scheduled run has no request and so
+  // no signed-in account, and this repo has no accounts table until the device
+  // sign-in store lands (#5), so the index's own rows are the only honest list:
+  // an account the drive has never served has nothing to rebuild, and no
+  // invented identity is indexed. Each account's rows are rebuilt from its own
+  // prefix (scopeStore), the same scoping a request path gets.
+  async scheduled(event, env, context, store = storeFor(env)) {
+    context.waitUntil(
+      (async () => {
+        if (!env.WAITLIST_DB) {
+          throw new Error("the nightly reindex needs the file index database");
+        }
+        for (const account of await indexAccounts(env.WAITLIST_DB)) {
+          await reconcileIndex(env.WAITLIST_DB, scopeStore(store, account), account);
+        }
+      })().catch((error) => {
+        throw new Error(`the nightly reindex failed: ${error.message}`);
+      }),
+    );
   },
 };

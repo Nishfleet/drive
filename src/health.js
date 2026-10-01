@@ -9,11 +9,17 @@
 // What "what it depends on" means here, and why the list is not the whole env:
 //
 //   - Every D1 database the Worker binds, found by reading the bindings on
-//     `env` rather than from a hand-kept list, so a database added to
-//     cloudflare.config.ts is checked the day it is added. The trivial read is
-//     the one statement D1 answers whatever the schema is, so a database
+//     `env` and asking which kind of binding each one is, so a database added
+//     to cloudflare.config.ts is checked the day it is added. The trivial read
+//     is the one statement D1 answers whatever the schema is, so a database
 //     whose migrations are ahead of the Worker (still healthy) passes and an
 //     unreachable one fails. The waitlist is the site's only store today.
+//     Asking which kind it is, rather than looking for one method, is what
+//     makes that discovery safe (drive#144): every binding that is not a
+//     database is a Fetcher, and a Fetcher answers a function to every
+//     property name, so looking only for `prepare` collected the asset binding
+//     as a database and every poll answered 503 {"failing":"ASSETS"} with a
+//     DataCloneError in the log.
 //
 //   - The bindings named in REQUIRED_BINDINGS below, which discovery cannot
 //     do: a binding the deploy lost is not on `env` at all, and a check that
@@ -135,12 +141,48 @@ class HealthCheckTimeout extends Error {
 }
 
 /**
+ * Whether a binding is a D1 database, which is a question about the kind of
+ * binding and not about one method. drive#144: the live /api/health answered
+ * 503 {"failing":"ASSETS"} on every poll, and the D1 read in checkD1 was the
+ * code that threw `DataCloneError: AbortSignal serialization is not enabled`.
+ *
+ * The cause was that predicate asking only "is `prepare` a function". Every
+ * binding that is not a database is a Fetcher (the static-assets binding, the
+ * email binding, every service binding), and a Fetcher is an RPC stub: it
+ * answers a function to every property name, `prepare` included, and to names
+ * that do not exist at all. So ASSETS matched, was collected as a database,
+ * and the check ran a D1 statement against the asset binding, which the
+ * runtime refuses to carry across the stub.
+ *
+ * What separates the two is documented rather than guessed. A database is
+ * `env.MY_DB.prepare(...)` with `batch`, `exec` and `withSession` beside it
+ * and no `fetch` (https://developers.cloudflare.com/d1/worker-api/); a Fetcher
+ * is `env.ASSETS.fetch(request)`
+ * (https://developers.cloudflare.com/workers/static-assets/). A database
+ * answers `undefined` to a name it does not have and a Fetcher answers a
+ * function, so `prepare` here is "a database" and no `fetch` is "not a
+ * Fetcher". Both halves are load-bearing: `prepare` alone matches a Fetcher,
+ * and some other method would miss a database whose runtime moved that one.
+ * @param {unknown} binding one value off `env`
+ * @returns {binding is {prepare: (sql: string) => unknown}}
+ */
+function isDatabaseBinding(binding) {
+  if (typeof binding !== "object" || binding === null) {
+    return false;
+  }
+  const candidate = /** @type {{prepare?: unknown, fetch?: unknown}} */ (binding);
+  return typeof candidate.prepare === "function" && typeof candidate.fetch !== "function";
+}
+
+/**
  * Every D1 database on this Worker, paired with the binding name that reached
- * it. Read from `env` by shape (a `prepare` function) rather than from a
+ * it. Read from `env` by binding kind (isDatabaseBinding above) rather than from a
  * hand-kept list, so a binding added to cloudflare.config.ts is checked the
- * day it is added and cannot be forgotten here. The waitlist's rate limiter,
- * the asset binding and the secret values do not match this shape, so they
- * are named in REQUIRED_BINDINGS instead.
+ * day it is added and cannot be forgotten here. A Fetcher is not a database
+ * however it is spelled — the static-assets binding and the email binding
+ * both answer `prepare` — so those are not discovered here, and the asset
+ * layer is checked on its own terms instead (checkHealth fetches it; the email
+ * binding deliberately is not, for the reason in this module's header).
  * @param {Record<string, unknown>} env
  * @returns {{name: string, db: {prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}}[]}
  */
@@ -149,21 +191,11 @@ export function d1Bindings(env) {
     return [];
   }
   return Object.entries(env)
-    .filter(
-      /** @param {[string, unknown]} pair */
-      ([, binding]) =>
-        typeof binding === "object" &&
-        binding !== null &&
-        "prepare" in binding &&
-        typeof binding.prepare === "function",
-    )
-    .map(
-      /** @param {[string, unknown]} pair */
-      ([name, db]) => ({
-        name,
-        db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (db),
-      }),
-    );
+    .filter(([, binding]) => isDatabaseBinding(binding))
+    .map(([name, db]) => ({
+      name,
+      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (db),
+    }));
 }
 
 /**
