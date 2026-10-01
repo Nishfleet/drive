@@ -165,7 +165,10 @@ export default {
     // over D1, #181). The start step mails a single-use link; the sign-out
     // step revokes the session. The link itself is the next branch below.
     // Registered here, ahead of the asset fallthrough, because /api/signin
-    // must reach the Worker.
+    // must reach the Worker. The handler enforces the two edge limits (issue
+    // #147, env.SIGNIN_RATE_LIMITER / env.SIGNIN_GLOBAL_RATE_LIMITER) before
+    // it reads the body, so a start that mails a real email is bounded at the
+    // edge and a refused request costs no parse and no send.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
       return handleSigninRequest(request, env);
     }
