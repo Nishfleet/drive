@@ -142,7 +142,7 @@ class HealthCheckTimeout extends Error {
  * the asset binding and the secret values do not match this shape, so they
  * are named in REQUIRED_BINDINGS instead.
  * @param {Record<string, unknown>} env
- * @returns {{name: string, db: {prepare: (sql: string) => D1PreparedStatement}}[]}
+ * @returns {{name: string, db: {prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}}[]}
  */
 export function d1Bindings(env) {
   if (typeof env !== "object" || env === null) {
@@ -161,7 +161,7 @@ export function d1Bindings(env) {
       /** @param {[string, unknown]} pair */
       ([name, db]) => ({
         name,
-        db: /** @type {{prepare: (sql: string) => D1PreparedStatement}} */ (db),
+        db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (db),
       }),
     );
 }
@@ -171,7 +171,13 @@ export function d1Bindings(env) {
  * share. A rejected read is not swallowed: it becomes the failure this check
  * reports, with the binding's name and nothing else.
  * @param {string} name the binding name, safe to show an operator
- * @param {{prepare: (sql: string) => D1PreparedStatement}} db
+ * @param {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} db
+ *   the binding, once its `prepare` shape was checked. The `all` signature is
+ *   spelled out rather than using the runtime's own `D1PreparedStatement`
+ *   because that type's `all()` takes no options, while the platform and the
+ *   test's fake both read the cancellation signal off this call: the type is
+ *   narrower than the API, and saying what this call actually passes is
+ *   truer than a cast around it.
  * @param {number} timeoutMs
  * @returns {Promise<void>}
  */
