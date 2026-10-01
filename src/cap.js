@@ -73,7 +73,7 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
  * A key row as the cap reads it, after checkedKey() has validated its shape.
  * The same row arrives from D1 and from the tests' fakes, so the fields the
  * arithmetic reads are all named here rather than being `object`.
- * @typedef {{keyId: string, kind: string, prefix: string, capabilities: string[], cappedFrom?: string[]|null}} CapKey
+ * @typedef {{keyId: string, kind: string, prefix: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
  */
 
 /**
