@@ -1,38 +1,88 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
+import { createMemoryStore, DEVICE_CODE_TTL_SECONDS } from "../src/keystore.js";
+import { SESSION_COOKIE } from "../../../src/accounts.js";
 
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,
 // mints one key per agent tool, and the storage API answers per key.
 //
-//   - a revoked agent key is refused by the storage API (the #5 bullet), and
+//   - a revoked agent key is refused by the storage API (the #5 bullet),
 //   - each connected tool has its own key, and reading another user's prefix
-//     fails.
+//     fails, and
+//   - the device sign-in safety bullets (drive#136): an anonymous approve is
+//     401 and changes nothing, a past-the-limit approve is 429, and an expired
+//     code is never approved.
 
-function baseCtx(store, account) {
-  return { env: {}, db: null, store, account, now: () => 0 };
+// The account store the sign-in flow (drive#130) provides: a session token
+// resolves to its account. The same interface src/status.js `signedInAccount`
+// reads, so the dispatcher resolves the cookie exactly as the site does.
+function makeAccounts() {
+  const byToken = new Map();
+  let next = 0;
+  return {
+    byToken,
+    add(account) {
+      const token = `sess_${++next}`;
+      byToken.set(token, account);
+      return token;
+    },
+    async accountForSession(token) {
+      return byToken.get(token) ?? null;
+    },
+  };
 }
 
-/** Walk the device flow and return the signed-in account and its token. */
+// The rate limit binding's whole contract is limit({ key }) -> { success }.
+function limiter(success = true) {
+  return { limit: async () => ({ success }) };
+}
+
+function baseCtx(store, account, overrides = {}) {
+  return {
+    env: {
+      DEVICE_RATE_LIMITER: limiter(),
+      DEVICE_GLOBAL_RATE_LIMITER: limiter(),
+      ...(overrides.env ?? {}),
+    },
+    db: null,
+    store,
+    accounts: overrides.accounts ?? makeAccounts(),
+    account,
+    now: () => 0,
+  };
+}
+
+/** Walk the device flow as a signed-in person and return the account and token. */
 async function signIn(store, name) {
+  const accounts = makeAccounts();
+  const account = {
+    id: `acct_${name.replace(/\W+/g, "_")}`,
+    name,
+    email: `${name.replace(/\W+/g, "_")}@example.com`,
+  };
+  const sessionToken = accounts.add(account);
+  const ctx = () => baseCtx(store, null, { accounts });
+
   const codeRes = await dispatch(
     new Request("https://api.test/v1/device/code", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
     }),
-    baseCtx(store, null),
+    ctx(),
   );
   assert.equal(codeRes.status, 200);
   const code = await codeRes.json();
   assert.match(code.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
 
-  // The person opens the page, then approves.
+  // The person opens the page, then approves while signed in.
   const page = await dispatch(
-    new Request(`${code.verificationUriComplete}`),
-    baseCtx(store, null),
+    new Request(`${code.verificationUriComplete}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` },
+    }),
+    ctx(),
   );
   assert.equal(page.status, 200);
   assert.match(await page.text(), new RegExp(code.userCode));
@@ -40,10 +90,13 @@ async function signIn(store, name) {
   const approved = await dispatch(
     new Request("https://api.test/v1/device/approve", {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
       body: `user_code=${encodeURIComponent(code.userCode)}`,
     }),
-    baseCtx(store, null),
+    ctx(),
   );
   assert.equal(approved.status, 200);
 
@@ -53,12 +106,13 @@ async function signIn(store, name) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_code: code.deviceCode }),
     }),
-    baseCtx(store, null),
+    ctx(),
   );
   assert.equal(tokenRes.status, 200);
   const token = await tokenRes.json();
   assert.equal(token.status, "approved");
-  assert.equal(token.account.name, name);
+  assert.equal(token.account.id, account.id);
+  assert.equal(token.account.name, account.name);
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
@@ -84,7 +138,8 @@ test("the poll is pending before approval, and the token works after it", async 
   );
   assert.deepEqual(await pending.json(), { status: "pending" });
 
-  store.approveDeviceCode(code.userCode);
+  const account = { id: "acct_test", name: "Nish's MacBook", email: "n@example.com" };
+  store.approveDeviceCode(code.userCode, account);
   const resolved = await dispatch(
     new Request("https://api.test/v1/device/token", {
       method: "POST",
@@ -290,4 +345,90 @@ test("a storage request with no or bad Basic auth is a 401 with a challenge", as
     baseCtx(store, null),
   );
   assert.equal(notBasic.status, 401);
+});
+
+// ---- drive#136: only a signed-in person can approve, and only within limits --
+
+test("an anonymous approve is 401 and changes nothing (drive#136 b)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "laptop" });
+
+  const anonymous = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(anonymous.status, 401);
+  assert.equal(anonymous.headers.get("www-authenticate"), 'Bearer realm="drive"');
+  const body = await anonymous.json();
+  assert.equal(typeof body.error, "string");
+  assert.equal(body.account, undefined);
+
+  // The code is still pending: the refused approval wrote nothing.
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+});
+
+test("the approve route answers 429 past its limit, and fails closed with none (drive#136 c)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_lim", name: "Lim", email: "lim@example.com" });
+  const code = store.requestDeviceCode({ name: "laptop" });
+  const request = () =>
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    });
+
+  const denied = await dispatch(
+    request(),
+    baseCtx(store, null, { accounts, env: { DEVICE_RATE_LIMITER: limiter(false) } }),
+  );
+  assert.equal(denied.status, 429);
+  assert.equal(denied.headers.get("retry-after"), "60");
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
+
+  // With the binding missing the route is closed, not open: an unrate-limited
+  // approve is the case the binding exists to prevent.
+  const missing = await dispatch(
+    request(),
+    baseCtx(store, null, { accounts, env: { DEVICE_RATE_LIMITER: undefined } }),
+  );
+  assert.equal(missing.status, 503);
+
+  // A request with the limiters present is approved.
+  const allowed = await dispatch(request(), baseCtx(store, null, { accounts }));
+  assert.equal(allowed.status, 200);
+});
+
+test("an expired code cannot be approved (drive#136 d)", async () => {
+  let nowMs = Date.parse("2026-09-30T12:00:00Z");
+  const store = createMemoryStore({ now: () => nowMs });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_exp", name: "Exp", email: "exp@example.com" });
+  const code = store.requestDeviceCode({ name: "laptop" });
+  nowMs += (DEVICE_CODE_TTL_SECONDS + 1) * 1000;
+
+  const expired = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(expired.status, 200);
+  assert.match(await expired.text(), /expired/);
+
+  // Still not approved, and the poll cannot mint a token from it.
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
 });

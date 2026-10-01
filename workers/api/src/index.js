@@ -1,6 +1,8 @@
 import { routes } from "./routes.js";
 import { errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
+import { createD1DeviceSigninStore } from "./device-signin.js";
+import { signedInAccount } from "../../../src/status.js";
 import { failureMessage } from "../../../src/messages.js";
 // Finding 1 replaced the hand-rolled path matcher with the platform's own
 // URLPattern: matching a path, capturing :params and deciding that `/a/b/c`
@@ -103,13 +105,18 @@ export async function dispatch(request, ctx, table = routes) {
   const url = new URL(request.url);
   const pathname =
     url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") || "/" : url.pathname;
-  // The account is read from the request's own bearer token (drive#55) rather
-  // than trusted from the context, so a handler cannot be handed an account
-  // the caller never proved. `ctx.account` is honoured only where there is no
+  // The account is read from the request's own credentials (drive#55),
+  // rather than trusted from the context, so a handler cannot be handed an
+  // account the caller never proved. A CLI request proves one with an
+  // `Authorization: Bearer <device token>` header; a browser approving a
+  // device proves one with the sign-in session cookie, resolved through the
+  // same `signedInAccount` gate every site account route uses (drive#109),
+  // against `ctx.accounts`. `ctx.account` is honoured only where there is no
   // store to resolve one with, which is the tests' own store-less context; the
   // Worker export always passes a store, so nothing reaches a route that way.
   const bearer = await accountForRequest(request, ctx.store);
-  const account = bearer ?? (ctx.store === undefined ? ctx.account ?? null : null);
+  const session = ctx.accounts ? await signedInAccount(request, ctx.accounts) : null;
+  const account = bearer ?? session ?? (ctx.store === undefined ? ctx.account ?? null : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];
@@ -184,7 +191,13 @@ let keyStore;
  */
 function storeFor(env) {
   if (keyStore === undefined) {
-    keyStore = createMemoryStore();
+    // The device sign-in half is D1-backed whenever the deployment binds a
+    // database, so a code started on one instance is visible on the next and
+    // survives a restart (drive#136 finding 1); without one it stays the
+    // in-memory stand-in. The key half is still the stand-in until drive#2.
+    keyStore = createMemoryStore({
+      signin: env.DB ? createD1DeviceSigninStore(env.DB) : undefined,
+    });
   }
   return keyStore;
 }
@@ -194,6 +207,12 @@ export default {
    * @param {{DB?: any, [key: string]: any}} env
    */
   async fetch(request, env) {
-    return dispatch(request, { env, db: env.DB, store: storeFor(env), now: Date.now });
+    return dispatch(request, {
+      env,
+      db: env.DB,
+      store: storeFor(env),
+      accounts: env.ACCOUNTS_STORE ?? null,
+      now: Date.now,
+    });
   },
 };

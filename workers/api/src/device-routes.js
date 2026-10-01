@@ -8,18 +8,21 @@
 // opens the verification page, and polls until approved. Nothing here invents
 // a second sign-in protocol.
 //
-// The approval page stands in for the account sign-in flow the spec's "Sign
-// in" screen describes (email one-time code, Google or GitHub): until that
-// lands, approving a code makes the account, and the page says so in plain
-// words rather than implying an identity check that did not happen. No email
-// is collected here — that is the sign-in flow's job, not the device flow's.
+// Approving requires a signed-in account (drive#136 finding 2): the approve
+// POST is an account route (routes.js), so the dispatcher resolves the
+// sign-in session cookie through the same gate every site account route uses
+// (src/status.js `signedInAccount`, drive#109) and answers 401 to an anonymous
+// request before this handler runs. The account is the sign-in flow's
+// (drive#130), copied onto the code row by the store; approving no longer
+// makes an account, it attaches the person who already signed in.
 import { json, errorResponse } from "./http.js";
+import { failureMessage } from "../../../src/messages.js";
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
 const APPROVE_INTRO =
-  "Type the code shown in the drive terminal, then approve. Approving signs " +
-  "this device in to a new drive; there is no password to enter yet.";
+  "Type the code shown in the drive terminal, then approve. You are signed in, " +
+  "so approving signs this device in to your drive.";
 
 // The characters an HTML text or attribute value must not contain, and what
 // they become. One pass over the string, so nothing is escaped twice and no
@@ -209,13 +212,58 @@ export function approvePageRoute(_request, ctx) {
 }
 
 /**
- * POST /v1/device/approve — the person approved the code. Public for the same
- * reason as the page: the person is doing the signing in. Until the account
- * sign-in flow lands, approving is what makes the account.
+ * The edge rate limit on the approve POST (drive#136 finding 2): a per-IP
+ * bucket and a service-wide one, the same two bindings the waitlist and the
+ * sign-in route use. It runs before the body is read, so a denied request
+ * costs no parse. It fails closed when a binding is missing — an
+ * unrate-limited approve is the case these bindings exist to prevent — and
+ * answers 429 past either limit.
  * @param {Request} request
- * @param {{store: any}} ctx
+ * @param {{env?: Record<string, any>}} ctx
+ * @returns {Promise<Response|null>} the refusal, or null when the call may run
+ */
+async function enforceApproveLimit(request, ctx) {
+  const perIp = ctx.env?.DEVICE_RATE_LIMITER;
+  const globalLimit = ctx.env?.DEVICE_GLOBAL_RATE_LIMITER;
+  if (!perIp || !globalLimit) {
+    console.error(
+      "device approve: DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured",
+    );
+    return errorResponse(503, failureMessage("unexpected"));
+  }
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp === null) {
+    console.warn(
+      "device approve: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
+    );
+  }
+  let perIpOk;
+  let globalOk;
+  try {
+    ({ success: perIpOk } = await perIp.limit({ key: clientIp ?? "unknown" }));
+    ({ success: globalOk } = await globalLimit.limit({ key: "device-approve" }));
+  } catch (error) {
+    console.error("device approve: the rate limiter call failed", error);
+    return errorResponse(503, failureMessage("unexpected"));
+  }
+  if (!perIpOk || !globalOk) {
+    return errorResponse(429, failureMessage("rate-limited"), { "retry-after": "60" });
+  }
+  return null;
+}
+
+/**
+ * POST /v1/device/approve — the signed-in person approved the code. An account
+ * route (routes.js), so the dispatcher has already answered 401 to an
+ * anonymous request and `ctx.account` is the signed-in account.
+ * @param {Request} request
+ * @param {{store: any, account: {id: string, name?: string, email?: string}, env?: Record<string, any>}} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
+  const limited = await enforceApproveLimit(request, ctx);
+  if (limited) {
+    return limited;
+  }
   const read = await readUserCode(request);
   if ("error" in read) {
     return errorResponse(400, read.error);
@@ -224,7 +272,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if (userCode === "") {
     return approvePageError("", "Type the code from the terminal.");
   }
-  const result = ctx.store.approveDeviceCode(userCode);
+  const result = ctx.store.approveDeviceCode(userCode, ctx.account);
   if ("error" in result) {
     const notice =
       result.error === "expired-code"

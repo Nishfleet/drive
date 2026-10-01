@@ -20,12 +20,19 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   };
 }
 
-async function signedInAccount(store, clock) {
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
-  store.approveDeviceCode(code.userCode);
+async function signedInAccount(store, name = "laptop") {
+  const account = testAccount(name);
+  const code = store.requestDeviceCode({ name });
+  store.approveDeviceCode(code.userCode, account);
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
-  return { account: poll.account, deviceToken: poll.deviceToken, code };
+  return { account, deviceToken: poll.deviceToken, code };
+}
+
+// The signed-in account the approval page passes in (drive#136): approving
+// attaches an existing account rather than making one.
+function testAccount(name = "laptop") {
+  return { id: `acct_${name.replace(/\W+/g, "_")}`, name, email: `${name}@example.com` };
 }
 
 test("a device code starts pending and reports its expiry and poll interval", () => {
@@ -44,9 +51,10 @@ test("the poll is pending until the page approves, then returns a token exactly 
   const code = store.requestDeviceCode({ name: "laptop" });
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 
-  assert.deepEqual(store.approveDeviceCode(code.userCode), {
-    accountId: store.accounts.keys().next().value,
-    name: "laptop",
+  const account = testAccount("laptop");
+  assert.deepEqual(store.approveDeviceCode(code.userCode, account), {
+    accountId: account.id,
+    name: account.name,
   });
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
@@ -61,7 +69,7 @@ test("a device code expires, and an expired code is never approved", async () =>
   const code = store.requestDeviceCode({});
   clock.advance(DEVICE_CODE_TTL_SECONDS + 1);
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
-  assert.deepEqual(store.approveDeviceCode(code.userCode), { error: "expired-code" });
+  assert.deepEqual(store.approveDeviceCode(code.userCode, testAccount()), { error: "expired-code" });
 });
 
 test("a device token resolves to its account, and a made-up token does not", async () => {
@@ -125,8 +133,8 @@ test("a wrong secret is refused, and the access key id is never guessed at", asy
 
 test("an account can revoke its own key but never another account's", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const first = await signedInAccount(store);
-  const second = await signedInAccount(store);
+  const first = await signedInAccount(store, "first");
+  const second = await signedInAccount(store, "second");
   const theirs = await store.mintKey(second.account, { kind: "agent" });
   assert.deepEqual(store.revokeKey(first.account, theirs.keyId), { error: "not-found" });
   assert.ok(await store.authenticate(theirs.accessKeyId, theirs.secret));
