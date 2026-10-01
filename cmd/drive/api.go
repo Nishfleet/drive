@@ -266,6 +266,61 @@ func (c *APIClient) RevokeKey(keyID string) error {
 	return c.do(http.MethodDelete, keysPath+"/"+url.PathEscape(keyID), nil, nil)
 }
 
+// RevokeDeviceToken revokes this device's own signed-in token (DELETE
+// /v1/device/token). The Authorization header carries the token, so the
+// caller revokes exactly its own credential. A 401 from the Worker means the
+// token was already dead (revoked or expired), which is the state logout is
+// trying to reach; it is not an error. Any other non-2xx is a real failure.
+func (c *APIClient) RevokeDeviceToken() error {
+	resp, err := c.doRaw(http.MethodDelete, deviceTokenPath, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 401 {
+		// The token was already dead; that is the state we want.
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return &APIError{Method: "DELETE", Path: deviceTokenPath, Status: resp.Status, Body: string(raw)}
+	}
+	return nil
+}
+
+// doRaw is like do but returns the raw HTTP response without trying to
+// unmarshal a body. Used where the caller must handle specific status codes
+// (e.g. 401 meaning "already dead").
+func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encode the request: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, c.Base+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, c.Base+path, err)
+	}
+	if body != nil {
+		request.Header.Set("content-type", "application/json")
+	}
+	if c.Token != "" {
+		request.Header.Set("authorization", "Bearer "+c.Token)
+	}
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: apiTimeout}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s%s: %w", method, c.Base, path, err)
+	}
+	return response, nil
+}
+
 // Credentials is what a signed-in device keeps on disk: where the api Worker
 // is and the device token it signs in with. 0600, because the token mints keys.
 type Credentials struct {

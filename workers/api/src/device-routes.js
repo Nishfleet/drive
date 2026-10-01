@@ -13,7 +13,7 @@
 // lands, approving a code makes the account, and the page says so in plain
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
-import { errorResponse, json } from "./http.js";
+import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
@@ -246,3 +246,37 @@ export async function approveDeviceCodeRoute(request, ctx) {
     notice: `Approved. Return to the terminal; ${result.name} is signed in.`,
   });
 }
+
+/**
+ * DELETE /v1/device/token — revoke the caller's own device token. The token
+ * is the one in the Authorization header, so a caller can only revoke its own
+ * credential; another device's token on the same account is not touched. The
+ * account gate (auth: "account") already resolved the account from this same
+ * token, so the store row must exist; revoking it marks it dead for every
+ * future bearer lookup.
+ * @param {Request} request
+ * @param {{store: KeyStore}} ctx
+ */
+export async function revokeDeviceTokenRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
+  }
+  const token = bearerToken(request);
+  if (token === null) {
+    // The account gate already 401s a request with no or malformed bearer;
+    // this is a belt-and-braces check for direct handler calls.
+    return errorResponse(401, "Provide a device token to revoke.", {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  const result = await ctx.store.revokeDeviceToken(token);
+  if ("error" in result) {
+    // The gate resolved this token, so the store row exists — this is
+    // unreachable through the dispatcher, but the handler is also unit-testable
+    // without the gate, so the shape is the honest answer: the token the
+    // caller sent is not one this drive knows.
+    return errorResponse(404, "That token is not one this drive knows.");
+  }
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+}
+
