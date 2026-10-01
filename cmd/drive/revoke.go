@@ -111,6 +111,16 @@ func (r APIKeyRevoker) Revoke(pair KeyPair) error {
 		return fmt.Errorf("POST %s: %w", RevokePath, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		// 401 is the key answering for itself: the endpoint refuses a revoked
+		// key and a wrong secret alike, and this request carries the same pair
+		// every storage request this device signs with — a pair the endpoint
+		// will not accept is not a working key. So an already-revoked key (a
+		// person who ran `drive logout` again after the first run died between
+		// the revoke and the config delete) reads as success here, and the
+		// retry does not turn a dead key into a receipt that says it is live.
+		return nil
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		// The status number, not resp.Status: the reason phrase is the server's
 		// own text, and this is the one channel the file's "nothing to echo"

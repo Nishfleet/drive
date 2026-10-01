@@ -150,7 +150,7 @@ func runMount(args []string) error {
 	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
 	// is, and nothing after the first `--` reaches it.
 	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
-	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read the secret access key from stdin, one line of it")
+	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)

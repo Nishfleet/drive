@@ -122,6 +122,25 @@ func TestRevokeRejectsABadBaseURLBeforeAnyRequest(t *testing.T) {
 	}
 }
 
+// An already-revoked key answers 401 from the self-revoke endpoint (the
+// endpoint refuses a revoked key and a wrong secret alike). Reading that as
+// success is what keeps a retry after a half-finished logout from recording a
+// dead key as live: the first run revoked the key and died before it deleted
+// the config, and `drive logout` again is the advice the first run's own error
+// gives.
+func TestRevokeReadsA401AsAnAlreadyDeadKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintln(w, `{"error":"This key was revoked or is not valid."}`)
+	}))
+	defer srv.Close()
+	err := (APIKeyRevoker{BaseURL: srv.URL}).Revoke(KeyPair{AccessKeyID: "ACCESSKEYID", SecretKey: "SECRETACCESSKEY"})
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+}
+
 // Only 204 means revoked. A proxy that answers 200 with an error page must
 // never read as a key turned off, and a server's own error text is not
 // relayed either: it could echo the credential this request just presented.

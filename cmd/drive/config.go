@@ -119,9 +119,24 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 		// for the check below, because a second one would have buffered the rest
 		// of the pipe and thrown it away, hiding exactly the second line this
 		// is supposed to notice.
-		reader := bufio.NewReader(stdin)
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
+		// The reader's buffer IS the cap: ReadSlice stops at the first
+		// newline or at a full buffer, and a full buffer with no newline is
+		// the over-long line refused below — the bytes never grow past
+		// maxSecretBytes no matter how long the pipe's writer hangs on. A
+		// plain ReadString would have grown the buffer without limit until it
+		// found the newline, which is exactly the disk-image read this cap
+		// exists to refuse.
+		reader := bufio.NewReaderSize(stdin, maxSecretBytes+1)
+		line, err := reader.ReadSlice('\n')
+		switch {
+		case err == nil || errors.Is(err, io.EOF):
+			// the line, or a last line with no newline: both fine
+		case errors.Is(err, bufio.ErrBufferFull):
+			// The buffer filled before any newline: what is on the pipe is
+			// not one short line. Nothing was consumed, so the refusal below
+			// is the answer and the bytes are never grown past the cap.
+			return "", fmt.Errorf("the storage secret on stdin is longer than %d bytes; --secret-key-stdin reads one line", maxSecretBytes)
+		default:
 			return "", fmt.Errorf("read the storage secret from stdin: %w", err)
 		}
 		if len(line) > maxSecretBytes {
@@ -131,7 +146,7 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 		// surrounding whitespace is a piping mistake, not part of the key, and
 		// leaving it on would mount with a secret that is subtly wrong and fail
 		// later as a confusing 403.
-		secret := strings.TrimSpace(line)
+		secret := strings.TrimSpace(string(line))
 		if secret == "" {
 			return "", errors.New("no storage secret on stdin: --secret-key-stdin reads one line from the pipe")
 		}
