@@ -250,7 +250,7 @@ export const SIGNIN_LINK_PATH = "/api/signin/verify";
  * no session or no session's user is `null`, and `null` is what every account
  * route answers 401 to.
  * @param {Request} request
- * @param {Auth|null|undefined} auth
+ * @param {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null|undefined} auth
  * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
 export async function sessionAccount(request, auth) {

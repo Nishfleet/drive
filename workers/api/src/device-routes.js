@@ -135,7 +135,7 @@ async function readUserCode(request) {
  * POST /v1/device/code — start a device sign-in. Public: the CLI has no
  * credential yet, which is the point of the flow.
  * @param {Request} request
- * @param {{store: KeyStore, url: URL}} ctx
+ * @param {import("./index.js").RouteCtx} ctx
  */
 export async function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -197,7 +197,7 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {{store: KeyStore}} ctx
+ * @param {import("./index.js").RouteCtx} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -240,7 +240,7 @@ export async function pollDeviceTokenRoute(request, ctx) {
 /**
  * GET /v1/device/approve — the page the CLI sends the person to.
  * @param {Request} _request
- * @param {{url: URL}} ctx
+ * @param {import("./index.js").RouteCtx} ctx
  */
 export function approvePageRoute(_request, ctx) {
   return approvePage({ userCode: ctx.url.searchParams.get("user_code") ?? "" });
@@ -298,7 +298,7 @@ async function enforceDeviceLimit(request, ctx, scope) {
  * route (routes.js), so the dispatcher has already answered 401 to an
  * anonymous request and `ctx.account` is the signed-in account.
  * @param {Request} request
- * @param {{store: any, account: {id: string, name?: string, email?: string}, env?: Record<string, any>}} ctx
+ * @param {import("./index.js").RouteCtx} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
   // State-changing and cookie-authenticated, so a form another site made on
@@ -325,7 +325,10 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // The store is async (the D1 implementation is), so this must be awaited:
   // an un-awaited Promise has no `error` property, which would render the
   // success page for a code that was never approved.
-  const result = await ctx.store.approveDeviceCode(userCode, ctx.account);
+  // This is an account route, so ctx.account is guaranteed non-null by the dispatcher.
+  /** @type {{id: string, name?: string, email?: string}} */
+  const account = /** @type {{id: string, name?: string, email?: string}} */ (ctx.account);
+  const result = await ctx.store.approveDeviceCode(userCode, account);
   if ("error" in result) {
     const notice =
       result.error === "expired-code"
@@ -349,7 +352,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
  * token, so the store row must exist; revoking it marks it dead for every
  * future bearer lookup.
  * @param {Request} request
- * @param {{store: KeyStore}} ctx
+ * @param {import("./index.js").RouteCtx} ctx
  */
 export async function revokeDeviceTokenRoute(request, ctx) {
   if (request.method !== "DELETE") {

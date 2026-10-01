@@ -8,6 +8,7 @@ import { routes } from "./routes.js";
 
 /** The stand-in key store this Worker hands its routes. */
 /** @typedef {ReturnType<typeof createMemoryStore>} KeyStore */
+
 // Finding 1 replaced the hand-rolled path matcher with the platform's own
 // URLPattern: matching a path, capturing :params and deciding that `/a/b/c`
 // does not match `/a/:id` are the runtime's job now, not ours. (The review
@@ -31,13 +32,18 @@ import { routes } from "./routes.js";
  * @typedef {{params: Record<string, string>}|{malformed: true}} RouteMatch
  *
  * What a handler gets besides the request. `store` is the stand-in key store
- * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
- * because a deployment without them answers its closed door rather than
- * pretending to hold keys. `accounts` is the sign-in flow's Better Auth
+ * (createMemoryStore below) and `db` the Worker's D1 binding; `db` is optional
+ * because a deployment without it answers its closed door rather than
+ * pretending to hold keys. `store`, `url`, `now`, and `account` are always
+ * provided by the dispatcher. `accounts` is the sign-in flow's Better Auth
  * instance (src/auth.js `authFor`), read through src/status.js
  * `signedInAccount` for the browser half of a device approval; a deployment
  * with no database, secret or address has no instance and stays signed out.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, accounts?: import("../../src/auth.js").Auth|null, params?: Record<string, string>, url?: URL}} Ctx
+ * @typedef {{env: object, db?: D1Database|null, store: KeyStore, now: () => number, account: {id: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url: URL}} RouteCtx
+ *
+ * Input context for dispatch: `account` and `url` are computed from the request,
+ * `params` from the matched route. `account` is only used in the store-less test context.
+ * @typedef {{env: object, db?: D1Database|null, store: KeyStore, now: () => number, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, account?: {id: string}|null}} DispatchCtx
  */
 
 /** @type {WeakMap<Route, URLPattern>} */
@@ -111,7 +117,7 @@ export async function accountForRequest(request, store) {
  * Dispatches to the registry. Kept separate from the Worker export so tests
  * can inject a database, a key provider and a signed-in account.
  * @param {Request} request
- * @param {Ctx} ctx {env, db, store, now, account}
+ * @param {DispatchCtx} ctx {env, db, store, now, accounts}
  * @param {ReadonlyArray<Route>} [table]
  */
 export async function dispatch(request, ctx, table = routes) {
@@ -214,7 +220,7 @@ let keyStoreDb;
  * (cloudflare.config.ts), plus whatever else the runtime bound (the generated
  * `Env` covers the pricing Worker's bindings, not this Worker's, so the pair is
  * declared here). The sign-in keys are read from it too, by authFor.
- * @typedef {{DRIVE_DB?: D1Database, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, [key: string]: unknown}} ApiEnv
+ * @typedef {{ASSETS: any, DRIVE_DB: D1Database, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL: import("@cloudflare/workers-types").SendEmail, WAITLIST_DB: D1Database, WAITLIST_RATE_LIMITER: import("@cloudflare/workers-types").RateLimit, [key: string]: unknown}} ApiEnv
  */
 
 /**
@@ -253,6 +259,7 @@ export default {
       // is one account in both Workers and the approval page needs no second
       // session system of its own. No database, secret or address is the closed
       // door `authFor` already documents: null, and every account route 401s.
+      /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
       accounts: authFor(env),
       now: Date.now,
     });

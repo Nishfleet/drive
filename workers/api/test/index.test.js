@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import "urlpattern-polyfill";
 import { dispatch } from "../src/index.js";
 import { AUTH_RULES, routes } from "../src/routes.js";
 

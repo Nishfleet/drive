@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import "urlpattern-polyfill";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { createTestD1 } from "../../../test/harness.mjs";
 import { sha256Hex } from "../src/db.js";

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import "urlpattern-polyfill";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { dispatch } from "../src/index.js";
 import {

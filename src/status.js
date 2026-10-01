@@ -243,7 +243,7 @@ const STATUS_HEADERS = Object.freeze({
  * `store` is a falsy value rather than an auth instance, so a test can hand
  * this the closed door and prove the gate denies by default.
  * @param {Request} request
- * @param {import("./auth.js").Auth|null|undefined} store
+ * @param {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null|undefined} store
  * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
 export async function signedInAccount(request, store) {
