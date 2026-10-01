@@ -1135,7 +1135,9 @@ export async function handleFilesRequest(request, store, account, now = Date.now
  */
 // Exported for the parity gate in test/files.test.mjs, which runs the Web
 // Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
-// two would store a name differently (drive#92).
+// two would store a name differently (drive#92). Also for src/share.js: an
+// upload request takes a dropped file's name exactly the way the Files page
+// does, so there is one name cleaner rather than two that can drift.
 export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
@@ -1148,7 +1150,9 @@ export function safeFileName(name) {
  * @param {string} name
  * @returns {string}
  */
-function joinPath(folder, name) {
+// Exported for src/share.js, for the same one-place reason: an upload request
+// writes into one folder the way the Files page does, not a second way.
+export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
 }

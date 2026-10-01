@@ -13,11 +13,66 @@
 // lands, approving a code makes the account, and the page says so in plain
 // words rather than implying an identity check that did not happen. No email
 // is collected here — that is the sign-in flow's job, not the device flow's.
+
+import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
 /** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+
+// The edge limits the device flow answers behind (drive issue #147, raised in
+// the code review that read the sign-in's send vector: "Covers /api/signin and
+// device approve/poll"). The stock rate-limit binding keyed on the client IP,
+// plus one global bucket: approving makes an account and a poll mints a device
+// token, so an unbounded loop from one connection is both a token factory and
+// a guessing lane for the short user code.
+//
+// The bindings belong to the deployment. This repo deploys the site Worker
+// (cloudflare.config.ts) but not the api Worker — it has no config file here
+// — so the two names below cannot be declared in this tree. Wherever the api
+// Worker's config lands it must declare both, with the per-IP ceiling above
+// the CLI's own poll rate: a device code is polled every
+// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/keystore.js), i.e. 12
+// requests a minute from one well-behaved CLI, so the per-IP limit has to sit
+// well above that (the sign-in binding's 10/min would lock a polling CLI out)
+// while the global one bounds the token factory. With no binding on env these
+// two routes fail closed — the same closed door src/email-send.js shows with
+// EMAIL_SEND_TOKEN unset and src/signin.js shows with no mailer: an
+// unrate-limited public route is the case the binding exists to prevent, so a
+// deployment that has not declared it does not run the flow.
+//
+// One shape note: the refusal is JSON ({"error": ...}), the api Worker's
+// answer everywhere (docs/api.md), including on POST /v1/device/approve, whose
+// page is HTML. A person over the limit sees the JSON words rather than the
+// page's error shell; the rate limit is a machine-scale bound, so the machine
+// answer is the honest one.
+const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
+const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
+
+/**
+ * The limiter refusal a device route answers with, or null when the request is
+ * allowed through. The 429's and the 503's words are the message table's
+ * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * state two different rate-limit answers.
+ * @param {Request} request
+ * @param {{env?: Record<string, any>}} ctx
+ * @param {string} log
+ * @returns {Promise<Response|null>}
+ */
+async function deviceLimitRefused(request, ctx, log) {
+  return enforceEdgeLimits(
+    [
+      {
+        binding: ctx.env?.[DEVICE_IP_LIMIT],
+        key: clientIpKey(request, log),
+        name: DEVICE_IP_LIMIT,
+      },
+      { binding: ctx.env?.[DEVICE_GLOBAL_LIMIT], key: "global", name: DEVICE_GLOBAL_LIMIT },
+    ],
+    log,
+  );
+}
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
@@ -173,11 +228,18 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {{store: KeyStore}} ctx
+ * @param {{store: KeyStore, env?: Record<string, any>}} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  // The edge limit next, before the body is read or the store is touched: a
+  // poll loop is both a token-minting lane and a guessing lane on the short
+  // user code, so it is bounded the same way the approve route is.
+  const refused = await deviceLimitRefused(request, ctx, "device-poll");
+  if (refused) {
+    return refused;
   }
   let body;
   try {
@@ -220,9 +282,16 @@ export function approvePageRoute(_request, ctx) {
  * reason as the page: the person is doing the signing in. Until the account
  * sign-in flow lands, approving is what makes the account.
  * @param {Request} request
- * @param {{store: KeyStore}} ctx
+ * @param {{store: KeyStore, env?: Record<string, any>}} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
+  // The same edge limit as the poll, before the code is read or the store is
+  // touched: approval is what makes an account, so an unbounded approve loop
+  // is the other half of the token factory.
+  const refused = await deviceLimitRefused(request, ctx, "device-approve");
+  if (refused) {
+    return refused;
+  }
   const read = await readUserCode(request);
   if ("error" in read) {
     return errorResponse(400, read.error);
