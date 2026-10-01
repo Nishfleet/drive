@@ -11,7 +11,13 @@ import {
   requestDeviceCodeRoute,
   revokeDeviceTokenRoute,
 } from "./device-routes.js";
-import { listKeysRoute, mintKeyRoute, revokeKeyRoute, storageListRoute } from "./key-routes.js";
+import {
+  listKeysRoute,
+  mintKeyRoute,
+  revokeKeyRoute,
+  revokePresentedKeyRoute,
+  storageListRoute,
+} from "./key-routes.js";
 
 /**
  * The auth rules a route may carry. The account gate is deny by default:
@@ -106,6 +112,15 @@ export const routes = [
   // auth with the access key id as the user and the secret as the password,
   // the same pair an S3 client presents. A revoked key is 401 and a path
   // outside the key's own prefix is 403 (key-routes.js).
+  // Public like the storage routes: the presented key IS the credential that
+  // revokes itself — `drive logout` calls this with what the rclone config
+  // holds, so a sign-out needs no session token.
+  {
+    method: "POST",
+    path: "/v1/keys/revoke",
+    auth: "public",
+    handler: revokePresentedKeyRoute,
+  },
   {
     method: "GET",
     path: "/v1/storage/list",
