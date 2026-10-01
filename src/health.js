@@ -95,7 +95,7 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiter is on it because the waitlist fails closed without one
-* (src/waitlist.js). METER_DB is on it because the meter's event intake and
+ * (src/waitlist.js). METER_DB is on it because the meter's event intake and
  * the hourly rollup both fail closed without it (src/meter.js), and a deploy
  * that lost it would silently stop billing. DRIVE_DB is on it because a
  * deploy that lost it would serve every page and sign-up while every file,
