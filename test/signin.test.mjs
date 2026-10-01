@@ -587,7 +587,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
 
   // The first three sends from one IP land.
   for (let i = 0; i < 3; i++) {
-    const response = await worker.fetch(
+    const response = await workerFetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
         { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
@@ -600,7 +600,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
 
   // The fourth send from the same IP is refused: the ceiling is hit, and no
   // link leaves after it.
-  const refused = await worker.fetch(
+  const refused = await workerFetch(
     post(
       { step: "start", method: "email", email: "over@the.ceil.ing" },
       { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
@@ -612,7 +612,7 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   assert.equal(made.sent.length, 3, "no link leaves after the ceiling");
 
   // A different IP is not under the first address's ceiling.
-  const other = await worker.fetch(
+  const other = await workerFetch(
     post(
       { step: "start", method: "email", email: "other@example.com" },
       { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.2" } },
@@ -630,7 +630,7 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
 
   // Drive the ceiling home from one address.
   for (let i = 0; i < 3; i++) {
-    await worker.fetch(
+    await workerFetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
         { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
