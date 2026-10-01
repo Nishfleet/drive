@@ -1,13 +1,13 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
+import { CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
 import {
-  DEVICE_CODE_INTERVAL_SECONDS,
-  DEVICE_CODE_TTL_SECONDS,
   authorizePath,
   canDelete,
   createMemoryStore,
+  DEVICE_CODE_INTERVAL_SECONDS,
+  DEVICE_CODE_TTL_SECONDS,
 } from "../src/keystore.js";
-import { CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
 
 // A clock the test owns, so a device code can be expired without sleeping.
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
@@ -20,7 +20,7 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   };
 }
 
-async function signedInAccount(store, clock) {
+async function signedInAccount(store, _clock) {
   const code = store.requestDeviceCode({ name: "Nish's MacBook" });
   store.approveDeviceCode(code.userCode);
   const poll = await store.pollDeviceCode(code.deviceCode);

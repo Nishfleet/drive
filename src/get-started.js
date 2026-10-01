@@ -22,8 +22,8 @@ import {
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
   syncStatus,
+  UPLOAD_LABEL,
   uploadProgress,
 } from "./status.js";
 
@@ -76,9 +76,7 @@ export function connectionStates() {
   // The keys are the module's own three states; the annotation is the union
   // the rest of the page switches on, which the page and this list must agree
   // on or a rendered line would have no arm to show.
-  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (
-    Object.keys(CONNECTION_COPY)
-  );
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
 /**
@@ -89,9 +87,7 @@ export function connectionStates() {
 export function stepLines() {
   return FIRST_RUN_STEPS.map((step, index) => {
     if (typeof step.title !== "string" || typeof step.body !== "string") {
-      throw new TypeError(
-        `step ${index} needs a title and a body, got ${JSON.stringify(step)}`,
-      );
+      throw new TypeError(`step ${index} needs a title and a body, got ${JSON.stringify(step)}`);
     }
     return { title: step.title, body: step.body };
   });
@@ -105,9 +101,7 @@ export function stepLines() {
 export function emptyState(screen) {
   const entry = EMPTY_STATES[screen];
   if (!entry) {
-    throw new TypeError(
-      `no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`,
-    );
+    throw new TypeError(`no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`);
   }
   return { what: entry.what, next: entry.next };
 }
@@ -243,9 +237,7 @@ export function lastSyncText(device) {
  */
 export function connectionStateForStatus(status) {
   if (!Number.isInteger(status)) {
-    throw new TypeError(
-      `connectionStateForStatus needs a status code, got ${String(status)}`,
-    );
+    throw new TypeError(`connectionStateForStatus needs a status code, got ${String(status)}`);
   }
   return status === 401 ? "waiting" : "unreachable";
 }
@@ -260,9 +252,7 @@ export function connectionStateForStatus(status) {
  */
 export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
-    throw new TypeError(
-      `isConnected needs a payload object, got ${String(payload)}`,
-    );
+    throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
   if (payload.state === "connected") {
     return true;
@@ -489,7 +479,7 @@ async function poll() {
     response = await fetch(statusEndpoint(), {
       headers: { accept: "application/json" },
     });
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -503,7 +493,7 @@ async function poll() {
   let payload;
   try {
     payload = await response.json();
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -511,7 +501,15 @@ async function poll() {
     showConnection("unreachable");
     return;
   }
-  render(payload);
+  try {
+    render(payload);
+  } catch {
+    // Every fetch and every body read above is guarded, and so is the render:
+    // this poll runs on a timer and on every tab that comes back, so a payload
+    // this page cannot draw has one home, and it is the unreachable state the
+    // user already knows. A rejection out of here would be an unhandled one.
+    showConnection("unreachable");
+  }
 }
 
 // Copy has to work on a plain http page too, where the async clipboard API is
@@ -540,7 +538,7 @@ function wireCopyButton() {
       }
       note.textContent = "Copied. Paste it into your terminal.";
       button.textContent = "Copied";
-    } catch (error) {
+    } catch (_error) {
       note.textContent = "Could not copy it for you. Select the command and copy it by hand.";
       button.textContent = "Copy";
     }
@@ -558,13 +556,16 @@ function start() {
   renderConnection();
   wireCopyButton();
 
-  poll();
-  timer = window.setInterval(poll, pollIntervalMs());
+  // poll() owns its own failures: every fetch and every body read is guarded
+  // and renders the unreachable state, so it cannot reject. The `void` says
+  // that out loud for the linter (drive issue #92) and keeps it true.
+  void poll();
+  timer = window.setInterval(() => void poll(), pollIntervalMs());
   document.addEventListener("visibilitychange", () => {
     // A tab in the background has the browser's own cadence; check the moment
     // it comes back so the line is never stale on return.
     if (document.visibilityState === "visible" && timer !== null) {
-      poll();
+      void poll();
     }
   });
 }

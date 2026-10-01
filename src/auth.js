@@ -260,7 +260,7 @@ export async function sessionAccount(request, auth) {
     return null;
   }
   const found = await auth.api.getSession({ headers: request.headers });
-  if (!found || !found.user || typeof found.user.id !== "string") {
+  if (!found?.user || typeof found.user.id !== "string") {
     return null;
   }
   return {

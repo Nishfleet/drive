@@ -31,11 +31,7 @@ export default defineConfig({
   // Two links leave the docs on purpose: the agent-facing files sit at the
   // site root next to the pricing page, not under /docs/. Nothing else may be
   // dead, so the check stays on for every real page.
-  ignoreDeadLinks: [
-    "/llms.txt",
-    "/llms-full.txt",
-    `${SITE_ORIGIN}/`,
-  ],
+  ignoreDeadLinks: ["/llms.txt", "/llms-full.txt", `${SITE_ORIGIN}/`],
   title: "Drive docs",
   description:
     "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.",
@@ -43,10 +39,7 @@ export default defineConfig({
   // The pricing page is the canonical entry point; the docs are the reference
   // behind it. Cross-linking keeps the two reading as one product.
   head: [
-    [
-      "link",
-      { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/llms-full.txt` },
-    ],
+    ["link", { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/llms-full.txt` }],
   ],
   themeConfig: {
     nav: [
@@ -69,8 +62,7 @@ export default defineConfig({
       domain: SITE_ORIGIN,
     },
     footer: {
-      message:
-        "Drive is not open yet — sign-ups go to a waitlist on the pricing page.",
+      message: "Drive is not open yet — sign-ups go to a waitlist on the pricing page.",
     },
   },
   vite: {

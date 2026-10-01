@@ -13,8 +13,9 @@
 // not: D1 takes a JavaScript boolean and a Date as bind values, node:sqlite
 // takes neither. Turning them into the integers SQLite stores is what makes the
 // two the same engine rather than two similar ones.
-import { DatabaseSync } from "node:sqlite";
+
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
 
 /** Every migration that applies to the customer database, in order. */

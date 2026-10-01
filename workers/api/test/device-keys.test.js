@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
 
@@ -30,10 +30,7 @@ async function signIn(store, name) {
   assert.match(code.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
 
   // The person opens the page, then approves.
-  const page = await dispatch(
-    new Request(`${code.verificationUriComplete}`),
-    baseCtx(store, null),
-  );
+  const page = await dispatch(new Request(`${code.verificationUriComplete}`), baseCtx(store, null));
   assert.equal(page.status, 200);
   assert.match(await page.text(), new RegExp(code.userCode));
 
@@ -292,9 +289,12 @@ test("reading another user's prefix fails with a 403, not an empty listing", asy
 
   // A traversal out of its own folder is refused the same way.
   const traversal = await dispatch(
-    new Request(`https://api.test/v1/storage/list?path=${firstKey.prefix}..%2F..%2F${secondKey.prefix}`, {
-      headers: basic(firstKey.accessKeyId, firstKey.secret),
-    }),
+    new Request(
+      `https://api.test/v1/storage/list?path=${firstKey.prefix}..%2F..%2F${secondKey.prefix}`,
+      {
+        headers: basic(firstKey.accessKeyId, firstKey.secret),
+      },
+    ),
     baseCtx(store, null),
   );
   assert.equal(traversal.status, 403);

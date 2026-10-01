@@ -9,8 +9,9 @@
 // Plain data and pure functions for the words and math; the one fetch handler
 // at the bottom serves the page's poll and uses only the standard Response,
 // which node --test provides.
-import { failureMessage } from "./messages.js";
+
 import { sessionAccount } from "./auth.js";
+import { failureMessage } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
 // setup": `drive init` signs you in, mounts the drive and connects every agent
@@ -106,15 +107,9 @@ function millis(value, field) {
   // A number is already epoch milliseconds (Date.now() is the default for
   // `now`); a string is an ISO timestamp; a Date is its epoch value.
   const time =
-    typeof value === "number"
-      ? value
-      : value instanceof Date
-        ? value.getTime()
-        : Date.parse(value);
+    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(time)) {
-    throw new TypeError(
-      `status needs ${field} as a date or ISO string, got ${String(value)}`,
-    );
+    throw new TypeError(`status needs ${field} as a date or ISO string, got ${String(value)}`);
   }
   return time;
 }
@@ -207,9 +202,7 @@ export function uploadProgress(upload) {
     return { percent: 100, label: UPLOAD_LABEL.upToDate };
   }
   if (uploadedBytes > totalBytes) {
-    throw new RangeError(
-      `uploadedBytes (${uploadedBytes}) cannot pass totalBytes (${totalBytes})`,
-    );
+    throw new RangeError(`uploadedBytes (${uploadedBytes}) cannot pass totalBytes (${totalBytes})`);
   }
   const percent = Math.round((uploadedBytes / totalBytes) * 100);
   // `files` is optional on the payload, so it is read into a local: the count
@@ -303,10 +296,10 @@ export function handleFirstRunStatusRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  return new Response(
-    JSON.stringify({ state: "waiting", devices: [] }),
-    { status: 200, headers: STATUS_HEADERS },
-  );
+  return new Response(JSON.stringify({ state: "waiting", devices: [] }), {
+    status: 200,
+    headers: STATUS_HEADERS,
+  });
 }
 
 /**
@@ -325,6 +318,7 @@ export function formatBytes(bytes) {
     value /= 1000;
     unit += 1;
   }
-  const shown = unit === 0 ? String(value) : value < 10 ? value.toFixed(1) : String(Math.round(value));
+  const shown =
+    unit === 0 ? String(value) : value < 10 ? value.toFixed(1) : String(Math.round(value));
   return `${shown} ${units[unit]}`;
 }

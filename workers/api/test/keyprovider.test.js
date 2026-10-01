@@ -1,10 +1,6 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  CAPABILITIES_BY_KIND,
-  KEY_KINDS,
-  scopeFor,
-} from "../src/keyprovider.js";
+import { test } from "node:test";
+import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "../src/keyprovider.js";
 
 // drive#77 finding 4: the storage prefix is the safety boundary, so scopeFor
 // validates the account id and the branch name instead of trusting them.
@@ -14,7 +10,10 @@ test("the one kind to capabilities table covers every kind", () => {
   for (const kind of KEY_KINDS) {
     const capabilities = CAPABILITIES_BY_KIND[kind];
     assert.ok(Array.isArray(capabilities) && capabilities.length > 0, `${kind} has capabilities`);
-    assert.ok(capabilities.includes("list") && capabilities.includes("read"), `${kind} can read the drive`);
+    assert.ok(
+      capabilities.includes("list") && capabilities.includes("read"),
+      `${kind} can read the drive`,
+    );
   }
 });
 
@@ -39,10 +38,7 @@ test("key scopes follow the spec", () => {
 test("scopeFor reads its capabilities from the one table", () => {
   for (const kind of KEY_KINDS) {
     const options = kind === "branch" ? { name: "fix" } : undefined;
-    assert.deepEqual(
-      scopeFor(kind, "a1", options).capabilities,
-      CAPABILITIES_BY_KIND[kind],
-    );
+    assert.deepEqual(scopeFor(kind, "a1", options).capabilities, CAPABILITIES_BY_KIND[kind]);
   }
 });
 
@@ -78,7 +74,18 @@ test("an account id that could point outside its own folder is refused", () => {
   }
 });
 
-const badBranchNames = ["../../x", "a/b", "..", "../..", "x..y", "a b", "", "a\\b", null, "x".repeat(65)];
+const badBranchNames = [
+  "../../x",
+  "a/b",
+  "..",
+  "../..",
+  "x..y",
+  "a b",
+  "",
+  "a\\b",
+  null,
+  "x".repeat(65),
+];
 
 test("a branch name that could point outside the branches folder is refused", () => {
   for (const name of badBranchNames) {

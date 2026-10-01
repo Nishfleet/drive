@@ -16,24 +16,24 @@
 // 4. The spec's words: the screen the build spec's "Screens" table describes,
 //    named here so a page that drops one of the three methods fails here with
 //    the line the spec carries, and nothing that only a parser would accept.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
+import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import {
+  readSigninRequest,
   SIGNIN_COPY,
   SIGNIN_ENDPOINT,
   SIGNIN_METHODS,
   SIGNIN_PATH,
   SIGNIN_STEPS,
-  handleSigninRequest,
-  readSigninRequest,
   signinClosedBody,
 } from "../src/signin.js";
-import { createTestAuth, TEST_BASE_URL, signIn } from "./harness.mjs";
+import { createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
@@ -73,9 +73,12 @@ test("the Worker routes the sign-in start and serves no other method", async () 
   const made = dispatchEnv();
   for (const path of ["/api/signin", "/api/signin/"]) {
     const response = await worker.fetch(
-      post({ step: "start", method: "email", email: "a@b.co" }, {
-        url: `${TEST_BASE_URL}${path}`,
-      }),
+      post(
+        { step: "start", method: "email", email: "a@b.co" },
+        {
+          url: `${TEST_BASE_URL}${path}`,
+        },
+      ),
       made.env,
     );
     assert.equal(response.status, 202, `${path} must reach the sign-in handler`);
@@ -98,7 +101,10 @@ test("with no auth the route is a closed door, not a fake success", async () => 
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     SIGNIN_MAIL: () => {},
   };
-  const response = await worker.fetch(post({ step: "start", method: "email", email: "a@b.co" }), env);
+  const response = await worker.fetch(
+    post({ step: "start", method: "email", email: "a@b.co" }),
+    env,
+  );
   assert.equal(response.status, 503);
   const payload = await response.json();
   assert.deepEqual(payload, signinClosedBody());
@@ -115,14 +121,19 @@ test("a missing signing secret or public address is a closed door", async () => 
   // is a deployment that is not signed in, not one with a weak session or a
   // link that points at the wrong host.
   const made = createTestAuth();
-  const partial = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) }, DRIVE_DB: made.db, SIGNIN_MAIL: () => {} };
+  const partial = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    SIGNIN_MAIL: () => {},
+  };
   for (const env of [
     partial,
     { ...partial, BETTER_AUTH_URL: TEST_BASE_URL },
     { ...partial, BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite" },
   ]) {
     const response = await worker.fetch(
-      post({ step: "start", method: "email", email: "a@b.co" }), env,
+      post({ step: "start", method: "email", email: "a@b.co" }),
+      env,
     );
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), signinClosedBody());
@@ -142,7 +153,9 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
         origin: TEST_BASE_URL,
       },
       body: new URLSearchParams({
-        step: "start", method: "email", email: "you@example.com",
+        step: "start",
+        method: "email",
+        email: "you@example.com",
       }),
     }),
     made.env,
@@ -183,7 +196,10 @@ test("the three methods the spec's screen names are the three it accepts", () =>
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
   for (const method of SIGNIN_METHODS) {
-    const body = method === "email" ? { step: "start", method, email: "you@example.com" } : { step: "start", method };
+    const body =
+      method === "email"
+        ? { step: "start", method, email: "you@example.com" }
+        : { step: "start", method };
     const read = readSigninRequest(body);
     assert.equal(read.method, method, `${method} must be accepted`);
     assert.equal("error" in read, false, `${method} must not be refused`);
@@ -217,15 +233,9 @@ test("the closed door's words come from the message table, once", async () => {
   // One entry, read through failureMessage() like every other surface, so
   // the words cannot fork between the endpoint and anything else that names it.
   const built = signinClosedBody();
-  assert.deepEqual(
-    built,
-    {
-      error:
-        FAILURE_MESSAGES["sign-in-closed"].what +
-        " " +
-        FAILURE_MESSAGES["sign-in-closed"].next,
-    },
-  );
+  assert.deepEqual(built, {
+    error: `${FAILURE_MESSAGES["sign-in-closed"].what} ${FAILURE_MESSAGES["sign-in-closed"].next}`,
+  });
   // A closed method never invents a second draft of the sentence.
   const made = dispatchEnv();
   const refused = await worker.fetch(post({ step: "start", method: "github" }), made.env);
@@ -260,7 +270,11 @@ test("a mailer that throws is a closed door, never a 202 for a link that never l
 
 test("the sign-in link is at the path the page and the email name", async () => {
   assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
-  assert.match(page, new RegExp(SIGNIN_LINK_PATH.replace(/\//g, "\\/")), "the page knows where a failed link lands");
+  assert.match(
+    page,
+    new RegExp(SIGNIN_LINK_PATH.replace(/\//g, "\\/")),
+    "the page knows where a failed link lands",
+  );
 });
 
 test("the verify route is GET only, and a link without a token answers the screen", async () => {
@@ -270,10 +284,7 @@ test("the verify route is GET only, and a link without a token answers the scree
     made.env,
   );
   assert.equal(posted.status, 405);
-  const noToken = await worker.fetch(
-    new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`),
-    made.env,
-  );
+  const noToken = await worker.fetch(new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`), made.env);
   assert.equal(noToken.status, 302, "an empty verify is a redirect, not a 500");
   assert.match(noToken.headers.get("location"), /error=no-token/);
 });
@@ -293,7 +304,11 @@ test("a good link mints the session and lands on the drive; a used one does not"
   assert.equal(followed.status, 302, "a good link redirects into the drive");
   assert.equal(followed.headers.get("location"), "/files");
   const setCookie = followed.headers.getSetCookie()[0];
-  assert.match(setCookie, /^__Secure-drive\.session_token=/, "the session is Better Auth's signed token");
+  assert.match(
+    setCookie,
+    /^__Secure-drive\.session_token=/,
+    "the session is Better Auth's signed token",
+  );
   assert.match(setCookie, /HttpOnly/, "no script may read the session");
   assert.match(setCookie, /SameSite=Lax/, "the session does not ride a cross-site post");
   assert.match(setCookie, /Secure/, "the session never travels in clear");
@@ -364,10 +379,16 @@ test("the page carries every string from src/signin.js verbatim", () => {
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
-  assert.ok(page.includes(`action="${SIGNIN_ENDPOINT}"`), "the no-JavaScript post must reach the route");
+  assert.ok(
+    page.includes(`action="${SIGNIN_ENDPOINT}"`),
+    "the no-JavaScript post must reach the route",
+  );
   // The page builds one body with a method field and an optional email.
   assert.ok(/body: JSON\.stringify\(/.test(page), "the page posts JSON");
-  assert.ok(page.includes('name="method" value="email"'), "the no-JavaScript post carries the email method");
+  assert.ok(
+    page.includes('name="method" value="email"'),
+    "the no-JavaScript post carries the email method",
+  );
   for (const method of SIGNIN_METHODS) {
     assert.ok(
       page.includes(`data-method="${method}"`) || page.includes(`"${method}"`),

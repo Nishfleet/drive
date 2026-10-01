@@ -27,15 +27,11 @@
 // it and answered the same closed way. The OAuth client ids and secrets are
 // credentials on Nish's side of the fence, never values in this repo, so the
 // route refuses rather than redirecting to a client it does not have.
+
+import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
-import {
-  AFTER_SIGNIN_PATH,
-  SIGNIN_LINK_PATH,
-  SIGNIN_LINK_TTL_SECONDS,
-  authFor,
-} from "./auth.js";
 
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";

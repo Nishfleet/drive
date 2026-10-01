@@ -1,24 +1,26 @@
-import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT } from "./status.js";
-import { SIGNIN_LINK_PATH, authFor } from "./auth.js";
+import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
+import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
+import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { handleSendEmailRequest } from "./email-send.js";
 import {
-  FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
+  FILES_ENDPOINT,
   handleFilesRequest,
   scopeStore,
 } from "./files.js";
-import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
-import { handleSendEmailRequest } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
-  SIGNIN_ENDPOINT,
-  handleSigninLinkVerify,
-  handleSigninRequest,
-} from "./signin.js";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
-import { REWIND_ENDPOINT, handleRewindRequest } from "./rewind.js";
-import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, indexAccounts, withIndex } from "./search.js";
+  handleSearchRequest,
+  indexAccounts,
+  reconcileIndex,
+  SEARCH_ENDPOINT,
+  withIndex,
+} from "./search.js";
+import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
+import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -86,21 +88,14 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(
-        request,
-        env.WAITLIST_DB,
-        env.WAITLIST_RATE_LIMITER,
-      );
+      return handleWaitlistRequest(request, env.WAITLIST_DB, env.WAITLIST_RATE_LIMITER);
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
     // The handler is closed until the sign-in flow resolves an account
     // (issue #45), so an anonymous poll gets 401 and no device data. The path
     // is the module's own constant, so the route and the page cannot drift.
-    if (
-      url.pathname === STATUS_ENDPOINT ||
-      url.pathname === `${STATUS_ENDPOINT}/`
-    ) {
+    if (url.pathname === STATUS_ENDPOINT || url.pathname === `${STATUS_ENDPOINT}/`) {
       return handleFirstRunStatusRequest(request, await signedInAccount(request, authFor(env)));
     }
     // Search reads only the D1 file index (issue #18), behind the same account
@@ -112,10 +107,7 @@ export default {
     // search itself never lists the bucket. The rebuild is not a web route:
     // it runs from the scheduled handler below. The index is customer data, so
     // it reads DRIVE_DB, never the waitlist's database (issue #170).
-    if (
-      url.pathname === SEARCH_ENDPOINT ||
-      url.pathname === `${SEARCH_ENDPOINT}/`
-    ) {
+    if (url.pathname === SEARCH_ENDPOINT || url.pathname === `${SEARCH_ENDPOINT}/`) {
       return handleSearchRequest(
         request,
         env.DRIVE_DB,
@@ -147,17 +139,9 @@ export default {
     // discard. The same account gate as every other route that names files,
     // and the store is handed in unscoped (the handler scopes it) and without
     // withIndex, so a branch's own copies never land in the search index.
-    if (
-      url.pathname === BRANCHES_ENDPOINT ||
-      url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)
-    ) {
+    if (url.pathname === BRANCHES_ENDPOINT || url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)) {
       const account = await signedInAccount(request, authFor(env));
-      return handleBranchesRequest(
-        request,
-        env.DRIVE_DB,
-        account ? storeFor(env) : null,
-        account,
-      );
+      return handleBranchesRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // Agent undo (build step 11, issue #13): the one-click rewind of an
     // agent's work, on the branch copy src/branches.js already keeps. Same
@@ -166,26 +150,15 @@ export default {
     // of the signed-in account's own branches. A rewind is a discard, so it
     // reads and writes the one branches table and the one file store; there is
     // no second copy of the agent's work anywhere.
-    if (
-      url.pathname === REWIND_ENDPOINT ||
-      url.pathname.startsWith(`${REWIND_ENDPOINT}/`)
-    ) {
+    if (url.pathname === REWIND_ENDPOINT || url.pathname.startsWith(`${REWIND_ENDPOINT}/`)) {
       const account = await signedInAccount(request, authFor(env));
-      return handleRewindRequest(
-        request,
-        env.DRIVE_DB,
-        account ? storeFor(env) : null,
-        account,
-      );
+      return handleRewindRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
     // fallthrough, and the account gate is what keeps one account's numbers
     // from being shown to another (issue #73).
-    if (
-      url.pathname === USAGE_ENDPOINT ||
-      url.pathname === `${USAGE_ENDPOINT}/`
-    ) {
+    if (url.pathname === USAGE_ENDPOINT || url.pathname === `${USAGE_ENDPOINT}/`) {
       return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
     }
     // The sign-in screen's two steps (build step 9, issue #10; Better Auth
@@ -193,10 +166,7 @@ export default {
     // step revokes the session. The link itself is the next branch below.
     // Registered here, ahead of the asset fallthrough, because /api/signin
     // must reach the Worker.
-    if (
-      url.pathname === SIGNIN_ENDPOINT ||
-      url.pathname === `${SIGNIN_ENDPOINT}/`
-    ) {
+    if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
       return handleSigninRequest(request, env);
     }
     // The link a sign-in email carries (drive#181): GET only, the token is
@@ -239,7 +209,7 @@ export default {
   // an account the drive has never served has nothing to rebuild, and no
   // invented identity is indexed. Each account's rows are rebuilt from its own
   // prefix (scopeStore), the same scoping a request path gets.
-  async scheduled(event, env, context, store = storeFor(env)) {
+  async scheduled(_event, env, context, store = storeFor(env)) {
     context.waitUntil(
       (async () => {
         if (!env.DRIVE_DB) {

@@ -21,9 +21,10 @@
 // off: what the customer actually pays. The issue named src/pricing.js; that
 // module still holds the superseded per-TB caps and is issue #23's to fix, so
 // the scoreboard reads the one billing function AGENTS.md's money gate names.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
 import { monthBillCents } from "../src/billing.js";
 
 const MINUTES_PER_MONTH = 43800;
@@ -139,10 +140,12 @@ test("the price rows are computed from monthBillCents, not typed", () => {
     ["price at 2 TB", 2],
     ["price at 5 TB", 5],
   ]) {
-    const derived = SPACE_PLAN_1TB_USD + (tb * SPACE_EXTRA_500GB_PER_TB - 2) * SPACE_EXTRA_500GB_USD;
+    const derived =
+      SPACE_PLAN_1TB_USD + (tb * SPACE_EXTRA_500GB_PER_TB - 2) * SPACE_EXTRA_500GB_USD;
     const spaceCell = row(metric)[1];
     assert.ok(
-      spaceCell.includes(`$${derived}`) && spaceCell.includes(`$${SPACE_EXTRA_500GB_USD} per extra 500 GB`),
+      spaceCell.includes(`$${derived}`) &&
+        spaceCell.includes(`$${SPACE_EXTRA_500GB_USD} per extra 500 GB`),
       `${metric}: the Space cell must state $${derived} and the $${SPACE_EXTRA_500GB_USD} per extra 500 GB it is worked out from`,
     );
   }

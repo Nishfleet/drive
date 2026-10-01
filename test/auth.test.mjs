@@ -12,15 +12,15 @@
 //   5. Sign-out kills the session.
 //   6. Deny by default: an unknown cookie, a foreign database, and a
 //      deployment with no auth at all all read as signed out.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { getMigrations } from "better-auth/db/migration";
+import { test } from "node:test";
 import { betterAuth } from "better-auth";
-import { createTestD1, createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
-import { createAuth, sessionAccount, authFor, SIGNIN_LINK_PATH } from "../src/auth.js";
+import { getMigrations } from "better-auth/db/migration";
+import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
 import worker from "../src/index.js";
+import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
 
 const SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 
@@ -81,7 +81,11 @@ test("a sign-in link works once", async () => {
   await made.auth.api.signInMagicLink({ body: { email: "once@example.com" }, headers: headers() });
   const token = new URL(made.sent[0].url).searchParams.get("token");
   assert.match(token, /^[A-Za-z0-9]+$/, "a token is a single opaque string");
-  assert.equal(made.sent[0].to, "once@example.com", "the link is addressed to the person who asked");
+  assert.equal(
+    made.sent[0].to,
+    "once@example.com",
+    "the link is addressed to the person who asked",
+  );
 
   const first = await made.auth.api.magicLinkVerify({
     query: { token },
@@ -92,7 +96,11 @@ test("a sign-in link works once", async () => {
   const cookie = first.headers.getSetCookie()[0];
   assert.ok(cookie, "the first follow sets a session cookie");
   const found = await made.auth.api.getSession({ headers: new Headers({ cookie }) });
-  assert.equal(found.user.email, "once@example.com", "the session names the account the link was for");
+  assert.equal(
+    found.user.email,
+    "once@example.com",
+    "the session names the account the link was for",
+  );
 
   // The second follow of the same link is the spent one: the token was
   // consumed on the first verification, so there is no second session to
@@ -109,7 +117,11 @@ test("a sign-in link works once", async () => {
   // used to hold two live sessions against one account (this is the one
   // session that exists below, verified next).
   const kept = await made.auth.api.getSession({ headers: new Headers({ cookie }) });
-  assert.equal(kept.user.email, "once@example.com", "the first session still belongs to the person");
+  assert.equal(
+    kept.user.email,
+    "once@example.com",
+    "the first session still belongs to the person",
+  );
   const rows = made.db.sqlite.prepare("select count(*) c from session").all();
   assert.equal(rows[0].c, 1, "exactly one session exists in the database");
 });
@@ -249,7 +261,11 @@ test("the deployment's auth comes from one binding, one secret and one address",
   const made = createTestD1();
   const base = { DRIVE_DB: made };
   assert.equal(authFor(base), null, "no secret, no auth");
-  assert.equal(authFor({ ...base, BETTER_AUTH_SECRET: SECRET }), null, "no public address, no auth");
+  assert.equal(
+    authFor({ ...base, BETTER_AUTH_SECRET: SECRET }),
+    null,
+    "no public address, no auth",
+  );
   const first = authFor({ ...base, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: TEST_BASE_URL });
   const again = authFor({ ...base, BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: TEST_BASE_URL });
   assert.ok(first, "all three set: the auth instance exists");
