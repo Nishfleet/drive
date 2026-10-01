@@ -50,9 +50,9 @@ export const AUTH_COOKIE_PREFIX = "drive";
 
 /**
  * How long a sign-in link is good for. Ten minutes is the same window the
- * hand-written code had (SIGNIN_CODE_TTL_SECONDS in the store this file
- * replaces) and the device code's TTL in workers/api/src/keystore.js: long
- * enough to find the email, short enough that a link left in a mailbox is dead.
+ * device code has (DEVICE_CODE_TTL_SECONDS in workers/api/src/keystore.js):
+ * long enough to find the email, short enough that a link left in a mailbox is
+ * dead.
  */
 export const SIGNIN_LINK_TTL_SECONDS = 600;
 
@@ -187,8 +187,7 @@ export function authFor(env) {
 /**
  * Mails one sign-in link. A deployment with no EMAIL binding, or a test that
  * wants to read what left, supplies its own sender: `SIGNIN_MAIL` is the seam
- * test/auth.test.mjs reads the token out of, exactly as the old store's
- * `sendCode` was the seam test/signin.test.mjs read the code out of.
+ * a test reads the link out of, and the token is never in a reply.
  *
  * With neither, this throws rather than returning quietly: a link that cannot
  * be sent must fail the sign-in, and the route turns that failure into the

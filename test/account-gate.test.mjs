@@ -241,12 +241,13 @@ test("an anonymous request to every account route is 401 and no data", async () 
 
 test("the gate reads the request, and a signed-out request has no account", async () => {
   // signedInAccount() is the only gate, and a request that cannot prove a
-  // session stays signed out — including one that presents a cookie the store
-  // never minted. The browser chooses the value; only the store's digest map
-  // can say whether it is a session, so a made-up cookie is not an account.
+  // session stays signed out — including one that presents a cookie Better
+  // Auth never minted. The browser chooses the value; only the customer
+  // database can say whether it is a session, so a made-up cookie is not an
+  // account.
   const bare = new Request("https://drive.test/api/files");
   const withCookie = new Request("https://drive.test/api/files", {
-    headers: { cookie: "drive_session=anything" },
+    headers: { cookie: "__Secure-drive.session_token=anything" },
   });
   for (const request of [bare, withCookie]) {
     const response = await anonymous(request);

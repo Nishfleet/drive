@@ -188,11 +188,11 @@ export default {
     ) {
       return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
     }
-    // The sign-in screen's start and finish (build step 9, issue #10). The
-    // account store (src/accounts.js) records the one-time code against the
-    // address and, on the finish step, mints the session cookie every account
-    // route above is gated on. It is registered here, ahead of the asset
-    // fallthrough, because /api/signin must reach the Worker.
+    // The sign-in screen's two steps (build step 9, issue #10; Better Auth
+    // over D1, #181). The start step mails a single-use link; the sign-out
+    // step revokes the session. The link itself is the next branch below.
+    // Registered here, ahead of the asset fallthrough, because /api/signin
+    // must reach the Worker.
     if (
       url.pathname === SIGNIN_ENDPOINT ||
       url.pathname === `${SIGNIN_ENDPOINT}/`
