@@ -17,6 +17,7 @@ Usage:
   drive agents [flags]                  list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
@@ -27,19 +28,24 @@ Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
 
+Search flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --limit  how many results to print (default 50, max 200)
+
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
-  --access-key  access key id (env DRIVE_S3_ACCESS_KEY_ID)
-  --secret-key  secret access key (env DRIVE_S3_SECRET_ACCESS_KEY)
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
-`
 
+The device keys are read from the environment, never a flag, so they stay out
+of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
+DRIVE_S3_SECRET_ACCESS_KEY.
+`
 const version = "0.1.0"
 
 func main() {
@@ -53,6 +59,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "agents":
 		err = runAgents(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":
@@ -103,14 +111,12 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region, accessKey, secretKey string
+	var endpoint, bucket, prefix, region string
 	var foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
-	fs.StringVar(&accessKey, "access-key", "", "access key id")
-	fs.StringVar(&secretKey, "secret-key", "", "secret access key")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -120,13 +126,13 @@ func runMount(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, accessKey, secretKey)
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region)
 	if err != nil {
 		return err
 	}
-	rclone := common.rclone
-	if rclone == "" {
-		rclone = DefaultRcloneBin(common.home)
+	rclone, err := ResolveRclone(common.rclone)
+	if err != nil {
+		return err
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
 }

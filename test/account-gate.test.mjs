@@ -29,9 +29,9 @@ import {
 import { USAGE_ENDPOINT, handleUsageRequest } from "../src/billing.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createAccountStore } from "../src/accounts.js";
-import { handleSigninRequest } from "../src/signin.js";
+import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
 import { HEALTH_PATH } from "../src/health.js";
-import { SIGNIN_ENDPOINT } from "../src/signin.js";
+import { SEARCH_ENDPOINT } from "../src/search.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -83,6 +83,11 @@ const ACCOUNT_ROUTES = [
   `${USAGE_ENDPOINT}/`,
   `${STATUS_ENDPOINT}`,
   `${STATUS_ENDPOINT}/`,
+  // drive issue #18: the file-name index's read route. It is behind the
+  // account gate like every route that names files, so the walk requires
+  // it to answer 401 anonymously.
+  `${SEARCH_ENDPOINT}`,
+  `${SEARCH_ENDPOINT}/`,
 ];
 
 function anonymous(request) {
@@ -129,6 +134,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         "STATUS_ENDPOINT",
         "HEALTH_PATH",
         "SIGNIN_ENDPOINT",
+        "SEARCH_ENDPOINT",
       ].includes(name),
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
     );
@@ -155,7 +161,8 @@ test("every route src/index.js registers is either public or behind the gate", a
       literals.includes(route) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
-        route.startsWith(STATUS_ENDPOINT),
+        route.startsWith(STATUS_ENDPOINT) ||
+        route.startsWith(SEARCH_ENDPOINT),
       `${route} must be a route the Worker really serves`,
     );
   }
@@ -340,7 +347,7 @@ test("an anonymous files request never reaches the store", async () => {
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.match(
     source,
-    /account \? storeFor\(env\) : null/,
+    /account \? withIndex\(storeFor\(env\), env\.WAITLIST_DB, account\) : null/,
     "the Worker must not build the store before the account gate answers",
   );
   assert.equal(typeof isolated.fetch, "function");

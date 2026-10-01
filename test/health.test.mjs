@@ -465,7 +465,9 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // config is the source of truth, so the test reads its binding keys.
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
-  assert.ok(declared.length >= 6, `only found ${declared.join(", ")} in the config`);
+  // Four today: ASSETS, WAITLIST_DB, WAITLIST_RATE_LIMITER, EMAIL. The email
+  // token and sender stay undeclared so the deploy does not require them.
+  assert.ok(declared.length >= 4, `only found ${declared.join(", ")} in the config`);
   for (const name of REQUIRED_BINDINGS) {
     assert.ok(
       declared.includes(name),

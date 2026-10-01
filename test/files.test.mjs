@@ -725,6 +725,63 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
 });
 
+test("the S3 stand-in follows the continuation token, so a folder is never truncated at 1,000", async () => {
+  // S3 caps one ListObjectsV2 answer at 1,000 keys. A store that reads only
+  // the first page silently truncates a big folder: the stand-in proof on a
+  // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
+  // storage here answers two pages, so the test fails on a store that stops at
+  // the first one.
+  const { createS3Store, nextContinuationToken } = await import("../src/files.js");
+  const page = (names, next) => {
+    const contents = names
+      .map(
+        (name) =>
+          `<Contents><Key>u/acct-a/${name}</Key><Size>10</Size>` +
+          `<LastModified>2026-09-30T11:00:00.000Z</LastModified></Contents>`,
+      )
+      .join("");
+    return (
+      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>` +
+      contents +
+      (next ? `<NextContinuationToken>${next}</NextContinuationToken>` : "") +
+      `</ListBucketResult>`
+    );
+  };
+  const first = Array.from({ length: 1_000 }, (_, i) => `file-${i}.txt`);
+  const second = Array.from({ length: 37 }, (_, i) => `later-${i}.txt`);
+  const seen = [];
+  let calls = 0;
+  const fetchImpl = async (url) => {
+    seen.push(url);
+    calls++;
+    if (calls === 1) return new Response(page(first, "token-1"), { status: 200 });
+    return new Response(page(second, null), { status: 200 });
+  };
+  const store = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+  const rows = await scopeStore(store, { id: "acct-a" }).list("/");
+  assert.equal(rows.length, 1_037, `both pages are read, got ${rows.length}`);
+  assert.equal(rows.at(-1).name, "later-36.txt");
+  assert.equal(calls, 2, "the second page is asked for with the token");
+  assert.match(seen[1], /continuation-token=token-1/);
+
+  // A server that repeats a token is a broken listing, not a short one: it is
+  // named instead of spun on.
+  const looping = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response(page(first, "same-token"), { status: 200 }),
+  });
+  await assert.rejects(
+    () => scopeStore(looping, { id: "acct-a" }).list("/"),
+    /repeated continuation-token/,
+  );
+
+  // An empty token element ends the listing, it does not ask for "".
+  assert.equal(nextContinuationToken("<ListBucketResult></ListBucketResult>"), null);
+  assert.equal(nextContinuationToken("<NextContinuationToken>t</NextContinuationToken>"), "t");
+  assert.throws(() => nextContinuationToken(null), TypeError);
+});
+
 // ---------------------------------------------------------------- the Worker
 
 test("the Worker routes the page's API to the files handler", async () => {
