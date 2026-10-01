@@ -1,4 +1,4 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // drive issue #11: the pricing and landing page, served as Worker static
@@ -16,6 +16,12 @@ export default defineConfig({
 			runWorkerFirst: ["/api/*"],
 			notFoundHandling: "404-page",
 		},
+		// drive issue #18: the file index's nightly reconciler. `scheduled` in
+		// src/index.js rebuilds one account's rows from a full store walk; the
+		// schedule is the only way a rebuild starts, so no web request can spend
+		// the walk (the safety review: reindex is not a public route). 03:00 UTC
+		// is the spec's quiet hour, before the meter's first hourly run.
+		triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
 		env: {
 			ASSETS: bindings.assets(),
 			WAITLIST_DB: bindings.d1({
@@ -42,11 +48,12 @@ export default defineConfig({
 			// file: with the token unset the route answers 403 (a closed
 			// door), and with no MAIL_FROM it answers 503, so it cannot be
 			// used as a mail relay and cannot send from a placeholder domain
-			// before drive has one. Set at deploy time:
+			// before drive has one. They are not declared here: a declared
+			// secret is required, so the deploy refused to ship until both
+			// were set, which contradicts the closed-door design. Set them
+			// once drive has a sending domain (they persist across deploys):
 			//   npx wrangler secret put EMAIL_SEND_TOKEN
 			//   npx wrangler secret put MAIL_FROM
-			EMAIL_SEND_TOKEN: bindings.secret(),
-			MAIL_FROM: bindings.secret(),
 		},
 	},
 });

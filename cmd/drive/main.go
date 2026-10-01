@@ -17,6 +17,7 @@ Usage:
   drive agents [flags]                  list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
@@ -26,6 +27,10 @@ Usage:
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
+
+Search flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --limit  how many results to print (default 50, max 200)
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
@@ -54,6 +59,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "agents":
 		err = runAgents(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":
