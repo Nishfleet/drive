@@ -10,7 +10,7 @@
 // at the bottom serves the page's poll and uses only the standard Response,
 // which node --test provides.
 import { failureMessage } from "./messages.js";
-import { readSessionCookie } from "./accounts.js";
+import { sessionAccount } from "./auth.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
 // setup": `drive init` signs you in, mounts the drive and connects every agent
@@ -237,37 +237,24 @@ const STATUS_HEADERS = Object.freeze({
 
 /**
  * The signed-in account a request carries, or null when the request is signed
- * out (build step 9, drive#10). The session is a cookie the sign-in screen
- * mints and the account store validates: `POST /api/signin` proves an address
- * with a one-time code and hands back a session token, and every account route
- * is scoped to the account that token names.
+ * out. The session is a cookie Better Auth signed and the customer database
+ * (DRIVE_DB) holds: `POST /api/signin` mails a single-use link, following it
+ * mints a session, and every account route is scoped to the account that
+ * session names.
  *
- * A cookie the browser chose is not a session: the token is looked up by its
- * SHA-256 digest in the store that minted it, so a made-up value, a forgotten
- * one and an expired one all answer null, and a request that cannot prove an
+ * A cookie the browser chose is not a session: the token is verified against
+ * the database that minted it, so a made-up value, a forgotten one, an expired
+ * one and a revoked one all answer null, and a request that cannot prove an
  * account never reads one's files (issue #45, north star: Safe).
  *
- * It is async because validating a token is a digest, and a digest is async.
- * Every caller awaits it, so the swap point has exactly one shape: an account
- * or null, never a promise of one.
+ * `store` is a falsy value rather than an auth instance, so a test can hand
+ * this the closed door and prove the gate denies by default.
  * @param {Request} request
- * @param {{accountForSession: (token: string|null) => Promise<{id: string, name: string, email: string}|null>}} store
+ * @param {import("./auth.js").Auth|null|undefined} store
  * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
 export async function signedInAccount(request, store) {
-  const token = readSessionCookie(request);
-  if (token === null) {
-    // No session presented: signed out, which is the honest answer.
-    return null;
-  }
-  if (!store) {
-    // A cookie is presented but no store is bound to validate it, so it proves
-    // nothing and stays signed out rather than trusting a value the browser
-    // chose. This is the same closed door the sign-in route takes, and it is
-    // what a deployment with no accounts store answers.
-    return null;
-  }
-  return store.accountForSession(token);
+  return sessionAccount(request, store ?? null);
 }
 
 /**
