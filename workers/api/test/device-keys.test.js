@@ -11,11 +11,16 @@ import { createMemoryStore } from "../src/keystore.js";
 //   - each connected tool has its own key, and reading another user's prefix
 //     fails.
 
+/** @param {ReturnType<typeof createMemoryStore>} store @param {{id: string, name: string}|null} account */
 function baseCtx(store, account) {
   return { env: {}, db: null, store, account, now: () => 0 };
 }
 
-/** Walk the device flow and return the signed-in account and its token. */
+/** Walk the device flow and return the signed-in account and its token.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} name
+ * @returns {Promise<{account: {id: string, name: string}, deviceToken: string}>}
+ */
 async function signIn(store, name) {
   const codeRes = await dispatch(
     new Request("https://api.test/v1/device/code", {
@@ -59,10 +64,12 @@ async function signIn(store, name) {
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
+/** @param {string} token @returns {{authorization: string}} */
 function bearer(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+/** @param {string} accessKeyId @param {string} secret @returns {{authorization: string}} */
 function basic(accessKeyId, secret) {
   return { authorization: `Basic ${btoa(`${accessKeyId}:${secret}`)}` };
 }

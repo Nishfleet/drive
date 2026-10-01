@@ -10,22 +10,35 @@ import {
 } from "../src/keystore.js";
 
 // A clock the test owns, so a device code can be expired without sleeping.
+/**
+ * @param {number} [startMs]
+ * @returns {{now: () => number, advance: (seconds: number) => void}}
+ */
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
+    /** @param {number} seconds */
     advance: (seconds) => {
       now += seconds * 1000;
     },
   };
 }
 
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {{now: () => number}} [_clock]
+ * @returns {Promise<{account: {id: string}, deviceToken: string, code: unknown}>}
+ */
 async function signedInAccount(store, _clock) {
   const code = store.requestDeviceCode({ name: "Nish's MacBook" });
   store.approveDeviceCode(code.userCode);
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
-  return { account: poll.account, deviceToken: poll.deviceToken, code };
+  // The assert above is not a type guard, so the approved arm is read through a
+  // documented cast rather than a `as`-by-another-name.
+  const approved = /** @type {{account: {id: string}, deviceToken: string}} */ (/** @type {unknown} */ (poll));
+  return { account: approved.account, deviceToken: approved.deviceToken, code };
 }
 
 test("a device code starts pending and reports its expiry and poll interval", () => {
@@ -92,8 +105,10 @@ test("minting a key returns the secret once and stores only its hash", async () 
   assert.deepEqual(minted.capabilities, ["list", "read", "write", "delete"]);
   const listed = store.listKeys(account);
   assert.equal(listed.length, 1);
-  assert.equal(listed[0].secret, undefined);
-  assert.equal(listed[0].secretHash, undefined);
+  // The hash lives only on the stored row; neither the API's listing nor its
+  // one-returned-secret surface it, so absence (not `undefined`) is the claim.
+  assert.ok(!("secret" in listed[0]), "the listing does not name the secret");
+  assert.ok(!("secretHash" in listed[0]), "the listing does not name the password hash");
 });
 
 test("an agent key never gets delete, and a branch key stays in its branch folder", async () => {
@@ -146,7 +161,7 @@ test("an account can revoke its own key but never another account's", async () =
 test("the delete capability comes from the one kind table", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  for (const kind of ["device", "agent", "s3", "branch"]) {
+  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ (["device", "agent", "s3", "branch"])) {
     const key = await store.mintKey(account, kind === "branch" ? { kind, name: "b" } : { kind });
     const device = { kind };
     assert.equal(
