@@ -166,8 +166,9 @@ function checkedCappedFrom(key) {
  * kind could ever have held returns an empty list, and the caller leaves the key
  * read-only: there is nothing to give back, and one bad row must not crash the
  * hourly enforcement run that is holding every other key read-only at the cap.
- * @param {string[]} taken the key row's validated `cappedFrom` record
+ * @param {ReadonlyArray<string>} taken the key row's validated `cappedFrom` record
  * @param {ReadonlyArray<string>} scope the key kind's full scope
+ * @returns {string[]}
  */
 function grantedCapabilities(taken, scope) {
   return taken.filter((name) => scope.includes(name));
