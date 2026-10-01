@@ -47,6 +47,20 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ------------------------------------------------------------ the rewind
 
+// `rewindBranch` and `discardBranch` answer a union of the worked object and a
+// failure carrying a status; the helper below reads the status only from an
+// arm that has one, so each assertion states its own expectation.
+const failedStatus = (
+  /** @type {unknown} */ result,
+) => {
+  assert.equal(
+    typeof result === "object" && result !== null && "status" in result,
+    true,
+    `expected a failure, got ${JSON.stringify(result)}`,
+  );
+  return /** @type {{status: number}} */ (result).status;
+};
+
 /**
  * D1's types are the runtime's `declare abstract class` — its `raw` carries two
  * generic overloads no JS object can express — so the adapter is typed here in
@@ -290,7 +304,9 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const result = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(result.error, undefined);
+  // `rewindBranch` answers a union; `"error" in result` is its discriminator
+  // and the success arm above carries state/rewound/changedBy, not error.
+  assert.ok(!("error" in result));
   assert.equal(result.state, "discarded");
   assert.equal(result.rewound, 2);
   assert.equal(result.changedBy, "k-claude");
@@ -303,8 +319,8 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   // And a second click is refused rather than re-removing nothing: the branch
   // is closed, and "already closed" is its own message.
   const again = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(again.status, 409);
-  assert.equal(again.error, failureMessage("branch-not-open"));
+  assert.equal(failedStatus(again), 409);
+  assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
 });
 
 test("the 30-day window is the server's, not a hidden button", async () => {
@@ -332,8 +348,8 @@ test("the 30-day window is the server's, not a hidden button", async () => {
 
   // And the POST is refused with the message table's own sentence.
   const refused = await rewindBranch(db, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
-  assert.equal(refused.status, 409);
-  assert.equal(refused.error, failureMessage("rewind-window-closed"));
+  assert.equal(failedStatus(refused), 409);
+  assert.equal(/** @type {{error: string}} */ (refused).error, failureMessage("rewind-window-closed"));
   // Nothing was removed: the refusal happens before the discard.
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
   assert.ok("rewind-window-closed" in FAILURE_MESSAGES);
@@ -347,8 +363,8 @@ test("one account can never read or rewind another account's branch", async () =
   const otherRaw = createMemoryStore();
   assert.equal(await rewindBranchRowFor(db, raw, "nope"), null);
   const other = await rewindBranch(db, scopeStore(otherRaw, OTHER), OTHER, "fix", AT);
-  assert.equal(other.status, 404);
-  assert.equal(other.error, failureMessage("branch-not-found"));
+  assert.equal(failedStatus(other), 404);
+  assert.equal(/** @type {{error: string}} */ (other).error, failureMessage("branch-not-found"));
   // The list an account sees is its own: account B sees no branches at all.
   const listed = await handleRewindRequest(
     new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),

@@ -106,6 +106,24 @@ function plain(message, status, headers = {}) {
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
  * @param {number} now epoch milliseconds, injected so the tests pin the clock
+/**
+ * The preview the rewind screen renders: the branch's live diff counts plus
+ * the server-enforced 30-day window, so the UI never computes its own window.
+ * @typedef {{name: string, sourcePrefix: string, state: string, changedBy:
+ *   string, createdAt: string, ageDays: number, windowDays: number,
+ *   restorableUntil: string, canRewind: boolean,
+ *   unavailableReason: "window-closed"|"already-closed"|null,
+ *   files: {added: string[], changed: string[], removed: string[], count: number}}} RewindPreview
+ */
+
+/**
+ * past the window reports `canRewind: false` and the route below refuses the
+ * rewind, so the limit is the server's and not a hidden button.
+ *
+ * @param {import("./branches.js").FileStore} store a scoped store
+ * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
+ * @param {number} now epoch milliseconds, injected so the tests pin the clock
+ * @returns {Promise<RewindPreview>}
  */
 export async function rewindPreview(store, branch, now) {
   if (typeof now !== "number" || !Number.isFinite(now)) {
@@ -188,6 +206,8 @@ export async function rewindBranchRow(db, store, account, name) {
  * @param {{id: string}} account
  * @param {string} name
  * @param {number} now epoch milliseconds
+ * @returns {Promise<{error: string, status: number, rewind?: RewindPreview}
+ *   |{name: string, state: string, rewound: number, changedBy: string}>}
  */
 export async function rewindBranch(db, store, account, name, now) {
   const branch = await rewindBranchRow(db, store, account, name);
@@ -201,7 +221,9 @@ export async function rewindBranch(db, store, account, name, now) {
     return { error: failureMessage(key), status: 409, name, rewind: preview };
   }
   const result = await discardBranch(db, store, account, name);
-  if (result.error) {
+  // `result` is a union; the failure arm is the one carrying a status, and
+  // `"error" in result` is its discriminator and narrows the success arm.
+  if ("error" in result) {
     return result;
   }
   return {
@@ -270,7 +292,7 @@ export async function handleRewindRequest(request, db, store, account, now = () 
   }
   if (request.method === "POST") {
     const result = await rewindBranch(db, store, account, name, at);
-    if (result.error) {
+    if ("error" in result) {
       return json(result, result.status);
     }
     return json(result);
