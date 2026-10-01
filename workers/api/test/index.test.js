@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dispatch } from "../src/index.js";
+import { createApp, dispatch } from "../src/index.js";
 import { AUTH_RULES, routes } from "../src/routes.js";
 
 const ctx = { env: {}, db: null, now: () => 0 };
 
 // ---- the registry and the deny-by-default account gate (drive#77) ----
+
+// The route table Hono actually built, read off the app the Worker runs. The
+// router's own `ALL` entries are its internal hooks (the trailing-slash,
+// method-not-allowed and wildcard middleware), not routes the Worker serves, so
+// they are filtered out; what is left is the registry as the library sees it.
+// This is what makes the walk a real walk of Hono's table rather than a second
+// reading of routes.js: a route registered with a method or path the table
+// does not carry is found here and fails.
+function registeredRoutes(table = routes) {
+  const app = createApp(ctx, table);
+  return app.routes
+    .filter((registered) => registered.method !== "ALL")
+    .map((registered) => `${registered.method} ${registered.path}`);
+}
 
 test("every route in the registry declares an auth rule", () => {
   assert.ok(routes.length > 0, "the registry is empty");
@@ -15,6 +29,25 @@ test("every route in the registry declares an auth rule", () => {
       `${route.method} ${route.path} has auth ${JSON.stringify(route.auth)}; ` +
         `add one of ${AUTH_RULES.join(", ")}`,
     );
+  }
+});
+
+test("the Hono route table is the registry, and the walk reads it", () => {
+  // The route table is the library's now, so the walk reads Hono's own
+  // registry (`app.routes`) rather than matching text in index.js: a route
+  // that reaches the app without the registry seeing it, or one the registry
+  // declares that never reaches the app, fails here.
+  const registered = registeredRoutes();
+  assert.ok(registered.length > 0, "the app must register the registry's routes");
+  for (const route of routes) {
+    assert.ok(
+      registered.includes(`${route.method} ${route.path}`),
+      `${route.method} ${route.path} is in the registry but Hono did not register it`,
+    );
+  }
+  const declared = new Set(routes.map((route) => `${route.method} ${route.path}`));
+  for (const route of registered) {
+    assert.ok(declared.has(route), `${route} is registered on the app but not in the registry`);
   }
 });
 
