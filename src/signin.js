@@ -66,6 +66,21 @@ export const SIGNIN_ENDPOINT = "/api/signin";
 export const SIGNIN_METHODS = Object.freeze(["email", "google", "github"]);
 
 /**
+ * The display name of each method the spec's screen names. The button copy
+ * the page shows for a provider is `Continue with ${label}` and its
+ * provider's name in prose is this label, so "github" is "GitHub", never
+ * "Github": the gate test that keeps an unoffered provider's copy off the
+ * page builds its forbidden strings from here, and a test that uppercased the
+ * method name instead would pass on the very regression it exists to catch
+ * (drive#180).
+ */
+export const SIGNIN_METHOD_LABELS = Object.freeze({
+  email: "Email",
+  google: "Google",
+  github: "GitHub",
+});
+
+/**
  * The methods the server can actually complete today, in the order the page
  * shows them. Email is one: the store mints a code and a session. Google and
  * GitHub stay in SIGNIN_METHODS — the endpoint still reads them and answers

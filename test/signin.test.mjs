@@ -28,6 +28,7 @@ import {
   readSigninRequest,
   SIGNIN_COPY,
   SIGNIN_ENDPOINT,
+  SIGNIN_METHOD_LABELS,
   SIGNIN_METHODS,
   SIGNIN_OFFERED_METHODS,
   SIGNIN_PATH,
@@ -663,9 +664,10 @@ test("the page offers no provider the server cannot complete (drive#180)", async
       );
     }
     // No copy on the page promises a provider that is not offered: no
-    // button, and no button words.
+    // button, and no button words. The label is the module's, not an
+    // uppercased method name, so "github" is checked as "GitHub" (drive#180).
     if (!offered) {
-      const button = `Continue with ${method[0].toUpperCase()}${method.slice(1)}`;
+      const button = `Continue with ${SIGNIN_METHOD_LABELS[method]}`;
       assert.equal(page.includes(button), false, `no ${method} button copy while it is unoffered`);
     }
   }
@@ -697,7 +699,7 @@ test("the page offers no provider the server cannot complete (drive#180)", async
   for (const method of SIGNIN_METHODS) {
     if (!SIGNIN_OFFERED_METHODS.includes(method)) {
       assert.equal(
-        description.includes(method[0].toUpperCase() + method.slice(1)),
+        description.includes(SIGNIN_METHOD_LABELS[method]),
         false,
         `the meta description must not name ${method} while it is unoffered`,
       );
