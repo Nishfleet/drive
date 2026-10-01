@@ -368,6 +368,42 @@ test("READ: a hide delivered before its create bills the same hours, through the
   );
 });
 
+test("WRITE+READ: a size-less hide after its create leaves the create's size, through the real schema", async () => {
+  // The order that happens every day: the version is written (the provider
+  // knows its size), then it is replaced and the provider sends a hide with
+  // no size of its own. The row's size_bytes is NOT NULL, so the hide cannot
+  // carry a size - and it must not zero the real size either, or the hour
+  // that bills the version's last minutes bills 0 bytes. The size comes from
+  // the create and only the create (the upsert's CASE), and this reads the
+  // row and the metered hours back out of the real schema.
+  const { sqlite, db } = makeMeteredDB();
+  await recordEvent(db, abcEvent({ eventId: "c-1" }), midnight());
+  const hide = validateEvent({
+    eventId: "h-1",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/notes.md",
+    b2FileId: "file-1",
+    action: "file hidden",
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+  });
+  assert.equal(hide.sizeBytes, 0, "a hide carries no size, so it stores the 0 placeholder");
+  await recordEvent(db, hide, midnight() + 30 * MINUTE_MS);
+  const row = sqlite.prepare("SELECT size_bytes, created_at, hidden_at FROM file_versions").get();
+  assert.equal(row.size_bytes, GB, "the size-less hide must not zero the create's size");
+  assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS, "and the hide's time still lands");
+  // And the metered hour is the real size, not 0: 30 minutes of overlap plus
+  // the 30-minute top-up to the 1-hour minimum = 60 GB-minutes for a 1 GB
+  // version, which a 0-byte version could never produce.
+  const rolled = await rollupHour(db, midnight(), midnight() + 60 * MINUTE_MS);
+  assert.equal(rolled.gbMinutes, 60, "the hour bills the create's real size");
+  assert.equal(
+    sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes").get().gb_minutes_live,
+    60,
+    "and the stored usage row is the real size's bill",
+  );
+});
+
 test("READ: a version hidden exactly on the hour's boundary books its minimum in that hour", async () => {
   // The half-open window in the real schema: created 00:30, hidden 01:00.
   // Hour 01 holds none of its minutes, and the top-up belongs there anyway, so
@@ -503,5 +539,59 @@ test("the migration is additive: it creates tables and changes nothing else", ()
     /deleted_at INTEGER(,|\s*\n)/.test(sql),
     true,
     "deleted_at stays nullable and defaulted away",
+  );
+});
+
+// The adapter's batch() is a transaction, because D1's is: a batch is one
+// round trip that commits every statement or none. The meter's whole money
+// story rests on that - the dedup row and its version row land together, so
+// an event is never half-counted, and an hour's usage rows and the mark that
+// says the hour is done are not torn apart by a mid-batch failure. This test
+// makes the adapter's transaction real by driving a batch whose LAST
+// statement fails and reading the database back: nothing from the batch may
+// have survived.
+test("the D1 adapter's batch is a transaction: a statement that fails rolls the whole batch back", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  // A real, valid event batch first, so there is a stored row that a later
+  // failed batch must NOT disturb.
+  await recordEvent(db, abcEvent({ eventId: "c-1" }), midnight());
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n, 1);
+
+  // A batch of plain statements where the last one is invalid SQL. On a real
+  // D1 (and on this adapter, which now wraps the batch in BEGIN/COMMIT) the
+  // first two must roll back with it.
+  const statements = [
+    db
+      .prepare("INSERT INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
+      .bind("will-roll-back", midnight()),
+    db
+      .prepare(
+        "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+      )
+      .bind("acc-abc", "file-rollback", "/u/acc-abc/x", GB, midnight()),
+    db.prepare("THIS IS NOT SQL").bind(),
+  ];
+  await assert.rejects(() => db.batch(statements), /syntax error|no such column|parse/i);
+
+  // The good event from before is untouched, and nothing from the failed
+  // batch survived: not the dedup row, not the version row.
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n,
+    1,
+    "the failed batch's version row rolled back; only the good event's row remains",
+  );
+  assert.equal(
+    sqlite
+      .prepare("SELECT COUNT(*) AS n FROM events_seen WHERE b2_event_id = ?1")
+      .get("will-roll-back").n,
+    0,
+    "and so did its dedup row - an event is never half-counted",
+  );
+  assert.equal(
+    sqlite
+      .prepare("SELECT COUNT(*) AS n FROM file_versions WHERE b2_file_id = ?1")
+      .get("file-rollback").n,
+    0,
+    "the half-written version is not in the schema",
   );
 });

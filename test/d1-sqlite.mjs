@@ -109,6 +109,25 @@ export function d1Over(sqlite, { onQuery } = {}) {
       events_seen: table("events_seen", (row) => row.b2_event_id),
       meter_rollup_state: table("meter_rollup_state", (row) => row.id),
     },
+    // One version row written straight into the real schema, for the shapes an
+    // event cannot express (a 0-byte version, an instant that is not a whole
+    // minute). Goes through the same migration-built table the SQL reads, so a
+    // test seeds real rows rather than a stand-in.
+    insertVersion({ accountId = "acct0", fileId, path, sizeBytes, createdAt, hiddenAt = null }) {
+      sqlite
+        .prepare(
+          `INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+        )
+        .run(
+          accountId,
+          fileId,
+          path ?? `/u/${accountId}/${fileId}`,
+          sizeBytes,
+          createdAt,
+          hiddenAt,
+        );
+    },
     prepare(sql) {
       const prepared = {
         _sql: sql,
@@ -140,14 +159,27 @@ export function d1Over(sqlite, { onQuery } = {}) {
       prepared.bound = [];
       return prepared;
     },
-    // D1 sends a batch as one transactional round trip; the results come
-    // back in the order the statements were given.
+    // D1 sends a batch as ONE transactional round trip: every statement
+    // commits together, and a statement that fails rolls the whole batch back,
+    // so a half-written event (the dedup row without its version row, or an
+    // hour's usage rows without its mark) can never exist. This adapter runs
+    // BEGIN/COMMIT around the statements so the meter is tested against that
+    // guarantee, not against a sequence of independent writes: a batch that
+    // throws partway leaves the database exactly as it was, and a test proves
+    // it. The results come back in the order the statements were given.
     async batch(statements) {
       onQuery?.();
       const results = [];
-      for (const statement of statements) {
-        results.push(await statement._exec());
+      sqlite.exec("BEGIN");
+      try {
+        for (const statement of statements) {
+          results.push(await statement._exec());
+        }
+      } catch (error) {
+        sqlite.exec("ROLLBACK");
+        throw error;
       }
+      sqlite.exec("COMMIT");
       return results;
     },
   };

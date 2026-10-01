@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
@@ -27,6 +28,7 @@ import {
   EVENTS_SEEN_RETENTION_MS,
   folderAccount,
   gbMinutesInHour,
+  HOUR_GB_MINUTES_SQL,
   handleStorageEventRequest,
   hourStart,
   listMeteredAccounts,
@@ -99,26 +101,41 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
   );
 });
 
-// The spec's price is 2 cents per decimal GB-month (docs/build-spec.md),
-// so the meter's GB is 1e9 and 50 GB held a whole month is 2,190,000
-// GB-minutes - the pin of both units.
-test("the meter's GB is decimal (the spec's), not binary, and a month of 50 GB is exactly 2,190,000 GB-minutes", () => {
-  assert.equal(BYTES_PER_GB, 1_000_000_000);
-  const month = [];
-  for (let h = 0; h < 30 * 24; h += 1)
-    month.push({ sizeBytes: 50 * GB, createdAt: midnight() + h * 60 * MINUTE_MS, hiddenAt: null });
-  assert.equal(gbMinutesInHour(month, midnight(), midnight() + 30 * 24 * 60 * MINUTE_MS), 50 * 60);
-  const total = month.reduce(
-    (sum, v, h) =>
-      sum +
-      versionGbMinutesInHour(
-        v,
-        midnight() + h * 60 * MINUTE_MS,
-        midnight() + 30 * 24 * 60 * MINUTE_MS,
-      ),
-    0,
-  );
-  assert.equal(total, 50 * 30 * 24 * 60, "a whole month of whole minutes is exact");
+// The spec's price is 2 cents per decimal GB-month (docs/build-spec.md), so
+// the meter's GB is 1e9. The other half of the pin is the free credit: the
+// spec reads the $1 as "about 50 GB", and 50 is not written in this test - it
+// is the $1 the config charges divided by the 2¢ it charges per GB-month, so
+// a price change moves the meter's month and the credit together, and a
+// mismatch between the two fails here.
+test("the meter's GB is decimal, and a month of the free credit's GB is exactly the credit's GB-minutes", () => {
+  // 2¢ per GB-month is the same rate the invoice charges (src/billing.js
+  // reads it from the same config src/pricing.js holds), and the free credit
+  // is $1 a month. The GB that credit buys for a month is 1 / 0.02.
+  const freeGb = BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth;
+  assert.equal(freeGb, 50, "$1 at 2c per GB-month is 50 GB - the spec's 'about 50 GB'");
+  assert.equal(BYTES_PER_GB, 1_000_000_000, "decimal GB, the one the spec prices in");
+
+  // A month of whole minutes at that size: ONE version of the credit's GB,
+  // written at the month's first instant and live to the end of it, so its
+  // GB-minutes are the credit's GB x 43,800 and the bill for them is the $1.
+  const monthEnd = midnight() + MINUTES_PER_MONTH * MINUTE_MS;
+  const version = { sizeBytes: freeGb * GB, createdAt: midnight(), hiddenAt: null };
+  const hours = Math.round(MINUTES_PER_MONTH / 60);
+  // The meter's whole-minute total for that month, summed hour by hour, is
+  // the credit's GB x 43,800 with no rounding drift (each hour books 60 whole
+  // minutes, and 43,800 of them is the average month the spec divides by).
+  let total = 0;
+  for (let h = 0; h < hours; h += 1) {
+    total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
+  }
+  assert.equal(total, freeGb * MINUTES_PER_MONTH, "a whole month of whole minutes is exact");
+  // And that total, through the ONE function the invoice reads, is the $1
+  // free credit: the meter and the bill cannot disagree about the free month.
+  assert.equal(meteredMonthlyBillUsd(total), BILLING_CONFIG.freeMonthlyUsd);
+  // The rolled-up total for the same month (the integer-unit sum the SQL
+  // stores, one version at a time) agrees, so a month's billing is the same
+  // whether the invoice reads the rollup or the per-version arithmetic.
+  assert.equal(gbMinutesInHour([version], midnight(), monthEnd), freeGb * 60);
 });
 
 // --- The arithmetic ------------------------------------------------------
@@ -1224,7 +1241,7 @@ test("the hourly trigger fails loudly when the binding is missing", async () => 
   await assert.rejects(() => runMeterCron(undefined, midnight()), /METER_DB/);
 });
 
-// --- Catch-up budget: one set-based statement per account per hour -------
+// --- Catch-up budget: one grouped statement per hour, rows flat in files --
 
 test("a catch-up over 48 hours with 25 accounts costs the same round trips as with one", async () => {
   const longAfter = midnight() + 48 * 60 * MINUTE_MS;
@@ -1251,15 +1268,14 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     `a catch-up must cost hours, not accounts: 25 accounts took ${queries25} round trips, one took ${queries2}`,
   );
   // The budget the trigger is designed to: three round trips per hour
-  // (the hour's read, the hour's batch, the hour's watermark) plus the four
+  // (the hour's read, the hour's batch, the hour's watermark) plus the three
   // around them - the watermark read, the earliest-version read that floors
-  // a first run, the accounts list and the dedup purge - whatever the
-  // customer count.
+  // a first run, and the dedup purge - whatever the customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,
-    3 * MAX_CATCHUP_HOURS + 4,
-    "three round trips per hour plus the four around them",
+    3 * MAX_CATCHUP_HOURS + 3,
+    "three round trips per hour plus the three around them",
   );
   assert.equal(rolled.accounts, 25);
   assert.equal(
@@ -1270,6 +1286,97 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     [...one.db.tables.usage_minutes.values()].filter((r) => r.hour < longAfter).length,
     MAX_CATCHUP_HOURS,
   );
+});
+
+// The round trips above are flat in the account count, but a round trip that
+// returns one row per FILE still grows with the customer's files: the Worker
+// would read every live version into itself and sum there. This is the
+// property that fixes it, and it is measured, not asserted in a comment: the
+// hour's read hands back one row per account, so 1 file and 500 files in the
+// same account return the same number of rows and the same bytes, and the
+// total it books is the same either way.
+test("the hour's read returns one row per account, so its cost is flat in an account's file count", async () => {
+  const hourEnd = midnight() + 60 * MINUTE_MS;
+  const one = makeMeteredDB();
+  const many = makeMeteredDB();
+  await storeCreate(one.db, "acct0", { eventId: "e-0", b2FileId: "f0", path: "/u/acct0/x" });
+  for (let f = 0; f < 500; f += 1) {
+    await storeCreate(many.db, "acct0", {
+      eventId: `e-${f}`,
+      b2FileId: `f${f}`,
+      path: `/u/acct0/x${f}`,
+    });
+  }
+  // The same statement the trigger runs, read directly, so the row count is
+  // the read's and not the trigger's batching.
+  const statement = one.db.prepare(HOUR_GB_MINUTES_SQL).bind(midnight(), hourEnd);
+  const statementMany = many.db.prepare(HOUR_GB_MINUTES_SQL).bind(midnight(), hourEnd);
+  const oneRow = await statement.all();
+  const manyRow = await statementMany.all();
+  assert.equal(oneRow.results.length, 1, "one account, one row");
+  assert.equal(manyRow.results.length, 1, "500 versions in one account are still one row");
+  assert.equal(manyRow.results[0].versions, 500, "the row still counts every version");
+  // 1 GB held for the hour, 500 times, is 500 GB-minutes either way.
+  assert.equal(oneRow.results[0].gb_minutes, 60);
+  assert.equal(manyRow.results[0].gb_minutes, 500 * 60);
+  const rolled = await rollupHour(many.db, midnight(), hourEnd + 5 * MINUTE_MS);
+  assert.equal(rolled.gbMinutes, 500 * 60, "and the rollup books the same total");
+  assert.equal(rolled.accounts, 1);
+  assert.equal(rolled.versions, 500);
+});
+
+// The SQL in rollupHour and the JS reference gbMinutesInHour are two
+// transcriptions of one rule, and the money depends on them agreeing exactly
+// (the invoice reads the stored total). This pins them against each other over
+// the awkward shapes - a boundary hide, a version shorter than the minimum, a
+// still-live version, several sizes in one account - so a future edit to
+// either one that moves a minute fails here instead of in a bill.
+test("the SQL rollup and the JS reference agree exactly, on the awkward shapes", async () => {
+  const shapes = [
+    { sizeBytes: GB, createdAt: midnight(), hiddenAt: null },
+    { sizeBytes: GB, createdAt: midnight(), hiddenAt: midnight() + 30 * MINUTE_MS },
+    { sizeBytes: GB, createdAt: midnight(), hiddenAt: midnight() + 60 * MINUTE_MS },
+    {
+      sizeBytes: GB,
+      createdAt: midnight() + 30 * MINUTE_MS,
+      hiddenAt: midnight() + 90 * MINUTE_MS,
+    },
+    { sizeBytes: 1, createdAt: midnight(), hiddenAt: midnight() + 59_999 },
+    { sizeBytes: 1, createdAt: midnight() + 1, hiddenAt: midnight() + 60_001 },
+    { sizeBytes: 3_000_000_007, createdAt: midnight() + 45 * MINUTE_MS, hiddenAt: null },
+    {
+      sizeBytes: 999_999_999_999,
+      createdAt: midnight() + 59 * MINUTE_MS,
+      hiddenAt: midnight() + 61 * MINUTE_MS,
+    },
+    { sizeBytes: 0, createdAt: midnight(), hiddenAt: midnight() + 10 * MINUTE_MS },
+  ];
+  for (let offset = 0; offset < 3; offset += 1) {
+    const hour = midnight() + offset * 60 * MINUTE_MS;
+    const now = hour + 60 * MINUTE_MS;
+    const { db } = makeMeteredDB();
+    for (const [index, shape] of shapes.entries()) {
+      // Written through the real schema, so the SQL reads what the intake
+      // would have stored rather than a hand-made row.
+      db.insertVersion({ fileId: `f${index}`, ...shape });
+    }
+    const expected = gbMinutesInHour(
+      shapes.map((shape) => ({ ...shape })),
+      hour,
+      now,
+    );
+    const rolled = await rollupHour(db, hour, now);
+    assert.equal(
+      rolled.gbMinutes,
+      expected,
+      `hour offset ${offset}: SQL ${rolled.gbMinutes} vs the JS reference ${expected}`,
+    );
+    assert.equal(
+      db.tables.usage_minutes.get("acct0|" + hour).gb_minutes_live,
+      expected,
+      "and the stored row holds the same number",
+    );
+  }
 });
 
 // --- The wiring the repo can see -----------------------------------------

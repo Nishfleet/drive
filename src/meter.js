@@ -172,6 +172,36 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
 }
 
 /**
+ * The whole minutes of one hour the version existed, before the 1-hour
+ * minimum. This is the version's own integer and carries no size: the size
+ * multiplies the BOOKED minutes (see versionBookedByteMinutes), so an hour's
+ * total is one exact integer sum scaled to GB once at the end. That is what
+ * lets rollupHour do the same sum in SQL, GROUP BY account_id, and land on
+ * bit-for-bit the number gbMinutesInHour does, however many versions an
+ * account has.
+ * @param {{createdAt: number, hiddenAt: number|null}} version
+ * @param {number|Date|string} hour
+ * @param {number|Date|string} now
+ * @returns {number} whole minutes
+ */
+function versionOverlapMinutes(version, hour, now = Date.now()) {
+  const start = hourStart(hour);
+  const end = start + HOUR_MS;
+  const created = toMillis(version.createdAt, "createdAt");
+  const stop =
+    version.hiddenAt === null || version.hiddenAt === undefined
+      ? Math.min(end, toMillis(now, "now"))
+      : Math.min(end, toMillis(version.hiddenAt, "hiddenAt"));
+  const live = Math.max(0, Math.min(end, stop) - Math.max(start, created));
+  if (live < MINUTE_MS) {
+    // Under a whole minute of overlap books nothing: the spec counts in whole
+    // minutes stored, and a fraction of one is not one.
+    return 0;
+  }
+  return Math.floor(live / MINUTE_MS);
+}
+
+/**
  * GB-minutes one version contributes to ONE hour, before the minimum: the
  * whole minutes of that hour the version existed, times its size in GB.
  * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
@@ -180,43 +210,32 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
  *   storage stops counting in this hour (the end of a closed hour)
  */
 export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
-  const size = Number(version.sizeBytes);
-  if (!Number.isFinite(size) || size < 0) {
+  const size = wholeBytes(version.sizeBytes);
+  if (size === null) {
     throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
   }
-  const start = hourStart(hour);
-  const end = start + HOUR_MS;
-  const created = toMillis(version.createdAt, "createdAt");
-  const stop =
-    version.hiddenAt === null || version.hiddenAt === undefined
-      ? Math.min(end, toMillis(now, "now"))
-      : Math.min(end, version.hiddenAt);
-  const live = Math.max(0, Math.min(end, stop) - Math.max(start, created));
-  if (live < MINUTE_MS) {
-    // Under a whole minute of overlap books nothing: the spec counts in whole
-    // minutes stored, and a fraction of one is not one.
-    return 0;
-  }
-  return Math.floor(live / MINUTE_MS) * (size / BYTES_PER_GB);
+  return versionOverlapMinutes(version, hour, now) * (size / BYTES_PER_GB);
 }
 
 /**
- * GB-minutes one version books into one hour, minimum included. This is the
- * one function the rollup trusts: two calls with the same version and hour
- * always return the same number, whether or not other hours were rolled in
- * between, so a re-run (the reconciler's re-roll, a missed trigger replayed)
- * writes the same total again.
+ * The whole minutes one version books into one hour, minimum included. This
+ * is the one function the rollup trusts: two calls with the same version and
+ * hour always return the same integer, whether or not other hours were rolled
+ * in between, so a re-run (the reconciler's re-roll, a missed trigger
+ * replayed) writes the same total again.
+ *
+ * The size is deliberately NOT in this number. versionBookedByteMinutes
+ * below is booked minutes x size, the exact integer both gbMinutesInHour
+ * and the SQL in rollupHour sum, so an account's hour is one integer sum and
+ * the two implementations cannot drift in the last bits of a float.
  * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
+ * @returns {number} whole booked minutes
  */
-export function versionGbMinutesInHour(version, hour, now = Date.now()) {
+export function versionBookedMinutes(version, hour, now = Date.now()) {
   const start = hourStart(hour);
-  // versionOverlapGbMinutes is the one place a version's size is read and
-  // checked, and it books the same GB the shortfall below books, so the two
-  // halves of this hour cannot disagree about a version's size.
-  const overlap = versionOverlapGbMinutes(version, start, now);
-  const size = Number(version.sizeBytes);
+  const overlap = versionOverlapMinutes(version, start, now);
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
     // Still live when this hour is rolled: book only the overlap. Its shortfall
     // against the minimum, if its life ends young later, is booked by the hour
@@ -234,21 +253,54 @@ export function versionGbMinutesInHour(version, hour, now = Date.now()) {
     return overlap;
   }
   const lifetime = versionLifetimeMinutes(version, now);
-  let booked = overlap;
-  if (lifetime < MINIMUM_MINUTES_PER_VERSION) {
-    // The shortfall against the 1-hour minimum, booked once, in the hour the
-    // version stopped. Each hour's overlap is rounded down to whole minutes,
-    // so the hours' sum can sit a fraction of a minute beside the lifetime
-    // floor, but the total booked never falls under the spec's minimum and
-    // never exceeds it by more than that fraction: no under-bill and no
-    // double-count, whichever hours were rolled first.
-    booked += (MINIMUM_MINUTES_PER_VERSION - lifetime) * (size / BYTES_PER_GB);
+  if (lifetime >= MINIMUM_MINUTES_PER_VERSION) {
+    return overlap;
   }
-  return booked;
+  // The shortfall against the 1-hour minimum, booked once, in the hour the
+  // version stopped. Each hour's overlap is rounded down to whole minutes,
+  // so the hours' sum can sit a fraction of a minute beside the lifetime
+  // floor, but the total booked never falls under the spec's minimum and
+  // never exceeds it by more than that fraction: no under-bill and no
+  // double-count, whichever hours were rolled first.
+  return overlap + (MINIMUM_MINUTES_PER_VERSION - lifetime);
 }
 
 /**
- * GB-minutes for a list of versions over one hour.
+ * One version's booking for one hour as an exact integer of byte-minutes:
+ * booked minutes x size in bytes. The unit both the JS reference
+ * (gbMinutesInHour) and the SQL in rollupHour sum, so an account's hour is
+ * one integer addition in either and the GB division happens once, at the
+ * end. Integer addition does not care about order, so the two agree exactly.
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
+ * @param {number|Date|string} hour
+ * @param {number|Date|string} now
+ * @returns {number} byte-minutes
+ */
+export function versionBookedByteMinutes(version, hour, now = Date.now()) {
+  const size = wholeBytes(version.sizeBytes);
+  if (size === null) {
+    throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
+  }
+  return versionBookedMinutes(version, hour, now) * size;
+}
+
+/**
+ * GB-minutes one version books into one hour, minimum included. This is the
+ * per-version form of versionBookedByteMinutes in GB, kept as the readable
+ * spec reference the tests pin. An hour's total comes from
+ * versionBookedByteMinutes, not from summing this per version, so the total
+ * cannot drift in a float.
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
+ * @param {number|Date|string} hour
+ * @param {number|Date|string} now
+ */
+export function versionGbMinutesInHour(version, hour, now = Date.now()) {
+  return versionBookedByteMinutes(version, hour, now) / BYTES_PER_GB;
+}
+
+/**
+ * GB-minutes for a list of versions over one hour: the exact integer
+ * byte-minute sum scaled once, the same total rollupHour's SQL stores.
  * @param {{createdAt: number, hiddenAt: number|null}[]} versions
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
@@ -257,24 +309,54 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   if (!Array.isArray(versions)) {
     throw new TypeError(`gbMinutesInHour needs an array of versions, got ${String(versions)}`);
   }
-  let total = 0;
+  let units = 0;
   for (const version of versions) {
-    total += versionGbMinutesInHour(version, hour, now);
+    units += versionBookedByteMinutes(version, hour, now);
   }
-  return total;
+  return units / BYTES_PER_GB;
 }
 
-// Every version that was live in one closed hour, across every account at
-// once: the set-based read one rollup statement is built from. The billing
-// window is [created_at, hidden_at), so a version counts in this hour when it
-// was written before the hour ended and was still visible when the hour began
-// - `>=`, not `>`, because a version hidden exactly on the hour's first
-// instant has no overlap here but still owes this hour its 1-hour-minimum
-// shortfall (see versionGbMinutesInHour).
-const HOUR_VERSIONS_SQL = `SELECT account_id, size_bytes, created_at, hidden_at
+// One closed UTC hour's byte-minutes for EVERY account, computed and grouped
+// by account IN SQL. The billing window is [created_at, hidden_at), so a
+// version counts in this hour when it was written before the hour ended and
+// was still visible when the hour began - `>=`, not `>`, because a version
+// hidden exactly on the hour's first instant has no overlap here but still
+// owes this hour its 1-hour-minimum shortfall (see versionBookedMinutes).
+//
+// The expression is a transcription of versionBookedByteMinutes per row, and
+// it is the SAME integer unit (booked minutes x size in bytes) that
+// gbMinutesInHour sums in JS, so SQLite's SUM (an exact integer addition,
+// order-independent) and the JS reference cannot drift in a float. One read,
+// one row per account, however many versions exist: the rows this statement
+// returns stay flat as an account's file count grows, which is the point -
+// the previous version read every live version into the Worker and summed
+// there, so a catch-up's cost grew with the customer's files.
+//
+// ?1 = hour start, ?2 = hour end. A still-live version's overlap is bounded
+// by the hour end: a closed hour is already over, so the rollup instant needs
+// no third parameter here (the JS reference takes `now` and ignores it for the
+// same reason).
+export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
+    CAST(SUM(
+      (
+        (CASE
+          WHEN MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) < 60000
+            THEN 0
+          ELSE CAST(MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) / 60000 AS INTEGER)
+        END)
+        + (CASE
+          WHEN hidden_at IS NOT NULL AND hidden_at >= ?1 AND hidden_at < ?2 AND hidden_at >= created_at
+            AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
+            THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
+            ELSE 0
+          END)
+      ) * size_bytes
+    ) AS REAL) / 1e9 AS gb_minutes,
+    COUNT(*) AS versions
   FROM file_versions
-  WHERE created_at < ?1 AND (hidden_at IS NULL OR hidden_at >= ?2)
-  ORDER BY created_at`;
+  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?1)
+  GROUP BY account_id
+  ORDER BY account_id`;
 
 // An hour's rows for accounts nothing was live for in it: the rollup is the
 // authority on the hour, so a row an earlier run wrote (before the versions
@@ -288,13 +370,18 @@ const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
   )`;
 
 /**
- * One closed UTC hour's GB-minutes for EVERY account, from one set-based read
- * grouped by account. This is the statement shape the hourly trigger runs:
- * the cost of rolling an hour is two D1 calls (one read, one batch) however
- * many accounts exist, so a catch-up over a day's hours cannot push a trigger
- * into the Worker's per-invocation query budget by growing with the customer
- * count. The per-version arithmetic stays in JS (gbMinutesInHour), so the
- * money formula has one implementation, not a second one transcribed into SQL.
+ * One closed UTC hour's GB-minutes for EVERY account, from one SQL statement
+ * that groups by account (HOUR_GB_MINUTES_SQL). This is the statement shape
+ * the hourly trigger runs: the cost of rolling an hour is two D1 calls (one
+ * read, one batch) however many accounts exist, and the read returns one row
+ * per account rather than one row per version, so it stays flat as a
+ * customer's file count grows.
+ *
+ * The money formula lives once, as a whole-minute count multiplied by the
+ * size in bytes (versionBookedByteMinutes); this statement computes the same
+ * integer per row and SQLite sums them exactly, and gbMinutesInHour is the JS
+ * reference a differential test pins it against - so there is one rule, not
+ * two, and no float drift between them.
  * @param {D1Database} db
  * @param {number} hourStartMs epoch ms of the hour start
  * @param {number} nowMs epoch ms, the rollup instant
@@ -303,13 +390,16 @@ const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
 export async function rollupHour(db, hourStartMs, nowMs) {
   const hour = hourStart(hourStartMs);
   const hourEnd = hour + HOUR_MS;
-  if (hourEnd > toMillis(nowMs, "nowMs")) {
+  const at = toMillis(nowMs, "nowMs");
+  if (hourEnd > at) {
     // Only closed hours are rolled. The hour in progress is billed by the
     // next trigger, when the rollup can see the whole of it.
     throw new RangeError(`hour ${hour} is not closed yet`);
   }
-  const result = await db.prepare(HOUR_VERSIONS_SQL).bind(hourEnd, hour).all();
-  const byAccount = new Map();
+  const result = await db.prepare(HOUR_GB_MINUTES_SQL).bind(hour, hourEnd).all();
+  const statements = [];
+  let gbMinutes = 0;
+  let versions = 0;
   for (const row of result.results || []) {
     // Not a skipped row and not a silent filter: a version with no account
     // cannot be billed to anyone, and quietly rolling past it would leave
@@ -318,28 +408,17 @@ export async function rollupHour(db, hourStartMs, nowMs) {
     if (typeof row.account_id !== "string" || row.account_id === "") {
       throw new TypeError("file_versions has a row with no account_id");
     }
-    const versions = byAccount.get(row.account_id);
-    if (versions === undefined) {
-      byAccount.set(row.account_id, [toVersion(row)]);
-    } else {
-      versions.push(toVersion(row));
-    }
-  }
-  const statements = [];
-  let gbMinutes = 0;
-  let versions = 0;
-  for (const [accountId, accountVersions] of byAccount) {
-    const total = gbMinutesInHour(accountVersions, hour, nowMs);
+    const total = Number(row.gb_minutes);
     if (!Number.isFinite(total) || total < 0) {
       throw new TypeError(`gbMinutes must be 0 or more, got ${total}`);
     }
-    statements.push(usageStatement(db, accountId, hour, total, nowMs));
+    statements.push(usageStatement(db, row.account_id, hour, total, at));
     gbMinutes += total;
-    versions += accountVersions.length;
+    versions += Number(row.versions ?? 0);
   }
   statements.push(db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour));
   await db.batch(statements);
-  return { hour, gbMinutes, accounts: byAccount.size, versions };
+  return { hour, gbMinutes, accounts: result.results?.length ?? 0, versions };
 }
 
 /**
@@ -385,17 +464,14 @@ function usageStatement(db, accountId, hour, gbMinutes, now) {
 }
 
 /**
- * Every account that has a stored version. The rollup walks this list, so an
- * account that never stored a file is never queried and never gets an empty
- * usage row.
- *
- * The list is deliberately NOT bounded by the hours being rolled: a version
- * created long ago and still live (hidden_at NULL) has minutes in every hour,
- * so an account filter keyed on recent created_at would drop exactly the
- * accounts with standing storage and underbill them. The (account_id,
- * created_at) index makes this an index-only DISTINCT, and the catch-up run
- * below amortizes it across every hour it rolls, so the cost per rolled hour
- * falls even though the scan itself is whole-history.
+ * Every account that has a stored version. Not on the rollup's path any more
+ * - the rollup groups its own per-hour read by account - so this is a
+ * read-only helper the nightly reconciler (#59) and operator tooling can use
+ * to enumerate who the meter is billing. It is deliberately NOT bounded by
+ * the hours being rolled: a version created long ago and still live
+ * (hidden_at NULL) has minutes in every hour, so an account filter keyed on
+ * recent created_at would drop exactly the accounts with standing storage.
+ * The (account_id, created_at) index makes this an index-only DISTINCT.
  * @param {D1Database} db
  * @returns {Promise<string[]>}
  */
@@ -997,11 +1073,11 @@ export const REROLL_GRACE_HOURS = 1;
 // outage cannot leave hours unrolled and cannot make one run unbounded work:
 // successive runs walk the whole backlog without skipping an hour.
 //
-// Sized to the query budget: one hour costs three D1 calls (one set-based
-// read, one batch of every account's usage writes beside the empty-hour
-// cleanup, one mark write), and the Workers free plan allows 50 subrequests
-// per invocation, so 12 hours (36 calls) plus the run's own housekeeping
-// (state read, floor read, account list, purge) stays inside that ceiling
+// Sized to the query budget: one hour costs three D1 calls (one grouped read
+// returning a row per account, one batch of every account's usage writes
+// beside the empty-hour cleanup, one mark write), and the Workers free plan
+// allows 50 subrequests per invocation, so 12 hours (36 calls) plus the run's
+// own housekeeping (state read, floor read, purge) stays inside that ceiling
 // with headroom.
 export const MAX_CATCHUP_HOURS = 12;
 
@@ -1097,18 +1173,22 @@ export async function runMeterCron(db, now = Date.now()) {
   from = Math.min(from, lastClosed);
   const through = Math.min(lastClosed, from + (MAX_CATCHUP_HOURS - 1) * HOUR_MS);
   const hours = Math.round((through - from) / HOUR_MS) + 1;
-  // The name the trigger reports, not a per-hour walk input: one statement,
-  // once per run.
-  const accounts = await listMeteredAccounts(db);
+  // The name the trigger reports, not a per-hour walk input: the account
+  // count is what the newest rolled hour covered, which rollupHour already
+  // knows from its GROUP BY. The old whole-history account list is gone: it
+  // was a second statement per run whose result nothing rolled past, and it
+  // scanned every version ever stored.
   let gbMinutes = 0;
+  let accounts = 0;
   for (let hour = from; hour <= through; hour += HOUR_MS) {
     const rolled = await rollupHour(db, hour, at);
     gbMinutes += rolled.gbMinutes;
+    accounts = rolled.accounts;
     await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(hour).run();
   }
   await db
     .prepare(PURGE_EVENTS_SEEN_SQL)
     .bind(at - EVENTS_SEEN_RETENTION_MS)
     .run();
-  return { from, through, hours, accounts: accounts.length, gbMinutes };
+  return { from, through, hours, accounts, gbMinutes };
 }
