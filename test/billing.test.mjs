@@ -18,9 +18,9 @@
 //
 // The shapes the two consumers read (the usage page and `drive usage`, issue
 // #53) are in test/usage.test.mjs.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
   B2_FALLBACK_CONFIG,
   BILLING_CONFIG,
@@ -29,11 +29,12 @@ import {
   handleUsageRequest,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyStorageBillUsd,
   monthlyCeilingUsd,
+  monthlyStorageBillUsd,
   savedLine,
   usageSummary,
 } from "../src/billing.js";
+import worker from "../src/index.js";
 
 // Minutes in an average month, the spec's divisor. Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
@@ -264,10 +265,7 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -405,10 +403,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
   for (const bad of [Number.NaN, -1, "600", null]) {
     assert.throws(() => monthBillCents({ gbMinutes: bad, peakGb: 0 }), TypeError);
     assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: bad }), TypeError);
-    assert.throws(
-      () => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: bad }),
-      TypeError,
-    );
+    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: bad }), TypeError);
     assert.throws(
       () => monthBillCents({ gbMinutes: 0, peakGb: 0, averageStoredGb: bad }),
       TypeError,

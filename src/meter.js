@@ -70,9 +70,7 @@
 export function toMillis(value, field) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new TypeError(
-        `${field} must be a finite number of milliseconds, got ${value}`,
-      );
+      throw new TypeError(`${field} must be a finite number of milliseconds, got ${value}`);
     }
     return Math.trunc(value);
   }
@@ -168,9 +166,7 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
       ? toMillis(now, "now")
       : toMillis(version.hiddenAt, "hiddenAt");
   if (end < created) {
-    throw new RangeError(
-      `hiddenAt ${end} is before createdAt ${created}`,
-    );
+    throw new RangeError(`hiddenAt ${end} is before createdAt ${created}`);
   }
   return Math.floor((end - created) / MINUTE_MS);
 }
@@ -186,9 +182,7 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
 export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
   const size = Number(version.sizeBytes);
   if (!Number.isFinite(size) || size < 0) {
-    throw new TypeError(
-      `version size must be 0 or more bytes, got ${version.sizeBytes}`,
-    );
+    throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
   }
   const start = hourStart(hour);
   const end = start + HOUR_MS;
@@ -261,9 +255,7 @@ export function versionGbMinutesInHour(version, hour, now = Date.now()) {
  */
 export function gbMinutesInHour(versions, hour, now = Date.now()) {
   if (!Array.isArray(versions)) {
-    throw new TypeError(
-      `gbMinutesInHour needs an array of versions, got ${String(versions)}`,
-    );
+    throw new TypeError(`gbMinutesInHour needs an array of versions, got ${String(versions)}`);
   }
   let total = 0;
   for (const version of versions) {
@@ -345,9 +337,7 @@ export async function rollupHour(db, hourStartMs, nowMs) {
     gbMinutes += total;
     versions += accountVersions.length;
   }
-  statements.push(
-    db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour),
-  );
+  statements.push(db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour));
   await db.batch(statements);
   return { hour, gbMinutes, accounts: byAccount.size, versions };
 }
@@ -524,11 +514,11 @@ export function validateEvent(input) {
   // the rest of the event matters at all: an action the meter does not bill
   // is refused by name whatever else the event carries, and the checks below
   // never have to reason about an effect that does not exist.
-  const action =
-    typeof event.action === "string" ? event.action.trim().toLowerCase() : "uploaded";
-  const effect = action in EVENT_ACTIONS
-    ? EVENT_ACTIONS[/** @type {keyof typeof EVENT_ACTIONS} */ (action)]
-    : null;
+  const action = typeof event.action === "string" ? event.action.trim().toLowerCase() : "uploaded";
+  const effect =
+    action in EVENT_ACTIONS
+      ? EVENT_ACTIONS[/** @type {keyof typeof EVENT_ACTIONS} */ (action)]
+      : null;
   if (effect === null) {
     return { error: `Unknown storage event action: ${action}` };
   }
@@ -539,9 +529,7 @@ export function validateEvent(input) {
   // folder is read from the root of that path, so a "/u/" deeper in a file's
   // own name is never taken for an account.
   const named = /** @type {string[]} */ (
-    [event.path, event.keyName].filter(
-      (value) => typeof value === "string" && value !== "",
-    )
+    [event.path, event.keyName].filter((value) => typeof value === "string" && value !== "")
   );
   const accountId = named.length === 0 ? null : folderAccount(named[0]);
   if (accountId === null) {
@@ -553,8 +541,7 @@ export function validateEvent(input) {
   // The row's path: the field that resolved the account, so the row is never
   // left without a path and never carries one that names another account.
   const path = named.find((value) => folderAccount(value) === accountId) ?? named[0];
-  const b2FileId =
-    typeof event.b2FileId === "string" ? event.b2FileId.trim() : "";
+  const b2FileId = typeof event.b2FileId === "string" ? event.b2FileId.trim() : "";
   if (b2FileId === "" || b2FileId.length > 512) {
     return { error: "The event does not name a file version." };
   }
@@ -594,11 +581,18 @@ export function validateEvent(input) {
   // own life and is corrected to the truth by the create that follows, since
   // the upsert's created_at = MIN always takes the earliest time any event
   // for the version carries. Both orders therefore end on the same row.
-  if (effect === "hide" && (event.hiddenAt === undefined || event.hiddenAt === null || event.hiddenAt === "") && (eventTimestamp === undefined || eventTimestamp === null || eventTimestamp === "")) {
+  if (
+    effect === "hide" &&
+    (event.hiddenAt === undefined || event.hiddenAt === null || event.hiddenAt === "") &&
+    (eventTimestamp === undefined || eventTimestamp === null || eventTimestamp === "")
+  ) {
     return { error: "The event does not say when the version stopped being visible." };
   }
   let createdAt;
-  if (effect === "create" && (event.createdAt === undefined || event.createdAt === null || event.createdAt === "")) {
+  if (
+    effect === "create" &&
+    (event.createdAt === undefined || event.createdAt === null || event.createdAt === "")
+  ) {
     return { error: "The event does not say when the version was written." };
   }
   try {
@@ -688,9 +682,7 @@ export function validateEvent(input) {
 function eventStatements(db, event, receivedAt) {
   return [
     db
-      .prepare(
-        "INSERT OR IGNORE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)",
-      )
+      .prepare("INSERT OR IGNORE INTO events_seen (b2_event_id, received_at) VALUES (?1, ?2)")
       .bind(event.eventId, receivedAt),
     db
       .prepare(
@@ -811,9 +803,10 @@ export async function tokensMatch(presented, configured) {
   // crypto.subtle.timingSafeEqual is a Workers API, so the generated runtime
   // types know it and the DOM ones do not; the cast is the platform difference,
   // and the accumulator below is the answer on a runtime without it.
-  const subtle = /** @type {SubtleCrypto & {timingSafeEqual?: (a: ArrayBuffer, b: ArrayBuffer) => boolean}} */ (
-    crypto.subtle
-  );
+  const subtle =
+    /** @type {SubtleCrypto & {timingSafeEqual?: (a: ArrayBuffer, b: ArrayBuffer) => boolean}} */ (
+      crypto.subtle
+    );
   if (typeof subtle.timingSafeEqual === "function") {
     return subtle.timingSafeEqual(left, right);
   }
@@ -1113,6 +1106,9 @@ export async function runMeterCron(db, now = Date.now()) {
     gbMinutes += rolled.gbMinutes;
     await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(hour).run();
   }
-  await db.prepare(PURGE_EVENTS_SEEN_SQL).bind(at - EVENTS_SEEN_RETENTION_MS).run();
+  await db
+    .prepare(PURGE_EVENTS_SEEN_SQL)
+    .bind(at - EVENTS_SEEN_RETENTION_MS)
+    .run();
   return { from, through, hours, accounts: accounts.length, gbMinutes };
 }

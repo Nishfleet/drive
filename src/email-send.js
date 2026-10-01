@@ -19,11 +19,7 @@
 // every branch without a Worker runtime, like src/waitlist.js and
 // src/status.js.
 
-import {
-  EMAIL_KINDS,
-  FROM_NAME,
-  renderEmail,
-} from "./emails.js";
+import { EMAIL_KINDS, FROM_NAME, renderEmail } from "./emails.js";
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -194,7 +190,9 @@ function readRequest(body) {
   try {
     const rendered = renderEmail(
       kind,
-      typeof data === "object" && data !== null ? /** @type {Record<string, unknown>} */ (data) : {},
+      typeof data === "object" && data !== null
+        ? /** @type {Record<string, unknown>} */ (data)
+        : {},
     );
     return { ok: true, kind, to: to.trim(), data, rendered };
   } catch (error) {
@@ -224,26 +222,17 @@ export async function handleSendEmailRequest(request, env) {
       },
     });
   }
-  if (!isAuthorizedSend(request, env && env.EMAIL_SEND_TOKEN)) {
-    return json(
-      { error: "Drive emails are only sent from the drive service." },
-      403,
-    );
+  if (!isAuthorizedSend(request, env?.EMAIL_SEND_TOKEN)) {
+    return json({ error: "Drive emails are only sent from the drive service." }, 403);
   }
   if (!isSameOriginRequest(request)) {
-    return json(
-      { error: "Drive emails are only sent from the drive service." },
-      403,
-    );
+    return json({ error: "Drive emails are only sent from the drive service." }, 403);
   }
   let body;
   try {
     body = await request.json();
   } catch (error) {
-    return json(
-      { error: `The request body is not valid JSON: ${String(error)}` },
-      400,
-    );
+    return json({ error: `The request body is not valid JSON: ${String(error)}` }, 400);
   }
   const read = readRequest(body);
   if (!read.ok) {
@@ -252,16 +241,13 @@ export async function handleSendEmailRequest(request, env) {
   // Bound once: the `ok` discriminant narrows the result, and a union property
   // is not narrowed across the awaits below.
   const wanted = read;
-  if (!env || !env.EMAIL) {
+  if (!env?.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
   if (typeof env.MAIL_FROM !== "string" || env.MAIL_FROM.trim().length === 0) {
     // A deployment with no sending domain yet: closed, and it says which
     // setting is missing rather than mailing from a placeholder.
-    return json(
-      { error: "MAIL_FROM is not set on this deployment." },
-      503,
-    );
+    return json({ error: "MAIL_FROM is not set on this deployment." }, 503);
   }
   // Bound once: the check above narrows the field, and a property of a
   // mutable object is not narrowed across the await below.

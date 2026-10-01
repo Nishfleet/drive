@@ -14,43 +14,39 @@
 // No fake D1: the adapter is the real thing - node:sqlite is in the
 // standard library, so the repo needs no new dependency to test its
 // migrations.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
-  EVENTS_SEEN_RETENTION_MS,
   EVENT_ACTIONS,
-  EVENTS_PER_BATCH,
-  MAX_CATCHUP_HOURS,
-  MINUTE_MS,
-  MINIMUM_MINUTES_PER_VERSION,
-  METER_CRON,
   EVENT_TOKEN_HEADER,
+  EVENTS_PER_BATCH,
+  EVENTS_SEEN_RETENTION_MS,
   folderAccount,
   gbMinutesInHour,
   handleStorageEventRequest,
   hourStart,
   listMeteredAccounts,
+  MAX_CATCHUP_HOURS,
+  METER_CRON,
+  MINIMUM_MINUTES_PER_VERSION,
+  MINUTE_MS,
   recordEvent,
   recordUsage,
   rollupHour,
   runMeterCron,
   tokensMatch,
+  toMillis,
+  toVersion,
   validateEvent,
   versionGbMinutesInHour,
   versionLifetimeMinutes,
-  toVersion,
-  toMillis,
 } from "../src/meter.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
-import {
-  makeMeteredDB,
-  GB,
-  at,
-  midnight,
-} from "./d1-sqlite.mjs";
+import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 const TOKEN = "test-event-token";
 
@@ -81,7 +77,10 @@ async function storeCreate(db, accountId, overrides = {}) {
 test("every timestamp is epoch milliseconds, and an unusable one is loud", () => {
   assert.equal(toMillis(1_700_000_000_000, "x"), 1_700_000_000_000);
   assert.equal(toMillis("2026-09-30T00:00:00.000Z", "x"), at("2026-09-30T00:00:00.000Z"));
-  assert.equal(toMillis(new Date(at("2026-09-30T00:00:00.000Z")), "x"), at("2026-09-30T00:00:00.000Z"));
+  assert.equal(
+    toMillis(new Date(at("2026-09-30T00:00:00.000Z")), "x"),
+    at("2026-09-30T00:00:00.000Z"),
+  );
   assert.equal(toMillis(1_700_000_000_000.9, "x"), 1_700_000_000_000);
   assert.throws(() => toMillis("not a date", "createdAt"), TypeError);
   assert.throws(() => toMillis(Number.NaN, "createdAt"), TypeError);
@@ -94,7 +93,10 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
   assert.equal(hourStart("2026-09-30T00:00:00.000Z"), midnight);
   assert.equal(hourStart("2026-09-30T00:59:59.999Z"), midnight);
   assert.equal(hourStart("2026-09-30T01:00:00.000Z"), midnight + 60 * MINUTE_MS);
-  assert.equal(new Date(hourStart("2026-10-15T12:34:56.000Z")).toISOString(), "2026-10-15T12:00:00.000Z");
+  assert.equal(
+    new Date(hourStart("2026-10-15T12:34:56.000Z")).toISOString(),
+    "2026-10-15T12:00:00.000Z",
+  );
 });
 
 // The spec's price is 2 cents per decimal GB-month (docs/build-spec.md),
@@ -103,9 +105,19 @@ test("an hour bucket is the UTC hour, and the minute inside it does not move it"
 test("the meter's GB is decimal (the spec's), not binary, and a month of 50 GB is exactly 2,190,000 GB-minutes", () => {
   assert.equal(BYTES_PER_GB, 1_000_000_000);
   const month = [];
-  for (let h = 0; h < 30 * 24; h += 1) month.push({ sizeBytes: 50 * GB, createdAt: midnight() + h * 60 * MINUTE_MS, hiddenAt: null });
+  for (let h = 0; h < 30 * 24; h += 1)
+    month.push({ sizeBytes: 50 * GB, createdAt: midnight() + h * 60 * MINUTE_MS, hiddenAt: null });
   assert.equal(gbMinutesInHour(month, midnight(), midnight() + 30 * 24 * 60 * MINUTE_MS), 50 * 60);
-  const total = month.reduce((sum, v, h) => sum + versionGbMinutesInHour(v, midnight() + h * 60 * MINUTE_MS, midnight() + 30 * 24 * 60 * MINUTE_MS), 0);
+  const total = month.reduce(
+    (sum, v, h) =>
+      sum +
+      versionGbMinutesInHour(
+        v,
+        midnight() + h * 60 * MINUTE_MS,
+        midnight() + 30 * 24 * 60 * MINUTE_MS,
+      ),
+    0,
+  );
   assert.equal(total, 50 * 30 * 24 * 60, "a whole month of whole minutes is exact");
 });
 
@@ -118,7 +130,9 @@ test("a version is billed from created to hidden, hour by hour", () => {
     hiddenAt: at("2026-09-30T03:00:00.000Z"),
   };
   const now = at("2026-09-30T23:00:00.000Z");
-  const hours = [0, 1, 2, 3].map((h) => versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, now));
+  const hours = [0, 1, 2, 3].map((h) =>
+    versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, now),
+  );
   assert.deepEqual(hours, [300, 600, 600, 0]);
   const day = hours.reduce((sum, value) => sum + value, 0);
   assert.equal(day, 10 * 150);
@@ -143,9 +157,16 @@ test("a version shorter than an hour costs the full hour, exactly once", () => {
     createdAt: at("2026-09-30T01:00:00.000Z"),
     hiddenAt: at("2026-09-30T01:10:00.000Z"),
   };
-  const booked = gbMinutesInHour([version], midnight() + 60 * MINUTE_MS, at("2026-09-30T06:00:00.000Z"));
+  const booked = gbMinutesInHour(
+    [version],
+    midnight() + 60 * MINUTE_MS,
+    at("2026-09-30T06:00:00.000Z"),
+  );
   assert.equal(booked, 5 * 60);
-  assert.equal(gbMinutesInHour([version], midnight() + 120 * MINUTE_MS, at("2026-09-30T06:00:00.000Z")), 0);
+  assert.equal(
+    gbMinutesInHour([version], midnight() + 120 * MINUTE_MS, at("2026-09-30T06:00:00.000Z")),
+    0,
+  );
 });
 
 test("a version that outlives the minimum is never topped up", () => {
@@ -165,15 +186,31 @@ test("a version that outlives the minimum is never topped up", () => {
 test("a still-live version is billed for what it has stored so far, and nothing more", () => {
   const version = { sizeBytes: 4 * GB, createdAt: at("2026-09-30T00:00:00.000Z"), hiddenAt: null };
   assert.equal(versionGbMinutesInHour(version, midnight(), at("2026-09-30T01:00:00.000Z")), 240);
-  assert.equal(versionGbMinutesInHour({ ...version, createdAt: at("2026-09-30T02:00:00.000Z") }, midnight(), at("2026-09-30T06:00:00.000Z")), 0);
+  assert.equal(
+    versionGbMinutesInHour(
+      { ...version, createdAt: at("2026-09-30T02:00:00.000Z") },
+      midnight(),
+      at("2026-09-30T06:00:00.000Z"),
+    ),
+    0,
+  );
   assert.equal(versionGbMinutesInHour(version, midnight(), at("2026-09-29T23:00:00.000Z")), 0);
 });
 
 test("a version's stored minutes are the whole minutes between its two times", () => {
-  const version = { createdAt: at("2026-09-30T00:00:00.000Z"), hiddenAt: at("2026-09-30T01:30:00.000Z") };
+  const version = {
+    createdAt: at("2026-09-30T00:00:00.000Z"),
+    hiddenAt: at("2026-09-30T01:30:00.000Z"),
+  };
   assert.equal(versionLifetimeMinutes(version), 90);
-  assert.equal(versionLifetimeMinutes({ createdAt: version.createdAt, hiddenAt: version.createdAt }), 0);
-  assert.throws(() => versionLifetimeMinutes({ createdAt: version.hiddenAt, hiddenAt: version.createdAt }), RangeError);
+  assert.equal(
+    versionLifetimeMinutes({ createdAt: version.createdAt, hiddenAt: version.createdAt }),
+    0,
+  );
+  assert.throws(
+    () => versionLifetimeMinutes({ createdAt: version.hiddenAt, hiddenAt: version.createdAt }),
+    RangeError,
+  );
 });
 
 test("several versions in one hour add up, and a zero-size file is free", () => {
@@ -185,7 +222,10 @@ test("several versions in one hour add up, and a zero-size file is free", () => 
   ];
   assert.equal(gbMinutesInHour(versions, midnight(), now), 3 * 60);
   assert.throws(() => gbMinutesInHour("nope", midnight(), now), TypeError);
-  assert.throws(() => versionGbMinutesInHour({ sizeBytes: -1, createdAt: midnight() }, midnight(), now), TypeError);
+  assert.throws(
+    () => versionGbMinutesInHour({ sizeBytes: -1, createdAt: midnight() }, midnight(), now),
+    TypeError,
+  );
 });
 
 test("a version row is read from the column names D1 returns", () => {
@@ -215,29 +255,58 @@ test("the account comes from the key's own folder, and an event without one is r
   assert.equal(folderAccount("/u/"), null);
   assert.equal(folderAccount("/home/alice/u/bob/secret"), null);
   assert.equal(folderAccount("/u/alice/notes/u/bob/secret"), "alice");
-  assert.equal(validateEvent({ keyName: "/root/not-our-key", path: "/root/not-our-key" }).error,
-    "The event does not name an account folder under /u/.");
+  assert.equal(
+    validateEvent({ keyName: "/root/not-our-key", path: "/root/not-our-key" }).error,
+    "The event does not name an account folder under /u/.",
+  );
 });
 
 test("a valid event becomes the meter's own shape", () => {
   const parsed = validateEvent({
-    eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md",
-    b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), hiddenAt: null, action: "uploaded",
+    eventId: "evt-1",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    hiddenAt: null,
+    action: "uploaded",
   });
   assert.deepEqual(parsed, {
-    accountId: "abc123", b2FileId: "file-1", path: "/u/abc123/notes.md",
-    sizeBytes: GB, createdAt: midnight(), hiddenAt: null, eventId: "evt-1", effect: "create",
+    accountId: "abc123",
+    b2FileId: "file-1",
+    path: "/u/abc123/notes.md",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    hiddenAt: null,
+    eventId: "evt-1",
+    effect: "create",
   });
   assert.equal(
-    validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", hiddenAt: midnight() + MINUTE_MS, eventTimestamp: midnight() + MINUTE_MS }).effect,
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      action: "hidden",
+      hiddenAt: midnight() + MINUTE_MS,
+      eventTimestamp: midnight() + MINUTE_MS,
+    }).effect,
     "hide",
   );
 });
 
 test("an event with a bad field is refused with one sentence, never a stack", () => {
-  const bad = (overrides) => validateEvent({
-    eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded", ...overrides,
-  });
+  const bad = (overrides) =>
+    validateEvent({
+      eventId: "evt-1",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      createdAt: midnight(),
+      action: "uploaded",
+      ...overrides,
+    });
   const cases = [
     [{ b2FileId: "  " }, "The event does not name a file version."],
     [{ sizeBytes: -1 }, "The event's size is not a whole number of bytes."],
@@ -254,11 +323,20 @@ test("an event with a bad field is refused with one sentence, never a stack", ()
     [{ sizeBytes: "1e3" }, "The event's size is not a whole number of bytes."],
     [{ createdAt: "whenever" }, "The event has no usable timestamp."],
     [{ hiddenAt: "soon" }, "The event's hidden time is not a timestamp."],
-    [{ createdAt: midnight(), hiddenAt: midnight() - 1 }, "The event's hidden time is before the version was written."],
+    [
+      { createdAt: midnight(), hiddenAt: midnight() - 1 },
+      "The event's hidden time is before the version was written.",
+    ],
     [{ action: "exploded" }, "Unknown storage event action: exploded"],
-    [{ action: "deleted", hiddenAt: null }, "The event does not say when the version stopped being visible."],
+    [
+      { action: "deleted", hiddenAt: null },
+      "The event does not say when the version stopped being visible.",
+    ],
     [{ b2FileId: "x".repeat(600) }, "The event does not name a file version."],
-    [{ keyName: `/u/${"a".repeat(200)}/x`, path: `/u/${"a".repeat(200)}/x` }, "The event's account folder is too long."],
+    [
+      { keyName: `/u/${"a".repeat(200)}/x`, path: `/u/${"a".repeat(200)}/x` },
+      "The event's account folder is too long.",
+    ],
   ];
   for (const [overrides, message] of cases) {
     assert.equal(bad(overrides).error, message);
@@ -269,11 +347,30 @@ test("an event with a bad field is refused with one sentence, never a stack", ()
 });
 
 test("a hidden time equal to the written time is a version of zero length, not a bad one", () => {
-  assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), hiddenAt: midnight(), action: "uploaded" }).hiddenAt, midnight());
+  assert.equal(
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      createdAt: midnight(),
+      hiddenAt: midnight(),
+      action: "uploaded",
+    }).hiddenAt,
+    midnight(),
+  );
 });
 
 test("an event with no id of its own is keyed by the version and its times", () => {
-  const { eventId, ...withoutId } = validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), hiddenAt: midnight() + MINUTE_MS, action: "uploaded" });
+  const { eventId, ...withoutId } = validateEvent({
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    hiddenAt: midnight() + MINUTE_MS,
+    action: "uploaded",
+  });
   const first = validateEvent(withoutId);
   const again = validateEvent(withoutId);
   assert.equal(first.eventId, `abc123:file-1:${midnight()}:${midnight() + MINUTE_MS}`);
@@ -283,34 +380,117 @@ test("an event with no id of its own is keyed by the version and its times", () 
 
 test("the accepted actions are the storage lifecycle, and the list is pinned", () => {
   for (const action of ["created", "uploaded", "file created"]) {
-    assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action }).error, undefined, action);
+    assert.equal(
+      validateEvent({
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action,
+      }).error,
+      undefined,
+      action,
+    );
   }
   for (const action of ["hidden", "file hidden", "deleted", "file deleted"]) {
-    const parsed = validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, action, hiddenAt: midnight() + 30 * MINUTE_MS, eventTimestamp: midnight() + 30 * MINUTE_MS });
+    const parsed = validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      action,
+      hiddenAt: midnight() + 30 * MINUTE_MS,
+      eventTimestamp: midnight() + 30 * MINUTE_MS,
+    });
     assert.equal(parsed.error, undefined, action);
     assert.equal(parsed.hiddenAt, midnight() + 30 * MINUTE_MS);
-    assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, action }).error, "The event does not say when the version stopped being visible.", action);
+    assert.equal(
+      validateEvent({
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        action,
+      }).error,
+      "The event does not say when the version stopped being visible.",
+      action,
+    );
   }
-  const reportedLate = validateEvent({ keyName: "/u/abc123/", b2FileId: "file-9", sizeBytes: GB, action: "file hidden", eventTimestamp: midnight() + 45 * MINUTE_MS });
+  const reportedLate = validateEvent({
+    keyName: "/u/abc123/",
+    b2FileId: "file-9",
+    sizeBytes: GB,
+    action: "file hidden",
+    eventTimestamp: midnight() + 45 * MINUTE_MS,
+  });
   assert.equal(reportedLate.createdAt, midnight() + 45 * MINUTE_MS);
   assert.equal(reportedLate.hiddenAt, midnight() + 45 * MINUTE_MS);
-  assert.deepEqual(Object.keys(EVENT_ACTIONS).sort(), ["created", "deleted", "file created", "file deleted", "file hidden", "hidden", "uploaded"]);
-  assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, action: undefined }).error, "The event does not say when the version was written.");
-  assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, action: "exploded" }).error, "Unknown storage event action: exploded");
+  assert.deepEqual(Object.keys(EVENT_ACTIONS).sort(), [
+    "created",
+    "deleted",
+    "file created",
+    "file deleted",
+    "file hidden",
+    "hidden",
+    "uploaded",
+  ]);
+  assert.equal(
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      action: undefined,
+    }).error,
+    "The event does not say when the version was written.",
+  );
+  assert.equal(
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      action: "exploded",
+    }).error,
+    "Unknown storage event action: exploded",
+  );
 });
 
 test("a size-less hide is accepted and a size-less hide-first insert stores a placeholder", () => {
-  const hide = validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", eventTimestamp: midnight() + 30 * MINUTE_MS });
+  const hide = validateEvent({
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    action: "hidden",
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+  });
   assert.equal(hide.error, undefined);
   assert.equal(hide.sizeBytes, 0);
-  assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "uploaded" }).error, "The event's size is not a whole number of bytes.");
+  assert.equal(
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      action: "uploaded",
+    }).error,
+    "The event's size is not a whole number of bytes.",
+  );
 });
 
 // --- The dedup -----------------------------------------------------------
 
 test("a repeated event is dropped, and the version row survives the first one", async () => {
   const { db } = makeMeteredDB();
-  const first = validateEvent({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" });
+  const first = validateEvent({
+    eventId: "evt-1",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    action: "uploaded",
+  });
   assert.deepEqual(await recordEvent(db, first, midnight()), { stored: true });
   assert.deepEqual(await recordEvent(db, first, midnight()), { stored: false });
   assert.equal(db.tables.events_seen.size, 1);
@@ -322,18 +502,72 @@ test("a repeated event is dropped, and the version row survives the first one", 
 
 test("the same version, hidden later, is one row that stops counting", async () => {
   const { db } = makeMeteredDB();
-  await recordEvent(db, validateEvent({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }), midnight());
-  await recordEvent(db, validateEvent({ eventId: "evt-2", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", hiddenAt: midnight() + 30 * MINUTE_MS, sizeBytes: GB, eventTimestamp: midnight() + 30 * MINUTE_MS }), midnight() + 30 * MINUTE_MS);
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-1",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      createdAt: midnight(),
+      action: "uploaded",
+    }),
+    midnight(),
+  );
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-2",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      action: "hidden",
+      hiddenAt: midnight() + 30 * MINUTE_MS,
+      sizeBytes: GB,
+      eventTimestamp: midnight() + 30 * MINUTE_MS,
+    }),
+    midnight() + 30 * MINUTE_MS,
+  );
   assert.equal(db.tables.file_versions.size, 1);
   const stored = db.tables.file_versions.get(`abc123|file-1`);
   assert.equal(stored.hidden_at, midnight() + 30 * MINUTE_MS);
-  await recordEvent(db, validateEvent({ eventId: "evt-3", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }), midnight() + 40 * MINUTE_MS);
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-3",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: GB,
+      createdAt: midnight(),
+      action: "uploaded",
+    }),
+    midnight() + 40 * MINUTE_MS,
+  );
   assert.equal(db.tables.file_versions.get(`abc123|file-1`).hidden_at, midnight() + 30 * MINUTE_MS);
 });
 
 test("a hide that outruns its create bills the same minutes, whichever order the events arrive", async () => {
-  const create = validateEvent({ eventId: "c-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" });
-  const hide = validateEvent({ eventId: "h-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", createdAt: midnight() + 30 * MINUTE_MS, hiddenAt: midnight() + 30 * MINUTE_MS, sizeBytes: GB });
+  const create = validateEvent({
+    eventId: "c-1",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    action: "uploaded",
+  });
+  const hide = validateEvent({
+    eventId: "h-1",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    action: "hidden",
+    createdAt: midnight() + 30 * MINUTE_MS,
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    sizeBytes: GB,
+  });
   const createFirst = makeMeteredDB();
   await recordEvent(createFirst.db, validateEvent(create), midnight());
   await recordEvent(createFirst.db, validateEvent(hide), midnight() + 30 * MINUTE_MS);
@@ -342,7 +576,11 @@ test("a hide that outruns its create bills the same minutes, whichever order the
   await recordEvent(hideFirst.db, validateEvent(create), midnight() + 31 * MINUTE_MS);
   const a = createFirst.db.tables.file_versions.get(`abc123|file-1`);
   const b = hideFirst.db.tables.file_versions.get(`abc123|file-1`);
-  assert.equal(b.created_at, midnight(), "the create corrects the hide's time, and does not bill zero");
+  assert.equal(
+    b.created_at,
+    midnight(),
+    "the create corrects the hide's time, and does not bill zero",
+  );
   assert.equal(b.hidden_at, midnight() + 30 * MINUTE_MS);
   assert.equal(b.size_bytes, GB, "the hide carries a size and must not set it");
   for (const field of ["created_at", "hidden_at", "size_bytes"]) {
@@ -363,17 +601,45 @@ test("a hide that outruns its create bills the same minutes, whichever order the
   const reversed = await dayTotal(hideFirst.db);
   assert.equal(ordered.rows.length, 1, "one 1-hour minimum for the version");
   assert.equal(reversed.rows.length, 1, "the hide-first order bills the same single minimum");
-  assert.equal(reversed.rows[0].gb_minutes_live, ordered.rows[0].gb_minutes_live, "both orders bill the same day");
+  assert.equal(
+    reversed.rows[0].gb_minutes_live,
+    ordered.rows[0].gb_minutes_live,
+    "both orders bill the same day",
+  );
 });
 
 test("a create event without createdAt is refused so the meter never silently bills zero", () => {
-  const bad = validateEvent({ eventId: "c-bad", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, action: "uploaded" });
+  const bad = validateEvent({
+    eventId: "c-bad",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    action: "uploaded",
+  });
   assert.notEqual(bad.error, undefined, "a create with no createdAt is refused");
 });
 
 test("a hide that outruns its create and carries no createdAt bills the same minutes", async () => {
-  const create = validateEvent({ eventId: "c-3", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" });
-  const hide = validateEvent({ eventId: "h-3", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", eventTimestamp: midnight() + 30 * MINUTE_MS, hiddenAt: midnight() + 30 * MINUTE_MS, sizeBytes: GB });
+  const create = validateEvent({
+    eventId: "c-3",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    sizeBytes: GB,
+    createdAt: midnight(),
+    action: "uploaded",
+  });
+  const hide = validateEvent({
+    eventId: "h-3",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    action: "hidden",
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    sizeBytes: GB,
+  });
   const createFirst = makeMeteredDB();
   await recordEvent(createFirst.db, validateEvent(create), midnight());
   await recordEvent(createFirst.db, validateEvent(hide), midnight() + 30 * MINUTE_MS);
@@ -394,24 +660,49 @@ test("a hide that outruns its create and carries no createdAt bills the same min
 
 test("a still-live version's hour is unaffected by another version's shortfall", () => {
   const now = midnight() + 60 * MINUTE_MS;
-  const long = toVersion({ size_bytes: GB, created_at: midnight(), hidden_at: midnight() + 90 * MINUTE_MS });
-  const short = toVersion({ size_bytes: GB, created_at: midnight() + 20 * MINUTE_MS, hidden_at: midnight() + 30 * MINUTE_MS });
+  const long = toVersion({
+    size_bytes: GB,
+    created_at: midnight(),
+    hidden_at: midnight() + 90 * MINUTE_MS,
+  });
+  const short = toVersion({
+    size_bytes: GB,
+    created_at: midnight() + 20 * MINUTE_MS,
+    hidden_at: midnight() + 30 * MINUTE_MS,
+  });
   assert.equal(versionGbMinutesInHour(long, midnight(), now), 60);
   assert.equal(versionGbMinutesInHour(short, midnight(), now), 60);
 });
 
 test("a version hidden exactly on the hour's boundary still books its minimum in that hour", () => {
-  const version = toVersion({ size_bytes: GB, created_at: midnight() + 30 * MINUTE_MS, hidden_at: midnight() + 60 * MINUTE_MS });
+  const version = toVersion({
+    size_bytes: GB,
+    created_at: midnight() + 30 * MINUTE_MS,
+    hidden_at: midnight() + 60 * MINUTE_MS,
+  });
   const now = midnight() + 2 * 60 * MINUTE_MS;
-  assert.equal(versionGbMinutesInHour(version, midnight(), now), 30, "hour 00 is just its half hour of overlap");
-  assert.equal(versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now), 30, "hour 01 books the shortfall");
-  const dayTotal = versionGbMinutesInHour(version, midnight(), now) + versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now);
+  assert.equal(
+    versionGbMinutesInHour(version, midnight(), now),
+    30,
+    "hour 00 is just its half hour of overlap",
+  );
+  assert.equal(
+    versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now),
+    30,
+    "hour 01 books the shortfall",
+  );
+  const dayTotal =
+    versionGbMinutesInHour(version, midnight(), now) +
+    versionGbMinutesInHour(version, midnight() + 60 * MINUTE_MS, now);
   assert.equal(dayTotal, MINIMUM_MINUTES_PER_VERSION, "the version costs exactly its hour");
 });
 
 test("a create and hide in the same instant cost one hour, not zero", () => {
   const version = toVersion({ size_bytes: GB, created_at: midnight(), hidden_at: midnight() });
-  assert.equal(versionGbMinutesInHour(version, midnight(), midnight()), MINIMUM_MINUTES_PER_VERSION);
+  assert.equal(
+    versionGbMinutesInHour(version, midnight(), midnight()),
+    MINIMUM_MINUTES_PER_VERSION,
+  );
 });
 
 // --- The rollup ----------------------------------------------------------
@@ -427,17 +718,33 @@ test("a rollup writes the hour's GB-minutes and leaves download bytes alone", as
   await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 90 * MINUTE_MS);
   assert.equal(db.tables.usage_minutes.size, 1);
   assert.equal(db.tables.usage_minutes.get(`abc123|${midnight()}`).gb_minutes_live, 42.5);
-  sqlite.prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2 AND hour = ?3").run(1234, "abc123", midnight());
+  sqlite
+    .prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2 AND hour = ?3")
+    .run(1234, "abc123", midnight());
   await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 120 * MINUTE_MS);
-  assert.equal(sqlite.prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2").get("abc123", midnight()).download_bytes, 1234, "the meter must never zero another writer's column");
-  assert.equal(db.tables.usage_minutes.get(`abc123|${midnight()}`).rolled_up_at, midnight() + 120 * MINUTE_MS);
+  assert.equal(
+    sqlite
+      .prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
+      .get("abc123", midnight()).download_bytes,
+    1234,
+    "the meter must never zero another writer's column",
+  );
+  assert.equal(
+    db.tables.usage_minutes.get(`abc123|${midnight()}`).rolled_up_at,
+    midnight() + 120 * MINUTE_MS,
+  );
   await assert.rejects(() => recordUsage(db, "abc123", midnight(), -1, midnight()), TypeError);
 });
 
 test("one account's hour is summed from its own versions, and only that account's", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123");
-  await storeCreate(db, "other", { eventId: "evt-b", b2FileId: "big-bin", path: "/u/other/big.bin", sizeBytes: 100 * GB });
+  await storeCreate(db, "other", {
+    eventId: "evt-b",
+    b2FileId: "big-bin",
+    path: "/u/other/big.bin",
+    sizeBytes: 100 * GB,
+  });
   const now = midnight() + 60 * MINUTE_MS;
   const result = await rollupHour(db, midnight(), now);
   assert.equal(result.gbMinutes, 60 + 100 * 60, "each account's own GB, added");
@@ -458,7 +765,15 @@ test("an account with nothing stored never gets a row", async () => {
 test("an hour with nothing live in it clears its row rather than keeping a stale number", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123");
-  const hide = validateEvent({ eventId: "evt-hide", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", action: "hidden", hiddenAt: midnight() + 30 * MINUTE_MS, eventTimestamp: midnight() + 30 * MINUTE_MS });
+  const hide = validateEvent({
+    eventId: "evt-hide",
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: "file-1",
+    action: "hidden",
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+  });
   assert.equal(hide.error, undefined, hide.error);
   await recordEvent(db, hide, midnight() + 30 * MINUTE_MS);
   const first = await rollupHour(db, midnight(), midnight() + 60 * MINUTE_MS);
@@ -474,7 +789,10 @@ test("an hour with nothing live in it clears its row rather than keeping a stale
 test("an hour that has not closed yet is refused, so a rollup is never half an hour", async () => {
   const { db } = makeMeteredDB();
   await assert.rejects(() => rollupHour(db, midnight(), midnight() + 30 * MINUTE_MS), RangeError);
-  await assert.rejects(() => rollupHour(db, "", midnight(), midnight() + 60 * MINUTE_MS), TypeError);
+  await assert.rejects(
+    () => rollupHour(db, "", midnight(), midnight() + 60 * MINUTE_MS),
+    TypeError,
+  );
 });
 
 // --- The handlers --------------------------------------------------------
@@ -485,7 +803,15 @@ test("the intake stores a post and answers with counts, not with stored data", a
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
       headers: { "content-type": "application/json", [EVENT_TOKEN_HEADER]: TOKEN },
-      body: JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }),
+      body: JSON.stringify({
+        eventId: "evt-1",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
     });
   const first = await handleStorageEventRequest(request(), db, TOKEN);
   assert.equal(first.status, 200);
@@ -499,9 +825,34 @@ test("the intake stores a post and answers with counts, not with stored data", a
 test("a provider batch is stored event by event, and a re-sent batch is free", async () => {
   const { db } = makeMeteredDB();
   const batch = [
-    { eventId: "b-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "f1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" },
-    { eventId: "b-2", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "f2", sizeBytes: 2 * GB, createdAt: midnight(), action: "uploaded" },
-    { eventId: "b-3", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "f3", sizeBytes: 3 * GB, createdAt: midnight(), hiddenAt: midnight() + MINUTE_MS, action: "hidden" },
+    {
+      eventId: "b-1",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "f1",
+      sizeBytes: GB,
+      createdAt: midnight(),
+      action: "uploaded",
+    },
+    {
+      eventId: "b-2",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "f2",
+      sizeBytes: 2 * GB,
+      createdAt: midnight(),
+      action: "uploaded",
+    },
+    {
+      eventId: "b-3",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "f3",
+      sizeBytes: 3 * GB,
+      createdAt: midnight(),
+      hiddenAt: midnight() + MINUTE_MS,
+      action: "hidden",
+    },
   ];
   const post = () =>
     new Request("https://drive.example/api/storage-events", {
@@ -509,30 +860,63 @@ test("a provider batch is stored event by event, and a re-sent batch is free", a
       headers: { [EVENT_TOKEN_HEADER]: TOKEN },
       body: JSON.stringify(batch),
     });
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), { ok: true, stored: 3, deduped: 0 });
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), { ok: true, stored: 0, deduped: 3 });
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: 3,
+    deduped: 0,
+  });
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: 0,
+    deduped: 3,
+  });
   assert.equal(db.tables.file_versions.size, 3);
   assert.equal(db.tables.events_seen.size, 3);
 });
 
 test("a request larger than one batch chunk stores every event exactly once", async () => {
   const { db } = makeMeteredDB();
-  const many = Array.from({ length: EVENTS_PER_BATCH + 7 }, (_, i) =>
-    ({ eventId: `m-${i}`, keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: `f${i}`, sizeBytes: GB, createdAt: midnight(), action: "uploaded" }));
+  const many = Array.from({ length: EVENTS_PER_BATCH + 7 }, (_, i) => ({
+    eventId: `m-${i}`,
+    keyName: "/u/abc123/",
+    path: "/u/abc123/notes.md",
+    b2FileId: `f${i}`,
+    sizeBytes: GB,
+    createdAt: midnight(),
+    action: "uploaded",
+  }));
   const post = () =>
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
       headers: { [EVENT_TOKEN_HEADER]: TOKEN },
       body: JSON.stringify(many),
     });
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), { ok: true, stored: many.length, deduped: 0 });
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: many.length,
+    deduped: 0,
+  });
   assert.equal(db.tables.file_versions.size, many.length);
-  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), { ok: true, stored: 0, deduped: many.length });
+  assert.deepEqual(await (await handleStorageEventRequest(post(), db, TOKEN)).json(), {
+    ok: true,
+    stored: 0,
+    deduped: many.length,
+  });
   assert.equal(db.tables.file_versions.size, many.length);
 });
 
 test("a decimal-string size is accepted, because a webhook may stringify its numbers", () => {
-  assert.equal(validateEvent({ keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: String(GB), createdAt: midnight(), action: "uploaded" }).sizeBytes, GB);
+  assert.equal(
+    validateEvent({
+      keyName: "/u/abc123/",
+      path: "/u/abc123/notes.md",
+      b2FileId: "file-1",
+      sizeBytes: String(GB),
+      createdAt: midnight(),
+      action: "uploaded",
+    }).sizeBytes,
+    GB,
+  );
 });
 
 test("the intake refuses what it cannot bill, and says why in one sentence", async () => {
@@ -543,33 +927,147 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
       headers: { [EVENT_TOKEN_HEADER]: TOKEN },
       body,
     });
-  const wrongMethod = await handleStorageEventRequest(new Request("https://drive.example/api/storage-events"), db, TOKEN);
+  const wrongMethod = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events"),
+    db,
+    TOKEN,
+  );
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.headers.get("allow"), "POST");
-  assert.equal((await (await handleStorageEventRequest(new Request("https://drive.example/api/storage-events", { method: "POST", body: JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }) }), db, `${TOKEN}-wrong`)).json()).error, "The event could not be accepted from this caller.");
-  const unconfigured = await handleStorageEventRequest(post(JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" })), db, undefined);
+  assert.equal(
+    (
+      await (
+        await handleStorageEventRequest(
+          new Request("https://drive.example/api/storage-events", {
+            method: "POST",
+            body: JSON.stringify({
+              eventId: "evt-1",
+              keyName: "/u/abc123/",
+              path: "/u/abc123/notes.md",
+              b2FileId: "file-1",
+              sizeBytes: GB,
+              createdAt: midnight(),
+              action: "uploaded",
+            }),
+          }),
+          db,
+          `${TOKEN}-wrong`,
+        )
+      ).json()
+    ).error,
+    "The event could not be accepted from this caller.",
+  );
+  const unconfigured = await handleStorageEventRequest(
+    post(
+      JSON.stringify({
+        eventId: "evt-1",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
+    ),
+    db,
+    undefined,
+  );
   assert.equal(unconfigured.status, 503);
   assert.equal(unconfigured.headers.get("content-type"), "application/json; charset=utf-8");
   assert.equal(db.tables.file_versions.size, 0);
-  assert.equal((await (await handleStorageEventRequest(post("{oops"), db, TOKEN)).json()).error, "The request body is not valid JSON.");
-  assert.deepEqual((await (await handleStorageEventRequest(post('"nope"'), db, TOKEN)).json()).rejected, [{ index: 0, error: "Send one storage event as a JSON object." }]);
-  assert.equal((await (await handleStorageEventRequest(post("[]"), db, TOKEN)).json()).error, "The batch has no events in it.");
-  const mixed = await handleStorageEventRequest(post(JSON.stringify([{ eventId: "ok-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }, { eventId: "bad", action: "exploded" }])), db, TOKEN);
+  assert.equal(
+    (await (await handleStorageEventRequest(post("{oops"), db, TOKEN)).json()).error,
+    "The request body is not valid JSON.",
+  );
+  assert.deepEqual(
+    (await (await handleStorageEventRequest(post('"nope"'), db, TOKEN)).json()).rejected,
+    [{ index: 0, error: "Send one storage event as a JSON object." }],
+  );
+  assert.equal(
+    (await (await handleStorageEventRequest(post("[]"), db, TOKEN)).json()).error,
+    "The batch has no events in it.",
+  );
+  const mixed = await handleStorageEventRequest(
+    post(
+      JSON.stringify([
+        {
+          eventId: "ok-1",
+          keyName: "/u/abc123/",
+          path: "/u/abc123/notes.md",
+          b2FileId: "file-1",
+          sizeBytes: GB,
+          createdAt: midnight(),
+          action: "uploaded",
+        },
+        { eventId: "bad", action: "exploded" },
+      ]),
+    ),
+    db,
+    TOKEN,
+  );
   assert.equal(mixed.status, 400);
   const mixedBody = await mixed.json();
   assert.equal(mixedBody.ok, false);
   assert.equal(mixedBody.stored, 1);
   assert.equal(mixedBody.deduped, 0);
-  assert.deepEqual(mixedBody.rejected, [{ index: 1, error: "Unknown storage event action: exploded" }]);
+  assert.deepEqual(mixedBody.rejected, [
+    { index: 1, error: "Unknown storage event action: exploded" },
+  ]);
   assert.equal(db.tables.file_versions.size, 1, "the good event was stored");
-  const huge = await handleStorageEventRequest(post(JSON.stringify({ eventId: "big", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "x".repeat(300 * 1024), sizeBytes: GB, createdAt: midnight(), action: "uploaded" })), db, TOKEN);
+  const huge = await handleStorageEventRequest(
+    post(
+      JSON.stringify({
+        eventId: "big",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "x".repeat(300 * 1024),
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
+    ),
+    db,
+    TOKEN,
+  );
   assert.equal(huge.status, 413);
   assert.equal(db.tables.events_seen.size, 1);
-  const broken = { prepare: () => { throw new Error("D1 is down"); } };
-  const failed = await handleStorageEventRequest(post(JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" })), broken, TOKEN);
+  const broken = {
+    prepare: () => {
+      throw new Error("D1 is down");
+    },
+  };
+  const failed = await handleStorageEventRequest(
+    post(
+      JSON.stringify({
+        eventId: "evt-1",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
+    ),
+    broken,
+    TOKEN,
+  );
   assert.equal(failed.status, 503);
   assert.equal((await failed.json()).error, "The event could not be stored.");
-  const unbound = await handleStorageEventRequest(post(JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" })), undefined, TOKEN);
+  const unbound = await handleStorageEventRequest(
+    post(
+      JSON.stringify({
+        eventId: "evt-1",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
+    ),
+    undefined,
+    TOKEN,
+  );
   assert.equal(unbound.status, 503);
   assert.equal((await unbound.json()).error, "The meter cannot reach its database right now.");
 });
@@ -589,7 +1087,12 @@ test("the token compare is constant-shape and never a prefix match", async () =>
 test("the hourly trigger rolls the hour that just closed, for every account", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc");
-  await storeCreate(db, "def", { eventId: "e2", b2FileId: "big-bin", path: "/u/def/big.bin", sizeBytes: 10 * GB });
+  await storeCreate(db, "def", {
+    eventId: "e2",
+    b2FileId: "big-bin",
+    path: "/u/def/big.bin",
+    sizeBytes: 10 * GB,
+  });
   const result = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
   assert.equal(result.from, midnight());
   assert.equal(result.through, midnight());
@@ -599,21 +1102,35 @@ test("the hourly trigger rolls the hour that just closed, for every account", as
   assert.equal(db.tables.usage_minutes.get(`abc|${midnight()}`).gb_minutes_live, 60);
   assert.equal(db.tables.usage_minutes.get(`def|${midnight()}`).gb_minutes_live, 600);
   assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
-  await storeCreate(db, "ghi", { eventId: "late", path: "/u/ghi/late.md", createdAt: at("2026-09-30T00:30:00.000Z") });
+  await storeCreate(db, "ghi", {
+    eventId: "late",
+    path: "/u/ghi/late.md",
+    createdAt: at("2026-09-30T00:30:00.000Z"),
+  });
   const second = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
   assert.equal(second.through, midnight());
   assert.equal(second.gbMinutes, 11 * 60 + 30);
   const third = await runMeterCron(db, at("2026-09-30T01:06:00.000Z"));
   assert.equal(third.gbMinutes, 11 * 60 + 30);
-  assert.equal(db.tables.usage_minutes.get(`ghi|${midnight()}`).gb_minutes_live, 30, "one row for the hour, not one per run");
+  assert.equal(
+    db.tables.usage_minutes.get(`ghi|${midnight()}`).gb_minutes_live,
+    30,
+    "one row for the hour, not one per run",
+  );
   const fourth = await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
   assert.equal(fourth.from, midnight());
   assert.equal(fourth.through, midnight() + 60 * MINUTE_MS);
   assert.equal(fourth.hours, 2);
   assert.equal(db.tables.usage_minutes.get(`abc|${midnight()}`).gb_minutes_live, 60);
-  assert.equal(db.tables.usage_minutes.get(`abc|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live, 60);
+  assert.equal(
+    db.tables.usage_minutes.get(`abc|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+  );
   assert.equal(db.tables.usage_minutes.get(`ghi|${midnight()}`).gb_minutes_live, 30);
-  assert.equal(db.tables.usage_minutes.get(`ghi|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live, 60);
+  assert.equal(
+    db.tables.usage_minutes.get(`ghi|${midnight() + 60 * MINUTE_MS}`).gb_minutes_live,
+    60,
+  );
   assert.equal(db.tables.usage_minutes.size, 6);
 });
 
@@ -624,11 +1141,27 @@ test("a missed trigger is caught up by the next run, and re-running bills nothin
   assert.equal(caughtUp.from, midnight());
   assert.equal(caughtUp.through, midnight() + 2 * 60 * MINUTE_MS);
   assert.equal(caughtUp.hours, 3);
-  assert.equal([...db.tables.usage_minutes.values()].filter((r) => r.hour === midnight() || r.hour === midnight() + 60 * MINUTE_MS || r.hour === midnight() + 120 * MINUTE_MS).length, 3, "all three missed hours were rolled");
-  assert.deepEqual([...db.tables.usage_minutes.values()].map((r) => r.gb_minutes_live), [60, 60, 60]);
+  assert.equal(
+    [...db.tables.usage_minutes.values()].filter(
+      (r) =>
+        r.hour === midnight() ||
+        r.hour === midnight() + 60 * MINUTE_MS ||
+        r.hour === midnight() + 120 * MINUTE_MS,
+    ).length,
+    3,
+    "all three missed hours were rolled",
+  );
+  assert.deepEqual(
+    [...db.tables.usage_minutes.values()].map((r) => r.gb_minutes_live),
+    [60, 60, 60],
+  );
   const next = await runMeterCron(db, at("2026-09-30T04:05:00.000Z"));
   assert.equal(next.hours, 2);
-  assert.equal([...db.tables.usage_minutes.values()].reduce((sum, r) => sum + r.gb_minutes_live, 0), 4 * 60, "four hours of one 1 GB version, nothing double-counted");
+  assert.equal(
+    [...db.tables.usage_minutes.values()].reduce((sum, r) => sum + r.gb_minutes_live, 0),
+    4 * 60,
+    "four hours of one 1 GB version, nothing double-counted",
+  );
   assert.equal(db.tables.usage_minutes.size, 4);
 });
 
@@ -641,7 +1174,11 @@ test("the first run on an empty database does not poison the watermark to 1970",
   assert.equal(result.hours, 1);
   assert.equal(result.accounts, 0);
   assert.equal(result.gbMinutes, 0);
-  assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight(), "the mark is the hour that just rolled, never 0");
+  assert.equal(
+    db.tables.meter_rollup_state.get(1).rolled_through,
+    midnight(),
+    "the mark is the hour that just rolled, never 0",
+  );
   const next = await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
   assert.equal(next.from, midnight());
   assert.equal(next.through, at("2026-09-30T01:00:00.000Z"));
@@ -670,7 +1207,12 @@ test("one run drains at most MAX_CATCHUP_HOURS, and the next continues where it 
 test("the dedup table is purged of rows older than the retention window", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123", { eventId: "old" });
-  await storeCreate(db, "abc123", { eventId: "new", b2FileId: "file-2", path: "/u/abc123/older.md", createdAt: midnight() + 8 * 24 * 60 * MINUTE_MS });
+  await storeCreate(db, "abc123", {
+    eventId: "new",
+    b2FileId: "file-2",
+    path: "/u/abc123/older.md",
+    createdAt: midnight() + 8 * 24 * 60 * MINUTE_MS,
+  });
   assert.equal(db.tables.events_seen.size, 2);
   await runMeterCron(db, midnight() + 8 * 24 * 60 * MINUTE_MS + 5 * MINUTE_MS);
   assert.equal(db.tables.events_seen.size, 1, "the week-old dedup row is gone");
@@ -689,7 +1231,11 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
   let queries = 0;
   const many = makeMeteredDB(() => queries++);
   for (let a = 0; a < 25; a += 1) {
-    await storeCreate(many.db, `acct${a}`, { eventId: `e-${a}`, b2FileId: `f${a}`, path: `/u/acct${a}/x` });
+    await storeCreate(many.db, `acct${a}`, {
+      eventId: `e-${a}`,
+      b2FileId: `f${a}`,
+      path: `/u/acct${a}/x`,
+    });
   }
   queries = 0;
   const rolled = await runMeterCron(many.db, longAfter + 5 * MINUTE_MS);
@@ -710,10 +1256,20 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
   // a first run, the accounts list and the dedup purge - whatever the
   // customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
-  assert.equal(queries25, 3 * MAX_CATCHUP_HOURS + 4, "three round trips per hour plus the four around them");
+  assert.equal(
+    queries25,
+    3 * MAX_CATCHUP_HOURS + 4,
+    "three round trips per hour plus the four around them",
+  );
   assert.equal(rolled.accounts, 25);
-  assert.equal([...many.db.tables.usage_minutes.values()].filter((r) => r.hour < longAfter).length, MAX_CATCHUP_HOURS * 25);
-  assert.equal([...one.db.tables.usage_minutes.values()].filter((r) => r.hour < longAfter).length, MAX_CATCHUP_HOURS);
+  assert.equal(
+    [...many.db.tables.usage_minutes.values()].filter((r) => r.hour < longAfter).length,
+    MAX_CATCHUP_HOURS * 25,
+  );
+  assert.equal(
+    [...one.db.tables.usage_minutes.values()].filter((r) => r.hour < longAfter).length,
+    MAX_CATCHUP_HOURS,
+  );
 });
 
 // --- The wiring the repo can see -----------------------------------------
@@ -728,7 +1284,10 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   // tells the two trips apart by the cron string the platform hands it.
   assert.match(config, /import \{ METER_CRON \} from "\.\/src\/meter\.js";/);
   assert.match(config, /import \{ REINDEX_SCHEDULE \} from "\.\/src\/search\.js";/);
-  assert.match(config, /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/);
+  assert.match(
+    config,
+    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/,
+  );
 });
 
 test("the entrypoint routes the intake and runs the trigger", async () => {
@@ -737,7 +1296,15 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
       headers: { "content-type": "application/json", [EVENT_TOKEN_HEADER]: TOKEN },
-      body: JSON.stringify({ eventId: "evt-1", keyName: "/u/abc123/", path: "/u/abc123/notes.md", b2FileId: "file-1", sizeBytes: GB, createdAt: midnight(), action: "uploaded" }),
+      body: JSON.stringify({
+        eventId: "evt-1",
+        keyName: "/u/abc123/",
+        path: "/u/abc123/notes.md",
+        b2FileId: "file-1",
+        sizeBytes: GB,
+        createdAt: midnight(),
+        action: "uploaded",
+      }),
     }),
     { METER_DB: db, METER_EVENT_TOKEN: TOKEN },
   );
@@ -758,24 +1325,43 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
   const rolled = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(rolled.gb_minutes_live, 60);
-  const waitlist = await worker.fetch(new Request("https://drive.example/api/waitlist", { method: "GET" }), {});
+  const waitlist = await worker.fetch(
+    new Request("https://drive.example/api/waitlist", { method: "GET" }),
+    {},
+  );
   assert.equal(waitlist.status, 405);
   const status = await worker.fetch(new Request("https://drive.example/api/first-run-status"), {});
   assert.equal(status.status, 401);
 });
 
 test("the migration creates exactly the tables and indexes the meter writes", () => {
-  const migration = readFileSync(new URL("../migrations/drive/0005_meter.sql", import.meta.url), "utf8");
+  const migration = readFileSync(
+    new URL("../migrations/drive/0005_meter.sql", import.meta.url),
+    "utf8",
+  );
   for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state"]) {
     assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
   assert.match(migration, /events_seen \(\s*b2_event_id TEXT PRIMARY KEY/);
   assert.match(migration, /PRIMARY KEY \(account_id, b2_file_id\)/);
   assert.match(migration, /PRIMARY KEY \(account_id, hour\)/);
-  for (const index of ["file_versions_created_at_idx", "file_versions_account_created_at_idx", "usage_minutes_hour_idx", "events_seen_received_at_idx"]) {
+  for (const index of [
+    "file_versions_created_at_idx",
+    "file_versions_account_created_at_idx",
+    "usage_minutes_hour_idx",
+    "events_seen_received_at_idx",
+  ]) {
     assert.ok(migration.includes(index), `migration is missing index: ${index}`);
   }
-  for (const column of ["size_bytes INTEGER NOT NULL", "created_at INTEGER NOT NULL", "hidden_at INTEGER", "gb_minutes_live REAL NOT NULL DEFAULT 0", "download_bytes INTEGER NOT NULL DEFAULT 0", "rolled_up_at INTEGER NOT NULL", "received_at INTEGER NOT NULL"]) {
+  for (const column of [
+    "size_bytes INTEGER NOT NULL",
+    "created_at INTEGER NOT NULL",
+    "hidden_at INTEGER",
+    "gb_minutes_live REAL NOT NULL DEFAULT 0",
+    "download_bytes INTEGER NOT NULL DEFAULT 0",
+    "rolled_up_at INTEGER NOT NULL",
+    "received_at INTEGER NOT NULL",
+  ]) {
     assert.ok(migration.includes(column), `migration is missing: ${column}`);
   }
   assert.equal(/DROP\s+(COLUMN|TABLE)/i.test(migration), false);

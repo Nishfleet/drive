@@ -11,39 +11,16 @@
 // migration directory the file index, branches and caps come from. Every file
 // in it is applied, in numeric order, so a statement the meter sends is
 // checked against the whole schema the drive database will actually have.
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import {
-  BYTES_PER_GB,
-  EVENTS_SEEN_RETENTION_MS,
-  EVENT_ACTIONS,
-  EVENTS_PER_BATCH,
-  MAX_CATCHUP_HOURS,
-  MINUTE_MS,
-  MINIMUM_MINUTES_PER_VERSION,
-  METER_CRON,
-  EVENT_TOKEN_HEADER,
-  folderAccount,
-  gbMinutesInHour,
-  handleStorageEventRequest,
-  hourStart,
-  listMeteredAccounts,
-  recordEvent,
-  rollupHour,
-  runMeterCron,
-  tokensMatch,
-  validateEvent,
-  versionGbMinutesInHour,
-  versionLifetimeMinutes,
-  toVersion,
-} from "../src/meter.js";
+import { BYTES_PER_GB } from "../src/meter.js";
 
 // The drive database's migration files, in the numeric order the deploy
 // applies them in.
 const migrationsDir = new URL("../migrations/drive/", import.meta.url);
 const migrationFiles = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
+  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
 export function applyMigrations(sqlite) {
   for (const name of migrationFiles) {
@@ -114,7 +91,9 @@ export function d1Over(sqlite, { onQuery } = {}) {
         return rows(name)[Symbol.iterator]();
       },
       entries() {
-        return rows(name).map((row) => [keyOf(row), row])[Symbol.iterator]();
+        return rows(name)
+          .map((row) => [keyOf(row), row])
+          [Symbol.iterator]();
       },
       [Symbol.iterator]() {
         return view.entries();
@@ -185,9 +164,4 @@ const GB = BYTES_PER_GB;
 const at = (iso) => Date.parse(iso);
 const midnight = () => at("2026-09-30T00:00:00.000Z");
 
-export {
-  makeMeteredDB,
-  GB,
-  at,
-  midnight,
-};
+export { at, GB, makeMeteredDB, midnight };

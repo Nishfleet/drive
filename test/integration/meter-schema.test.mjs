@@ -19,18 +19,19 @@
 // adapter remembered and the schema never got could not pass this file.
 // node:sqlite is in the standard library, so the repo needs no new dependency
 // to test its migrations.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { test } from "node:test";
 import {
-  MINUTE_MS,
   listMeteredAccounts,
+  MINUTE_MS,
   recordEvent,
   rollupHour,
   runMeterCron,
   validateEvent,
 } from "../../src/meter.js";
-import { applyMigrations, makeMeteredDB, GB, at, midnight } from "../d1-sqlite.mjs";
+import { at, GB, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // The real migration files of the drive database (drive issue #170: customer
 // tables, the waitlist's sign-up table lives in its own database and is
@@ -38,7 +39,7 @@ import { applyMigrations, makeMeteredDB, GB, at, midnight } from "../d1-sqlite.m
 // deploy applies them in.
 const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
   .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
+  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
 const abcEvent = (overrides = {}) =>
   validateEvent({
@@ -102,11 +103,7 @@ test("the real migrations apply cleanly, in filename order", () => {
       .prepare(`SELECT type FROM pragma_table_info('${table}') WHERE name = ?1`)
       .get(column);
     assert.ok(row, `${table}.${column} is missing`);
-    assert.match(
-      row.type,
-      new RegExp(type, "i"),
-      `${table}.${column} is ${row.type}, not ${type}`,
-    );
+    assert.match(row.type, new RegExp(type, "i"), `${table}.${column} is ${row.type}, not ${type}`);
   }
   // The two tables the meter upserts into are keyed exactly the way its
   // ON CONFLICT names them, or every redelivery would raise instead of
@@ -132,7 +129,9 @@ test("WRITE: an event lands as one version row, and a redelivery writes nothing"
   const first = await recordEvent(db, abcEvent(), midnight());
   assert.equal(first.stored, true, "the first delivery stores its event");
   const versions = sqlite
-    .prepare("SELECT account_id, b2_file_id, path, size_bytes, created_at, hidden_at FROM file_versions")
+    .prepare(
+      "SELECT account_id, b2_file_id, path, size_bytes, created_at, hidden_at FROM file_versions",
+    )
     .all();
   assert.equal(versions.length, 1);
   assert.equal(versions[0].account_id, "acc-abc");
@@ -172,7 +171,11 @@ test("WRITE: a hidden time reaches the row, and a later bare event cannot un-hid
   assert.equal(row.size_bytes, 0, "a hide carries no size of its own");
   // The create that follows: it sets the size and moves created_at back to the
   // truth, and it must not lift the hidden time the row already carries.
-  await recordEvent(db, abcEvent({ eventId: "c-1", createdAt: midnight() }), midnight() + 40 * MINUTE_MS);
+  await recordEvent(
+    db,
+    abcEvent({ eventId: "c-1", createdAt: midnight() }),
+    midnight() + 40 * MINUTE_MS,
+  );
   row = sqlite.prepare("SELECT created_at, hidden_at, size_bytes FROM file_versions").get();
   assert.equal(row.created_at, midnight(), "the late create moves created_at back");
   assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS, "the earliest hidden time wins");
@@ -208,7 +211,9 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
   assert.equal(rolled.accounts, 2);
   assert.equal(rolled.versions, 2);
   const rows = sqlite
-    .prepare("SELECT account_id, hour, gb_minutes_live, download_bytes FROM usage_minutes ORDER BY account_id")
+    .prepare(
+      "SELECT account_id, hour, gb_minutes_live, download_bytes FROM usage_minutes ORDER BY account_id",
+    )
     .all()
     .map((r) => ({
       account_id: r.account_id,
@@ -307,13 +312,27 @@ test("the trigger's hour sums a whole day to exactly what the versions cost", as
   // 13:10 - a rollup of an hour with nothing stored writes no row at all.
   assert.equal(rows.length, 14);
   assert.equal(rows.at(-1).gb_minutes_live, 20, "hour 13 holds ten minutes of the 2 GB file");
-  assert.equal(rows.find((row) => row.hour === midnight() + 9 * 60 * MINUTE_MS).gb_minutes_live, 120 + 300, "hour 09 is the big file plus the short version's minimum");
-  assert.equal(rows.filter((row) => row.gb_minutes_live === 0).length, 0, "no empty hour is written");
+  assert.equal(
+    rows.find((row) => row.hour === midnight() + 9 * 60 * MINUTE_MS).gb_minutes_live,
+    120 + 300,
+    "hour 09 is the big file plus the short version's minimum",
+  );
+  assert.equal(
+    rows.filter((row) => row.gb_minutes_live === 0).length,
+    0,
+    "no empty hour is written",
+  );
   // Every hour is a whole number of GB-minutes: whole-minute billing, so the
   // day's rows add up to the day's total with no rounding drift between
   // them. This is the 1% the done-when measures, exact by construction.
-  assert.equal(rows.every((row) => Number.isInteger(row.gb_minutes_live)), true);
-  assert.equal(rows.reduce((sum, row) => sum + row.gb_minutes_live, 0), day);
+  assert.equal(
+    rows.every((row) => Number.isInteger(row.gb_minutes_live)),
+    true,
+  );
+  assert.equal(
+    rows.reduce((sum, row) => sum + row.gb_minutes_live, 0),
+    day,
+  );
 });
 
 test("READ: a hide delivered before its create bills the same hours, through the real schema", async () => {
@@ -372,11 +391,18 @@ test("READ: a version hidden exactly on the hour's boundary books its minimum in
   await recordEvent(db, hidden, at("2026-09-30T01:00:00.000Z"));
   const hour00 = await rollupHour(db, midnight(), at("2026-09-30T01:05:00.000Z"));
   assert.equal(hour00.gbMinutes, 30, "hour 00 is just its half hour of overlap");
-  const hour01 = await rollupHour(db, at("2026-09-30T01:00:00.000Z"), at("2026-09-30T02:05:00.000Z"));
+  const hour01 = await rollupHour(
+    db,
+    at("2026-09-30T01:00:00.000Z"),
+    at("2026-09-30T02:05:00.000Z"),
+  );
   assert.equal(hour01.versions, 1, "the boundary version is in hour 01's window");
   assert.equal(hour01.gbMinutes, 30, "hour 01 books the shortfall to the full hour");
   const rows = sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes ORDER BY hour").all();
-  assert.deepEqual(rows.map((r) => r.gb_minutes_live), [30, 30]);
+  assert.deepEqual(
+    rows.map((r) => r.gb_minutes_live),
+    [30, 30],
+  );
   assert.equal(
     rows.reduce((sum, r) => sum + r.gb_minutes_live, 0),
     60,
@@ -395,7 +421,8 @@ test("READ+WRITE: an empty database sets the mark to the hour just rolled, not t
   assert.equal(first.accounts, 0, "nothing is stored, so nothing is billed");
   assert.equal(first.gbMinutes, 0);
   assert.equal(
-    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get().rolled_through,
+    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get()
+      .rolled_through,
     midnight(),
     "the mark is the hour that just rolled, never 0",
   );
@@ -421,7 +448,8 @@ test("READ+WRITE: a missed trigger is caught up from the stored mark, through th
     "all three missed hours were rolled",
   );
   assert.equal(
-    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get().rolled_through,
+    sqlite.prepare("SELECT rolled_through FROM meter_rollup_state WHERE id = 1").get()
+      .rolled_through,
     midnight() + 2 * 60 * MINUTE_MS,
   );
   // Re-running at the same instant changes nothing: the same hours, the same
@@ -431,7 +459,10 @@ test("READ+WRITE: a missed trigger is caught up from the stored mark, through th
     .prepare("SELECT hour, gb_minutes_live FROM usage_minutes ORDER BY hour")
     .all();
   assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((r) => r.gb_minutes_live), [60, 60, 60]);
+  assert.deepEqual(
+    rows.map((r) => r.gb_minutes_live),
+    [60, 60, 60],
+  );
 });
 
 test("the migration is additive: it creates tables and changes nothing else", () => {
@@ -441,7 +472,10 @@ test("the migration is additive: it creates tables and changes nothing else", ()
   // rolling the code back, and the check is on the shipped SQL rather than on
   // the intent behind it: a future edit that adds a DROP, a RENAME or an
   // ALTER fails here instead of in production.
-  const sql = readFileSync(new URL("../../migrations/drive/0005_meter.sql", import.meta.url), "utf8");
+  const sql = readFileSync(
+    new URL("../../migrations/drive/0005_meter.sql", import.meta.url),
+    "utf8",
+  );
   for (const destructive of [
     /\bDROP\s+(TABLE|COLUMN|INDEX)\b/i,
     /\bALTER\s+TABLE\b/i,
@@ -465,5 +499,9 @@ test("the migration is additive: it creates tables and changes nothing else", ()
     true,
     "file_versions.size_bytes is the one NOT NULL the file leaves without a DEFAULT",
   );
-  assert.equal(/deleted_at INTEGER(,|\s*\n)/.test(sql), true, "deleted_at stays nullable and defaulted away");
+  assert.equal(
+    /deleted_at INTEGER(,|\s*\n)/.test(sql),
+    true,
+    "deleted_at stays nullable and defaulted away",
+  );
 });

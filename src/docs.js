@@ -22,8 +22,8 @@ import {
   GB_PER_TB,
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
-  monthlyCeilingUsd,
   monthlyBillForStoredTb,
+  monthlyCeilingUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { SITE } from "./seo.js";
@@ -86,9 +86,7 @@ export const BILL_TABLE = Object.freeze(
   [
     "| Stored, kept all month | The meter | The ceiling | Your bill |",
     "| --- | --- | --- | --- |",
-    ...BILL_EXAMPLES.map(
-      (e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`,
-    ),
+    ...BILL_EXAMPLES.map((e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`),
   ].join("\n"),
 );
 
@@ -213,9 +211,7 @@ export const FAQ = Object.freeze([
  * @param {string} metric the row's first cell, exactly as the table spells it
  */
 export function scoreboardVerdict(scoreboardText, metric) {
-  const row = scoreboardText
-    .split("\n")
-    .find((line) => line.startsWith(`| ${metric} |`));
+  const row = scoreboardText.split("\n").find((line) => line.startsWith(`| ${metric} |`));
   if (!row) {
     throw new Error(`docs/scoreboard.md has no row for "${metric}"`);
   }

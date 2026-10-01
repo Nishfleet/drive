@@ -21,20 +21,21 @@
 // real SQLite engine via node:sqlite with the shipped migrations applied,
 // which is the same adapter test/branches.test.mjs uses, and storage is the
 // in-memory FileStore whose `copy` stands in for S3's CopyObject.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
 import { createBranch, handleBranchesRequest } from "../src/branches.js";
+import { createMemoryStore, scopeStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
+  handleRewindRequest,
   REWIND_ENDPOINT,
   REWIND_WINDOW_DAYS,
-  handleRewindRequest,
   rewindBranch,
   rewindPreview,
 } from "../src/rewind.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -97,8 +98,7 @@ function makeD1() {
   };
 }
 
-const text = (store, path) =>
-  store.read(path).then((found) => new Response(found.body).text());
+const text = (store, path) => store.read(path).then((found) => new Response(found.body).text());
 
 /** A drive with a folder an agent branched and then changed. */
 async function agentBranch({ changedBy = "k-claude" } = {}) {
@@ -110,7 +110,13 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   await scoped.write("/Photos/a.txt", new Blob(["original a"]).stream(), "text/plain");
   await scoped.write("/Photos/keep.txt", new Blob(["untouched"]).stream(), "text/plain");
   const db = makeD1();
-  const created = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "fix", changedBy }, () => AT);
+  const created = await createBranch(
+    db,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "fix", changedBy },
+    () => AT,
+  );
   // The agent edits one file and deletes another, inside the branch copy.
   await scoped.write("/.branches/fix/a.txt", new Blob(["agent rewrote a"]).stream(), "text/plain");
   await scoped.remove("/.branches/fix/keep.txt");
@@ -185,7 +191,7 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // still inside; day 31 is not.
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
-  const row = (await rewindBranchRowFor(db, raw, "fix"));
+  const row = await rewindBranchRowFor(db, raw, "fix");
 
   const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS);
   assert.equal(inside.canRewind, true);
@@ -235,7 +241,13 @@ test("one account can never read or rewind another account's branch", async () =
 test("the rewind route lists, previews, rewinds and refuses the rest", async () => {
   const { raw, db } = await agentBranch();
   const call = (path, init) =>
-    handleRewindRequest(new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init), db, raw, ACCOUNT, () => AT);
+    handleRewindRequest(
+      new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init),
+      db,
+      raw,
+      ACCOUNT,
+      () => AT,
+    );
 
   // The list is built from the same previews the detail returns.
   const list = await call("", { method: "GET" });

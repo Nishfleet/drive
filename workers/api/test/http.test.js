@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { errorResponse, json, readJsonObject } from "../src/http.js";
 
 // drive#77 finding 5: http.js had no test at all. These pin the error shape
