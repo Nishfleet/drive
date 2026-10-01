@@ -91,11 +91,6 @@ body {
   color: var(--ink-soft);
 }
 
-.masthead a[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
-}
-
 main {
   margin: 0 auto;
 }

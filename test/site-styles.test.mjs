@@ -8,21 +8,26 @@
 //    the product was reviewed at, exactly once each.
 // 2. Every page links the shared file before its own <style> block, so the
 //    page's per-page values can still override the base.
-// 3. No page keeps a second copy of a token in its own block. A token is the
-//    thing a page-by-page edit gets wrong, so it is the thing this fails on.
+// 3. No page declares a custom property it does not own. A token is the thing
+//    a page-by-page edit gets wrong, so a page is allowed only the page-local
+//    tokens listed in PAGE_LOCAL, and any other --* declaration fails — even
+//    one that does not exist yet.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
-const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-
-const SITE_CSS = "../public/site.css";
+const PUBLIC_DIR = new URL("../public/", import.meta.url);
+// Every shipped page, walked the way test/seo.test.mjs walks them: the
+// verbatim assets in public/ plus the Vite entry at the repo root, so a page
+// added later is covered without editing this list.
 const PAGES = [
-  ["get-started.html", "../get-started.html"],
-  ["public/index.html", "../public/index.html"],
-  ["public/files.html", "../public/files.html"],
-  ["public/usage.html", "../public/usage.html"],
+  ...readdirSync(PUBLIC_DIR)
+    .filter((name) => name.endsWith(".html"))
+    .map((name) => [ `public/${name}`, new URL(name, PUBLIC_DIR) ]),
+  [ "get-started.html", new URL("../get-started.html", import.meta.url) ],
 ];
+
+const SITE_CSS = new URL("site.css", PUBLIC_DIR);
 
 // The palette and the type, one line each so the comparison ignores how the
 // stylesheet wraps them. These are the values the pricing page was designed
@@ -40,17 +45,33 @@ const TOKENS = {
     'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
 };
 
-/** Every value declared for a custom property, whitespace collapsed. */
-function declarations(css, token) {
-  const pattern = new RegExp(`${token}\\s*:([^;]*);`, "g");
-  return [...css.matchAll(pattern)].map(([, value]) => value.trim().replace(/\s+/g, " "));
+// The one custom property a page owns: the Web Files page's 44px tap target.
+// Everything else a page needs comes from public/site.css.
+const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
+
+/**
+ * Every custom property a stylesheet declares, name -> values, with comments
+ * stripped and the property name matched exactly (so `--my--paper` is not a
+ * declaration of `--paper`, and a token named in a comment is not one).
+ */
+function declaredTokens(css) {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const found = new Map();
+  for (const [, name, value] of clean.matchAll(/(?:^|[;{\s])(--[-\w]+)\s*:\s*([^;]+);/g)) {
+    const values = found.get(name) ?? [];
+    values.push(value.trim().replace(/\s+/g, " "));
+    found.set(name, values);
+  }
+  return found;
 }
 
+const styleBlocks = (html) => html.match(/<style>[\s\S]*?<\/style>/g) ?? [];
+
 test("the shared stylesheet declares the palette and the type, once each", () => {
-  const css = read(SITE_CSS);
+  const declared = declaredTokens(readFileSync(SITE_CSS, "utf8"));
   for (const [token, value] of Object.entries(TOKENS)) {
     assert.deepEqual(
-      declarations(css, token),
+      declared.get(token),
       [value],
       `public/site.css must declare ${token}: ${value} exactly once`,
     );
@@ -58,8 +79,8 @@ test("the shared stylesheet declares the palette and the type, once each", () =>
 });
 
 test("every page links the shared stylesheet before its own styles", () => {
-  for (const [name, path] of PAGES) {
-    const html = read(path);
+  for (const [name, url] of PAGES) {
+    const html = readFileSync(url, "utf8");
     assert.match(
       html,
       /<link\s+rel="stylesheet"\s+href="\/site\.css">/,
@@ -67,6 +88,7 @@ test("every page links the shared stylesheet before its own styles", () => {
     );
     const linkAt = html.indexOf('href="/site.css"');
     const styleAt = html.indexOf("<style>");
+    assert.ok(styleAt !== -1, `${name} must keep a <style> block for its per-page rules`);
     assert.ok(
       styleAt > linkAt,
       `${name}'s own <style> block must load after the shared stylesheet`,
@@ -74,16 +96,15 @@ test("every page links the shared stylesheet before its own styles", () => {
   }
 });
 
-test("no page keeps a second copy of a palette or type token", () => {
-  for (const [name, path] of PAGES) {
-    const html = read(path);
-    const block = html.match(/<style>([\s\S]*?)<\/style>/);
-    assert.ok(block, `${name} must keep a <style> block for its per-page rules`);
-    for (const token of Object.keys(TOKENS)) {
-      assert.equal(
-        declarations(block[1], token).length,
-        0,
-        `${name} must not re-declare ${token}; that token belongs to public/site.css`,
+test("no page declares a custom property it does not own", () => {
+  for (const [name, url] of PAGES) {
+    const blocks = styleBlocks(readFileSync(url, "utf8"));
+    assert.ok(blocks.length > 0, `${name} must keep a <style> block for its per-page rules`);
+    const local = PAGE_LOCAL.get(name) ?? new Set();
+    for (const token of declaredTokens(blocks.join("\n")).keys()) {
+      assert.ok(
+        local.has(token),
+        `${name} declares ${token}; that token belongs to public/site.css`,
       );
     }
   }
