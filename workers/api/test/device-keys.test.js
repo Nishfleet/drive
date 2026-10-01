@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { failureMessage } from "../../../src/messages.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js";
 
@@ -15,6 +16,26 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   };
 }
 
+// The edge limits the device flow answers behind (drive issue #147). The
+// binding's whole contract is `limit({ key }) -> { success }`, the same fake
+// the site Worker's tests drive; every call is recorded so a test can assert
+// the bucket and that a refused request never reaches the store.
+function makeRateLimiter({ success = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async limit(options) {
+      calls.push(options);
+      return { success };
+    },
+  };
+}
+
+/** The env every device context carries once the limits are bound. */
+function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
+  return { DEVICE_RATE_LIMITER: ip, DEVICE_GLOBAL_RATE_LIMITER: global };
+}
+
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,
 // mints one key per agent tool, and the storage API answers per key.
@@ -24,7 +45,10 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
 //     fails.
 
 function baseCtx(store, account) {
-  return { env: {}, db: null, store, account, now: () => 0 };
+  // The two edge limits the device routes fail closed without (drive issue
+  // #147): fake pass-throughs, so every test that walks the device flow does
+  // so the way production runs it with the bindings configured.
+  return { env: limits(), db: null, store, account, now: () => 0 };
 }
 
 /** Walk the device flow and return the signed-in account and its token. */
@@ -400,9 +424,9 @@ test("DELETE /v1/device/token without a token cannot revoke it (the route stays 
   const clock = fixedClock();
   const { deviceToken, account } = await signIn(store, "Nish's MacBook");
 
-  // No bearer at all: the account gate never runs the handler. /v1/device/token
-  // has a public POST route, so an anonymous DELETE is a 405 (method not allowed,
-  // allow: POST) rather than a 401 -- the documented dispatcher shape. Either
+  // No bearer at all: the account gate is middleware, so an anonymous request
+  // to the path's DELETE is answered by the gate itself (401 with a bearer
+  // challenge, no handler), while the path's public POST still answers. Either
   // way the handler does not run and the token is not revoked.
   const anon = await dispatch(
     new Request("https://api.test/v1/device/token", { method: "DELETE" }),
@@ -416,4 +440,134 @@ test("DELETE /v1/device/token without a token cannot revoke it (the route stays 
     clockCtx(store, account, clock),
   );
   assert.equal(keys.status, 200, "the token was not revoked");
+});
+
+// ---- device edge limits (drive issue #147) ----
+//
+// Approving makes an account and a poll mints a device token, so both are
+// bounded at the edge: the per-IP bucket stops one connection looping, and the
+// global bucket is the backstop the CLI's 5s poll rate still sits under. With
+// no binding on env the routes fail closed, never open.
+
+test("a poll denied by the per-IP edge limit is a 429, before the store is read", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ip = makeRateLimiter({ success: false });
+  const ctx = { env: limits(ip), db: null, store, account: null, now: () => 0 };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 429, "the poll must hit the edge limit, not the store");
+  assert.equal(response.headers.get("retry-after"), "60");
+  assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
+  assert.deepEqual(ip.calls, [{ key: "203.0.113.7" }]);
+});
+
+test("an approve denied by the global edge limit is a 429 and the code stays unapproved", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const global = makeRateLimiter({ success: false });
+  const ctx = {
+    env: limits(makeRateLimiter(), global),
+    db: null,
+    store,
+    account: null,
+    now: () => 0,
+  };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 429, "the global bucket is the approve backstop");
+  assert.deepEqual(global.calls, [{ key: "global" }]);
+  // The code is still pending: the rate-limited approve touched no store.
+  const pending = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(pending.status, "pending", "a refused approve must not approve the code");
+});
+
+test("the device limits key the per-IP bucket on cf-connecting-ip and the global on one shared bucket", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ip = makeRateLimiter();
+  const global = makeRateLimiter();
+  const ctx = { env: limits(ip, global), db: null, store, account: null, now: () => 0 };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.9" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(ip.calls, [{ key: "198.51.100.9" }]);
+  assert.deepEqual(global.calls, [{ key: "global" }]);
+});
+
+test("with no device limiters the approve and poll routes fail closed, not open", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  // No DEVICE_RATE_LIMITER / DEVICE_GLOBAL_RATE_LIMITER on env: a deployment
+  // that has not declared them does not run the flow.
+  const bare = { env: {}, db: null, store, account: null, now: () => 0 };
+  const poll = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    bare,
+  );
+  assert.equal(poll.status, 503, "a missing edge binding is a closed door");
+  assert.deepEqual(await poll.json(), { error: failureMessage("unexpected") });
+
+  const approve = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    bare,
+  );
+  assert.equal(approve.status, 503);
+  // The code was not approved behind the closed door.
+  assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "pending");
+});
+
+test("a device limiter that throws fails closed with the table's words, never the error text", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: {
+        limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+      },
+      DEVICE_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+    },
+    db: null,
+    store,
+    account: null,
+    now: () => 0,
+  };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), { error: failureMessage("unexpected") });
+  assert.ok(!body.includes("exploded"), "the raw error text never reaches the caller");
 });

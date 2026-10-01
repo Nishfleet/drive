@@ -142,6 +142,10 @@ const HEALTHY_ENV = () => ({
   DRIVE_DB: fakeD1("ok"),
   ASSETS: fakeAssets(),
   WAITLIST_RATE_LIMITER: fakeLimiter(),
+  // The sign-in endpoint's two edge limits (drive issue #147): the route fails
+  // closed without either, so a healthy deploy is one with both bound.
+  SIGNIN_RATE_LIMITER: fakeLimiter(),
+  SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
 });
 
 const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
@@ -170,6 +174,8 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -184,6 +190,8 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -196,6 +204,8 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     WAITLIST_DB: fakeD1("ok"),
     DRIVE_DB: fakeD1("ok"),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -207,6 +217,8 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: { fetch: () => Promise.reject(new Error("asset manifest missing")) },
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -224,6 +236,8 @@ test("every bound D1 database is checked, not just the first", async () => {
     BILLING_DB: second,
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -259,6 +273,8 @@ test("a binding that is not a database is never read as one", () => {
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(
     d1Bindings(env).map((b) => b.name),
@@ -277,6 +293,8 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     ASSETS: fakeFetcher(),
     EMAIL: fakeFetcher(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -294,6 +312,8 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     DRIVE_DB: fakeD1("ok"),
     ASSETS: assets,
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -310,6 +330,8 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -344,6 +366,8 @@ test("the failing body is the name and nothing else", async () => {
     DRIVE_DB: fakeD1("ok"),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -426,6 +450,8 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     THIRD_DB: hang(),
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -459,6 +485,8 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     },
     ASSETS: fakeAssets(),
     WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -522,6 +550,8 @@ test("the health check never spends a real caller's rate limit quota", async () 
         return Promise.resolve({ success: true });
       },
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -545,6 +575,8 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
         return Promise.resolve({ success: true });
       },
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
@@ -571,12 +603,12 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // config is the source of truth, so the test reads its binding keys.
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   const declared = [...config.matchAll(/(\w+): bindings\./g)].map((m) => m[1]);
-  // Five today: ASSETS, WAITLIST_DB, DRIVE_DB, WAITLIST_RATE_LIMITER, EMAIL.
-  // The email token and sender stay undeclared so the deploy does not require
-  // them.
-  // exactly 5: the four required bindings plus the EMAIL three, which are
-  // the documented exception (src/health.js) — only the token-gated
-  // internal send route uses them, and probing would send mail.
+  // Every binding the config declares is declared as `NAME: bindings.x()`, so
+  // the count is the config's own and must equal the required list plus the
+  // EMAIL binding, which is the documented exception (src/health.js): only the
+  // token-gated internal send route uses it, and probing would send mail. The
+  // two sign-in edge limits (drive issue #147) are declared bindings, so they
+  // are on the required list and counted here.
   assert.equal(
     declared.length,
     REQUIRED_BINDINGS.length + 1,
@@ -618,6 +650,8 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -641,7 +675,66 @@ test("a limiter that denies the probe is still healthy", async () => {
     WAITLIST_RATE_LIMITER: {
       limit: () => Promise.resolve({ success: false }),
     },
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
+});
+
+// --- the sign-in endpoint's two edge limits (drive issue #147) -------------
+
+test("the sign-in edge limits are required bindings, so a deploy that lost one is named", async () => {
+  // src/signin.js answers 503 without either binding rather than mail an
+  // unbounded number of links, so a deploy that lost one is an outage this
+  // endpoint must report by name — the same rule the waitlist's limiter has.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    assert.ok(REQUIRED_BINDINGS.includes(name), `${name} must be a required binding`);
+    const env = HEALTHY_ENV();
+    delete env[name];
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503, `${name} missing must be a 503`);
+    assert.deepEqual(await response.json(), { ok: false, failing: name });
+  }
+});
+
+test("either sign-in limiter that throws is a 503 naming that one, not the other", async () => {
+  // The probe carries the binding's own name, so the alert says which of the
+  // two to look at rather than a shared label.
+  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+    const env = HEALTHY_ENV();
+    env[name] = {
+      limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+    };
+    const response = await handleHealthRequest(GET(), env);
+    assert.equal(response.status, 503);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { ok: false, failing: name });
+    assert.ok(!body.includes("exploded"), "the raw error text never reaches the body");
+  }
+});
+
+test("each sign-in limiter is probed on a key of its own, never a client IP", async () => {
+  // The probe must not spend a real caller's quota (the same rule the
+  // waitlist's limiter probe follows), and each binding's key changes per call.
+  const keys = { SIGNIN_RATE_LIMITER: [], SIGNIN_GLOBAL_RATE_LIMITER: [] };
+  const make = (name) => ({
+    limit({ key }) {
+      keys[name].push(key);
+      return Promise.resolve({ success: true });
+    },
+  });
+  const env = HEALTHY_ENV();
+  env.SIGNIN_RATE_LIMITER = make("SIGNIN_RATE_LIMITER");
+  env.SIGNIN_GLOBAL_RATE_LIMITER = make("SIGNIN_GLOBAL_RATE_LIMITER");
+  const first = await handleHealthRequest(GET(), env);
+  const second = await handleHealthRequest(GET(), env);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  for (const name of Object.keys(keys)) {
+    assert.equal(keys[name].length, 2, `${name} is probed once per poll`);
+    assert.match(keys[name][0], /^health-probe-/);
+    assert.ok(!keys[name][0].includes("."), `${name}'s probe key must not be a client IP`);
+    assert.notEqual(keys[name][0], keys[name][1], "each poll spends a bucket of its own");
+  }
 });

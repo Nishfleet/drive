@@ -89,6 +89,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
   }),
+  // A share link or upload page that does not open: unknown, revoked or past
+  // its 7-day window (issue #19). One entry for all three on purpose — the
+  // public routes must not tell a stranger which of those it was, and the one
+  // next step is the same for every case.
+  "link-not-found": Object.freeze({
+    what: "That link does not open anything.",
+    next: "Ask the person who sent it for a new one.",
+  }),
+  // The owner's drive is read-only at its spending cap, so a public upload
+  // page cannot take a file. The stranger can act on neither the cap nor the
+  // drive; the one thing they can do is tell the owner (issue #19).
+  "upload-paused-at-cap": Object.freeze({
+    what: "This drive has reached its spending cap, so it is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.

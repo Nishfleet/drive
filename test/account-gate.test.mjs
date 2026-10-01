@@ -29,9 +29,24 @@ import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
+import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, signIn } from "./harness.mjs";
+
+/**
+ * A fake rate limiter that always allows (drive issue #147). The sign-in
+ * route fails closed without its two edge bindings, so every dispatch that
+ * reaches it needs them; the fake is the seam a test uses to exercise the
+ * real handler logic the way production runs it.
+ */
+function makeLimiter() {
+  return {
+    async limit() {
+      return { success: true };
+    },
+  };
+}
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
 // The two accounts every isolation test drives. The ids are storage-prefix
@@ -40,6 +55,10 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 const ACCOUNT_A = Object.freeze({ id: "acct-a", name: "Account A" });
 const ACCOUNT_B = Object.freeze({ id: "acct-b", name: "Account B" });
 const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+// A token in the shape the Worker issues (src/share.js TOKEN_PATTERN), so it
+// passes the shape check and is only unknown — the same shape a viewer's link
+// carries, and the same refusal an unknown one gets.
+const TOKEN_SHAPE = "A".repeat(22);
 
 // ------------------------------------------------------------------ the walk
 
@@ -87,6 +106,10 @@ const ACCOUNT_ROUTES = [
   `${USAGE_ENDPOINT}/`,
   `${STATUS_ENDPOINT}`,
   `${STATUS_ENDPOINT}/`,
+  `${SHARE_ENDPOINT}`,
+  `${SHARE_ENDPOINT}/`,
+  `${REQUEST_ENDPOINT}`,
+  `${REQUEST_ENDPOINT}/`,
   // drive issue #18: the file-name index's read route. It is behind the
   // account gate like every route that names files, so the walk requires
   // it to answer 401 anonymously.
@@ -102,6 +125,18 @@ const ACCOUNT_ROUTES = [
   // it reads, and the walk requires the same 401.
   `${REWIND_ENDPOINT}`,
   `${REWIND_ENDPOINT}/`,
+];
+
+// The routes that serve a stranger on purpose, from a bearer token instead of
+// a session. Each probe carries a token-shaped value, because the handler's
+// own token check must be what is tested rather than a crash on absent input:
+// every name a stranger hits, open or not, is the one 404 the table's
+// `link-not-found` words answer (src/share.js), and never account data.
+const TOKEN_PROBES = [
+  [`${SHARE_LINK_PREFIX}/${TOKEN_SHAPE}`, "GET"],
+  [`${SHARE_LINK_PREFIX}/${TOKEN_SHAPE}/`, "GET"],
+  [`${REQUEST_ENDPOINT}/info?k=${TOKEN_SHAPE}`, "GET"],
+  [`${REQUEST_ENDPOINT}/upload?k=${TOKEN_SHAPE}&name=a.txt`, "POST"],
 ];
 
 function anonymous(request) {
@@ -150,8 +185,11 @@ test("every route src/index.js registers is either public or behind the gate", a
         "SEARCH_ENDPOINT",
         "BRANCHES_ENDPOINT",
         "REWIND_ENDPOINT",
+        "SHARE_ENDPOINT",
+        "REQUEST_ENDPOINT",
+        "SHARE_LINK_PREFIX",
       ].includes(name),
-      `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
+      `src/index.js routes ${name}, which this test does not classify; probe it as an account route, a token probe, or allow-list it here with a reason`,
     );
   }
   // Every public entry is still routed: an allow-list entry whose route was
@@ -184,7 +222,9 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
-        route.startsWith(REWIND_ENDPOINT),
+        route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(SHARE_ENDPOINT) ||
+        route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,
     );
   }
@@ -236,6 +276,40 @@ test("an anonymous request to every account route is 401 and no data", async () 
   }
 });
 
+test("a link token answers without an account, and never data", async () => {
+  // The stranger's side of issue #19: /s/<token> and the two public
+  // upload-request routes carry the proof in the path or the query, not in a
+  // session, so they are the one place a logged-out caller is served. An
+  // unknown token is not an error to explain but the same 404 a revoked link
+  // answers (src/share.js), which is also why a stranger learns nothing:
+  // open, revoked and expired all say the same words.
+  const notFound = failureMessage("link-not-found");
+  assert.equal(
+    notFound,
+    `${FAILURE_MESSAGES["link-not-found"].what} ${FAILURE_MESSAGES["link-not-found"].next}`,
+  );
+  for (const [path, method] of TOKEN_PROBES) {
+    const response = await anonymous(new Request(`https://drive.test${path}`, { method }));
+    assert.equal(response.status, 404, `${method} ${path} must be 404 for a token nobody issued`);
+    assert.notEqual(response.status, 401, "a token route serves strangers");
+    assert.match(await response.text(), /That link does not open anything/);
+  }
+  // And the owner's roots are the account's: a signed-out caller cannot list,
+  // mint or revoke on either feature, with the shared 401 (src/status.js).
+  const unauthorized = failureMessage("unauthorized");
+  for (const route of [SHARE_ENDPOINT, REQUEST_ENDPOINT]) {
+    for (const method of ["GET", "POST", "DELETE"]) {
+      const response = await anonymous(new Request(`https://drive.test${route}`, { method }));
+      assert.equal(
+        response.status,
+        401,
+        `${method} ${route} must be 401 without a signed-in account`,
+      );
+      assert.deepEqual(await response.json(), { error: unauthorized });
+    }
+  }
+});
+
 test("the gate reads the request, and a signed-out request has no account", async () => {
   // signedInAccount() is the only gate, and a request that cannot prove a
   // session stays signed out — including one that presents a cookie Better
@@ -280,6 +354,11 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_MAIL: (link) => {
       emailed.push(link);
     },
+    // The edge limiters (drive issue #147), as pass-through fakes: the route
+    // behaves exactly as production does with the bindings bound, and the
+    // limit's own behaviour is this test's (below, not here).
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
   };
   const call = (cookie, path) =>
     worker.fetch(
@@ -392,6 +471,10 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
+    // The edge limiters (drive issue #147), as pass-through fakes, for the
+    // same reason the sign-in walk above carries them.
+    SIGNIN_RATE_LIMITER: makeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await worker.fetch(
