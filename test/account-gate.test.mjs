@@ -33,6 +33,7 @@ import { SIGNIN_ENDPOINT, handleSigninRequest } from "../src/signin.js";
 import { HEALTH_PATH } from "../src/health.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
+import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");
@@ -94,6 +95,11 @@ const ACCOUNT_ROUTES = [
   // anonymously like the rest.
   `${BRANCHES_ENDPOINT}`,
   `${BRANCHES_ENDPOINT}/`,
+  // drive issue #13: the one-click rewind. A rewind names the files an agent
+  // changed, so it is behind the account gate exactly like the branches route
+  // it reads, and the walk requires the same 401.
+  `${REWIND_ENDPOINT}`,
+  `${REWIND_ENDPOINT}/`,
 ];
 
 function anonymous(request) {
@@ -142,6 +148,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         "SIGNIN_ENDPOINT",
         "SEARCH_ENDPOINT",
         "BRANCHES_ENDPOINT",
+        "REWIND_ENDPOINT",
       ].includes(name),
       `src/index.js routes ${name}, which this test does not classify; probe it as an account route or allow-list it here with a reason`,
     );
@@ -171,7 +178,8 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
-        route.startsWith(BRANCHES_ENDPOINT),
+        route.startsWith(BRANCHES_ENDPOINT) ||
+        route.startsWith(REWIND_ENDPOINT),
       `${route} must be a route the Worker really serves`,
     );
   }

@@ -97,6 +97,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The original changed after that branch was made, so nothing was copied back.",
     next: "Discard the branch and make it again from the folder as it is now.",
   }),
+  // An agent's own rewind is past the drive's 30-day window, so the copy this
+  // would undo and the old versions behind it are both gone (issue #13, "the
+  // 30-day undo"). Nothing was changed: the original folder is as it is.
+  "rewind-window-closed": Object.freeze({
+    what: "That agent's work is more than 30 days old, so it can't be rewound.",
+    next: "Make a new branch for the folder and the agent can work in it again.",
+  }),
   // Sign-in exists as a route, but it is not fully open yet: the account
   // store lands with D1 (drive#2) and a deployment with no mailer refuses
   // rather than reporting a code sent, and no OAuth provider is wired to
