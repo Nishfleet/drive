@@ -321,10 +321,13 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   // The sign-in endpoint's two edge limits (issue #147). The endpoint
   // fails closed without either (src/signin.js), so a deploy that lost
   // one is an outage, and a binding present but without `limit` is as
-  // broken as a missing one and gets the same name.
+  // broken as a missing one and gets the same name. The guard is
+  // self-contained (not relying on the REQUIRED_BINDINGS pass above) so
+  // a future edit that reorders the checks cannot turn a missing binding
+  // into a TypeError.
   for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
     const bound = env[name];
-    if (typeof bound.limit !== "function") {
+    if (typeof bound === "undefined" || typeof bound.limit !== "function") {
       return { ok: false, failing: name };
     }
     checks.push({ name, run: (left) => checkRateLimiter(bound, left, name) });

@@ -50,12 +50,17 @@ export default defineConfig({
 			// bound the issue asks for. The per-IP one is far above a person
 			// signing in (even behind a shared office NAT) and far below what a
 			// script needs to walk addresses; the global one bounds the whole
-			// service so a distributed walk cannot spend a real email send on
-			// every address at once. Both configs are one minute, the waitlist's
-			// period, and both are turned on before sign-in opens in production.
-			// The namespaces are distinct from the waitlist's: Cloudflare wants a
-			// positive integer string, unique per account, and reusing 1001 with a
-			// second config would fail the deploy with 10021.
+			// service. Both configs are one minute, the waitlist's period, and
+			// both are turned on before sign-in opens in production.
+			//
+			// The global ceiling is a spend bound, not a traffic shaper: it sits
+			// far above any plausible sign-in demand, so it never shapes a real
+			// person's sign-in, and it caps the worst case at 100 sends a minute
+			// however many addresses a distributed walk touches. Revisit the
+			// number the day sign-in opens (issue #147).
+			// Each binding needs its own namespace: Cloudflare wants a positive
+			// integer string, and a namespace another binding already uses fails
+			// the deploy. These are distinct from the waitlist's 1001.
 			SIGNIN_RATE_LIMITER: bindings.rateLimit({
 				namespace: "1002",
 				simple: { limit: 10, period: 60 },

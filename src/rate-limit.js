@@ -25,8 +25,12 @@ import { failureMessage } from "./messages.js";
 export function clientIpKey(request, log) {
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp === null) {
+    // The first argument is a constant string, so a caller's log label
+    // cannot forge the log line (the pattern workers/api/src/index.js
+    // uses). The label travels as its own argument instead.
     console.warn(
-      `${log}: request arrived without cf-connecting-ip; rate limiting against the shared bucket`,
+      "rate-limit: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
+      log,
     );
     return "unknown";
   }
@@ -66,14 +70,14 @@ function refused(status, message, headers = {}) {
 export async function enforceEdgeLimits(limits, log) {
   for (const { binding, key, name } of limits) {
     if (!binding) {
-      console.error(`${log}: ${name} binding is not configured`);
+      console.error("rate-limit: a rate-limiter binding is not configured", name, log);
       return refused(503, failureMessage("unexpected"));
     }
     let success;
     try {
       ({ success } = await binding.limit({ key }));
     } catch (error) {
-      console.error(`${log}: the rate limiter call failed`, error);
+      console.error("rate-limit: the rate limiter call failed", name, log, error);
       return refused(503, failureMessage("unexpected"));
     }
     if (!success) {

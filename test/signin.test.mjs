@@ -247,6 +247,44 @@ test("the finish step is bounded by the same edge limits, before the code is rea
   assert.deepEqual(finishCalls, [], "a rate-limited finish must not read the store");
 });
 
+// The vector the issue names: a walk spends the *global* bucket on
+// the start step, the one that mails a real code. A global denial
+// there is the backstop a distributed walk cannot route around.
+test("a start denied by the global edge limit is a 429 and mails nothing", async () => {
+  const emailed = [];
+  const limits = {
+    ipLimiter: makeRateLimiter(),
+    globalLimiter: makeRateLimiter({ success: false }),
+  };
+  const response = await handleSigninRequest(
+    post({ method: "email", email: "a@b.co" }),
+    createAccountStore({ sendCode: ({ code }) => emailed.push(code) }),
+    limits,
+  );
+  assert.equal(response.status, 429, "the global bucket is the walk's backstop");
+  assert.equal(response.headers.get("retry-after"), "60");
+  assert.deepEqual(emailed, [], "a globally rate-limited start must not mail a code");
+});
+
+test("through the dispatch, a missing limiter binding fails closed, not open", async () => {
+  // The dispatch (src/index.js) hands the route the bindings off env. A
+  // deploy that lost one must answer the table's unexpected words rather
+  // than run the sign-in unbounded — the same closed door the waitlist's
+  // limiter shows (test/waitlist.test.mjs).
+  const routedEnv = {
+    ...env,
+    ACCOUNTS_STORE: createAccountStore({ sendCode: () => {} }),
+    SIGNIN_RATE_LIMITER: makeRateLimiter(),
+    // SIGNIN_GLOBAL_RATE_LIMITER deliberately absent.
+  };
+  const response = await worker.fetch(
+    post({ method: "email", email: "a@b.co" }),
+    routedEnv,
+  );
+  assert.equal(response.status, 503, "a missing edge binding is a closed door");
+  assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
+});
+
 test("with no edge limiters the route fails closed, not open", async () => {
   const storeCalls = [];
   const store = {

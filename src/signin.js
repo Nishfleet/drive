@@ -189,9 +189,10 @@ function readStart(body) {
  * message table's words rather than reporting a code sent that no store could
  * hold.
  *
- * The edge limiters are arguments for the same reason bindings are read in
- * the dispatch (src/index.js hands them off env): the check they enforce runs
- * before the body is read, so the limit a request spends is spent on nothing.
+ * The edge limiters are arguments for the same reason the bindings are
+ * read in the dispatch (src/index.js hands them off env): the limit runs
+ * before the body is read, so a refused request costs no parse and no
+ * store work.
  * @param {Request} request
  * @param {unknown} store the account store, or a falsy value while #2 lands
  * @param {SigninLimiters} [limiters] the two edge limits (per-IP and global)
