@@ -364,7 +364,7 @@ test("an anonymous files request never reaches the store", async () => {
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.match(
     source,
-    /account \? withIndex\(storeFor\(env\), env\.WAITLIST_DB, account\) : null/,
+    /account \? withIndex\(storeFor\(env\), env\.DRIVE_DB, account\) : null/,
     "the Worker must not build the store before the account gate answers",
   );
   assert.equal(typeof isolated.fetch, "function");

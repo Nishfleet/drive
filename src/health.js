@@ -13,7 +13,9 @@
 //     to cloudflare.config.ts is checked the day it is added. The trivial read
 //     is the one statement D1 answers whatever the schema is, so a database
 //     whose migrations are ahead of the Worker (still healthy) passes and an
-//     unreachable one fails. The waitlist is the site's only store today.
+//     unreachable one fails. Two databases today: the waitlist's, holding
+//     only the sign-up table, and the customer drive's, holding the file
+//     index, branches and agent caps (drive issue #170).
 //     Asking which kind it is, rather than looking for one method, is what
 //     makes that discovery safe (drive#144): every binding that is not a
 //     database is a Fetcher, and a Fetcher answers a function to every
@@ -93,11 +95,19 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). The email binding is not: only the token-gated internal
+ * (src/waitlist.js). Both databases are on it: a deploy that lost DRIVE_DB
+ * would serve every page and sign-up while every file, search and branch
+ * request failed, which is exactly the outage this endpoint exists to catch
+ * (drive issue #170). The email binding is not: only the token-gated internal
  * send route uses it, no customer request needs it, and its one operation
  * would really send mail.
  */
-export const REQUIRED_BINDINGS = Object.freeze(["WAITLIST_DB", "ASSETS", "WAITLIST_RATE_LIMITER"]);
+export const REQUIRED_BINDINGS = Object.freeze([
+  "WAITLIST_DB",
+  "DRIVE_DB",
+  "ASSETS",
+  "WAITLIST_RATE_LIMITER",
+]);
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -120,7 +130,10 @@ function withTimeout(promise, ms, name) {
   /** @type {ReturnType<typeof setTimeout>|undefined} */
   let timer;
   const expiry = new Promise((_resolve, reject) => {
-    timer = setTimeout(() => reject(new HealthCheckTimeout(name)), ms);
+    timer = setTimeout(
+      () => reject(new HealthCheckTimeout(name)),
+      ms,
+    );
   });
   return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
 }
@@ -187,9 +200,7 @@ export function d1Bindings(env) {
     .filter(([, binding]) => isDatabaseBinding(binding))
     .map(([name, db]) => ({
       name,
-      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (
-        db
-      ),
+      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (db),
     }));
 }
 
@@ -320,11 +331,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({
-    name: "ASSETS",
-    run: (left) =>
-      checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left),
-  });
+  checks.push({ name: "ASSETS", run: (left) => checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left) });
   const limiter = env.WAITLIST_RATE_LIMITER;
   if (
     typeof limiter !== "object" ||
