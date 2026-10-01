@@ -96,6 +96,22 @@ export function createAuth(options) {
     // never values in this repo.
     emailAndPassword: { enabled: false },
     socialProviders: {},
+    // Better Auth's built-in rate limiter: by default it keeps its counters in
+    // memory, one set per Worker instance, so an attacker spread across
+    // isolates is barely limited (drive issue #200). Pointing it at the
+    // customer D1 makes the counter one per address across every instance.
+    rateLimit: {
+      storage: "database",
+      enabled: true,
+      // The magic-link send is the one route that mints a link into an inbox,
+      // so it gets its own per-IP ceiling below the library's stock one (the
+      // magic-link plugin already applies a per-IP rule of 5/60s; this custom
+      // rule lowers it to 3/60s). The key Better Auth builds is IP plus path,
+      // so the limit is per address by construction.
+      customRules: {
+        "/sign-in/magic-link": { window: 60, max: 3 },
+      },
+    },
     session: {
       expiresIn: SESSION_TTL_SECONDS,
       // Refresh a session that is still being used, so an active person is not
@@ -107,6 +123,14 @@ export function createAuth(options) {
       // The site is served over HTTPS only (Cloudflare terminates TLS), so the
       // session cookie is `__Secure-` prefixed and never travels in clear.
       useSecureCookies: true,
+      // Cloudflare sets `cf-connecting-ip` on every request; Better Auth only
+      // looks at `x-forwarded-for` by default, which behind Cloudflare can
+      // hold a chain of proxies and fail to parse as a single IP. Listing the
+      // edge header second lets the per-IP rate limit key resolve to the real
+      // caller on the deployed Worker.
+      ipAddress: {
+        ipAddressHeaders: ["x-forwarded-for", "cf-connecting-ip"],
+      },
     },
     plugins: [
       magicLink({

@@ -240,14 +240,29 @@ export async function handleSigninRequest(request, env) {
     return json(signinClosedBody(), 503);
   }
   try {
-    await auth.api.signInMagicLink({
-      body: { email: /** @type {string} */ (read.email) },
-      headers: request.headers,
-    });
+    // Hand the send to Better Auth's own handler so its rate limiter runs.
+    // The in-process `auth.api` call bypasses the router's onRequest hook, so
+    // a per-IP ceiling stored in D1 would never see the request; the handler
+    // routes the call through that hook, building the rate-limit key (IP plus
+    // path) from this request's headers. The route's own origin check, body
+    // parse and closed-door guard have already run above; this only needs the
+    // email the start step validated and the headers the limiter reads IP from.
+    const authResponse = await auth.handler(signinLinkRequest(auth, read.email, request));
+    // Better Auth answers 429 from its rate limiter; translate that into the
+    // message table's words rather than passing its body through.
+    if (authResponse.status === 429) {
+      return json({ error: failureMessage("rate-limited") }, 429);
+    }
+    // Any other non-200 is a real failure — a database error, a token that
+    // could not be stored, or a mailer that threw: the closed door, never a
+    // 202 for a link that never left.
+    if (authResponse.status !== 200) {
+      return json(signinClosedBody(), 503);
+    }
   } catch (error) {
-    // A mailer that threw has not sent the link, so the failure is the
-    // route's answer: the person is told sign-in did not happen rather than
-    // shown a screen that waits for an email that is not coming.
+    // A rate-limit refusal surfaces as a 429 Response, handled above; this catch
+    // is for anything that throws instead — the closed door, never a 202 for a
+    // send that never landed.
     if (isTooManyRequests(error)) {
       return json({ error: failureMessage("rate-limited") }, 429);
     }
@@ -312,6 +327,37 @@ export async function handleSigninLinkVerify(request, env) {
   // same-origin redirect of its own, so a person lands on the drive rather
   // than on a JSON body.
   return redirect(AFTER_SIGNIN_PATH, cookieHeaders(verified));
+}
+
+/**
+ * The internal Better Auth request that the start step forwards a send to.
+ *
+ * The route never calls `auth.api.signInMagicLink` directly because that
+ * bypass the router's onRequest hook — and with it the per-IP rate limiter
+ * Better Auth stores in D1 (drive issue #200). Forwarding a real request
+ * through `auth.handler` puts the call in that hook, so the counter is
+ * checked and incremented the same way a browser hit the library route.
+ *
+ * The URL is the library's own endpoint under the configured auth base path;
+ * the body carries only the address the start step already validated, and
+ * the headers are the caller's so the limiter can read the IP and the origin
+ * check can see the site the request came from.
+ * @param {Auth} auth the Better Auth instance from `authFor`
+ * @param {string} email the address the start step validated
+ * @param {Request} request the caller's request, whose headers are forwarded
+ * @returns {Request}
+ */
+function signinLinkRequest(auth, email, request) {
+  const basePath = /** @type {object} */ (auth.options).basePath || "/api/auth";
+  const base = /** @type {string} */ (auth.options.baseURL);
+  const headers = new Headers(request.headers);
+  // The body is the library's own shape, not the route's `step` wrapper.
+  headers.set("content-type", "application/json");
+  return new Request(`${base}${basePath}/sign-in/magic-link`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ email }),
+  });
 }
 
 /**

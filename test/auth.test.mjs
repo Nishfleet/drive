@@ -30,8 +30,10 @@ const headers = () => new Headers({ origin: TEST_BASE_URL });
 
 test("the migration file is what Better Auth's own planner generates", async () => {
   // Better Auth's Kysely adapter compiles the tables its session query runs
-  // against. This pin makes a library upgrade that changes the schema fail
-  // here, at the migration, instead of at the first sign-in.
+  // against — including the rateLimit table when storage is "database"
+  // (drive issue #200). This pin makes a library upgrade that changes the
+  // schema fail here, at the migration, instead of at the first sign-in or
+  // rate-limited send.
   const plan = await getMigrations(
     /** @type {any} */ (
       betterAuth({
@@ -39,6 +41,9 @@ test("the migration file is what Better Auth's own planner generates", async () 
         secret: SECRET,
         baseURL: TEST_BASE_URL,
         emailAndPassword: { enabled: false },
+        // Mirrors the option in src/auth.js: the rate-limit counters are
+        // stored in D1, so the planner now emits the rateLimit table too.
+        rateLimit: { storage: "database" },
         plugins: [
           (await import("better-auth/plugins")).magicLink({
             sendMagicLink: async () => {},
@@ -48,10 +53,13 @@ test("the migration file is what Better Auth's own planner generates", async () 
     ).options,
   );
   const generated = await plan.compileMigrations();
-  const shipped = readFileSync(
-    new URL("../migrations/drive/0005_better_auth.sql", import.meta.url),
-    "utf8",
-  );
+  // The shipped migration is split across two files: 0005 holds the four
+  // core tables and 0006 holds the rateLimit table, because a deployed D1
+  // has already applied 0005 and cannot re-run it. Concatenate them so the
+  // comparison is against the full set the planner emits.
+  const shipped = ["0005_better_auth.sql", "0006_rate_limit.sql"]
+    .map((name) => readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"))
+    .join("\n");
   assert.ok(plan.toBeCreated.length > 0, "the planner must have tables to create");
   // The planner returns statements separated by two newlines; the file carries
   // one statement per line. Compare statement sets rather than whitespace.

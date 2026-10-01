@@ -24,10 +24,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0003_branches.sql",
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
+  "drive/0006_rate_limit.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
-const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
+export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */
 export const TEST_BASE_URL = "https://drive.test";
 

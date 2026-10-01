@@ -20,7 +20,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
+import { createAuth, SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
@@ -33,7 +33,7 @@ import {
   SIGNIN_STEPS,
   signinClosedBody,
 } from "../src/signin.js";
-import { createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
+import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
@@ -359,6 +359,95 @@ test("sign-out through the route revokes the session the cookie names", async ()
     made.env,
   );
   assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
+});
+
+// --------------------------------------------------------- per-IP rate limit
+
+test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
+  // Better Auth's rate limiter stores its counter in the customer D1 (drive
+  // issue #200), keyed by IP plus path. Three sends from one address succeed;
+  // the fourth is refused. A different address is unaffected.
+  const made = dispatchEnv();
+  const env = made.env;
+
+  // The first three sends from one IP land.
+  for (let i = 0; i < 3; i++) {
+    const response = await worker.fetch(
+      post(
+        { step: "start", method: "email", email: `user${i}@example.com` },
+        { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+      ),
+      env,
+    );
+    assert.equal(response.status, 202, `send ${i + 1} from one IP should succeed`);
+    assert.equal(made.sent.length, i + 1, `send ${i + 1} should mail a link`);
+  }
+
+  // The fourth send from the same IP is refused: the ceiling is hit, and no
+  // link leaves after it.
+  const refused = await worker.fetch(
+    post(
+      { step: "start", method: "email", email: "over@the.ceil.ing" },
+      { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+    ),
+    env,
+  );
+  assert.equal(refused.status, 429, "the fourth send from one IP is refused");
+  assert.deepEqual(await refused.json(), { error: failureMessage("rate-limited") });
+  assert.equal(made.sent.length, 3, "no link leaves after the ceiling");
+
+  // A different IP is not under the first address's ceiling.
+  const other = await worker.fetch(
+    post(
+      { step: "start", method: "email", email: "other@example.com" },
+      { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.2" } },
+    ),
+    env,
+  );
+  assert.equal(other.status, 202, "a different IP is not rate-limited");
+});
+
+test("a rate-limited send is still refused by a fresh isolate over the same D1", async () => {
+  // The counter lives in D1, not in a Worker instance, so a new isolate — a
+  // fresh auth built from the same database — still sees it and still refuses.
+  const made = dispatchEnv();
+  const env = made.env;
+
+  // Drive the ceiling home from one address.
+  for (let i = 0; i < 3; i++) {
+    await worker.fetch(
+      post(
+        { step: "start", method: "email", email: `user${i}@example.com` },
+        { headers: { origin: TEST_BASE_URL, "x-forwarded-for": "192.0.2.1" } },
+      ),
+      env,
+    );
+  }
+
+  // The "restart": a brand-new Better Auth instance over the same database,
+  // as a new Worker isolate would build. It never shares the old instance's
+  // objects — only the D1 table they both read and write.
+  const restarted = createAuth({
+    database: made.db,
+    secret: TEST_SECRET,
+    baseURL: TEST_BASE_URL,
+    sendLink: async () => {},
+  });
+
+  // The same address still trips the ceiling, because the counter was written
+  // to D1 by the first instance.
+  const stillLimited = await restarted.handler(
+    new Request(`${TEST_BASE_URL}/api/auth/sign-in/magic-link`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        "x-forwarded-for": "192.0.2.1",
+      },
+      body: JSON.stringify({ email: "still@limited.example" }),
+    }),
+  );
+  assert.equal(stillLimited.status, 429, "a fresh isolate over the same D1 still refuses");
 });
 
 // --------------------------------------------------------- the shipped page
