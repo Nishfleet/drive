@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import {
   BILLING,
+  DOC_PAGES,
   PAGES,
   SITE,
   absoluteUrl,
@@ -216,10 +217,16 @@ test("sitemap.xml lists exactly the indexable pages, on the canonical origin", (
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
     (match) => match[1],
   );
+  // The docs pages (drive issue #98) are read from the same config, so a docs
+  // page that ships without being listed here fails this test.
+  const expected = [
+    ...indexablePages.map(pageUrl),
+    ...DOC_PAGES.map((page) => absoluteUrl(page.path)),
+  ];
   assert.deepEqual(
     locations,
-    indexablePages.map(pageUrl),
-    "the sitemap must list exactly the indexable pages, at their canonical URLs",
+    expected,
+    "the sitemap must list exactly the indexable pages and the docs pages, at their canonical URLs",
   );
   for (const location of locations) {
     assert.equal(new URL(location).origin, SITE.origin);
