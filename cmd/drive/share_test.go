@@ -230,17 +230,40 @@ func TestAFailureWithNoReadableBodyIsStillNamed(t *testing.T) {
 }
 
 // A person holds a full link, not a token: the argument is reduced to the
-// token the endpoint takes, for both link shapes.
+// token the endpoint takes, for both link shapes, with a trailing slash or a
+// query string after it. Anything that does not reduce to the Worker's token
+// shape is refused here, not sent to the api.
 func TestTokenFromArgAcceptsALinkOrAToken(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{shareToken, shareToken},
 		{"  " + shareToken + "  ", shareToken},
 		{"https://drive.test/s/" + shareToken, shareToken},
 		{"https://drive.test/s/" + shareToken + "/", shareToken},
-		{"https://drive.test/upload.html?k=BBBBBBBBBBBBBBBBBBBBBB", "BBBBBBBBBBBBBBBBBBBBBB"},
+		{"https://drive.test/s/" + shareToken + "/?x=1", shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken, shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken + "&utm_source=mail", shareToken},
 	} {
-		if got := tokenFromArg(tc.in); got != tc.want {
+		got, err := tokenFromArg(tc.in)
+		if err != nil {
+			t.Errorf("tokenFromArg(%q) failed: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
 			t.Errorf("tokenFromArg(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
+	for _, in := range []string{
+		"",
+		"k=short",
+		"https://drive.test/s/AAAA/?x=1",
+		"https://drive.test/k=evil",
+		"../" + shareToken,
+	} {
+		if got, err := tokenFromArg(in); err == nil {
+			t.Errorf("tokenFromArg(%q) = %q, want an error", in, got)
 		}
 	}
 }
