@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createApp, dispatch } from "../src/index.js";
 import { AUTH_RULES, routes } from "../src/routes.js";
+
 /** @typedef {import("../src/index.js").Ctx} Ctx */
 // `Route.handler` is `Function` in the product (its real handlers assume a
 // non-null account on account routes, so a strict ctx would be over-checked),
@@ -229,13 +230,13 @@ test("an account route runs with the signed-in account on ctx", async () => {
       method: "GET",
       path: "/v1/me",
       auth: "account",
-      handler: /** @param {Request} _r @param {Ctx} c */
-      (_r, c) => Response.json({ account: /** @type {{id: string}} */ (c.account).id }),
+      handler /** @param {Request} _r @param {Ctx} c */: (_r, c) =>
+        Response.json({ account: /** @type {{id: string}} */ (c.account).id }),
     },
   ];
   const res = await dispatch(
     new Request("https://x.test/v1/me"),
-    { ...ctx, account: { id: "acct_1" } },
+    { ...ctx, account: { id: "acct_1", name: "Account" } },
     table,
   );
   assert.equal(res.status, 200);
@@ -301,7 +302,9 @@ test("a handler error is a 500 the caller cannot learn from, and the real error 
     assert.ok(!body.includes(secret), "raw error text must never reach the caller");
     assert.equal(logged.length, 1, "the real error is logged once, server-side");
     /** @type {unknown[]} */
-    const loggedErrors = /** @type {Error[]} */ (logged.flat().filter((entry) => entry instanceof Error));
+    const loggedErrors = /** @type {Error[]} */ (
+      logged.flat().filter((entry) => entry instanceof Error)
+    );
     assert.equal(loggedErrors.length, 1, "the real error itself is logged");
     const firstLogged = /** @type {Error} */ (/** @type {unknown} */ (loggedErrors[0]));
     assert.ok(firstLogged.message.includes(secret), "the log carries the real error");

@@ -748,8 +748,13 @@ test("either sign-in limiter that throws is a 503 naming that one, not the other
 test("each sign-in limiter is probed on a key of its own, never a client IP", async () => {
   // The probe must not spend a real caller's quota (the same rule the
   // waitlist's limiter probe follows), and each binding's key changes per call.
+  /** @type {{SIGNIN_RATE_LIMITER: string[], SIGNIN_GLOBAL_RATE_LIMITER: string[]}} */
   const keys = { SIGNIN_RATE_LIMITER: [], SIGNIN_GLOBAL_RATE_LIMITER: [] };
+  /**
+   * @param {keyof typeof keys} name
+   */
   const make = (name) => ({
+    /** @param {{key: string}} options */
     limit({ key }) {
       keys[name].push(key);
       return Promise.resolve({ success: true });
@@ -762,7 +767,9 @@ test("each sign-in limiter is probed on a key of its own, never a client IP", as
   const second = await handleHealthRequest(GET(), env);
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
-  for (const name of Object.keys(keys)) {
+  /** @type {Array<keyof typeof keys>} */
+  const names = ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"];
+  for (const name of names) {
     assert.equal(keys[name].length, 2, `${name} is probed once per poll`);
     assert.match(keys[name][0], /^health-probe-/);
     assert.ok(!keys[name][0].includes("."), `${name}'s probe key must not be a client IP`);

@@ -54,7 +54,16 @@ const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "ut
  * The env the Worker's real dispatch is driven with: the customer database,
  * the two Better Auth settings and the test mailer standing in for the EMAIL
  * binding. Every claim about a real sign-in below runs through this.
- * @returns {ReturnType<typeof createTestAuth> & {env: object}}
+ * @typedef {{limit: (options: {key: string}) => Promise<{success: boolean}>, calls?: Array<{key: string}>}} SigninLimiterFake
+ * @returns {ReturnType<typeof createTestAuth> & {env: {
+ *   ASSETS: {fetch: () => Response},
+ *   DRIVE_DB: unknown,
+ *   BETTER_AUTH_SECRET: string,
+ *   BETTER_AUTH_URL: string,
+ *   SIGNIN_MAIL: (link: {to: string, url: string}) => void,
+ *   SIGNIN_RATE_LIMITER?: SigninLimiterFake,
+ *   SIGNIN_GLOBAL_RATE_LIMITER?: SigninLimiterFake,
+ * }}}
  */
 function dispatchEnv() {
   const made = createTestAuth();
@@ -94,10 +103,15 @@ const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} }
 // Every call is recorded, so a test can assert the bucket a limit was spent on
 // — the client IP for the per-IP binding, one shared bucket for the global one
 // — and that a refused request reaches neither the mailer nor Better Auth.
+/**
+ * @param {{success?: boolean}} [options]
+ */
 function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
   const calls = [];
   return {
     calls,
+    /** @param {{key: string}} options */
     async limit(options) {
       calls.push(options);
       return { success };
@@ -305,7 +319,7 @@ test("a start denied by the per-IP edge limit is a 429 from the edge, before any
   const made = dispatchEnv();
   made.env.SIGNIN_RATE_LIMITER = makeRateLimiter({ success: false });
   const before = made.sent.length;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     made.env,
   );
@@ -325,7 +339,7 @@ test("the edge limit runs before the body is read: a refused sign-in is a 429, n
   // the limit exists to make a refused request cost no parse.
   const made = dispatchEnv();
   made.env.SIGNIN_RATE_LIMITER = makeRateLimiter({ success: false });
-  const response = await worker.fetch(post("not json"), made.env);
+  const response = await workerFetch(post("not json"), made.env);
   assert.equal(response.status, 429, "a invalid body behind a spent bucket is still a 429");
   assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
 });
@@ -337,7 +351,7 @@ test("a start denied by the global edge limit is a 429 and mails nothing", async
   const made = dispatchEnv();
   made.env.SIGNIN_GLOBAL_RATE_LIMITER = makeRateLimiter({ success: false });
   const before = made.sent.length;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     made.env,
   );
@@ -354,7 +368,7 @@ test("the per-IP limit keys on cf-connecting-ip and the global limit on one shar
   const global = makeRateLimiter();
   made.env.SIGNIN_RATE_LIMITER = ip;
   made.env.SIGNIN_GLOBAL_RATE_LIMITER = global;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post(
       { step: "start", method: "email", email: "a@b.co" },
       { headers: { "cf-connecting-ip": "203.0.113.7" } },
@@ -378,7 +392,7 @@ test("a request that did not come from the site is refused before it spends any 
     { step: "start", method: "email", email: "a@b.co" },
     { headers: { origin: "https://elsewhere.example" } },
   );
-  const response = await worker.fetch(cross, made.env);
+  const response = await workerFetch(cross, made.env);
   assert.equal(response.status, 403);
   assert.deepEqual(ip.calls, [], "a refused cross-site post spends no quota");
   assert.deepEqual(global.calls, [], "a refused cross-site post spends no quota");
@@ -393,7 +407,7 @@ test("through the dispatch, a missing limiter binding fails closed, not open", a
   const made = dispatchEnv();
   made.env.SIGNIN_GLOBAL_RATE_LIMITER = undefined;
   const before = made.sent.length;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     made.env,
   );
@@ -409,7 +423,7 @@ test("with no edge limiters at all the route fails closed, not open", async () =
   made.env.SIGNIN_RATE_LIMITER = undefined;
   made.env.SIGNIN_GLOBAL_RATE_LIMITER = undefined;
   const before = made.sent.length;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     made.env,
   );
@@ -424,10 +438,13 @@ test("a limiter that throws fails closed with the table's words, never the error
   // waitlist gives.
   const made = dispatchEnv();
   made.env.SIGNIN_RATE_LIMITER = {
-    limit: () => Promise.reject(new Error("rate limiter backend exploded: key=sk-secret")),
+    /** @param {{key: string}} _options */
+    limit(_options) {
+      return Promise.reject(new Error("rate limiter backend exploded: key=sk-secret"));
+    },
   };
   const before = made.sent.length;
-  const response = await worker.fetch(
+  const response = await workerFetch(
     post({ step: "start", method: "email", email: "a@b.co" }),
     made.env,
   );

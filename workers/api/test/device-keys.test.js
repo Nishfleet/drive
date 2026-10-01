@@ -25,10 +25,15 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
 // binding's whole contract is `limit({ key }) -> { success }`, the same fake
 // the site Worker's tests drive; every call is recorded so a test can assert
 // the bucket and that a refused request never reaches the store.
+/**
+ * @param {{success?: boolean}} [options]
+ */
 function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
   const calls = [];
   return {
     calls,
+    /** @param {{key: string}} options */
     async limit(options) {
       calls.push(options);
       return { success };
