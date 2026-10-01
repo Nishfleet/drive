@@ -16,6 +16,7 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { isSameOriginRequest } from "./email-send.js";
+import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** The page the api Worker serves; linked from the first-run page. */
@@ -1087,7 +1088,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return unauthorizedResponse();
   }
   if (!store) {
-    return json({ error: "The drive is not configured on this deployment." }, 503);
+    return json({ error: failureMessage("drive-not-configured") }, 503);
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
@@ -1163,10 +1164,15 @@ async function readJsonObject(request) {
   try {
     body = await request.json();
   } catch {
-    return { error: "The request body is not valid JSON." };
+    // A body that is not JSON at all is the same failure as a body that is
+    // JSON but not an object: both are "this request did not carry a JSON
+    // object", and both routes that read a body say it in the table's words, so
+    // a form, an array, a bare value and a mangled body all read the same on
+    // every account route (drive#158).
+    return { error: failureMessage("json-object-needed") };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   return { body };
 }
@@ -1255,7 +1261,7 @@ async function readRequest(request, url, store, download) {
     return json({ error: `We could not read that file: ${String(error)}` }, 500);
   }
   if (!object) {
-    return plain("That file is not here.", 404);
+    return plain(failureMessage("file-not-found"), 404);
   }
   const name = drivePath.split("/").pop() || "";
   const headers = /** @type {Record<string, string>} */ ({
@@ -1302,7 +1308,7 @@ async function uploadRequest(request, url, store) {
   }
   const name = url.searchParams.get("name") || "";
   if (!name) {
-    return json({ error: "Name the file you are uploading." }, 400);
+    return json({ error: failureMessage("upload-needs-name") }, 400);
   }
   const path = joinPath(checked.path, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
@@ -1328,7 +1334,10 @@ async function deleteRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The `if` is the narrowing: readJsonObject's error arm is the only one
+    // without a body, so error is a string here and there is nothing to fall
+    // back to, and no second copy of the sentence to keep in step.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {
@@ -1337,7 +1346,7 @@ async function deleteRequest(request, store, now) {
   try {
     const object = await store.read(checked.path);
     if (!object) {
-      return json({ error: "That file is not here." }, 404);
+      return json({ error: failureMessage("file-not-found") }, 404);
     }
     await store.write(
       trashStorePath(trashName(checked.path, now)),
@@ -1363,7 +1372,9 @@ async function restoreRequest(request, store, now) {
   }
   const { body, error } = await readJsonObject(request);
   if (body === undefined) {
-    return json({ error: error || "The request body is not valid JSON." }, 400);
+    // The same narrowing as the delete path above, and the same words: the
+    // restore route reads a body exactly as the delete route does.
+    return json({ error }, 400);
   }
   const checked = validatePath(body.path);
   if (checked.error) {

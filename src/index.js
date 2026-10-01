@@ -1,7 +1,7 @@
-import { createAccountStore } from "./accounts.js";
+import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
-import { handleSendEmailRequest, sendEmail } from "./email-send.js";
+import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -18,7 +18,7 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
-import { handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
@@ -69,83 +69,6 @@ function storeFor(env) {
   return filesStore;
 }
 
-// The account store for sign-in: one place to plug the api Worker's D1 in
-// (#2), so the sign-in route never reads a binding of its own and a test can
-// hand the handler a fake. One store per Worker isolate, holding the accounts,
-// their one-time codes and their sessions (src/accounts.js). The real D1
-// store is #2; swapping it is one factory with the same three methods.
-/** @type {ReturnType<typeof createAccountStore>|undefined} */
-let accountsStore;
-/**
- * The two settings this module reads that are not bindings in
- * cloudflare.config.ts, so they are not on the generated `Env`: `ACCOUNTS_STORE`
- * is the store a test injects to drive the real dispatch, and `MAIL_FROM` is the
- * deployment's sending address (a secret, so it never appears in the config).
- * Widened here as the optional pair they are — the same move `devStorage` makes
- * for the two dev-only S3 vars.
- * @param {Env} env
- * @returns {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}}
- */
-function accountEnv(env) {
-  return /** @type {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}} */ (
-    env
-  );
-}
-
-/**
- * @param {Env} env
- * @returns {ReturnType<typeof createAccountStore>}
- */
-function accountsStoreFor(env) {
-  const settings = accountEnv(env);
-  // A store passed on the env wins, and that is how a test drives the real
-  // dispatch (test/account-gate.test.mjs builds a store with a mailer that
-  // captures the code, so it can read what left by email). A deployment never
-  // sets it,
-  // so the one-isolate cache below is what production uses.
-  if (settings.ACCOUNTS_STORE) {
-    return settings.ACCOUNTS_STORE;
-  }
-  if (!accountsStore) {
-    accountsStore = createAccountStore({
-      // The code leaves by email through the same provider every drive email
-      // uses (src/email-send.js). With no EMAIL binding the store is built
-      // without a mailer, and a start that cannot be mailed is reported as
-      // failed rather than as a code sent — the route reads the store's answer
-      // either way, so nothing here decides what a person is told.
-      sendCode: settings.EMAIL
-        ? async ({ to, code }) => {
-            await sendEmail(settings.EMAIL, {
-              to,
-              kind: "signin-code",
-              from: settings.MAIL_FROM ?? "",
-              rendered: signinCodeEmail(code),
-            });
-          }
-        : undefined,
-    });
-  }
-  return accountsStore;
-}
-
-// The one email the sign-in code arrives in. It is rendered here rather than in
-// src/emails.js because it carries a secret and that module's templates are the
-// five the spec names for customers (welcome, cap, read-only, payment, receipt)
-// — a secret is not one of them, and a template table that also held codes
-// would be a place to leak one from.
-/**
- * @param {string} code
- * @returns {{subject: string, text: string, html: string, saved: string|null}}
- */
-function signinCodeEmail(code) {
-  return {
-    subject: `Your drive sign-in code: ${code}`,
-    text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
-    html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
-    saved: null,
-  };
-}
-
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
@@ -173,10 +96,7 @@ export default {
     // (issue #45), so an anonymous poll gets 401 and no device data. The path
     // is the module's own constant, so the route and the page cannot drift.
     if (url.pathname === STATUS_ENDPOINT || url.pathname === `${STATUS_ENDPOINT}/`) {
-      return handleFirstRunStatusRequest(
-        request,
-        await signedInAccount(request, accountsStoreFor(env)),
-      );
+      return handleFirstRunStatusRequest(request, await signedInAccount(request, authFor(env)));
     }
     // Search reads only the D1 file index (issue #18), behind the same account
     // gate every drive read that names files goes through (`signedInAccount`,
@@ -191,7 +111,7 @@ export default {
       return handleSearchRequest(
         request,
         env.DRIVE_DB,
-        await signedInAccount(request, accountsStoreFor(env)),
+        await signedInAccount(request, authFor(env)),
       );
     }
     // The files handler is behind the same account gate as the page's poll
@@ -208,7 +128,7 @@ export default {
       // signed-in callers and tells a stranger nothing about itself. The
       // index wrapper sits outside the scope the handler applies, so it sees
       // the account's own storage keys and writes only that account's rows.
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleFilesRequest(
         request,
         account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
@@ -220,7 +140,7 @@ export default {
     // and the store is handed in unscoped (the handler scopes it) and without
     // withIndex, so a branch's own copies never land in the search index.
     if (url.pathname === BRANCHES_ENDPOINT || url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleBranchesRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // Agent undo (build step 11, issue #13): the one-click rewind of an
@@ -231,7 +151,7 @@ export default {
     // reads and writes the one branches table and the one file store; there is
     // no second copy of the agent's work anywhere.
     if (url.pathname === REWIND_ENDPOINT || url.pathname.startsWith(`${REWIND_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleRewindRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
@@ -239,15 +159,26 @@ export default {
     // fallthrough, and the account gate is what keeps one account's numbers
     // from being shown to another (issue #73).
     if (url.pathname === USAGE_ENDPOINT || url.pathname === `${USAGE_ENDPOINT}/`) {
-      return handleUsageRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+      return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
     }
-    // The sign-in screen's start and finish (build step 9, issue #10). The
-    // account store (src/accounts.js) records the one-time code against the
-    // address and, on the finish step, mints the session cookie every account
-    // route above is gated on. It is registered here, ahead of the asset
-    // fallthrough, because /api/signin must reach the Worker.
+    // The sign-in screen's two steps (build step 9, issue #10; Better Auth
+    // over D1, #181). The start step mails a single-use link; the sign-out
+    // step revokes the session. The link itself is the next branch below.
+    // Registered here, ahead of the asset fallthrough, because /api/signin
+    // must reach the Worker.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, accountsStoreFor(env));
+      return handleSigninRequest(request, env);
+    }
+    // The link a sign-in email carries (drive#181): GET only, the token is
+    // the whole proof. The route verifies it against Better Auth, sets the
+    // session cookie the account routes are gated on, and sends a signed-in
+    // person to their files. No session is required to reach it — signing
+    // in is the only way to get one, so it must be reachable without one —
+    // and the closed-door check inside handleSigninLinkVerify keeps a
+    // deployment with no auth bound from minting sessions it cannot stand
+    // behind.
+    if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
+      return handleSigninLinkVerify(request, env);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

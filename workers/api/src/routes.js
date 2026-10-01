@@ -9,6 +9,7 @@ import {
   approvePageRoute,
   pollDeviceTokenRoute,
   requestDeviceCodeRoute,
+  revokeDeviceTokenRoute,
 } from "./device-routes.js";
 import { listKeysRoute, mintKeyRoute, revokeKeyRoute, storageListRoute } from "./key-routes.js";
 
@@ -69,6 +70,15 @@ export const routes = [
     path: "/v1/device/approve",
     auth: "account",
     handler: approveDeviceCodeRoute,
+  },
+
+  // Revoke the caller's own device token: the account gate already resolved
+  // the account from the bearer, so the handler only revokes that one token.
+  {
+    method: "DELETE",
+    path: "/v1/device/token",
+    auth: "account",
+    handler: revokeDeviceTokenRoute,
   },
 
   // ---- keys (build step 4, drive#55) ----

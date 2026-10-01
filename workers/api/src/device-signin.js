@@ -37,6 +37,8 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  * @property {(userCode: string, account: {id: string, name?: string, email?: string}) => {accountId?: string, name?: string, error?: string}|Promise<{accountId?: string, name?: string, error?: string}>} approveDeviceCode
  * @property {(deviceCode: string) => Promise<{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
+ * @property {(token: string) => Promise<{revoked: true, expiresAt: number, revokedAt: number}|{error: "not-found"}>} revokeDeviceToken
+ * @property {(at?: number) => number|Promise<number>} sweepDeviceTokens
  */
 
 // How long a device code is good for, and how often the CLI may poll
@@ -44,6 +46,19 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 // phone, short enough that a code left on a terminal screen dies.
 export const DEVICE_CODE_TTL_SECONDS = 600;
 export const DEVICE_CODE_INTERVAL_SECONDS = 5;
+
+// How long a minted device token is good for. A device token is the CLI's whole
+// credential for the account gate, so a token that never dies is a credential a
+// leak keeps: the store would hold it until the person deleted their account,
+// and the only way to kill it would be to delete that account's keys. Thirty
+// days is the session TTL src/auth.js already chose, and for the same reason
+// ("the drive is reached on every visit, so signing in every week would be a
+// support ticket, not a security win"): a month bounds what a leak is worth
+// without asking a person to approve a code every few days. The number is
+// written here rather than imported so this module keeps no dependency on the
+// account store; keystore.test.js pins the two to each other, so they cannot
+// drift into two different months.
+export const DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 // The user code a person types on the approval page. The alphabet leaves out
 // vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
@@ -114,10 +129,30 @@ export function createMemoryDeviceSigninStore(options = {}) {
   const byDeviceCode = new Map();
   /** @type {Map<string, string>} user code -> device code */
   const byUserCode = new Map();
-  /** @type {Map<string, {account: {id: string, name: string, email: string|null}, createdAt: number}>} token hash -> token */
+  /** @type {Map<string, {account: {id: string, name: string, email: string|null}, createdAt: number, expiresAt: number, revokedAt: number|null}>} token hash -> token */
   const tokens = new Map();
   /** @type {Map<string, {id: string, name: string, email: string|null}>} account id -> account the stand-in holds */
   const accounts = new Map();
+
+  /**
+   * The token rows that can no longer authenticate: expired or revoked. The
+   * bearer lookup already refuses both, so dropping them is housekeeping and
+   * never the security boundary — a store that never swept would refuse the
+   * same tokens and only hold more rows.
+   * @param {number} [at] epoch seconds to judge the rows at; injected so a
+   *   test can sweep a row it cannot otherwise wait for.
+   * @returns {number} how many rows went
+   */
+  function sweepTokens(at = nowSeconds(now())) {
+    let dropped = 0;
+    for (const [digest, row] of tokens) {
+      if (row.revokedAt !== null || at >= row.expiresAt) {
+        tokens.delete(digest);
+        dropped++;
+      }
+    }
+    return dropped;
+  }
 
   return {
     /** Every account this stand-in holds, so a test can model a row that is
@@ -222,9 +257,17 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return { status: "expired" };
       }
       const token = newId("dtok");
+      const minted = nowSeconds(now());
+      // Minting is the only moment a new token row appears, so it is where the
+      // dead ones go: a row that can no longer authenticate is not worth
+      // holding, and this stand-in would otherwise grow one per sign-in for
+      // the life of the isolate.
+      sweepTokens(minted);
       tokens.set(await sha256Hex(token), {
         account,
-        createdAt: nowSeconds(now()),
+        createdAt: minted,
+        expiresAt: minted + DEVICE_TOKEN_TTL_SECONDS,
+        revokedAt: null,
       });
       code.status = "used";
       return { status: "approved", deviceToken: token, account };
@@ -233,6 +276,11 @@ export function createMemoryDeviceSigninStore(options = {}) {
     /**
      * The account a device token belongs to, or null. The token is hashed
      * before lookup, so the store never holds the value the CLI holds.
+     *
+     * This is the one place a bearer token becomes an account, so it is where
+     * a token past its expiry or one that has been revoked stops being one:
+     * both answer `null`, the same answer a token that was never minted gets,
+     * so the account gate cannot tell a dead credential from a made-up one.
      * @param {string} token
      */
     async accountForDeviceToken(token) {
@@ -240,7 +288,49 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return null;
       }
       const row = tokens.get(await sha256Hex(token));
-      return row === undefined ? null : row.account;
+      if (row === undefined || row.revokedAt !== null) {
+        return null;
+      }
+      if (nowSeconds(now()) >= row.expiresAt) {
+        return null;
+      }
+      return row.account;
+    },
+
+    /**
+     * Revoke one device token: `drive logout`'s server-side half, and the way a
+     * token that leaked is killed without deleting the account's keys. The raw
+     * token is hashed before lookup, exactly as `accountForDeviceToken` hashes
+     * it, so the store never holds the value the CLI holds.
+     *
+     * Revoking is idempotent: a second revoke reports what the first did,
+     * because from here on the token is dead either way. A token the store
+     * never held answers `not-found` rather than claiming a revoke that
+     * changed nothing — that difference is what a caller can promise a person.
+     * @param {string} token
+     */
+    async revokeDeviceToken(token) {
+      if (typeof token !== "string" || token === "") {
+        return { error: "not-found" };
+      }
+      const row = tokens.get(await sha256Hex(token));
+      if (row === undefined) {
+        return { error: "not-found" };
+      }
+      if (row.revokedAt === null) {
+        row.revokedAt = nowSeconds(now());
+      }
+      return { revoked: true, expiresAt: row.expiresAt, revokedAt: row.revokedAt };
+    },
+
+    /**
+     * The token rows that can no longer authenticate. See the closure above;
+     * exposed so a test (or a timer) can run it without minting.
+     * @param {number} [at]
+     * @returns {number} how many rows went
+     */
+    sweepDeviceTokens(at) {
+      return sweepTokens(at);
     },
   };
 }
@@ -249,7 +339,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
  * The D1-backed device sign-in store. Every method is one or two prepared
  * statements; the row is the state, so a code started on one instance is
  * visible on the next one and across a restart.
- * @param {import("./db.js").D1Like} db
+ * @param {D1Database} db
  * @param {{now?: () => number, randomBytes?: () => Uint8Array}} [options]
  * @returns {DeviceSigninStore}
  */
@@ -434,14 +524,15 @@ export function createD1DeviceSigninStore(db, options = {}) {
           params: [hash, nowSeconds(now())],
         },
         {
-          sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5)`,
+          sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at, expires_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
           params: [
             await sha256Hex(token),
             row.account.id,
             row.account.name,
             row.account.email,
             nowSeconds(now()),
+            nowSeconds(now()) + DEVICE_TOKEN_TTL_SECONDS,
           ],
         },
       ]);
@@ -461,10 +552,16 @@ export function createD1DeviceSigninStore(db, options = {}) {
       if (typeof token !== "string" || token === "") {
         return null;
       }
+      // The expiry and the revocation are the WHERE clause, not a check the
+      // caller could forget: a dead row is the same answer as a row that was
+      // never written, so there is one way for a token to fail and one place it
+      // can happen.
       const row = await first(
         db,
-        "SELECT account_id, account_name, account_email FROM device_tokens WHERE token_hash = ?1",
+        `SELECT account_id, account_name, account_email FROM device_tokens
+          WHERE token_hash = ?1 AND revoked_at IS NULL AND expires_at > ?2`,
         await sha256Hex(token),
+        nowSeconds(now()),
       );
       if (!row || typeof row !== "object") {
         return null;
@@ -475,6 +572,60 @@ export function createD1DeviceSigninStore(db, options = {}) {
         name: String(r.account_name ?? ""),
         email: String(r.account_email ?? ""),
       };
+    },
+
+    /**
+     * Revoke one device token: `drive logout`'s server-side half. The write is
+     * conditional on the token not being revoked already, so two callers racing
+     * cannot stamp two different times, and the row is read back either way so
+     * the answer is the row's own (`revokedAt` is the first revoke's time, not
+     * this one's). A token the store never held answers `not-found` rather
+     * than claiming a revoke that changed nothing.
+     * @param {string} token
+     */
+    async revokeDeviceToken(token) {
+      if (typeof token !== "string" || token === "") {
+        return { error: "not-found" };
+      }
+      const hash = await sha256Hex(token);
+      const revokedAt = nowSeconds(now());
+      await run(
+        db,
+        "UPDATE device_tokens SET revoked_at = ?1 WHERE token_hash = ?2 AND revoked_at IS NULL",
+        revokedAt,
+        hash,
+      );
+      const row = /** @type {Record<string, unknown>|null} */ (
+        await first(
+          db,
+          "SELECT expires_at, revoked_at FROM device_tokens WHERE token_hash = ?1",
+          hash,
+        )
+      );
+      if (!row || row.revoked_at === null || row.revoked_at === undefined) {
+        return { error: "not-found" };
+      }
+      return {
+        revoked: true,
+        expiresAt: Number(row.expires_at),
+        revokedAt: Number(row.revoked_at),
+      };
+    },
+
+    /**
+     * Drop the token rows that can no longer authenticate: expired or revoked.
+     * The bearer lookup already refuses both, so this is housekeeping, never
+     * the security boundary.
+     * @param {number} [at]
+     * @returns {Promise<number>} how many rows went
+     */
+    async sweepDeviceTokens(at = nowSeconds(now())) {
+      const dropped = await run(
+        db,
+        "DELETE FROM device_tokens WHERE expires_at <= ?1 OR revoked_at IS NOT NULL",
+        at,
+      );
+      return Number(/** @type {{meta?: {changes?: number}}} */ (dropped)?.meta?.changes ?? 0);
     },
   };
 }

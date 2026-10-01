@@ -1,10 +1,41 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { SESSION_COOKIE } from "../../../src/accounts.js";
-import { createD1DeviceSigninStore, DEVICE_CODE_TTL_SECONDS } from "../src/device-signin.js";
+import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import {
+  createD1DeviceSigninStore,
+  DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
+} from "../src/device-signin.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
+
+// The session cookie Better Auth mints, named by src/auth.js
+// `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
+// instance): `__Secure-` because the site is HTTPS only, then the prefix, then
+// Better Auth's own session name.
+const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
+
+// The sign-in store the api Worker resolves a browser approval through:
+// src/auth.js `authFor` builds a Better Auth instance and src/status.js
+// `signedInAccount` asks it for the session the cookie names, so a stand-in
+// here speaks `api.getSession`. One token is signed in; every other value the
+// browser could have invented has no session.
+function accountsFor(token) {
+  return {
+    api: {
+      async getSession({ headers }) {
+        const cookie = headers?.get?.("cookie") ?? "";
+        const found = cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
+        const value = found?.slice(SESSION_COOKIE.length + 1);
+        return value === token ? { user: ACCOUNT } : null;
+      },
+    },
+  };
+}
 
 // A minimal D1 stand-in for the device sign-in store: it implements the exact
 // statements device-signin.js prepares, over Maps, so two store instances share
@@ -102,15 +133,37 @@ function makeFakeD1(options = {}) {
       return { success: true, meta: { changes: 1 } };
     }
     if (s.startsWith("INSERT INTO device_tokens")) {
-      const [hash, accountId, accountName, accountEmail, createdAt] = params;
+      const [hash, accountId, accountName, accountEmail, createdAt, expiresAt] = params;
       tokens.set(hash, {
         token_hash: hash,
         account_id: accountId,
         account_name: accountName,
         account_email: accountEmail,
         created_at: createdAt,
+        expires_at: expiresAt,
+        revoked_at: null,
       });
       return { success: true, meta: { changes: 1 } };
+    }
+    if (s.startsWith("UPDATE device_tokens SET revoked_at")) {
+      const [revokedAt, hash] = params;
+      const row = tokens.get(hash);
+      if (row === undefined || row.revoked_at !== null) {
+        return { success: true, meta: { changes: 0 } };
+      }
+      row.revoked_at = revokedAt;
+      return { success: true, meta: { changes: 1 } };
+    }
+    if (s.startsWith("DELETE FROM device_tokens")) {
+      const [at] = params;
+      let changes = 0;
+      for (const [hash, row] of tokens) {
+        if (row.expires_at <= at || row.revoked_at !== null) {
+          tokens.delete(hash);
+          changes += 1;
+        }
+      }
+      return { success: true, meta: { changes } };
     }
     throw new Error(`fake D1: unexpected run() SQL: ${s}`);
   }
@@ -131,7 +184,19 @@ function makeFakeD1(options = {}) {
               return codes.get(params[0]) ?? null;
             }
             if (s.includes("FROM device_tokens WHERE token_hash")) {
-              return tokens.get(params[0]) ?? null;
+              const row = tokens.get(params[0]);
+              if (row === undefined) {
+                return null;
+              }
+              // The lookup's own predicates, so the store cannot pass them by
+              // reading a dead row and checking it somewhere else.
+              if (s.includes("revoked_at IS NULL") && row.revoked_at !== null) {
+                return null;
+              }
+              if (s.includes("expires_at >") && row.expires_at <= params[1]) {
+                return null;
+              }
+              return row;
             }
             throw new Error(`fake D1: unexpected first() SQL: ${s}`);
           },
@@ -237,17 +302,115 @@ test("an unknown code is refused and a bad user code attaches nothing", async ()
   assert.equal(await store.accountForDeviceToken("dtok_forged"), null);
 });
 
+// ---- the token window over D1 (drive#176, kept through drive#136) ----
+//
+// The expiry and the revocation used to live in a per-isolate Map. They are now
+// columns on the row a poll wrote, so these prove the same three answers the
+// in-memory store gives, read from a database by an instance that minted
+// nothing: past the window is no account, a revoke is a second write that
+// reports the first, and the sweep drops exactly the dead rows.
+
+// Walks the whole flow over D1 and hands back the token a fresh instance can
+// resolve, which is the point: nothing below depends on module state.
+async function mintOverD1(db, now) {
+  const store = createD1DeviceSigninStore(db, { now });
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  await store.approveDeviceCode(code.userCode, ACCOUNT);
+  const polled = await createD1DeviceSigninStore(db, { now }).pollDeviceCode(code.deviceCode);
+  assert.equal(polled.status, "approved");
+  return polled.deviceToken;
+}
+
+test("a device token past its TTL resolves to no account over D1", async () => {
+  let nowMs = 0;
+  const db = makeFakeD1();
+  const deviceToken = await mintOverD1(db, () => nowMs);
+  // An instance that never minted it still resolves it while it is live.
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(deviceToken),
+    ACCOUNT,
+  );
+
+  nowMs += (DEVICE_TOKEN_TTL_SECONDS + 1) * 1000;
+  assert.equal(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(deviceToken),
+    null,
+    "an expired token is the same answer as one that was never minted",
+  );
+  // The row is still on disk: refusing it is the lookup's job, not a sweep's.
+  assert.equal(db.tokens.size, 1);
+});
+
+test("a revoke over D1 is one write that reports the first, and the token stops resolving", async () => {
+  const nowMs = 0;
+  const db = makeFakeD1();
+  const deviceToken = await mintOverD1(db, () => nowMs);
+
+  const first = await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken(
+    deviceToken,
+  );
+  assert.equal(first.revoked, true);
+  assert.equal(first.revokedAt, 0, "revoked at the clock the caller gave");
+  assert.equal(first.expiresAt, DEVICE_TOKEN_TTL_SECONDS);
+
+  // Revoking again changes nothing and reports what the first did, not a
+  // second kill at a later instant.
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken(deviceToken),
+    first,
+  );
+  assert.equal(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(deviceToken),
+    null,
+  );
+  // A token the database never held is a named refusal, not a false promise.
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken("dtok_forged"),
+    { error: "not-found" },
+  );
+});
+
+test("the D1 sweep drops the expired and the revoked token rows and leaves the live one", async () => {
+  let nowMs = 0;
+  const db = makeFakeD1();
+  const expiredToken = await mintOverD1(db, () => nowMs);
+  const revokedToken = await mintOverD1(db, () => nowMs);
+  await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken(revokedToken);
+
+  nowMs += (DEVICE_TOKEN_TTL_SECONDS + 1) * 1000;
+  const liveToken = await mintOverD1(db, () => nowMs);
+
+  assert.equal(await createD1DeviceSigninStore(db, { now: () => nowMs }).sweepDeviceTokens(), 2);
+  assert.equal(db.tokens.size, 1, "only the live row is left");
+  assert.deepEqual(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(liveToken),
+    ACCOUNT,
+  );
+  assert.equal(
+    await createD1DeviceSigninStore(db, { now: () => nowMs }).accountForDeviceToken(expiredToken),
+    null,
+  );
+});
+
 // The store's SQL names a table and a set of columns; the migration is what
 // creates them. Nothing in a Worker runs the migration (the api Worker has no
 // deploy config in this tree, drive#168), so this is the check that the SQL the
 // Worker prepares and the DDL the database gets cannot drift apart: a column
 // renamed in the migration, or a table the migration never creates, fails here.
-test("the migration creates every table and column the store's SQL names", () => {
-  const ddl = readFileSync(
+test("the migrations create every table and column the store's SQL names", () => {
+  // The tables are one file and the token's expiry and revocation are another
+  // (drive#136 kept #176's window when the device half moved to D1, and D1 has
+  // no down-migration, so an applied 0005 cannot be edited), so the schema the
+  // store reads is the two files together.
+  const tables = readFileSync(
     new URL("../../../migrations/drive/0005_device_codes.sql", import.meta.url),
     "utf8",
   );
-  const columnsOf = (table) => {
+  const tokenWindow = readFileSync(
+    new URL("../../../migrations/drive/0006_device_token_expiry.sql", import.meta.url),
+    "utf8",
+  );
+  const columnsOf = (ddl, table) => {
     const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\((.*?)\\n\\);`, "s").exec(
       ddl,
     )?.[1];
@@ -260,7 +423,7 @@ test("the migration creates every table and column the store's SQL names", () =>
       .filter((name) => name !== undefined);
   };
 
-  assert.deepEqual(columnsOf("device_codes"), [
+  assert.deepEqual(columnsOf(tables, "device_codes"), [
     "device_code_hash",
     "user_code",
     "name",
@@ -271,19 +434,39 @@ test("the migration creates every table and column the store's SQL names", () =>
     "created_at",
     "expires_at",
   ]);
-  assert.deepEqual(columnsOf("device_tokens"), [
-    "token_hash",
-    "account_id",
-    "account_name",
-    "account_email",
-    "created_at",
-  ]);
+  assert.deepEqual(
+    [...columnsOf(tables, "device_tokens"), ...addedColumns(tokenWindow, "device_tokens")],
+    [
+      "token_hash",
+      "account_id",
+      "account_name",
+      "account_email",
+      "created_at",
+      "expires_at",
+      "revoked_at",
+    ],
+  );
   // The sweep the code route runs on every request is a full scan without it.
   assert.match(
-    ddl,
+    tables,
     /CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes \(expires_at\)/,
   );
+  assert.match(
+    tokenWindow,
+    /CREATE INDEX IF NOT EXISTS device_tokens_expires_at ON device_tokens \(expires_at\)/,
+  );
+  // A token minted before the window existed must not read as expired the
+  // instant the migration lands, so the file backfills rather than leaving the
+  // DEFAULT of 0 in place.
+  assert.match(tokenWindow, /UPDATE device_tokens\s+SET expires_at = created_at \+ \d+/);
 });
+
+/** The columns an `ALTER TABLE ... ADD COLUMN` file adds, in file order. */
+function addedColumns(ddl, table) {
+  return [...ddl.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN ([a-z_]+)`, "g"))].map(
+    (match) => match[1],
+  );
+}
 
 // Consuming a code and writing its token are one transaction, so a failure
 // between them cannot lose a sign-in a person already approved: the row is
@@ -390,11 +573,8 @@ test("the public device routes are rate limited before they reach the database",
     env,
     db,
     store: createMemoryStore({ signin }),
-    accounts: {
-      async accountForSession() {
-        return null;
-      },
-    },
+    // No session resolves here, so a public-route request stays public.
+    accounts: accountsFor("sess_never_minted"),
     account: null,
     now: () => 0,
   });
@@ -463,11 +643,7 @@ test("the approve route leaves an unknown or expired code unapproved over D1", a
   const store = createMemoryStore({
     signin: createD1DeviceSigninStore(db, { now: () => nowMs }),
   });
-  const accounts = {
-    async accountForSession(token) {
-      return token === "sess_ok" ? ACCOUNT : null;
-    },
-  };
+  const accounts = accountsFor("sess_ok");
   const ctx = {
     env: {
       DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
@@ -516,11 +692,7 @@ test("a code started by the route is approvable from a fresh instance (drive#136
   const store = createMemoryStore({
     signin: createD1DeviceSigninStore(db, { now: () => 0 }),
   });
-  const accounts = {
-    async accountForSession(token) {
-      return token === "sess_ok" ? ACCOUNT : null;
-    },
-  };
+  const accounts = accountsFor("sess_ok");
   const ctxFor = (signin) => ({
     env: {
       DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },

@@ -27,13 +27,15 @@ import {
   createMemoryDeviceSigninStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
 import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
 
-// Kept as keystore re-exports so the one place that named the device-code TTL
-// keeps naming it; the values live with the store that enforces them
-// (device-signin.js), which is the store the D1 deployment uses.
-export { DEVICE_CODE_INTERVAL_SECONDS, DEVICE_CODE_TTL_SECONDS };
+// Kept as keystore re-exports so the one place that named a device-code or
+// device-token window keeps naming it; the values live with the store that
+// enforces them (device-signin.js), which is the store the D1 deployment uses
+// and the only one left — the per-isolate Maps #122 built them over are gone.
+export { DEVICE_CODE_INTERVAL_SECONDS, DEVICE_CODE_TTL_SECONDS, DEVICE_TOKEN_TTL_SECONDS };
 
 /**
  * Constant-time string comparison for two equal-length hex digests. A plain
@@ -91,7 +93,7 @@ export function createMemoryStore(options = {}) {
   return {
     /** The stand-in's accounts, for the tests and the stand-in's one query.
      * The D1 sign-in store has no accounts of its own (the sign-in flow owns
-     * them, src/accounts.js), so the map is the in-memory one's only. */
+     * them, src/auth.js), so the map is the in-memory one's only. */
     accounts: signin.accounts ?? new Map(),
 
     /**
@@ -133,10 +135,48 @@ export function createMemoryStore(options = {}) {
     /**
      * The account a device token belongs to, or null. The token is hashed
      * before lookup, so the store never holds the value the CLI holds.
+     *
+     * This is the one place a bearer token becomes an account, so it is where
+     * a token past its expiry or one that has been revoked stops being one:
+     * both answer `null`, the same answer a token that was never minted gets,
+     * so the account gate cannot tell a dead credential from a made-up one.
+     * Checking here rather than in each route is the point — there is one
+     * lookup, so there is one place to be wrong.
      * @param {string} token
      */
     accountForDeviceToken(token) {
       return signin.accountForDeviceToken(token);
+    },
+
+    /**
+     * Revoke one device token: `drive logout`'s server-side half, and the way a
+     * token that leaked is killed without deleting the account's keys. The raw
+     * token is hashed before lookup, exactly as `accountForDeviceToken` hashes
+     * it, so the store never holds the value the CLI holds.
+     *
+     * Revoking is idempotent: a second revoke reports what the first did,
+     * because from here on the token is dead either way. A token the store
+     * never held answers `not-found` rather than claiming a revoke that
+     * changed nothing — that difference is what a caller can promise a person.
+     * @param {string} token
+     */
+    revokeDeviceToken(token) {
+      return signin.revokeDeviceToken(token);
+    },
+
+    /**
+     * The token rows that can no longer authenticate: expired or revoked. The
+     * bearer lookup already refuses both, so dropping them is housekeeping and
+     * never the security boundary — a store that never swept would refuse the
+     * same tokens and only hold more rows. Minting calls this on every new
+     * token; it is exposed for the tests, and for a deployment that wants to
+     * run it on a timer.
+     * @param {number} [at] epoch seconds to judge the rows at; injected so a
+     *   test can sweep a row it cannot otherwise wait for.
+     * @returns {number|Promise<number>} how many rows went
+     */
+    sweepDeviceTokens(at) {
+      return signin.sweepDeviceTokens(at);
     },
 
     /**

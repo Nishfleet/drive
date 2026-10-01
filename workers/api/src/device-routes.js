@@ -11,20 +11,26 @@
 // Approving requires a signed-in account (drive#136 finding 2): the approve
 // POST is an account route (routes.js), so the dispatcher resolves the
 // sign-in session cookie through the same gate every site account route uses
-// (src/status.js `signedInAccount`, drive#109) and answers 401 to an anonymous
-// request before this handler runs. The account is the sign-in flow's
-// (drive#130), copied onto the code row by the store; approving no longer
-// makes an account, it attaches the person who already signed in.
+// (src/status.js `signedInAccount` over the Better Auth instance src/auth.js
+// `authFor` builds, drive#109) and answers 401 to an anonymous request before
+// this handler runs. The account is the sign-in flow's (drive#130), copied onto
+// the code row by the store; approving no longer makes an account, it attaches
+// the person who already signed in.
 //
 // All three POSTs are rate limited, one bucket each: the two public ones write
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
 // limit runs before the body is read, so a refused call costs no parse and, on
 // the code route, no row.
+//
+// The DELETE below is the fourth device route and is the only one that is
+// neither public nor rate limited: the account gate has already resolved the
+// caller's own token from its own bearer header, so there is nothing for a
+// stranger to spend.
 
 import { isSameOriginRequest } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
-import { errorResponse, json } from "./http.js";
+import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
@@ -331,4 +337,37 @@ export async function approveDeviceCodeRoute(request, ctx) {
     userCode,
     notice: `Approved. Return to the terminal; ${result.name} is signed in.`,
   });
+}
+
+/**
+ * DELETE /v1/device/token — revoke the caller's own device token. The token
+ * is the one in the Authorization header, so a caller can only revoke its own
+ * credential; another device's token on the same account is not touched. The
+ * account gate (auth: "account") already resolved the account from this same
+ * token, so the store row must exist; revoking it marks it dead for every
+ * future bearer lookup.
+ * @param {Request} request
+ * @param {{store: KeyStore}} ctx
+ */
+export async function revokeDeviceTokenRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
+  }
+  const token = bearerToken(request);
+  if (token === null) {
+    // The account gate already 401s a request with no or malformed bearer;
+    // this is a belt-and-braces check for direct handler calls.
+    return errorResponse(401, "Provide a device token to revoke.", {
+      "www-authenticate": 'Bearer realm="drive"',
+    });
+  }
+  const result = await ctx.store.revokeDeviceToken(token);
+  if ("error" in result) {
+    // The gate resolved this token, so the store row exists — this is
+    // unreachable through the dispatcher, but the handler is also unit-testable
+    // without the gate, so the shape is the honest answer: the token the
+    // caller sent is not one this drive knows.
+    return errorResponse(404, "That token is not one this drive knows.");
+  }
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }

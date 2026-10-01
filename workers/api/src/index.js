@@ -1,7 +1,8 @@
+import { authFor } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
 import { signedInAccount } from "../../../src/status.js";
 import { createD1DeviceSigninStore } from "./device-signin.js";
-import { errorResponse } from "./http.js";
+import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
 
@@ -32,10 +33,11 @@ import { routes } from "./routes.js";
  * What a handler gets besides the request. `store` is the stand-in key store
  * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
  * because a deployment without them answers its closed door rather than
- * pretending to hold keys. `accounts` is the sign-in flow's account store, read
- * through src/status.js `signedInAccount` for the browser half of a device
- * approval; a deployment with none bound stays signed out.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, accounts?: {accountForSession: (token: string|null) => Promise<{id: string, name: string, email: string}|null>}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * pretending to hold keys. `accounts` is the sign-in flow's Better Auth
+ * instance (src/auth.js `authFor`), read through src/status.js
+ * `signedInAccount` for the browser half of a device approval; a deployment
+ * with no database, secret or address has no instance and stays signed out.
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, accounts?: import("../../src/auth.js").Auth|null, params?: Record<string, string>, url?: URL}} Ctx
  */
 
 /** @type {WeakMap<Route, URLPattern>} */
@@ -85,21 +87,24 @@ function matchRoute(route, pathname) {
  * Bearer <device token>` header and nothing else. The token is hashed and
  * looked up in the key store, so a caller cannot name an account, and no
  * cookie, query value or body field is trusted (the same rule
- * src/status.js `signedInAccount` already follows for the site Worker).
+ * src/status.js `signedInAccount` already follows for the site Worker). The
+ * header is read with http.js `bearerToken`, the one place that shape is
+ * parsed, and the expiry and revocation checks live in the store's one lookup
+ * (keystore.js `accountForDeviceToken`), so a dead token fails here for every
+ * route at once rather than in each handler.
  * @param {Request} request
  * @param {any} store the key store, or undefined where there is none
  * @returns {Promise<{id: string, name: string}|null>}
  */
 export async function accountForRequest(request, store) {
-  const header = request.headers.get("authorization") ?? "";
-  const [scheme, token] = header.split(" ");
-  if (scheme === undefined || token === undefined || scheme.toLowerCase() !== "bearer") {
+  const token = bearerToken(request);
+  if (token === null) {
     return null;
   }
   if (store === undefined) {
     return null;
   }
-  return store.accountForDeviceToken(token.trim());
+  return store.accountForDeviceToken(token);
 }
 
 /**
@@ -205,10 +210,11 @@ let keyStore;
 let keyStoreDb;
 
 /**
- * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB,
- * plus whatever else the runtime bound (the generated `Env` covers the pricing
- * Worker's bindings, not this Worker's, so the pair is declared here).
- * @typedef {{DRIVE_DB?: D1Database, [key: string]: unknown}} ApiEnv
+ * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB
+ * (cloudflare.config.ts), plus whatever else the runtime bound (the generated
+ * `Env` covers the pricing Worker's bindings, not this Worker's, so the pair is
+ * declared here). The sign-in keys are read from it too, by authFor.
+ * @typedef {{DRIVE_DB?: D1Database, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, [key: string]: unknown}} ApiEnv
  */
 
 /**
@@ -242,7 +248,12 @@ export default {
       env,
       db: env.DRIVE_DB,
       store: storeFor(env),
-      accounts: /** @type {Ctx["accounts"]} */ (env.ACCOUNTS_STORE ?? null),
+      // The same sign-in gate the site Worker's account routes resolve
+      // (src/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // is one account in both Workers and the approval page needs no second
+      // session system of its own. No database, secret or address is the closed
+      // door `authFor` already documents: null, and every account route 401s.
+      accounts: authFor(env),
       now: Date.now,
     });
   },

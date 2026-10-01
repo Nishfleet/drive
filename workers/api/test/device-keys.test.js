@@ -1,8 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SESSION_COOKIE } from "../../../src/accounts.js";
+import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore, DEVICE_CODE_TTL_SECONDS } from "../src/keystore.js";
+import {
+  createMemoryStore,
+  DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
+} from "../src/keystore.js";
+
+// The session cookie Better Auth mints, named by src/auth.js
+// `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
+// instance): `__Secure-` because the site is HTTPS only, then the prefix, then
+// Better Auth's own session name.
+const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
+
+// A clock the test owns, so a device code or a device token can be pushed past
+// its window without sleeping; the store reads `now` from the context it is
+// given.
+function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
+  let now = startMs;
+  return {
+    now: () => now,
+    advance: (seconds) => {
+      now += seconds * 1000;
+    },
+  };
+}
 
 // The build step 4 acceptance walked over HTTP, through the real registry and
 // the real dispatcher (not the handlers called directly): a device signs in,
@@ -15,9 +38,12 @@ import { createMemoryStore, DEVICE_CODE_TTL_SECONDS } from "../src/keystore.js";
 //     401 and changes nothing, a past-the-limit approve is 429, and an expired
 //     code is never approved.
 
-// The account store the sign-in flow (drive#130) provides: a session token
-// resolves to its account. The same interface src/status.js `signedInAccount`
-// reads, so the dispatcher resolves the cookie exactly as the site does.
+// The account store the sign-in flow (drive#130) provides, in the shape the
+// api Worker resolves it: src/auth.js `authFor` builds a Better Auth instance
+// over the customer database and src/status.js `signedInAccount` asks that
+// instance for the session a request's cookie names, so this stand-in speaks
+// Better Auth's own `api.getSession`. `add` mints a session token; a token
+// this object never minted has no session, which is the closed door.
 function makeAccounts() {
   const byToken = new Map();
   let next = 0;
@@ -28,8 +54,17 @@ function makeAccounts() {
       byToken.set(token, account);
       return token;
     },
-    async accountForSession(token) {
-      return byToken.get(token) ?? null;
+    api: {
+      async getSession({ headers }) {
+        const cookie = headers?.get?.("cookie") ?? "";
+        const found = cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
+        const token = found?.slice(SESSION_COOKIE.length + 1);
+        const account = token === undefined ? undefined : byToken.get(token);
+        return account === undefined ? null : { user: account };
+      },
     },
   };
 }
@@ -500,4 +535,82 @@ test("an approval from another site is 403 and a same-origin one is approved", a
   assert.equal(sameSite.status, 200);
   assert.match(await sameSite.text(), /Approved\. Return to the terminal/);
   assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "approved");
+});
+
+// ---- device token expiry and revocation (drive#176, kept through drive#136) ----
+//
+// A device token is the CLI's whole credential for the account gate, so it
+// must die on its own: an expiry bounds how long a stolen token stays good,
+// and the revoke route lets `drive logout` kill it server-side. Both land in
+// the bearer lookup, so a dead token is a 401 on /v1/keys before any handler.
+// drive#136 moved that lookup into the device sign-in store, so these run
+// through the same dispatcher and the same store the D1 deployment uses.
+
+test("an expired device token is 401 on /v1/keys", async () => {
+  // A controllable clock so the token can be pushed past its TTL without
+  // sleeping; the store reads `now` from the context it is given.
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
+  // Drive #176: DEVICE_TOKEN_TTL_SECONDS is the session TTL, so a month out
+  // the token that opened /v1/keys is dead.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
+
+  const keys = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+    baseCtx(store, null),
+  );
+  assert.equal(keys.status, 401, "an expired token must not pass the account gate");
+  assert.equal(keys.headers.get("www-authenticate"), 'Bearer realm="drive"');
+});
+
+test("a revoked device token is 401 on /v1/keys, and only the revoked token", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  // Two devices on the same account: revoking one must not touch the other.
+  const { deviceToken: first } = await signIn(store, "Nish's MacBook");
+  const { account, deviceToken: second } = await signIn(store, "Nish's other Mac");
+
+  // Revoke the first device's own token via DELETE /v1/device/token.
+  const revoked = await dispatch(
+    new Request("https://api.test/v1/device/token", { method: "DELETE", headers: bearer(first) }),
+    baseCtx(store, account),
+  );
+  assert.equal(revoked.status, 204, "the owner can revoke its own token");
+
+  // The revoked token is dead at the gate; /v1/keys does not run.
+  const dead = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(first) }),
+    baseCtx(store, account),
+  );
+  assert.equal(dead.status, 401, "a revoked token is 401 on /v1/keys");
+
+  // The other device on the same account is untouched and still works.
+  const live = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(second) }),
+    baseCtx(store, account),
+  );
+  assert.equal(live.status, 200, "the other device's token still works");
+  assert.deepEqual(await live.json(), { keys: [] });
+});
+
+test("DELETE /v1/device/token without a token cannot revoke it (the route stays account-gated)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { deviceToken, account } = await signIn(store, "Nish's MacBook");
+
+  // No bearer at all: the account gate never runs the handler. /v1/device/token
+  // has a public POST route, so an anonymous DELETE is a 405 (method not allowed,
+  // allow: POST) rather than a 401 -- the documented dispatcher shape. Either
+  // way the handler does not run and the token is not revoked.
+  const anon = await dispatch(
+    new Request("https://api.test/v1/device/token", { method: "DELETE" }),
+    baseCtx(store, account),
+  );
+  assert.notEqual(anon.status, 204, "an anonymous request must not revoke");
+
+  // The token still opens /v1/keys, proving the revoke above did not fire.
+  const keys = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+    baseCtx(store, account),
+  );
+  assert.equal(keys.status, 200, "the token was not revoked");
 });
