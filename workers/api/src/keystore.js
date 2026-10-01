@@ -193,7 +193,12 @@ export function createMemoryStore(options = {}) {
      * The CLI's poll. `pending` until the page approves, then the device token
      * (shown once) and the account. A code is consumed by the poll that
      * returns the token, so a stolen device code cannot mint a second token.
+     * An approved code whose account row is gone (a store restored from a
+     * backup, say) answers `expired` rather than a token that names no
+     * account: there is nothing for that token to be.
      * @param {string} deviceCode
+     * @returns {Promise<{status: "unknown"|"expired"|"pending"}
+     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null, createdAt: number}}>}
      */
     async pollDeviceCode(deviceCode) {
       const code = codes.get(deviceCode);
@@ -209,9 +214,13 @@ export function createMemoryStore(options = {}) {
       if (code.status === "used") {
         return { status: "expired" };
       }
+      const account = accounts.get(/** @type {string} */ (code.accountId));
+      if (account === undefined) {
+        return { status: "expired" };
+      }
       const token = newId("dtok");
       deviceTokens.set(await sha256Hex(token), {
-        accountId: /** @type {string} */ (code.accountId),
+        accountId: account.id,
         name: code.name,
         createdAt: nowSeconds(now()),
       });
@@ -219,7 +228,7 @@ export function createMemoryStore(options = {}) {
       return {
         status: "approved",
         deviceToken: token,
-        account: accounts.get(/** @type {string} */ (code.accountId)),
+        account,
       };
     },
 
