@@ -33,7 +33,12 @@ const OTHER = { id: "acct-2", name: "Someone else" };
 // table's writes are single statements.
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["0001_waitlist.sql", "0002_file_index.sql", "0003_branches.sql"]) {
+  for (const name of [
+    "0001_waitlist.sql",
+    "0002_file_index.sql",
+    "0003_branches.sql",
+    "0004_agent_undo.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const runOne = (sql, params) => {
@@ -294,6 +299,15 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   const listed = await handleBranchesRequest(request("GET", BRANCHES_ENDPOINT), db, raw, account);
   const listedBody = await listed.json();
   assert.equal(listedBody.branches.length, 1);
+  // The list response never ships the snapshot: it is one entry per file and
+  // the rewind read needs it on the row, so it is stripped at this boundary
+  // rather than in listBranches. A 10,000-file branch is a 10,000-entry body
+  // otherwise, and nothing on the wire reads it.
+  assert.equal("snapshot" in listedBody.branches[0], false, "the list must not ship the snapshot");
+  // The fields the CLI and the screen do read are all still there.
+  assert.equal(listedBody.branches[0].name, "work");
+  assert.equal(listedBody.branches[0].state, "open");
+  assert.equal(typeof listedBody.branches[0].changed, "number");
 
   const scoped = scopeStore(raw, account);
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");

@@ -312,6 +312,13 @@ function toBranch(row) {
     branchPrefix: row.branch_prefix,
     state: row.state,
     createdAt: row.created_at,
+    // Whose key made the branch's changes (migration 0004, issue #13). The
+    // rewind screen reads it for "Rewind <agent>'s work" and the activity list
+    // reads the same value for "changed by <agent or person>" — one column on
+    // the one log that already exists, never a second store. Absent on a row
+    // written before the migration, it reads as "no key recorded", which is
+    // what a branch a person made in the app is.
+    changedBy: row.changed_by_key_id ?? "",
     snapshot,
   };
 }
@@ -329,7 +336,7 @@ function toBranch(row) {
  */
 export async function getBranch(db, account, name) {
   const columns =
-    "name, source_prefix, branch_prefix, snapshot, state, created_at";
+    "name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id";
   const open = await db
     .prepare(
       `SELECT ${columns} FROM branches ` +
@@ -402,6 +409,11 @@ export async function createBranch(db, store, account, request, now = () => Date
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
+  // Whose key branched this folder (issue #13; migration 0004's
+  // changed_by_key_id): a branch a person made in the app carries no key, which
+  // is recorded as the empty string the column DEFAULTs to — "changed by a
+  // person", not a missing value.
+  const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
   // Claim the name before touching the store. The partial unique index on
   // (account_id, name) where state = 'open' then makes this the one create
   // that may copy into the prefix: two creates of a name in the same moment
@@ -413,10 +425,10 @@ export async function createBranch(db, store, account, request, now = () => Date
   try {
     await db
       .prepare(
-        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at) " +
-          "VALUES (?1,?2,?3,?4,'{}','open',?5)",
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
+          "VALUES (?1,?2,?3,?4,'{}','open',?5,?6)",
       )
-      .bind(account.id, name, folderPath, branchPrefix, createdAt)
+      .bind(account.id, name, folderPath, branchPrefix, createdAt, changedBy)
       .run();
   } catch (error) {
     // The open-name index refused a second branch of a name that is already
@@ -500,6 +512,7 @@ export async function createBranch(db, store, account, request, now = () => Date
     branchPrefix,
     state: "open",
     createdAt,
+    changedBy,
     files: Object.keys(snapshot).length,
   };
 }
@@ -516,7 +529,7 @@ export async function createBranch(db, store, account, request, now = () => Date
 export async function listBranches(db, store, account) {
   const result = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at " +
+      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
         "FROM branches WHERE account_id = ?1 ORDER BY created_at DESC, name",
     )
     .bind(account.id)
@@ -531,11 +544,11 @@ export async function listBranches(db, store, account) {
       changed = diff.added.length + diff.changed.length + diff.removed.length;
       sourceChanged = diff.sourceChanged.length;
     }
-    // The snapshot is this module's own bookkeeping, one entry per file: it
-    // never goes to the CLI or the screen, where a 10,000-file branch would
-    // be a 10,000-entry response.
-    const { snapshot, ...summary } = branch;
-    branches.push({ ...summary, changed, sourceChanged });
+    // The snapshot is kept on the row: the rewind read (src/rewind.js) feeds
+    // these rows straight into diffBranch, so it needs it. It is the HTTP
+    // list response that drops it (see the route below), because a
+    // 10,000-file branch would otherwise be a 10,000-entry JSON body.
+    branches.push({ ...branch, changed, sourceChanged });
   }
   return branches;
 }
@@ -806,7 +819,14 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   const rest = url.pathname.slice(BRANCHES_ENDPOINT.length).replace(/\/$/, "");
   if (rest === "") {
     if (request.method === "GET") {
-      return json({ branches: await listBranches(db, scoped, account) });
+      // The snapshot is the module's own bookkeeping, one entry per file, and
+      // it is stripped here at the response boundary rather than in
+      // listBranches: the rewind read needs it on the row, the JSON body does
+      // not (a 10,000-file branch would be a 10,000-entry response).
+      const branches = (await listBranches(db, scoped, account)).map(
+        ({ snapshot, ...summary }) => summary,
+      );
+      return json({ branches });
     }
     if (request.method === "POST") {
       const read = await readJsonBody(request);
@@ -858,7 +878,7 @@ export async function handleBranchesRequest(request, db, store, account, now = (
         ? await diffBranch(scoped, branch)
         : { added: [], changed: [], removed: [], sourceChanged: [] };
     return json({
-      branch: { name, sourcePrefix: branch.sourcePrefix, state: branch.state },
+      branch: { name, sourcePrefix: branch.sourcePrefix, state: branch.state, changedBy: branch.changedBy },
       diff,
     });
   }
