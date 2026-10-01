@@ -105,6 +105,39 @@ test("the poll is pending before approval, and the token works after it", async 
   assert.deepEqual(await keys.json(), { keys: [] });
 });
 
+test("GET /v1/keys lists each key's own fields, never an undefined id or a secret", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
+  const minted = await (
+    await dispatch(
+      new Request("https://api.test/v1/keys", {
+        method: "POST",
+        headers: { ...bearer(deviceToken), "content-type": "application/json" },
+        body: JSON.stringify({ kind: "agent", name: "claude" }),
+      }),
+      baseCtx(store, null),
+    )
+  ).json();
+
+  const listed = await (
+    await dispatch(
+      new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+      baseCtx(store, null),
+    )
+  ).json();
+  assert.equal(listed.keys.length, 1);
+  // `listKeys` already returns the public shape, so the route must not map it a
+  // second time: a second map reads `device.id` off a shape that no longer has
+  // it, and the CLI lists a key with `keyId: undefined` and can never revoke it.
+  const [key] = listed.keys;
+  assert.equal(key.keyId, minted.keyId);
+  assert.equal(key.name, "claude");
+  assert.equal(key.prefix, minted.prefix);
+  assert.deepEqual(key.capabilities, minted.capabilities);
+  // The secret is in the mint response and nowhere else.
+  assert.equal(key.secret, undefined);
+});
+
 test("an anonymous /v1/keys is 401, and a made-up token stays 401", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const anonymous = await dispatch(new Request("https://api.test/v1/keys"), baseCtx(store, null));
