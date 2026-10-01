@@ -37,7 +37,9 @@ export default defineConfig({
 			// customer lives in the drive database. The two migration
 			// directories mirror the split — `migrations/waitlist/` applies to
 			// WAITLIST_DB and `migrations/drive/` to DRIVE_DB — and the deploy
-			// applies both before it ships the Worker.
+			// must apply both before it ships the Worker; that deploy step is
+			// tracked in the follow-up for #170 (the worker App cannot write
+			// workflow files), so the config alone cannot enforce it here.
 			WAITLIST_DB: bindings.d1({
 				name: "drive-waitlist",
 				id: "93c9f523-159c-4261-8541-d4c059906df3",

@@ -578,7 +578,14 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // Five today: ASSETS, WAITLIST_DB, DRIVE_DB, WAITLIST_RATE_LIMITER, EMAIL.
   // The email token and sender stay undeclared so the deploy does not require
   // them.
-  assert.ok(declared.length >= 4, `only found ${declared.join(", ")} in the config`);
+  // exactly 5: the four required bindings plus the EMAIL three, which are
+  // the documented exception (src/health.js) — only the token-gated
+  // internal send route uses them, and probing would send mail.
+  assert.equal(
+    declared.length,
+    REQUIRED_BINDINGS.length + 1,
+    `expected ${REQUIRED_BINDINGS.length + 1} bindings, found ${declared.join(", ")}`,
+  );
   for (const name of REQUIRED_BINDINGS) {
     assert.ok(
       declared.includes(name),
