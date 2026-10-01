@@ -81,6 +81,49 @@ function fakeAssets() {
   };
 }
 
+/**
+ * A static-assets binding shaped the way the runtime actually shapes it.
+ * drive#144: the live /api/health answered 503 {"failing":"ASSETS"} on every
+ * poll, with `DataCloneError: AbortSignal serialization is not enabled` in the
+ * tail, and the health check's own D1 read was the code that threw.
+ *
+ * The reason is the shape of a Fetcher, which is what every binding that is
+ * not a database is (the static-assets binding, the email binding, every
+ * service binding): it is an RPC stub, so it answers a function to *every*
+ * property name. The static-assets binding answers a function to `prepare`
+ * exactly as a database does, so a check that asks only "is prepare a
+ * function" cannot tell ASSETS from WAITLIST_DB — and then runs a D1
+ * statement against the asset binding, which the runtime refuses to carry
+ * across the stub. What does work on a Fetcher is `fetch`, which is the only
+ * real call on it.
+ *
+ * So this fake refuses every call that is not the assets fetch, the way the
+ * real binding does, and a test that pins the health answer is pinned against
+ * the real shape rather than against a plain object that happens to carry a
+ * `prepare`.
+ */
+function fakeFetcher(assets = fakeAssets()) {
+  return new Proxy(assets, {
+    get(target, property) {
+      // `fetch` and the recorded requests are the real asset layer; anything
+      // else is the stub answering a function, which is what caught the bug.
+      if (property in target) {
+        return Reflect.get(target, property);
+      }
+      // A thenable would be awaited by anything that wraps the binding, and
+      // this stub is not one.
+      if (property === "then") {
+        return undefined;
+      }
+      return function rpcStub() {
+        return Promise.reject(
+          new DOMException("AbortSignal serialization is not enabled.", "DataCloneError"),
+        );
+      };
+    },
+  });
+}
+
 /** A rate limiter stub whose whole contract is limit({ key }) -> { success }. */
 function fakeLimiter() {
   return {
@@ -191,6 +234,57 @@ test("d1Bindings finds the databases and ignores everything else", () => {
     MAIL_FROM: "drive@example.com",
   };
   assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+});
+
+test("a binding that is not a database is never read as one", () => {
+  // drive#144, the live failure: ASSETS and EMAIL are Fetchers, and a Fetcher
+  // answers a function to every property name, so `prepare` alone mistook
+  // both for databases. The health check then ran a D1 statement against the
+  // asset binding, which the runtime refuses to carry, and /api/health
+  // answered 503 {"failing":"ASSETS"} on every poll. A database is the one
+  // binding kind with `prepare` and no `fetch`, so both tests are asked here.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeFetcher(),
+    EMAIL: fakeFetcher(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  };
+  assert.deepEqual(d1Bindings(env).map((b) => b.name), ["WAITLIST_DB"]);
+});
+
+test("a health poll over the real binding shapes answers ok, not ASSETS", async () => {
+  // The same case end to end, and the shape that actually failed in
+  // production: the fetcher-shaped bindings answer every call the way the
+  // runtime does, so a check that read one of them as a database fails here
+  // exactly as it did live. The answer has to be the healthy one.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: fakeFetcher(),
+    EMAIL: fakeFetcher(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  };
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+});
+
+test("the asset probe is a HEAD on a path the site does not serve", async () => {
+  // The probe's own shape, pinned so a future edit cannot quietly turn it into
+  // something the asset binding refuses to answer: one request, HEAD (the
+  // cheap form), the probe path (nothing is served there, so the 404 the fake
+  // answers is the expected one) and no body.
+  const assets = fakeAssets();
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    ASSETS: assets,
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+  };
+  assert.deepEqual(await checkHealth(env), { ok: true });
+  assert.equal(assets.requests.length, 1, "the asset layer is checked once");
+  const [probe] = assets.requests;
+  assert.equal(probe.method, "HEAD");
+  assert.match(probe.url, /^https:\/\/drive-health\.invalid\/__health_probe__$/);
+  assert.equal(probe.body, null, "the probe carries no body");
 });
 // --- no secret or internal in the body -----------------------------------
 
