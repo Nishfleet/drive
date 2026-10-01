@@ -48,7 +48,7 @@ import {
   withoutTrash,
 } from "../src/files.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 // The first-run page is a Vite entry at the repo root (issue #70), not a
@@ -517,7 +517,9 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
     new Request(`${api("/upload")}?path=%2F`, { method: "POST", body: "x" }),
   );
   assert.equal(response.status, 400);
-  assert.match((await response.json()).error, /Name the file/);
+  // The words are the message table's, not this route's own copy of them
+  // (drive#158); test/messages.test.mjs walks this route for that rule.
+  assert.equal((await response.json()).error, failureMessage("upload-needs-name"));
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
@@ -629,7 +631,9 @@ test("a body that is not JSON is a 400, not a 500", async () => {
       }),
     );
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /not valid JSON/);
+    // A body that is not JSON is the same failure as one that is JSON but not
+    // an object, and both are the table's (drive#158).
+    assert.equal((await response.json()).error, failureMessage("json-object-needed"));
   }
 });
 
