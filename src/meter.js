@@ -25,7 +25,7 @@
 //   - A version is billed from created_at until hidden_at.
 //   - At least 60 minutes per version (the 1-hour minimum, the decision table's
 //     "default yes until Nish answers").
-//   - GB-minutes = size in GB x stored minutes.
+//   - GB-minutes = size in GB x whole stored minutes.
 //
 // How the two rules share out one version across hours, so that a day's
 // hours sum to exactly what the version cost (the done-when compares a full
@@ -48,10 +48,14 @@
 //     booking. The one gap - hidden_at arriving more than an hour after its
 //     hour was already rolled - is the nightly reconciler's job (a follow-up
 //     issue), whose re-roll recomputes the same totals.
-//   - Nothing here rounds to whole minutes. Whole-minute billing belongs to
-//     invoice time (build step 6); rounding in the rollup would let the hours
-//     of a day drift from the version's true minutes by up to a minute per
-//     hour boundary, which is the 1% the done-when measures.
+//   - Minutes are whole minutes (docs/build-spec.md line 137: "GB-minutes =
+//     size in GB x whole minutes stored, with at least 60 minutes per
+//     version"). Each hour counts the whole minutes the version was live in
+//     it, and the two boundary hours each give up the sub-minute remainder
+//     of their overlap, so a version's booked minutes never exceed its true
+//     ones and a re-roll repeats them exactly. src/billing.js turns the
+//     rollup into money with the same 43,800-minute divisor and the same
+//     decimal GB, so the meter and the invoice cannot disagree about a unit.
 
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/0002_meter.sql. Strings are accepted anywhere a number is (Date
@@ -93,11 +97,13 @@ export const MINIMUM_MINUTES_PER_VERSION = 60;
 
 export const MINUTE_MS = 60_000;
 
-// One GB in bytes, binary (1024^3): the unit `size_bytes` counts in, the unit
-// rclone and every S3-compatible provider report, and the unit the provider's
-// own usage report - the thing the done-when compares within 1% - is written
-// in. A decimal 1e9 here would under-bill every version by 7.4%.
-export const BYTES_PER_GB = 1024 * 1024 * 1024;
+// One GB in bytes, decimal (1e9), because the GB in this repo's prices is the
+// decimal one: docs/build-spec.md prices at 2 cents per GB-month and reads
+// the $1 free credit as "about 50 GB", src/billing.js stores
+// BYTES_PER_GB = 1e9 and GB_PER_TB = 1000, and the provider-usage-report
+// comparison the done-when makes is GB-months too. `size_bytes` itself is
+// always bytes; this constant is only the divisor of the GB-minutes math.
+export const BYTES_PER_GB = 1e9;
 
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -141,8 +147,8 @@ export function toVersion(row) {
 
 /**
  * A version's stored minutes across its whole life: created to hidden, or
- * created to now for a version still live. Whole minutes are what the 60
- * -minute minimum compares against.
+ * created to now for a version still live. Whole minutes (the spec counts in
+ * whole stored minutes), which is what the 60-minute minimum compares against.
  * @param {{createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} now
  */
@@ -157,12 +163,12 @@ export function versionLifetimeMinutes(version, now = Date.now()) {
       `hiddenAt ${end} is before createdAt ${created}`,
     );
   }
-  return (end - created) / MINUTE_MS;
+  return Math.floor((end - created) / MINUTE_MS);
 }
 
 /**
  * GB-minutes one version contributes to ONE hour, before the minimum: the
- * minutes of that hour the version existed, times its size in GB.
+ * whole minutes of that hour the version existed, times its size in GB.
  * @param {{createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour either hour boundary of the hour
  * @param {number|Date|string} now for a version still live, the instant its
@@ -183,10 +189,12 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
       ? Math.min(end, toMillis(now, "now"))
       : Math.min(end, version.hiddenAt);
   const live = Math.max(0, Math.min(end, stop) - Math.max(start, created));
-  if (live === 0) {
+  if (live < MINUTE_MS) {
+    // Under a whole minute of overlap books nothing: the spec counts in whole
+    // minutes stored, and a fraction of one is not one.
     return 0;
   }
-  return ((size / BYTES_PER_GB) * live) / MINUTE_MS;
+  return Math.floor(live / MINUTE_MS) * (size / BYTES_PER_GB);
 }
 
 /**
@@ -222,8 +230,10 @@ export function versionGbMinutesInHour(version, hour, now = Date.now()) {
   let booked = overlap;
   if (lifetime < MINIMUM_MINUTES_PER_VERSION) {
     // The shortfall against the 1-hour minimum, booked once, in the hour the
-    // version stopped. The overlap sums of all its hours equal its lifetime,
-    // so lifetime + shortfall is exactly 60 minutes: no under-bill and no
+    // version stopped. Each hour's overlap is rounded down to whole minutes,
+    // so the hours' sum can sit a fraction of a minute beside the lifetime
+    // floor, but the total booked never falls under the spec's minimum and
+    // never exceeds it by more than that fraction: no under-bill and no
     // double-count, whichever hours were rolled first.
     booked += (MINIMUM_MINUTES_PER_VERSION - lifetime) * (version.sizeBytes / BYTES_PER_GB);
   }
@@ -249,30 +259,43 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   return total;
 }
 
-// The versions one closed hour needs, in the order the composite index
-// (account_id, created_at) serves best: one account's versions by creation
-// time. The billing window is [created_at, hidden_at), so a version counts in
-// this hour when it was written before the hour ended and was still visible
-// when the hour began - `>=`, not `>`, because a version hidden exactly on
-// the hour's first instant has no overlap here but still owes this hour its
-// 1-hour-minimum shortfall (see versionGbMinutesInHour).
-const HOUR_VERSIONS_SQL = `SELECT size_bytes, created_at, hidden_at
+// Every version that was live in one closed hour, across every account at
+// once: the set-based read one rollup statement is built from. The billing
+// window is [created_at, hidden_at), so a version counts in this hour when it
+// was written before the hour ended and was still visible when the hour began
+// - `>=`, not `>`, because a version hidden exactly on the hour's first
+// instant has no overlap here but still owes this hour its 1-hour-minimum
+// shortfall (see versionGbMinutesInHour).
+const HOUR_VERSIONS_SQL = `SELECT account_id, size_bytes, created_at, hidden_at
   FROM file_versions
-  WHERE account_id = ?3 AND created_at < ?1 AND (hidden_at IS NULL OR hidden_at >= ?2)
+  WHERE created_at < ?1 AND (hidden_at IS NULL OR hidden_at >= ?2)
   ORDER BY created_at`;
 
+// An hour's rows for accounts nothing was live for in it: the rollup is the
+// authority on the hour, so a row an earlier run wrote (before the versions
+// were hidden by a late event, say) is removed rather than left saying the
+// account stored something it did not. One statement for the whole hour,
+// beside the upserts in the same batch.
+const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
+  WHERE hour = ?1 AND account_id NOT IN (
+    SELECT account_id FROM file_versions
+    WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?3)
+  )`;
+
 /**
- * One account's GB-minutes for one closed UTC hour, from D1.
+ * One closed UTC hour's GB-minutes for EVERY account, from one set-based read
+ * grouped by account. This is the statement shape the hourly trigger runs:
+ * the cost of rolling an hour is two D1 calls (one read, one batch) however
+ * many accounts exist, so a catch-up over a day's hours cannot push a trigger
+ * into the Worker's per-invocation query budget by growing with the customer
+ * count. The per-version arithmetic stays in JS (gbMinutesInHour), so the
+ * money formula has one implementation, not a second one transcribed into SQL.
  * @param {D1Database} db
- * @param {string} accountId
  * @param {number} hourStartMs epoch ms of the hour start
  * @param {number} nowMs epoch ms, the rollup instant
- * @returns {Promise<{accountId: string, hour: number, gbMinutes: number, versions: number}>}
+ * @returns {Promise<{hour: number, gbMinutes: number, accounts: number, versions: number}>}
  */
-export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
-  if (typeof accountId !== "string" || accountId.length === 0) {
-    throw new TypeError(`rollupAccountHour needs an account id, got ${String(accountId)}`);
-  }
+export async function rollupHour(db, hourStartMs, nowMs) {
   const hour = hourStart(hourStartMs);
   const hourEnd = hour + HOUR_MS;
   if (hourEnd > toMillis(nowMs, "nowMs")) {
@@ -280,34 +303,49 @@ export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
     // next trigger, when the rollup can see the whole of it.
     throw new RangeError(`hour ${hour} is not closed yet`);
   }
-  const result = await db
-    .prepare(HOUR_VERSIONS_SQL)
-    .bind(hourEnd, hour, accountId)
-    .all();
-  const versions = (result.results || []).map(toVersion);
-  if (versions.length === 0) {
-    // Nothing of this account was live in the hour. The rollup is the
-    // authority on the hour, so a row an earlier run wrote (before the
-    // versions were hidden by a late event, say) is removed rather than left
-    // saying the account stored something it did not.
-    await db
-      .prepare("DELETE FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
-      .bind(accountId, hour)
-      .run();
-    return { accountId, hour, gbMinutes: 0, versions: 0 };
+  const result = await db.prepare(HOUR_VERSIONS_SQL).bind(hourEnd, hour).all();
+  const byAccount = new Map();
+  for (const row of result.results || []) {
+    // Not a skipped row and not a silent filter: a version with no account
+    // cannot be billed to anyone, and quietly rolling past it would leave
+    // storage that no rollup ever accounts for. The trigger fails, the
+    // operator sees why, and the row is fixed at the source.
+    if (typeof row.account_id !== "string" || row.account_id === "") {
+      throw new TypeError("file_versions has a row with no account_id");
+    }
+    const versions = byAccount.get(row.account_id);
+    if (versions === undefined) {
+      byAccount.set(row.account_id, [toVersion(row)]);
+    } else {
+      versions.push(toVersion(row));
+    }
   }
-  const gbMinutes = gbMinutesInHour(versions, hour, nowMs);
-  await recordUsage(db, accountId, hour, gbMinutes, nowMs);
-  return { accountId, hour, gbMinutes, versions: versions.length };
+  const statements = [];
+  let gbMinutes = 0;
+  let versions = 0;
+  for (const [accountId, accountVersions] of byAccount) {
+    const total = gbMinutesInHour(accountVersions, hour, nowMs);
+    if (!Number.isFinite(total) || total < 0) {
+      throw new TypeError(`gbMinutes must be 0 or more, got ${total}`);
+    }
+    statements.push(usageStatement(db, accountId, hour, total, nowMs));
+    gbMinutes += total;
+    versions += accountVersions.length;
+  }
+  statements.push(
+    db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour),
+  );
+  await db.batch(statements);
+  return { hour, gbMinutes, accounts: byAccount.size, versions };
 }
 
 /**
- * Writes one account's usage for one hour, replacing the metered number with
- * the rollup's: the rollup is the authority on the hour, and a re-roll must
- * write the same total, not add to it (a trigger replayed by Cloudflare must
- * not double the bill). download_bytes is left alone on purpose: the dl
- * Worker owns that column (a follow-up), and the meter has no way to recount
- * bytes it never saw.
+ * The usage row one account's hour needs, as a statement a batch can run:
+ * replacing the metered number with the rollup's. The rollup is the authority
+ * on the hour, and a re-roll must write the same total, not add to it (a
+ * trigger replayed by Cloudflare must not double the bill). download_bytes is
+ * left alone on purpose: the dl Worker owns that column (a follow-up), and
+ * the meter has no way to recount bytes it never saw.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number|Date|string} hour
@@ -318,7 +356,14 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
   }
-  await db
+  await usageStatement(db, accountId, hour, gbMinutes, now).run();
+}
+
+function usageStatement(db, accountId, hour, gbMinutes, now) {
+  if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
+    throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
+  }
+  return db
     .prepare(
       `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, rolled_up_at)
        VALUES (?1, ?2, ?3, 0, ?4)
@@ -326,8 +371,7 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
          gb_minutes_live = excluded.gb_minutes_live,
          rolled_up_at = excluded.rolled_up_at`,
     )
-    .bind(accountId, hourStart(hour), gbMinutes, toMillis(now, "now"))
-    .run();
+    .bind(accountId, hourStart(hour), gbMinutes, toMillis(now, "now"));
 }
 
 /**
@@ -452,6 +496,16 @@ export function validateEvent(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { error: "Send one storage event as a JSON object." };
   }
+  // The action first, because it is the one question that decides whether
+  // the rest of the event matters at all: an action the meter does not bill
+  // is refused by name whatever else the event carries, and the checks below
+  // never have to reason about an effect that does not exist.
+  const action =
+    typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
+  const effect = Object.hasOwn(EVENT_ACTIONS, action) ? EVENT_ACTIONS[action] : null;
+  if (effect === null) {
+    return { error: `Unknown storage event action: ${action}` };
+  }
   // The account is read from whichever field carries the key's folder: a
   // provider event may name the key, the file, or both. The stored path is
   // the file's own path when the event has one, and the key's name prefix
@@ -476,25 +530,31 @@ export function validateEvent(input) {
   if (b2FileId === "" || b2FileId.length > 512) {
     return { error: "The event does not name a file version." };
   }
+  // The event's own time, which is what a hide or delete event carries: the
+  // version's creation time may not be in the event at all, and the instant
+  // the provider saw the change is the honest moment billing stops.
+  const eventTimestamp = input.eventTimestamp;
   // The size is only ever set by a create, and it must be a real byte count:
   // `Number(null)`, `Number("")` and `Number(true)` are all 0 or 1, so a
   // coercion here would let a create whose size never arrived be stored as a
   // 0-byte version and bill nothing for a file the customer is paying to
   // store. A whole number of bytes in, or a decimal string of one, is the only
   // shape accepted; everything else is refused by name.
-  const sizeBytes = wholeBytes(input.sizeBytes);
-  if (sizeBytes === null) {
-    return { error: "The event's size is not a whole number of bytes." };
-  }
-  // The event's own time, which is what a hide or delete event carries: the
-  // version's creation time may not be in the event at all, and the instant
-  // the provider saw the change is the honest moment billing stops.
-  const eventTimestamp = input.eventTimestamp;
-  const action =
-    typeof input.action === "string" ? input.action.trim().toLowerCase() : "uploaded";
-  const effect = Object.hasOwn(EVENT_ACTIONS, action) ? EVENT_ACTIONS[action] : null;
-  if (effect === null) {
-    return { error: `Unknown storage event action: ${action}` };
+  //
+  // Only a create MUST carry one: a hide says the version stopped being
+  // visible, and the provider sends when it disappeared, not how big it was.
+  // A size-less hide stores the NOT NULL column's 0 as a placeholder, which
+  // bills nothing meanwhile and is overwritten by the create that follows
+  // (the upsert takes the size from a create, or out of a 0 placeholder,
+  // only), so both delivery orders end on the same row.
+  let sizeBytes;
+  if (effect === "create" || input.sizeBytes !== undefined) {
+    sizeBytes = wholeBytes(input.sizeBytes);
+    if (sizeBytes === null) {
+      return { error: "The event's size is not a whole number of bytes." };
+    }
+  } else {
+    sizeBytes = 0;
   }
   // created_at comes from the event's own time, never from arrival. A CREATE
   // must say it: a create with no creation time cannot say when the version
@@ -506,26 +566,24 @@ export function validateEvent(input) {
   // own life and is corrected to the truth by the create that follows, since
   // the upsert's created_at = MIN always takes the earliest time any event
   // for the version carries. Both orders therefore end on the same row.
+  if (effect === "hide" && (input.hiddenAt === undefined || input.hiddenAt === null || input.hiddenAt === "") && (eventTimestamp === undefined || eventTimestamp === null || eventTimestamp === "")) {
+    return { error: "The event does not say when the version stopped being visible." };
+  }
   let createdAt;
   if (effect === "create" && (input.createdAt === undefined || input.createdAt === null || input.createdAt === "")) {
     return { error: "The event does not say when the version was written." };
   }
   try {
-    // A hide without an explicit createdAt falls back to its own timestamp:
-    // hidden_at IS that instant, and file_versions.created_at is NOT NULL.
-    createdAt = toMillis(input.createdAt ?? eventTimestamp, "createdAt");
+    // A hide without an explicit createdAt seeds created_at from its own
+    // timestamp: hidden_at IS that instant, and file_versions.created_at
+    // is NOT NULL. A late create then corrects it backwards via MIN.
+    createdAt = toMillis(input.createdAt ?? (effect === "hide" ? eventTimestamp : undefined), "createdAt");
   } catch {
     return { error: "The event has no usable timestamp." };
   }
   let hiddenAt = null;
   if (effect === "hide") {
-    // A hide says the version stopped existing, so it has to say when. The
-    // hidden time, or the event's own time, is that instant; a hide with
-    // neither is refused rather than stored as a version that bills forever.
     const hiddenSource = input.hiddenAt ?? eventTimestamp;
-    if (hiddenSource === undefined || hiddenSource === null || hiddenSource === "") {
-      return { error: "The event does not say when the version stopped being visible." };
-    }
     try {
       hiddenAt = toMillis(hiddenSource, "hiddenAt");
     } catch {
@@ -571,7 +629,8 @@ export function validateEvent(input) {
  * The version upsert runs on EVERY delivery, not only the first: a D1 batch
  * executes every statement it is handed, so there is no conditional execution
  * to rely on here. That is safe because the upsert itself is idempotent - it
- * takes MIN(created_at), keeps the create's size and the earliest hidden time -
+ * takes MIN(created_at), keeps the create's size (a hide can only ever raise a
+ * stale 0 placeholder, never lower a real size) and the earliest hidden time -
  * so a redelivered event rewrites the row it already wrote and never adds one.
  * @param {D1Database} db
  * @param {ReturnType<typeof validateEvent>} event
@@ -591,8 +650,8 @@ function eventStatements(db, event, receivedAt) {
          ON CONFLICT(account_id, b2_file_id) DO UPDATE SET
            path = COALESCE(NULLIF(excluded.path, ''), file_versions.path),
            created_at = MIN(file_versions.created_at, excluded.created_at),
-           size_bytes = CASE WHEN ?7 = 'create'
-                             THEN excluded.size_bytes ELSE file_versions.size_bytes END,
+           size_bytes = CASE WHEN ?7 = 'create' THEN excluded.size_bytes
+                             ELSE MAX(file_versions.size_bytes, excluded.size_bytes) END,
            hidden_at = CASE WHEN file_versions.hidden_at IS NULL THEN excluded.hidden_at
                             WHEN excluded.hidden_at IS NULL THEN file_versions.hidden_at
                             ELSE MIN(file_versions.hidden_at, excluded.hidden_at) END`,
@@ -679,29 +738,35 @@ export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 
 /**
  * Compares a presented token with the configured one without leaking the
- * secret through timing. A length mismatch returns early, which is a length
-// check and reveals nothing beyond the length; the bytes are then compared
- * with an accumulator so no single byte's comparison ends the loop early.
- *
- * The platform's crypto.subtle.timingSafeEqual is deliberately not used: it
- * exists in the Workers runtime and not in Node's Web Crypto, so calling it
- * through a runtime check would leave every test here exercising a different
- * compare from the one production runs. The accumulator above is the same
- * constant-shape comparison a hand-written HMAC uses, and it has no early
- * byte exit.
+ * secret through timing. Both sides are hashed with SHA-256 first, so the
+ * compare runs over two always-equal-length digests: a longer or shorter
+ * presentation reveals nothing, and the byte compare is the runtime's own
+ * constant-time one (crypto.subtle.timingSafeEqual, a Workers API) where the
+ * runtime provides it, and an accumulator with no byte-count exit over those
+ * same equal-length digests where it does not.
  * @param {unknown} presented
  * @param {unknown} configured
  */
-export function tokensMatch(presented, configured) {
+export async function tokensMatch(presented, configured) {
   if (typeof presented !== "string" || typeof configured !== "string") {
     return false;
   }
-  if (presented.length !== configured.length) {
+  if (presented === "" || configured === "") {
     return false;
   }
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(presented)),
+    crypto.subtle.digest("SHA-256", encoder.encode(configured)),
+  ]);
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(left, right);
+  }
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
   let difference = 0;
-  for (let i = 0; i < presented.length; i += 1) {
-    difference |= presented.charCodeAt(i) ^ configured.charCodeAt(i);
+  for (let i = 0; i < a.length; i += 1) {
+    difference |= a[i] ^ b[i];
   }
   return difference === 0;
 }
@@ -735,7 +800,7 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     console.error("meter: METER_EVENT_TOKEN binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
-  if (!tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken)) {
+  if (!(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken))) {
     // One sentence, no echo of what was presented: a wrong token is a caller
     // with a stale or misconfigured event rule, and its text is not a hint.
     return json({ error: "The event could not be accepted from this caller." }, 401);
@@ -873,7 +938,14 @@ export const REROLL_GRACE_HOURS = 1;
 // and the mark below advances to the last hour actually rolled, so a long
 // outage cannot leave hours unrolled and cannot make one run unbounded work:
 // successive runs walk the whole backlog without skipping an hour.
-export const MAX_CATCHUP_HOURS = 48;
+//
+// Sized to the query budget: one hour costs three D1 calls (one set-based
+// read, one batch of every account's usage writes beside the empty-hour
+// cleanup, one mark write), and the Workers free plan allows 50 subrequests
+// per invocation, so 12 hours (36 calls) plus the run's own housekeeping
+// (state read, floor read, account list, purge) stays inside that ceiling
+// with headroom.
+export const MAX_CATCHUP_HOURS = 12;
 
 // How long a dedup row is kept. The provider's own retries land inside
 // minutes, so a week is generous; past it the row is deleted by the run below
@@ -921,11 +993,11 @@ function stampMillis(value) {
  * run does - and the bound on that work.
  *
  * Billing the hours a version lived needs the row set per hour, so the run
- * reads the accounts once and walks hours inside them. The purge of the dedup
- * table rides along: one statement, once per run.
+ * rolls one hour at a time and advances the mark after each one - a run
+ * killed mid-catch-up leaves the hours it finished marked, not lost.
  * @param {D1Database|undefined} db
  * @param {number|Date|string} now the trigger instant
- * @returns {Promise<{from: number, through: number, hours: number, accounts: number, gbMinutes: number}>}
+ * @returns {Promise<{from: number, through: number, hours: number, accounts: number, gbMinutes: number}>}}
  */
 export async function runMeterCron(db, now = Date.now()) {
   if (!db) {
@@ -967,15 +1039,15 @@ export async function runMeterCron(db, now = Date.now()) {
   from = Math.min(from, lastClosed);
   const through = Math.min(lastClosed, from + (MAX_CATCHUP_HOURS - 1) * HOUR_MS);
   const hours = Math.round((through - from) / HOUR_MS) + 1;
+  // The name the trigger reports, not a per-hour walk input: one statement,
+  // once per run.
   const accounts = await listMeteredAccounts(db);
   let gbMinutes = 0;
   for (let hour = from; hour <= through; hour += HOUR_MS) {
-    for (const accountId of accounts) {
-      const result = await rollupAccountHour(db, accountId, hour, at);
-      gbMinutes += result.gbMinutes;
-    }
+    const rolled = await rollupHour(db, hour, at);
+    gbMinutes += rolled.gbMinutes;
+    await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(hour).run();
   }
-  await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(through).run();
   await db.prepare(PURGE_EVENTS_SEEN_SQL).bind(at - EVENTS_SEEN_RETENTION_MS).run();
   return { from, through, hours, accounts: accounts.length, gbMinutes };
 }

@@ -530,9 +530,10 @@ test("the deployed cron schedule is the one the module names", () => {
     new URL("../cloudflare.config.ts", import.meta.url),
     "utf8",
   );
+  assert.equal(REINDEX_SCHEDULE, "0 3 * * *", "the reconciler's own quiet-hour schedule");
   assert.match(
     config,
-    new RegExp(`triggers\\.scheduled\\(\\{ schedule: "${REINDEX_SCHEDULE.replace(/\*/g, "\\*")}" \\}\\)`),
+    /triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\)/,
     "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
   );
 });

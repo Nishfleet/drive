@@ -3,126 +3,39 @@
 // the meter's statements run against it and the rows read back out.
 //
 // A unit-test fake can only assert the SQL the meter sends; it cannot see the
-// schema. This file applies migrations/0001_waitlist.sql and
-// migrations/0002_meter.sql verbatim (read from disk, the files that ship) and
-// proves both directions of the new tables:
+// schema. This file applies every migration in migrations/ verbatim (read from
+// disk, the files that ship) and proves both directions of the new tables:
 //   WRITE - the dedup batch (events_seen + file_versions upsert) and the
 //           rollup upsert land rows a plain SELECT can find;
 //   READ  - the rollup's SELECT finds exactly the versions an hour needs, and
 //           re-running the rollup overwrites rather than duplicates.
 //
-// The D1-shaped adapter over node:sqlite implements only what src/meter.js
-// calls: prepare().bind().all/first/run and batch, with D1's result shapes
-// ({ results }, { meta: { rows_written } }). node:sqlite is in the standard
-// library, so the repo needs no new dependency to test its migrations.
+// The D1-shaped adapter is the one test/d1-sqlite.mjs shares with the unit
+// tests: it runs the meter's real SQL on the real schema through node:sqlite,
+// so nothing here re-implements an upsert, a MIN() or a half-open window in
+// JS. Every assertion below reads the rows back with plain node:sqlite
+// statements, independently of the adapter the meter was handed, so a row the
+// adapter remembered and the schema never got could not pass this file.
+// node:sqlite is in the standard library, so the repo needs no new dependency
+// to test its migrations.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import {
-  BYTES_PER_GB,
   MINUTE_MS,
   listMeteredAccounts,
   recordEvent,
-  rollupAccountHour,
+  rollupHour,
   runMeterCron,
   validateEvent,
 } from "../../src/meter.js";
+import { applyMigrations, makeMeteredDB, GB, at, midnight } from "../d1-sqlite.mjs";
 
-const GB = BYTES_PER_GB;
-const at = (iso) => Date.parse(iso);
-const midnight = () => at("2026-09-30T00:00:00.000Z");
-
-// The real migration files, in their filename order.
-const migrationsDir = new URL("../../migrations/", import.meta.url);
-const migrationFiles = readdirSync(migrationsDir)
+// The real migration files, in their filename order: the order the deploy
+// applies them in.
+const migrationFiles = readdirSync(new URL("../../migrations/", import.meta.url))
   .filter((name) => name.endsWith(".sql"))
   .sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
-
-function applyMigrations(sqlite) {
-  for (const name of migrationFiles) {
-    sqlite.exec(readFileSync(new URL(`../../migrations/${name}`, import.meta.url), "utf8"));
-  }
-}
-
-// A D1-shaped adapter over node:sqlite. D1's numbered placeholders (?1) are
-// SQLite's own, and node:sqlite binds them positionally in order.
-//
-// A D1PreparedStatement is opaque to the caller: the meter hands the object to
-// db.batch, which is the only thing that runs it. The adapter carries the SQL
-// and the bound values on the statement so batch can do that, and answers with
-// D1's shapes ({ results, success, meta: { rows_written } }) because that is
-// what the meter reads.
-function d1Over(sqlite) {
-  function statementResult(statement, bound) {
-    const info = statement.run(...bound);
-    return {
-      results: [],
-      success: true,
-      meta: { changes: Number(info.changes), rows_written: Number(info.changes) },
-    };
-  }
-  return {
-    prepare(sql) {
-      const prepared = {
-        _sql: sql,
-        _bound: [],
-        _statement: null,
-        sql,
-        bound: [],
-        bind(...bound) {
-          this._bound = bound;
-          this._statement = sqlite.prepare(sql);
-          return this;
-        },
-        async all() {
-          const statement = this._statement ?? sqlite.prepare(sql);
-          return {
-            results: statement.all(...this._bound).map((row) => ({ ...row })),
-            success: true,
-            meta: { changes: 0, rows_written: 0 },
-          };
-        },
-        async first() {
-          const statement = this._statement ?? sqlite.prepare(sql);
-          const row = statement.get(...this._bound);
-          return row === undefined ? null : { ...row };
-        },
-        async run() {
-          const statement = this._statement ?? sqlite.prepare(sql);
-          return statementResult(statement, this._bound);
-        },
-      };
-      // The bare prepare().all() form the meter uses for its list query.
-      prepared.sql = sql;
-      prepared.bound = [];
-      return prepared;
-    },
-    // D1 runs a batch as one transaction; SQLite gets the same guarantee from
-    // BEGIN/COMMIT here, so both statements of the dedup land or neither does.
-    async batch(statements) {
-      const results = [];
-      sqlite.exec("BEGIN");
-      try {
-        for (const statement of statements) {
-          const sqliteStatement = statement._statement ?? sqlite.prepare(statement.sql ?? statement._sql);
-          results.push(statementResult(sqliteStatement, statement._bound ?? statement.bound ?? []));
-        }
-        sqlite.exec("COMMIT");
-      } catch (error) {
-        sqlite.exec("ROLLBACK");
-        throw error;
-      }
-      return results;
-    },
-  };
-}
-
-function makeMeteredDB() {
-  const sqlite = new DatabaseSync(":memory:");
-  applyMigrations(sqlite);
-  return { sqlite, d1: d1Over(sqlite) };
-}
 
 const abcEvent = (overrides = {}) =>
   validateEvent({
@@ -132,15 +45,26 @@ const abcEvent = (overrides = {}) =>
     b2FileId: "file-1",
     sizeBytes: GB,
     createdAt: midnight(),
-    hiddenAt: null,
+    action: "uploaded",
+    ...overrides,
+  });
+
+const otherEvent = (overrides = {}) =>
+  validateEvent({
+    eventId: "evt-2",
+    keyName: "/u/acc-other/",
+    path: "/u/acc-other/movie.mkv",
+    b2FileId: "file-2",
+    sizeBytes: 10 * GB,
+    createdAt: midnight(),
     action: "uploaded",
     ...overrides,
   });
 
 test("the real migrations apply cleanly, in filename order", () => {
-  // The order the deploy applies them in. 0002 must not depend on anything
-  // 0001 does not already have, and neither may fail on a database that
-  // already ran the other.
+  // The order the deploy applies them in. No file may depend on something a
+  // lower-numbered file does not already have, and none may fail on a database
+  // that already ran the others.
   assert.ok(migrationFiles.includes("0001_waitlist.sql"), "0001_waitlist.sql is missing");
   assert.ok(migrationFiles.includes("0002_meter.sql"), "0002_meter.sql is missing");
   const { sqlite } = makeMeteredDB();
@@ -148,17 +72,60 @@ test("the real migrations apply cleanly, in filename order", () => {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
     .all()
     .map((row) => row.name);
-  for (const table of ["file_versions", "usage_minutes", "events_seen", "waitlist"]) {
+  for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state", "waitlist"]) {
     assert.ok(tables.includes(table), `table ${table} was not created`);
+  }
+  // The columns the meter's arithmetic assumes: epoch milliseconds in
+  // INTEGER columns, sizes and bytes in INTEGER columns, and the fraction of
+  // a GB-minute in a REAL one. A timestamp stored as TEXT would make the
+  // rollup's MIN() and its whole-minute arithmetic compare strings, and the
+  // done-when's day total would drift instead of adding up.
+  for (const [table, column, type] of [
+    ["file_versions", "account_id", "TEXT"],
+    ["file_versions", "b2_file_id", "TEXT"],
+    ["file_versions", "path", "TEXT"],
+    ["file_versions", "size_bytes", "INT"],
+    ["file_versions", "created_at", "INT"],
+    ["file_versions", "hidden_at", "INT"],
+    ["usage_minutes", "hour", "INT"],
+    ["usage_minutes", "gb_minutes_live", "REAL"],
+    ["usage_minutes", "download_bytes", "INT"],
+    ["usage_minutes", "rolled_up_at", "INT"],
+    ["events_seen", "received_at", "INT"],
+    ["meter_rollup_state", "rolled_through", "INT"],
+  ]) {
+    const row = sqlite
+      .prepare(`SELECT type FROM pragma_table_info('${table}') WHERE name = ?1`)
+      .get(column);
+    assert.ok(row, `${table}.${column} is missing`);
+    assert.match(
+      row.type,
+      new RegExp(type, "i"),
+      `${table}.${column} is ${row.type}, not ${type}`,
+    );
+  }
+  // The two tables the meter upserts into are keyed exactly the way its
+  // ON CONFLICT names them, or every redelivery would raise instead of
+  // update. The conflict target has to be the primary key, in that order.
+  for (const [table, expected] of [
+    ["file_versions", "account_id,b2_file_id"],
+    ["usage_minutes", "account_id,hour"],
+  ]) {
+    const key = sqlite
+      .prepare(`SELECT name FROM pragma_table_info('${table}') WHERE pk > 0 ORDER BY pk`)
+      .all()
+      .map((row) => row.name)
+      .join(",");
+    assert.equal(key, expected, `${table}'s conflict target is ${key || "none"}, not ${expected}`);
   }
 });
 
 test("WRITE: an event lands as one version row, and a redelivery writes nothing", async () => {
-  const { sqlite, d1 } = makeMeteredDB();
+  const { sqlite, db } = makeMeteredDB();
   // Awaited: the batch has to have run before the tables are read. The result
   // says the dedup row was new, and the rows themselves are read back out of
   // SQLite below, which is the point of an integration test.
-  const first = await recordEvent(d1, abcEvent(), midnight());
+  const first = await recordEvent(db, abcEvent(), midnight());
   assert.equal(first.stored, true, "the first delivery stores its event");
   const versions = sqlite
     .prepare("SELECT account_id, b2_file_id, path, size_bytes, created_at, hidden_at FROM file_versions")
@@ -167,13 +134,14 @@ test("WRITE: an event lands as one version row, and a redelivery writes nothing"
   assert.equal(versions[0].account_id, "acc-abc");
   assert.equal(versions[0].b2_file_id, "file-1");
   assert.equal(versions[0].size_bytes, GB);
+  assert.equal(versions[0].created_at, midnight());
   assert.equal(versions[0].hidden_at, null);
-  const seen = sqlite.prepare("SELECT b2_event_id FROM events_seen").all();
-  assert.equal(seen.length, 1);
+  assert.equal(sqlite.prepare("SELECT b2_event_id FROM events_seen").all().length, 1);
   // The redelivery: the same event id again. The dedup row is there, so the
-  // version count does not move, and the upsert (which runs on every delivery,
-  // because a D1 batch executes every statement) rewrites the same row.
-  const repeat = await recordEvent(d1, abcEvent(), midnight());
+  // meter reports the event as not stored, and the upsert (which runs on every
+  // delivery, because a D1 batch executes every statement) rewrites the same
+  // row rather than adding one.
+  const repeat = await recordEvent(db, abcEvent(), midnight());
   assert.equal(repeat.stored, false, "the dedup eats the repeated event");
   assert.equal(
     sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n,
@@ -184,73 +152,82 @@ test("WRITE: an event lands as one version row, and a redelivery writes nothing"
 });
 
 test("WRITE: a hidden time reaches the row, and a later bare event cannot un-hide it", async () => {
-  const { sqlite, d1 } = makeMeteredDB();
-  await recordEvent(d1, abcEvent({ hiddenAt: midnight() + 30 * MINUTE_MS }), midnight());
-  let row = sqlite.prepare("SELECT hidden_at FROM file_versions").get();
+  const { sqlite, db } = makeMeteredDB();
+  const hide = validateEvent({
+    eventId: "h-1",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/notes.md",
+    b2FileId: "file-1",
+    action: "file hidden",
+    hiddenAt: midnight() + 30 * MINUTE_MS,
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+  });
+  await recordEvent(db, hide, midnight() + 30 * MINUTE_MS);
+  let row = sqlite.prepare("SELECT hidden_at, size_bytes FROM file_versions").get();
   assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS);
-  await recordEvent(d1, abcEvent({ eventId: "evt-2" }), midnight() + 40 * MINUTE_MS);
-  row = sqlite.prepare("SELECT hidden_at FROM file_versions").get();
-  assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS, "the COALESCE keeps the hidden time");
+  assert.equal(row.size_bytes, 0, "a hide carries no size of its own");
+  // The create that follows: it sets the size and moves created_at back to the
+  // truth, and it must not lift the hidden time the row already carries.
+  await recordEvent(db, abcEvent({ eventId: "c-1", createdAt: midnight() }), midnight() + 40 * MINUTE_MS);
+  row = sqlite.prepare("SELECT created_at, hidden_at, size_bytes FROM file_versions").get();
+  assert.equal(row.created_at, midnight(), "the late create moves created_at back");
+  assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS, "the earliest hidden time wins");
+  assert.equal(row.size_bytes, GB, "a create is the only writer of the size");
 });
 
 test("READ: the rollup sums only the hour's own versions, from the real schema", async () => {
-  const { sqlite, d1 } = makeMeteredDB();
+  const { sqlite, db } = makeMeteredDB();
   // Two accounts. acc-abc stores 1 GB from 00:30; acc-other stores 10 GB all
   // hour and hides it at 00:45.
   await recordEvent(
-    d1,
+    db,
     abcEvent({ createdAt: at("2026-09-30T00:30:00.000Z") }),
     at("2026-09-30T00:30:00.000Z"),
   );
-  await recordEvent(
-    d1,
-    validateEvent({
-      eventId: "evt-2",
-      keyName: "/u/acc-other/",
-      path: "/u/acc-other/movie.mkv",
-      b2FileId: "file-2",
-      sizeBytes: 10 * GB,
-      createdAt: midnight(),
-      hiddenAt: at("2026-09-30T00:45:00.000Z"),
-    }),
-    midnight(),
-  );
-  const accounts = await listMeteredAccounts(d1);
-  assert.deepEqual(accounts, ["acc-abc", "acc-other"]);
-  const abc = await rollupAccountHour(d1, "acc-abc", midnight(), at("2026-09-30T01:00:00.000Z"));
-  // 1 GB live from 00:30 to 01:00: 30 GB-minutes.
-  assert.equal(abc.gbMinutes, 30);
-  const other = await rollupAccountHour(d1, "acc-other", midnight(), at("2026-09-30T01:00:00.000Z"));
-  // 10 GB live 45 minutes, under the hour: the 1-hour minimum books 600, and
-  // the shortfall rides in the hour hidden_at falls in (hour 00).
-  assert.equal(other.gbMinutes, 10 * 60);
-  const rows = (await d1
+  const hide = validateEvent({
+    eventId: "h-2",
+    keyName: "/u/acc-other/",
+    path: "/u/acc-other/movie.mkv",
+    b2FileId: "file-2",
+    action: "file hidden",
+    hiddenAt: at("2026-09-30T00:45:00.000Z"),
+    eventTimestamp: at("2026-09-30T00:45:00.000Z"),
+  });
+  await recordEvent(db, hide, at("2026-09-30T00:45:00.000Z"));
+  await recordEvent(db, otherEvent(), midnight());
+  assert.deepEqual(await listMeteredAccounts(db), ["acc-abc", "acc-other"]);
+  const rolled = await rollupHour(db, midnight(), at("2026-09-30T01:00:00.000Z"));
+  // acc-abc: 1 GB live from 00:30 to 01:00, 30 GB-minutes. acc-other: 10 GB
+  // live 45 minutes, under the hour, so the 1-hour minimum books 600 - and
+  // the shortfall rides in the hour hidden_at falls in, which is this one.
+  assert.equal(rolled.gbMinutes, 30 + 10 * 60);
+  assert.equal(rolled.accounts, 2);
+  assert.equal(rolled.versions, 2);
+  const rows = sqlite
     .prepare("SELECT account_id, hour, gb_minutes_live, download_bytes FROM usage_minutes ORDER BY account_id")
-    .all()).results;
-  assert.deepEqual(
-    rows.map((r) => ({
+    .all()
+    .map((r) => ({
       account_id: r.account_id,
       hour: r.hour,
       gb_minutes_live: r.gb_minutes_live,
       download_bytes: r.download_bytes,
-    })),
-    [
-      { account_id: "acc-abc", hour: midnight(), gb_minutes_live: 30, download_bytes: 0 },
-      { account_id: "acc-other", hour: midnight(), gb_minutes_live: 600, download_bytes: 0 },
-    ],
-  );
+    }));
+  assert.deepEqual(rows, [
+    { account_id: "acc-abc", hour: midnight(), gb_minutes_live: 30, download_bytes: 0 },
+    { account_id: "acc-other", hour: midnight(), gb_minutes_live: 600, download_bytes: 0 },
+  ]);
 });
 
 test("READ+WRITE: a re-run of the same hour overwrites, and bytes written by another writer survive", async () => {
-  const { sqlite, d1 } = makeMeteredDB();
-  await recordEvent(d1, abcEvent(), midnight());
-  await rollupAccountHour(d1, "acc-abc", midnight(), at("2026-09-30T01:00:00.000Z"));
+  const { sqlite, db } = makeMeteredDB();
+  await recordEvent(db, abcEvent(), midnight());
+  await rollupHour(db, midnight(), at("2026-09-30T01:00:00.000Z"));
   // The dl Worker (a follow-up issue) owns download_bytes. It writes its
   // column straight into the row the meter made.
   sqlite
     .prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2")
     .run(4242, "acc-abc");
-  await rollupAccountHour(d1, "acc-abc", midnight(), at("2026-09-30T01:05:00.000Z"));
+  await rollupHour(db, midnight(), at("2026-09-30T01:05:00.000Z"));
   const rows = sqlite.prepare("SELECT * FROM usage_minutes").all();
   assert.equal(rows.length, 1, "a re-run must not add a second row for the hour");
   assert.equal(rows[0].gb_minutes_live, 60);
@@ -259,100 +236,113 @@ test("READ+WRITE: a re-run of the same hour overwrites, and bytes written by ano
 
 test("the trigger's hour sums a whole day to exactly what the versions cost", async () => {
   // The done-when compares one account's GB-minutes for a full day against
-  // the provider's own report. The meter's side of that comparison, end to
-  // end through the real schema: events in, hours out, day total exact.
-  const { sqlite, d1 } = makeMeteredDB();
-  // 2 GB stored at 10:20 on the 29th, hidden 13:10 on the 30th: 26h50m of
-  // life, 5360 GB-minutes, split across the hours of the 30th (and three of
-  // the 29th, which a day-view of the 30th does not book).
-  await recordEvent(
-    d1,
-    validateEvent({
-      eventId: "day-1",
-      keyName: "/u/acc-abc/",
-      path: "/u/acc-abc/big.bin",
-      b2FileId: "big",
-      sizeBytes: 2 * GB,
-      createdAt: at("2026-09-29T10:20:00.000Z"),
-      hiddenAt: at("2026-09-30T13:10:00.000Z"),
-    }),
-    at("2026-09-29T10:20:00.000Z"),
-  );
+  // the storage provider's own report. The meter's side of that comparison,
+  // end to end through the real schema: events in, hours out, day total
+  // exact to the byte.
+  const { sqlite, db } = makeMeteredDB();
+  // 2 GB stored at 10:20 on the 29th, hidden 13:10 on the 30th.
+  const big = validateEvent({
+    eventId: "day-1",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/big.bin",
+    b2FileId: "big",
+    sizeBytes: 2 * GB,
+    createdAt: at("2026-09-29T10:20:00.000Z"),
+    action: "uploaded",
+  });
+  await recordEvent(db, big, at("2026-09-29T10:20:00.000Z"));
+  const bigHidden = validateEvent({
+    eventId: "day-1h",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/big.bin",
+    b2FileId: "big",
+    action: "file hidden",
+    hiddenAt: at("2026-09-30T13:10:00.000Z"),
+    eventTimestamp: at("2026-09-30T13:10:00.000Z"),
+  });
+  await recordEvent(db, bigHidden, at("2026-09-30T13:10:00.000Z"));
   // A short-lived 5 GB version: 20 minutes, so the 1-hour minimum books 300.
-  await recordEvent(
-    d1,
-    validateEvent({
-      eventId: "day-2",
-      keyName: "/u/acc-abc/",
-      path: "/u/acc-abc/short.txt",
-      b2FileId: "short",
-      sizeBytes: 5 * GB,
-      createdAt: at("2026-09-30T09:00:00.000Z"),
-      hiddenAt: at("2026-09-30T09:20:00.000Z"),
-    }),
-    at("2026-09-30T09:20:00.000Z"),
-  );
+  const short = validateEvent({
+    eventId: "day-2",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/short.txt",
+    b2FileId: "short",
+    sizeBytes: 5 * GB,
+    createdAt: at("2026-09-30T09:00:00.000Z"),
+    action: "uploaded",
+  });
+  await recordEvent(db, short, at("2026-09-30T09:00:00.000Z"));
+  const shortHidden = validateEvent({
+    eventId: "day-2h",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/short.txt",
+    b2FileId: "short",
+    action: "file hidden",
+    hiddenAt: at("2026-09-30T09:20:00.000Z"),
+    eventTimestamp: at("2026-09-30T09:20:00.000Z"),
+  });
+  await recordEvent(db, shortHidden, at("2026-09-30T09:20:00.000Z"));
   // One trigger per hour of the 30th, each rolling the hours its predecessor
-  // left and re-rolling the one before that as a grace. The day is read from
-  // the hour rows, which is what a bill is worked out from; the trigger's own
-  // return is a per-run work figure and re-rolls the grace hour, so it is not
-  // the day's total.
+  // left and re-rolling the newest of them as a grace. The day is read from
+  // the hour rows, which is what a bill is worked out from; a single run's
+  // return is a per-run work figure, not the day's total.
   for (let h = 0; h < 24; h += 1) {
-    await runMeterCron(d1, midnight() + (h + 1) * 60 * MINUTE_MS);
+    await runMeterCron(db, midnight() + (h + 1) * 60 * MINUTE_MS);
   }
-  const rows = (await d1
+  const rows = sqlite
     .prepare(
       "SELECT hour, gb_minutes_live FROM usage_minutes WHERE account_id = 'acc-abc' AND hour >= ?1 AND hour < ?2 ORDER BY hour",
     )
-    .bind(midnight(), midnight() + 24 * 60 * MINUTE_MS)
-    .all()).results;
+    .all(midnight(), midnight() + 24 * 60 * MINUTE_MS);
   const day = rows.reduce((sum, row) => sum + row.gb_minutes_live, 0);
-  // The day of the 30th: the 2 GB file from 00:00 to 13:10 (2 x 790) plus the
-  // short version's 1-hour minimum (5 x 60).
+  // The day of the 30th: the 2 GB file from 00:00 to 13:10 (2 GB x 790 whole
+  // minutes) plus the short version's 1-hour minimum (5 GB x 60).
   assert.equal(day, 2 * 790 + 5 * 60);
   // Hours 00 to 13 carry the big file; hour 09 carries it plus the short
   // version's minimum. That is 14 rows, and none for the empty hours after
   // 13:10 - a rollup of an hour with nothing stored writes no row at all.
   assert.equal(rows.length, 14);
   assert.equal(rows.at(-1).gb_minutes_live, 20, "hour 13 holds ten minutes of the 2 GB file");
-  // The rows sum to the day, with no rounding drift between them: this is the
-  // 1% the done-when measures, exact by construction.
-  assert.equal(rows.reduce((sum, row) => sum + row.gb_minutes_live, 0), day);
+  assert.equal(rows.find((row) => row.hour === midnight() + 9 * 60 * MINUTE_MS).gb_minutes_live, 120 + 300, "hour 09 is the big file plus the short version's minimum");
   assert.equal(rows.filter((row) => row.gb_minutes_live === 0).length, 0, "no empty hour is written");
+  // Every hour is a whole number of GB-minutes: whole-minute billing, so the
+  // day's rows add up to the day's total with no rounding drift between
+  // them. This is the 1% the done-when measures, exact by construction.
+  assert.equal(rows.every((row) => Number.isInteger(row.gb_minutes_live)), true);
+  assert.equal(rows.reduce((sum, row) => sum + row.gb_minutes_live, 0), day);
 });
 
 test("READ: a hide delivered before its create bills the same hours, through the real schema", async () => {
   // The provider's delivery order is not ours to choose, and the meter is the
   // one thing that has to be indifferent to it. This is the money rule: the
   // hide-first row is the create-first row.
-  const { sqlite, d1 } = makeMeteredDB();
+  const { sqlite, db } = makeMeteredDB();
   // The hide first: the provider reports the version replaced at 00:30, with
   // no creation time of its own.
-  await recordEvent(
-    d1,
-    validateEvent({
-      eventId: "h-1",
-      keyName: "/u/acc-abc/",
-      b2FileId: "file-1",
-      sizeBytes: GB,
-      action: "file hidden",
-      eventTimestamp: midnight() + 30 * MINUTE_MS,
-    }),
-    midnight() + 30 * MINUTE_MS,
-  );
+  const hide = validateEvent({
+    eventId: "h-1",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/notes.md",
+    b2FileId: "file-1",
+    action: "file hidden",
+    eventTimestamp: midnight() + 30 * MINUTE_MS,
+  });
+  await recordEvent(db, hide, midnight() + 30 * MINUTE_MS);
   // The create arrives after, naming the true creation instant.
-  await recordEvent(d1, abcEvent({ eventId: "c-1" }), midnight() + 31 * MINUTE_MS);
-  const row = sqlite
-    .prepare("SELECT size_bytes, created_at, hidden_at FROM file_versions")
-    .get();
+  await recordEvent(db, abcEvent({ eventId: "c-1" }), midnight() + 31 * MINUTE_MS);
+  const row = sqlite.prepare("SELECT size_bytes, created_at, hidden_at FROM file_versions").get();
   assert.equal(row.created_at, midnight(), "the late create moves created_at back");
   assert.equal(row.hidden_at, midnight() + 30 * MINUTE_MS);
   assert.equal(row.size_bytes, GB, "the hide must not set the size");
-  // The rollup bills the 30 minutes and the 1-hour minimum on top: 60.
-  const rolled = await rollupAccountHour(d1, "acc-abc", midnight(), midnight() + 60 * MINUTE_MS);
+  // The rollup bills the 30 minutes of overlap and tops the version up to its
+  // 1-hour minimum: 60.
+  const rolled = await rollupHour(db, midnight(), midnight() + 60 * MINUTE_MS);
   assert.equal(rolled.gbMinutes, 60);
-  const usage = sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes").get();
-  assert.equal(usage.gb_minutes_live, 60, "the hide-first order bills a real hour, not zero");
+  assert.equal(
+    sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes").get().gb_minutes_live,
+    60,
+    "the hide-first order bills a real hour, not zero",
+  );
 });
 
 test("READ: a version hidden exactly on the hour's boundary books its minimum in that hour", async () => {
@@ -360,20 +350,25 @@ test("READ: a version hidden exactly on the hour's boundary books its minimum in
   // Hour 01 holds none of its minutes, and the top-up belongs there anyway, so
   // the rollup's window has to include a version whose hidden_at IS the hour's
   // start. A `>` bound here would drop it and bill 30 minutes for an hour.
-  const { sqlite, d1 } = makeMeteredDB();
+  const { sqlite, db } = makeMeteredDB();
   await recordEvent(
-    d1,
-    abcEvent({ createdAt: at("2026-09-30T00:30:00.000Z"), hiddenAt: at("2026-09-30T01:00:00.000Z") }),
+    db,
+    abcEvent({ createdAt: at("2026-09-30T00:30:00.000Z") }),
     at("2026-09-30T00:30:00.000Z"),
   );
-  const hour00 = await rollupAccountHour(d1, "acc-abc", midnight(), at("2026-09-30T01:05:00.000Z"));
+  const hidden = validateEvent({
+    eventId: "h-1",
+    keyName: "/u/acc-abc/",
+    path: "/u/acc-abc/notes.md",
+    b2FileId: "file-1",
+    action: "file hidden",
+    hiddenAt: at("2026-09-30T01:00:00.000Z"),
+    eventTimestamp: at("2026-09-30T01:00:00.000Z"),
+  });
+  await recordEvent(db, hidden, at("2026-09-30T01:00:00.000Z"));
+  const hour00 = await rollupHour(db, midnight(), at("2026-09-30T01:05:00.000Z"));
   assert.equal(hour00.gbMinutes, 30, "hour 00 is just its half hour of overlap");
-  const hour01 = await rollupAccountHour(
-    d1,
-    "acc-abc",
-    at("2026-09-30T01:00:00.000Z"),
-    at("2026-09-30T02:05:00.000Z"),
-  );
+  const hour01 = await rollupHour(db, at("2026-09-30T01:00:00.000Z"), at("2026-09-30T02:05:00.000Z"));
   assert.equal(hour01.versions, 1, "the boundary version is in hour 01's window");
   assert.equal(hour01.gbMinutes, 30, "hour 01 books the shortfall to the full hour");
   const rows = sqlite.prepare("SELECT gb_minutes_live FROM usage_minutes ORDER BY hour").all();
@@ -391,8 +386,8 @@ test("READ+WRITE: an empty database sets the mark to the hour just rolled, not t
   // meter_rollup_state and the meter bills nothing for about a year while the
   // trigger reports success. Proved here against the real tables, where NULL
   // is what the query actually returns.
-  const { sqlite, d1 } = makeMeteredDB();
-  const first = await runMeterCron(d1, at("2026-09-30T01:05:00.000Z"));
+  const { sqlite, db } = makeMeteredDB();
+  const first = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
   assert.equal(first.accounts, 0, "nothing is stored, so nothing is billed");
   assert.equal(first.gbMinutes, 0);
   assert.equal(
@@ -402,17 +397,17 @@ test("READ+WRITE: an empty database sets the mark to the hour just rolled, not t
   );
   // A version stored after the empty run still bills, which it would not if
   // the watermark were a year behind.
-  await recordEvent(d1, abcEvent({ createdAt: midnight() + 30 * MINUTE_MS }), midnight());
-  const second = await runMeterCron(d1, at("2026-09-30T02:05:00.000Z"));
+  await recordEvent(db, abcEvent({ createdAt: midnight() + 30 * MINUTE_MS }), midnight());
+  const second = await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
   assert.ok(second.gbMinutes > 0, "a version stored after an empty run must still bill");
 });
 
 test("READ+WRITE: a missed trigger is caught up from the stored mark, through the real schema", async () => {
-  // The review's finding, against the real tables: three closed hours with no
-  // trigger, then one run. Every hour gets its row and the mark is stored.
-  const { sqlite, d1 } = makeMeteredDB();
-  await recordEvent(d1, abcEvent(), midnight());
-  const caughtUp = await runMeterCron(d1, at("2026-09-30T03:05:00.000Z"));
+  // Three closed hours with no trigger, then one run. Every hour gets its row
+  // and the mark is stored.
+  const { sqlite, db } = makeMeteredDB();
+  await recordEvent(db, abcEvent(), midnight());
+  const caughtUp = await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
   assert.equal(caughtUp.from, midnight());
   assert.equal(caughtUp.through, midnight() + 2 * 60 * MINUTE_MS);
   assert.equal(caughtUp.hours, 3);
@@ -427,10 +422,44 @@ test("READ+WRITE: a missed trigger is caught up from the stored mark, through th
   );
   // Re-running at the same instant changes nothing: the same hours, the same
   // numbers, one row each.
-  await runMeterCron(d1, at("2026-09-30T03:06:00.000Z"));
+  await runMeterCron(db, at("2026-09-30T03:06:00.000Z"));
   const rows = sqlite
     .prepare("SELECT hour, gb_minutes_live FROM usage_minutes ORDER BY hour")
     .all();
   assert.equal(rows.length, 3);
   assert.deepEqual(rows.map((r) => r.gb_minutes_live), [60, 60, 60]);
+});
+
+test("the migration is additive: it creates tables and changes nothing else", () => {
+  // D1 has no down-migrations, so anything that drops a column, a table or a
+  // name, or that renames one, breaks the version of the code that is still
+  // deployed the instant the file lands. This migration's whole rollback is
+  // rolling the code back, and the check is on the shipped SQL rather than on
+  // the intent behind it: a future edit that adds a DROP, a RENAME or an
+  // ALTER fails here instead of in production.
+  const sql = readFileSync(new URL("../../migrations/0002_meter.sql", import.meta.url), "utf8");
+  for (const destructive of [
+    /\bDROP\s+(TABLE|COLUMN|INDEX)\b/i,
+    /\bALTER\s+TABLE\b/i,
+    /\bRENAME\b/i,
+    /\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)/i,
+  ]) {
+    assert.equal(destructive.test(sql), false, `0002_meter.sql matches ${destructive}`);
+  }
+  // The four tables, all new: adding a NOT NULL column to a table that already
+  // holds rows is the other way a migration breaks the previous version, and
+  // with no ALTER in the file that cannot happen here.
+  assert.deepEqual(
+    [...sql.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map((match) => match[1]).sort(),
+    ["events_seen", "file_versions", "meter_rollup_state", "usage_minutes"],
+  );
+  // Every column in a new table still carries a DEFAULT where one is possible,
+  // so a later ALTER that needs to widen one is a code change and not a
+  // rewrite of the table.
+  assert.equal(
+    /\bsize_bytes INTEGER NOT NULL\b(?![^,]*DEFAULT)/.test(sql),
+    true,
+    "file_versions.size_bytes is the one NOT NULL the file leaves without a DEFAULT",
+  );
+  assert.equal(/deleted_at INTEGER(,|\s*\n)/.test(sql), true, "deleted_at stays nullable and defaulted away");
 });

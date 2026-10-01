@@ -93,12 +93,15 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiter is on it because the waitlist fails closed without one
- * (src/waitlist.js). The email binding is not: only the token-gated internal
- * send route uses it, no customer request needs it, and its one operation
- * would really send mail.
+ * (src/waitlist.js). METER_DB is on it because the meter's event intake and
+ * the hourly rollup both fail closed without it (src/meter.js), and a deploy
+ * that lost it would silently stop billing. The email binding is not: only
+ * the token-gated internal send route uses it, no customer request needs it,
+ * and its one operation would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
+  "METER_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
 ]);

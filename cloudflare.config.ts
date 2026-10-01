@@ -1,6 +1,7 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 import { METER_CRON } from "./src/meter.js";
+import { REINDEX_SCHEDULE } from "./src/search.js";
 
 // drive issue #11: the pricing and landing page, served as Worker static
 // assets, with /api/* routed to the Worker for the waitlist form and the
@@ -34,7 +35,7 @@ export default defineConfig({
 		// past, after the hour has closed.
 		triggers: [
 			triggers.scheduled({ schedule: METER_CRON }),
-			triggers.scheduled({ schedule: "0 3 * * *" }),
+			triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
 		],
 		env: {
 			ASSETS: bindings.assets(),
