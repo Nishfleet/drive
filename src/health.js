@@ -13,7 +13,9 @@
 //     to cloudflare.config.ts is checked the day it is added. The trivial read
 //     is the one statement D1 answers whatever the schema is, so a database
 //     whose migrations are ahead of the Worker (still healthy) passes and an
-//     unreachable one fails. The waitlist is the site's only store today.
+//     unreachable one fails. Two databases today: the waitlist's, holding
+//     only the sign-up table, and the customer drive's, holding the file
+//     index, branches and agent caps (drive issue #170).
 //     Asking which kind it is, rather than looking for one method, is what
 //     makes that discovery safe (drive#144): every binding that is not a
 //     database is a Fetcher, and a Fetcher answers a function to every
@@ -34,18 +36,17 @@
 //
 //   - The waitlist's rate limiter. Missing, the waitlist endpoint fails closed
 //     (src/waitlist.js answers 503 rather than accept unbounded sign-ups), so
-//     it is a binding the Worker needs to serve one of its requests. It has no
+//     it is a binding the Worker needs to serve one of its requests. The
+//     sign-in endpoint's two edge limits (drive issue #147) are the same
+//     argument for the same reason: src/signin.js answers 503 without them
+//     rather than mail an unbounded number of sign-in links, so a deploy that
+//     lost either is an outage this endpoint names. It has no
 //     read, so the check is the one callable operation, `limit()`, on a key
 //     nothing else uses and that changes every call. Two things follow: a real
 //     client key (a client IP) can never collide with the probe, and a
 //     stranger hammering this public endpoint cannot exhaust a shared probe
 //     key and push the endpoint into a false 503. The one name the result
 //     reports is the binding, never the key.
-//
-//   - The sign-in endpoint's two edge limits (issue #147). Both fail closed
-//     without them (src/signin.js answers 503 rather than send unbounded), so
-//     a deploy that lost either is an outage this endpoint reports by name. The
-//     probe is the same `limit()` call on a key nothing else holds.
 //
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
 //   - Secrets. Their presence is a deployment shape, not a reachability
@@ -97,13 +98,18 @@ const LIVENESS_QUERY = "SELECT 1";
  * list pointing at a binding that no longer exists.
  *
  * ASSETS is on the list because every page load goes through it. The rate
- * limiters are on it because the waitlist and the sign-in endpoint fail
- * closed without one (src/waitlist.js, src/signin.js). The email binding is
- * not: only the token-gated internal send route uses it, no customer request
- * needs it, and its one operation would really send mail.
+ * limiters are on it because the waitlist and the sign-in endpoint fail closed
+ * without one (src/waitlist.js, src/signin.js). Both databases are on it: a
+ * deploy that lost DRIVE_DB
+ * would serve every page and sign-up while every file, search and branch
+ * request failed, which is exactly the outage this endpoint exists to catch
+ * (drive issue #170). The email binding is not: only the token-gated internal
+ * send route uses it, no customer request needs it, and its one operation
+ * would really send mail.
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
+  "DRIVE_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
   "SIGNIN_RATE_LIMITER",
@@ -121,19 +127,23 @@ const JSON_HEADERS = Object.freeze({
  * Rejects with a named timeout if `work` has not settled within `ms`. The
  * work itself keeps a reference to its own signal so a D1 read can be
  * cancelled at the database rather than merely abandoned here.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {string} name
+ * @returns {Promise<T>}
  */
 function withTimeout(promise, ms, name) {
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
   let timer;
   const expiry = new Promise((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new HealthCheckTimeout(name)),
-      ms,
-    );
+    timer = setTimeout(() => reject(new HealthCheckTimeout(name)), ms);
   });
   return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
 }
 
 class HealthCheckTimeout extends Error {
+  /** @param {string} name */
   constructor(name) {
     super(`${name} did not answer in time`);
     this.name = "HealthCheckTimeout";
@@ -164,14 +174,14 @@ class HealthCheckTimeout extends Error {
  * Fetcher". Both halves are load-bearing: `prepare` alone matches a Fetcher,
  * and some other method would miss a database whose runtime moved that one.
  * @param {unknown} binding one value off `env`
+ * @returns {binding is {prepare: (sql: string) => unknown}}
  */
 function isDatabaseBinding(binding) {
-  return (
-    typeof binding === "object" &&
-    binding !== null &&
-    typeof binding.prepare === "function" &&
-    typeof binding.fetch !== "function"
-  );
+  if (typeof binding !== "object" || binding === null) {
+    return false;
+  }
+  const candidate = /** @type {{prepare?: unknown, fetch?: unknown}} */ (binding);
+  return typeof candidate.prepare === "function" && typeof candidate.fetch !== "function";
 }
 
 /**
@@ -184,7 +194,7 @@ function isDatabaseBinding(binding) {
  * layer is checked on its own terms instead (checkHealth fetches it; the email
  * binding deliberately is not, for the reason in this module's header).
  * @param {Record<string, unknown>} env
- * @returns {{name: string, db: {prepare: (sql: string) => unknown}}[]}
+ * @returns {{name: string, db: {prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}}[]}
  */
 export function d1Bindings(env) {
   if (typeof env !== "object" || env === null) {
@@ -192,7 +202,12 @@ export function d1Bindings(env) {
   }
   return Object.entries(env)
     .filter(([, binding]) => isDatabaseBinding(binding))
-    .map(([name, db]) => ({ name, db }));
+    .map(([name, db]) => ({
+      name,
+      db: /** @type {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} */ (
+        db
+      ),
+    }));
 }
 
 /**
@@ -200,7 +215,15 @@ export function d1Bindings(env) {
  * share. A rejected read is not swallowed: it becomes the failure this check
  * reports, with the binding's name and nothing else.
  * @param {string} name the binding name, safe to show an operator
- * @param {{prepare: (sql: string) => unknown}} db
+ * @param {{prepare: (sql: string) => {all: (options?: {signal?: AbortSignal}) => Promise<unknown>}}} db
+ *   the binding, once its `prepare` shape was checked. The `all` signature is
+ *   spelled out rather than using the runtime's own `D1PreparedStatement`
+ *   because that type's `all()` takes no options, while the platform and the
+ *   test's fake both read the cancellation signal off this call: the type is
+ *   narrower than the API, and saying what this call actually passes is
+ *   truer than a cast around it.
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkD1(name, db, timeoutMs) {
   await withTimeout(
@@ -220,6 +243,8 @@ async function checkD1(name, db, timeoutMs) {
  * a document, and a 404 is the expected answer (nothing is served there), so
  * the check is "did we get a response at all", not "was it 200".
  * @param {{fetch: (request: Request) => Promise<Response>}} assets
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
  */
 async function checkAssets(assets, timeoutMs) {
   const response = await withTimeout(
@@ -245,21 +270,23 @@ async function checkAssets(assets, timeoutMs) {
 
 /**
  * A rate-limit binding, on a key of its own. The binding has no read,
- * so `limit()` is the only way to know it answers at all: without it
- * the endpoint behind it fails closed (src/waitlist.js,
- * src/signin.js), which is an outage this endpoint must be able to
- * report.
+ * so `limit()` is the only way to know it answers at all: without it the
+ * endpoint behind it fails closed — sign-ups stop without the waitlist's
+ * (src/waitlist.js), sign-in stops without sign-in's (src/signin.js) — and
+ * that is an outage this endpoint must be able to report. The name is the
+ * binding's, so a probe for one limiter never reports another's.
  *
- * The key changes every call and carries no client IP, for the reason
- * above: a health poll spends one unit of a bucket nobody else holds,
- * so it cannot eat a real client's quota, and a stranger hammering a
- * public endpoint cannot exhaust the probe's bucket and turn the
- * health answer into a false 503. Whether the limiter allows this
- * call is not the question — the binding answering at all is.
+ * The key changes every call and carries no client IP, for the reason above:
+ * a health poll spends one unit of a bucket nobody else holds, so it cannot
+ * eat a real client's quota, and a stranger hammering this public endpoint
+ * cannot exhaust the probe's bucket and turn the health answer into a false
+ * 503. Whether the limiter allows this call is not the question — the binding
+ * answering at all is.
  *
  * @param {{limit: (options: {key: string}) => Promise<{success: boolean}>}} limiter
  * @param {number} timeoutMs
  * @param {string} name the binding's name, reported on failure
+ * @returns {Promise<void>}
  */
 async function checkRateLimiter(limiter, timeoutMs, name) {
   const result = await withTimeout(
@@ -295,20 +322,36 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       return { ok: false, failing: name };
     }
   }
-  const checks = [];
+  const checks = /** @type {{name: string, run: (left: number) => Promise<void>}[]} */ ([]);
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
+  // The binding is read off the untyped env and checked by shape, exactly as
+  // d1Bindings does: the cast is the check that was just made, not a default.
   const assets = env.ASSETS;
-  if (typeof assets.fetch !== "function") {
+  if (
+    typeof assets !== "object" ||
+    assets === null ||
+    !("fetch" in assets) ||
+    typeof assets.fetch !== "function"
+  ) {
     // The landing page is served by this binding on every request that is
     // not /api/*, so its absence is an outage, not a configuration nit: a
     // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
-  checks.push({ name: "ASSETS", run: (left) => checkAssets(assets, left) });
+  checks.push({
+    name: "ASSETS",
+    run: (left) =>
+      checkAssets(/** @type {{fetch: (request: Request) => Promise<Response>}} */ (assets), left),
+  });
   const limiter = env.WAITLIST_RATE_LIMITER;
-  if (typeof limiter.limit !== "function") {
+  if (
+    typeof limiter !== "object" ||
+    limiter === null ||
+    !("limit" in limiter) ||
+    typeof limiter.limit !== "function"
+  ) {
     // The waitlist fails closed without this binding (src/waitlist.js), so a
     // binding that is present but has no `limit` is as broken as a missing
     // one and gets the same name.
@@ -316,21 +359,38 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   }
   checks.push({
     name: "WAITLIST_RATE_LIMITER",
-    run: (left) => checkRateLimiter(limiter, left, "WAITLIST_RATE_LIMITER"),
+    run: (left) =>
+      checkRateLimiter(
+        /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (limiter),
+        left,
+        "WAITLIST_RATE_LIMITER",
+      ),
   });
-  // The sign-in endpoint's two edge limits (issue #147). The endpoint
-  // fails closed without either (src/signin.js), so a deploy that lost
-  // one is an outage, and a binding present but without `limit` is as
-  // broken as a missing one and gets the same name. The guard is
-  // self-contained (not relying on the REQUIRED_BINDINGS pass above) so
-  // a future edit that reorders the checks cannot turn a missing binding
-  // into a TypeError.
+  // The sign-in endpoint's two edge limits (drive issue #147), probed the same
+  // way: the route fails closed without either, so a deploy that lost one is an
+  // outage, and a binding that is present but has no `limit` is as broken as a
+  // missing one and gets the same name. The guard is written out rather than
+  // trusting the REQUIRED_BINDINGS pass above, so a future edit that reorders
+  // these checks cannot turn a missing binding into a TypeError.
   for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
     const bound = env[name];
-    if (typeof bound === "undefined" || typeof bound.limit !== "function") {
+    if (
+      typeof bound !== "object" ||
+      bound === null ||
+      !("limit" in bound) ||
+      typeof bound.limit !== "function"
+    ) {
       return { ok: false, failing: name };
     }
-    checks.push({ name, run: (left) => checkRateLimiter(bound, left, name) });
+    checks.push({
+      name,
+      run: (left) =>
+        checkRateLimiter(
+          /** @type {{limit: (options: {key: string}) => Promise<{success: boolean}>}} */ (bound),
+          left,
+          name,
+        ),
+    });
   }
 
   for (const check of checks) {

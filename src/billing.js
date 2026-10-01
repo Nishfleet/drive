@@ -52,13 +52,13 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the ceiling's floor and slope, and the free credit are
 // declared there once, so this file's arithmetic and the page's copy cannot
 // disagree. What is added here is operational: the B2 fallback slope, the
 // default cap, and the download allowance.
 import { PRICE } from "./pricing.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
@@ -110,6 +110,18 @@ export const B2_FALLBACK_CONFIG = Object.freeze({
   perTbUsd: BILLING_CONFIG.b2FallbackPerTbUsd,
 });
 
+/**
+ * A frozen billing config: the metered rate and the ceiling formula. Every
+ * field is `number` rather than the literal in BILLING_CONFIG: a caller that
+ * takes a whole-month alternative (B2_FALLBACK_CONFIG, whose perTbUsd is the
+ * $10 fallback, not the $8 primary) passes a config whose values differ from
+ * the default's literals, and a literal type would refuse exactly the
+ * substitution the fallback exists to make. Still no missing field: the
+ * arithmetic below reads every one of them, so a partial config fails here
+ * rather than as NaN in an invoice.
+ * @typedef {Readonly<Record<keyof typeof BILLING_CONFIG, number>>} BillingConfig
+ */
+
 // The usage read's route (drive issue #53): the one path the api Worker routes
 // to handleUsageRequest. Exported so index.js, the page and the tests cannot
 // each spell it their own way.
@@ -129,6 +141,12 @@ export const SAVED_COPY = Object.freeze({
   uncapped: "You paid {amount} less than a flat plan.",
 });
 
+/**
+ * @param {number} value
+ * @param {string} name
+ * @param {{ min?: number }} [options]
+ * @returns {number}
+ */
 function checked(value, name, { min = 0 } = {}) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
     throw new TypeError(`${name} must be a number of ${min} or more, got ${String(value)}`);
@@ -156,7 +174,7 @@ export function gbMonths(gbMinutes) {
  * The metered cost of a month, in dollars: the 2¢/GB rate on the month's
  * GB-months, so the meter, the page and the CLI divide by the same 43,800.
  * @param {number} gbMinutes the `usage_minutes` rollup for the month
- * @param {object} [config]
+ * @param {BillingConfig} [config]
  */
 export function meteredMonthlyBillUsd(gbMinutes, config = BILLING_CONFIG) {
   return gbMonths(gbMinutes) * config.rateUsdPerGbMonth;
@@ -169,6 +187,7 @@ export function meteredMonthlyBillUsd(gbMinutes, config = BILLING_CONFIG) {
  * peak 1.5 TB, then rises $8 for each TB; on the B2 fallback the slope becomes
  * `config.b2FallbackPerTbUsd` (a flat $12 up to 1.2 TB, then $10 a TB).
  * @param {number} peakGb the month's largest stored size, in GB
+ * @param {BillingConfig} [config]
  */
 export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
   checked(peakGb, "peakGb");
@@ -186,7 +205,7 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
  * cannot mistake it for the whole bill.
  * @param {number} gbMinutes the month's metered GB-minutes
  * @param {number} peakGb the month's largest stored size
- * @param {object} [config=BILLING_CONFIG]
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
   return monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
@@ -204,7 +223,7 @@ export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG
  * month, over the spec's own 43,800-minute divisor — the conversion every
  * consumer needs, in one place.
  * @param {number} tb the stored size in TB, held the whole month
- * @param {object} [config=BILLING_CONFIG]
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  * @returns {{storageUsd: number, creditUsd: number, billUsd: number}}
  */
 export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
@@ -243,8 +262,7 @@ export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
  * `lines` is the same three amounts as the invoice's own lines — storage,
  * downloads, and the credit shown as a dollar line — so the invoice prints
  * what the arithmetic produced.
- * @param {{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number}} month
- * @param {object} [config=BILLING_CONFIG]
+ * @param {{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number, config?: BillingConfig}} month
  */
 export function monthBillCents({
   gbMinutes,
@@ -252,7 +270,7 @@ export function monthBillCents({
   downloadBytes = 0,
   averageStoredGb = 0,
   config = BILLING_CONFIG,
-} = {}) {
+}) {
   checked(gbMinutes, "month.gbMinutes");
   checked(peakGb, "month.peakGb");
   checked(downloadBytes, "month.downloadBytes");
@@ -281,8 +299,16 @@ export function monthBillCents({
     totalCents: Math.max(0, storageCents + downloadCents - creditCents),
     lines: Object.freeze([
       Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
-      Object.freeze({ label: "Downloads", cents: downloadCents, usd: formatUsd(downloadCents / 100) }),
-      Object.freeze({ label: "Free credit", cents: -creditCents, usd: signedUsd(-creditCents / 100) }),
+      Object.freeze({
+        label: "Downloads",
+        cents: downloadCents,
+        usd: formatUsd(downloadCents / 100),
+      }),
+      Object.freeze({
+        label: "Free credit",
+        cents: -creditCents,
+        usd: signedUsd(-creditCents / 100),
+      }),
     ]),
   });
 }
@@ -301,7 +327,7 @@ export function monthBillCents({
  * @returns {{usd: number, copy: string}|null}
  * @param {number} gbMinutes
  * @param {number} peakGb
- * @param {object} [config=BILLING_CONFIG]
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
@@ -333,6 +359,7 @@ export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
  * @param {number} gbMinutes metered so far this month
  * @param {number} peakGb the month's peak so far
  * @param {number} capUsd the account's cap in dollars
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
 export function capStatus(gbMinutes, peakGb, capUsd, config = BILLING_CONFIG) {
@@ -403,6 +430,7 @@ export function capLine(cap) {
  * dl Worker's count.
  * @param {number} downloadBytes
  * @param {number} averageStoredGb
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING_CONFIG) {
   checked(downloadBytes, "downloadBytes");
@@ -416,6 +444,10 @@ export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING
   return Object.freeze({ freeBytes, billableBytes, usd });
 }
 
+/**
+ * @param {number} usd
+ * @returns {string}
+ */
 function formatUsd(usd) {
   // Two decimals, so $12.80 reads as $12.80 and not $12.8: Nish's 1.6 TB
   // example is $12.80, so the cents always show. A non-finite value is a
@@ -429,6 +461,10 @@ function formatUsd(usd) {
 // A line that takes money off the bill carries the minus in front, the way an
 // invoice prints a credit: "-$1.00", never "$-1.00" (build-spec.md, "Free
 // credit": the free $1 is shown as a dollar line).
+/**
+ * @param {number} usd
+ * @returns {string}
+ */
 function signedUsd(usd) {
   return usd < 0 ? `-${formatUsd(-usd)}` : formatUsd(usd);
 }
@@ -444,7 +480,7 @@ function signedUsd(usd) {
  * static page renders strings instead of repeating the arithmetic. The
  * labels are the same strings `drive usage` prints.
  * @param {{gbMinutes: number, peakGb: number, storedGb: number, storedDaily: {day: string, gb: number}[], downloadBytes: number, averageStoredGb: number, capUsd: number, cardAdded?: boolean}} usage
- * @param {object} [config]
+ * @param {BillingConfig} [config]
  */
 export function usageSummary(usage, config = BILLING_CONFIG) {
   if (typeof usage !== "object" || usage === null) {

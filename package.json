@@ -7,20 +7,29 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.api.json --noEmit",
+    "pretypecheck": "cf workers types",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "format": "biome format --write .",
+    "check": "npm run typecheck && npm run lint",
+    "pretest": "npm run check",
     "docs:render": "node src/render-docs.js",
     "docs:build": "npm run docs:render && vitepress build docs-site",
-    "test": "npm run typecheck && npm run docs:build && node --test"
+    "test": "npm run docs:build && node --test"
   },
   "engines": {
     "node": ">=24"
   },
   "dependencies": {
+    "better-auth": "^1.7.7",
     "validator": "^13.15.35"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-ad79608dd",
-    "cf": "^1.0.0-beta.5",
+    "@types/node": "^24.19.0",
+    "@types/validator": "^13.15.10",
+    "cf": "^1.0.0-beta.10",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
     "vitepress": "^1.6.4",

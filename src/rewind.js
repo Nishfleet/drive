@@ -32,10 +32,10 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-import { BRANCHES_ENDPOINT, diffBranch, discardBranch, listBranches } from "./branches.js";
+import { diffBranch, discardBranch, listBranches } from "./branches.js";
 import { RECENTLY_DELETED_DAYS } from "./files.js";
 import { failureMessage } from "./messages.js";
-import { signedInAccount, unauthorizedResponse } from "./status.js";
+import { unauthorizedResponse } from "./status.js";
 
 /** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";
@@ -52,6 +52,12 @@ const JSON_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} [status]
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -59,6 +65,12 @@ function json(body, status = 200, headers = {}) {
   });
 }
 
+/**
+ * @param {string} message
+ * @param {number} status
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function plain(message, status, headers = {}) {
   return new Response(message, {
     status,
@@ -70,18 +82,12 @@ function plain(message, status, headers = {}) {
   });
 }
 
-async function readJsonBody(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return { error: "Send a JSON object." };
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
-  }
-  return { body };
-}
+// rewind.js used to read a JSON body from the rewind routes; nothing has wired
+// one since the rewind screen moved its input to the query string, and
+// src/branches.js owns the reader for the one route that still takes a body.
+// Removed by the drive#92 lint pass rather than renamed: a linter-clean unused
+// function is still unused, and the note is here so the next reader stops
+// looking for the helper they half remember.
 
 /**
  * What a rewind of this branch would undo, as the screen shows it: the files
@@ -98,7 +104,7 @@ async function readJsonBody(request) {
  * rewind, so the limit is the server's and not a hidden button.
  *
  * @param {import("./branches.js").FileStore} store a scoped store
- * @param {object} branch a branch row as `listBranches` returns
+ * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
  * @param {number} now epoch milliseconds, injected so the tests pin the clock
  */
 export async function rewindPreview(store, branch, now) {
@@ -145,11 +151,7 @@ export async function rewindPreview(store, branch, now) {
     // failures — the screen renders them, so the two reasons stay separate
     // rather than collapsing into one "no".
     canRewind: open && withinWindow,
-    unavailableReason: open
-      ? withinWindow
-        ? null
-        : "window-closed"
-      : "already-closed",
+    unavailableReason: open ? (withinWindow ? null : "window-closed") : "already-closed",
     files,
   });
 }
@@ -194,7 +196,8 @@ export async function rewindBranch(db, store, account, name, now) {
   }
   const preview = await rewindPreview(store, branch, now);
   if (!preview.canRewind) {
-    const key = preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
+    const key =
+      preview.unavailableReason === "window-closed" ? "rewind-window-closed" : "branch-not-open";
     return { error: failureMessage(key), status: 409, name, rewind: preview };
   }
   const result = await discardBranch(db, store, account, name);
@@ -220,7 +223,7 @@ export async function rewindBranch(db, store, account, name, now) {
  *
  * @param {Request} request
  * @param {D1Database} db
- * @param {import("./branches.js").FileStore} store a scoped store
+ * @param {import("./branches.js").FileStore|null} store a scoped store
  * @param {{id: string}|null} account
  * @param {() => number} now
  */

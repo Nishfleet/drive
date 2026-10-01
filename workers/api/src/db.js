@@ -15,7 +15,10 @@
  * @returns {Promise<unknown>}
  */
 export function first(db, sql, ...params) {
-  return db.prepare(sql).bind(...params).first();
+  return db
+    .prepare(sql)
+    .bind(...params)
+    .first();
 }
 
 /**
@@ -25,7 +28,10 @@ export function first(db, sql, ...params) {
  * @returns {Promise<unknown[]>}
  */
 export async function all(db, sql, ...params) {
-  const result = await db.prepare(sql).bind(...params).all();
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
+    .all();
   return result.results;
 }
 
@@ -36,7 +42,10 @@ export async function all(db, sql, ...params) {
  * @returns {Promise<unknown>}
  */
 export function run(db, sql, ...params) {
-  return db.prepare(sql).bind(...params).run();
+  return db
+    .prepare(sql)
+    .bind(...params)
+    .run();
 }
 
 /** Seconds since the epoch: the one clock format in the api tables. */
@@ -67,9 +76,6 @@ export function newId(prefix) {
  * @param {string} text
  */
 export async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(text),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return toHex(new Uint8Array(digest));
 }

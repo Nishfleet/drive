@@ -4,14 +4,15 @@
 // runs is the SQL these tests run. Storage is the in-memory FileStore
 // (src/files.js), whose `copy` stands in for S3's CopyObject; the S3 store's
 // own copy call is pinned separately in test/files.test.mjs.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
 import {
+  approveBranch,
   BRANCHES_ENDPOINT,
   BRANCHES_ROOT,
-  approveBranch,
   createBranch,
   diffBranch,
   discardBranch,
@@ -20,8 +21,7 @@ import {
   relativePath,
   sameFile,
 } from "../src/branches.js";
-import { BRANCHES_FOLDER } from "../src/files.js";
-import { createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -32,10 +32,10 @@ const OTHER = { id: "acct-2", name: "Someone else" };
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of [
-    "0001_waitlist.sql",
-    "0002_file_index.sql",
-    "0003_branches.sql",
-    "0004_agent_undo.sql",
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0003_branches.sql",
+    "drive/0004_agent_undo.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -179,8 +179,14 @@ test("a second branch of the same name is refused, not silently overwritten", as
 test("createBranch refuses a bad folder, a bad name and the branches folder", async () => {
   const { scoped, db } = await driven();
   assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "../etc" })).status, 400);
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })).status, 400);
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })).status, 400);
+  assert.equal(
+    (await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })).status,
+    400,
+  );
+  assert.equal(
+    (await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })).status,
+    400,
+  );
   const branches = await createBranch(db, scoped, ACCOUNT, { folder: BRANCHES_ROOT, name: "x" });
   assert.equal(branches.status, 400);
   assert.match(branches.error, /branches folder/);
@@ -207,7 +213,11 @@ test("diffBranch names added, changed and removed files, and the original's drif
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(`${BRANCHES_ROOT}/work/new.txt`, new Blob(["n"]).stream(), "text/plain");
-  await scoped.write(`${BRANCHES_ROOT}/work/sub/b.txt`, new Blob(["edited"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/sub/b.txt`,
+    new Blob(["edited"]).stream(),
+    "text/plain",
+  );
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
   const branch = (await listBranches(db, scoped, ACCOUNT))[0];
@@ -241,7 +251,11 @@ test("approve copies a branch's changes back when the original is untouched", as
 test("approve stops and names the file when the original changed after branching", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
   await scoped.write("/Photos/a.txt", new Blob(["person edit"]).stream(), "text/plain");
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
@@ -258,7 +272,11 @@ test("approve stops and names the file when the original changed after branching
 test("discard throws the branch away and leaves the original untouched", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
 
   const result = await discardBranch(db, scoped, ACCOUNT, "work");
   assert.deepEqual(result, { name: "work", state: "discarded", removed: 2 });
@@ -338,12 +356,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
 
 test("the branch route refuses an anonymous caller, a bad method and a missing branch", async () => {
   const { raw, db } = await driven();
-  const anonymous = await handleBranchesRequest(
-    request("GET", BRANCHES_ENDPOINT),
-    db,
-    raw,
-    null,
-  );
+  const anonymous = await handleBranchesRequest(request("GET", BRANCHES_ENDPOINT), db, raw, null);
   assert.equal(anonymous.status, 401);
   assert.match(await anonymous.text(), /not signed in/);
 

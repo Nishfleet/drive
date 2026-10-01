@@ -27,15 +27,15 @@
 // macOS and cannot be timed here; the drive repo's AGENTS.md marks a Mac-only
 // proof for Nish, and the number recorded on the issue says so.
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, scopeStore } from "../src/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
@@ -55,7 +55,7 @@ const BUDGET_MS = 1000;
 // it is repeated rather than imported.
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["0001_waitlist.sql", "0002_file_index.sql"]) {
+  for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const runOne = (sql, params) => {
@@ -172,7 +172,8 @@ async function startStorage(t) {
   t.after(() => server.kill("SIGTERM"));
   const deadline = Date.now() + 20_000;
   for (;;) {
-    if (server.exitCode !== null) throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
+    if (server.exitCode !== null)
+      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
     try {
       const response = await fetch(
         `http://127.0.0.1:${port}/${bucket}?list-type=2&prefix=u%2F${ACCOUNT.id}%2Ffolder-0%2F&delimiter=%2F`,
@@ -190,71 +191,74 @@ async function startStorage(t) {
   return { endpoint: `http://127.0.0.1:${port}`, bucket, stop: async () => {} };
 }
 
-test(
-  "100,000 real files: the index search is under a second, the bucket walk it avoids is not",
-  { skip: rcloneRuns(process.env.DRIVE_STANDIN_RCLONE ?? "rclone") ? false : "rclone is not installed" },
-  async (t) => {
-    const storage = await startStorage(t);
-    if (!storage) {
-      t.diagnostic("rclone is not installed; the S3 stand-in proof did not run");
-      return;
-    }
-    const db = makeD1();
-    // The exact wiring src/index.js's scheduled handler uses: the S3 store,
-    // scoped to one account, walked by the reconciler.
-    const store = scopeStore(createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }), ACCOUNT);
+test("100,000 real files: the index search is under a second, the bucket walk it avoids is not", {
+  skip: rcloneRuns(process.env.DRIVE_STANDIN_RCLONE ?? "rclone")
+    ? false
+    : "rclone is not installed",
+}, async (t) => {
+  const storage = await startStorage(t);
+  if (!storage) {
+    t.diagnostic("rclone is not installed; the S3 stand-in proof did not run");
+    return;
+  }
+  const db = makeD1();
+  // The exact wiring src/index.js's scheduled handler uses: the S3 store,
+  // scoped to one account, walked by the reconciler.
+  const store = scopeStore(
+    createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }),
+    ACCOUNT,
+  );
 
-    // The nightly build, timed: this is the walk a search must not repeat.
-    const built = await reconcileIndex(db, store, ACCOUNT);
-    assert.equal(built.indexed, FILES, `the walk found every file: ${JSON.stringify(built)}`);
+  // The nightly build, timed: this is the walk a search must not repeat.
+  const built = await reconcileIndex(db, store, ACCOUNT);
+  assert.equal(built.indexed, FILES, `the walk found every file: ${JSON.stringify(built)}`);
 
-    // The search. This is the issue's number.
-    const common = await searchDrive(db, ACCOUNT, "invoice", { now: () => performance.now() });
-    assert.equal(common.count, 50, "the default page is 50 results");
-    assert.ok(
-      common.tookMs < BUDGET_MS,
-      `search over ${FILES} real files took ${common.tookMs.toFixed(1)}ms, budget ${BUDGET_MS}ms`,
-    );
-    assert.equal(common.results[0].path, filePath(0), "names come back as drive paths");
+  // The search. This is the issue's number.
+  const common = await searchDrive(db, ACCOUNT, "invoice", { now: () => performance.now() });
+  assert.equal(common.count, 50, "the default page is 50 results");
+  assert.ok(
+    common.tookMs < BUDGET_MS,
+    `search over ${FILES} real files took ${common.tookMs.toFixed(1)}ms, budget ${BUDGET_MS}ms`,
+  );
+  assert.equal(common.results[0].path, filePath(0), "names come back as drive paths");
 
-    // A precise name, the way a person looks for one file.
-    const precise = await searchDrive(db, ACCOUNT, "needle", { now: () => performance.now() });
-    assert.equal(precise.count, 1);
-    assert.equal(precise.results[0].path, filePath(FILES - 1));
-    assert.ok(
-      precise.tookMs < BUDGET_MS,
-      `the precise search took ${precise.tookMs.toFixed(1)}ms, budget ${BUDGET_MS}ms`,
-    );
+  // A precise name, the way a person looks for one file.
+  const precise = await searchDrive(db, ACCOUNT, "needle", { now: () => performance.now() });
+  assert.equal(precise.count, 1);
+  assert.equal(precise.results[0].path, filePath(FILES - 1));
+  assert.ok(
+    precise.tookMs < BUDGET_MS,
+    `the precise search took ${precise.tookMs.toFixed(1)}ms, budget ${BUDGET_MS}ms`,
+  );
 
-    // The counterfactual: the same question asked the way a mounted folder
-    // answers it, by walking the bucket. This is the cost the index removes,
-    // measured on the same files, in the same store.
-    const walk = await reconcileIndex(db, store, ACCOUNT);
-    t.diagnostic(
-      [
-        `files: ${FILES}`,
-        `index build (one full bucket walk): ${walk.tookMs.toFixed(0)}ms`,
-        `search "invoice": ${common.tookMs.toFixed(1)}ms`,
-        `search "needle": ${precise.tookMs.toFixed(1)}ms`,
-      ].join(" | "),
-    );
-    assert.ok(
-      common.tookMs < walk.tookMs,
-      `the index search (${common.tookMs.toFixed(1)}ms) must beat the bucket walk (${walk.tookMs.toFixed(0)}ms)`,
-    );
+  // The counterfactual: the same question asked the way a mounted folder
+  // answers it, by walking the bucket. This is the cost the index removes,
+  // measured on the same files, in the same store.
+  const walk = await reconcileIndex(db, store, ACCOUNT);
+  t.diagnostic(
+    [
+      `files: ${FILES}`,
+      `index build (one full bucket walk): ${walk.tookMs.toFixed(0)}ms`,
+      `search "invoice": ${common.tookMs.toFixed(1)}ms`,
+      `search "needle": ${precise.tookMs.toFixed(1)}ms`,
+    ].join(" | "),
+  );
+  assert.ok(
+    common.tookMs < walk.tookMs,
+    `the index search (${common.tookMs.toFixed(1)}ms) must beat the bucket walk (${walk.tookMs.toFixed(0)}ms)`,
+  );
 
-    // The write feed over real storage: a file saved is in the index at once,
-    // and a file removed leaves it.
-    const live = scopeStore(
-      withIndex(createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }), db, ACCOUNT),
-      ACCOUNT,
-    );
-    await live.write("/folder-0/standin-write.pdf", "written over the stand-in", "application/pdf");
-    const afterWrite = await searchDrive(db, ACCOUNT, "standin-write");
-    assert.equal(afterWrite.count, 1, "a file written to the bucket is searchable at once");
-    assert.equal(afterWrite.results[0].path, "/folder-0/standin-write.pdf");
-    await live.remove("/folder-0/standin-write.pdf");
-    const afterRemove = await searchDrive(db, ACCOUNT, "standin-write");
-    assert.equal(afterRemove.count, 0, "a file removed from the bucket leaves the index");
-  },
-);
+  // The write feed over real storage: a file saved is in the index at once,
+  // and a file removed leaves it.
+  const live = scopeStore(
+    withIndex(createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }), db, ACCOUNT),
+    ACCOUNT,
+  );
+  await live.write("/folder-0/standin-write.pdf", "written over the stand-in", "application/pdf");
+  const afterWrite = await searchDrive(db, ACCOUNT, "standin-write");
+  assert.equal(afterWrite.count, 1, "a file written to the bucket is searchable at once");
+  assert.equal(afterWrite.results[0].path, "/folder-0/standin-write.pdf");
+  await live.remove("/folder-0/standin-write.pdf");
+  const afterRemove = await searchDrive(db, ACCOUNT, "standin-write");
+  assert.equal(afterRemove.count, 0, "a file removed from the bucket leaves the index");
+});

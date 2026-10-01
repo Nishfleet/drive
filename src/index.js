@@ -1,20 +1,26 @@
-import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT } from "./status.js";
+import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
+import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
+import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { handleSendEmailRequest } from "./email-send.js";
 import {
-  FILES_ENDPOINT,
   createMemoryStore,
   createS3Store,
+  FILES_ENDPOINT,
   handleFilesRequest,
   scopeStore,
 } from "./files.js";
-import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
-import { handleSendEmailRequest, sendEmail } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
-import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
-import { createAccountStore } from "./accounts.js";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
-import { REWIND_ENDPOINT, handleRewindRequest } from "./rewind.js";
-import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, indexAccounts, withIndex } from "./search.js";
+import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
+import {
+  handleSearchRequest,
+  indexAccounts,
+  reconcileIndex,
+  SEARCH_ENDPOINT,
+  withIndex,
+} from "./search.js";
+import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
+import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -28,68 +34,39 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 // the same FileStore interface. Both are plain stores over storage keys: the
 // account prefix and the isolation between accounts are scopeStore's job
 // (src/files.js), so an adapter never has to know about an account.
+/** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
+/**
+ * The `rclone serve s3` stand-in's two config vars (drive issue #1's build
+ * host). They are set in the environment of a local dev run, never declared
+ * as bindings in cloudflare.config.ts: the deployed Worker has no S3 stand-in,
+ * and a declared binding would also have to be probed by the health check
+ * (test/health.test.mjs) when there is nothing to probe. So they are read off
+ * the worker's own env as the optional pair the dev-only path takes, and the
+ * env is widened with exactly that pair and nothing else.
+ * @param {Env} env
+ * @returns {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}}
+ */
+function devStorage(env) {
+  return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+}
+
+/**
+ * @param {Env} env
+ * @returns {import("./files.js").FileStore}
+ */
 function storeFor(env) {
   if (!filesStore) {
+    const dev = devStorage(env);
     filesStore =
-      env.FILES_S3_ENDPOINT && env.FILES_S3_BUCKET
+      dev.FILES_S3_ENDPOINT && dev.FILES_S3_BUCKET
         ? createS3Store({
-            endpoint: env.FILES_S3_ENDPOINT,
-            bucket: env.FILES_S3_BUCKET,
+            endpoint: dev.FILES_S3_ENDPOINT,
+            bucket: dev.FILES_S3_BUCKET,
           })
         : createMemoryStore();
   }
   return filesStore;
-}
-
-// The account store for sign-in: one place to plug the api Worker's D1 in
-// (#2), so the sign-in route never reads a binding of its own and a test can
-// hand the handler a fake. One store per Worker isolate, holding the accounts,
-// their one-time codes and their sessions (src/accounts.js). The real D1
-// store is #2; swapping it is one factory with the same three methods.
-let accountsStore;
-function accountsStoreFor(env) {
-  // A store passed on the env wins, and that is how a test drives the real
-  // dispatch (test/account-gate.test.mjs builds a store with a mailer that
-  // captures the code, so it can read what left by email). A deployment never
-  // sets it,
-  // so the one-isolate cache below is what production uses.
-  if (env.ACCOUNTS_STORE) {
-    return env.ACCOUNTS_STORE;
-  }
-  if (!accountsStore) {
-    accountsStore = createAccountStore({
-      // The code leaves by email through the same provider every drive email
-      // uses (src/email-send.js). With no EMAIL binding the store is built
-      // without a mailer, and a start that cannot be mailed is reported as
-      // failed rather than as a code sent — the route reads the store's answer
-      // either way, so nothing here decides what a person is told.
-      sendCode: env.EMAIL
-        ? async ({ to, code }) => {
-            await sendEmail(env.EMAIL, {
-              to,
-              kind: "signin-code",
-              from: env.MAIL_FROM,
-              rendered: signinCodeEmail(code),
-            });
-          }
-        : undefined,
-    });
-  }
-  return accountsStore;
-}
-
-// The one email the sign-in code arrives in. It is rendered here rather than in
-// src/emails.js because it carries a secret and that module's templates are the
-// five the spec names for customers (welcome, cap, read-only, payment, receipt)
-// — a secret is not one of them, and a template table that also held codes
-// would be a place to leak one from.
-function signinCodeEmail(code) {
-  return {
-    subject: `Your drive sign-in code: ${code}`,
-    text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
-    html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
-  };
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -104,26 +81,22 @@ function signinCodeEmail(code) {
 // answers 403, so the deployment is closed until the token is set, and the
 // first producers are the meter's cap emails and the billing webhook
 // (build step 6, drive#7).
+/**
+ * @type {ExportedHandler<Env>}
+ */
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(
-        request,
-        env.WAITLIST_DB,
-        env.WAITLIST_RATE_LIMITER,
-      );
+      return handleWaitlistRequest(request, env.WAITLIST_DB, env.WAITLIST_RATE_LIMITER);
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
     // The handler is closed until the sign-in flow resolves an account
     // (issue #45), so an anonymous poll gets 401 and no device data. The path
     // is the module's own constant, so the route and the page cannot drift.
-    if (
-      url.pathname === STATUS_ENDPOINT ||
-      url.pathname === `${STATUS_ENDPOINT}/`
-    ) {
-      return handleFirstRunStatusRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+    if (url.pathname === STATUS_ENDPOINT || url.pathname === `${STATUS_ENDPOINT}/`) {
+      return handleFirstRunStatusRequest(request, await signedInAccount(request, authFor(env)));
     }
     // Search reads only the D1 file index (issue #18), behind the same account
     // gate every drive read that names files goes through (`signedInAccount`,
@@ -132,15 +105,13 @@ export default {
     // module keeps the index current by wrapping the store, so an upload, a
     // delete or a restore is in the index before the next search, and the
     // search itself never lists the bucket. The rebuild is not a web route:
-    // it runs from the scheduled handler below.
-    if (
-      url.pathname === SEARCH_ENDPOINT ||
-      url.pathname === `${SEARCH_ENDPOINT}/`
-    ) {
+    // it runs from the scheduled handler below. The index is customer data, so
+    // it reads DRIVE_DB, never the waitlist's database (issue #170).
+    if (url.pathname === SEARCH_ENDPOINT || url.pathname === `${SEARCH_ENDPOINT}/`) {
       return handleSearchRequest(
         request,
-        env.WAITLIST_DB,
-        await signedInAccount(request, accountsStoreFor(env)),
+        env.DRIVE_DB,
+        await signedInAccount(request, authFor(env)),
       );
     }
     // The files handler is behind the same account gate as the page's poll
@@ -157,10 +128,10 @@ export default {
       // signed-in callers and tells a stranger nothing about itself. The
       // index wrapper sits outside the scope the handler applies, so it sees
       // the account's own storage keys and writes only that account's rows.
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleFilesRequest(
         request,
-        account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
         account,
       );
     }
@@ -168,17 +139,9 @@ export default {
     // discard. The same account gate as every other route that names files,
     // and the store is handed in unscoped (the handler scopes it) and without
     // withIndex, so a branch's own copies never land in the search index.
-    if (
-      url.pathname === BRANCHES_ENDPOINT ||
-      url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)
-    ) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
-      return handleBranchesRequest(
-        request,
-        env.WAITLIST_DB,
-        account ? storeFor(env) : null,
-        account,
-      );
+    if (url.pathname === BRANCHES_ENDPOINT || url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)) {
+      const account = await signedInAccount(request, authFor(env));
+      return handleBranchesRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // Agent undo (build step 11, issue #13): the one-click rewind of an
     // agent's work, on the branch copy src/branches.js already keeps. Same
@@ -187,41 +150,38 @@ export default {
     // of the signed-in account's own branches. A rewind is a discard, so it
     // reads and writes the one branches table and the one file store; there is
     // no second copy of the agent's work anywhere.
-    if (
-      url.pathname === REWIND_ENDPOINT ||
-      url.pathname.startsWith(`${REWIND_ENDPOINT}/`)
-    ) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
-      return handleRewindRequest(
-        request,
-        env.WAITLIST_DB,
-        account ? storeFor(env) : null,
-        account,
-      );
+    if (url.pathname === REWIND_ENDPOINT || url.pathname.startsWith(`${REWIND_ENDPOINT}/`)) {
+      const account = await signedInAccount(request, authFor(env));
+      return handleRewindRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
     // #53, build step 6). Same rule: the branch comes before the asset
     // fallthrough, and the account gate is what keeps one account's numbers
     // from being shown to another (issue #73).
-    if (
-      url.pathname === USAGE_ENDPOINT ||
-      url.pathname === `${USAGE_ENDPOINT}/`
-    ) {
-      return handleUsageRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+    if (url.pathname === USAGE_ENDPOINT || url.pathname === `${USAGE_ENDPOINT}/`) {
+      return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
     }
-    // The sign-in screen's start and finish (build step 9, issue #10). The
-    // account store (src/accounts.js) records the one-time code against the
-    // address and, on the finish step, mints the session cookie every account
-    // route above is gated on. It is registered here, ahead of the asset
-    // fallthrough, because /api/signin must reach the Worker. The two edge
-    // limits (issue #147) are the per-IP and the global bound beside the
-    // store's per-address one: the start step mails a real email, so the
-    // whole route is bounded at the edge before its body is even read.
+    // The sign-in screen's two steps (build step 9, issue #10; Better Auth
+    // over D1, #181). The start step mails a single-use link; the sign-out
+    // step revokes the session. The link itself is the next branch below.
+    // Registered here, ahead of the asset fallthrough, because /api/signin
+    // must reach the Worker. The handler enforces the two edge limits (issue
+    // #147, env.SIGNIN_RATE_LIMITER / env.SIGNIN_GLOBAL_RATE_LIMITER) before
+    // it reads the body, so a start that mails a real email is bounded at the
+    // edge and a refused request costs no parse and no send.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, accountsStoreFor(env), {
-        ipLimiter: env.SIGNIN_RATE_LIMITER,
-        globalLimiter: env.SIGNIN_GLOBAL_RATE_LIMITER,
-      });
+      return handleSigninRequest(request, env);
+    }
+    // The link a sign-in email carries (drive#181): GET only, the token is
+    // the whole proof. The route verifies it against Better Auth, sets the
+    // session cookie the account routes are gated on, and sends a signed-in
+    // person to their files. No session is required to reach it — signing
+    // in is the only way to get one, so it must be reachable without one —
+    // and the closed-door check inside handleSigninLinkVerify keeps a
+    // deployment with no auth bound from minting sessions it cannot stand
+    // behind.
+    if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
+      return handleSigninLinkVerify(request, env);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
@@ -252,14 +212,14 @@ export default {
   // an account the drive has never served has nothing to rebuild, and no
   // invented identity is indexed. Each account's rows are rebuilt from its own
   // prefix (scopeStore), the same scoping a request path gets.
-  async scheduled(event, env, context, store = storeFor(env)) {
+  async scheduled(_event, env, context, store = storeFor(env)) {
     context.waitUntil(
       (async () => {
-        if (!env.WAITLIST_DB) {
+        if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
-        for (const account of await indexAccounts(env.WAITLIST_DB)) {
-          await reconcileIndex(env.WAITLIST_DB, scopeStore(store, account), account);
+        for (const account of await indexAccounts(env.DRIVE_DB)) {
+          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);
