@@ -1,18 +1,18 @@
-// Tests for the sign-in screen and its one endpoint (drive issue #10, build
-// step 9's sign-up half; the pricing half is public/index.html and
-// test/pricing-copy.test.mjs). Four halves:
+// Tests for the sign-in screen and its two endpoints (drive issue #10, build
+// step 9's sign-up half, now on Better Auth over D1: #181; the pricing half is
+// public/index.html and test/pricing-copy.test.mjs). Four halves:
 //
 // 1. The route's contract, through the Worker's own dispatch: only POST is
 //    served, a request that does not come from the site is refused, the three
 //    methods the spec's screen names are the three it accepts, and the closed
 //    door answers 503 with the message table's words rather than reporting a
-//    code it could not send.
-// 2. The store, once one is passed in: the handler calls it once with the
-//    method and address, and a store that fails does not become a 202.
+//    link it could not send.
+// 2. The verify link: a good token signs a person in, a used or made-up one
+//    sends them back to the screen, and the sign-out step revokes.
 // 3. The shipped page: public/signin.html is a static asset and cannot import
 //    src/signin.js, so this reads the file and fails CI when its copy, its
-//    endpoint, its method list or its button vocabulary drift from the module —
-//    the same gate test/usage.test.mjs runs for the usage page.
+//    endpoints, its method list or its button vocabulary drift from the
+//    module — the same gate test/usage.test.mjs runs for the usage page.
 // 4. The spec's words: the screen the build spec's "Screens" table describes,
 //    named here so a page that drops one of the three methods fails here with
 //    the line the spec carries, and nothing that only a parser would accept.
@@ -20,245 +20,213 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createAccountStore, MAX_FINISH_ATTEMPTS } from "../src/accounts.js";
+import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
 import {
-  handleSigninRequest,
   readSigninRequest,
   SIGNIN_COPY,
   SIGNIN_ENDPOINT,
   SIGNIN_METHODS,
   SIGNIN_PATH,
+  SIGNIN_STEPS,
   signinClosedBody,
 } from "../src/signin.js";
+import { createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
 const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
 
-const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+/**
+ * The env the Worker's real dispatch is driven with: the customer database,
+ * the two Better Auth settings and the test mailer standing in for the EMAIL
+ * binding. Every claim about a real sign-in below runs through this.
+ * @returns {ReturnType<typeof createTestAuth> & {env: object}}
+ */
+function dispatchEnv() {
+  const made = createTestAuth();
+  const sent = made.sent;
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_MAIL: (link) => {
+      sent.push(link);
+    },
+  };
+  return { ...made, env };
+}
 
-function post(body, { url = "https://drive.test/api/signin", headers = {} } = {}) {
-  return new Request(url, {
+const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) =>
+  new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
-}
 
 // ------------------------------------------------------------ the dispatch
 
 test("the Worker routes the sign-in start and serves no other method", async () => {
   assert.equal(SIGNIN_ENDPOINT, "/api/signin");
-  // The Worker's dispatch is driven with a store that has a mailer, because a
-  // store with no mailer refuses a start (a code that cannot be sent is never
-  // reported as sent). The mailer captures what left by email.
-  const routedEnv = {
-    ...env,
-    ACCOUNTS_STORE: createAccountStore({ sendCode: () => {} }),
-  };
+  const made = dispatchEnv();
   for (const path of ["/api/signin", "/api/signin/"]) {
     const response = await worker.fetch(
       post(
-        { method: "email", email: "a@b.co" },
+        { step: "start", method: "email", email: "a@b.co" },
         {
-          url: `https://drive.test${path}`,
+          url: `${TEST_BASE_URL}${path}`,
         },
       ),
-      routedEnv,
+      made.env,
     );
     assert.equal(response.status, 202, `${path} must reach the sign-in handler`);
     const payload = await response.json();
     assert.equal(payload.ok, true);
-    assert.equal("code" in payload, false, "the code leaves by email, never in the reply");
+    assert.equal("url" in payload, false, "the link leaves by email, never in the reply");
+    assert.equal("token" in payload, false, "the token leaves by email, never in the reply");
   }
   // GET is not served: a GET must not be answered by the handler's POST
   // body, and must not fall through to the asset layer either.
-  const get = await worker.fetch(new Request("https://drive.test/api/signin"), routedEnv);
+  const get = await worker.fetch(new Request(`${TEST_BASE_URL}/api/signin`), made.env);
   assert.equal(get.status, 405, "GET must be refused, not read as a sign-in");
   assert.equal(get.headers.get("allow"), "POST");
 });
 
-test("with no account store the route is a closed door, not a fake success", async () => {
-  const response = await handleSigninRequest(post({ method: "email", email: "a@b.co" }), null);
+test("with no auth the route is a closed door, not a fake success", async () => {
+  // The env has the mailer but nothing to stand behind a session: no database
+  // and no signing secret. Better than a 202 for a link no one could mint.
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    SIGNIN_MAIL: () => {},
+  };
+  const response = await worker.fetch(
+    post({ step: "start", method: "email", email: "a@b.co" }),
+    env,
+  );
   assert.equal(response.status, 503);
   const payload = await response.json();
   assert.deepEqual(payload, signinClosedBody());
   assert.equal(payload.error, failureMessage("sign-in-closed"));
-  // The closed door must not look like a sent code, in any field.
+  // The closed door must not look like a sent link, in any field.
   assert.equal("ok" in payload, false, "a closed sign-in must not answer ok");
-  assert.equal("code" in payload, false, "a closed sign-in must not answer a code");
+  assert.equal("url" in payload, false, "a closed sign-in must not answer a link");
   assert.equal(response.headers.get("set-cookie"), null, "a closed sign-in sets no session");
 });
 
-test("a store with no mailer refuses a start instead of reporting a code sent", async () => {
-  // A store that cannot send a code must not answer 202: the person would
-  // wait for an email that is not coming, which is a fake success.
-  const response = await handleSigninRequest(
-    post({ method: "email", email: "you@example.com" }),
-    createAccountStore(),
-  );
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), signinClosedBody());
+test("a missing signing secret or public address is a closed door", async () => {
+  // Better Auth signs its cookies with the secret and builds every link from
+  // the URL, so neither has a safe default: a deployment that has not set one
+  // is a deployment that is not signed in, not one with a weak session or a
+  // link that points at the wrong host.
+  const made = createTestAuth();
+  const partial = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    SIGNIN_MAIL: () => {},
+  };
+  for (const env of [
+    partial,
+    { ...partial, BETTER_AUTH_URL: TEST_BASE_URL },
+    { ...partial, BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite" },
+  ]) {
+    const response = await worker.fetch(
+      post({ step: "start", method: "email", email: "a@b.co" }),
+      env,
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), signinClosedBody());
+  }
 });
 
 test("the no-JavaScript form post is read as a form, not refused as JSON", async () => {
   // A plain <form> posts application/x-www-form-urlencoded with the same field
   // names the JSON path uses. The route reads it, so the no-JS path the page
   // documents actually reaches the endpoint.
-  const store = createAccountStore({ sendCode: () => {} });
-  const response = await handleSigninRequest(
-    new Request("https://drive.test/api/signin", {
+  const made = dispatchEnv();
+  const response = await worker.fetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ step: "start", method: "email", email: "you@example.com" }),
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({
+        step: "start",
+        method: "email",
+        email: "you@example.com",
+      }),
     }),
-    store,
+    made.env,
   );
   assert.equal(response.status, 202);
   const payload = await response.json();
   assert.equal(payload.ok, true);
-  assert.equal("code" in payload, false, "the code leaves by email, never in the reply");
+  assert.equal("url" in payload, false, "the link leaves by email, never in the reply");
 });
 
-test("a store that returns nothing on finish is a closed door, not a session", async () => {
-  // A finish that stores nothing must not take the cookie-setting branch.
-  const response = await handleSigninRequest(
-    post({ step: "finish", email: "you@example.com", code: "012345" }),
-    {
-      async finishSignin() {
-        return undefined;
-      },
-    },
-  );
-  assert.equal(response.status, 503);
-  assert.equal(response.headers.get("set-cookie"), null);
-});
-
-test("a pending code is thrown away after five wrong guesses", async () => {
-  // The store's own test: the 6-digit code cannot be walked with unlimited
-  // finish posts. Five wrong guesses discard it, so the real code no longer
-  // works and the person must ask for a new one.
-  let emailed;
-  const store = createAccountStore({
-    sendCode: ({ code }) => {
-      emailed = code;
-    },
-  });
-  await store.startSignin({ method: "email", email: "someone@example.com" });
-  for (let i = 0; i < MAX_FINISH_ATTEMPTS; i++) {
-    const wrong = String((Number(emailed) + i + 1) % 1_000_000).padStart(6, "0");
-    const result = await store.finishSignin({ email: "someone@example.com", code: wrong });
-    assert.equal(result.error, "invalid-code", `wrong guess ${i + 1} must be refused`);
-  }
-  const after = await store.finishSignin({ email: "someone@example.com", code: emailed });
-  assert.equal(after.error, "invalid-code", "the real code is dead once the tries are spent");
-});
-
-test("a request that did not come from the site is refused before anything is stored", async () => {
+test("a request that did not come from the site is refused before anything is mailed", async () => {
+  const made = dispatchEnv();
   const cross = post(
-    { method: "email", email: "a@b.co" },
+    { step: "start", method: "email", email: "a@b.co" },
     { headers: { origin: "https://elsewhere.example" } },
   );
-  const response = await handleSigninRequest(cross, createAccountStore());
+  const response = await worker.fetch(cross, made.env);
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: failureMessage("cross-site") });
+  assert.equal(made.sent.length, 0, "a refused cross-site sign-in mails nothing");
 });
 
 test("a body that is not JSON, or not an object, is a 400 and never a 202", async () => {
+  const made = dispatchEnv();
   for (const body of ["not json", '["email"]', '"email"', "null"]) {
-    const response = await handleSigninRequest(post(body), createAccountStore());
+    const response = await worker.fetch(post(body), made.env);
     assert.equal(response.status, 400, `body ${body} must be refused`);
   }
 });
 
 test("the three methods the spec's screen names are the three it accepts", () => {
-  // docs/build-spec.md, "Screens": "Sign in | Email one-time code, or Google
+  // docs/build-spec.md, "Screens": "Sign in | Email one-time link, or Google
   // or GitHub. No card asked". This is the spec's own sentence, kept here as
   // the line a change to the method list has to argue with.
   assert.ok(
-    spec.includes("Email one-time code, or Google or GitHub. No card asked"),
+    spec.includes("Email one-time link, or Google or GitHub. No card asked"),
     "the spec's sign-in screen sentence has changed; update this test and the copy",
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
   for (const method of SIGNIN_METHODS) {
-    const body = method === "email" ? { method, email: "you@example.com" } : { method };
+    const body =
+      method === "email"
+        ? { step: "start", method, email: "you@example.com" }
+        : { step: "start", method };
     const read = readSigninRequest(body);
     assert.equal(read.method, method, `${method} must be accepted`);
     assert.equal("error" in read, false, `${method} must not be refused`);
   }
   // A method the spec does not name is refused, by name, so the caller can
   // see which three are allowed.
-  const refused = readSigninRequest({ method: "sms" });
+  const refused = readSigninRequest({ step: "start", method: "sms" });
   assert.ok(refused.error);
   assert.match(refused.error, /email, google, github/);
   // A body that carries none is refused too, not defaulted: the method is the
   // one thing this request must name.
-  assert.ok(readSigninRequest({ email: "you@example.com" }).error);
+  assert.ok(readSigninRequest({ step: "start", email: "you@example.com" }).error);
   assert.ok(readSigninRequest().error);
+  // The two steps are the route's, documented above each endpoint.
+  assert.deepEqual([...SIGNIN_STEPS], ["start", "signout"]);
 });
 
-test("the email method needs an address; the OAuth methods do not", () => {
-  for (const email of ["", "   ", "nope", "a@b", "a b@c.co", 7]) {
-    const read = readSigninRequest({ method: "email", email });
-    assert.ok(read.error, `"${String(email)}" must be refused as an address`);
+test("the OAuth methods are a closed door, not a 202 for a redirect to nowhere", async () => {
+  // Google and GitHub are the spec's screen; their client ids and secrets are
+  // Nish's credentials, so there is no client to redirect to and the route
+  // says the closed door rather than opening a browser onto nothing.
+  const made = dispatchEnv();
+  for (const method of ["google", "github"]) {
+    const response = await worker.fetch(post({ step: "start", method }), made.env);
+    assert.equal(response.status, 503, `${method} has no client configured`);
+    assert.deepEqual(await response.json(), signinClosedBody());
   }
-  const read = readSigninRequest({ method: "email", email: "  you@example.com  " });
-  assert.equal(read.email, "you@example.com", "the address is trimmed, not mangled");
-  // Google and GitHub ask the person who they are; the address is not ours
-  // to collect, and the page does not collect one.
-  assert.deepEqual(readSigninRequest({ method: "github", email: "ignored@x.co" }), {
-    step: "start",
-    method: "github",
-  });
-});
-
-test("the route hands the store the method and address, once, and reports failure", async () => {
-  const calls = [];
-  const store = {
-    async startSignin(read) {
-      calls.push(read);
-      return { expiresIn: 600 };
-    },
-  };
-  const ok = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), store);
-  assert.equal(ok.status, 202);
-  assert.deepEqual(await ok.json(), { ok: true, step: "start", method: "email", expiresIn: 600 });
-  assert.deepEqual(calls, [{ step: "start", method: "email", email: "you@example.com" }]);
-
-  // A store that failed does not become a 202, and the raw key never reaches
-  // a person: the route's own words answer instead.
-  const broken = await handleSigninRequest(post({ method: "email", email: "you@example.com" }), {
-    async startSignin() {
-      return { error: "rate-limited" };
-    },
-  });
-  assert.equal(broken.status, 429, "a store that failed must not answer 202");
-  assert.equal((await broken.json()).error, failureMessage("rate-limited"));
-});
-
-test("the finish step is checked before anything is minted", () => {
-  // Both fields are required and both are shape-checked, so a missing or
-  // malformed code is a 400 rather than a store lookup of "".
-  for (const body of [
-    { step: "finish" },
-    { step: "finish", email: "you@example.com" },
-    { step: "finish", code: "123456" },
-    { step: "finish", email: "nope", code: "123456" },
-    { step: "finish", email: "you@example.com", code: "12345" },
-    { step: "finish", email: "you@example.com", code: "1234567" },
-    { step: "finish", email: "you@example.com", code: "12345a" },
-    { step: "finish", email: "you@example.com", code: "123 456" },
-  ]) {
-    const read = readSigninRequest(body);
-    assert.ok(read.error, `${JSON.stringify(body)} must be refused`);
-  }
-  const good = readSigninRequest({ step: "finish", email: " you@example.com ", code: " 012345 " });
-  assert.deepEqual(good, { step: "finish", email: "you@example.com", code: "012345" });
-  // A step that is neither is refused by name, so a typo cannot read as a
-  // start and quietly email another code.
-  assert.match(readSigninRequest({ step: "confirm", email: "a@b.co" }).error, /start or finish/);
 });
 
 test("the closed door's words come from the message table, once", async () => {
@@ -268,16 +236,129 @@ test("the closed door's words come from the message table, once", async () => {
   assert.deepEqual(built, {
     error: `${FAILURE_MESSAGES["sign-in-closed"].what} ${FAILURE_MESSAGES["sign-in-closed"].next}`,
   });
-  // The endpoint never invents a second draft of the sentence.
-  const storeless = await handleSigninRequest(
-    new Request("https://drive.test/api/signin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ method: "github" }),
-    }),
-    null,
+  // A closed method never invents a second draft of the sentence.
+  const made = dispatchEnv();
+  const refused = await worker.fetch(post({ step: "start", method: "github" }), made.env);
+  assert.deepEqual(await refused.json(), built);
+});
+
+// ---------------------------------------------------------- the verify link
+
+test("a mailer that throws is a closed door, never a 202 for a link that never left", async () => {
+  // The guarantee the hand-written store made ("a code that could not be sent
+  // is never reported as sent") has to hold on the library too: Better Auth
+  // propagates a rejected sendMagicLink, and the route turns that into the
+  // closed door rather than a 202 the person waits on.
+  const db = createTestAuth().db;
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_MAIL: async () => {
+      throw new Error("the mail server is down");
+    },
+  };
+  const response = await worker.fetch(
+    post({ step: "start", method: "email", email: "a@b.co" }),
+    env,
   );
-  assert.deepEqual(await storeless.json(), built);
+  assert.equal(response.status, 503, "a link that could not be sent is not a 202");
+  assert.deepEqual(await response.json(), signinClosedBody());
+  assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("the sign-in link is at the path the page and the email name", async () => {
+  assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
+  assert.match(
+    page,
+    new RegExp(SIGNIN_LINK_PATH.replace(/\//g, "\\/")),
+    "the page knows where a failed link lands",
+  );
+});
+
+test("the verify route is GET only, and a link without a token answers the screen", async () => {
+  const made = dispatchEnv();
+  const posted = await worker.fetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`, { method: "POST" }),
+    made.env,
+  );
+  assert.equal(posted.status, 405);
+  const noToken = await worker.fetch(new Request(`${TEST_BASE_URL}${SIGNIN_LINK_PATH}`), made.env);
+  assert.equal(noToken.status, 302, "an empty verify is a redirect, not a 500");
+  assert.match(noToken.headers.get("location"), /error=no-token/);
+});
+
+test("a good link mints the session and lands on the drive; a used one does not", async () => {
+  const made = dispatchEnv();
+  await worker.fetch(
+    post({ step: "start", method: "email", email: "newperson@example.com" }),
+    made.env,
+  );
+  assert.equal(made.sent.length, 1, "exactly one email went out");
+  const token = new URL(made.sent[0].url).searchParams.get("token");
+  assert.match(String(token), /^[A-Za-z0-9]+$/, "the token is a single opaque string");
+  assert.doesNotMatch(made.sent[0].url, /callbackURL=/, "the built link needs no second parameter");
+
+  const followed = await worker.fetch(new Request(made.sent[0].url), made.env);
+  assert.equal(followed.status, 302, "a good link redirects into the drive");
+  assert.equal(followed.headers.get("location"), "/files");
+  const setCookie = followed.headers.getSetCookie()[0];
+  assert.match(
+    setCookie,
+    /^__Secure-drive\.session_token=/,
+    "the session is Better Auth's signed token",
+  );
+  assert.match(setCookie, /HttpOnly/, "no script may read the session");
+  assert.match(setCookie, /SameSite=Lax/, "the session does not ride a cross-site post");
+  assert.match(setCookie, /Secure/, "the session never travels in clear");
+
+  // The same link again is spent: Better Auth consumed it on the first
+  // verification, so it answers the screen rather than a second session.
+  const replay = await worker.fetch(new Request(made.sent[0].url), made.env);
+  assert.equal(replay.status, 302);
+  assert.match(replay.headers.get("location"), /error=invalid-link/);
+  assert.equal(replay.headers.getSetCookie().length, 0, "a spent link mints no session");
+
+  // A token that was never minted is a failed link too, and so is a mangled
+  // one: neither names which of the three ways it failed, because a stranger
+  // told "wrong code" from "no code sent" is told about a mailbox they may not
+  // own.
+  for (const url of [
+    `${TEST_BASE_URL}${SIGNIN_LINK_PATH}?token=never-minted`,
+    `${TEST_BASE_URL}${SIGNIN_LINK_PATH}?token=`,
+  ]) {
+    const failed = await worker.fetch(new Request(url), made.env);
+    assert.equal(failed.status, 302, `${url} still answers, never a 500`);
+    assert.match(failed.headers.get("location"), /error=invalid-link|error=no-token/);
+    assert.equal(failed.headers.getSetCookie().length, 0, "a failed link mints no session");
+  }
+});
+
+test("sign-out through the route revokes the session the cookie names", async () => {
+  const made = dispatchEnv();
+  const { cookie } = await signIn(made, "leaver@example.com");
+  const before = await worker.fetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(before.status, 200, "the session works before signing out");
+
+  const out = await worker.fetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie },
+      body: JSON.stringify({ step: "signout" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 200, "sign-out answers ok");
+  assert.deepEqual(await out.json(), { ok: true, step: "signout" });
+  const after = await worker.fetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
 });
 
 // --------------------------------------------------------- the shipped page
@@ -286,7 +367,7 @@ test("the page carries every string from src/signin.js verbatim", () => {
   for (const [name, value] of Object.entries(SIGNIN_COPY)) {
     assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
   }
-  // The endpoint, from the module, never typed into the page a second time.
+  // The endpoints, from the modules, never typed into the page a second time.
   assert.ok(page.includes(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}";`));
   assert.ok(
     page.includes(`const METHODS = [${SIGNIN_METHODS.map((m) => `"${m}"`).join(", ")}];`),
@@ -304,6 +385,10 @@ test("the page posts to the endpoint the Worker routes, with a method the endpoi
   );
   // The page builds one body with a method field and an optional email.
   assert.ok(/body: JSON\.stringify\(/.test(page), "the page posts JSON");
+  assert.ok(
+    page.includes('name="method" value="email"'),
+    "the no-JavaScript post carries the email method",
+  );
   for (const method of SIGNIN_METHODS) {
     assert.ok(
       page.includes(`data-method="${method}"`) || page.includes(`"${method}"`),
@@ -323,6 +408,9 @@ test("the page posts to the endpoint the Worker routes, with a method the endpoi
     );
   }
   assert.ok(methodNames.length > 0, "the page must post at least one named method");
+  // The code step is gone with the code flow: a page that still asks for six
+  // digits asks for something this sign-in never emails.
+  assert.equal(page.includes('placeholder="000000"'), false, "the page must not ask for a code");
 });
 
 test("the page states the spec's two promises: no card, and the free dollar", () => {
@@ -350,7 +438,7 @@ test("the page is at the path the module names, and the Worker serves it as an a
   // The asset layer owns the page; a path it does not have is its 404. What
   // this pins is that the Worker's own routing does not answer it: sign-in's
   // API is /api/signin, and the page is a different path.
-  const pageFetch = await worker.fetch(new Request("https://drive.test/signin"), {
+  const pageFetch = await worker.fetch(new Request(`${TEST_BASE_URL}/signin`), {
     ASSETS: { fetch: () => new Response("the sign-in page", { status: 200 }) },
   });
   assert.equal(pageFetch.status, 200);

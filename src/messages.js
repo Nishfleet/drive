@@ -48,10 +48,33 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That request was too large to accept.",
     next: "Send a smaller request and try again.",
   }),
+  // The endpoint needs a JSON object and got a form, an array or a bare value
+  // instead. Every account route refuses it the same way, so the same failure
+  // says the same thing whichever route the caller reached (drive#158): the
+  // account routes in src/files.js, src/signin.js and src/branches.js all call
+  // this one key rather than each carrying their own copy of the sentence.
+  "json-object-needed": Object.freeze({
+    what: "That request did not carry a JSON object.",
+    next: "Send the body as a JSON object and try again.",
+  }),
+  // An upload arrived with no file name, so there is no storage key to write it
+  // under and nothing was stored.
+  "upload-needs-name": Object.freeze({
+    what: "That upload did not name a file.",
+    next: "Send the name of the file you are uploading.",
+  }),
   // The api Worker (or the CLI's call to it) could not reach storage.
   "storage-down": Object.freeze({
     what: "We can't reach storage right now.",
     next: "Wait a few minutes and try again.",
+  }),
+  // This deployment has no drive storage behind it at all, so no file route
+  // can answer. It is a fact about the deployment and not about the call, so
+  // the next step is not "try again": someone has to point this deployment at
+  // a drive before any file route works.
+  "drive-not-configured": Object.freeze({
+    what: "The drive is not configured on this deployment.",
+    next: "Ask whoever runs this deployment to point it at a drive.",
   }),
   // A payment did not go through, so billing is paused.
   "payment-failed": Object.freeze({
@@ -85,6 +108,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
   }),
+  // The file this call named is not in this account's drive, on the read,
+  // preview, download and delete paths alike. The file may never have been
+  // there, or it may be in the trash under Recently deleted, so the next step
+  // is to look rather than to send the same call again.
+  "file-not-found": Object.freeze({
+    what: "That file is not here.",
+    next: "Open the folder again to see what is in it.",
+  }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.
   "branch-not-open": Object.freeze({
@@ -110,7 +141,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   // secrets (Nish's). This is the closed door's words, not a fake success.
   "sign-in-closed": Object.freeze({
     what: "Signing in is not open yet.",
-    next: "Join the waitlist, and your first email will carry a sign-in code.",
+    next: "Join the waitlist, and your first email will carry a sign-in link.",
   }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback

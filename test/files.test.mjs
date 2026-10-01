@@ -48,7 +48,7 @@ import {
   withoutTrash,
 } from "../src/files.js";
 import worker from "../src/index.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 // The first-run page is a Vite entry at the repo root (issue #70), not a
@@ -200,8 +200,9 @@ test("the Worker owns the stored file name, and the page does not hold a second 
     "the page must not declare its own copy of the module's name rule",
   );
   const pageScript = page.slice(page.indexOf("<script>"));
-  assert.ok(
-    pageScript.includes("encodeURIComponent(\n        file.name,\n      )"),
+  assert.match(
+    pageScript,
+    /encodeURIComponent\(\s*file\.name,?\s*\)/,
     "the page sends the name as the browser knows it",
   );
 
@@ -516,7 +517,9 @@ test("upload: an unnamed file is refused, not stored as 'upload'", async () => {
     new Request(`${api("/upload")}?path=%2F`, { method: "POST", body: "x" }),
   );
   assert.equal(response.status, 400);
-  assert.match((await response.json()).error, /Name the file/);
+  // The words are the message table's, not this route's own copy of them
+  // (drive#158); test/messages.test.mjs walks this route for that rule.
+  assert.equal((await response.json()).error, failureMessage("upload-needs-name"));
 });
 
 test("delete: a file leaves the folder and lands in Recently deleted", async () => {
@@ -628,7 +631,9 @@ test("a body that is not JSON is a 400, not a 500", async () => {
       }),
     );
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /not valid JSON/);
+    // A body that is not JSON is the same failure as one that is JSON but not
+    // an object, and both are the table's (drive#158).
+    assert.equal((await response.json()).error, failureMessage("json-object-needed"));
   }
 });
 
@@ -907,7 +912,7 @@ test("the page shows the sign-in words the 401 sent, and carries no copy", () =>
   // A read that succeeds takes the panel away again, so the page's own
   // "this page updates on its own" is true.
   assert.ok(page.includes("function showSignedIn()"));
-  assert.match(page, /const payload = await api\(url\);\n {4}showSignedIn\(\);/);
+  assert.match(page, /const payload = await api\(url\);\s{2,}showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {
@@ -950,7 +955,7 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // and the page deliberately does not have a second copy of that rule (the
   // gate above is where the page's character set is compared with the
   // module's).
-  assert.ok(script.includes("encodeURIComponent(\n        file.name,\n      )"));
+  assert.match(script, /encodeURIComponent\(\s*file\.name,?\s*\)/);
   // A folder opens in place; a file opens the viewer.
   assert.ok(script.includes('row.kind === "folder"'));
   // One tap restores: the Restore button posts the path and the list reloads.

@@ -200,8 +200,9 @@ let keyStore;
  * The env is what will choose it, and the parameter is named here so the
  * signature the type check reads and the one the runtime calls are the same
  * function. Biome's unused-parameter rule reads `env` as unused and wants an
- * underscore, which would break the JSDoc `@param` it sits under, so the rule
- * is off for the file and the type check is the one that guards the name.
+ * underscore, which would break the JSDoc `@param` it sits under, so the
+ * parameter is read with a void here and the type check is the one that
+ * guards the name.
  *
  * @param {ApiEnv} env
  * @returns {KeyStore}
