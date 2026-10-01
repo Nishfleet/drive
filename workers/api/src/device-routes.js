@@ -258,14 +258,18 @@ async function enforceDeviceLimit(request, ctx, scope) {
   const globalLimit = ctx.env?.DEVICE_GLOBAL_RATE_LIMITER;
   if (!perIp || !globalLimit) {
     console.error(
-      `device ${scope}: DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured`,
+      "[api] device limit:",
+      scope,
+      "DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured",
     );
     return errorResponse(503, failureMessage("unexpected"));
   }
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp === null) {
     console.warn(
-      `device ${scope}: request arrived without cf-connecting-ip; rate limiting against the shared bucket`,
+      "[api] device limit:",
+      scope,
+      "request arrived without cf-connecting-ip; rate limiting against the shared bucket",
     );
   }
   let perIpOk;
@@ -274,7 +278,7 @@ async function enforceDeviceLimit(request, ctx, scope) {
     ({ success: perIpOk } = await perIp.limit({ key: clientIp ?? "unknown" }));
     ({ success: globalOk } = await globalLimit.limit({ key: `device-${scope}` }));
   } catch (error) {
-    console.error(`device ${scope}: the rate limiter call failed`, error);
+    console.error("[api] device limit:", scope, "the rate limiter call failed", error);
     return errorResponse(503, failureMessage("unexpected"));
   }
   if (!perIpOk || !globalOk) {
