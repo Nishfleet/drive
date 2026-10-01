@@ -55,10 +55,7 @@ const BUDGET_MS = 1000;
 // it is repeated rather than imported.
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of [
-    "waitlist/0001_waitlist.sql",
-    "drive/0002_file_index.sql",
-  ]) {
+  for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
   const runOne = (sql, params) => {
