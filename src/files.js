@@ -819,8 +819,10 @@ export function parseListObjects(xml, prefix, path) {
       // S3's ETag is the content fingerprint a branch snapshot compares against
       // (build step 7): CopyObject preserves it, so a copied file matches and an
       // edited one does not. The quotes are S3's own and are stripped so two
-      // stores' values compare in one form.
-      etag: tagValue(block, "ETag").replace(/"/g, ""),
+      // stores' values compare in one form. A server that returns no ETag (the
+      // spec allows it) gets the same empty value `tagValue` gives any missing
+      // tag, and `fingerprint` turns that into null.
+      etag: (tagValue(block, "ETag") || "").replace(/"/g, ""),
     });
   }
   return entries;

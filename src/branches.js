@@ -317,16 +317,37 @@ function toBranch(row) {
 }
 
 /** One of the account's own branches, or null. A name from another account is
- * "no such branch". */
-async function getBranch(db, account, name) {
-  const row = await db
+ * "no such branch".
+ *
+ * The open branch of a name is what the diff, approve and discard act on. The
+ * table keeps one row per (account, name, state) so a name whose branch was
+ * approved or discarded can be branched again, which means a name can hold a
+ * closed row and an open one at once: without the open row pinned here the
+ * read returns the older closed row and a fresh branch answers "already
+ * closed". A name with no open row still resolves, to its newest row, so
+ * "that branch is not open" is a 409 and not a 404.
+ */
+export async function getBranch(db, account, name) {
+  const columns =
+    "name, source_prefix, branch_prefix, snapshot, state, created_at";
+  const open = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at " +
-        "FROM branches WHERE account_id = ?1 AND name = ?2",
+      `SELECT ${columns} FROM branches ` +
+        "WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
     )
     .bind(account.id, name)
     .first();
-  return row === undefined || row === null ? null : toBranch(row);
+  if (open !== undefined && open !== null) {
+    return toBranch(open);
+  }
+  const newest = await db
+    .prepare(
+      `SELECT ${columns} FROM branches ` +
+        "WHERE account_id = ?1 AND name = ?2 ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(account.id, name)
+    .first();
+  return newest === undefined || newest === null ? null : toBranch(newest);
 }
 
 // --------------------------------------------------------------- the actions
@@ -380,6 +401,16 @@ export async function createBranch(db, store, account, request, now = () => Date
     return { error: failureMessage("branch-exists"), status: 409 };
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
+  // A name branched before leaves its last copy under .branches/<name>/. Clear
+  // it before copying, or the files a file the original no longer has stay in
+  // the new branch: the diff would call them added and the next approve would
+  // copy a deleted file back into the original.
+  try {
+    await removePrefixFiles(store, branchPrefix);
+  } catch (error) {
+    console.error?.(`branch prefix clear failed for ${account.id}/${name}: ${error.message}`);
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
   let snapshot;
   try {
     snapshot = await copyFolder(store, folderPath, branchPrefix);
@@ -407,15 +438,16 @@ export async function createBranch(db, store, account, request, now = () => Date
     // The copy is on disk but the row did not land, so the branch would be
     // invisible and a retry would see the name as free. Clean the copy up, then
     // report the failure rather than returning 201 for a half-made branch.
+    // There is no row of ours to close here — the INSERT is what failed — so
+    // the cleanup only removes the copies. It never touches a branch row: with
+    // the open-name index, the one failure this can report for an existing
+    // branch is a second branch of a name that is already open, and closing
+    // that one would throw away a branch another create just made.
     console.error?.(`branch insert failed for ${account.id}/${name}: ${error.message}`);
     try {
       for (const rel of Object.keys(snapshot)) {
         await store.remove(`${branchPrefix}/${rel}`);
       }
-      await db
-        .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'")
-        .bind(account.id, name)
-        .run();
     } catch {
       /* best-effort cleanup; the 500 is the answer */
     }
@@ -439,8 +471,7 @@ export async function createBranch(db, store, account, request, now = () => Date
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
- */
-export async function listBranches(db, store, account) {
+ */export async function listBranches(db, store, account) {
   const result = await db
     .prepare(
       "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at " +
@@ -458,7 +489,11 @@ export async function listBranches(db, store, account) {
       changed = diff.added.length + diff.changed.length + diff.removed.length;
       sourceChanged = diff.sourceChanged.length;
     }
-    branches.push({ ...branch, changed, sourceChanged });
+    // The snapshot is this module's own bookkeeping, one entry per file: it
+    // never goes to the CLI or the screen, where a 10,000-file branch would
+    // be a 10,000-entry response.
+    const { snapshot, ...summary } = branch;
+    branches.push({ ...summary, changed, sourceChanged });
   }
   return branches;
 }
@@ -492,7 +527,10 @@ export async function approveBranch(db, store, account, name) {
   const touched = new Set([...diff.added, ...diff.changed, ...diff.removed]);
   const initialClashes = diff.sourceChanged.filter((rel) => touched.has(rel));
   if (initialClashes.length > 0) {
-    return sourceMoved(initialClashes, diff.sourceChanged.length);
+    // The named list is the whole clash set, so the count is its own length:
+    // the total source-drift count includes files this approve never touches,
+    // which would make "and N more" name files the caller cannot act on.
+    return sourceMoved(initialClashes, initialClashes.length);
   }
   const snapshot = { ...branch.snapshot };
   const applied = { added: [], changed: [], removed: [] };
@@ -502,7 +540,7 @@ export async function approveBranch(db, store, account, name) {
     for (const rel of diff.added) {
       const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
       if (current !== null) {
-        failure = sourceMoved([rel], rel === diff.sourceChanged[0] ? 1 : 1);
+        failure = sourceMoved([rel], 1);
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
@@ -540,9 +578,6 @@ export async function approveBranch(db, store, account, name) {
     console.error?.(`approve failed for ${account.id}/${name}: ${error.message}`);
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
-  if (appliedAny && failure === null) {
-    await saveSnapshot(db, account, name, snapshot);
-  }
   if (failure !== null) {
     // Record what was applied so a retry resumes; the caller sees the clash.
     if (appliedAny) {
@@ -550,13 +585,24 @@ export async function approveBranch(db, store, account, name) {
     }
     return failure;
   }
+  if (appliedAny) {
+    await saveSnapshot(db, account, name, snapshot);
+  }
+  // Close the row before the branch's own copies go: if the close failed with
+  // the copies already gone, a retry of an open branch would read every
+  // applied file as "removed" and delete it from the original. Closed first,
+  // the worst a cleanup failure leaves is a dead prefix, which the next
+  // branch of the name clears before it copies.
   const result = await db
-    .prepare("UPDATE branches SET state = 'approved' WHERE account_id = ?1 AND name = ?2")
+    .prepare(
+      "UPDATE branches SET state = 'approved' WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
+    )
     .bind(account.id, name)
     .run();
   if (!result?.success) {
     return { error: failureMessage("unexpected"), status: 500 };
   }
+  await removeBranchFiles(store, branch);
   return { name, state: "approved", applied };
 }
 
@@ -588,8 +634,13 @@ export async function discardBranch(db, store, account, name) {
     console.error?.(`discard failed for ${account.id}/${name}: ${error.message}`);
     return { error: failureMessage("storage-down"), status: 500 };
   }
+  // state = 'open' so the close moves this branch's row and not the row a
+  // branch of the same name, already closed, left behind: the table's key is
+  // (account, name, state), so an unscoped update would collide on it.
   const result = await db
-    .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2")
+    .prepare(
+      "UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
+    )
     .bind(account.id, name)
     .run();
   if (!result?.success) {
@@ -598,13 +649,45 @@ export async function discardBranch(db, store, account, name) {
   return { name, state: "discarded", removed };
 }
 
-// Persists one account's branch snapshot, so an approve that is retried after
-// a partial run sees each file it already copied back as no longer changed.
+// Persists one account's open branch snapshot, so an approve that is retried
+// after a partial run sees each file it already copied back as no longer
+// changed. Scoped to state = 'open' for the same reason the close is: a closed
+// row of the same name is history, not the branch being applied.
 async function saveSnapshot(db, account, name, snapshot) {
   await db
-    .prepare("UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2")
+    .prepare(
+      "UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
+    )
     .bind(account.id, name, JSON.stringify(snapshot))
     .run();
+}
+
+// Every file under a prefix, removed. A branch prefix is a folder and the
+// stores delete one object at a time (S3 has no folders), so clearing what a
+// name left behind is a walk of that folder's own listing.
+async function removePrefixFiles(store, prefix) {
+  for (const rel of (await listFiles(store, prefix)).keys()) {
+    await store.remove(`${prefix}/${rel}`);
+  }
+}
+
+// The branch's own copies, gone. After an approve they have nothing left to
+// do, and leaving them makes a name branched again start from a prefix that
+// holds a previous branch's files: the diff would read them as the new
+// branch's additions and the next approve would copy a file the original had
+// deleted straight back into it.
+async function removeBranchFiles(store, branch) {
+  try {
+    await removePrefixFiles(store, branch.branchPrefix);
+  } catch (error) {
+    // The branch's changes are already back in the original and the row is
+    // about to close; a cleanup that cannot finish is logged, not turned into
+    // a failure of an approve that worked. A later branch of the same name
+    // clears the prefix before it copies.
+    console.error?.(
+      `branch cleanup failed for ${branch.branchPrefix}: ${error.message}`,
+    );
+  }
 }
 
 /**
@@ -677,7 +760,13 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   // docs/api.md).
   let name;
   const tail = rest.replace(/^\//, "");
-  const [rawName, action] = tail.split("/");
+  const segments = tail.split("/");
+  const [rawName, action, ...extra] = segments;
+  // A third segment is a URL this route family does not have (an approve is
+  // /api/branches/<name>/approve), never a way to act anyway.
+  if (extra.length > 0) {
+    return json({ error: "That is not a branch path." }, 404);
+  }
   try {
     name = decodeURIComponent(rawName);
   } catch {
@@ -697,15 +786,16 @@ export async function handleBranchesRequest(request, db, store, account, now = (
       diff,
     });
   }
-  if (action === "approve" && request.method === "POST") {
-    const result = await approveBranch(db, scoped, account, name);
-    if (result.error) {
-      return json(result, result.status);
+  if (action === "approve" || action === "discard") {
+    if (request.method !== "POST") {
+      return plain(`Method not allowed. POST the branch to ${action} it.`, 405, {
+        allow: "POST",
+      });
     }
-    return json(result);
-  }
-  if (action === "discard" && request.method === "POST") {
-    const result = await discardBranch(db, scoped, account, name);
+    const result =
+      action === "approve"
+        ? await approveBranch(db, scoped, account, name)
+        : await discardBranch(db, scoped, account, name);
     if (result.error) {
       return json(result, result.status);
     }

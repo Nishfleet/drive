@@ -15,6 +15,7 @@ import {
   createBranch,
   diffBranch,
   discardBranch,
+  getBranch,
   handleBranchesRequest,
   listBranches,
   relativePath,
@@ -205,7 +206,7 @@ test("diffBranch names added, changed and removed files, and the original's drif
   await scoped.write(`${BRANCHES_ROOT}/work/sub/b.txt`, new Blob(["edited"]).stream(), "text/plain");
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
-  const branch = (await listBranches(db, scoped, ACCOUNT))[0];
+  const branch = (await getBranch(db, ACCOUNT, "work"));
   const diff = await diffBranch(scoped, branch);
   assert.deepEqual(diff.added, ["new.txt"]);
   assert.deepEqual(diff.changed, ["sub/b.txt"]);
@@ -370,4 +371,97 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
     ACCOUNT,
   );
   assert.equal(notJson.status, 400);
+});
+
+// --------------------------------------------------------------------- re-branch
+
+test("a name branched, approved, and branched again: the new branch is open and diff works", async () => {
+  const { scoped, db } = await driven();
+
+  // First branch: make it, approve it.
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
+  await approveBranch(db, scoped, ACCOUNT, "work");
+
+  // Branch the same name again: it should be a fresh open branch.
+  // (createBranch returns the branch itself; the 201 is the route's answer.)
+  const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, ACCOUNT, "work");
+  assert.equal(branch.state, "open");
+  assert.equal(branch.name, "work");
+
+  // The second branch's diff should only see files the new branch has,
+  // not the first branch's old copies. (The first approve left files
+  // under .branches/work/, but createBranch cleared the prefix.)
+  const diff = await diffBranch(scoped, branch);
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.changed, []);
+  assert.deepEqual(diff.removed, []);
+  assert.deepEqual(diff.sourceChanged, []);
+
+  // Edit the new branch and approve it — the files go back cleanly.
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.equal(result.state, "approved");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "agent edit");
+});
+
+test("a name branched, discarded, and branched again: the new branch is open and discarding works", async () => {
+  const { scoped, db } = await driven();
+
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await discardBranch(db, scoped, ACCOUNT, "work");
+
+  const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, ACCOUNT, "work");
+  assert.equal(branch.state, "open");
+
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  const result = await discardBranch(db, scoped, ACCOUNT, "work");
+  assert.equal(result.state, "discarded");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+});
+
+test("the route rejects a third segment and answers 405 for GET on approve/discard", async () => {
+  const { raw, db } = await driven();
+  const account = ACCOUNT;
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    raw,
+    account,
+  );
+
+  // Third segment → 404.
+  const extra = await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve/extra`, {}),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(extra.status, 404);
+
+  // GET /approve → 405 with Allow: POST.
+  const getApprove = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/approve`),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(getApprove.status, 405);
+  assert.equal(getApprove.headers.get("allow"), "POST");
+
+  // GET /discard → 405 with Allow: POST.
+  const getDiscard = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/discard`),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(getDiscard.status, 405);
+  assert.equal(getDiscard.headers.get("allow"), "POST");
 });
