@@ -173,34 +173,35 @@ export async function sendEmail(emailBinding, request) {
 // provider failure (502) the caller would retry forever.
 /**
  * @param {unknown} body
- * @returns {{kind: string, to: string, data: unknown, rendered: {subject: string, text: string, html: string, saved: string|null}, error?: undefined}|{error: string, kind?: undefined, to?: undefined, data?: undefined, rendered?: undefined}}
+ * @returns {{ok: true, kind: string, to: string, data: unknown, rendered: {subject: string, text: string, html: string, saved: string|null}}|{ok: false, error: string}}
  */
 function readRequest(body) {
   if (typeof body !== "object" || body === null) {
-    return { error: "Send a JSON object with an email kind, an address and its data." };
+    return { ok: false, error: "Send a JSON object with an email kind, an address and its data." };
   }
   // Narrowed from `unknown` by the check above; the object's own fields are
   // read by name and each is type-checked before it is used.
   const { kind, to, data } = /** @type {Record<string, unknown>} */ (body);
   if (typeof kind !== "string" || !EMAIL_KINDS.includes(kind)) {
     return {
+      ok: false,
       error: `Send one of these emails: ${EMAIL_KINDS.join(", ")}.`,
     };
   }
   if (typeof to !== "string" || to.trim().length === 0) {
-    return { error: "An email address is required." };
+    return { ok: false, error: "An email address is required." };
   }
   try {
     const rendered = renderEmail(
       kind,
       typeof data === "object" && data !== null ? /** @type {Record<string, unknown>} */ (data) : {},
     );
-    return { kind, to: to.trim(), data, rendered };
+    return { ok: true, kind, to: to.trim(), data, rendered };
   } catch (error) {
     // A missing or unusable amount is named, never defaulted: a receipt sent
     // with a $0 bill because the meter lost a number is the worst outcome
     // this lane can produce.
-    return { error: `Cannot build the ${kind} email: ${String(error)}` };
+    return { ok: false, error: `Cannot build the ${kind} email: ${String(error)}` };
   }
 }
 
@@ -245,11 +246,11 @@ export async function handleSendEmailRequest(request, env) {
     );
   }
   const read = readRequest(body);
-  if (read.error) {
+  if (!read.ok) {
     return json({ error: read.error }, 400);
   }
-  // Bound once: `if (read.error) return …` narrows the result, and a union
-  // property is not narrowed across the awaits below.
+  // Bound once: the `ok` discriminant narrows the result, and a union property
+  // is not narrowed across the awaits below.
   const wanted = read;
   if (!env || !env.EMAIL) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
@@ -262,11 +263,14 @@ export async function handleSendEmailRequest(request, env) {
       503,
     );
   }
+  // Bound once: the check above narrows the field, and a property of a
+  // mutable object is not narrowed across the await below.
+  const mailFrom = env.MAIL_FROM;
   try {
     const sent = await sendEmail(env.EMAIL, {
       to: wanted.to,
       kind: wanted.kind,
-      from: env.MAIL_FROM,
+      from: mailFrom,
       rendered: wanted.rendered,
     });
     return json({ ok: true, kind: wanted.kind, to: wanted.to, ...sent }, 202);
