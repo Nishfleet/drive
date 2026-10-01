@@ -18,6 +18,11 @@ Usage:
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
   drive search <words> [flags]          find files by name, from the drive index
+  drive branch <folder> [flags]         copy a folder into a branch an agent works in
+  drive branches [flags]                list branches and how many files changed
+  drive diff <branch> [flags]           files added, changed or removed in a branch
+  drive approve <branch> [flags]        copy a branch's changes back into the original
+  drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
@@ -31,6 +36,10 @@ mcp add command or its JSON config file.
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
   --limit  how many results to print (default 50, max 200)
+
+Branch flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --name   branch name (the folder's own name unless given)
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
@@ -61,6 +70,16 @@ func main() {
 		err = runAgents(os.Args[2:])
 	case "search":
 		err = runSearch(os.Args[2:])
+	case "branch":
+		err = runBranch(os.Args[2:])
+	case "branches":
+		err = runBranches(os.Args[2:])
+	case "diff":
+		err = runDiff(os.Args[2:])
+	case "approve":
+		err = runApprove(os.Args[2:])
+	case "discard":
+		err = runDiscard(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":

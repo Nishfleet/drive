@@ -12,6 +12,8 @@ import { handleSendEmailRequest, sendEmail } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { SIGNIN_ENDPOINT, handleSigninRequest } from "./signin.js";
 import { createAccountStore } from "./accounts.js";
+import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { REWIND_ENDPOINT, handleRewindRequest } from "./rewind.js";
 import { SEARCH_ENDPOINT, handleSearchRequest, reconcileIndex, indexAccounts, withIndex } from "./search.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -159,6 +161,41 @@ export default {
       return handleFilesRequest(
         request,
         account ? withIndex(storeFor(env), env.WAITLIST_DB, account) : null,
+        account,
+      );
+    }
+    // Branches (build step 7, drive#8): the folder copy, the diff, approve and
+    // discard. The same account gate as every other route that names files,
+    // and the store is handed in unscoped (the handler scopes it) and without
+    // withIndex, so a branch's own copies never land in the search index.
+    if (
+      url.pathname === BRANCHES_ENDPOINT ||
+      url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)
+    ) {
+      const account = await signedInAccount(request, accountsStoreFor(env));
+      return handleBranchesRequest(
+        request,
+        env.WAITLIST_DB,
+        account ? storeFor(env) : null,
+        account,
+      );
+    }
+    // Agent undo (build step 11, issue #13): the one-click rewind of an
+    // agent's work, on the branch copy src/branches.js already keeps. Same
+    // account gate and the same store handling as the branches route above —
+    // unscoped in, scoped by the handler — so a rewind can only ever name one
+    // of the signed-in account's own branches. A rewind is a discard, so it
+    // reads and writes the one branches table and the one file store; there is
+    // no second copy of the agent's work anywhere.
+    if (
+      url.pathname === REWIND_ENDPOINT ||
+      url.pathname.startsWith(`${REWIND_ENDPOINT}/`)
+    ) {
+      const account = await signedInAccount(request, accountsStoreFor(env));
+      return handleRewindRequest(
+        request,
+        env.WAITLIST_DB,
+        account ? storeFor(env) : null,
         account,
       );
     }
