@@ -20,10 +20,13 @@
 // will receive. That is the same posture POST /api/emails/send takes with
 // EMAIL_SEND_TOKEN unset (src/email-send.js).
 //
-// Third-party sign-in (Google, GitHub) is present as the spec's screen shows
-// it and answered the same closed way. The OAuth client ids and secrets are
-// credentials on Nish's side of the fence, never values in this repo, so the
-// route refuses rather than redirecting to a client it does not have.
+// Third-party sign-in (Google, GitHub) is read by the endpoint and answered
+// the closed way. The OAuth client ids and secrets are credentials on Nish's
+// side of the fence, never values in this repo, so the route refuses rather
+// than redirecting to a client it does not have — and because the server
+// cannot complete them, the page does not offer them at all: SIGNIN_OFFERED_
+// METHODS below is the screen's list, and it carries email alone until a
+// provider's client exists (drive#180).
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -36,10 +39,24 @@ export const SIGNIN_ENDPOINT = "/api/signin";
 
 /**
  * The three methods the spec's screen names, in the order it names them. The
- * page renders one control per entry and the endpoint accepts no other, so a
- * fourth method cannot appear on the page without appearing here.
+ * endpoint accepts no other, so a fourth method cannot start a sign-in
+ * without appearing here.
  */
 export const SIGNIN_METHODS = Object.freeze(["email", "google", "github"]);
+
+/**
+ * The methods the server can actually complete today, in the order the page
+ * shows them. Email is one: the store mints a code and a session. Google and
+ * GitHub stay in SIGNIN_METHODS — the endpoint still reads them and answers
+ * the closed door — but they are deliberately not here, because there is no
+ * OAuth client to redirect to (their client ids and secrets are Nish's
+ * credentials, never values in this repo), so a button for one would promise
+ * a sign-in that ends in the closed door. The page renders one control per
+ * offered method and test/signin.test.mjs fails CI when a button returns for
+ * a method this list does not carry (drive#180). Moving a method into this
+ * list is the whole change that brings its control back.
+ */
+export const SIGNIN_OFFERED_METHODS = Object.freeze(["email"]);
 
 // Every word and every path the page shows, in one place. The page carries
 // these verbatim (test/signin.test.mjs pins each one against the shipped
@@ -47,7 +64,11 @@ export const SIGNIN_METHODS = Object.freeze(["email", "google", "github"]);
 // line comes from src/pricing.js, the single price source.
 export const SIGNIN_COPY = Object.freeze({
   title: "Sign in",
-  lede: "One code by email, or Google or GitHub.",
+  // drive#180: the screen offers only what the server can complete, so the
+  // lede names the email path alone. Google and GitHub return to this line,
+  // and their buttons to SIGNIN_COPY, when SIGNIN_OFFERED_METHODS carries
+  // them.
+  lede: "One code by email.",
   // The spec's own words for this screen: "No card asked".
   noCard: "No card asked.",
   // The price module's line, so the sign-in screen and the pricing page cannot
@@ -60,8 +81,6 @@ export const SIGNIN_COPY = Object.freeze({
   codeLabel: "The 6-digit code",
   codePlaceholder: "000000",
   codeButton: "Finish signing in",
-  googleButton: "Continue with Google",
-  githubButton: "Continue with GitHub",
   // The line the page shows while it waits for the endpoint, and the line it
   // falls back to when the browser cannot reach the network at all. The second
   // is the message table's `offline` entry; the first is this page's own.

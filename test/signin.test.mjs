@@ -26,6 +26,7 @@ import {
   SIGNIN_COPY,
   SIGNIN_ENDPOINT,
   SIGNIN_METHODS,
+  SIGNIN_OFFERED_METHODS,
   SIGNIN_PATH,
   handleSigninRequest,
   readSigninRequest,
@@ -278,9 +279,13 @@ test("the page carries every string from src/signin.js verbatim", () => {
   }
   // The endpoint, from the module, never typed into the page a second time.
   assert.ok(page.includes(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}";`));
+  // drive#180: the page's method list is the module's OFFERED list, not its
+  // accepted list: the screen renders the methods the server can complete
+  // (email today; Google and GitHub are read by the endpoint but answered
+  // with the closed door), and this line fails the moment the two drift.
   assert.ok(
-    page.includes(`const METHODS = [${SIGNIN_METHODS.map((m) => `"${m}"`).join(", ")}];`),
-    "the page's method list must be the module's",
+    page.includes(`const METHODS = [${SIGNIN_OFFERED_METHODS.map((m) => `"${m}"`).join(", ")}];`),
+    "the page's method list must be the module's offered list",
   );
   // The page is a static asset, so the price line it shows is the price
   // module's; the test reads the module, so the two cannot drift.
@@ -291,16 +296,25 @@ test("the page posts to the endpoint the Worker routes, with a method the endpoi
   assert.ok(page.includes(`action="${SIGNIN_ENDPOINT}"`), "the no-JavaScript post must reach the route");
   // The page builds one body with a method field and an optional email.
   assert.ok(/body: JSON\.stringify\(/.test(page), "the page posts JSON");
-  for (const method of SIGNIN_METHODS) {
+  // drive#180: the page offers the methods the server can complete — the
+  // module's offered list — and no others. A control for a provider the
+  // endpoint answers with the closed door is a promise the server breaks, so
+  // the offered list is what the screen renders; email's control is the form
+  // above, and every offered method is one the page names.
+  for (const method of SIGNIN_OFFERED_METHODS) {
     assert.ok(
       page.includes(`data-method="${method}"`) || page.includes(`"${method}"`),
       `the page must offer ${method}`,
     );
   }
-  // One <form> is the no-JavaScript path; the provider controls are the only
-  // other senders, so a click cannot go nowhere.
+  // The provider buttons are exactly the offered providers — email's control
+  // is the form above — so the Google and GitHub buttons stay off the page
+  // until SIGNIN_OFFERED_METHODS carries them.
   const providerButtons = [...page.matchAll(/data-method="([a-z]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(providerButtons.sort(), [...SIGNIN_METHODS].slice(1).sort());
+  assert.deepEqual(
+    providerButtons.sort(),
+    [...SIGNIN_OFFERED_METHODS].filter((m) => m !== "email").sort(),
+  );
   // The posted method names are the module's, not strings the page invented.
   const methodNames = [...page.matchAll(/start\("([a-z]+)"/g)].map((m) => m[1]);
   for (const name of methodNames) {
@@ -310,6 +324,49 @@ test("the page posts to the endpoint the Worker routes, with a method the endpoi
     );
   }
   assert.ok(methodNames.length > 0, "the page must post at least one named method");
+});
+
+test("the page offers no provider the server cannot complete (drive#180)", () => {
+  // The spec's Screens table names Google and GitHub for the finished product,
+  // but the server cannot complete either one today: the store refuses them
+  // with sign-in-closed (src/accounts.js), because their client ids and
+  // secrets are Nish's credentials, never values in this repo, so there is no
+  // OAuth client to redirect to. Offering the button anyway sends a person to
+  // a closed door, so the page renders only the module's offered methods —
+  // and this test fails the moment a provider control returns while the
+  // server still cannot finish it.
+  for (const method of SIGNIN_METHODS) {
+    const offered = SIGNIN_OFFERED_METHODS.includes(method);
+    // A provider method renders as a data-method button; email's control is
+    // the form above (pinned below), so the button check is the providers'.
+    if (method !== "email") {
+      assert.equal(
+        page.includes(`data-method="${method}"`),
+        offered,
+        `the page ${offered ? "must" : "must not"} render a ${method} control`,
+      );
+    }
+    // No copy on the page promises a provider that is not offered: no
+    // button, and no button words.
+    if (!offered) {
+      const button = `Continue with ${method[0].toUpperCase()}${method.slice(1)}`;
+      assert.equal(page.includes(button), false, `no ${method} button copy while it is unoffered`);
+    }
+  }
+  // The endpoint still reads the unoffered methods: the closed door is a
+  // routed, answered refusal, not a missing route. "The server accepts" and
+  // "the screen offers" are two different questions, and the assertions above
+  // are the one that holds the screen to the second.
+  for (const method of SIGNIN_METHODS) {
+    const read = readSigninRequest(
+      method === "email" ? { method, email: "you@example.com" } : { method },
+    );
+    assert.equal(read.method, method, `${method} stays readable by the endpoint`);
+  }
+  // Email is the one the store completes today, and its form is the one the
+  // page ships.
+  assert.ok(SIGNIN_OFFERED_METHODS.includes("email"), "email is offered");
+  assert.ok(page.includes(SIGNIN_COPY.emailButton), "the email button stays");
 });
 
 test("the page states the spec's two promises: no card, and the free dollar", () => {
