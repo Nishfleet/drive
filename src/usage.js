@@ -71,7 +71,7 @@ const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "co
  * disagree about a number. The Go CLI lands with build steps 2 and 4 (issues
  * #3, #5); these lines are its contract, pinned by test/usage.test.mjs so the
  * command can be wired without re-deciding the output.
- * @param {ReturnType<import("./billing.js").usageSummary>} summary
+ * @param {ReturnType<typeof import("./billing.js").usageSummary>} summary
  * @returns {readonly string[]}
  */
 export function usageLines(summary) {

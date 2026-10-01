@@ -45,6 +45,16 @@ export default defineConfig({
 			//   npx wrangler secret put MAIL_FROM
 			EMAIL_SEND_TOKEN: bindings.secret(),
 			MAIL_FROM: bindings.secret(),
+			// The `rclone serve s3` stand-in (drive issue #1's build host):
+			// with both set, storeFor() in src/index.js points the file
+			// handlers at the stand-in instead of the in-memory store. They
+			// default to "", so a production deploy that sets neither gets
+			// the in-memory store exactly as before — a declared var with an
+			// empty default is the config way to say "set it if you run the
+			// stand-in", and the empty string is the falsy value storeFor()
+			// already branches on.
+			FILES_S3_ENDPOINT: bindings.text(""),
+			FILES_S3_BUCKET: bindings.text(""),
 		},
 	},
 });

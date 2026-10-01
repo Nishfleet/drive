@@ -22,7 +22,12 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 // the same FileStore interface. Both are plain stores over storage keys: the
 // account prefix and the isolation between accounts are scopeStore's job
 // (src/files.js), so an adapter never has to know about an account.
+/** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
+/**
+ * @param {Env} env
+ * @returns {import("./files.js").FileStore}
+ */
 function storeFor(env) {
   if (!filesStore) {
     filesStore =
@@ -49,6 +54,11 @@ function storeFor(env) {
 // first producers are the meter's cap emails and the billing webhook
 // (build step 6, drive#7).
 export default {
+  /**
+   * @param {Request} request
+   * @param {Env} env
+   * @returns {Promise<Response>}
+   */
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {

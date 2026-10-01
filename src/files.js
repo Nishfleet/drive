@@ -826,7 +826,8 @@ function plain(message, status) {
  * use. A caller with no Origin (curl, the CLI) passes that check; the gate
  * above is what actually keeps a stranger out.
  * @param {Request} request
- * @param {FileStore} store the shared, unscoped store
+ * @param {import("./files.js").FileStore|null} store the shared, unscoped store,
+ *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
  */

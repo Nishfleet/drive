@@ -69,7 +69,10 @@ export const BILL_EXAMPLES = Object.freeze(
 );
 
 /** A dollar figure, as the invoice prints it: whole dollars without cents,
- * anything else with two decimals. */
+ * anything else with two decimals.
+ * @param {number} amount
+ * @returns {string}
+ */
 function dollars(amount) {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
 }
@@ -110,11 +113,17 @@ export function agentCannotDeleteSentence() {
  * @param {keyof typeof KEY_POWERS} kind
  * @param {string} owner the person this key belongs to, in plain words
  */
+/**
+ * @param {string} kind
+ * @param {string} owner
+ * @returns {string}
+ */
 function keyRow(kind, owner) {
   const powers = KEY_POWERS[kind];
   return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${yesNo(powers.canDelete)} |`;
 }
 
+/** @param {boolean|undefined} value */
 const yesNo = (value) => (value ? "yes" : "no");
 
 /** The two keys a person meets, as a Markdown table. */
