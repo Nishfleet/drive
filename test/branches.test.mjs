@@ -15,9 +15,11 @@ import {
   createBranch,
   diffBranch,
   discardBranch,
+  getBranch,
   handleBranchesRequest,
   listBranches,
   relativePath,
+  removePrefixFiles,
   sameFile,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER } from "../src/files.js";
@@ -205,7 +207,7 @@ test("diffBranch names added, changed and removed files, and the original's drif
   await scoped.write(`${BRANCHES_ROOT}/work/sub/b.txt`, new Blob(["edited"]).stream(), "text/plain");
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
-  const branch = (await listBranches(db, scoped, ACCOUNT))[0];
+  const branch = (await getBranch(db, ACCOUNT, "work"));
   const diff = await diffBranch(scoped, branch);
   assert.deepEqual(diff.added, ["new.txt"]);
   assert.deepEqual(diff.changed, ["sub/b.txt"]);
@@ -370,4 +372,309 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
     ACCOUNT,
   );
   assert.equal(notJson.status, 400);
+});
+
+// --------------------------------------------------------------------- re-branch
+
+test("a name branched, approved, and branched again: the new branch is open and diff works", async () => {
+  const { scoped, db } = await driven();
+
+  // First branch: make it, approve it.
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
+  await approveBranch(db, scoped, ACCOUNT, "work");
+
+  // Branch the same name again: it should be a fresh open branch.
+  // (createBranch returns the branch itself; the 201 is the route's answer.)
+  const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, ACCOUNT, "work");
+  assert.equal(branch.state, "open");
+  assert.equal(branch.name, "work");
+
+  // The second branch's diff should only see files the new branch has,
+  // not the first branch's old copies. (The first approve left files
+  // under .branches/work/, but createBranch cleared the prefix.)
+  const diff = await diffBranch(scoped, branch);
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.changed, []);
+  assert.deepEqual(diff.removed, []);
+  assert.deepEqual(diff.sourceChanged, []);
+
+  // Edit the new branch and approve it — the files go back cleanly.
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.equal(result.state, "approved");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "agent edit");
+});
+
+test("a name branched, discarded, and branched again: the new branch is open and discarding works", async () => {
+  const { scoped, db } = await driven();
+
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await discardBranch(db, scoped, ACCOUNT, "work");
+
+  const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, ACCOUNT, "work");
+  assert.equal(branch.state, "open");
+
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  const result = await discardBranch(db, scoped, ACCOUNT, "work");
+  assert.equal(result.state, "discarded");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+});
+
+test("the route rejects a third segment and answers 405 for GET on approve/discard", async () => {
+  const { raw, db } = await driven();
+  const account = ACCOUNT;
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    raw,
+    account,
+  );
+
+  // Third segment → 404.
+  const extra = await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve/extra`, {}),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(extra.status, 404);
+
+  // GET /approve → 405 with Allow: POST.
+  const getApprove = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/approve`),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(getApprove.status, 405);
+  assert.equal(getApprove.headers.get("allow"), "POST");
+
+  // GET /discard → 405 with Allow: POST.
+  const getDiscard = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/discard`),
+    db,
+    raw,
+    account,
+  );
+  assert.equal(getDiscard.status, 405);
+  assert.equal(getDiscard.headers.get("allow"), "POST");
+});
+
+test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
+  // The row's own id is what makes two closes of one name possible: with
+  // (account_id, name, state) as the key the second 'approved' row of a name
+  // collides on the primary key, and a second approve 500s. Apply the shipped
+  // migrations and prove the shape rather than inferring it.
+  const sqlite = new DatabaseSync(":memory:");
+  for (const name of ["0001_waitlist.sql", "0002_file_index.sql", "0003_branches.sql"]) {
+    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  }
+  const columns = sqlite.prepare("PRAGMA table_info(branches)").all();
+  const pk = columns.filter((c) => c.pk > 0).map((c) => c.name);
+  assert.deepEqual(pk, ["id"], "the key is the row's own id, not the name and state");
+  // Two 'approved' rows for one name are legal now.
+  const insert = sqlite.prepare(
+    "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+      "VALUES (?1,?2,'/Photos','/.branches/x','{}','approved',?3)",
+  );
+  insert.run("acct-1", "work", "2026-01-01T00:00:00Z");
+  insert.run("acct-1", "work", "2026-01-02T00:00:00Z");
+  const approved = sqlite
+    .prepare("SELECT COUNT(*) AS n FROM branches WHERE account_id='acct-1' AND name='work' AND state='approved'")
+    .get();
+  assert.equal(approved.n, 2);
+  // The partial unique index still refuses a second open branch of one name.
+  const open = sqlite.prepare(
+    "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+      "VALUES (?1,?2,'/Photos','/.branches/x','{}','open',?3)",
+  );
+  open.run("acct-1", "work", "2026-01-03T00:00:00Z");
+  assert.throws(
+    () => open.run("acct-1", "work", "2026-01-04T00:00:00Z"),
+    /UNIQUE constraint failed/,
+    "two open branches of one name must still be refused",
+  );
+});
+
+test("approving a name whose branch was discarded is a 409, never a delete of the original", async () => {
+  // The dangerous path the closed-row fallback opens: getBranch returns the
+  // discarded row, and if approveBranch did not refuse a non-open state its
+  // diff (an empty branch prefix) would read every file as removed and delete
+  // the source. The guard lives in approveBranch itself, so a direct call is
+  // refused, not just the route.
+  const { scoped, db } = await driven();
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await discardBranch(db, scoped, ACCOUNT, "work");
+
+  const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.equal(result.status, 409);
+  // The original is intact, byte for byte.
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
+});
+
+test("a create whose claim is closed mid-copy reports 409 and leaves no stray copy", async () => {
+  // The claim-first flow leaves a window: the row is claimed, the copy runs,
+  // and a concurrent approve/discard closes the claim before the snapshot
+  // UPDATE lands. That UPDATE is scoped state = 'open', so it moves zero rows;
+  // the create must not answer 200 for a branch that is no longer open. It
+  // clears the copy it just made and answers 409.
+  const { scoped, db: real } = await driven();
+  const racing = {
+    prepare(sql) {
+      return {
+        bind(...params) {
+          return {
+            async first() {
+              if (sql.includes("state = 'open'")) return null; // pre-check: name free
+              return null;
+            },
+            async run() {
+              if (sql.startsWith("INSERT INTO branches")) {
+                return { success: true, meta: { changes: 1 } };
+              }
+              if (sql.startsWith("UPDATE branches SET snapshot")) {
+                // The claim was closed underneath this create.
+                return { success: true, meta: { changes: 0 } };
+              }
+              if (sql.startsWith("UPDATE branches SET state")) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              return { success: true, meta: { changes: 1 } };
+            },
+            async all() { return { results: [] }; },
+          };
+        },
+      };
+    },
+  };
+  const result = await createBranch(racing, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(result.status, 409, "a claim closed mid-copy is a 409, not a 200");
+  // The copy this create made is gone; nothing is left for a later branch to
+  // read as a change.
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
+  // And the name is genuinely free: a real create of it now succeeds and its
+  // diff is empty, so the aborted copy left no residue behind.
+  const after = await createBranch(real, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(after.state, "open");
+  const diff = await diffBranch(scoped, await getBranch(real, ACCOUNT, "work"));
+  assert.deepEqual(diff, { added: [], changed: [], removed: [], sourceChanged: [] });
+});
+
+test("the prefix clear refuses anything that is not a folder under .branches", async () => {
+  // Defence in depth. A real branch name is a single safe segment
+  // (checkedBranchName), so every real prefix is under .branches/. This pins
+  // the guard that holds if a row is ever written with something else: a
+  // cleanup must never become a bulk delete of a folder it was not meant to
+  // touch. The original is untouched by every refused prefix.
+  const { scoped } = await driven();
+  const refused = [
+    "/Photos",                 // the source folder
+    "/",                       // the drive root
+    "",                        // empty
+    BRANCHES_ROOT,             // the branches folder itself
+    "/.branches",              // without the trailing slash
+    "/.branchesOther/work",    // a sibling that merely shares the prefix
+    null,
+    undefined,
+  ];
+  for (const prefix of refused) {
+    await assert.rejects(
+      () => removePrefixFiles(scoped, prefix),
+      /not a branch folder/,
+      `${JSON.stringify(prefix)} must be refused`,
+    );
+  }
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
+  assert.equal(await readText(scoped, "/Notes.md"), "notes");
+  // A real branch prefix is cleared, and the count is what it removed.
+  await createBranch(makeD1(), scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(await removePrefixFiles(scoped, `${BRANCHES_ROOT}/work`), 2);
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "the source is untouched");
+});
+
+test("a discard of a row whose prefix is not under .branches is a 500, never a delete", async () => {
+  // The discard path goes through the same guard, so a forged branch_prefix
+  // cannot make `drive discard` delete the original: the clear throws, the
+  // catch turns it into storage-down, and the row is left open.
+  const { scoped, db } = await driven();
+  db.sqlite
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at) " +
+        "VALUES (?,?,?,?,'{}','open',?)",
+    )
+    .run(ACCOUNT.id, "evil", "/Photos", "/Photos", "2026-01-01T00:00:00Z");
+  const result = await discardBranch(db, scoped, ACCOUNT, "evil");
+  assert.equal(result.status, 500);
+  assert.equal((await getBranch(db, ACCOUNT, "evil")).state, "open");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
+});
+
+test("a create that loses the open-name race is refused before it touches the prefix", async () => {
+  // The claim-first flow: the name is claimed with the INSERT before anything
+  // is copied, so a create racing another create fails the INSERT (the partial
+  // unique index) before it can clear or overwrite the winner's prefix. This
+  // db lets the pre-check see nothing and then reports the claim as lost, which
+  // is exactly the TOCTOU window; the re-read after the failure finds the
+  // winner's open row, so the answer is the same 409 a plain second create gets.
+  const { scoped, db: real } = await driven();
+  const winner = await createBranch(real, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(winner.state, "open");
+  const winnerBranch = await getBranch(real, ACCOUNT, "work");
+
+  const raced = {
+    prepare(sql) {
+      return {
+        bind(...params) {
+          return {
+            async first() {
+              // The pre-check sees no open branch; the post-failure re-read
+              // finds the winner's row.
+              if (sql.includes("state = 'open'")) {
+                return null;
+              }
+              return {
+                name: "work",
+                source_prefix: "/Photos",
+                branch_prefix: "/.branches/work",
+                snapshot: "{}",
+                state: "open",
+                created_at: "2026-01-01T00:00:00Z",
+              };
+            },
+            async run() {
+              if (sql.startsWith("INSERT INTO branches")) {
+                throw new Error("UNIQUE constraint failed: branches.account_id, branches.name");
+              }
+              return { success: true, meta: { changes: 1 } };
+            },
+            async all() {
+              return { results: [] };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const lost = await createBranch(raced, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(lost.status, 409, "a lost claim is the same 409 as a second create");
+
+  // The winner's row, copies and snapshot are exactly as they were: the loser
+  // never reached the prefix clear or the copy.
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), "a");
+  const after = await getBranch(real, ACCOUNT, "work");
+  assert.equal(after.state, "open");
+  assert.deepEqual(after.snapshot, winnerBranch.snapshot);
+  assert.deepEqual((await diffBranch(scoped, after)).removed, []);
 });
