@@ -13,7 +13,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createAccountStore } from "../src/accounts.js";
 import {
   ageMs,
   connectionLine,
@@ -52,6 +51,7 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "../src/status.js";
+import { createTestAuth, signIn } from "./harness.mjs";
 
 // The page's shell, read for the structure the module fills and the script tag
 // that loads it. Its copy is not read here: there is no copy in it to drift.
@@ -233,27 +233,40 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
   assert.equal(forgot.status, 401);
 });
 
-test("a request can only prove an account through a session the store minted", async () => {
+test("a request can only prove an account through a session Better Auth minted", async () => {
   // The sign-in flow has landed (build step 9, #10), so signedInAccount() is
   // no longer null for every caller — but it is still closed by default. With
-  // no store a cookie proves nothing, and a made-up one proves nothing either:
-  // the token is looked up by digest, so a value the browser chose is not a
-  // session (north star: Safe).
+  // no auth a cookie proves nothing, and a made-up one proves nothing either:
+  // the token is verified against the database that minted it, so a value the
+  // browser chose is not a session (north star: Safe).
   assert.equal(await signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
   const madeUp = new Request("https://drive.test/api/first-run-status", {
-    headers: { cookie: "drive_session=made-up" },
+    headers: { cookie: "__Secure-drive.session_token=made-up" },
   });
-  assert.equal(await signedInAccount(madeUp, createAccountStore()), null);
-  assert.equal(await signedInAccount(madeUp, null), null, "no store, no account");
+  const other = createTestAuth();
+  assert.equal(await signedInAccount(madeUp, other.auth), null);
+  assert.equal(await signedInAccount(madeUp, null), null, "no auth, no account");
 
-  // The other half: a start makes or finds the account, and the store holds
-  // only digests, so there is no session token to read back out of it. The
-  // finish step is the only way to get one, and the full round trip is proved
-  // through the Worker in test/account-gate.test.mjs.
-  const store = createAccountStore({ sendCode: () => {} });
-  const started = await store.startSignin({ method: "email", email: "someone@example.com" });
-  assert.ok(started.account.id, "a start makes or finds the account");
-  assert.equal(await store.accountForSession("made-up"), null);
+  // The other half: a sign-in link mints a session and the auth holds it, so
+  // the cookie the browser carries reads back as an account. The cookie is
+  // only a session in the database that minted it — an instance over another
+  // database refuses the same value (north star: Safe).
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "someone@example.com");
+  const proved = await signedInAccount(
+    new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+    made.auth,
+  );
+  assert.equal(proved.email, "someone@example.com", "a minted session is an account");
+  assert.equal(proved.id, account.id, "the session names the account that signed in");
+  assert.equal(
+    await signedInAccount(
+      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      other.auth,
+    ),
+    null,
+    "a session belongs to the database that minted it",
+  );
 });
 
 test("the status endpoint names the one method it serves", () => {

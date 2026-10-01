@@ -141,7 +141,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   // secrets (Nish's). This is the closed door's words, not a fake success.
   "sign-in-closed": Object.freeze({
     what: "Signing in is not open yet.",
-    next: "Join the waitlist, and your first email will carry a sign-in code.",
+    next: "Join the waitlist, and your first email will carry a sign-in link.",
   }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
