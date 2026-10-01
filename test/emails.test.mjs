@@ -398,7 +398,7 @@ test("the Worker still serves the waitlist and the assets", async () => {
     env,
   );
   assert.equal(waitlist.status, 405);
-  assert.equal(waitlist.headers.get("allow"), "POST");
+  assert.ok(waitlist.headers.get("allow").includes("POST"), `allow header: ${waitlist.headers.get("allow")}`);
 });
 
 // ---------------------------------------------------------------------------

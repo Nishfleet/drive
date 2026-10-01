@@ -1,5 +1,17 @@
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { trimTrailingSlash } from "hono/trailing-slash";
+import { methodNotAllowed } from "hono/method-not-allowed";
+import { secureHeaders } from "hono/secure-headers";
+import { csrf } from "hono/csrf";
+
 import { handleWaitlistRequest } from "./waitlist.js";
-import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT } from "./status.js";
+import {
+  handleFirstRunStatusRequest,
+  signedInAccount,
+  STATUS_ENDPOINT,
+  unauthorizedResponse,
+} from "./status.js";
 import {
   FILES_ENDPOINT,
   createMemoryStore,
@@ -9,15 +21,23 @@ import {
 import { USAGE_ENDPOINT, handleUsageRequest } from "./billing.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { failureMessage } from "./messages.js";
 
-// The path the meter, the billing webhook and the tests post a drive email to
-// (src/email-send.js). One route, so one place knows the provider.
-const SEND_EMAIL_PATH = "/api/emails/send";
+// Public routes: reachable without a signed-in account. Every other
+// /api/ route is account-gated by default (deny-by-default).
+export const PUBLIC_ROUTES = Object.freeze(["/api/waitlist", "/api/emails/send", HEALTH_PATH]);
 
-// One store per Worker isolate, holding every account's files under its own
-// prefix. With no storage configured the in-memory store holds what the page
-// uploaded this run, so the Web Files page is real in dev and in the tests;
-// FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
+function isPublic(pathname) {
+  const clean = pathname.replace(/\/+$/, "") || "/";
+  return PUBLIC_ROUTES.some(
+    (p) => clean === p || clean.startsWith(p + "/"),
+  );
+}
+
+// One store per Worker isolate, holding every account's files under its
+// own prefix. With no storage configured the in-memory store holds what the
+// page uploaded this run, so the Web Files page is real in dev and in the
+// tests; FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
 // `rclone serve s3` instead. The real scoped-key adapter lands with #2 behind
 // the same FileStore interface. Both are plain stores over storage keys: the
 // account prefix and the isolation between accounts are scopeStore's job
@@ -36,78 +56,86 @@ function storeFor(env) {
   return filesStore;
 }
 
-// Static assets serve the pricing page, the first-run page, the Web Files page
-// and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
-// cloudflare.config.ts). Anything that does reach it and is not an API falls
-// through to the assets, so a stray path is a real 404 from the asset worker
-// rather than a hand-rolled page.
-//
-// The send-email route is mounted behind its deployment's token and the
-// same-origin rule (src/email-send.js), which together keep it from mailing
-// an arbitrary person from our domain: with EMAIL_SEND_TOKEN unset the route
-// answers 403, so the deployment is closed until the token is set, and the
-// first producers are the meter's cap emails and the billing webhook
-// (build step 6, drive#7).
+/**
+ * Create the Hono app. All route logic lives here so the Worker export
+ * is a thin shim and the app can be tested in isolation.
+ * @param {{ASSETS: {fetch: Function}, [key: string]: any}} env
+ */
+export function createApp(env) {
+  const app = new Hono({ strict: false });
+
+  // Trailing slashes handled by the library (redirects to canonical).
+  app.use(trimTrailingSlash());
+
+  // Secure headers on every response (X-Content-Type-Options, X-Frame-Options, etc.).
+  app.use("*", secureHeaders());
+
+  // Same-origin / CSRF protection on the public state-changing endpoints,
+  // using Hono's built-in middleware. The waitlist and email-send handlers
+  // keep their own isSameOriginRequest checks as defence-in-depth.
+  app.use("/api/waitlist", csrf());
+  app.use("/api/emails/send", csrf());
+
+  // Deny-by-default auth gate on /api/*. Public routes are declared explicitly
+  // in PUBLIC_ROUTES above. The gate runs before any handler, so an anonymous
+  // request is answered 401 without the store being built or the handler
+  // running.
+  app.use("/api/*", async (c, next) => {
+    if (isPublic(c.req.path)) return next();
+    const account = signedInAccount(c.req.raw);
+    if (!account) return unauthorizedResponse();
+    c.set("account", account);
+    await next();
+  });
+
+  // Account-gated routes. Each is registered by method so Hono's
+  // methodNotAllowed middleware answers 405 with an Allow header; the account
+  // gate above already answered an anonymous caller 401.
+  app.get(STATUS_ENDPOINT, (c) =>
+    handleFirstRunStatusRequest(c.req.raw, c.get("account"))
+  );
+  const filesHandler = (c) => {
+    const account = c.get("account");
+    return handleFilesRequest(
+      c.req.raw,
+      account ? storeFor(c.env) : null,
+      account,
+    );
+  };
+  app.get(FILES_ENDPOINT, filesHandler);
+  app.post(FILES_ENDPOINT, filesHandler);
+  app.get(`${FILES_ENDPOINT}/*`, filesHandler);
+  app.post(`${FILES_ENDPOINT}/*`, filesHandler);
+  app.get(USAGE_ENDPOINT, (c) =>
+    handleUsageRequest(c.req.raw, c.get("account"))
+  );
+
+  // Public routes
+  app.post("/api/waitlist", (c) =>
+    handleWaitlistRequest(c.req.raw, c.env.WAITLIST_DB, c.env.WAITLIST_RATE_LIMITER)
+  );
+  app.get(HEALTH_PATH, (c) => handleHealthRequest(c.req.raw, c.env));
+  app.post("/api/emails/send", (c) => handleSendEmailRequest(c.req.raw, c.env));
+
+  // Method handling, 404 and 405 from the library
+  app.use("*", methodNotAllowed({ app }));
+  app.notFound((c) => {
+    if (c.req.path.startsWith("/api/")) {
+      return c.json({ error: "Not found." }, 404);
+    }
+    return c.env.ASSETS.fetch(c.req.raw);
+  });
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse();
+    console.error("[pricing] request failed:", err.message, err.stack, err);
+    return c.json({ error: failureMessage("unexpected") }, 500);
+  });
+
+  return app;
+}
+
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(
-        request,
-        env.WAITLIST_DB,
-        env.WAITLIST_RATE_LIMITER,
-      );
-    }
-    // The first-run page's live flip (issue #32). runWorkerFirst sends every
-    // /api/* here; the branch just has to come before the asset fallthrough.
-    // The handler is closed until the sign-in flow resolves an account
-    // (issue #45), so an anonymous poll gets 401 and no device data. The path
-    // is the module's own constant, so the route and the page cannot drift.
-    if (
-      url.pathname === STATUS_ENDPOINT ||
-      url.pathname === `${STATUS_ENDPOINT}/`
-    ) {
-      return handleFirstRunStatusRequest(request, signedInAccount(request));
-    }
-    // The files handler is behind the same account gate as the page's poll
-    // (issue #73): it answers 401 with no data for a request that cannot prove
-    // an account, and scopes every read and write to that account's prefix.
-    if (
-      url.pathname === FILES_ENDPOINT ||
-      url.pathname === `${FILES_ENDPOINT}/` ||
-      url.pathname.startsWith(`${FILES_ENDPOINT}/`)
-    ) {
-      // The gate is asked before the store is built. A request that cannot
-      // prove an account is answered by the handler's own 401 with no store
-      // in the call at all, so a misconfigured deployment fails for its own
-      // signed-in callers and tells a stranger nothing about itself.
-      const account = signedInAccount(request);
-      return handleFilesRequest(request, account ? storeFor(env) : null, account);
-    }
-    // The usage page's and the CLI's read of the month's money (issues #7 and
-    // #53, build step 6). Same rule: the branch comes before the asset
-    // fallthrough, and the account gate is what keeps one account's numbers
-    // from being shown to another (issue #73).
-    if (
-      url.pathname === USAGE_ENDPOINT ||
-      url.pathname === `${USAGE_ENDPOINT}/`
-    ) {
-      return handleUsageRequest(request, signedInAccount(request));
-    }
-    if (url.pathname === SEND_EMAIL_PATH) {
-      // The whole env, not just the binding: the route reads the token and
-      // the sending address too (src/email-send.js handleSendEmailRequest).
-      return handleSendEmailRequest(request, env);
-    }
-    // The health endpoint the outside monitor polls (issue #96, #36). It
-    // comes before the asset fallthrough and takes the whole env because the
-    // check reads the dependencies off the bindings: a trivially-read D1 on
-    // each database and a fetch of the asset layer. The whole env is the
-    // honest argument — a check that only saw the bindings it was told about
-    // would be a check that could not fail.
-    if (url.pathname === HEALTH_PATH || url.pathname === `${HEALTH_PATH}/`) {
-      return handleHealthRequest(request, env);
-    }
-    return env.ASSETS.fetch(request);
+    return createApp(env).fetch(request, env);
   },
 };

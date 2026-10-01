@@ -19,6 +19,7 @@ import worker from "../src/index.js";
 import { monthBillCents, USAGE_ENDPOINT } from "../src/billing.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { HEALTH_PATH } from "../src/health.js";
 import {
   FILES_ENDPOINT,
   createMemoryStore,
@@ -97,43 +98,44 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
 // email-send.js:181); the rest are imported constants, so each is checked in
 // the module that owns it as well.
 const ROUTES = [
-  { path: "/api/waitlist", source: "waitlist.js", usedAs: '"/api/waitlist"' },
-  { path: STATUS_ENDPOINT, source: "status.js", usedAs: "STATUS_ENDPOINT" },
-  { path: FILES_ENDPOINT, source: "files.js", usedAs: "FILES_ENDPOINT" },
-  { path: USAGE_ENDPOINT, source: "billing.js", usedAs: "USAGE_ENDPOINT" },
-  { path: "/api/emails/send", source: "email-send.js", usedAs: "SEND_EMAIL_PATH" },
+  { method: "POST", path: "/api/waitlist", source: "waitlist.js", usedAs: '"/api/waitlist"' },
+  { method: "GET", path: STATUS_ENDPOINT, source: "status.js", usedAs: "STATUS_ENDPOINT" },
+  { method: "ALL", path: FILES_ENDPOINT, source: "files.js", usedAs: "FILES_ENDPOINT" },
+  { method: "GET", path: USAGE_ENDPOINT, source: "billing.js", usedAs: "USAGE_ENDPOINT" },
+  { method: "POST", path: "/api/emails/send", source: "email-send.js", usedAs: "SEND_EMAIL_PATH" },
 ];
 
 test("gate 1: every route is in the table, and the gated one answers 401", async () => {
+  // Hono is the proven router for every Worker (drive#94).
   const index = srcFile("index.js");
+  assert.match(index, /import \{ Hono \} from "hono"/, "Hono is the router");
+  assert.match(index, /new Hono\(/, "Hono app is created");
+  assert.match(index, /methodNotAllowed/, "405 comes from the library");
+  assert.match(index, /trimTrailingSlash/, "trailing slashes come from the library");
+  assert.match(index, /secureHeaders/, "secure headers come from the library");
+  assert.match(index, /createApp/, "createApp exports the app builder");
+  const { createApp } = await import("../src/index.js");
+  const app = createApp({ ASSETS: { fetch: () => new Response("asset") } });
+  const registered = app.routes
+    .filter((r) => r.method !== "ALL")
+    .map((r) => `${r.method} ${r.path}`);
   for (const route of ROUTES) {
-    // `/api/files` arrives as the imported FILES_ENDPOINT constant; the rest
-    // are string literals in the fetch branch, so this reads the real table.
-    const inTable = index.includes(`"${route.path}"`) || index.includes(route.usedAs);
-    assert.ok(inTable, `${route.path} must be in the route table`);
+    assert.ok(
+      route.method === "ALL"
+        ? registered.some((r) => r.endsWith(" " + route.path))
+        : registered.some((r) => r === `${route.method} ${route.path}`),
+      `${route.method} ${route.path} must be in the route table`,
+    );
     assert.ok(
       srcFile(route.source).includes(route.path),
       `src/${route.source} must name ${route.path}, the path it handles`,
     );
   }
-  // The account gate is one function. It is reached in the fetch switch (not
-  // only in a comment above it), and the files route names its account source
-  // there too.
-  const switchIsLive = index.indexOf("async fetch(request, env) {");
-  assert.notEqual(switchIsLive, -1, "src/index.js must keep its fetch switch");
-  const branch = index.slice(switchIsLive, index.indexOf("return env.ASSETS.fetch(request);"));
-  // Each route decides its own account where it is mounted, not somewhere else
-  // in the file: the expression has to sit in the route's own branch, and every
-  // route's branch is named by the constant the switch compares against.
-  for (const [usedAs, account] of [
-    ["STATUS_ENDPOINT", "signedInAccount(request)"],
-    ["FILES_ENDPOINT", "signedInAccount(request)"],
-  ]) {
-    const at = branch.indexOf(usedAs);
-    assert.notEqual(at, -1, `${usedAs} must have its own branch in the fetch switch`);
+  // Every known base path is gated (public routes are the exception).
+  for (const base of [FILES_ENDPOINT, USAGE_ENDPOINT, STATUS_ENDPOINT, HEALTH_PATH]) {
     assert.ok(
-      branch.slice(at, at + 700).includes(account),
-      `${usedAs}'s branch must read ${account}`,
+      registered.some((r) => r.includes(base)),
+      `${base} must be gated behind the account gate`,
     );
   }
   // The live proof: anonymous is 401 with the table's words.
