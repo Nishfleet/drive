@@ -610,14 +610,42 @@ export function createS3Store(config) {
       // `path` is a storage key (`u/<id>`, `u/<id>/Photos`); the query wants
       // exactly one trailing slash and no second one.
       const prefix = path.endsWith("/") ? path : `${path}/`;
-      const query = `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F`;
-      const response = await fetchImpl(`${base}${query}`);
-      if (!response.ok) {
-        throw new Error(`storage list failed with ${response.status}`);
+      const entries = [];
+      let token = null;
+      let seen = null;
+      // Every page, not the first. S3 caps one ListObjectsV2 answer at 1,000
+      // keys and answers the rest through NextContinuationToken, so a single
+      // call silently truncates a folder at 1,000 files: the Files page showed
+      // the first thousand and the file index (issue #18) never indexed the
+      // rest, which the stand-in proof caught on a 100,000-file drive (5,000 a
+      // folder -> 20,000 of 100,000 indexed). The token is looped here, once,
+      // so no caller has to remember to.
+      for (;;) {
+        const query =
+          `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
+          (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
+        const response = await fetchImpl(`${base}${query}`);
+        if (!response.ok) {
+          throw new Error(`storage list failed with ${response.status}`);
+        }
+        const xml = await response.text();
+        // The base a row's key is built from: the folder key without its
+        // trailing slash, so a child key is `${base}/${name}`.
+        entries.push(...parseListObjects(xml, prefix, prefix.slice(0, -1)));
+        token = nextContinuationToken(xml);
+        if (token === null) {
+          return entries;
+        }
+        if (token === seen) {
+          // A server answering the same token forever would spin here and hold
+          // the request open. A truncated folder is the one failure this file
+          // exists to prevent, so it is named instead of returned.
+          throw new Error(
+            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+          );
+        }
+        seen = token;
       }
-      // The base a row's key is built from: the folder key without its
-      // trailing slash, so a child key is `${base}/${name}`.
-      return parseListObjects(await response.text(), prefix, prefix.slice(0, -1));
     },
     async read(path) {
       const response = await fetchImpl(urlFor(path));
@@ -699,6 +727,23 @@ function tagValue(block, tag) {
   const from = open + tag.length + 2;
   const close = block.indexOf(`</${tag}>`, from);
   return close === -1 ? "" : block.slice(from, close).trim();
+}
+
+/**
+ * The token that fetches the page after this one, or null when the listing is
+ * the last page. S3 caps one ListObjectsV2 answer at 1,000 keys and says so by
+ * returning `<NextContinuationToken>`; without it a folder is truncated at the
+ * cap and the caller cannot tell. An empty element counts as no next page, so a
+ * server that sends the tag empty ends the loop rather than asking for "".
+ * @param {string} xml
+ * @returns {string|null}
+ */
+export function nextContinuationToken(xml) {
+  if (typeof xml !== "string") {
+    throw new TypeError("nextContinuationToken needs the XML body");
+  }
+  const token = tagValue(xml, "NextContinuationToken");
+  return token === "" ? null : token;
 }
 
 /**
