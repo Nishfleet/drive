@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — sign in</title>
+  <meta name="description" content="Sign in to your drive: one code by email, or Google or GitHub. No card asked.">
+  <meta name="robots" content="noindex">
+  <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
+       table. The copy and the endpoints live in src/signin.js, the single
+       source; test/signin.test.mjs reads this shipped file and fails CI when
+       its copy, its endpoints, its method list or its vocabulary drifts from
+       the module. This page is a static asset and cannot import the module. -->
+  <style>
+/* Sign-in page: the palette and type of the pricing page (public/index.html),
+   the first-run page (get-started.html, a Vite entry at the repo root) and the
+   usage page, so the four read as one product. System font stacks only: no web
+   font files, so nothing blocks first paint. */
+
+:root {
+  --paper: #faf6ee;
+  --paper-raised: #fffdf8;
+  --ink: #21201c;
+  --ink-soft: #56514a;
+  --ink-faint: #6f6a5f;
+  --rule: #ddd5c5;
+  --accent: #1f3a5f;
+  --accent-soft: #e6ecf3;
+  --bad: #8a2b2b;
+  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip-link:focus {
+  left: 12px;
+  top: 12px;
+  padding: 8px 12px;
+  background: var(--paper-raised);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  z-index: 10;
+}
+
+.masthead {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 22px 0 18px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: baseline;
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.tagline {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.masthead a {
+  color: var(--ink-soft);
+  font-size: 15px;
+  margin-left: auto;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(30px, 5vw, 40px);
+  line-height: 1.1;
+  margin: 32px 0 8px;
+}
+
+.lede {
+  color: var(--ink-soft);
+  margin: 0 0 6px;
+}
+
+.free {
+  color: var(--ink-soft);
+  font-size: 15px;
+  margin: 0 0 28px;
+}
+
+.card {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: clamp(18px, 3vw, 26px);
+}
+
+form {
+  margin: 0;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+input[type="email"],
+input[type="text"] {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button {
+  padding: 11px 18px;
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--ink);
+  color: var(--paper-raised);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.providers {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.providers button {
+  width: 100%;
+}
+
+.hint {
+  color: var(--ink-faint);
+  font-size: 14px;
+  margin: 10px 0 0;
+}
+
+.rule {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 22px 0;
+}
+
+.status {
+  margin: 16px 0 0;
+  font-size: 15px;
+  color: var(--ink-soft);
+  min-height: 1.4em;
+}
+
+.status.is-error {
+  color: var(--bad);
+}
+
+.status.is-done {
+  color: var(--accent);
+}
+
+.code-step[hidden] {
+  display: none;
+}
+
+.footer {
+  max-width: 640px;
+  margin: 40px auto 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer p {
+  margin: 0 0 8px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#signin-heading">Skip to sign in</a>
+  <header class="masthead">
+    <span class="wordmark">Drive</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/">Pricing</a>
+  </header>
+
+  <main>
+    <h1 id="signin-heading">Sign in</h1>
+    <p class="lede">One code by email, or Google or GitHub.</p>
+    <p class="free">No card asked. $1 free every month, no card needed</p>
+
+    <div class="card">
+      <!-- Not Django: this is a static asset, and the route it posts to is not
+           a cookie-authenticated form handler that trusts the browser.
+           Whatever cookie a session later carries is set by POST /api/signin,
+           which refuses a request another origin made (isSameOriginRequest,
+           src/email-send.js), so a token in the markup would protect nothing. -->
+      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+      <form id="signin-form" action="/api/signin" method="post">
+        <input type="hidden" name="step" value="start">
+        <input type="hidden" name="method" value="email">
+        <label for="email">Email</label>
+        <div class="field-row">
+          <input id="email" name="email" type="email" required
+                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
+          <button class="primary" id="email-button" type="submit">Email me a code</button>
+        </div>
+        <p class="hint">We email a 6-digit code. No password to remember.</p>
+      </form>
+
+      <div class="code-step" id="code-step" hidden>
+        <hr class="rule">
+        <form id="code-form">
+          <input type="hidden" name="step" value="finish">
+          <label for="code">The 6-digit code</label>
+          <div class="field-row">
+            <input id="code" name="code" type="text" inputmode="numeric"
+                   placeholder="000000"
+                   autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+            <button class="primary" type="submit">Finish signing in</button>
+          </div>
+        </form>
+      </div>
+
+      <hr class="rule">
+
+      <div class="providers">
+        <button type="button" data-method="google">Continue with Google</button>
+        <button type="button" data-method="github">Continue with GitHub</button>
+      </div>
+
+      <p class="status" id="signin-status" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p>New here? Signing in makes your drive, and $1 a month of storage is free.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+
+  <script>
+// Sign-in submit. This script upgrades the reply from a page reload to a line
+// in the live region. Without JavaScript the email form still posts the address
+// to /api/signin (an ordinary form post, which the route reads as
+// application/x-www-form-urlencoded) and shows the route's JSON; the code step
+// is revealed by this script, so a browser with JavaScript off cannot finish
+// the two-step sign-in. Every path writes a line: the server's own message when
+// it sends one, the message table's words when the browser never reached the
+// service, and never a raw error string (drive#28's rule for the pricing page).
+const SIGNIN_ENDPOINT = "/api/signin";
+const METHODS = ["email", "google", "github"];
+// Where a person lands once they are signed in. The drive itself, not a
+// dashboard: the sign-in's whole job is to get them to their files.
+const AFTER_SIGNIN = "/files";
+
+const form = document.getElementById("signin-form");
+const codeStep = document.getElementById("code-step");
+const codeForm = document.getElementById("code-form");
+const emailInput = document.getElementById("email");
+const emailButton = document.getElementById("email-button");
+const status = document.getElementById("signin-status");
+
+// The same two constants the pricing page carries; test/messages.test.mjs
+// reads both pages and fails CI when either string drifts from the table.
+const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
+const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
+
+function say(message, kind) {
+  status.textContent = message;
+  status.classList.toggle("is-error", kind === "error");
+  status.classList.toggle("is-done", kind === "done");
+}
+
+// One POST for all three methods. The reply's error line is shown as sent:
+// the server builds it from src/messages.js, so it is a finished sentence and
+// never a stack.
+async function start(method, email) {
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(email === undefined ? { method } : { method, email }),
+    });
+  } catch (networkError) {
+    console.error("signin: request failed", networkError);
+    say(OFFLINE_MESSAGE, "error");
+    return;
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (parseError) {
+    console.error("signin: reply was not JSON", parseError);
+    say(UNEXPECTED_MESSAGE, "error");
+    return;
+  }
+  if (!response.ok) {
+    say(
+      typeof payload.error === "string" && payload.error.length > 0
+        ? payload.error
+        : UNEXPECTED_MESSAGE,
+      "error",
+    );
+    return;
+  }
+  if (method === "email") {
+    codeStep.hidden = false;
+    say("Check your email for the 6-digit code.", "done");
+    document.getElementById("code").focus();
+    return;
+  }
+  say("Opening " + method + "…", "done");
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  emailButton.disabled = true;
+  say("Sending…", "pending");
+  start("email", emailInput.value.trim()).finally(() => {
+    emailButton.disabled = false;
+  });
+});
+
+for (const button of document.querySelectorAll("[data-method]")) {
+  button.addEventListener("click", () => {
+    const method = button.dataset.method;
+    if (!METHODS.includes(method)) {
+      return;
+    }
+    say("Sending…", "pending");
+    start(method, undefined);
+  });
+}
+
+// The finish step: the address and the code, in one POST. A good answer sets
+// the session cookie, so the browser follows to the drive with the session
+// attached; a bad one says so in the server's own words and the code box stays
+// open for a second try rather than dumping the person back to the start.
+async function finish(email, code) {
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ step: "finish", email, code }),
+    });
+  } catch (networkError) {
+    console.error("signin: request failed", networkError);
+    say(OFFLINE_MESSAGE, "error");
+    return;
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (parseError) {
+    console.error("signin: reply was not JSON", parseError);
+    say(UNEXPECTED_MESSAGE, "error");
+    return;
+  }
+  if (!response.ok) {
+    say(
+      typeof payload.error === "string" && payload.error.length > 0
+        ? payload.error
+        : UNEXPECTED_MESSAGE,
+      "error",
+    );
+    return;
+  }
+  // The session is set; the only thing left is to use it.
+  window.location.assign(AFTER_SIGNIN);
+}
+
+// The code step posts the address with the code. The endpoint checks the code
+// against the one it emailed and, on a match, sets the session cookie every
+// account route is gated on (src/accounts.js).
+codeForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const code = document.getElementById("code").value.trim();
+  const codeButton = codeForm.querySelector("button");
+  codeButton.disabled = true;
+  say("Signing in…", "pending");
+  finish(emailInput.value.trim(), code).finally(() => {
+    codeButton.disabled = false;
+  });
+});
+  </script>
+</body>
+</html>

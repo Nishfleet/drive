@@ -75,7 +75,7 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   // cannot name a test that runs but no longer enforces anything.
   assert.match(srcFile("index.js"), /export default \{\n  async fetch/);
   const required = [
-    ["src/status.js", /export function signedInAccount\(request\)/],
+    ["src/status.js", /export async function signedInAccount\(request, store\)/],
     ["src/files.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
@@ -126,8 +126,8 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // in the file: the expression has to sit in the route's own branch, and every
   // route's branch is named by the constant the switch compares against.
   for (const [usedAs, account] of [
-    ["STATUS_ENDPOINT", "signedInAccount(request)"],
-    ["FILES_ENDPOINT", "signedInAccount(request)"],
+    ["STATUS_ENDPOINT", "await signedInAccount(request,"],
+    ["FILES_ENDPOINT", "await signedInAccount(request,"],
   ]) {
     const at = branch.indexOf(usedAs);
     assert.notEqual(at, -1, `${usedAs} must have its own branch in the fetch switch`);
@@ -136,6 +136,15 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
       `${usedAs}'s branch must read ${account}`,
     );
   }
+  // The gate is async, so a call site that forgets `await` would hold a truthy
+  // Promise where an account belongs. Every call in the file must be awaited.
+  const signinCalls = [...index.matchAll(/signedInAccount\(/g)].length;
+  const awaitedCalls = [...index.matchAll(/await signedInAccount\(/g)].length;
+  assert.equal(
+    awaitedCalls,
+    signinCalls,
+    "every signedInAccount() call in src/index.js must be awaited",
+  );
   // The live proof: anonymous is 401 with the table's words.
   const env = { ASSETS: { fetch: () => new Response("asset") } };
   const anonymous = await worker.fetch(new Request(`https://drive.test${STATUS_ENDPOINT}`), env);

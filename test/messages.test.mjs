@@ -21,6 +21,11 @@ const REQUIRED_PATHS = [
   "storage-down",
   "payment-failed",
   "unauthorized",
+  // The sign-in screen's two words (drive#10): the closed door while the
+  // account store lands with build step 1, and the refusal a cross-site
+  // request gets from the same-origin rule.
+  "sign-in-closed",
+  "cross-site",
 ];
 
 // Every entry must have exactly these keys, no more, no less (sorted for the
