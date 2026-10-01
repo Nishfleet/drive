@@ -18,9 +18,9 @@
 //    the line the spec carries, and nothing that only a parser would accept.
 
 import assert from "node:assert/strict";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
