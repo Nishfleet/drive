@@ -24,68 +24,189 @@ import {
   withIndex,
 } from "../src/search.js";
 
+/** @typedef {import("../src/files.js").FileStore} FileStore */
+
 const ACCOUNT = { id: "1", name: "Your drive" };
 const ACCOUNT_B = { id: "2", name: "Someone else's drive" };
+
+// parseQuery answers a two-arm union; every error test below wants the error
+// arm, so the discriminator is read through one narrowing helper rather than
+// with a cast at each call.
+/**
+ * @param {{words: string[]}|{error: string}} parsed
+ * @returns {string|undefined}
+ */
+const errorOf = (parsed) => ("error" in parsed ? parsed.error : undefined);
 
 // ------------------------------------------------------------------- the db
 
 // The D1 shape over a real SQLite database, with the shipped migrations
 // applied, so every test below runs the SQL the Worker will run.
+/**
+ * D1's types are the runtime's `declare abstract class` — its `raw` carries two
+ * generic overloads no JS object can express — so the adapter is typed here in
+ * full, every method named and JSDoc'd, and handed to the interface the modules
+ * import through one documented cast. Nothing inside hides an error: each
+ * method below checks on its own, and a method the modules call that is missing
+ * would fail at run time, not silently pass.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+ * @returns {SqliteD1}
+ */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const runOne = (sql, params) => {
+  /** The D1 meta a run answers with: every required field of the runtime's
+   * D1Meta, so a `D1Result` check is not fought.
+   * @returns {D1Meta & Record<string, unknown>} */
+  const meta = () => ({
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: 0,
+    last_row_id: 0,
+    changed_db: false,
+    changes: 0,
+  });
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {{results: Record<string, unknown>[], changes: number}}
+   */
+  const runOne = (sql, params = []) => {
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: sqlite.prepare(sql).all(...params) };
+      return { results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(sql).all(...values)), changes: 0 };
     }
-    const info = sqlite.prepare(sql).run(...params);
-    return { success: true, meta: { changes: info.changes } };
+    const info = sqlite.prepare(sql).run(...values);
+    return { results: [], changes: Number(info.changes) };
   };
-  return {
-    sqlite,
-    prepare(sql) {
-      return {
-        bind(...params) {
-          return {
-            sql,
-            params,
-            async all() {
-              return runOne(sql, params);
-            },
-            async first() {
-              const row = sqlite.prepare(sql).get(...params);
-              return row === undefined ? null : row;
-            },
-          };
+  /**
+   * One prepared statement, the way D1 hands it back: bind() returns a
+   * statement carrying its own parameters, so the rest of the chain
+   * (all/first/run) runs the bound SQL.
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {D1PreparedStatement}
+   */
+  const statementFor = (sql, params = []) =>
+    /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        sql,
+        params,
+        /** @param {...unknown} values */
+        bind(...values) {
+          return statementFor(sql, values);
         },
-      };
+        /**
+         * @template T
+         * @param {string} [colName]
+         * @returns {Promise<T|null>}
+         */
+        async first(colName) {
+          void colName;
+          const row = runOne(sql, params).results[0];
+          return row === undefined ? null : /** @type {T} */ (row);
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async all() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async run() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+      })
+    );
+  /** @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
+  return /** @type {SqliteD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+    /**
+     * @param {string} sql
+     * @returns {D1PreparedStatement}
+     */
+    prepare(sql) {
+      const statement = statementFor(sql, []);
+      bound.set(statement, { sql, params: [] });
+      return statement;
     },
+    /**
+     * @template T
+     * @param {D1PreparedStatement[]} statements
+     * @returns {Promise<D1Result<T>[]>}
+     */
     async batch(statements) {
+      /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
       const results = [];
       sqlite.exec("BEGIN");
       try {
         for (const statement of statements) {
-          results.push(runOne(statement.sql, statement.params));
+          const state = bound.get(statement);
+          if (!state) {
+            throw new Error("a statement was batch-ran that this adapter did not prepare");
+          }
+          results.push(runOne(state.sql, state.params));
         }
       } finally {
         sqlite.exec("COMMIT");
       }
-      return results;
+      return /** @type {D1Result<T>[]} */ (
+        results.map((result) => ({
+          results: /** @type {T[]} */ (result.results),
+          success: /** @type {true} */ (true),
+          meta: meta(),
+        }))
+      );
     },
-  };
+    /**
+     * D1's exec runs a multi-statement string; the tests never call it, but
+     * the adapter speaks the interface rather than being cast silent.
+     * @param {string} query
+     */
+    async exec(query) {
+      sqlite.exec(query);
+      return { count: 0, duration: 0 };
+    },
+    /**
+     * D1's session API is not part of what the modules under test use; a
+     * call would be a real bug, so it throws rather than standing in silently.
+     * @param {string} [constraintOrBookmark]
+     */
+    withSession(constraintOrBookmark) {
+      throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+    },
+      async dump() {
+        throw new Error("a test adapter has no dump");
+      },
+    })
+  );
 }
 
-// A fake account's store with a small tree, used by the feed tests.
-function seededStore() {
-  const store = createMemoryStore();
-  return store;
-}
-
+/**
+ * A drive tree written through the real store, for the feed tests.
+ * @param {FileStore} store
+ * @param {Array<[string, string]>} entries
+ */
 async function seed(store, entries) {
   for (const [path, body] of entries) {
-    await store.write(path, body, "text/plain");
+    await store.write(path, new Blob([body]).stream(), "text/plain");
   }
 }
 
@@ -100,18 +221,18 @@ test("parseQuery folds case, splits words and drops repeats", () => {
 test("parseQuery says what to do when the query is empty", () => {
   for (const empty of [undefined, "", "   ", null, 42]) {
     const parsed = parseQuery(empty);
-    assert.equal(parsed.error, "Type one or more words to search for.");
+    assert.equal(errorOf(parsed), "Type one or more words to search for.");
   }
 });
 
 test("parseQuery rejects an over-long query with the limit named", () => {
   const parsed = parseQuery("a".repeat(257));
-  assert.match(parsed.error, /too long/);
+  assert.match(/** @type {string} */ (errorOf(parsed)), /too long/);
 });
 
 test("parseQuery caps the word count", () => {
   const parsed = parseQuery(Array.from({ length: MAX_WORDS + 1 }, (_, i) => `w${i}`).join(" "));
-  assert.match(parsed.error, /at most 8 words/);
+  assert.match(/** @type {string} */ (errorOf(parsed)), /at most 8 words/);
 });
 
 test("searchSql builds one AND clause per word, escapes wildcards and never interpolates input", () => {
@@ -134,7 +255,7 @@ test("searchSql builds one AND clause per word, escapes wildcards and never inte
 
 test("search finds a file by name across folders and ranks whole-name matches first", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [
     ["/Report Q4.pdf", "x"],
     ["/fin/2024 annual report.pdf", "x"],
@@ -154,7 +275,7 @@ test("search finds a file by name across folders and ranks whole-name matches fi
 
 test("search matches every word (AND) and is case-insensitive", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [
     ["/INVOICE March.pdf", "x"],
     ["/invoice-april.pdf", "x"],
@@ -168,7 +289,7 @@ test("search matches every word (AND) and is case-insensitive", async () => {
 
 test("search treats % and _ as characters, not wildcards", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [
     ["/50%_off.txt", "x"],
     ["/50percent_off.txt", "x"],
@@ -181,7 +302,7 @@ test("search treats % and _ as characters, not wildcards", async () => {
 
 test("search never touches the bucket: the store is not a search parameter", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [["/notes.txt", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
   const hostile = {
@@ -199,7 +320,7 @@ test("search never touches the bucket: the store is not a search parameter", asy
 
 test("search honours limit and reports truncation", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(
     store,
     Array.from({ length: 7 }, (_, i) => [`/note-${i}.txt`, "x"]),
@@ -214,7 +335,7 @@ test("search honours limit and reports truncation", async () => {
 });
 
 test("searchDrive without a database says the index is not configured", async () => {
-  const found = await searchDrive(null, ACCOUNT, "notes");
+  const found = await searchDrive(/** @type {null} */ (null), ACCOUNT, "notes");
   assert.equal(found.status, 503);
 });
 
@@ -222,7 +343,7 @@ test("searchDrive without a database says the index is not configured", async ()
 
 test("reconcileIndex indexes every live file, nested, and skips the trash", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [
     ["/a.txt", "x"],
     ["/deep/er/one.md", "x"],
@@ -242,7 +363,7 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
 
 test("reconcileIndex is a rebuild: rows for files the store no longer has are dropped", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [
     ["/keep.txt", "x"],
     ["/gone.txt", "x"],
@@ -257,7 +378,7 @@ test("reconcileIndex is a rebuild: rows for files the store no longer has are dr
 
 test("withIndex keeps the index current on write, delete and restore, without listing", async () => {
   const db = makeD1();
-  const raw = seededStore();
+  const raw = createMemoryStore();
   let listed = 0;
   const watched = {
     ...raw,
@@ -292,8 +413,8 @@ test("withIndex keeps the index current on write, delete and restore, without li
 });
 
 test("withIndex passes the store through unchanged when there is no database", () => {
-  const raw = seededStore();
-  assert.equal(withIndex(raw, null, ACCOUNT), raw);
+  const raw = createMemoryStore();
+  assert.equal(withIndex(raw, /** @type {null} */ (null), ACCOUNT), raw);
 });
 
 // ------------------------------------------------------------------ timing
@@ -384,7 +505,7 @@ function request(path, options = {}) {
 
 test("GET /api/search answers with the found rows", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [["/pictures/np-2024.png", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
   const response = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=np-2024`), db, ACCOUNT);
@@ -402,7 +523,11 @@ test("an empty query is a 400 with the one next step", async () => {
 });
 
 test("a search without an index binding is a 503", async () => {
-  const response = await handleSearchRequest(request(`${SEARCH_ENDPOINT}?q=x`), null, ACCOUNT);
+  const response = await handleSearchRequest(
+    request(`${SEARCH_ENDPOINT}?q=x`),
+    /** @type {null} */ (null),
+    ACCOUNT,
+  );
   assert.equal(response.status, 503);
 });
 
@@ -414,7 +539,7 @@ test("a search without an index binding is a 503", async () => {
 // null means 401, and the rows are filtered on account_id.
 test("an anonymous request is a 401 and no names leave the index", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(store, [["/secret-contract.pdf", "x"]]);
   await reconcileIndex(db, store, ACCOUNT);
   for (const account of [null, undefined]) {
@@ -437,13 +562,13 @@ test("account A never sees account B's file names", async () => {
   const db = makeD1();
   // Two drives, one index: A and B each walk their own store into the same
   // table, the way two accounts share one D1 database in production.
-  const storeA = seededStore();
+  const storeA = createMemoryStore();
   await seed(storeA, [
     ["/taxes/only-for-a.txt", "x"],
     ["/a/notes.txt", "x"],
   ]);
   await reconcileIndex(db, storeA, ACCOUNT);
-  const storeB = seededStore();
+  const storeB = createMemoryStore();
   await seed(storeB, [
     ["/b-only/invoice-for-b.txt", "x"],
     ["/b/notes.txt", "x"],
@@ -602,7 +727,7 @@ test("the migration is additive: one new table, no drops, every column defaulted
 
 test("MAX_LIMIT is the ceiling a caller can ask for", async () => {
   const db = makeD1();
-  const store = seededStore();
+  const store = createMemoryStore();
   await seed(
     store,
     Array.from({ length: MAX_LIMIT + 10 }, (_, i) => [`/many-${i}.txt`, "x"]),
