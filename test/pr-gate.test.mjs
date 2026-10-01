@@ -4,7 +4,7 @@
 // too late; the list is the builder's own check. That only works if a line is
 // checkable, so every line names a gate and this file proves each one against
 // the same modules the Worker runs. The first test pins the list's own shape:
-// eight checkable lines, under fifteen, every pointer a file that exists — so
+// nine checkable lines, under fifteen, every pointer a file that exists — so
 // a line cannot drift into prose or name a test that is no longer there.
 //
 // The one line a program cannot judge is the last one, what the PR body claims
@@ -60,7 +60,7 @@ const ctx = { waitUntil() {}, passThroughOnException() {} };
 // Worker runs. The one line a program cannot judge is the last one — what the
 // PR body claims was proven on real records — so its pointer is the spec's rule
 // for it (docs/build-spec.md), and the builder answers it in the PR.
-test("the list is checkable: eight lines, every pointer real, gates still wired", () => {
+test("the list is checkable: nine lines, every pointer real, gates still wired", () => {
   const agents = read("AGENTS.md");
   const start = agents.indexOf("## Before you open a PR");
   assert.notEqual(start, -1, "AGENTS.md must carry the 'Before you open a PR' list");
@@ -70,7 +70,7 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
 
   const lines = list.split("\n");
   const checks = lines.filter((line) => line.startsWith("- [ ] "));
-  assert.equal(checks.length, 8, "one checkable line per definition-of-done item");
+  assert.equal(checks.length, 9, "one checkable line per definition-of-done item");
   assert.ok(
     lines.filter((line) => line.trim() !== "").length <= 15,
     "the list stays under 15 lines",
@@ -103,6 +103,16 @@ test("the list is checkable: eight lines, every pointer real, gates still wired"
   for (const [file, gate] of required) {
     assert.match(srcFile(file.slice(4)), gate, `${file} must keep its gate`);
   }
+  assert.match(
+    read("test/own-words.test.mjs"),
+    /term: "SpaceFS"/,
+    "the own-words gate must still list SpaceFS as a term, so the line cannot point at an empty file",
+  );
+  assert.match(
+    read("test/own-words.test.mjs"),
+    /source: "https:\/\/spacefs.com\/"/,
+    "the SpaceFS term must cite the page it was read from",
+  );
 });
 
 // ------------------------------------------------ 1. every route has a gate

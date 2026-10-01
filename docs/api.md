@@ -20,9 +20,10 @@ The liveness probe is public on purpose: it answers before anyone is signed in, 
 | `GET /v1/keys` | account | The account's keys: `{keys: [{keyId, name, kind, prefix, capabilities, createdAt, lastSeenAt, revokedAt}]}`. No secret is ever listed. |
 | `POST /v1/keys` | account | Mint a key. Body `{kind?, name?}` (`device`/`agent`/`s3`/`branch`); answer `{keyId, accessKeyId, secret, prefix, capabilities}`. The secret is in this response and nowhere else. |
 | `DELETE /v1/keys/:keyId` | account | Revoke one of the account's own keys. `204`; another account's key is `404`. |
+| `DELETE /v1/device/token` | account | Revoke the caller's own device token. The token is the one in the `Authorization: Bearer` header. `204`; subsequent requests with that token are `401`. |
 | `GET /v1/storage/list` | public | The stand-in storage API. HTTP Basic with the access key id and secret. `?path=` defaults to the key's prefix. A revoked key is `401`; a path outside the key's own prefix is `403`. The real adapter replaces this behind the same answers (build step 1). |
 
-The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`); a request with no token, or a token that does not resolve, is `401` and no handler runs. The device flow is RFC 8628's device authorization grant.
+The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`); a request with no token, or a token that does not resolve (unknown, expired, or revoked), is `401` and no handler runs. The device flow is RFC 8628's device authorization grant.
 
 ## Key scopes
 

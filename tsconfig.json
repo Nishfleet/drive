@@ -30,7 +30,6 @@
     "checkJs": true
   },
   // The product code — the pricing Worker in src/ and the api Worker in
-  // The product code — the pricing Worker in src/ and the api Worker in
   // workers/api/src — checked with checkJs and strict. The two test trees
   // (test/** and workers/api/test/**) were drive#162's remainder: their fakes
   // are now JSDoc-typed, so including them here leaves `npm run typecheck`

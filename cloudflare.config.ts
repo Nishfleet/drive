@@ -72,8 +72,19 @@ export default defineConfig({
       // secret is required, so the deploy refused to ship until both
       // were set, which contradicts the closed-door design. Set them
       // once drive has a sending domain (they persist across deploys):
-      //   npx wrangler secret put EMAIL_SEND_TOKEN
-      //   npx wrangler secret put MAIL_FROM
+      //   cf workers secrets update EMAIL_SEND_TOKEN --type secret_text \
+      //     --text <token> --worker drive-pricing
+      //   cf workers secrets update MAIL_FROM --type secret_text \
+      //     --text <address> --worker drive-pricing
+      // (--type is required: cf refuses the update without it.)
+      //
+      // drive issue #189: these two survive a deploy only because cf
+      // 1.0.0-beta.7 and later inherit secret bindings from the previous
+      // Worker version instead of dropping any not declared in this file
+      // (https://github.com/cloudflare/cf/releases/tag/cf%401.0.0-beta.7).
+      // On beta.5, the first deploy after either was set would have deleted
+      // them, so the "closed door" above would have opened on a config that
+      // read as closed. The lockfile pin is the gate on that behaviour.
     },
   },
 });
