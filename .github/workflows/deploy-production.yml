@@ -48,11 +48,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Check the site stayed private
-        # The site has no public address until drive has a domain
-        # (cloudflare.config.ts, workersDev: false). A deploy that republished
-        # the workers.dev address would answer here; Cloudflare answers 404
-        # when it is off. The live health smoke returns with the domain.
+        # The workers.dev address sits behind Cloudflare Access until drive
+        # has a domain (cloudflare.config.ts). A stranger must get a redirect
+        # to the Access sign-in, never the site. The live health smoke
+        # returns with the domain.
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' https://drive-pricing.nishant345.workers.dev/)
-          echo "workers.dev answered $code"
-          test "$code" = 404
+          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
+          echo "workers.dev answered: ${out%%\?*}"
+          case "$out" in
+            "302 https://"*".cloudflareaccess.com/"*) ;;
+            *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
+          esac

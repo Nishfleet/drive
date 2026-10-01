@@ -7,10 +7,11 @@ export default defineConfig({
 	worker: {
 		name: "drive-pricing",
 		compatibilityDate: "2026-09-29",
-		// Private until drive has its own domain (Nish, 2026-10-01: "make it
-		// private"). No public workers.dev address and no preview URLs, so a
-		// deploy cannot republish the site where anyone with the link sees it.
-		workersDev: false,
+		// Private until drive has its own domain (Nish, 2026-10-01). The
+		// workers.dev address is on only behind Cloudflare Access ("All
+		// traffic", Cloudflare account members); the deploy fails if a
+		// stranger ever reaches the site without the sign-in. No preview URLs.
+		workersDev: true,
 		previewUrls: false,
 		entrypoint,
 		// Everything that is not /api/* is served straight from the asset
