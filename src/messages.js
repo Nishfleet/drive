@@ -81,6 +81,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This drive has reached its spending cap, so it is not taking uploads right now.",
     next: "Tell the person who shared this page and try again later.",
   }),
+  // A cross-site request a page made on the visitor's behalf, refused by
+  // request.referrer and Origin together; the same-origin rule in
+  // src/email-send.js is the pattern this words.
+  "cross-site": Object.freeze({
+    what: "That request did not come from the drive.",
+    next: "Open the drive's page and try again there.",
+  }),
+  // Sign-in exists as a route, but it is not fully open yet: the account
+  // store lands with D1 (drive#2) and a deployment with no mailer refuses
+  // rather than reporting a code sent, and no OAuth provider is wired to
+  // secrets (Nish's). This is the closed door's words, not a fake success.
+  "sign-in-closed": Object.freeze({
+    what: "Signing in is not open yet.",
+    next: "Join the waitlist, and your first email will carry a sign-in code.",
+  }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
   // and the worker's last resort.

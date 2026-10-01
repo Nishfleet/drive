@@ -447,11 +447,12 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
 
 test("the pages' mastheads read as one navigation", () => {
   // The review found the headers disagreeing. The two mastheads that carry a
-  // nav (usage and get-started) list Your files, Pricing, Get started, Usage
-  // in that order (the Web Files link leads since #48 merged), and each marks
-  // itself. The pricing page's masthead is its wordmark alone — its links are
-  // its footer nav, which is issue #11's and is checked below.
-  const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"'];
+  // nav (usage and get-started) list Your files, Pricing, Get started, Usage,
+  // Sign in in that order (the Web Files link leads since #48 merged, and Sign
+  // in closes it since drive#10), and each marks itself. The pricing page's
+  // masthead is its wordmark alone — its links are its footer nav, which is
+  // issue #11's and is checked below.
+  const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"', '<a href="/signin"'];
   for (const masthead of [page, getStartedPage]) {
     const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
     assert.deepEqual(

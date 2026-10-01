@@ -80,6 +80,10 @@ export const PAGES = Object.freeze([
   // (issue #19). It carries its own title and description rather than
   // inheriting the pricing page's.
   Object.freeze({ path: "/upload.html", indexable: false }),
+  // The sign-in screen is where a person starts a session, so it is noindex
+  // and out of the sitemap: a crawler has no session and nothing to read
+  // there (drive#10).
+  Object.freeze({ path: "/signin.html", indexable: false }),
 ]);
 
 // The docs pages (drive issue #98), as the URLs a crawler reads. The docs are

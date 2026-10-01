@@ -1,4 +1,4 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 
 // drive issue #11: the pricing and landing page, served as Worker static
@@ -7,6 +7,11 @@ export default defineConfig({
 	worker: {
 		name: "drive-pricing",
 		compatibilityDate: "2026-09-29",
+		// Private until drive has its own domain (Nish, 2026-10-01: "make it
+		// private"). No public workers.dev address and no preview URLs, so a
+		// deploy cannot republish the site where anyone with the link sees it.
+		workersDev: false,
+		previewUrls: false,
 		entrypoint,
 		// Everything that is not /api/* is served straight from the asset
 		// layer, so the page never pays for a Worker invocation. /api/* runs the
@@ -21,6 +26,12 @@ export default defineConfig({
 			runWorkerFirst: ["/api/*", "/s/*"],
 			notFoundHandling: "404-page",
 		},
+		// drive issue #18: the file index's nightly reconciler. `scheduled` in
+		// src/index.js rebuilds one account's rows from a full store walk; the
+		// schedule is the only way a rebuild starts, so no web request can spend
+		// the walk (the safety review: reindex is not a public route). 03:00 UTC
+		// is the spec's quiet hour, before the meter's first hourly run.
+		triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
 		env: {
 			ASSETS: bindings.assets(),
 			WAITLIST_DB: bindings.d1({
@@ -30,8 +41,10 @@ export default defineConfig({
 			// drive issue #28: bound the waitlist endpoint. Five sign-ups a
 			// minute per client IP is far above a person's pace and far below
 			// what a script needs to enumerate addresses or fill the table.
+			// Cloudflare requires the namespace to be a positive integer
+			// string, unique per account; a name fails the deploy with 10021.
 			WAITLIST_RATE_LIMITER: bindings.rateLimit({
-				namespace: "drive-waitlist",
+				namespace: "1001",
 				simple: { limit: 5, period: 60 },
 			}),
 			// Cloudflare Email Sending (drive#33): the stock provider every
@@ -45,11 +58,12 @@ export default defineConfig({
 			// file: with the token unset the route answers 403 (a closed
 			// door), and with no MAIL_FROM it answers 503, so it cannot be
 			// used as a mail relay and cannot send from a placeholder domain
-			// before drive has one. Set at deploy time:
+			// before drive has one. They are not declared here: a declared
+			// secret is required, so the deploy refused to ship until both
+			// were set, which contradicts the closed-door design. Set them
+			// once drive has a sending domain (they persist across deploys):
 			//   npx wrangler secret put EMAIL_SEND_TOKEN
 			//   npx wrangler secret put MAIL_FROM
-			EMAIL_SEND_TOKEN: bindings.secret(),
-			MAIL_FROM: bindings.secret(),
 		},
 	},
 });

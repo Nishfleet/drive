@@ -411,17 +411,13 @@ export function restorableUntil(deletedAt) {
  * This is the one place the prefix is applied, so an adapter never has to know
  * it: `createMemoryStore` and `createS3Store` are both plain stores over
  * storage keys, and the gate scopes them.
- * @param {FileStore} store the shared, unscoped store
  * @param {{id: string, name?: string}} account
- * @returns {FileStore}
+ * @returns {string} the storage prefix, `u/<id>`
  */
-export function scopeStore(store, account) {
-  if (!store) {
-    throw new TypeError("scopeStore needs a store");
-  }
+export function accountPrefix(account) {
   if (typeof account !== "object" || account === null || typeof account.id !== "string") {
     throw new TypeError(
-      `scopeStore needs a signed-in account with an id, got ${String(account)}`,
+      `an account prefix needs a signed-in account with an id, got ${String(account)}`,
     );
   }
   if (account.id.length === 0 || account.id.includes("/")) {
@@ -431,7 +427,62 @@ export function scopeStore(store, account) {
       `an account id is one path segment, got "${account.id}"`,
     );
   }
-  const prefix = `u/${account.id}`;
+  return `u/${account.id}`;
+}
+
+/**
+ * The drive path a storage key names, for one account — the inverse of the key
+ * `scopeStore` builds. It is exported for the one caller that sits under the
+ * scope and has to name a file the way the drive does: the file index (src/
+ * search.js) is handed the account's storage keys and must store `/a/b.txt`,
+ * never `u/<id>/a/b.txt`. A key outside the account's own prefix is a wiring
+ * bug and is thrown on, not returned: an index row for another account's file
+ * is exactly the leak the prefix exists to prevent.
+ * @param {string} key the storage key a wrapped store was handed
+ * @param {{id: string}} account
+ * @returns {string} the drive path
+ */
+export function drivePathFromKey(key, account) {
+  const prefix = accountPrefix(account);
+  if (typeof key !== "string" || !key.startsWith(`${prefix}/`)) {
+    throw new Error(
+      `${String(key)} is not under ${prefix}/; a store scoped to one account must never be handed another's key`,
+    );
+  }
+  return `/${key.slice(prefix.length + 1)}`;
+}
+
+/**
+ * One account's view of a shared store: every drive path is rewritten to that
+ * account's own prefix, and every row that comes back is rewritten to a drive
+ * path, so the page and the handlers never see a storage key and one account
+ * can never name another's (drive issue #73, north star: Safe). The id is
+ * carried in a full segment (`u/<id>/…`) so an id that is a prefix of another
+ * (`1` and `10`) cannot reach across.
+ *
+ * This is the one place the prefix is applied, so an adapter never has to know
+ * it: `createMemoryStore` and `createS3Store` are both plain stores over storage
+ * keys, and the gate scopes them.
+ * @param {FileStore} store the shared, unscoped store
+ * @param {{id: string, name?: string}} account
+ * @returns {FileStore}
+ */
+/**
+ * One account's view of a shared store: see `accountPrefix` for the prefix
+ * and `drivePathFromKey` for the inverse.
+ * @param {FileStore} store the shared, unscoped store
+ * @param {{id: string, name?: string}} account
+ * @returns {FileStore}
+ */
+export function scopeStore(store, account) {
+  if (!store) {
+    throw new TypeError("scopeStore needs a store");
+  }
+  // The account is checked here, in the one function that applies the prefix,
+  // and the prefix itself comes from accountPrefix so the shape is written
+  // once.
+  const prefix = accountPrefix(account);
+
   // The drive path is checked here as well as in the handlers. Isolation must
   // not rest on every future caller remembering to validate, so a path that
   // could climb out of the prefix (`..`) is refused at the one place the
@@ -559,14 +610,42 @@ export function createS3Store(config) {
       // `path` is a storage key (`u/<id>`, `u/<id>/Photos`); the query wants
       // exactly one trailing slash and no second one.
       const prefix = path.endsWith("/") ? path : `${path}/`;
-      const query = `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F`;
-      const response = await fetchImpl(`${base}${query}`);
-      if (!response.ok) {
-        throw new Error(`storage list failed with ${response.status}`);
+      const entries = [];
+      let token = null;
+      let seen = null;
+      // Every page, not the first. S3 caps one ListObjectsV2 answer at 1,000
+      // keys and answers the rest through NextContinuationToken, so a single
+      // call silently truncates a folder at 1,000 files: the Files page showed
+      // the first thousand and the file index (issue #18) never indexed the
+      // rest, which the stand-in proof caught on a 100,000-file drive (5,000 a
+      // folder -> 20,000 of 100,000 indexed). The token is looped here, once,
+      // so no caller has to remember to.
+      for (;;) {
+        const query =
+          `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
+          (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
+        const response = await fetchImpl(`${base}${query}`);
+        if (!response.ok) {
+          throw new Error(`storage list failed with ${response.status}`);
+        }
+        const xml = await response.text();
+        // The base a row's key is built from: the folder key without its
+        // trailing slash, so a child key is `${base}/${name}`.
+        entries.push(...parseListObjects(xml, prefix, prefix.slice(0, -1)));
+        token = nextContinuationToken(xml);
+        if (token === null) {
+          return entries;
+        }
+        if (token === seen) {
+          // A server answering the same token forever would spin here and hold
+          // the request open. A truncated folder is the one failure this file
+          // exists to prevent, so it is named instead of returned.
+          throw new Error(
+            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+          );
+        }
+        seen = token;
       }
-      // The base a row's key is built from: the folder key without its
-      // trailing slash, so a child key is `${base}/${name}`.
-      return parseListObjects(await response.text(), prefix, prefix.slice(0, -1));
     },
     async read(path) {
       const response = await fetchImpl(urlFor(path));
@@ -648,6 +727,23 @@ function tagValue(block, tag) {
   const from = open + tag.length + 2;
   const close = block.indexOf(`</${tag}>`, from);
   return close === -1 ? "" : block.slice(from, close).trim();
+}
+
+/**
+ * The token that fetches the page after this one, or null when the listing is
+ * the last page. S3 caps one ListObjectsV2 answer at 1,000 keys and says so by
+ * returning `<NextContinuationToken>`; without it a folder is truncated at the
+ * cap and the caller cannot tell. An empty element counts as no next page, so a
+ * server that sends the tag empty ends the loop rather than asking for "".
+ * @param {string} xml
+ * @returns {string|null}
+ */
+export function nextContinuationToken(xml) {
+  if (typeof xml !== "string") {
+    throw new TypeError("nextContinuationToken needs the XML body");
+  }
+  const token = tagValue(xml, "NextContinuationToken");
+  return token === "" ? null : token;
 }
 
 /**

@@ -26,10 +26,9 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     # A job with an environment gets a GitHub Deployment and deployment_status
-    # events for free; `url` is also the origin the smoke step curls.
+    # events for free. No `url` while the site has no public address.
     environment:
       name: production
-      url: https://drive-pricing.nishant345.workers.dev
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,8 +47,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Smoke the deployed Worker
-        # A deploy that reports success while the site 503s is not a success:
-        # /api/health answers {"ok":true} only when the Worker can reach its
-        # D1, its assets and its rate limiter (src/health.js).
-        run: curl -fsS --retry 20 --retry-all-errors https://drive-pricing.nishant345.workers.dev/api/health | grep -q '"ok":true'
+      - name: Check the site stayed private
+        # The site has no public address until drive has a domain
+        # (cloudflare.config.ts, workersDev: false). A deploy that republished
+        # the workers.dev address would answer here; Cloudflare answers 404
+        # when it is off. The live health smoke returns with the domain.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://drive-pricing.nishant345.workers.dev/)
+          echo "workers.dev answered $code"
+          test "$code" = 404
