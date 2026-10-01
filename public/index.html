@@ -59,86 +59,29 @@
   <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
        The favicon is an inline data: URI: there is no network fetch to
        hash, so an integrity attribute would be meaningless. -->
+  <link rel="stylesheet" href="/site.css">
   <style>
 /* Drive pricing page — direction A ("the bill") with the 60%-full strip grafted
-   from direction C. See docs/design/pricing-brief.md. System font stacks only:
-   no web font files, so nothing blocks first paint. */
-
-:root {
-  --paper: #faf6ee;
-  --paper-raised: #fffdf8;
-  --ink: #21201c;
-  --ink-soft: #56514a;
-  --ink-faint: #6f6a5f;
-  --rule: #ddd5c5;
-  --accent: #1f3a5f;
-  --accent-soft: #e6ecf3;
-  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
-    "Times New Roman", serif;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
-}
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  -webkit-text-size-adjust: 100%;
-}
+   from direction C. See docs/design/pricing-brief.md. The palette, the reset
+   and the page chrome are in the shared site stylesheet (drive #71); what is
+   left here is only what the pricing page does differently. System font stacks
+   only: no web font files, so nothing blocks first paint. */
 
 body {
-  margin: 0;
   padding: 0 clamp(20px, 5vw, 72px) 72px;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  font-size: 17px;
-  line-height: 1.55;
-  overflow-wrap: break-word;
 }
 
 /* The single action on the page; used by keyboard users, not mouse users. */
-.skip-link {
-  position: absolute;
-  left: -9999px;
-}
-
 .skip-link:focus {
-  left: 8px;
-  top: 8px;
   z-index: 10;
-  padding: 8px 12px;
-  background: var(--ink);
-  color: var(--paper);
-  text-decoration: none;
-}
-
-:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .masthead {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 18px;
   max-width: 1180px;
-  margin: 0 auto;
-  padding: 28px 0 20px;
-  border-bottom: 1px solid var(--rule);
 }
 
 .wordmark {
-  font-family: var(--serif);
   font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 .tagline {
@@ -148,7 +91,6 @@ body {
 
 main {
   max-width: 1180px;
-  margin: 0 auto;
 }
 
 /* ---- Price statement: the only large type on the page ------------------- */
@@ -468,8 +410,6 @@ main {
 .footer {
   max-width: 1180px;
   margin: clamp(40px, 6vh, 72px) auto 0;
-  padding-top: 18px;
-  border-top: 1px solid var(--rule);
   color: var(--ink-soft);
   font-size: 14px;
 }
@@ -571,6 +511,7 @@ main {
         <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
       </form>
       <nav class="footer-nav" aria-label="Drive">
+        <a href="/signin">Sign in</a>
         <a href="/get-started">Get started</a>
         <a href="/">Pricing</a>
       </nav>

@@ -32,6 +32,7 @@ import {
   syncStatus,
   uploadProgress,
 } from "../src/status.js";
+import { createAccountStore } from "../src/accounts.js";
 import {
   ageMs,
   connectionLine,
@@ -242,19 +243,27 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
   assert.equal(forgot.status, 401);
 });
 
-test("no request can prove an account until the sign-in flow lands", () => {
-  // Build step 4 (#5) owns the session; until then signedInAccount() is the
-  // one swap point and returns null for every request, signed-in cookie or
-  // not, so the endpoint is closed rather than open (north star: Safe).
-  assert.equal(signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
-  assert.equal(
-    signedInAccount(
-      new Request("https://drive.test/api/first-run-status", {
-        headers: { cookie: "drive_session=made-up" },
-      }),
-    ),
-    null,
-  );
+test("a request can only prove an account through a session the store minted", async () => {
+  // The sign-in flow has landed (build step 9, #10), so signedInAccount() is
+  // no longer null for every caller — but it is still closed by default. With
+  // no store a cookie proves nothing, and a made-up one proves nothing either:
+  // the token is looked up by digest, so a value the browser chose is not a
+  // session (north star: Safe).
+  assert.equal(await signedInAccount(new Request("https://drive.test/api/first-run-status")), null);
+  const madeUp = new Request("https://drive.test/api/first-run-status", {
+    headers: { cookie: "drive_session=made-up" },
+  });
+  assert.equal(await signedInAccount(madeUp, createAccountStore()), null);
+  assert.equal(await signedInAccount(madeUp, null), null, "no store, no account");
+
+  // The other half: a start makes or finds the account, and the store holds
+  // only digests, so there is no session token to read back out of it. The
+  // finish step is the only way to get one, and the full round trip is proved
+  // through the Worker in test/account-gate.test.mjs.
+  const store = createAccountStore({ sendCode: () => {} });
+  const started = await store.startSignin({ method: "email", email: "someone@example.com" });
+  assert.ok(started.account.id, "a start makes or finds the account");
+  assert.equal(await store.accountForSession("made-up"), null);
 });
 
 test("the status endpoint names the one method it serves", () => {

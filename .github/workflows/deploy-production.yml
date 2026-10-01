@@ -1,24 +1,61 @@
+# Push to main deploys the drive-pricing Worker. Merging to main already
+# requires the `verify` and `go` checks (the main ruleset), so this job does
+# not re-run them: it builds, ships, and smokes the live health endpoint.
+#
+# drive#132: the old caller pointed at nish3451/shared-workflows (archived).
+# That reusable workflow had no deploy target for drive and waited on every
+# check on the main SHA, so merging to main never shipped the site and the
+# live drive-pricing Worker went stale. This is the plain deploy job 0509
+# already runs, adapted to drive's `cf` CLI (`cloudflare.config.ts`).
 name: Deploy production
-# Canonical fleet deploy-on-green caller — synced to every active repo by
-# Nishfleet/fleet-ops repo-standards-sync. Do NOT customize this file in a
-# consumer repo (the sync will overwrite it); per-repo settings live in
-# .github/deploy-config.json (build_command, deploy_command, health_url,
-# node_version). Repos with no deploy target self-skip green.
+
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}  # manual redeploy of main head; the green gate still runs
-permissions:
-  contents: read
-  checks: read
-  actions: read
+  workflow_dispatch: {}  # manual redeploy of main head
+
 concurrency:
   group: deploy-production
   cancel-in-progress: false  # deploys queue, never cancel mid-flight
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
-    uses: nish3451/shared-workflows/.github/workflows/deploy-production.yml@v1
-    # explicit map, not inherit — least privilege, semgrep-enforced
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    name: deploy
+    runs-on: ubuntu-latest
+    # A job with an environment gets a GitHub Deployment and deployment_status
+    # events for free. No `url` while the site has no public address.
+    environment:
+      name: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Deploy the Worker
+        # `npm run build` (cf build) already wrote .cloudflare/output, so
+        # --prebuilt uploads that output instead of building a second time.
+        run: npx cf deploy --prebuilt
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Check the site stayed private
+        # The workers.dev address sits behind Cloudflare Access until drive
+        # has a domain (cloudflare.config.ts). A stranger must get a redirect
+        # to the Access sign-in, never the site. The live health smoke
+        # returns with the domain.
+        run: |
+          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
+          echo "workers.dev answered: ${out%%\?*}"
+          case "$out" in
+            "302 https://"*".cloudflareaccess.com/"*) ;;
+            *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
+          esac
