@@ -40,6 +40,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Apply D1 migrations
+        # The databases live outside the Worker version, so their migrations
+        # apply before the code that reads the new tables ships (drive #170,
+        # #178). One directory per database, matching the bindings in
+        # cloudflare.config.ts. `cf d1 migrations apply` takes the database
+        # id; it rejects names and binding names.
+        run: |
+          npx cf d1 migrations apply 93c9f523-159c-4261-8541-d4c059906df3 --dir migrations/waitlist
+          npx cf d1 migrations apply 0f636b57-4a2e-482a-bf40-8aa315e2403e --dir migrations/drive
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy the Worker
         # `npm run build` (cf build) already wrote .cloudflare/output, so
         # --prebuilt uploads that output instead of building a second time.
