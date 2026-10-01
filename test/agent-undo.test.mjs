@@ -209,7 +209,18 @@ function makeD1() {
   );
 }
 
-const text = (store, path) => store.read(path).then((found) => new Response(found.body).text());
+/**
+ * The bytes a scoped store holds at `path`, as text. A read that answers null
+ * is a real miss, so it throws rather than resolving an empty string the
+ * assertions below could not tell from a genuinely empty file.
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+const text = (store, path) =>
+  store.read(path).then((found) =>
+    found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
+  );
 
 /** A drive with a folder an agent branched and then changed. */
 async function agentBranch({ changedBy = "k-claude" } = {}) {
@@ -303,6 +314,9 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const row = await rewindBranchRowFor(db, raw, "fix");
+  // The branch above was just created, so the list that reads it back has it;
+  // `assert.ok` narrows the null the lookup honestly returns.
+  assert.ok(row);
 
   const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS);
   assert.equal(inside.canRewind, true);
@@ -351,6 +365,7 @@ test("one account can never read or rewind another account's branch", async () =
 
 test("the rewind route lists, previews, rewinds and refuses the rest", async () => {
   const { raw, db } = await agentBranch();
+  /** @param {string} path @param {RequestInit} [init] */
   const call = (path, init) =>
     handleRewindRequest(
       new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init),
@@ -408,6 +423,15 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 
 // The one branch row a test needs by name, through the same list the screen
 // reads, so a test cannot reach a row the screen would not show.
+// The one branch row a test needs by name, through the same list the screen
+// reads, so a test cannot reach a row the screen would not show. `listBranches`
+// answers each row with the branch plus the two diff counts the screen shows.
+/**
+ * @param {D1Database} db
+ * @param {import("../src/files.js").FileStore} raw
+ * @param {string} name
+ * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
+ */
 async function rewindBranchRowFor(db, raw, name) {
   const branches = await handleBranchesRequest(
     new Request(`https://drive.test/api/branches`, { method: "GET" }),
@@ -416,5 +440,9 @@ async function rewindBranchRowFor(db, raw, name) {
     ACCOUNT,
     () => AT,
   );
-  return (await branches.json()).branches.find((row) => row.name === name) ?? null;
+  // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
+  // read through one bound local carrying the list's own shape.
+  /** @type {{branches: Array<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}>}} */
+  const body = await branches.json();
+  return body.branches.find((row) => row.name === name) ?? null;
 }

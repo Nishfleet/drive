@@ -198,18 +198,47 @@ async function driven() {
   return { raw, scoped, db: makeD1() };
 }
 
+/**
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} path
+ * @returns {Promise<string|null>}
+ */
 async function readText(store, path) {
   const object = await store.read(path);
   return object ? await new Response(object.body).text() : null;
 }
 
+/**
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} [body]
+ * @returns {Request}
+ */
 function request(method, path, body) {
+  /** @type {RequestInit} */
   const init = { method };
   if (body !== undefined) {
     init.headers = { "content-type": "application/json" };
     init.body = JSON.stringify(body);
   }
   return new Request(`https://drive.test${path}`, init);
+}
+
+// `approveBranch` and `discardBranch` each answer a union: the worked object or
+// a failure carrying a status. Every status assertion below is about the
+// failure arm, and `"status" in result` is that arm's discriminator, so the
+// status is read here once instead of through a cast at each call site.
+/**
+ * @param {unknown} result the union `approveBranch`/`discardBranch` answers
+ * @returns {number}
+ */
+function failedStatus(result) {
+  assert.equal(
+    typeof result === "object" && result !== null && "status" in result,
+    true,
+    `expected a failure with a status, got ${JSON.stringify(result)}`,
+  );
+  return /** @type {{status: number}} */ (result).status;
 }
 
 // ------------------------------------------------------------------ the keys
@@ -220,7 +249,7 @@ test("relativePath keys a branch file by its path under the source folder", () =
   assert.equal(relativePath("/", "/a.txt"), "a.txt");
   assert.equal(relativePath("/Photos", "/Notes.md"), null);
   assert.equal(relativePath("/Photos", "/Photos"), null);
-  assert.equal(relativePath("/Photos", 42), null);
+  assert.equal(relativePath("/Photos", /** @type {string} */ (/** @type {unknown} */ (42))), null);
 });
 
 test("sameFile is content first, then size and time, and never a missing file", () => {
@@ -254,7 +283,8 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   const row = db.sqlite
     .prepare("SELECT snapshot, state FROM branches WHERE account_id = ? AND name = ?")
     .get(ACCOUNT.id, "work");
-  const snapshot = JSON.parse(row.snapshot);
+  assert.ok(row, "the branch this test just created has a row");
+  const snapshot = JSON.parse(/** @type {string} */ (row.snapshot));
   assert.deepEqual(Object.keys(snapshot).sort(), ["a.txt", "sub/b.txt"]);
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
 });
@@ -274,7 +304,10 @@ test("a branch never shows up as a folder in the drive root", async () => {
   );
   // withoutTrash() agrees with the scoped store. A folder of that name
   // deeper in the tree is still a person's folder and is not hidden there.
-  assert.equal(withoutTrash([{ name: BRANCHES_FOLDER, kind: "folder" }], "/Photos").length, 1);
+  assert.equal(
+    withoutTrash([{ name: BRANCHES_FOLDER, kind: "folder", path: `/${BRANCHES_FOLDER}` }], "/Photos").length,
+    1,
+  );
 });
 
 test("a second branch of the same name is refused, not silently overwritten", async () => {
@@ -289,18 +322,26 @@ test("a second branch of the same name is refused, not silently overwritten", as
 
 test("createBranch refuses a bad folder, a bad name and the branches folder", async () => {
   const { scoped, db } = await driven();
-  assert.equal((await createBranch(db, scoped, ACCOUNT, { folder: "../etc" })).status, 400);
+  // A bad folder is refused whatever else the request carries. The API's own
+  // shape allows an absent `name` (the server validates it), so this request is
+  // the one a client that posted only a folder sends.
   assert.equal(
-    (await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })).status,
+    failedStatus(
+      await createBranch(db, scoped, ACCOUNT, /** @type {{folder: unknown, name: unknown}} */ ({ folder: "../etc" })),
+    ),
     400,
   );
   assert.equal(
-    (await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })).status,
+    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })),
+    400,
+  );
+  assert.equal(
+    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })),
     400,
   );
   const branches = await createBranch(db, scoped, ACCOUNT, { folder: BRANCHES_ROOT, name: "x" });
-  assert.equal(branches.status, 400);
-  assert.match(branches.error, /branches folder/);
+  assert.equal(failedStatus(branches), 400);
+  assert.match(/** @type {{error: string}} */ (branches).error, /branches folder/);
 });
 
 test("listBranches reports the live changed count and the original's drift", async () => {
@@ -347,6 +388,11 @@ test("approve copies a branch's changes back when the original is untouched", as
   await scoped.remove(`${BRANCHES_ROOT}/work/sub/b.txt`);
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  // `approveBranch` answers a union: either the branch was approved with the
+  // lists it applied, or it failed with a status. The success arm is the one
+  // these assertions are about, and `"error" in result` is the discriminator
+  // the module's own contract gives, so it is read here once.
+  assert.ok(!("error" in result));
   assert.equal(result.state, "approved");
   assert.equal(result.applied.changed.length, 1);
   assert.equal(result.applied.added.length, 1);
@@ -356,7 +402,7 @@ test("approve copies a branch's changes back when the original is untouched", as
   assert.equal(await readText(scoped, "/Photos/sub/b.txt"), null);
 
   // A second approve is refused: the branch is closed, not re-applied.
-  assert.equal((await approveBranch(db, scoped, ACCOUNT, "work")).status, 409);
+  assert.equal(failedStatus(await approveBranch(db, scoped, ACCOUNT, "work")), 409);
 });
 
 test("approve stops and names the file when the original changed after branching", async () => {
@@ -370,7 +416,9 @@ test("approve stops and names the file when the original changed after branching
   await scoped.write("/Photos/a.txt", new Blob(["person edit"]).stream(), "text/plain");
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
-  assert.equal(result.status, 409);
+  assert.equal(failedStatus(result), 409);
+  // The 409 that names the moved original is its own arm, carrying the files.
+  assert.ok("files" in result);
   assert.deepEqual(result.files, ["a.txt"]);
   assert.match(result.error, /original changed/);
   // Nothing was copied back: the person's edit is intact and the branch is
@@ -401,8 +449,8 @@ test("a branch of another account is not found, ever", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   const other = scopeStore(createMemoryStore(), OTHER);
-  assert.equal((await approveBranch(db, other, OTHER, "work")).status, 404);
-  assert.equal((await discardBranch(db, other, OTHER, "work")).status, 404);
+  assert.equal(failedStatus(await approveBranch(db, other, OTHER, "work")), 404);
+  assert.equal(failedStatus(await discardBranch(db, other, OTHER, "work")), 404);
   assert.deepEqual(await listBranches(db, other, OTHER), []);
 });
 

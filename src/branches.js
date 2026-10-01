@@ -551,6 +551,9 @@ export async function listBranches(db, store, account) {
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
+ * @returns {Promise<{name: string, state: string, applied: {added: string[], changed: string[], removed: string[]}}
+ *   |{error: string, status: number, files: string[]}
+ *   |{error: string, status: number}>}
  */
 export async function approveBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
@@ -651,6 +654,8 @@ export async function approveBranch(db, store, account, name) {
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
+ * @returns {Promise<{name: string, state: string, removed: number}
+ *   |{error: string, status: number}>}
  */
 export async function discardBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
@@ -794,14 +799,17 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   }
   if (action === "approve" && request.method === "POST") {
     const result = await approveBranch(db, scoped, account, name);
-    if (result.error) {
+    // `approveBranch` answers a union, so the failed arm is the one that
+    // carries a status; `"error" in result` is that arm's discriminator and
+    // narrows the success arm to the object `json` sends with a 200.
+    if ("error" in result) {
       return json(result, result.status);
     }
     return json(result);
   }
   if (action === "discard" && request.method === "POST") {
     const result = await discardBranch(db, scoped, account, name);
-    if (result.error) {
+    if ("error" in result) {
       return json(result, result.status);
     }
     return json(result);
