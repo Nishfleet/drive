@@ -6,23 +6,16 @@
   <title>Drive — send files</title>
   <meta name="description" content="Drop files into a shared folder. The owner sees them on their drive.">
   <meta name="robots" content="noindex">
+  <!-- The palette, the reset and the page chrome are in the shared site
+       stylesheet (public/site.css, drive #71); what is left in this page's
+       style block is its own components only, and it loads after the shared
+       file so an override still works (test/site-styles.test.mjs). -->
+  <link rel="stylesheet" href="/site.css">
   <style>
-/* Upload request page (drive issue #19). The palette and type of the pricing,
-   first-run and files pages, so the product reads as one thing. Mobile first:
-   the drop zone is the whole screen and the button is a 44px tap target.
+/* Upload request page (drive issue #19). Shared base from /site.css; what is
+   here is this page's own rules. Mobile first: the drop zone is the whole
+   screen and the button is a 44px tap target.
    System font stacks only: no web font files, so nothing blocks first paint. */
-
-:root {
-  --paper: #faf6ee;
-  --paper-raised: #fffdf8;
-  --ink: #21201c;
-  --ink-soft: #56514a;
-  --rule: #ddd5c5;
-  --accent: #1f3a5f;
-  --good: #1d5c3a;
-  --bad: #8a2b2b;
-  --tap: 44px;
-}
 
 *,
 *::before,
@@ -130,7 +123,7 @@ h1 {
 }
 
 button {
-  min-height: var(--tap);
+  min-height: 44px;
   padding: 0 18px;
   font: inherit;
   font-size: 15px;
