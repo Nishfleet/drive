@@ -675,7 +675,6 @@ test("upload, delete and restore refuse a cross-site request", async () => {
         body: "bytes",
       }),
     );
-  /** @param {string} path @param {BodyInit} body @param {string|undefined} origin @returns {Promise<Response>} */
   /** @param {string} path @param {unknown} body @param {string|undefined} origin @returns {Promise<Response>} */
   const stateChange = (path, body, origin) =>
     call(

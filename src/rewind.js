@@ -103,22 +103,11 @@ function plain(message, status, headers = {}) {
  * past the window reports `canRewind: false` and the route below refuses the
  * rewind, so the limit is the server's and not a hidden button.
  *
- * @param {import("./branches.js").FileStore} store a scoped store
- * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
- * @param {number} now epoch milliseconds, injected so the tests pin the clock
-/**
- * The preview the rewind screen renders: the branch's live diff counts plus
- * the server-enforced 30-day window, so the UI never computes its own window.
  * @typedef {{name: string, sourcePrefix: string, state: string, changedBy:
  *   string, createdAt: string, ageDays: number, windowDays: number,
  *   restorableUntil: string, canRewind: boolean,
  *   unavailableReason: "window-closed"|"already-closed"|null,
  *   files: {added: string[], changed: string[], removed: string[], count: number}}} RewindPreview
- */
-
-/**
- * past the window reports `canRewind: false` and the route below refuses the
- * rewind, so the limit is the server's and not a hidden button.
  *
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns

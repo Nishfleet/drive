@@ -73,14 +73,16 @@ function drive() {
   // the objects are keyed on in storage is scopeStore's business, not the
   // page's.
   const scoped = scopeStore(store, account);
-  /** @param {Request} request */ const call = (request) => handleFilesRequest(request, store, account, now);
-  /** @param {string} path @param {string} name @param {BodyInit} body @param {string} [type] */ const upload = (path, name, body, type = "text/plain") =>
-    call(
-      new Request(
-        `${api("/upload")}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`,
-        { method: "POST", headers: { "content-type": type }, body },
-      ),
-    );
+  /** @param {Request} request */ const call = (request) =>
+    handleFilesRequest(request, store, account, now);
+  /** @param {string} path @param {string} name @param {BodyInit} body @param {string} [type] */ const upload =
+    (path, name, body, type = "text/plain") =>
+      call(
+        new Request(
+          `${api("/upload")}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`,
+          { method: "POST", headers: { "content-type": type }, body },
+        ),
+      );
   return { store, scoped, call, upload };
 }
 
@@ -254,7 +256,10 @@ test("a key that is not ours is not restored from", () => {
   assert.equal(parseTrashName("not-a-trash-key"), null);
   assert.equal(parseTrashName("0__/a.txt"), null);
   assert.equal(parseTrashName("abc__%2F..%2Fetc"), null);
-  assert.equal(parseTrashName(/** @type {string|null} */ (/** @type {unknown} */ (undefined))), null);
+  assert.equal(
+    parseTrashName(/** @type {string|null} */ (/** @type {unknown} */ (undefined))),
+    null,
+  );
   assert.throws(() => trashName("a/b", now), TypeError);
   assert.throws(() => trashName("/a", 0), TypeError);
 });
@@ -329,6 +334,10 @@ test("Recently deleted says when a file was deleted and until when", () => {
   assert.equal(rows.length, 1);
   assert.ok(rows[0]);
   assert.equal(rows[0].name, "a.txt");
+  assert.equal(rows[0].sizeLabel, "1.2 KB");
+  assert.equal(rows[0].deletedLabel, `Deleted ${formatWhen(now - 60_000, now)}`);
+  assert.equal(rows[0].untilLabel, restorableUntil(now - 60_000));
+  assert.equal(rows[0].restorable, true);
 });
 
 // ---------------------------------------------------------------- times
@@ -479,7 +488,10 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
   assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
-  assert.throws(() => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"), TypeError);
+  assert.throws(
+    () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),
+    TypeError,
+  );
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -602,7 +614,8 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
   // Deleted 31 days before the clock this test reads.
   const deletedAt = now - 31 * day;
   /** @param {number} clock */
-  const at = (clock) => /** @param {Request} request */ (request) => handleFilesRequest(request, store, account, clock);
+  const at = (clock) => /** @param {Request} request */ (request) =>
+    handleFilesRequest(request, store, account, clock);
   await at(deletedAt)(
     new Request(api("/delete"), {
       method: "POST",
@@ -672,22 +685,12 @@ test("a storage failure is a 500 that names it, never a silent success", async (
 });
 
 test("a deployment with no store says so, rather than serving an empty drive", async () => {
-  const response = await handleFilesRequest(
-    new Request(api("")),
-    null,
-    account,
-    now,
-  );
+  const response = await handleFilesRequest(new Request(api("")), null, account, now);
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /not configured/);
   // A signed-out request is the gate's 401, not the store's 503: the account
   // is asked for first, so a stranger learns nothing about the deployment.
-  const signedOut = await handleFilesRequest(
-    new Request(api("")),
-    null,
-    null,
-    now,
-  );
+  const signedOut = await handleFilesRequest(new Request(api("")), null, null, now);
   assert.equal(signedOut.status, 401);
 });
 
@@ -735,13 +738,20 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
   assert.equal(photo.size, 2400);
   assert.equal(photo.modified, Date.parse("2026-09-30T11:00:00.000Z"));
   assert.equal(photo.path, "/holiday.jpg");
-  assert.throws(() => parseListObjects(/** @type {string} */ (/** @type {unknown} */ (null)), "u/1/", "/"), TypeError);
+  assert.throws(
+    () => parseListObjects(/** @type {string} */ (/** @type {unknown} */ (null)), "u/1/", "/"),
+    TypeError,
+  );
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
   const { createS3Store } = await import("../src/files.js");
   assert.throws(
-    () => createS3Store({ endpoint: /** @type {string} */ (/** @type {unknown} */ (undefined)), bucket: "drive" }),
+    () =>
+      createS3Store({
+        endpoint: /** @type {string} */ (/** @type {unknown} */ (undefined)),
+        bucket: "drive",
+      }),
     /endpoint and a bucket/,
   );
   const store = createS3Store({ endpoint: "http://127.0.0.1:9000/", bucket: "drive" });
@@ -855,7 +865,10 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // An empty token element ends the listing, it does not ask for "".
   assert.equal(nextContinuationToken("<ListBucketResult></ListBucketResult>"), null);
   assert.equal(nextContinuationToken("<NextContinuationToken>t</NextContinuationToken>"), "t");
-  assert.throws(() => nextContinuationToken(/** @type {string} */ (/** @type {unknown} */ (null))), TypeError);
+  assert.throws(
+    () => nextContinuationToken(/** @type {string} */ (/** @type {unknown} */ (null))),
+    TypeError,
+  );
 });
 
 // ---------------------------------------------------------------- the Worker
@@ -870,9 +883,10 @@ test("the Worker routes the page's API to the files handler", async () => {
   // supplies the execution context the platform would and keeps those facts
   // out of every call site.
   /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */
-  const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
-    /** @type {unknown} */ (worker.fetch)
-  );
+  const workerFetch =
+    /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+      /** @type {unknown} */ (worker.fetch)
+    );
   const ctx = { waitUntil() {}, passThroughOnException() {} };
   const response = await workerFetch(
     new Request(`https://drive.test${FILES_ENDPOINT}`),
@@ -885,11 +899,7 @@ test("the Worker routes the page's API to the files handler", async () => {
   });
 
   // A path that is not an API still comes from the asset layer.
-  const page = await workerFetch(
-    new Request("https://drive.test/files"),
-    { ASSETS: assets },
-    ctx,
-  );
+  const page = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
   assert.equal(await page.text(), "asset");
 });
 

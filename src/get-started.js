@@ -102,12 +102,14 @@ export function stepLines() {
  * @returns {{what: string, next: string}}
  */
 export function emptyState(screen) {
-  if (typeof screen !== "string") {
-    throw new TypeError(`no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`);
-  }
-  const entry = EMPTY_STATES[/** @type {keyof typeof EMPTY_STATES} */ (screen)];
+  const entry =
+    typeof screen === "string" && Object.hasOwn(EMPTY_STATES, screen)
+      ? EMPTY_STATES[/** @type {keyof typeof EMPTY_STATES} */ (screen)]
+      : undefined;
   if (!entry) {
-    throw new TypeError(`no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`);
+    throw new TypeError(
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
+    );
   }
   return { what: entry.what, next: entry.next };
 }
