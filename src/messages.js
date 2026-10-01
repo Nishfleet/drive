@@ -83,7 +83,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   // The branch this call named does not exist on this drive.
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
-    next: "Run `drive branches` to see the branches you have.",
+    next: "Run drive branches to see the branches you have.",
   }),
   // The branch was already approved or discarded, so there is nothing left to
   // apply or throw away.
