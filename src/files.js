@@ -183,7 +183,7 @@ const PREVIEW_CONTENT_TYPES = Object.freeze({
  * @returns {string}
  */
 export function previewContentType(name, storedContentType = "") {
-  const kind = fileKind(name, storedContentType);
+  const kind = /** @type {string} */ (/** @type {unknown} */ (name), fileKind(name, storedContentType));
   const stored = String(storedContentType).split(";")[0].trim().toLowerCase();
   // Only text and pdf are pinned here; the media kinds have no entry and fall
   // through to the kind-matched check below, so the lookup is asked only for
@@ -319,7 +319,7 @@ export function validatePath(path) {
 /**
  * A listing as the page shows it: folders first, then files, each sorted by
  * name the way a person reads them (case-insensitive, numbers in order).
- * @param {Array<{name: string, kind?: string}>} entries
+ * @param {unknown} entries
  * @returns {Array<{name: string, kind?: string}>}
  */
 export function sortEntries(entries) {
@@ -394,7 +394,7 @@ export function trashName(path, at) {
 /**
  * The reverse: the drive path and deleted-at time a trash name carries, or
  * null for anything that is not one of ours.
- * @param {string} name
+ * @param {unknown} name
  */
 export function parseTrashName(name) {
   if (typeof name !== "string") {
@@ -516,7 +516,7 @@ export function restorableUntil(deletedAt) {
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
  * @property {(path: string) => Promise<FileRead>} read
- * @property {(path: string, body: ReadableStream, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
  * @property {(from: string, to: string) => Promise<void>} copy A copy the
  *   storage itself makes, no bytes through this Worker: `drive branch`
@@ -964,6 +964,7 @@ export function nextContinuationToken(xml) {
   if (typeof xml !== "string") {
     throw new TypeError("nextContinuationToken needs the XML body");
   }
+  void xml;
   const token = tagValue(xml, "NextContinuationToken");
   return token === "" ? null : token;
 }

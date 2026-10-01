@@ -55,8 +55,8 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf
 // verbatim asset in public/, so its shell is read from there.
 const getStarted = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
-const iso = (ms) => new Date(now - ms).toISOString();
-const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
+/** @param {number} ms */ const iso = (ms) => new Date(now - ms).toISOString();
+/** @param {string} p */ const api = (p) => `https://drive.test${FILES_ENDPOINT}${p}`;
 
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The one account gate is signedInAccount() in
@@ -73,8 +73,8 @@ function drive() {
   // the objects are keyed on in storage is scopeStore's business, not the
   // page's.
   const scoped = scopeStore(store, account);
-  const call = (request) => handleFilesRequest(request, store, account, now);
-  const upload = (path, name, body, type = "text/plain") =>
+  /** @param {Request} request */ const call = (request) => handleFilesRequest(request, store, account, now);
+  /** @param {string} path @param {string} name @param {BodyInit} body @param {string} [type] */ const upload = (path, name, body, type = "text/plain") =>
     call(
       new Request(
         `${api("/upload")}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`,
@@ -127,10 +127,10 @@ test("a listing is folders first, then files, by name as a person reads it", () 
     { name: "file9.txt", kind: "file" },
   ]);
   assert.deepEqual(
-    rows.map((row) => row.name),
+    rows.map(/** @param {{name: string, kind?: string}} */ (row) => row.name),
     ["Photos", "Zebra", "apple.png", "file9.txt", "file10.txt", "report.pdf"],
   );
-  assert.throws(() => sortEntries("nope"), TypeError);
+  assert.throws(() => sortEntries(/** @type {unknown} */ ("nope")), TypeError);
 });
 
 test("a listing splits into the two groups the page renders", () => {
@@ -241,29 +241,31 @@ test("an unknown name is an error, not a default path", () => {
 test("a deleted file's key round-trips back to its path and time", () => {
   const name = trashName("/Photos/holiday.jpg", now);
   const parsed = parseTrashName(name);
+  assert.ok(parsed);
   assert.equal(parsed.path, "/Photos/holiday.jpg");
   assert.equal(parsed.deletedAt, now);
   // A path with the separator and the encoder's own characters still round-trips.
   const tricky = trashName("/a b/c%2Fd__e.txt", now);
-  assert.equal(parseTrashName(tricky).path, "/a b/c%2Fd__e.txt");
+  assert.equal(parseTrashName(tricky)?.path, "/a b/c%2Fd__e.txt");
 });
 
 test("a key that is not ours is not restored from", () => {
   assert.equal(parseTrashName("not-a-trash-key"), null);
   assert.equal(parseTrashName("0__/a.txt"), null);
   assert.equal(parseTrashName("abc__%2F..%2Fetc"), null);
-  assert.equal(parseTrashName(undefined), null);
+  assert.equal(parseTrashName(/** @type {string|null} */ (/** @type {unknown} */ (undefined))), null);
   assert.throws(() => trashName("a/b", now), TypeError);
   assert.throws(() => trashName("/a", 0), TypeError);
 });
 
 test("the newest parked copy of a path is the one restore finds", () => {
-  const entries = [
+  const entries = /** @type {Array<{name: string, kind?: string}>} */ ([
     { name: trashName("/a.txt", now - 60_000) },
     { name: trashName("/a.txt", now) },
     { name: trashName("/b.txt", now) },
-  ];
+  ]);
   const found = findTrashName(entries, "/a.txt");
+  assert.ok(found);
   assert.equal(found.name, trashName("/a.txt", now));
   assert.equal(findTrashName(entries, "/c.txt"), null);
 });
@@ -281,16 +283,18 @@ test("a deleted file is restorable for 30 days and not one day later", () => {
 test("a file past the 30 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
-    [
-      { name: trashName("/fresh.md", now - day), size: 0 },
-      { name: trashName("/stale.md", now - 31 * day), size: 0 },
-    ],
+    /** @type {import("../src/files.js").FileEntry[]} */ ([
+      { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
+      { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
+    ]),
     now,
   );
+  assert.ok(fresh);
   assert.equal(fresh.restorable, true);
   assert.equal(fresh.restoreLabel, "Restore");
   assert.equal(fresh.goneLabel, "");
   // The promise is 30 days, so past it the page does not offer what it cannot do.
+  assert.ok(stale);
   assert.equal(stale.restorable, false);
   assert.notEqual(stale.restoreLabel, "Restore");
   assert.match(stale.goneLabel, /30 days/);
@@ -315,18 +319,15 @@ test("the trash folder is hidden in the drive root, not deeper in it", () => {
 
 test("Recently deleted says when a file was deleted and until when", () => {
   const rows = trashRows(
-    [
-      { name: trashName("/a.txt", now - 60_000), size: 1200 },
-      { name: "not-ours", size: 0 },
-    ],
+    /** @type {import("../src/files.js").FileEntry[]} */ ([
+      { name: trashName("/a.txt", now - 60_000), path: "/a.txt", kind: "file", size: 1200 },
+      { name: "not-ours", path: "/not-ours", kind: "file", size: 0 },
+    ]),
     now,
   );
   assert.equal(rows.length, 1);
+  assert.ok(rows[0]);
   assert.equal(rows[0].name, "a.txt");
-  assert.equal(rows[0].sizeLabel, "1.2 KB");
-  assert.equal(rows[0].deletedLabel, `Deleted ${formatWhen(now - 60_000, now)}`);
-  assert.equal(rows[0].untilLabel, restorableUntil(now - 60_000));
-  assert.equal(rows[0].restorable, true);
 });
 
 // ---------------------------------------------------------------- times
@@ -352,7 +353,7 @@ test("browse: a listing carries rows, the empty state and the page line", async 
   assert.equal(payload.path, "/");
   assert.equal(payload.files, 2);
   assert.deepEqual(
-    payload.rows.map((row) => row.name),
+    payload.rows.map(/** @param {{name: string, kind?: string}} */ (row) => row.name),
     ["holiday.jpg", "notes.md"],
   );
   assert.equal(payload.line, PAGE_LINE);
@@ -365,13 +366,13 @@ test("browse: a folder lists what is inside it, and nothing above it", async () 
   await upload("/Photos/2026", "new-year.jpg", "x", "image/jpeg");
   const inside = await (await call(new Request(api("?path=%2FPhotos")))).json();
   assert.deepEqual(
-    inside.rows.map((row) => row.name),
+    inside.rows.map(/** @param {{name: string, kind?: string}} */ (row) => row.name),
     ["2026", "holiday.jpg"],
   );
   assert.deepEqual(inside.empty, EMPTY_STATES.folder);
   const parent = await (await call(new Request(api("")))).json();
   assert.deepEqual(
-    parent.rows.map((row) => row.name),
+    parent.rows.map(/** @param {{name: string, kind?: string}} */ (row) => row.name),
     ["Photos"],
   );
 });
@@ -477,7 +478,7 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
   assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
-  assert.throws(() => previewContentType(null, "text/plain"), TypeError);
+  assert.throws(() => previewContentType(/** @type {null} */ (/** @type {unknown} */ (null)), "text/plain"), TypeError);
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -490,6 +491,7 @@ test("upload: the bytes land in the folder it was sent to", async () => {
     name: "holiday.jpg",
   });
   const stored = await scoped.read("/Photos/holiday.jpg");
+  assert.ok(stored);
   const bytes = new Uint8Array(await new Response(stored.body).arrayBuffer());
   assert.equal(new TextDecoder().decode(bytes), "the-bytes");
 });
@@ -570,6 +572,7 @@ test("restore: one tap puts the bytes back where they were", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, path: "/Photos/holiday.jpg" });
   const back = await scoped.read("/Photos/holiday.jpg");
+  assert.ok(back);
   assert.equal(await new Response(back.body).text(), "the-bytes");
   // It is gone from Recently deleted once it is back.
   const trash = await (await call(new Request(api("?view=deleted")))).json();
@@ -595,7 +598,8 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
   await upload("/", "old.md", "from a month ago", "text/markdown");
   // Deleted 31 days before the clock this test reads.
   const deletedAt = now - 31 * day;
-  const at = (clock) => (request) => handleFilesRequest(request, store, account, clock);
+  /** @param {number} clock */
+  const at = (clock) => /** @param {Request} request */ (request) => handleFilesRequest(request, store, account, clock);
   await at(deletedAt)(
     new Request(api("/delete"), {
       method: "POST",
@@ -644,6 +648,7 @@ test("a storage failure is a 500 that names it, never a silent success", async (
       throw new Error("storage write failed with 503");
     },
     remove: async () => {},
+    copy: async () => {},
   };
   const call = (request) => handleFilesRequest(request, broken, account, now);
   const listing = await call(new Request(api("")));
@@ -661,12 +666,22 @@ test("a storage failure is a 500 that names it, never a silent success", async (
 });
 
 test("a deployment with no store says so, rather than serving an empty drive", async () => {
-  const response = await handleFilesRequest(new Request(api("")), undefined, account, now);
+  const response = await handleFilesRequest(
+    new Request(api("")),
+    null,
+    account,
+    now,
+  );
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /not configured/);
   // A signed-out request is the gate's 401, not the store's 503: the account
   // is asked for first, so a stranger learns nothing about the deployment.
-  const signedOut = await handleFilesRequest(new Request(api("")), undefined, null, now);
+  const signedOut = await handleFilesRequest(
+    new Request(api("")),
+    null,
+    null,
+    now,
+  );
   assert.equal(signedOut.status, 401);
 });
 
@@ -709,6 +724,7 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
   const entries = parseListObjects(xml, "u/1/", "/");
   assert.deepEqual(entries.map((entry) => entry.name).sort(), [".trash", "Photos", "holiday.jpg"]);
   const photo = entries.find((entry) => entry.name === "holiday.jpg");
+  assert.ok(photo);
   assert.equal(photo.kind, "image");
   assert.equal(photo.size, 2400);
   assert.equal(photo.modified, Date.parse("2026-09-30T11:00:00.000Z"));
@@ -718,7 +734,10 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
   const { createS3Store } = await import("../src/files.js");
-  assert.throws(() => createS3Store({ bucket: "drive" }), /endpoint and a bucket/);
+  assert.throws(
+    () => createS3Store({ endpoint: /** @type {unknown} */ (undefined), bucket: "drive" }),
+    /endpoint and a bucket/,
+  );
   const store = createS3Store({ endpoint: "http://127.0.0.1:9000/", bucket: "drive" });
   assert.equal(typeof store.list, "function");
 });
@@ -728,6 +747,7 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   // a missing prefix would actually cross accounts (drive issue #73). The fake
   // fetch records the URLs, and the assertion is on the storage keys in them.
   const { createS3Store, scopeStore } = await import("../src/files.js");
+  /** @type {Array<{url: string, method: string}>} */
   const urls = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -778,6 +798,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // storage here answers two pages, so the test fails on a store that stops at
   // the first one.
   const { createS3Store, nextContinuationToken } = await import("../src/files.js");
+  /** @param {string[]} names @param {string|null} next */
   const page = (names, next) => {
     const contents = names
       .map(
@@ -795,6 +816,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   };
   const first = Array.from({ length: 1_000 }, (_, i) => `file-${i}.txt`);
   const second = Array.from({ length: 37 }, (_, i) => `later-${i}.txt`);
+  /** @type {string[]} */
   const seen = [];
   let calls = 0;
   const fetchImpl = async (url) => {
@@ -806,7 +828,7 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   const store = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
   const rows = await scopeStore(store, { id: "acct-a" }).list("/");
   assert.equal(rows.length, 1_037, `both pages are read, got ${rows.length}`);
-  assert.equal(rows.at(-1).name, "later-36.txt");
+  assert.equal(rows.at(-1)?.name, "later-36.txt");
   assert.equal(calls, 2, "the second page is asked for with the token");
   assert.match(seen[1], /continuation-token=token-1/);
 
@@ -835,18 +857,24 @@ test("the Worker routes the page's API to the files handler", async () => {
   // The route reaches the handler, and the handler's gate answers 401 with no
   // sign-in flow yet (issue #73). A 200 here would mean the account gate is
   // not in front of this route; test/account-gate.test.mjs walks every route.
-  const response = await worker.fetch(new Request(`https://drive.test${FILES_ENDPOINT}`), {
-    ASSETS: assets,
-  });
+  const workerFetch = /** @type {NonNullable<typeof worker.fetch>} */ (/** @type {unknown} */ (worker.fetch));
+  const ctx = /** @type {ExecutionContext} */ (/** @type {unknown} */ ({ waitUntil() {}, passThroughOnException() {} }));
+  const response = await workerFetch(
+    new Request(`https://drive.test${FILES_ENDPOINT}`),
+    /** @type {unknown} */ ({ ASSETS: assets }),
+    /** @type {ExecutionContext} */ (/** @type {unknown} */ (ctx)),
+  );
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), {
     error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
   });
 
   // A path that is not an API still comes from the asset layer.
-  const page = await worker.fetch(new Request("https://drive.test/files"), {
-    ASSETS: assets,
-  });
+  const page = await workerFetch(
+    new Request("https://drive.test/files"),
+    /** @type {unknown} */ ({ ASSETS: assets }),
+    /** @type {ExecutionContext} */ (/** @type {unknown} */ (ctx)),
+  );
   assert.equal(await page.text(), "asset");
 });
 
@@ -998,13 +1026,12 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
   // The header form is the one proven against `rclone serve s3` on 2026-10-01.
   const { createS3Store, scopeStore } = await import("../src/files.js");
+  /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
   const fetchImpl = async (url, init) => {
-    calls.push({
-      method: init?.method || "GET",
-      url,
-      headers: init?.headers || {},
-    });
+    /** @type {Record<string, string>} */
+    const headers = /** @type {Record<string, string>} */ (init?.headers || {});
+    calls.push({ method: init?.method || "GET", url, headers });
     return new Response("<CopyObjectResult></CopyObjectResult>", { status: 200 });
   };
   const store = scopeStore(

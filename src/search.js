@@ -364,7 +364,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
   return {
     ...store,
     /** @param {string} key
-     * @param {ReadableStream} body
+     * @param {BodyInit} body
      * @param {string} contentType */
     async write(key, body, contentType) {
       await write(key, body, contentType);
