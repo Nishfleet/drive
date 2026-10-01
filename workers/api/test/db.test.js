@@ -56,7 +56,10 @@ test("all returns the result rows and binds in order", async () => {
 test("run reports success and binds every value", async () => {
   const db = recordingDb();
   const result = await run(db, "insert into accounts (id) values (?)", "acct_1");
-  assert.equal(/** @type {{success: boolean}} */ (/** @type {unknown} */ (result)).success, true);
+  assert.equal(typeof result, "object");
+  assert.notEqual(result, null);
+  const outcome = /** @type {{success: boolean}} */ (result);
+  assert.equal(outcome.success, true);
   assert.deepEqual(db.calls[0].params, ["acct_1"]);
 });
 

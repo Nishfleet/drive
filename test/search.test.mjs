@@ -381,6 +381,7 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
   ]);
   await store.write("/.trash/1__/a.txt", new Blob(["x"]).stream(), "text/plain");
   const built = await reconcileIndex(db, store, ACCOUNT);
+  assert.equal("error" in built, false, "reconcileIndex answers counts, not an error arm");
   assert.equal(built.folders, 3, "root, /deep, /deep/er");
   assert.equal(built.indexed, 3, "the trashed copy is not indexed");
   const found = await searchDrive(db, ACCOUNT, "a.txt");

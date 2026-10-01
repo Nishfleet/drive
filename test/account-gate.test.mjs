@@ -800,13 +800,7 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
-  assert.equal(
-    handleUsageRequest(
-      new Request("https://drive.test/api/usage"),
-      /** @type {null} */ (/** @type {unknown} */ (undefined)),
-    ).status,
-    401,
-  );
+  assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0);

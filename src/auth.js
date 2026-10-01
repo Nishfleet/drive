@@ -156,6 +156,10 @@ const AUTH_CACHE = new WeakMap();
  * secret or no public address. Null is the honest answer and every caller
  * treats it as signed out rather than trusting a cookie the browser chose.
  *
+ * The argument is the subset this function reads, not the whole Worker `Env`:
+ * missing pieces are the closed door, so a half-configured deployment (and the
+ * tests that prove it) can pass only those fields.
+ *
  * @param {{DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>}} env
  * @returns {Auth|null}
  */
