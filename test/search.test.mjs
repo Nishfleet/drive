@@ -23,6 +23,7 @@ import {
   searchSql,
   withIndex,
 } from "../src/search.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 /** @typedef {import("../src/files.js").FileStore} FileStore */
 
@@ -36,9 +37,10 @@ import {
  * strict Request generic, which a `new Request(...)` literal cannot express.
  * @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
  */
-const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
-  /** @type {unknown} */ (worker.fetch)
-);
+const workerFetch =
+  /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 const ACCOUNT = { id: "1", name: "Your drive" };
@@ -91,10 +93,14 @@ function makeD1() {
    */
   const runOne = (sql, params = []) => {
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(sql).all(...values)), changes: 0 };
+      return {
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
+      };
     }
-    const info = sqlite.prepare(sql).run(...values);
+    const info = sqlite.prepare(prepared).run(...values);
     return { results: [], changes: Number(info.changes) };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
@@ -158,58 +164,58 @@ function makeD1() {
   return /** @type {SqliteD1} */ (
     /** @type {unknown} */ ({
       sqlite,
-    /**
-     * @param {string} sql
-     * @returns {D1PreparedStatement}
-     */
-    prepare(sql) {
-      return statementFor(sql, []);
-    },
-    /**
-     * @template T
-     * @param {D1PreparedStatement[]} statements
-     * @returns {Promise<D1Result<T>[]>}
-     */
-    async batch(statements) {
-      /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
-      const results = [];
-      sqlite.exec("BEGIN");
-      try {
-        for (const statement of statements) {
-          const state = bound.get(statement);
-          if (!state) {
-            throw new Error("a statement was batch-ran that this adapter did not prepare");
+      /**
+       * @param {string} sql
+       * @returns {D1PreparedStatement}
+       */
+      prepare(sql) {
+        return statementFor(sql, []);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      async batch(statements) {
+        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
+        const results = [];
+        sqlite.exec("BEGIN");
+        try {
+          for (const statement of statements) {
+            const state = bound.get(statement);
+            if (!state) {
+              throw new Error("a statement was batch-ran that this adapter did not prepare");
+            }
+            results.push(runOne(state.sql, state.params));
           }
-          results.push(runOne(state.sql, state.params));
+        } finally {
+          sqlite.exec("COMMIT");
         }
-      } finally {
-        sqlite.exec("COMMIT");
-      }
-      return /** @type {D1Result<T>[]} */ (
-        results.map((result) => ({
-          results: /** @type {T[]} */ (result.results),
-          success: /** @type {true} */ (true),
-          meta: meta(),
-        }))
-      );
-    },
-    /**
-     * D1's exec runs a multi-statement string; the tests never call it, but
-     * the adapter speaks the interface rather than being cast silent.
-     * @param {string} query
-     */
-    async exec(query) {
-      sqlite.exec(query);
-      return { count: 0, duration: 0 };
-    },
-    /**
-     * D1's session API is not part of what the modules under test use; a
-     * call would be a real bug, so it throws rather than standing in silently.
-     * @param {string} [constraintOrBookmark]
-     */
-    withSession(constraintOrBookmark) {
-      throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
-    },
+        return /** @type {D1Result<T>[]} */ (
+          results.map((result) => ({
+            results: /** @type {T[]} */ (result.results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          }))
+        );
+      },
+      /**
+       * D1's exec runs a multi-statement string; the tests never call it, but
+       * the adapter speaks the interface rather than being cast silent.
+       * @param {string} query
+       */
+      async exec(query) {
+        sqlite.exec(query);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * D1's session API is not part of what the modules under test use; a
+       * call would be a real bug, so it throws rather than standing in silently.
+       * @param {string} [constraintOrBookmark]
+       */
+      withSession(constraintOrBookmark) {
+        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+      },
       async dump() {
         throw new Error("a test adapter has no dump");
       },
@@ -426,7 +432,11 @@ test("withIndex keeps the index current on write, delete and restore, without li
   assert.equal(found.count, 0, "the delete removed the row");
   // A restore is a write of the original path plus a remove of the parked
   // name, so the wrapped store keeps both halves right with no new code.
-  await scoped.write("/.trash/1__%2Ffresh%2Freport.txt", new Blob(["hello"]).stream(), "text/plain");
+  await scoped.write(
+    "/.trash/1__%2Ffresh%2Freport.txt",
+    new Blob(["hello"]).stream(),
+    "text/plain",
+  );
   await scoped.write("/fresh/report.txt", new Blob(["hello"]).stream(), "text/plain");
   await scoped.remove("/.trash/1__%2Ffresh%2Freport.txt");
   found = await searchDrive(db, ACCOUNT, "report");
@@ -665,11 +675,12 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   await scopeStore(raw, ACCOUNT).write("/late-arrival.txt", new Blob(["x"]).stream(), "text/plain");
   await scopeStore(raw, ACCOUNT_B).write("/b-late.txt", new Blob(["x"]).stream(), "text/plain");
 
-  /** @type {Promise<any>[]} */
+  /** @type {Promise<unknown>[]} */
   const waits = [];
-  const workerScheduled = /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
-    /** @type {unknown} */ (worker.scheduled)
-  );
+  const workerScheduled =
+    /** @type {(event: ScheduledController, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: FileStore) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
   const scheduledEvent = /** @type {ScheduledController} */ (
     /** @type {unknown} */ ({ cron: REINDEX_SCHEDULE })
   );

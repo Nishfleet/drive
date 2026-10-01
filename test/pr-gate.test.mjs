@@ -48,9 +48,10 @@ const pointersOn = (line) =>
 // supplies the execution context the platform would and keeps those facts out
 // of every call site; `worker.fetch` is optional and carries the runtime's
 // strict Request generic, which a `new Request(...)` literal cannot express.
-const workerFetch = /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
-  /** @type {unknown} */ (worker.fetch)
-);
+const workerFetch =
+  /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // The list's own shape: the 3pm review found pages shipped with no login, and
@@ -174,7 +175,11 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   );
   // The live proof: anonymous is 401 with the table's words.
   const env = { ASSETS: { fetch: () => new Response("asset") } };
-  const anonymous = await workerFetch(new Request(`https://drive.test${STATUS_ENDPOINT}`), env, ctx);
+  const anonymous = await workerFetch(
+    new Request(`https://drive.test${STATUS_ENDPOINT}`),
+    env,
+    ctx,
+  );
   assert.equal(anonymous.status, 401);
   assert.deepEqual(await anonymous.json(), {
     error: `${FAILURE_MESSAGES.unauthorized.what} ${FAILURE_MESSAGES.unauthorized.next}`,
@@ -383,9 +388,13 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
   assert.equal(preview.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal(preview.headers.get("content-security-policy"), "sandbox");
-  const asPage = await workerFetch(new Request("https://drive.test/page.html"), {
-    ASSETS: { fetch: () => new Response("asset") },
-  }, ctx);
+  const asPage = await workerFetch(
+    new Request("https://drive.test/page.html"),
+    {
+      ASSETS: { fetch: () => new Response("asset") },
+    },
+    ctx,
+  );
   assert.equal(await asPage.text(), "asset");
 });
 
@@ -456,9 +465,7 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   for (const [input, expected] of cases) {
     const bill = monthBillCents(input);
     for (const [field, cents] of Object.entries(expected)) {
-      const value = /** @type {Record<string, number>} */ (
-        /** @type {unknown} */ (bill)
-      )[field];
+      const value = /** @type {Record<string, number>} */ (/** @type {unknown} */ (bill))[field];
       assert.equal(value, cents, `${field} for ${JSON.stringify(input)}`);
       assert.ok(Number.isInteger(value), `${field} is whole cents`);
     }

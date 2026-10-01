@@ -36,6 +36,7 @@ import {
   rewindBranch,
   rewindPreview,
 } from "../src/rewind.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -50,9 +51,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // `rewindBranch` and `discardBranch` answer a union of the worked object and a
 // failure carrying a status; the helper below reads the status only from an
 // arm that has one, so each assertion states its own expectation.
-const failedStatus = (
-  /** @type {unknown} */ result,
-) => {
+const failedStatus = (/** @type {unknown} */ result) => {
   assert.equal(
     typeof result === "object" && result !== null && "status" in result,
     true,
@@ -100,10 +99,14 @@ function makeD1() {
    */
   const runOne = (sql, params = []) => {
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(sql).all(...values)), changes: 0 };
+      return {
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
+      };
     }
-    const info = sqlite.prepare(sql).run(...values);
+    const info = sqlite.prepare(prepared).run(...values);
     return { results: [], changes: Number(info.changes) };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
@@ -232,9 +235,11 @@ function makeD1() {
  * @returns {Promise<string>}
  */
 const text = (store, path) =>
-  store.read(path).then((found) =>
-    found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
-  );
+  store
+    .read(path)
+    .then((found) =>
+      found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
+    );
 
 /** A drive with a folder an agent branched and then changed. */
 async function agentBranch({ changedBy = "k-claude" } = {}) {
@@ -349,7 +354,10 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // And the POST is refused with the message table's own sentence.
   const refused = await rewindBranch(db, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
   assert.equal(failedStatus(refused), 409);
-  assert.equal(/** @type {{error: string}} */ (refused).error, failureMessage("rewind-window-closed"));
+  assert.equal(
+    /** @type {{error: string}} */ (refused).error,
+    failureMessage("rewind-window-closed"),
+  );
   // Nothing was removed: the refusal happens before the discard.
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
   assert.ok("rewind-window-closed" in FAILURE_MESSAGES);
@@ -437,8 +445,6 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
   assert.equal(await text(scopeStore(raw, ACCOUNT), "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
-// The one branch row a test needs by name, through the same list the screen
-// reads, so a test cannot reach a row the screen would not show.
 // The one branch row a test needs by name, through the same list the screen
 // reads, so a test cannot reach a row the screen would not show. `listBranches`
 // answers each row with the branch plus the two diff counts the screen shows.

@@ -22,6 +22,7 @@ import {
   sameFile,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -65,10 +66,14 @@ function makeD1() {
    */
   const runOne = (sql, params = []) => {
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(sql).all(...values)), changes: 0 };
+      return {
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
+      };
     }
-    const info = sqlite.prepare(sql).run(...values);
+    const info = sqlite.prepare(prepared).run(...values);
     return { results: [], changes: Number(info.changes) };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
@@ -305,7 +310,10 @@ test("a branch never shows up as a folder in the drive root", async () => {
   // withoutTrash() agrees with the scoped store. A folder of that name
   // deeper in the tree is still a person's folder and is not hidden there.
   assert.equal(
-    withoutTrash([{ name: BRANCHES_FOLDER, kind: "folder", path: `/${BRANCHES_FOLDER}` }], "/Photos").length,
+    withoutTrash(
+      [{ name: BRANCHES_FOLDER, kind: "folder", path: `/${BRANCHES_FOLDER}` }],
+      "/Photos",
+    ).length,
     1,
   );
 });
@@ -327,7 +335,12 @@ test("createBranch refuses a bad folder, a bad name and the branches folder", as
   // the one a client that posted only a folder sends.
   assert.equal(
     failedStatus(
-      await createBranch(db, scoped, ACCOUNT, /** @type {{folder: unknown, name: unknown}} */ ({ folder: "../etc" })),
+      await createBranch(
+        db,
+        scoped,
+        ACCOUNT,
+        /** @type {{folder: unknown, name: unknown}} */ ({ folder: "../etc" }),
+      ),
     ),
     400,
   );

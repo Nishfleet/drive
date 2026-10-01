@@ -39,7 +39,9 @@ async function signedInAccount(store, _clock) {
   assert.equal(poll.status, "approved");
   // The assert above is not a type guard, so the approved arm is read through a
   // documented cast rather than a `as`-by-another-name.
-  const approved = /** @type {{account: {id: string}, deviceToken: string}} */ (/** @type {unknown} */ (poll));
+  const approved = /** @type {{account: {id: string}, deviceToken: string}} */ (
+    /** @type {unknown} */ (poll)
+  );
   return { account: approved.account, deviceToken: approved.deviceToken, code };
 }
 
@@ -163,7 +165,12 @@ test("an account can revoke its own key but never another account's", async () =
 test("the delete capability comes from the one kind table", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ (["device", "agent", "s3", "branch"])) {
+  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ ([
+    "device",
+    "agent",
+    "s3",
+    "branch",
+  ])) {
     const key = await store.mintKey(account, kind === "branch" ? { kind, name: "b" } : { kind });
     const device = { kind };
     assert.equal(

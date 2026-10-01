@@ -105,12 +105,9 @@ test("validateSignup rejects missing input", () => {
   assert.deepEqual(validateSignup(/** @type {unknown} */ (null)), {
     error: "Send a JSON object with an email.",
   });
-  assert.deepEqual(
-    validateSignup(/** @type {unknown} */ ("not an object")),
-    {
-      error: "Send a JSON object with an email.",
-    },
-  );
+  assert.deepEqual(validateSignup(/** @type {unknown} */ ("not an object")), {
+    error: "Send a JSON object with an email.",
+  });
   assert.deepEqual(validateSignup({}), {
     error: "An email address is required.",
   });
@@ -520,7 +517,11 @@ test("handleWaitlistRequest returns 503 when D1 binding is missing", async () =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "test@example.com" }),
   });
-  const res = await handleWaitlistRequest(req, /** @type {D1Database} */ (/** @type {unknown} */ (null)), ALLOWED());
+  const res = await handleWaitlistRequest(
+    req,
+    /** @type {D1Database} */ (/** @type {unknown} */ (null)),
+    ALLOWED(),
+  );
   assert.equal(res.status, 503);
   const data = await res.json();
   // The visitor reads the table's storage-down words, built from the table so

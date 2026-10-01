@@ -39,6 +39,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, scopeStore } from "../src/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -84,10 +85,14 @@ function makeD1() {
    */
   const runOne = (sql, params = []) => {
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(sql).all(...values)), changes: 0 };
+      return {
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
+      };
     }
-    const info = sqlite.prepare(sql).run(...values);
+    const info = sqlite.prepare(prepared).run(...values);
     return { results: [], changes: Number(info.changes) };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can

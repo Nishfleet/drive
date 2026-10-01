@@ -55,6 +55,18 @@ function sqliteValue(value) {
 }
 
 /**
+ * D1 numbered placeholders (`?1`, `?2`, …) as node:sqlite can bind them.
+ * node:sqlite only accepts anonymous `?`; the product SQL in src/search.js is
+ * numbered because D1 is. One rewrite, used by every test adapter that speaks
+ * SQLite, so a second bind path cannot drift.
+ * @param {string} sql
+ * @returns {string}
+ */
+export function sqlitePlaceholders(sql) {
+  return sql.replace(/\?\d+/g, "?");
+}
+
+/**
  * Runs one statement and answers the way D1's bound statement does: every
  * query — a SELECT or an INSERT/UPDATE/DELETE with a `returning` clause —
  * comes back as `{ results, meta }`, and `meta.changes` is the change count.
@@ -69,7 +81,7 @@ function sqliteValue(value) {
  * @param {unknown[]} params
  */
 function runOne(sqlite, sql, params) {
-  const statement = sqlite.prepare(sql);
+  const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = params.map(sqliteValue);
   const results = statement.all(...bound);
   // Node's StatementSync types put change counts on `run()`, not `all()`. The
@@ -123,7 +135,7 @@ export function createTestD1(options = {}) {
     },
     async first() {
       const bound = params.map(sqliteValue);
-      const row = sqlite.prepare(sql).get(...bound);
+      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
       return row === undefined ? null : row;
     },
     async run() {
