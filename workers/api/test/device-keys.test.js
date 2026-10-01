@@ -424,9 +424,9 @@ test("DELETE /v1/device/token without a token cannot revoke it (the route stays 
   const clock = fixedClock();
   const { deviceToken, account } = await signIn(store, "Nish's MacBook");
 
-  // No bearer at all: the account gate never runs the handler. /v1/device/token
-  // has a public POST route, so an anonymous DELETE is a 405 (method not allowed,
-  // allow: POST) rather than a 401 -- the documented dispatcher shape. Either
+  // No bearer at all: the account gate is middleware, so an anonymous request
+  // to the path's DELETE is answered by the gate itself (401 with a bearer
+  // challenge, no handler), while the path's public POST still answers. Either
   // way the handler does not run and the token is not revoked.
   const anon = await dispatch(
     new Request("https://api.test/v1/device/token", { method: "DELETE" }),
