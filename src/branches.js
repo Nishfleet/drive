@@ -44,7 +44,8 @@ import { failureMessage } from "./messages.js";
 /** One row of the `branches` table as this module uses it. */
 /**
  * @typedef {{name: string, sourcePrefix: string, branchPrefix: string,
- *   state: string, createdAt: string, snapshot: Record<string, Fingerprint>}} Branch
+ *   state: string, createdAt: string, changedBy: string,
+ *   snapshot: Record<string, Fingerprint>}} Branch
  */
 
 /** The one place an unknown thrown value becomes a message: a caught value is
@@ -364,6 +365,13 @@ function toBranch(row) {
     branchPrefix: String(row.branch_prefix),
     state: String(row.state),
     createdAt: String(row.created_at),
+    // Whose key made the branch's changes (migration 0004, issue #13). The
+    // rewind screen reads it for "Rewind <agent>'s work" and the activity list
+    // reads the same value for "changed by <agent or person>" — one column on
+    // the one log that already exists, never a second store. Absent on a row
+    // written before the migration, it reads as "no key recorded", which is
+    // what a branch a person made in the app is.
+    changedBy: typeof row.changed_by_key_id === "string" ? row.changed_by_key_id : "",
     snapshot,
   };
 }
@@ -377,7 +385,7 @@ function toBranch(row) {
 async function getBranch(db, account, name) {
   const row = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at " +
+      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
         "FROM branches WHERE account_id = ?1 AND name = ?2",
     )
     .bind(account.id, name)
@@ -397,7 +405,7 @@ async function getBranch(db, account, name) {
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
- * @param {{folder: unknown, name: unknown}} request
+ * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
  * @param {() => number} now
  */
 export async function createBranch(db, store, account, request, now = () => Date.now()) {
@@ -444,11 +452,19 @@ export async function createBranch(db, store, account, request, now = () => Date
     return { error: failureMessage("storage-down"), status: 500 };
   }
   const createdAt = new Date(now()).toISOString();
+  // Whose key branched this folder (issue #13's third comment: "we already mint
+  // one key per agent, so record the key on each change"). A branch a person
+  // made in the app carries no key, which is recorded as the empty string the
+  // column DEFAULTs to — "changed by a person", not a missing value. The
+  // caller cannot name another account's key: the key id is recorded as a label
+  // for the activity list, and every read of this row is scoped by account_id
+  // in the query itself, never by the value of this column.
+  const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
   try {
     await db
       .prepare(
-        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at) " +
-          "VALUES (?1,?2,?3,?4,?5,'open',?6)",
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
+          "VALUES (?1,?2,?3,?4,?5,'open',?6,?7)",
       )
       .bind(
         account.id,
@@ -457,6 +473,7 @@ export async function createBranch(db, store, account, request, now = () => Date
         branchPrefix,
         JSON.stringify(snapshot),
         createdAt,
+        changedBy,
       )
       .run();
   } catch (error) {
@@ -483,6 +500,7 @@ export async function createBranch(db, store, account, request, now = () => Date
     branchPrefix,
     state: "open",
     createdAt,
+    changedBy,
     files: Object.keys(snapshot).length,
   };
 }
@@ -499,7 +517,7 @@ export async function createBranch(db, store, account, request, now = () => Date
 export async function listBranches(db, store, account) {
   const result = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at " +
+      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
         "FROM branches WHERE account_id = ?1 ORDER BY created_at DESC, name",
     )
     .bind(account.id)
@@ -764,7 +782,7 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     }
     const diff = await diffBranch(scoped, branch);
     return json({
-      branch: { name, sourcePrefix: branch.sourcePrefix, state: branch.state },
+      branch: { name, sourcePrefix: branch.sourcePrefix, state: branch.state, changedBy: branch.changedBy },
       diff,
     });
   }
