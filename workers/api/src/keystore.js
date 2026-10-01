@@ -64,7 +64,7 @@ function digestsEqual(left, right) {
  * tests and a database-less deployment keep the in-memory one. The delegation
  * is the one call site the two implementations plug into; nothing else in this
  * module knows which backend is underneath.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: object}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -124,7 +124,7 @@ export function createMemoryStore(options = {}) {
      * account: there is nothing for that token to be.
      * @param {string} deviceCode
      * @returns {Promise<{status: "unknown"|"expired"|"pending"}
-     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null, createdAt: number}}>}
+     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}>}
      */
     pollDeviceCode(deviceCode) {
       return signin.pollDeviceCode(deviceCode);

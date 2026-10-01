@@ -25,6 +25,20 @@
 // name the owner without this module holding an accounts table of its own.
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 
+/**
+ * Any device sign-in store: the shape the routes read. The in-memory
+ * implementation is a stand-in; the D1 one is the real store. Every caller
+ * awaits, so sync or async implementations both fit.
+ * @typedef {object} DeviceSigninStore
+ * @property {Map<string, {id: string, name: string, email: string|null}>} [accounts]
+ *        only the in-memory store holds one, for a test that models a
+ *        lost account row
+ * @property {(request?: {name?: string}) => {deviceCode: string, userCode: string, expiresIn: number, interval: number}|Promise<{deviceCode: string, userCode: string, expiresIn: number, interval: number}>} requestDeviceCode
+ * @property {(userCode: string, account: {id: string, name?: string, email?: string}) => {accountId?: string, name?: string, error?: string}|Promise<{accountId?: string, name?: string, error?: string}>} approveDeviceCode
+ * @property {(deviceCode: string) => Promise<{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}>} pollDeviceCode
+ * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
+ */
+
 // How long a device code is good for, and how often the CLI may poll
 // (RFC 8628's device_code and interval). Ten minutes is long enough to find a
 // phone, short enough that a code left on a terminal screen dies.
@@ -90,6 +104,7 @@ function accountFields(account) {
  * over Maps, for the tests and a deployment with no database binding. One
  * instance per isolate, exactly the stand-in the D1 store replaces.
  * @param {{now?: () => number, randomBytes?: () => Uint8Array}} [options]
+ * @returns {DeviceSigninStore}
  */
 export function createMemoryDeviceSigninStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -99,9 +114,9 @@ export function createMemoryDeviceSigninStore(options = {}) {
   const byDeviceCode = new Map();
   /** @type {Map<string, string>} user code -> device code */
   const byUserCode = new Map();
-  /** @type {Map<string, {account: object, createdAt: number}>} token hash -> token */
+  /** @type {Map<string, {account: {id: string, name: string, email: string|null}, createdAt: number}>} token hash -> token */
   const tokens = new Map();
-  /** @type {Map<string, object>} account id -> account the stand-in holds */
+  /** @type {Map<string, {id: string, name: string, email: string|null}>} account id -> account the stand-in holds */
   const accounts = new Map();
 
   return {
@@ -168,7 +183,11 @@ export function createMemoryDeviceSigninStore(options = {}) {
         code.accountId = own.id;
         code.status = "approved";
       }
-      const accountRow = accounts.get(code.accountId);
+      const accountId = code.accountId;
+      if (!accountId) {
+        return { error: "unknown-code" };
+      }
+      const accountRow = accounts.get(accountId);
       if (accountRow === undefined) {
         return { error: "unknown-code" };
       }
@@ -232,6 +251,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
  * visible on the next one and across a restart.
  * @param {import("./db.js").D1Like} db
  * @param {{now?: () => number, randomBytes?: () => Uint8Array}} [options]
+ * @returns {DeviceSigninStore}
  */
 export function createD1DeviceSigninStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());

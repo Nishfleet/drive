@@ -52,7 +52,7 @@ function makeFakeD1() {
             if (s.startsWith("UPDATE device_codes SET status = 'approved'")) {
               const [accountId, accountName, accountEmail, userCode] = params;
               const row = byUserCode.get(userCode);
-              if (!row || row.status !== "pending") {
+              if (row?.status !== "pending") {
                 return { success: true, meta: { changes: 0 } };
               }
               row.status = "approved";
@@ -63,7 +63,7 @@ function makeFakeD1() {
             }
             if (s.startsWith("UPDATE device_codes SET status = 'used'")) {
               const row = codes.get(params[0]);
-              if (!row || row.status !== "approved") {
+              if (row?.status !== "approved") {
                 return { success: true, meta: { changes: 0 } };
               }
               row.status = "used";
@@ -211,4 +211,101 @@ test("the approve route leaves an unknown or expired code unapproved over D1", a
   assert.match(expiredBody, /expired/);
   assert.doesNotMatch(expiredBody, /Approved\. Return to the terminal/);
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
+});
+
+// The DEVICE code route is the same story: the D1 store's `requestDeviceCode`
+// is a Promise, so an unawaited call answers `{}` with an undefined user code
+// and the CLI has nothing to show. This walks the real dispatcher with the
+// D1-backed store behind it, then starts the code on a second store instance
+// (the way a second Worker isolate would) and polls it there.
+test("a code started by the route is approvable from a fresh instance (drive#136 a over D1)", async () => {
+  const db = makeFakeD1();
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => 0 }),
+  });
+  const accounts = {
+    async accountForSession(token) {
+      return token === "sess_ok" ? ACCOUNT : null;
+    },
+  };
+  const ctxFor = (signin) => ({
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store: createMemoryStore({ signin }),
+    accounts,
+    account: null,
+    now: () => 0,
+  });
+
+  const codeRes = await dispatch(
+    new Request("https://api.test/v1/device/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Nish's MacBook" }),
+    }),
+    ctxFor(store),
+  );
+  assert.equal(codeRes.status, 200, "the code route answered with the D1 store behind it");
+  const firstCode = await codeRes.json();
+  assert.match(firstCode.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
+  assert.equal(firstCode.deviceCode.length > 0, true);
+  assert.equal(firstCode.expiresIn, DEVICE_CODE_TTL_SECONDS);
+
+  // A fresh instance answers the same code route: no module-level state holds it.
+  const second = createD1DeviceSigninStore(db, { now: () => 0 });
+  const started = await dispatch(
+    new Request("https://api.test/v1/device/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Nish's MacBook" }),
+    }),
+    ctxFor(second),
+  );
+  assert.equal(started.status, 200);
+  const code = await started.json();
+  assert.match(code.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
+  assert.equal(code.deviceCode.length > 0, true);
+  assert.notEqual(code.deviceCode, code.userCode);
+  assert.equal(code.expiresIn, DEVICE_CODE_TTL_SECONDS);
+  assert.notEqual(code.userCode, firstCode.userCode, "each code is its own row");
+
+  // A third instance over the same database sees the code and can approve it.
+  const third = createD1DeviceSigninStore(db, { now: () => 0 });
+  const pageCtx = ctxFor(third);
+  const approved = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=sess_ok`,
+        origin: "https://api.test",
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    pageCtx,
+  );
+  assert.equal(approved.status, 200);
+
+  // The CLI's poll, from a fourth instance, holds the token exactly once.
+  const fourth = createD1DeviceSigninStore(db, { now: () => 0 });
+  const polled = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctxFor(fourth),
+  );
+  assert.equal(polled.status, 200);
+  const token = await polled.json();
+  assert.equal(token.status, "approved");
+  assert.equal(token.account.id, ACCOUNT.id);
+  assert.equal(token.deviceToken.length > 0, true);
+
+  // A fifth instance resolves the token it never minted in memory.
+  const fifth = createD1DeviceSigninStore(db, { now: () => 0 });
+  assert.deepEqual(await fifth.accountForDeviceToken(token.deviceToken), ACCOUNT);
 });

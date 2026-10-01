@@ -125,29 +125,28 @@ async function readUserCode(request) {
  * @param {Request} request
  * @param {{store: KeyStore, url: URL}} ctx
  */
-export function requestDeviceCodeRoute(request, ctx) {
+export async function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
   // The device name is optional: the CLI sends its hostname so the approval
   // page and the device list can tell two laptops apart. A body that is
   // absent is fine; one that is present must be a JSON object.
-  return readRequestedName(request).then((read) => {
-    if ("error" in read) {
-      return errorResponse(400, read.error);
-    }
-    const code = ctx.store.requestDeviceCode({ name: read.name });
-    const verification = new URL("/v1/device/approve", ctx.url);
-    const complete = new URL(verification);
-    complete.searchParams.set("user_code", code.userCode);
-    return json({
-      deviceCode: code.deviceCode,
-      userCode: code.userCode,
-      verificationUri: verification.toString(),
-      verificationUriComplete: complete.toString(),
-      expiresIn: code.expiresIn,
-      interval: code.interval,
-    });
+  const read = await readRequestedName(request);
+  if ("error" in read) {
+    return errorResponse(400, read.error);
+  }
+  const code = await ctx.store.requestDeviceCode({ name: read.name });
+  const verification = new URL("/v1/device/approve", ctx.url);
+  const complete = new URL(verification);
+  complete.searchParams.set("user_code", code.userCode);
+  return json({
+    deviceCode: code.deviceCode,
+    userCode: code.userCode,
+    verificationUri: verification.toString(),
+    verificationUriComplete: complete.toString(),
+    expiresIn: code.expiresIn,
+    interval: code.interval,
   });
 }
 

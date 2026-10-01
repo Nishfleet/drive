@@ -32,8 +32,10 @@ import { routes } from "./routes.js";
  * What a handler gets besides the request. `store` is the stand-in key store
  * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
  * because a deployment without them answers its closed door rather than
- * pretending to hold keys.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * pretending to hold keys. `accounts` is the sign-in flow's account store, read
+ * through src/status.js `signedInAccount` for the browser half of a device
+ * approval; a deployment with none bound stays signed out.
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string}|null, accounts?: {accountForSession: (token: string|null) => Promise<{id: string, name: string, email: string}|null>}|null, params?: Record<string, string>, url?: URL}} Ctx
  */
 
 /** @type {WeakMap<Route, URLPattern>} */
@@ -199,28 +201,29 @@ export async function dispatch(request, ctx, table = routes) {
 let keyStore;
 /** The database the cached key store was built for, so a later request with a
  * bound DB does not keep a memory sign-in store from the first request. */
+/** @type {D1Database|undefined} */
 let keyStoreDb;
 
 /**
- * The Worker's own env as this entry reads it: the D1 binding named DB, plus
- * whatever else the runtime bound (the generated `Env` covers the pricing
+ * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB,
+ * plus whatever else the runtime bound (the generated `Env` covers the pricing
  * Worker's bindings, not this Worker's, so the pair is declared here).
- * @typedef {{DB?: D1Database, [key: string]: unknown}} ApiEnv
+ * @typedef {{DRIVE_DB?: D1Database, [key: string]: unknown}} ApiEnv
  */
 
 /**
  * @param {ApiEnv} env
  */
 function storeFor(env) {
-  if (keyStore === undefined || keyStoreDb !== env.DB) {
+  if (keyStore === undefined || keyStoreDb !== env.DRIVE_DB) {
     // The device sign-in half is D1-backed whenever the deployment binds a
     // database, so a code started on one instance is visible on the next and
     // survives a restart (drive#136 finding 1); without one it stays the
     // in-memory stand-in. The key half is still the stand-in until drive#2.
     keyStore = createMemoryStore({
-      signin: env.DB ? createD1DeviceSigninStore(env.DB) : undefined,
+      signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
     });
-    keyStoreDb = env.DB;
+    keyStoreDb = env.DRIVE_DB;
   }
   return keyStore;
 }
@@ -232,9 +235,9 @@ export default {
   async fetch(request, env) {
     return dispatch(request, {
       env,
-      db: env.DB,
+      db: env.DRIVE_DB,
       store: storeFor(env),
-      accounts: env.ACCOUNTS_STORE ?? null,
+      accounts: /** @type {Ctx["accounts"]} */ (env.ACCOUNTS_STORE ?? null),
       now: Date.now,
     });
   },
