@@ -212,6 +212,11 @@ let keyStoreDb;
  */
 
 /**
+ * The stand-in key store, until the D1-backed one lands: the same shape
+ * createMemoryStore gives the tests, so a route cannot tell the difference.
+ * The env is what will choose it, and the parameter is named here so the
+ * signature the type check reads and the one the runtime calls are the same
+ * function. `env` is read below, so there is no unused parameter to void.
  * @param {ApiEnv} env
  */
 function storeFor(env) {
