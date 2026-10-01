@@ -25,10 +25,10 @@
 -- a future sweep can find dead rows without a full scan.
 
 CREATE TABLE IF NOT EXISTS device_codes (
-  device_code_hash TEXT PRIMARY KEY,
+  device_code_hash TEXT PRIMARY KEY NOT NULL,
   user_code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'used')),
   account_id TEXT NOT NULL DEFAULT '',
   account_name TEXT NOT NULL DEFAULT '',
   account_email TEXT NOT NULL DEFAULT '',
@@ -36,9 +36,8 @@ CREATE TABLE IF NOT EXISTS device_codes (
   expires_at INTEGER NOT NULL DEFAULT 0
 );
 
--- The approval path looks a code up by the short code the person typed.
-CREATE INDEX IF NOT EXISTS device_codes_user_code_idx
-  ON device_codes (user_code);
+-- The approval path looks a code up by the short code the person typed; the
+-- UNIQUE constraint above already provides that index.
 
 -- A minted device token, kept only as its digest. The account columns are the
 -- signed-in account the code was approved with, copied onto the token so a
@@ -46,7 +45,7 @@ CREATE INDEX IF NOT EXISTS device_codes_user_code_idx
 -- second accounts table of its own (the account store is the sign-in flow's,
 -- src/accounts.js, and moves to D1 with drive#161).
 CREATE TABLE IF NOT EXISTS device_tokens (
-  token_hash TEXT PRIMARY KEY,
+  token_hash TEXT PRIMARY KEY NOT NULL,
   account_id TEXT NOT NULL DEFAULT '',
   account_name TEXT NOT NULL DEFAULT '',
   account_email TEXT NOT NULL DEFAULT '',

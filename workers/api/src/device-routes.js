@@ -17,6 +17,7 @@
 // makes an account, it attaches the person who already signed in.
 import { json, errorResponse } from "./http.js";
 import { failureMessage } from "../../../src/messages.js";
+import { isSameOriginRequest } from "../../../src/email-send.js";
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
@@ -260,6 +261,13 @@ async function enforceApproveLimit(request, ctx) {
  * @param {{store: any, account: {id: string, name?: string, email?: string}, env?: Record<string, any>}} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
+  // State-changing and cookie-authenticated, so a form another site made on
+  // the person's behalf is refused before it spends any rate-limit quota (the
+  // waitlist's own ordering). The session cookie is SameSite=Lax, but this is
+  // the second lock: the approval must come from the page that served it.
+  if (!isSameOriginRequest(request)) {
+    return errorResponse(403, failureMessage("cross-site"));
+  }
   const limited = await enforceApproveLimit(request, ctx);
   if (limited) {
     return limited;
@@ -272,7 +280,10 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if (userCode === "") {
     return approvePageError("", "Type the code from the terminal.");
   }
-  const result = ctx.store.approveDeviceCode(userCode, ctx.account);
+  // The store is async (the D1 implementation is), so this must be awaited:
+  // an un-awaited Promise has no `error` property, which would render the
+  // success page for a code that was never approved.
+  const result = await ctx.store.approveDeviceCode(userCode, ctx.account);
   if ("error" in result) {
     const notice =
       result.error === "expired-code"

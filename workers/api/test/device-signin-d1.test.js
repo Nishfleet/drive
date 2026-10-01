@@ -4,6 +4,9 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   createD1DeviceSigninStore,
 } from "../src/device-signin.js";
+import { dispatch } from "../src/index.js";
+import { createMemoryStore } from "../src/keystore.js";
+import { SESSION_COOKIE } from "../../../src/accounts.js";
 
 // A minimal D1 stand-in for the device sign-in store: it implements the exact
 // statements device-signin.js prepares, over Maps, so two store instances share
@@ -158,4 +161,57 @@ test("an unknown code is refused and a bad user code attaches nothing", async ()
     error: "unknown-code",
   });
   assert.equal(await store.accountForDeviceToken("dtok_forged"), null);
+});
+
+// The route calls the store, so the D1 store's asynchrony is the request
+// path's too: without the `await` the unknown/expired branch would render the
+// success page while writing nothing. This walks the real dispatcher with the
+// D1-backed store behind it.
+test("the approve route leaves an unknown or expired code unapproved over D1", async () => {
+  const db = makeFakeD1();
+  let nowMs = 0;
+  const store = createMemoryStore({
+    signin: createD1DeviceSigninStore(db, { now: () => nowMs }),
+  });
+  const accounts = {
+    async accountForSession(token) {
+      return token === "sess_ok" ? ACCOUNT : null;
+    },
+  };
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      DEVICE_GLOBAL_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    },
+    db,
+    store,
+    accounts,
+    account: null,
+    now: () => nowMs,
+  };
+  const approve = (userCode) =>
+    dispatch(
+      new Request("https://api.test/v1/device/approve", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: `${SESSION_COOKIE}=sess_ok`,
+        },
+        body: `user_code=${encodeURIComponent(userCode)}`,
+      }),
+      ctx,
+    );
+
+  const unknownPage = await approve("ZZZZ-ZZZZ");
+  assert.equal(unknownPage.status, 200);
+  assert.doesNotMatch(await unknownPage.text(), /Approved\. Return to the terminal/);
+
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  nowMs += (DEVICE_CODE_TTL_SECONDS + 1) * 1000;
+  const expiredPage = await approve(code.userCode);
+  assert.equal(expiredPage.status, 200);
+  const expiredBody = await expiredPage.text();
+  assert.match(expiredBody, /expired/);
+  assert.doesNotMatch(expiredBody, /Approved\. Return to the terminal/);
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
 });

@@ -115,8 +115,6 @@ export async function dispatch(request, ctx, table = routes) {
   // store to resolve one with, which is the tests' own store-less context; the
   // Worker export always passes a store, so nothing reaches a route that way.
   const bearer = await accountForRequest(request, ctx.store);
-  const session = ctx.accounts ? await signedInAccount(request, ctx.accounts) : null;
-  const account = bearer ?? session ?? (ctx.store === undefined ? ctx.account ?? null : null);
 
   /** @type {Array<{route: Route, match: RouteMatch}>} */
   const matches = [];
@@ -128,6 +126,15 @@ export async function dispatch(request, ctx, table = routes) {
     matches.push({ route, match });
   }
 
+  // The session cookie is only read when the matched path actually needs an
+  // account and no bearer already proved one: a public route and a
+  // bearer-authenticated CLI call must not pay a session-store read.
+  const needsAccount = matches.some(({ route }) => route.auth !== "public");
+  const session =
+    bearer === null && needsAccount && ctx.accounts
+      ? await signedInAccount(request, ctx.accounts)
+      : null;
+  const account = bearer ?? session ?? (ctx.store === undefined ? ctx.account ?? null : null);
   if (matches.length === 0) {
     // 404 for nothing registered, 401 for a registered account route: the api
     // contract (docs/api.md) lists every route publicly, so route existence is
@@ -185,12 +192,15 @@ export async function dispatch(request, ctx, table = routes) {
 // the same methods, so no route changes.
 /** @type {ReturnType<typeof createMemoryStore>|undefined} */
 let keyStore;
+/** The database the cached key store was built for, so a later request with a
+ * bound DB does not keep a memory sign-in store from the first request. */
+let keyStoreDb;
 
 /**
  * @param {{DB?: any, [key: string]: any}} env
  */
 function storeFor(env) {
-  if (keyStore === undefined) {
+  if (keyStore === undefined || keyStoreDb !== env.DB) {
     // The device sign-in half is D1-backed whenever the deployment binds a
     // database, so a code started on one instance is visible on the next and
     // survives a restart (drive#136 finding 1); without one it stays the
@@ -198,6 +208,7 @@ function storeFor(env) {
     keyStore = createMemoryStore({
       signin: env.DB ? createD1DeviceSigninStore(env.DB) : undefined,
     });
+    keyStoreDb = env.DB;
   }
   return keyStore;
 }

@@ -291,6 +291,11 @@ export function createD1DeviceSigninStore(db, options = {}) {
         const stored = asCode(
           await first(db, "SELECT status, expires_at, account_id, account_name, account_email FROM device_codes WHERE user_code = ?1", userCode),
         );
+        if (stored === null || stored.account.id === "") {
+          // The row vanished between the update and this read, or the update
+          // did not attach an account; say so rather than dereferencing null.
+          return { error: "unknown-code" };
+        }
         return { accountId: stored.account.id, name: stored.account.name };
       }
       return { accountId: row.account.id, name: row.account.name };
@@ -327,7 +332,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
       );
       const changes = consumed && typeof consumed === "object" && "meta" in consumed
         ? Number(/** @type {{meta?: {changes?: number}}} */ (consumed).meta?.changes ?? 0)
-        : 1;
+        : 0;
       if (changes === 0) {
         return { status: "expired" };
       }
