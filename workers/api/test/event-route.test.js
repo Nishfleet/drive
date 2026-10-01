@@ -133,3 +133,9 @@ test("a key that arrives form-encoded decodes the way S3 sends it", () => {
   assert.ok(!("error" in parsed));
   assert.equal(parsed.events[0].key, "u/acct-a/q3 report.txt");
 });
+
+test("an invalid JSON body is a 400 the bucket can retry", async () => {
+  const response = await call({ authorization: `Bearer ${TOKEN}`, body: "not-json" });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /valid JSON/);
+});

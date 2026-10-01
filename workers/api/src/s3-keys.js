@@ -161,7 +161,7 @@ export function createS3KeyProvider(config) {
     masterAccessKeyId,
     masterSecretAccessKey,
     sessionSeconds = 3600,
-    sessionName = "drive-key",
+    sessionName = "drive-key-${crypto.randomUUID().slice(0, 8)}",
     roleArn,
     fetchImpl = fetch,
   } = config;

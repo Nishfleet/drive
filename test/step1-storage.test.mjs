@@ -173,16 +173,19 @@ async function startStandin(config, t) {
       [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
     },
   });
+  // Clean up the container and its volume even if the health check
+  // fails: a crashed stand-in should not leak resources on the
+  // runner, and a failure here is the failure to prove, not a pass.
+  t.after(() => {
+    spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
+    spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
+  });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
   const status = await new Promise((resolve) => child.once("exit", (code) => resolve(code)));
   if (status !== 0) {
     throw new Error(`\`${engine} run\` exited ${status}: ${stderr}`);
   }
-  t.after(() => {
-    spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-    spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
-  });
   const endpoint = `http://127.0.0.1:${PORT}`;
   await waitForHealth(endpoint, 60, t);
   t.diagnostic(`started ${IMAGE} as ${name} on ${endpoint}, notifications to ${config.webhookUrl}`);
@@ -516,26 +519,23 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       "the stored bytes must be the bytes that were sent",
     );
 
+    // Poll receiver.answers (the Worker's own route) rather than the
+    // log mock: the route is the contract, and a logger swap breaks
+    // this proof, not a silent timeout.
     const deadline = Date.now() + 30_000;
-    let line = null;
+    let answer = null;
     for (;;) {
-      const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
-      // The log line carries the key the FILE has, not the `+`-encoded one the
-      // notification arrived as.
-      line = lines.find(
-        (candidate) =>
-          candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
-      ) ?? null;
-      if (line !== null) {
+      answer = receiver.answers.find((a) => a.body.includes(key)) ?? null;
+      if (answer !== null) {
         break;
       }
       if (Date.now() > deadline) {
-        t.diagnostic(`worker log lines after 30s: ${JSON.stringify(lines)}`);
+        t.diagnostic(`receiver answers after 30s: ${JSON.stringify(receiver.answers)}`);
         throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
       }
       await sleep(500);
     }
-    t.diagnostic(`worker log: ${line}`);
+    t.diagnostic(`receiver answer: ${JSON.stringify(answer.body)}`);
   });
 
   await t.test("the session policy is derived from the one capabilities table", () => {

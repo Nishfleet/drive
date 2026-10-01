@@ -222,6 +222,12 @@ function keyProviderFor(env) {
       mint() {
         throw problem;
       },
+      revoke() {
+        throw problem;
+      },
+      swapToReadOnly() {
+        throw problem;
+      },
     };
   }
   return createS3KeyProvider({
