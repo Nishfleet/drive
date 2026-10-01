@@ -26,6 +26,10 @@ Usage:
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive request <folder>   make a page anyone can drop files onto
+  drive share --list       list this account's links (also on drive request)
+  drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive version            print the version
 
@@ -50,6 +54,11 @@ Mount flags:
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
+
+Link flags (share, request):
+  --api         api Worker base URL (env DRIVE_API_URL)
+  --list        list this account's links instead of minting one
+  --revoke      revoke the link with this token (a full link URL also works)
 
 The device keys are read from the environment, never a flag, so they stay out
 of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
@@ -92,6 +101,10 @@ func main() {
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "share":
+		err = runShare(os.Args[2:])
+	case "request":
+		err = runRequest(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
 	case "version", "--version", "-v":
