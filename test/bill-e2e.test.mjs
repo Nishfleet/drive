@@ -499,12 +499,8 @@ test("an hour that starts a month belongs to that month, not the one before", as
     from: monthInstant("2026-09"),
     hours: monthHours("2026-09"),
   });
-  const september = await monthUsageRollup(
-    meteredDb.db,
-    ACCOUNT,
-    monthInstant("2026-09"),
-    monthEnd("2026-09"),
-  );
+  // The same file is inside September for its first half hour and October for
+  // its second, and each month reads only the part that belongs to it.
   assert.equal(
     monthGbMinutes(meteredDb, "2026-09"),
     30,
