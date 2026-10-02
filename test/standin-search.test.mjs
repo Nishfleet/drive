@@ -39,6 +39,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, scopeStore } from "../src/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -50,63 +51,184 @@ if (!Number.isInteger(FILES) || FILES <= 0) {
 /** The issue's bar, in the same units searchDrive reports. */
 const BUDGET_MS = 1000;
 
-// The D1 shape over a real SQLite database with the shipped migrations, the
-// adapter test/search.test.mjs uses. Each test file is self-contained here, so
-// it is repeated rather than imported.
+/**
+ * D1's types are the runtime's `declare abstract class` — its `raw` carries two
+ * generic overloads no JS object can express — so the adapter is typed here in
+ * full, every method named and JSDoc'd, and handed to the interface the modules
+ * import through one documented cast. Nothing inside hides an error: each
+ * method below checks on its own, and a method the modules call that is missing
+ * would fail at run time, not silently pass.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+ * @returns {SqliteD1}
+ */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of ["waitlist/0001_waitlist.sql", "drive/0002_file_index.sql"]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const runOne = (sql, params) => {
+  /** The D1 meta a run answers with: every required field of the runtime's
+   * D1Meta, so a `D1Result` check is not fought.
+   * @returns {D1Meta & Record<string, unknown>} */
+  const meta = () => ({
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: 0,
+    last_row_id: 0,
+    changed_db: false,
+    changes: 0,
+  });
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {{results: Record<string, unknown>[], changes: number}}
+   */
+  const runOne = (sql, params = []) => {
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: sqlite.prepare(sql).all(...params) };
-    }
-    const info = sqlite.prepare(sql).run(...params);
-    return { success: true, meta: { changes: info.changes } };
-  };
-  return {
-    sqlite,
-    prepare(sql) {
       return {
-        bind(...params) {
-          return {
-            sql,
-            params,
-            async all() {
-              return runOne(sql, params);
-            },
-            async first() {
-              const row = sqlite.prepare(sql).get(...params);
-              return row === undefined ? null : row;
-            },
-          };
-        },
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
       };
-    },
-    async batch(statements) {
-      const results = [];
-      sqlite.exec("BEGIN");
-      try {
-        for (const statement of statements) {
-          results.push(runOne(statement.sql, statement.params));
-        }
-      } finally {
-        sqlite.exec("COMMIT");
-      }
-      return results;
-    },
+    }
+    const info = sqlite.prepare(prepared).run(...values);
+    return { results: [], changes: Number(info.changes) };
   };
+  /** The SQL and parameters each prepared statement carries, so batch() can
+   * run the statements the caller built and not re-derive them.
+   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
+  /**
+   * One prepared statement, the way D1 hands it back: bind() returns a
+   * statement carrying its own parameters, so the rest of the chain
+   * (all/first/run) runs the bound SQL.
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {D1PreparedStatement}
+   */
+  const statementFor = (sql, params = []) => {
+    const statement = /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        sql,
+        params,
+        /** @param {...unknown} values */
+        bind(...values) {
+          return statementFor(sql, values);
+        },
+        /**
+         * @template T
+         * @param {string} [colName]
+         * @returns {Promise<T|null>}
+         */
+        async first(colName) {
+          void colName;
+          const row = runOne(sql, params).results[0];
+          return row === undefined ? null : /** @type {T} */ (row);
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async all() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async run() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+      })
+    );
+    bound.set(statement, { sql, params });
+    return statement;
+  };
+  return /** @type {SqliteD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+      /** @param {string} sql */
+      prepare(sql) {
+        return statementFor(sql, []);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      async batch(statements) {
+        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
+        const results = [];
+        sqlite.exec("BEGIN");
+        try {
+          for (const statement of statements) {
+            const state = bound.get(statement);
+            if (!state) {
+              throw new Error("a statement was batch-ran that this adapter did not prepare");
+            }
+            results.push(runOne(state.sql, state.params));
+          }
+        } finally {
+          sqlite.exec("COMMIT");
+        }
+        return /** @type {D1Result<T>[]} */ (
+          results.map((result) => ({
+            results: /** @type {T[]} */ (result.results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          }))
+        );
+      },
+      /**
+       * D1's exec runs a multi-statement string; the tests never call it, but
+       * the adapter speaks the interface rather than being cast silent.
+       * @param {string} query
+       */
+      async exec(query) {
+        sqlite.exec(query);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * D1's session API is not part of what the modules under test use; a
+       * call would be a real bug, so it throws rather than standing in silently.
+       * @param {string} [constraintOrBookmark]
+       */
+      withSession(constraintOrBookmark) {
+        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+      },
+      async dump() {
+        throw new Error("a test adapter has no dump");
+      },
+    })
+  );
 }
 
+/** @param {string} bin @returns {boolean} */
 function rcloneRuns(bin) {
   return spawnSync(bin, ["version"], { stdio: "ignore" }).status === 0;
 }
 
+/** @returns {Promise<number>} */
 async function freePort() {
   const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  // `listen`'s callback receives the bound address, which this promise ignores,
+  // so the callback discards it; the promise carries no value, so `resolve` takes
+  // no argument either.
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  // `server.address()` answers the bound address, a string for a pipe and an
+  // AddressInfo for the TCP socket this asked for; only the latter has a port.
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string", "the stand-in listens on TCP");
+  const { port } = address;
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
@@ -114,11 +236,13 @@ async function freePort() {
 /** The files the stand-in drive holds, and the name one of them is found by.
  * Names are built so one word (`invoice`) matches every file and a second
  * (`needle`) matches exactly one: the common search and the precise one. */
+/** @param {number} i @returns {string} */
 function fileName(i) {
   const stem = `file-${String(i).padStart(6, "0")}`;
   return i === FILES - 1 ? `${stem}-invoice-needle.pdf` : `${stem}-invoice.pdf`;
 }
 
+/** @param {number} i @returns {string} */
 function filePath(i) {
   return `/folder-${i % FOLDERS}/${fileName(i)}`;
 }
@@ -126,6 +250,7 @@ function filePath(i) {
 /** One account's files in a folder rclone serve s3 will list. Written straight
  * into the served directory: the stand-in is a local folder, so the files are
  * the bucket's objects without 100,000 round trips of setup. */
+/** @param {string} dir @param {string} bucket @returns {Promise<void>} */
 async function seedDrive(dir, bucket) {
   const root = path.join(dir, bucket, `u/${ACCOUNT.id}`);
   for (let f = 0; f < FOLDERS; f++) {
@@ -142,6 +267,10 @@ async function seedDrive(dir, bucket) {
 
 /** A local `rclone serve s3` on a fresh folder, or the configured endpoint when
  * the environment names real storage. */
+/**
+ * @param {import("node:test").TestContext} t
+ * @returns {Promise<{endpoint: string, bucket: string, stop: () => Promise<void>}|null>}
+ */
 async function startStorage(t) {
   if (process.env.DRIVE_STANDIN_ENDPOINT) {
     return {

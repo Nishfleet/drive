@@ -128,7 +128,7 @@ function makeFakeD1(options = {}) {
       return { success: true, meta: { changes: 1 } };
     }
     if (s.startsWith("UPDATE device_codes SET status = 'used'")) {
-      const [hash, nonce, nowSecondsAt] = params;
+      const [nonce, hash, nowSecondsAt] = params;
       const row = codes.get(hash);
       if (row?.status !== "approved" || row.consumed_by !== "" || row.expires_at <= nowSecondsAt) {
         return { success: true, meta: { changes: 0 } };

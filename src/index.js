@@ -1,5 +1,5 @@
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
-import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
+import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
@@ -10,6 +10,7 @@ import {
   scopeStore,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { handleStorageEventRequest, METER_CRON, runMeterCron } from "./meter.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -18,6 +19,17 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
+import {
+  createMemoryLinkStore,
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleRequestUploadRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+  REQUEST_ENDPOINT,
+  SHARE_ENDPOINT,
+  SHARE_LINK_PREFIX,
+} from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
@@ -69,6 +81,52 @@ function storeFor(env) {
   return filesStore;
 }
 
+// One link store per Worker isolate, the same stand-in shape storeFor() uses
+// for files: the in-memory LinkStore stands in until the accounts store lands
+// (#55), where the shares and upload_requests rows move to D1 behind the same
+// interface (src/share.js). Sharing the FileStore above is what makes a file
+// dropped through an upload page appear on the owner's drive at its next
+// listing.
+/** @type {import("./share.js").LinkStore|undefined} */
+let linksStore;
+function linksFor() {
+  if (!linksStore) {
+    linksStore = createMemoryLinkStore();
+  }
+  return linksStore;
+}
+
+// The owner's spending-cap state for the public upload routes, read from the
+// same src/billing.js summary the usage page shows, and resolved per account so
+// the cap answered is always the one belonging to the account that minted the
+// token (src/share.js handleRequestInfoRequest and
+// handleRequestUploadRequest both take a resolver, not a value). Until the
+// meter lands (#6) an account has no usage rows, so this is the empty month
+// the usage endpoint already answers with — the honest cap for a drive with
+// nothing stored. When the meter lands, this one function is the swap point:
+// it reads the token owner's usage_minutes rows and answers their cap, and no
+// upload route changes.
+/**
+ * The `_accountId` is the swap point's seam: the meter (issue #6) will read
+ * the named account's usage_minutes rows here, and until it lands every
+ * account gets the empty month the usage endpoint answers with.
+ *
+ * @param {string} _accountId
+ */
+function capStateFor(_accountId) {
+  const empty = usageSummary({
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  });
+  return empty.cap.state;
+}
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
@@ -89,6 +147,13 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
       return handleWaitlistRequest(request, env.WAITLIST_DB, env.WAITLIST_RATE_LIMITER);
+    }
+    // The meter's event intake (issue #6). The storage provider's event rule
+    // lands here with the shared token in a header; the dedup in
+    // src/meter.js makes the provider's own retries safe, so no rate limiter
+    // is bound to this path.
+    if (url.pathname === "/api/storage-events" || url.pathname === "/api/storage-events/") {
+      return handleStorageEventRequest(request, env.METER_DB, env.METER_EVENT_TOKEN);
     }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
@@ -165,7 +230,10 @@ export default {
     // over D1, #181). The start step mails a single-use link; the sign-out
     // step revokes the session. The link itself is the next branch below.
     // Registered here, ahead of the asset fallthrough, because /api/signin
-    // must reach the Worker.
+    // must reach the Worker. The handler enforces the two edge limits (issue
+    // #147, env.SIGNIN_RATE_LIMITER / env.SIGNIN_GLOBAL_RATE_LIMITER) before
+    // it reads the body, so a start that mails a real email is bounded at the
+    // edge and a refused request costs no parse and no send.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
       return handleSigninRequest(request, env);
     }
@@ -179,6 +247,41 @@ export default {
     // behind.
     if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
       return handleSigninLinkVerify(request, env);
+    }
+    // Share links and upload requests (issue #19). The share/request roots
+    // are the owner's side and stand behind the same gate as /api/files
+    // (issue #73): a caller that cannot prove an account gets 401 with no
+    // link, no file and no list. /s/<token>, the request info and the upload
+    // route are the logged-out side and carry the token in the path or the
+    // query instead of a session, so they do not ask the gate for an account
+    // — the token is the whole proof, and one that expires or is revoked
+    // answers 404 (src/share.js).
+    if (url.pathname === SHARE_ENDPOINT || url.pathname === `${SHARE_ENDPOINT}/`) {
+      return handleShareRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
+      return handleShareFileRequest(request, storeFor(env), linksFor());
+    }
+    if (url.pathname === REQUEST_ENDPOINT || url.pathname === `${REQUEST_ENDPOINT}/`) {
+      return handleRequestRequest(
+        request,
+        storeFor(env),
+        linksFor(),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    // The two public request routes are matched after the owner's /api/request
+    // root so the exact root is never mistaken for its own child.
+    if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
+      return handleRequestInfoRequest(request, linksFor(), capStateFor);
+    }
+    if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
@@ -197,19 +300,47 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // The nightly reconciler (build-spec.md piece 6, drive issue #18):
-  // `reconcileIndex` walks one account's store once and rebuilds its rows, so
-  // an event the write path missed is corrected within a day. The schedule is
-  // the only way a rebuild starts: it is invoked by the platform and cannot be
-  // started by a browser request, which a route on /api/search/index would
-  // have allowed (issue #18 safety review). The accounts to walk are the ones
-  // the index already holds rows for — a scheduled run has no request and so
-  // no signed-in account, and this repo has no accounts table until the device
-  // sign-in store lands (#5), so the index's own rows are the only honest list:
-  // an account the drive has never served has nothing to rebuild, and no
-  // invented identity is indexed. Each account's rows are rebuilt from its own
-  // prefix (scopeStore), the same scoping a request path gets.
-  async scheduled(_event, env, context, store = storeFor(env)) {
+  // Two Cron Triggers share this one handler, and the platform's cron string
+  // tells them apart, so neither trigger spends the other's work:
+  //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
+  //     has not been rolled yet into usage_minutes, oldest first
+  //     (src/meter.js runMeterCron). A D1 failure throws, so Cloudflare
+  //     records the trigger as failed and retries, and the catch-up takes
+  //     the next one over - a failed rollup must never read as a quiet zero.
+  //     The schedule string lives in cloudflare.config.ts, pinned to
+  //     src/meter.js's METER_CRON by test/meter.test.mjs.
+  //   - The nightly reconciler (build-spec.md piece 6, drive issue #18):
+  //     `reconcileIndex` walks one account's store once and rebuilds its rows,
+  //     so an event the write path missed is corrected within a day. The
+  //     schedule is the only way a rebuild starts: it is invoked by the
+  //     platform and cannot be started by a browser request, which a route on
+  //     /api/search/index would have allowed (issue #18 safety review). The
+  //     accounts to walk are the ones the index already holds rows for — a
+  //     scheduled run has no request and so no signed-in account, and this
+  //     repo has no accounts table until the device sign-in store lands (#5),
+  //     so the index's own rows are the only honest list: an account the
+  //     drive has never served has nothing to rebuild, and no invented
+  //     identity is indexed. Each account's rows are rebuilt from its own
+  //     prefix (scopeStore), the same scoping a request path gets.
+  /**
+   * @param {ScheduledController} event
+   * @param {Env} env
+   * @param {ExecutionContext} context
+   * @param {import("./files.js").FileStore} [store] the storage store,
+   *   injectable so the reindex's own tests hand one in instead of standing
+   *   in the runtime's fetch
+   * @returns {Promise<void>}
+   */
+  async scheduled(event, env, context, store = storeFor(env)) {
+    // The meter's trip. The controller carries the schedule string the
+    // trigger fired for (event.cron), so a run on the meter's schedule does
+    // the meter's work and nothing else.
+    if (event.cron === METER_CRON) {
+      // Awaited, so a D1 failure is Cloudflare's to record and retry: a
+      // rollup that returned early would read as a quiet zero.
+      await runMeterCron(env.METER_DB, event.scheduledTime);
+      return;
+    }
     context.waitUntil(
       (async () => {
         if (!env.DRIVE_DB) {

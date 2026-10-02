@@ -1,50 +1,66 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import "urlpattern-polyfill";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
+import { failureMessage } from "../../../src/messages.js";
 import { dispatch } from "../src/index.js";
-import {
-  createMemoryStore,
-  DEVICE_CODE_TTL_SECONDS,
-  DEVICE_TOKEN_TTL_SECONDS,
-} from "../src/keystore.js";
+import { createMemoryStore, DEVICE_CODE_TTL_SECONDS, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js";
 
-// The session cookie Better Auth mints, named by src/auth.js
-// `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
-// instance): `__Secure-` because the site is HTTPS only, then the prefix, then
-// Better Auth's own session name.
-const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
-
-// A clock the test owns, so a device code or a device token can be pushed past
-// its window without sleeping; the store reads `now` from the context it is
-// given.
+// A clock the test owns, so a device token can be pushed past its TTL without
+// sleeping; the store reads `now` from the context it is given.
+/**
+ * @param {number} [startMs]
+ * @returns {{now: () => number, advance: (seconds: number) => void}}
+ */
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
+    /** @param {number} seconds */
     advance: (seconds) => {
       now += seconds * 1000;
     },
   };
 }
 
-// The build step 4 acceptance walked over HTTP, through the real registry and
-// the real dispatcher (not the handlers called directly): a device signs in,
-// mints one key per agent tool, and the storage API answers per key.
-//
-//   - a revoked agent key is refused by the storage API (the #5 bullet),
-//   - each connected tool has its own key, and reading another user's prefix
-//     fails, and
-//   - the device sign-in safety bullets (drive#136): an anonymous approve is
-//     401 and changes nothing, a past-the-limit approve is 429, and an expired
-//     code is never approved.
+// The edge limits the device flow answers behind (drive issue #147). The
+// binding's whole contract is `limit({ key }) -> { success }`, the same fake
+// the site Worker's tests drive; every call is recorded so a test can assert
+// the bucket and that a refused request never reaches the store.
+/**
+ * @param {{success?: boolean}} [options]
+ */
+function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
+  const calls = [];
+  return {
+    calls,
+    /** @param {{key: string}} options */
+    async limit(options) {
+      calls.push(options);
+      return { success };
+    },
+  };
+}
+
+/** The env every device context carries once the limits are bound. */
+function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
+  return { DEVICE_RATE_LIMITER: ip, DEVICE_GLOBAL_RATE_LIMITER: global };
+}
+
+// The session cookie Better Auth mints, named by src/auth.js
+// `AUTH_COOKIE_PREFIX` (the same name test/auth.test.mjs asserts against a real
+// instance): `__Secure-` because the site is HTTPS only, then the prefix, then
+// Better Auth's own session name. The approval routes are account routes
+// (drive#136 finding 2), so a test that walks the flow past the page must
+// carry one; a value this stand-in never minted has no session.
+const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
 // The account store the sign-in flow (drive#130) provides, in the shape the
 // api Worker resolves it: src/auth.js `authFor` builds a Better Auth instance
-// over the customer database and src/status.js `signedInAccount` asks that
-// instance for the session a request's cookie names, so this stand-in speaks
-// Better Auth's own `api.getSession`. `add` mints a session token; a token
-// this object never minted has no session, which is the closed door.
+// over the customer database and the account gate asks that instance for the
+// session a request's cookie names, so this stand-in speaks Better Auth's own
+// `api.getSession`. `add` mints a session token; a token this object never
+// minted has no session, which is the closed door.
 function makeAccounts() {
   const byToken = new Map();
   let next = 0;
@@ -70,27 +86,35 @@ function makeAccounts() {
   };
 }
 
-// The rate limit binding's whole contract is limit({ key }) -> { success }.
-function limiter(success = true) {
-  return { limit: async () => ({ success }) };
-}
+// The build step 4 acceptance walked over HTTP, through the real registry and
+// the real dispatcher (not the handlers called directly): a device signs in,
+// mints one key per agent tool, and the storage API answers per key.
+//
+//   - a revoked agent key is refused by the storage API (the #5 bullet), and
+//   - each connected tool has its own key, and reading another user's prefix
+//     fails.
 
+/** @param {ReturnType<typeof createMemoryStore>} store @param {{id: string, name: string}|null} account @param {{accounts?: ReturnType<typeof makeAccounts>, env?: Record<string, unknown>}} [overrides] */
 function baseCtx(store, account, overrides = {}) {
+  // The two edge limits the device routes fail closed without (drive issue
+  // #147): fake pass-throughs, so every test that walks the device flow does
+  // so the way production runs it with the bindings configured. The account
+  // store is the sign-in flow's stand-in, read only by the account gate.
   return {
-    env: {
-      DEVICE_RATE_LIMITER: limiter(),
-      DEVICE_GLOBAL_RATE_LIMITER: limiter(),
-      ...(overrides.env ?? {}),
-    },
+    env: { ...limits(), ...(overrides.env ?? {}) },
     db: null,
     store,
-    accounts: overrides.accounts ?? makeAccounts(),
+    accounts: overrides.accounts,
     account,
     now: () => 0,
   };
 }
 
-/** Walk the device flow as a signed-in person and return the account and token. */
+/** Walk the device flow as a signed-in person and return the account and token.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} name
+ * @returns {Promise<{account: {id: string, name: string}, deviceToken: string}>}
+ */
 async function signIn(store, name) {
   const accounts = makeAccounts();
   const account = {
@@ -152,10 +176,12 @@ async function signIn(store, name) {
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
+/** @param {string} token @returns {{authorization: string}} */
 function bearer(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+/** @param {string} accessKeyId @param {string} secret @returns {{authorization: string}} */
 function basic(accessKeyId, secret) {
   return { authorization: `Basic ${btoa(`${accessKeyId}:${secret}`)}` };
 }
@@ -174,8 +200,7 @@ test("the poll is pending before approval, and the token works after it", async 
   );
   assert.deepEqual(await pending.json(), { status: "pending" });
 
-  const account = { id: "acct_test", name: "Nish's MacBook", email: "n@example.com" };
-  store.approveDeviceCode(code.userCode, account);
+  store.approveDeviceCode(code.userCode);
   const resolved = await dispatch(
     new Request("https://api.test/v1/device/token", {
       method: "POST",
@@ -419,11 +444,244 @@ test("a storage request with no or bad Basic auth is a 401 with a challenge", as
   assert.equal(notBasic.status, 401);
 });
 
+// ---- device token expiry and revocation (drive#176) ----
+//
+// A device token is the CLI's whole credential for the account gate, so it
+// must die on its own: an expiry bounds how long a stolen token stays good,
+// and the revoke route lets `drive logout` kill it server-side. Both land in
+// the bearer lookup, so a dead token is a 401 on /v1/keys before any handler.
+
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now: () => number}} clock
+ */
+function clockCtx(store, account, clock) {
+  return { env: {}, db: null, store, account, now: clock.now };
+}
+
+test("an expired device token is 401 on /v1/keys", async () => {
+  // A controllable clock so the token can be pushed past its TTL without
+  // sleeping; the store reads `now` from the context.
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
+  // Drive #176: DEVICE_TOKEN_TTL_SECONDS is the session TTL, so a month out
+  // the token that opened /v1/keys is dead.
+  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
+
+  const keys = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+    clockCtx(store, null, clock),
+  );
+  assert.equal(keys.status, 401, "an expired token must not pass the account gate");
+  assert.equal(keys.headers.get("www-authenticate"), 'Bearer realm="drive"');
+});
+
+test("a revoked device token is 401 on /v1/keys, and only the revoked token", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  // Two devices on the same account: revoking one must not touch the other.
+  const { deviceToken: first } = await signIn(store, "Nish's MacBook");
+  const { account, deviceToken: second } = await signIn(store, "Nish's other Mac");
+
+  // Revoke the first device's own token via DELETE /v1/device/token.
+  const revoked = await dispatch(
+    new Request("https://api.test/v1/device/token", { method: "DELETE", headers: bearer(first) }),
+    clockCtx(store, account, { now: () => 0 }),
+  );
+  assert.equal(revoked.status, 204, "the owner can revoke its own token");
+
+  // The revoked token is dead at the gate; /v1/keys does not run.
+  const dead = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(first) }),
+    clockCtx(store, account, { now: () => 0 }),
+  );
+  assert.equal(dead.status, 401, "a revoked token is 401 on /v1/keys");
+
+  // The other device on the same account is untouched and still works.
+  const live = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(second) }),
+    clockCtx(store, account, { now: () => 0 }),
+  );
+  assert.equal(live.status, 200, "the other device's token still works");
+  assert.deepEqual(await live.json(), { keys: [] });
+});
+
+test("DELETE /v1/device/token without a token cannot revoke it (the route stays account-gated)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const clock = fixedClock();
+  const { deviceToken, account } = await signIn(store, "Nish's MacBook");
+
+  // No bearer at all: the account gate is middleware, so an anonymous request
+  // to the path's DELETE is answered by the gate itself (401 with a bearer
+  // challenge, no handler), while the path's public POST still answers. Either
+  // way the handler does not run and the token is not revoked.
+  const anon = await dispatch(
+    new Request("https://api.test/v1/device/token", { method: "DELETE" }),
+    clockCtx(store, account, clock),
+  );
+  assert.notEqual(anon.status, 204, "an anonymous request must not revoke");
+
+  // The token still opens /v1/keys, proving the revoke above did not fire.
+  const keys = await dispatch(
+    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+    clockCtx(store, account, clock),
+  );
+  assert.equal(keys.status, 200, "the token was not revoked");
+});
+
+// ---- device edge limits (drive issue #147) ----
+//
+// Approving makes an account and a poll mints a device token, so both are
+// bounded at the edge: the per-IP bucket stops one connection looping, and the
+// global bucket is the backstop the CLI's 5s poll rate still sits under. With
+// no binding on env the routes fail closed, never open.
+
+test("a poll denied by the per-IP edge limit is a 429, before the store is read", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ip = makeRateLimiter({ success: false });
+  const ctx = { env: limits(ip), db: null, store, account: null, now: () => 0 };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 429, "the poll must hit the edge limit, not the store");
+  assert.equal(response.headers.get("retry-after"), "60");
+  assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
+  assert.deepEqual(ip.calls, [{ key: "203.0.113.7" }]);
+});
+
+test("an approve denied by the global edge limit is a 429 and the code stays unapproved", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_lim", name: "Lim", email: "lim@example.com" });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const global = makeRateLimiter({ success: false });
+  const ctx = {
+    env: limits(makeRateLimiter(), global),
+    db: null,
+    store,
+    accounts,
+    account: null,
+    now: () => 0,
+  };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 429, "the global bucket is the approve backstop");
+  assert.deepEqual(global.calls, [{ key: "global" }]);
+  // The code is still pending: the rate-limited approve touched no store.
+  const pending = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(pending.status, "pending", "a refused approve must not approve the code");
+});
+
+test("the device limits key the per-IP bucket on cf-connecting-ip and the global on one shared bucket", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ip = makeRateLimiter();
+  const global = makeRateLimiter();
+  const ctx = { env: limits(ip, global), db: null, store, account: null, now: () => 0 };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.9" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(ip.calls, [{ key: "198.51.100.9" }]);
+  assert.deepEqual(global.calls, [{ key: "global" }]);
+});
+
+test("with no device limiters the approve and poll routes fail closed, not open", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const sessionToken = accounts.add({ id: "acct_bare", name: "Bare", email: "b@example.com" });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  // No DEVICE_RATE_LIMITER / DEVICE_GLOBAL_RATE_LIMITER on env: a deployment
+  // that has not declared them does not run the flow. The account store is
+  // present, so the gated approve reaches its handler and hits the closed door
+  // rather than the gate's 401.
+  const bare = { env: {}, db: null, store, accounts, account: null, now: () => 0 };
+  const poll = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    bare,
+  );
+  assert.equal(poll.status, 503, "a missing edge binding is a closed door");
+  assert.deepEqual(await poll.json(), { error: failureMessage("unexpected") });
+
+  const approve = await dispatch(
+    new Request("https://api.test/v1/device/approve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
+      body: `user_code=${encodeURIComponent(code.userCode)}`,
+    }),
+    bare,
+  );
+  assert.equal(approve.status, 503);
+  // The code was not approved behind the closed door.
+  assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "pending");
+});
+
+test("a device limiter that throws fails closed with the table's words, never the error text", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const ctx = {
+    env: {
+      DEVICE_RATE_LIMITER: {
+        limit: () => Promise.reject(new Error("limiter backend exploded: key=sk-secret")),
+      },
+      DEVICE_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+    },
+    db: null,
+    store,
+    account: null,
+    now: () => 0,
+  };
+  const response = await dispatch(
+    new Request("https://api.test/v1/device/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: code.deviceCode }),
+    }),
+    ctx,
+  );
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), { error: failureMessage("unexpected") });
+  assert.ok(!body.includes("exploded"), "the raw error text never reaches the caller");
+});
+
 // ---- drive#136: only a signed-in person can approve, and only within limits --
 
+// Finding 2's first half: the approve route is an account route, so an
+// anonymous request is the gate's own 401 before the handler runs and the
+// pending code is untouched.
 test("an anonymous approve is 401 and changes nothing (drive#136 b)", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const code = store.requestDeviceCode({ name: "laptop" });
+  const accounts = makeAccounts();
 
   const anonymous = await dispatch(
     new Request("https://api.test/v1/device/approve", {
@@ -431,7 +689,7 @@ test("an anonymous approve is 401 and changes nothing (drive#136 b)", async () =
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: `user_code=${encodeURIComponent(code.userCode)}`,
     }),
-    baseCtx(store, null),
+    baseCtx(store, null, { accounts }),
   );
   assert.equal(anonymous.status, 401);
   assert.equal(anonymous.headers.get("www-authenticate"), 'Bearer realm="drive"');
@@ -443,6 +701,9 @@ test("an anonymous approve is 401 and changes nothing (drive#136 b)", async () =
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 });
 
+// Finding 2's second half: the approve route spends its own per-IP bucket
+// before it reads the code, so a caller over the limit gets a 429 and the code
+// stays pending; with the binding missing the route is closed, not open.
 test("the approve route answers 429 past its limit, and fails closed with none (drive#136 c)", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const accounts = makeAccounts();
@@ -460,7 +721,7 @@ test("the approve route answers 429 past its limit, and fails closed with none (
 
   const denied = await dispatch(
     request(),
-    baseCtx(store, null, { accounts, env: { DEVICE_RATE_LIMITER: limiter(false) } }),
+    baseCtx(store, null, { accounts, env: { DEVICE_RATE_LIMITER: makeRateLimiter({ success: false }) } }),
   );
   assert.equal(denied.status, 429);
   assert.equal(denied.headers.get("retry-after"), "60");
@@ -479,6 +740,8 @@ test("the approve route answers 429 past its limit, and fails closed with none (
   assert.equal(allowed.status, 200);
 });
 
+// Finding 1's other half at the route: an expired code cannot be approved, so
+// the poll never mints a token from it.
 test("an expired code cannot be approved (drive#136 d)", async () => {
   let nowMs = Date.parse("2026-09-30T12:00:00Z");
   const store = createMemoryStore({ now: () => nowMs });
@@ -536,82 +799,4 @@ test("an approval from another site is 403 and a same-origin one is approved", a
   assert.equal(sameSite.status, 200);
   assert.match(await sameSite.text(), /Approved\. Return to the terminal/);
   assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "approved");
-});
-
-// ---- device token expiry and revocation (drive#176, kept through drive#136) ----
-//
-// A device token is the CLI's whole credential for the account gate, so it
-// must die on its own: an expiry bounds how long a stolen token stays good,
-// and the revoke route lets `drive logout` kill it server-side. Both land in
-// the bearer lookup, so a dead token is a 401 on /v1/keys before any handler.
-// drive#136 moved that lookup into the device sign-in store, so these run
-// through the same dispatcher and the same store the D1 deployment uses.
-
-test("an expired device token is 401 on /v1/keys", async () => {
-  // A controllable clock so the token can be pushed past its TTL without
-  // sleeping; the store reads `now` from the context it is given.
-  const clock = fixedClock();
-  const store = createMemoryStore({ now: clock.now });
-  const { deviceToken } = await signIn(store, "Nish's MacBook");
-  // Drive #176: DEVICE_TOKEN_TTL_SECONDS is the session TTL, so a month out
-  // the token that opened /v1/keys is dead.
-  clock.advance(DEVICE_TOKEN_TTL_SECONDS + 1);
-
-  const keys = await dispatch(
-    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
-    baseCtx(store, null),
-  );
-  assert.equal(keys.status, 401, "an expired token must not pass the account gate");
-  assert.equal(keys.headers.get("www-authenticate"), 'Bearer realm="drive"');
-});
-
-test("a revoked device token is 401 on /v1/keys, and only the revoked token", async () => {
-  const store = createMemoryStore({ now: () => 0 });
-  // Two devices on the same account: revoking one must not touch the other.
-  const { deviceToken: first } = await signIn(store, "Nish's MacBook");
-  const { account, deviceToken: second } = await signIn(store, "Nish's other Mac");
-
-  // Revoke the first device's own token via DELETE /v1/device/token.
-  const revoked = await dispatch(
-    new Request("https://api.test/v1/device/token", { method: "DELETE", headers: bearer(first) }),
-    baseCtx(store, account),
-  );
-  assert.equal(revoked.status, 204, "the owner can revoke its own token");
-
-  // The revoked token is dead at the gate; /v1/keys does not run.
-  const dead = await dispatch(
-    new Request("https://api.test/v1/keys", { headers: bearer(first) }),
-    baseCtx(store, account),
-  );
-  assert.equal(dead.status, 401, "a revoked token is 401 on /v1/keys");
-
-  // The other device on the same account is untouched and still works.
-  const live = await dispatch(
-    new Request("https://api.test/v1/keys", { headers: bearer(second) }),
-    baseCtx(store, account),
-  );
-  assert.equal(live.status, 200, "the other device's token still works");
-  assert.deepEqual(await live.json(), { keys: [] });
-});
-
-test("DELETE /v1/device/token without a token cannot revoke it (the route stays account-gated)", async () => {
-  const store = createMemoryStore({ now: () => 0 });
-  const { deviceToken, account } = await signIn(store, "Nish's MacBook");
-
-  // No bearer at all: the account gate never runs the handler. /v1/device/token
-  // has a public POST route, so an anonymous DELETE is a 405 (method not allowed,
-  // allow: POST) rather than a 401 -- the documented dispatcher shape. Either
-  // way the handler does not run and the token is not revoked.
-  const anon = await dispatch(
-    new Request("https://api.test/v1/device/token", { method: "DELETE" }),
-    baseCtx(store, account),
-  );
-  assert.notEqual(anon.status, 204, "an anonymous request must not revoke");
-
-  // The token still opens /v1/keys, proving the revoke above did not fire.
-  const keys = await dispatch(
-    new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
-    baseCtx(store, account),
-  );
-  assert.equal(keys.status, 200, "the token was not revoked");
 });

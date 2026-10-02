@@ -45,16 +45,20 @@ function json(body, status) {
 /**
  * The Worker binding, as an argument so the test can pass a fake and the
  * shape is checked here rather than at runtime on a live send.
- * @param {EmailBinding} emailBinding
+ * @param {unknown} emailBinding
  * @returns {EmailBinding} the binding, or throws naming what is missing
  */
 function requireBinding(emailBinding) {
-  if (!emailBinding || typeof emailBinding.send !== "function") {
+  if (
+    typeof emailBinding !== "object" ||
+    emailBinding === null ||
+    typeof (/** @type {{send?: unknown}} */ (emailBinding).send) !== "function"
+  ) {
     throw new Error(
       "EMAIL is not bound on this deployment: the send_email binding is declared in cloudflare.config.ts but no Email Sending domain is onboarded for it",
     );
   }
-  return emailBinding;
+  return /** @type {EmailBinding} */ (emailBinding);
 }
 
 // The deployment's own token, compared without an early return so the
@@ -117,8 +121,8 @@ export function isSameOriginRequest(request) {
  * binding's own error: a failed send is never reported as sent, because the
  * caller decides whether to retry and a false "sent" would silently drop a
  * customer's receipt.
- * @param {EmailBinding} emailBinding the EMAIL binding
- * @param {{to: string, kind: string, data?: Record<string, unknown>, from: string, fromName?: string, rendered?: {subject: string, text: string, html: string, saved: string|null}}} request
+ * @param {unknown} emailBinding the EMAIL binding
+ * @param {unknown} request
  * @returns {Promise<{messageId: string, subject: string}>}
  */
 export async function sendEmail(emailBinding, request) {
@@ -126,7 +130,11 @@ export async function sendEmail(emailBinding, request) {
   if (typeof request !== "object" || request === null) {
     throw new TypeError(`sendEmail needs a request object, got ${String(request)}`);
   }
-  const { to, kind, data = {}, from, fromName = FROM_NAME, rendered } = request;
+  const fields =
+    /** @type {{to?: unknown, kind?: unknown, data?: Record<string, unknown>, from?: unknown, fromName?: unknown, rendered?: {subject: string, text: string, html: string, saved: string|null}}} */ (
+      request
+    );
+  const { to, kind, data = {}, from, fromName = FROM_NAME, rendered } = fields;
   if (typeof to !== "string" || to.trim().length === 0) {
     throw new TypeError(`sendEmail needs a recipient address, got ${to}`);
   }
@@ -139,12 +147,13 @@ export async function sendEmail(emailBinding, request) {
   // renderEmail throws on an unknown kind, so a typo fails here and not as a
   // 202 with an empty body. The route renders first (so a bad body is a 400
   // rather than a 502) and passes the result in.
+  const senderName = typeof fromName === "string" ? fromName : FROM_NAME;
   const { subject, text, html } = rendered ?? renderEmail(kind, data);
   // Both parts: some clients show only the text part, and a text part is a
   // large part of the spam score.
   const message = await binding.send({
     to: to.trim(),
-    from: { email: from.trim(), name: fromName },
+    from: { email: from.trim(), name: senderName },
     subject,
     text,
     html,
@@ -210,7 +219,7 @@ function readRequest(body) {
  * same-origin rule, so the route cannot be used to mail an arbitrary person
  * from our domain.
  * @param {Request} request
- * @param {{EMAIL?: EmailBinding, EMAIL_SEND_TOKEN?: string, MAIL_FROM?: string}} env
+ * @param {{EMAIL?: unknown, EMAIL_SEND_TOKEN?: string, MAIL_FROM?: string}} env
  */
 export async function handleSendEmailRequest(request, env) {
   if (request.method !== "POST") {

@@ -12,29 +12,37 @@ import {
 } from "../src/keystore.js";
 
 // A clock the test owns, so a device code or token can be expired without sleeping.
+/**
+ * @param {number} [startMs]
+ * @returns {{now: () => number, advance: (seconds: number) => void}}
+ */
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
+    /** @param {number} seconds */
     advance: (seconds) => {
       now += seconds * 1000;
     },
   };
 }
 
-async function signedInAccount(store, name = "laptop") {
-  const account = testAccount(name);
-  const code = store.requestDeviceCode({ name });
-  store.approveDeviceCode(code.userCode, account);
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {{now: () => number}} [_clock]
+ * @returns {Promise<{account: {id: string}, deviceToken: string, code: unknown}>}
+ */
+async function signedInAccount(store, _clock) {
+  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  store.approveDeviceCode(code.userCode);
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
-  return { account, deviceToken: poll.deviceToken, code };
-}
-
-// The signed-in account the approval page passes in (drive#136): approving
-// attaches an existing account rather than making one.
-function testAccount(name = "laptop") {
-  return { id: `acct_${name.replace(/\W+/g, "_")}`, name, email: `${name}@example.com` };
+  // The assert above is not a type guard, so the approved arm is read through a
+  // documented cast rather than a `as`-by-another-name.
+  const approved = /** @type {{account: {id: string}, deviceToken: string}} */ (
+    /** @type {unknown} */ (poll)
+  );
+  return { account: approved.account, deviceToken: approved.deviceToken, code };
 }
 
 test("a device code starts pending and reports its expiry and poll interval", () => {
@@ -53,10 +61,9 @@ test("the poll is pending until the page approves, then returns a token exactly 
   const code = store.requestDeviceCode({ name: "laptop" });
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 
-  const account = testAccount("laptop");
-  assert.deepEqual(store.approveDeviceCode(code.userCode, account), {
-    accountId: account.id,
-    name: account.name,
+  assert.deepEqual(store.approveDeviceCode(code.userCode), {
+    accountId: store.accounts.keys().next().value,
+    name: "laptop",
   });
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
@@ -82,9 +89,7 @@ test("a device code expires, and an expired code is never approved", async () =>
   const code = store.requestDeviceCode({});
   clock.advance(DEVICE_CODE_TTL_SECONDS + 1);
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
-  assert.deepEqual(store.approveDeviceCode(code.userCode, testAccount()), {
-    error: "expired-code",
-  });
+  assert.deepEqual(store.approveDeviceCode(code.userCode), { error: "expired-code" });
 });
 
 test("a device token resolves to its account, and a made-up token does not", async () => {
@@ -104,8 +109,10 @@ test("minting a key returns the secret once and stores only its hash", async () 
   assert.deepEqual(minted.capabilities, ["list", "read", "write", "delete"]);
   const listed = store.listKeys(account);
   assert.equal(listed.length, 1);
-  assert.equal(listed[0].secret, undefined);
-  assert.equal(listed[0].secretHash, undefined);
+  // The hash lives only on the stored row; neither the API's listing nor its
+  // one-returned-secret surface it, so absence (not `undefined`) is the claim.
+  assert.ok(!("secret" in listed[0]), "the listing does not name the secret");
+  assert.ok(!("secretHash" in listed[0]), "the listing does not name the password hash");
 });
 
 test("an agent key never gets delete, and a branch key stays in its branch folder", async () => {
@@ -148,8 +155,8 @@ test("a wrong secret is refused, and the access key id is never guessed at", asy
 
 test("an account can revoke its own key but never another account's", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const first = await signedInAccount(store, "first");
-  const second = await signedInAccount(store, "second");
+  const first = await signedInAccount(store);
+  const second = await signedInAccount(store);
   const theirs = await store.mintKey(second.account, { kind: "agent" });
   assert.deepEqual(store.revokeKey(first.account, theirs.keyId), { error: "not-found" });
   assert.ok(await store.authenticate(theirs.accessKeyId, theirs.secret));
@@ -158,7 +165,12 @@ test("an account can revoke its own key but never another account's", async () =
 test("the delete capability comes from the one kind table", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  for (const kind of ["device", "agent", "s3", "branch"]) {
+  for (const kind of /** @type {Array<import("../src/keyprovider.js").KeyKind>} */ ([
+    "device",
+    "agent",
+    "s3",
+    "branch",
+  ])) {
     const key = await store.mintKey(account, kind === "branch" ? { kind, name: "b" } : { kind });
     const device = { kind };
     assert.equal(
@@ -199,7 +211,7 @@ test("the device token TTL is the session TTL", () => {
 test("a fresh token resolves and a token past its TTL does not", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
-  const { deviceToken, account } = await signedInAccount(store);
+  const { deviceToken, account } = await signedInAccount(store, clock);
   // The token resolves to the account it was minted against.
   assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
   // One second before the TTL the token still resolves; one second after it is
@@ -213,7 +225,7 @@ test("a fresh token resolves and a token past its TTL does not", async () => {
 test("a revoked device token does not resolve to an account", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
-  const { deviceToken, account } = await signedInAccount(store);
+  const { deviceToken, account } = await signedInAccount(store, clock);
   assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
   const result = await store.revokeDeviceToken(deviceToken);
   assert.equal(result.revoked, true);
@@ -233,7 +245,7 @@ test("a revoked device token does not resolve to an account", async () => {
 test("the sweep drops expired and revoked device tokens and leaves the live ones", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
-  const first = await signedInAccount(store);
+  const first = await signedInAccount(store, clock);
   // Advance past the first token's TTL. The bearer lookup refuses it now, but
   // nothing has swept it yet — no new token has been minted, and minting is
   // the only place the sweep runs automatically.
@@ -248,7 +260,7 @@ test("the sweep drops expired and revoked device tokens and leaves the live ones
 
   // A freshly minted token is live and survives a sweep. Minting also sweeps
   // (and dropped nothing live).
-  const second = await signedInAccount(store);
+  const second = await signedInAccount(store, clock);
   assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token resolves");
   assert.equal(store.sweepDeviceTokens(), 0, "nothing live was swept");
   assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token survived");

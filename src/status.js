@@ -99,15 +99,19 @@ export const SYNC_ERROR_NOTIFICATION = Object.freeze({
 });
 
 /**
- * @param {number|Date|string} value
+ * @param {unknown} value
  * @param {string} field the field name the error carries
  * @returns {number} epoch milliseconds
  */
 function millis(value, field) {
-  // A number is already epoch milliseconds (Date.now() is the default for
-  // `now`); a string is an ISO timestamp; a Date is its epoch value.
   const time =
-    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
+    typeof value === "number"
+      ? value
+      : value instanceof Date
+        ? value.getTime()
+        : typeof value === "string"
+          ? Date.parse(value)
+          : Number.NaN;
   if (!Number.isFinite(time)) {
     throw new TypeError(`status needs ${field} as a date or ISO string, got ${String(value)}`);
   }
@@ -118,20 +122,21 @@ function millis(value, field) {
  * The first-run state of a device, for the connection line and the Devices
  * list. `error` is the poll's own failure (set by the page), never the
  * device's: an unreachable service must not read as "waiting on you".
- * @param {{lastSeenAt?: string|Date|null, name?: string|null, error?: string|null}} device
+ * @param {unknown} device
  * @param {number|Date} now
  */
 export function connectionStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
     throw new TypeError(`connectionStatus needs a device object, got ${String(device)}`);
   }
-  if (device.error) {
+  const row = /** @type {{error?: unknown, lastSeenAt?: unknown}} */ (device);
+  if (row.error) {
     return { state: "unreachable", ...CONNECTION_COPY.unreachable };
   }
-  if (!device.lastSeenAt) {
+  if (!row.lastSeenAt) {
     return { state: "waiting", ...CONNECTION_COPY.waiting };
   }
-  const lastSeen = millis(device.lastSeenAt, "lastSeenAt");
+  const lastSeen = millis(row.lastSeenAt, "lastSeenAt");
   const age = millis(now, "now") - lastSeen;
   if (age <= CONNECTED_WINDOW_MS) {
     return { state: "connected", ...CONNECTION_COPY.connected };
@@ -185,30 +190,34 @@ export const UPLOAD_LABEL = Object.freeze({
  * Upload progress for `drive status` and the page's activity line: how much of
  * the queue has gone up. Zero total means nothing is waiting, which is a
  * complete state ("Up to date"), not an error and not a division by zero.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number}} upload
+ * @param {unknown} upload
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
     throw new TypeError(`uploadProgress needs an upload object, got ${String(upload)}`);
   }
-  const { uploadedBytes, totalBytes } = upload;
-  if (!Number.isFinite(uploadedBytes) || uploadedBytes < 0) {
-    throw new TypeError(`uploadedBytes must be 0 or more, got ${uploadedBytes}`);
+  const fields = /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown}} */ (
+    upload
+  );
+  const uploaded = fields.uploadedBytes;
+  const total = fields.totalBytes;
+  if (typeof uploaded !== "number" || !Number.isFinite(uploaded) || uploaded < 0) {
+    throw new TypeError(`uploadedBytes must be 0 or more, got ${uploaded}`);
   }
-  if (!Number.isFinite(totalBytes) || totalBytes < 0) {
-    throw new TypeError(`totalBytes must be 0 or more, got ${totalBytes}`);
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
+    throw new TypeError(`totalBytes must be 0 or more, got ${total}`);
   }
-  if (totalBytes === 0) {
+  if (total === 0) {
     return { percent: 100, label: UPLOAD_LABEL.upToDate };
   }
-  if (uploadedBytes > totalBytes) {
-    throw new RangeError(`uploadedBytes (${uploadedBytes}) cannot pass totalBytes (${totalBytes})`);
+  if (uploaded > total) {
+    throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
   }
-  const percent = Math.round((uploadedBytes / totalBytes) * 100);
+  const percent = Math.round((uploaded / total) * 100);
   // `files` is optional on the payload, so it is read into a local: the count
   // is null unless it is a positive integer, and the label below switches on
   // that null rather than on a missing field.
-  const count = upload.files;
+  const count = fields.files;
   const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   const head =
     files === null
@@ -217,8 +226,8 @@ export function uploadProgress(upload) {
         ? UPLOAD_LABEL.oneFile
         : UPLOAD_LABEL.manyFiles.replace("{files}", String(files));
   const detail = UPLOAD_LABEL.progress
-    .replace("{uploaded}", formatBytes(uploadedBytes))
-    .replace("{total}", formatBytes(totalBytes))
+    .replace("{uploaded}", formatBytes(uploaded))
+    .replace("{total}", formatBytes(total))
     .replace("{percent}", String(percent));
   return { percent, label: `${head}: ${detail}` };
 }
@@ -243,7 +252,7 @@ const STATUS_HEADERS = Object.freeze({
  * `store` is a falsy value rather than an auth instance, so a test can hand
  * this the closed door and prove the gate denies by default.
  * @param {Request} request
- * @param {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null|undefined} store
+ * @param {import("./auth.js").Auth|null|undefined} [store]
  * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
 export async function signedInAccount(request, store) {
@@ -282,7 +291,7 @@ export function unauthorizedResponse() {
  * shared with the other account routes through unauthorizedResponse() above
  * (drive issue #73).
  * @param {Request} request
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
  */
 export function handleFirstRunStatusRequest(request, account) {
   // The gate comes before the method check, so an anonymous request is told
@@ -305,10 +314,10 @@ export function handleFirstRunStatusRequest(request, account) {
 /**
  * Bytes as a person reads them: one decimal under 10, none above, so a queue
  * of 1.2 GB and a queue of 12 GB both stay one short line.
- * @param {number} bytes
+ * @param {unknown} bytes
  */
 export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
     throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);
   }
   const units = ["B", "KB", "MB", "GB", "TB"];

@@ -27,11 +27,28 @@
 // it and answered the same closed way. The OAuth client ids and secrets are
 // credentials on Nish's side of the fence, never values in this repo, so the
 // route refuses rather than redirecting to a client it does not have.
+// What bounds the route, and why the bound is at the edge (drive issue #147).
+// The start step mails a real email, so POST /api/signin is a mailbomb and a
+// send-cost vector the moment the route is open in production: a script walking
+// addresses spends a send on each, and nothing inside the route is keyed on
+// anything but the request itself. So the two stock rate-limit bindings the
+// waitlist introduced (WAITLIST_RATE_LIMITER, cloudflare.config.ts) are the
+// guard here too, beside the waitlist's: a per-IP one (SIGNIN_RATE_LIMITER) so
+// one client cannot walk addresses, and a global one
+// (SIGNIN_GLOBAL_RATE_LIMITER) so a distributed walk cannot either. Both are
+// read off env and run before the body is parsed, so a refused request costs
+// no parse and no email; both are declared next to the waitlist's in
+// cloudflare.config.ts, and both are probed by the health endpoint
+// (src/health.js), which answers 503 naming one a deploy lost. The shared
+// module (src/rate-limit.js) owns the key, the fail-closed answer and the 429,
+// so the waitlist, this route and the api Worker's device routes cannot state
+// two different limits.
 
 import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
@@ -110,7 +127,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
  * Reads and checks the posted body for the start step: the method is checked
  * against SIGNIN_METHODS, and the email method requires an address; the OAuth
  * methods carry none, because the provider is the one that asks.
- * @param {unknown} body
+ * @param {unknown} [body]
  * @returns {SigninRequest}
  */
 export function readSigninRequest(body) {
@@ -159,7 +176,7 @@ function readStart(body) {
  * Better Auth settings (src/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
  */
 
 /**
@@ -188,6 +205,34 @@ export async function handleSigninRequest(request, env) {
   // made on the visitor's behalf, the same rule the send route uses.
   if (!isSameOriginRequest(request)) {
     return json({ error: failureMessage("cross-site") }, 403);
+  }
+  // The edge limits, in the same place the waitlist runs its own: after the
+  // guards that refuse a request outright (a refused cross-site post spends no
+  // quota) and before the body is read or the auth instance is asked, so a
+  // denied sign-in costs no parse and no email send. Both buckets are checked,
+  // the per-IP one first, so a client over its own limit is answered before
+  // the service-wide counter moves for it. The two limiters are optional in
+  // the type and required in practice: with either missing this answers 503
+  // rather than serving an endpoint that would mail an unbounded number of
+  // links, which is the closed door the other unset credentials in this
+  // deployment shape already give.
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: env.SIGNIN_RATE_LIMITER,
+        key: clientIpKey(request, "signin"),
+        name: "SIGNIN_RATE_LIMITER",
+      },
+      {
+        binding: env.SIGNIN_GLOBAL_RATE_LIMITER,
+        key: "global",
+        name: "SIGNIN_GLOBAL_RATE_LIMITER",
+      },
+    ],
+    "signin",
+  );
+  if (limited) {
+    return limited;
   }
   let body;
   const contentType = request.headers.get("content-type") ?? "";

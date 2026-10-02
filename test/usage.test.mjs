@@ -28,6 +28,18 @@ import {
 import worker from "../src/index.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The gate itself is pinned in test/account-gate.test.mjs.
@@ -41,6 +53,10 @@ const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.u
 const MINUTES_PER_MONTH = 43800;
 
 /** A whole month of a fixed size, with the month's daily history behind it. */
+/**
+ * @param {number} storedGb
+ * @param {Record<string, unknown>} [overrides]
+ */
 function month(storedGb, overrides = {}) {
   const days = [];
   for (let index = USAGE_HISTORY_DAYS; index > 0; index -= 1) {
@@ -177,7 +193,7 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
   );
   assert.throws(() => usageSummary({ ...base, storedDaily: [null] }), TypeError);
   const missing = { ...base };
-  delete missing.storedGb;
+  delete (/** @type {{storedGb?: number}} */ (missing).storedGb);
   assert.throws(() => usageSummary(missing), /usage\.storedGb/);
 });
 
@@ -185,10 +201,12 @@ test("both saved sentences come from the one table in src/billing.js", () => {
   // The capped month: 2 TB held all month meters $40 against a $16 ceiling,
   // so the line is the cap's own sentence.
   const capped = month(2000);
+  assert.ok(capped.saved);
   assert.equal(capped.saved.usd, 24);
   assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$24.00"));
   // The uncapped month: the ceiling is what a flat plan would have cost.
   const uncapped = month(300);
+  assert.ok(uncapped.saved);
   assert.equal(uncapped.saved.usd, 6);
   assert.equal(uncapped.saved.copy, SAVED_COPY.uncapped.replace("{amount}", "$6.00"));
   // No real saving means no line at all: the page hides it and the CLI prints
@@ -226,6 +244,7 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // summary: it used to print "Stored GB now: undefined", which the test name
   // above promises can never happen. Each key is named when it is missing.
   for (const key of ["storedNow", "gbMonths", "downloads", "cost"]) {
+    /** @type {Record<string, string>} */
     const labels = { storedNow: "400 GB", gbMonths: "400.00", downloads: "0 B", cost: "$8.00" };
     delete labels[key];
     assert.throws(
@@ -280,7 +299,7 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     // flow yet no request can prove an account, so the Worker's read shows
     // nobody's money (issue #73). The signed-in shape is pinned in
     // test/account-gate.test.mjs.
-    const anonymous = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const anonymous = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
   const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);

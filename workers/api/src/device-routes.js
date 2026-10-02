@@ -21,7 +21,9 @@
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
 // limit runs before the body is read, so a refused call costs no parse and, on
-// the code route, no row.
+// the code route, no row. The limiter is the one edge limiter (src/rate-limit.js
+// `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
+// behind, so the fail-closed posture and the 429 answer are written once.
 //
 // The DELETE below is the fourth device route and is the only one that is
 // neither public nor rate limited: the account gate has already resolved the
@@ -30,11 +32,65 @@
 
 import { isSameOriginRequest } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
+import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
  * the key routes take. */
 /** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
+
+// The two edge-limit bindings the device flow answers behind (drive issue #147,
+// raised in the code review that read the sign-in's send vector: "Covers
+// /api/signin and device approve/poll"). The stock rate-limit binding keyed on
+// the client IP, plus one global bucket: approval attaches a signed-in person
+// and a poll mints a device token, so an unbounded loop from one connection is
+// both a token factory and a guessing lane for the short user code.
+//
+// The bindings belong to the deployment. This repo deploys the site Worker
+// (cloudflare.config.ts) but not the api Worker — it has no config file here
+// — so the two names below cannot be declared in this tree. Wherever the api
+// Worker's config lands it must declare both, with the per-IP ceiling above
+// the CLI's own poll rate: a device code is polled every
+// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/keystore.js), i.e. 12
+// requests a minute from one well-behaved CLI, so the per-IP limit has to sit
+// well above that (the sign-in binding's 10/min would lock a polling CLI out)
+// while the global one bounds the token factory. With no binding on env these
+// two routes fail closed — the same closed door src/email-send.js shows with
+// EMAIL_SEND_TOKEN unset and src/signin.js shows with no mailer: an
+// unrate-limited public route is the case the binding exists to prevent, so a
+// deployment that has not declared it does not run the flow.
+//
+// One shape note: the refusal is JSON ({"error": ...}), the api Worker's
+// answer everywhere (docs/api.md), including on POST /v1/device/approve, whose
+// page is HTML. A person over the limit sees the JSON words rather than the
+// page's error shell; the rate limit is a machine-scale bound, so the machine
+// answer is the honest one.
+const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
+const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
+
+/**
+ * The limiter refusal a device route answers with, or null when the request is
+ * allowed through. The 429's and the 503's words are the message table's
+ * (through src/rate-limit.js), so the api Worker and the site Worker cannot
+ * state two different rate-limit answers.
+ * @param {Request} request
+ * @param {{env?: Record<string, any>}} ctx
+ * @param {string} log
+ * @returns {Promise<Response|null>}
+ */
+async function deviceLimitRefused(request, ctx, log) {
+  return enforceEdgeLimits(
+    [
+      {
+        binding: ctx.env?.[DEVICE_IP_LIMIT],
+        key: clientIpKey(request, log),
+        name: DEVICE_IP_LIMIT,
+      },
+      { binding: ctx.env?.[DEVICE_GLOBAL_LIMIT], key: "global", name: DEVICE_GLOBAL_LIMIT },
+    ],
+    log,
+  );
+}
 
 // The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
@@ -145,7 +201,7 @@ export async function requestDeviceCodeRoute(request, ctx) {
   // is also why it is rate limited: every allowed call writes a row, so an
   // unlimited version of this route is a way to fill the table from anywhere
   // (drive#136). The limit runs first, so a refused call writes nothing.
-  const limited = await enforceDeviceLimit(request, ctx, "code");
+  const limited = await deviceLimitRefused(request, ctx, "device-code");
   if (limited) {
     return limited;
   }
@@ -156,6 +212,8 @@ export async function requestDeviceCodeRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
+  // The store's `requestDeviceCode` is a Promise over D1 (device-signin.js), so
+  // an un-awaited call would answer `{}` with an undefined user code.
   const code = await ctx.store.requestDeviceCode({ name: read.name });
   const verification = new URL("/v1/device/approve", ctx.url);
   const complete = new URL(verification);
@@ -206,7 +264,7 @@ export async function pollDeviceTokenRoute(request, ctx) {
   // The poll is public for the same reason the code request is, and costs a
   // database read per call, so it spends its own bucket rather than the
   // approval's (drive#136).
-  const limited = await enforceDeviceLimit(request, ctx, "token");
+  const limited = await deviceLimitRefused(request, ctx, "device-poll");
   if (limited) {
     return limited;
   }
@@ -238,59 +296,13 @@ export async function pollDeviceTokenRoute(request, ctx) {
 }
 
 /**
- * GET /v1/device/approve — the page the CLI sends the person to.
+ * GET /v1/device/approve — the page the CLI sends the person to. An account
+ * route (routes.js), so only a signed-in person reaches it.
  * @param {Request} _request
  * @param {import("./index.js").RouteCtx} ctx
  */
 export function approvePageRoute(_request, ctx) {
   return approvePage({ userCode: ctx.url.searchParams.get("user_code") ?? "" });
-}
-
-/**
- * The edge rate limit on a device route (drive#136 finding 2): a per-IP bucket
- * and a service-wide one, the same two bindings the waitlist and the sign-in
- * route use, one bucket per device operation so a caller cannot spend the
- * approval's quota asking for codes. It runs before the body is read, so a
- * denied request costs no parse and, on `/v1/device/code`, no row. It fails
- * closed when a binding is missing — an unrate-limited device route is the
- * case these bindings exist to prevent — and answers 429 past either limit.
- * @param {Request} request
- * @param {{env?: Record<string, any>}} ctx
- * @param {string} scope the bucket this call spends, named in the log lines
- * @returns {Promise<Response|null>} the refusal, or null when the call may run
- */
-async function enforceDeviceLimit(request, ctx, scope) {
-  const perIp = ctx.env?.DEVICE_RATE_LIMITER;
-  const globalLimit = ctx.env?.DEVICE_GLOBAL_RATE_LIMITER;
-  if (!perIp || !globalLimit) {
-    console.error(
-      "[api] device limit:",
-      scope,
-      "DEVICE_RATE_LIMITER/DEVICE_GLOBAL_RATE_LIMITER is not configured",
-    );
-    return errorResponse(503, failureMessage("unexpected"));
-  }
-  const clientIp = request.headers.get("cf-connecting-ip");
-  if (clientIp === null) {
-    console.warn(
-      "[api] device limit:",
-      scope,
-      "request arrived without cf-connecting-ip; rate limiting against the shared bucket",
-    );
-  }
-  let perIpOk;
-  let globalOk;
-  try {
-    ({ success: perIpOk } = await perIp.limit({ key: clientIp ?? "unknown" }));
-    ({ success: globalOk } = await globalLimit.limit({ key: `device-${scope}` }));
-  } catch (error) {
-    console.error("[api] device limit:", scope, "the rate limiter call failed", error);
-    return errorResponse(503, failureMessage("unexpected"));
-  }
-  if (!perIpOk || !globalOk) {
-    return errorResponse(429, failureMessage("rate-limited"), { "retry-after": "60" });
-  }
-  return null;
 }
 
 /**
@@ -308,7 +320,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if (!isSameOriginRequest(request)) {
     return errorResponse(403, failureMessage("cross-site"));
   }
-  const limited = await enforceDeviceLimit(request, ctx, "approve");
+  const limited = await deviceLimitRefused(request, ctx, "device-approve");
   if (limited) {
     return limited;
   }

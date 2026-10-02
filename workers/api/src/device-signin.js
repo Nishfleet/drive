@@ -529,8 +529,13 @@ export function createD1DeviceSigninStore(db, options = {}) {
       const nonce = newId("claim");
       await batch(db, [
         {
-          sql: "UPDATE device_codes SET status = 'used', consumed_by = ?2 WHERE device_code_hash = ?1 AND status = 'approved' AND consumed_by = '' AND expires_at > ?3",
-          params: [hash, nonce, nowSeconds(now())],
+          // The numbered placeholders are written in ascending order (`?1`,
+          // `?2`, `?3`) and bound in that order: `?1` is this poll's nonce,
+          // `?2` the code hash, `?3` the clock. D1 binds `?N` by position, and
+          // the test harness's SQLite adapter rewrites them positionally too,
+          // so the two agree only while the written order is the bound order.
+          sql: "UPDATE device_codes SET status = 'used', consumed_by = ?1 WHERE device_code_hash = ?2 AND status = 'approved' AND consumed_by = '' AND expires_at > ?3",
+          params: [nonce, hash, nowSeconds(now())],
         },
         {
           sql: `INSERT INTO device_tokens (token_hash, account_id, account_name, account_email, created_at, expires_at)

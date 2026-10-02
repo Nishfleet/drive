@@ -320,7 +320,7 @@ export function validatePath(path) {
 /**
  * A listing as the page shows it: folders first, then files, each sorted by
  * name the way a person reads them (case-insensitive, numbers in order).
- * @param {Array<{name: string, kind?: string}>} entries
+ * @param {unknown} entries
  * @returns {Array<{name: string, kind?: string}>}
  */
 export function sortEntries(entries) {
@@ -395,7 +395,7 @@ export function trashName(path, at) {
 /**
  * The reverse: the drive path and deleted-at time a trash name carries, or
  * null for anything that is not one of ours.
- * @param {string} name
+ * @param {unknown} name
  */
 export function parseTrashName(name) {
   if (typeof name !== "string") {
@@ -517,7 +517,7 @@ export function restorableUntil(deletedAt) {
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
  * @property {(path: string) => Promise<FileRead>} read
- * @property {(path: string, body: ReadableStream, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
  * @property {(from: string, to: string) => Promise<void>} copy A copy the
  *   storage itself makes, no bytes through this Worker: `drive branch`
@@ -965,6 +965,7 @@ export function nextContinuationToken(xml) {
   if (typeof xml !== "string") {
     throw new TypeError("nextContinuationToken needs the XML body");
   }
+  void xml;
   const token = tagValue(xml, "NextContinuationToken");
   return token === "" ? null : token;
 }
@@ -1078,7 +1079,7 @@ function plain(message, status) {
  * use. A caller with no Origin (curl, the CLI) passes that check; the gate
  * above is what actually keeps a stranger out.
  * @param {Request} request
- * @param {import("./files.js").FileStore|null} store the shared, unscoped store,
+ * @param {import("./files.js").FileStore|null|undefined} store the shared, unscoped store,
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
@@ -1134,7 +1135,9 @@ export async function handleFilesRequest(request, store, account, now = Date.now
  */
 // Exported for the parity gate in test/files.test.mjs, which runs the Web
 // Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
-// two would store a name differently (drive#92).
+// two would store a name differently (drive#92). Also for src/share.js: an
+// upload request takes a dropped file's name exactly the way the Files page
+// does, so there is one name cleaner rather than two that can drift.
 export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()
@@ -1147,7 +1150,9 @@ export function safeFileName(name) {
  * @param {string} name
  * @returns {string}
  */
-function joinPath(folder, name) {
+// Exported for src/share.js, for the same one-place reason: an upload request
+// writes into one folder the way the Files page does, not a second way.
+export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
 }

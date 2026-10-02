@@ -32,16 +32,19 @@ const scoreboard = readFileSync(new URL("../docs/scoreboard.md", import.meta.url
 // read what would ship, not the authored Markdown, so a page that renders but
 // ships a wrong number fails here.
 const siteDir = new URL("../public/docs/", import.meta.url);
+/** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
 // The price numbers, worked out the way the invoice works them out: a month
 // that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
 // the same gb. Nothing in these tests types a dollar figure.
+/** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
   return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
 }
 
+/** @param {number} amount */
 const dollars = (amount) => (Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`);
 
 test("every docs page exists, is registered, and ships as HTML and .md", () => {
@@ -240,6 +243,7 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
   // lands. faqMarkdown() must refuse, naming the answer and the row,
   // so the answer leaves the page at the next build rather than
   // staying up unmeasured.
+  /** @param {string} metric @param {string} verdict */
   const flip = (metric, verdict) =>
     scoreboard
       .split("\n")
@@ -284,6 +288,7 @@ test("the FAQ's rival line keeps the orchestrator's phrasing, from the scoreboar
     "the rival line must keep the orchestrator's exact phrasing",
   );
   const row = scoreboard.split("\n").find((line) => line.startsWith("| price at 1 TB |"));
+  assert.ok(row);
   const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);
   for (const figure of ["20", "15"]) {
     assert.ok(
