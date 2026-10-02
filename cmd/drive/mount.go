@@ -538,7 +538,14 @@ func Unmount(goos, home string) error {
 // mount table through findmnt; macOS has no findmnt, so the BSD mount listing
 // is the platform's own answer and its mount-point field is what is compared.
 func Mounted(goos, home string) (bool, error) {
-	mountDir := DefaultMountDir(home)
+	return MountedDir(goos, DefaultMountDir(home))
+}
+
+// MountedDir is Mounted for a mount point that is not <home>/Drive, so a caller
+// holding the mount point itself (the proofs, whose dir may be a second mount
+// on the same host) asks the same platform question. One switch, so a caller
+// cannot drift from what `drive mount` waits on.
+func MountedDir(goos, mountDir string) (bool, error) {
 	if goos == "darwin" {
 		out, err := exec.Command("mount").Output()
 		if err != nil {
