@@ -30,6 +30,7 @@ import {
   PAGE_LINE,
   PREVIEW_COPY,
   parseListObjects,
+  parseListVersions,
   parseTrashName,
   previewContentType,
   previewCopy,
@@ -667,6 +668,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     },
     remove: async () => {},
     copy: async () => {},
+    listVersions: async () => {
+      throw new Error("storage version list failed with 503");
+    },
   };
   /** @param {Request} request */
   const call = (request) => handleFilesRequest(request, broken, account, now);
@@ -742,6 +746,81 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
     () => parseListObjects(/** @type {string} */ (/** @type {unknown} */ (null)), "u/1/", "/"),
     TypeError,
   );
+});
+
+test("a real S3 ListObjectVersions becomes version rows", () => {
+  // The shape a versioned S3 bucket answers (iDrive e2 and B2 both speak it):
+  // two versions of one key newest first, and a delete marker that ended
+  // another key's latest version. The reconciler reads created_at -> hidden_at,
+  // so the older version is hidden when the newer one began, and the marker's
+  // key is hidden when the marker landed.
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>drive</Name><Prefix>u/1/</Prefix>
+  <Version><Key>u/1/notes.md</Key><VersionId>v2</VersionId><IsLatest>true</IsLatest>
+    <Size>2048</Size><LastModified>2026-09-30T12:00:00.000Z</LastModified></Version>
+  <Version><Key>u/1/notes.md</Key><VersionId>v1</VersionId><IsLatest>false</IsLatest>
+    <Size>1024</Size><LastModified>2026-09-30T10:00:00.000Z</LastModified></Version>
+  <Version><Key>u/1/gone.txt</Key><VersionId>v9</VersionId><IsLatest>false</IsLatest>
+    <Size>5</Size><LastModified>2026-09-30T09:00:00.000Z</LastModified></Version>
+  <DeleteMarker><Key>u/1/gone.txt</Key><VersionId>d1</VersionId><IsLatest>true</IsLatest>
+    <LastModified>2026-09-30T11:00:00.000Z</LastModified></DeleteMarker>
+</ListVersionsResult>`;
+  const versions = parseListVersions(xml);
+  assert.equal(versions.length, 3);
+  const newest = versions.find((version) => version.b2FileId === "v2");
+  assert.ok(newest);
+  assert.equal(newest.hiddenAt, null, "the newest version of its key is still live");
+  const older = versions.find((version) => version.b2FileId === "v1");
+  assert.ok(older);
+  assert.equal(
+    older.hiddenAt,
+    Date.parse("2026-09-30T12:00:00.000Z"),
+    "hidden when the next version began",
+  );
+  assert.equal(older.sizeBytes, 1024);
+  assert.equal(older.path, "u/1/notes.md");
+  const removed = versions.find((version) => version.b2FileId === "v9");
+  assert.ok(removed);
+  assert.equal(
+    removed.hiddenAt,
+    Date.parse("2026-09-30T11:00:00.000Z"),
+    "the delete marker ended it",
+  );
+  assert.throws(
+    () => parseListVersions(/** @type {string} */ (/** @type {unknown} */ (null))),
+    TypeError,
+  );
+  assert.throws(
+    () =>
+      parseListVersions(
+        "<ListVersionsResult><Version><Key>u/1/x</Key></Version></ListVersionsResult>",
+      ),
+    /key, a version id or a time/,
+  );
+});
+
+test("the in-memory store keeps the version history the reconciler reads", async () => {
+  const { createMemoryStore } = await import("../src/files.js");
+  const store = createMemoryStore();
+  await store.write("u/1/a.txt", "one", "text/plain");
+  await store.write("u/1/a.txt", "two", "text/plain");
+  const versions = await store.listVersions("u/1");
+  assert.equal(versions.length, 2);
+  assert.notEqual(versions[0].hiddenAt, null, "the first write is hidden by the second");
+  assert.equal(versions[1].hiddenAt, null, "the newest write is live");
+  assert.equal(versions[1].sizeBytes, 3);
+  // A remove hides the live version rather than forgetting it, exactly as the
+  // drive's storage lifecycle does, so it stays in the history as a version
+  // the reconciler can see.
+  await store.remove("u/1/a.txt");
+  const afterRemove = await store.listVersions("u/1");
+  assert.equal(
+    afterRemove.find((version) => version.hiddenAt === null),
+    undefined,
+    "the delete hid the live version",
+  );
+  assert.equal(afterRemove.length, 2, "nothing was thrown away");
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
