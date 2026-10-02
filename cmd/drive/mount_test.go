@@ -450,6 +450,12 @@ func TestMountSpeedHillClimb(t *testing.T) {
 	results := map[string]hillResult{}
 
 	measure := func(profile netemProfile, label string, pairs [][]string, h *hillStandin) []hillResult {
+		h.stopMount()
+		for _, row := range allRows {
+			if row.set == profile.set && row.copies > 1 && row.seed != nil {
+				row.seed(t, h)
+			}
+		}
 		h.remount(t, pairs)
 		var out []hillResult
 		for _, row := range allRows {
@@ -599,6 +605,9 @@ func hyperfine(t *testing.T, runs int, prepare, cmd string, copies int) (hyperfi
 }
 
 func combineStats(rs []hyperfineStats) hyperfineStats {
+	if len(rs) == 1 {
+		return rs[0]
+	}
 	sum := 0.0
 	min := rs[0].Min
 	for _, r := range rs {
