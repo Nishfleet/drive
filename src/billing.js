@@ -169,11 +169,21 @@ function checked(value, name, { min = 0 } = {}) {
  * the ceiling is worked out in. Exported so a caller that holds the meter's own
  * numbers - monthUsageRollup's result, or a test writing a month's peak in
  * bytes - reduces them here rather than dividing by a billion a second way.
+ *
+ * A peak is a whole number of bytes and nothing else: the write path
+ * (usageStatement, src/meter.js) and the read path (monthUsageRollup) both
+ * refuse a fractional byte count, and this is the third door into the same
+ * number, so it refuses one too rather than dividing a broken caller's 1.5
+ * into 1.5 GB and billing a size no drive can hold.
  * @param {unknown} peakBytes
  * @returns {number}
  */
 export function storedGb(peakBytes) {
-  return checked(peakBytes, "peakBytes") / BYTES_PER_GB;
+  const bytes = checked(peakBytes, "peakBytes");
+  if (!Number.isSafeInteger(bytes)) {
+    throw new TypeError(`peakBytes must be 0 or more whole bytes, got ${String(peakBytes)}`);
+  }
+  return bytes / BYTES_PER_GB;
 }
 
 /**

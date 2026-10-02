@@ -656,6 +656,14 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   // genuinely empty hours (the account stored nothing, so no hour marked a
   // byte) is a real $0 month and reads as one: it has no live version either,
   // which is what the second read confirms.
+  //
+  // A PARTIALLY marked month is deliberately not refused: the only way one
+  // arises is the deploy window, where the hours before 0006 landed have the
+  // column's 0 default and every hour after it carries a real mark. Those early
+  // zeros cannot lower a MAX, and the hours that do carry a mark are the later
+  // ones, so the peak this reads is the drive's true largest size, not a subset
+  // of it. The unmeasurable case is the all-zero one above, which is the only
+  // shape in which no hour measured anything at all.
   if (hours > 0 && markedHours === 0 && peakBytes === 0) {
     const live = await db.prepare(MONTH_HAS_VERSIONS_SQL).bind(accountId, at).first();
     if (live?.has_versions) {
@@ -687,18 +695,14 @@ function monthWindow(month, now) {
   // anything else, which is what refuses a month that is not an instant.
   const at = toMillis(/** @type {number|Date|string} */ (month), "month");
   const instant = new Date(at);
+  // toISOString throws a RangeError on an instant outside the calendar Date can
+  // name, so the label line is what refuses a month the calendar does not have:
+  // no separate NaN guard is reachable here once toMillis has taken the value.
   const label = instant.toISOString().slice(0, 7);
-  // The start of the month the instant is in, in UTC: the first of the month,
-  // so 2026-13 and 2026-00 - which Date.UTC rolls into the next and the
-  // previous year - cannot name a month that has not started.
-  const first = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), 1);
   if (at > toMillis(now, "now")) {
     throw new RangeError(
       `month ${label} has not started at the rollup instant ${toMillis(now, "now")}`,
     );
-  }
-  if (Number.isNaN(first)) {
-    throw new TypeError(`month ${String(month)} is not a real calendar month`);
   }
   return { label, at };
 }

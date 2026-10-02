@@ -26,5 +26,8 @@
 --
 -- What the column deliberately does NOT do is claim a peak for a month the
 -- meter never measured: that is the reader's rule, not the column's, and
--- monthUsageRollup (src/meter.js) states it.
+-- monthUsageRollup (src/meter.js) states it. There is no backfill phase in
+-- this PR: the reconciler (#59) re-rolls the pre-deploy hours from the stored
+-- versions, and until it runs the reader refuses a month whose hours are all
+-- unmarked rather than billing $0 for storage nobody measured.
 ALTER TABLE usage_minutes ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0;
