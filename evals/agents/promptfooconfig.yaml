@@ -27,16 +27,20 @@ providers:
       apiBaseUrl: http://127.0.0.1:4000/v1
       apiKeyEnvar: OPENAI_API_KEY
       temperature: 0
-      max_tokens: 16384
+      max_tokens: 32768
       maxRetries: 2
+      extra_body:
+        reasoning_effort: low
   - id: openai:chat:worker-capable
     label: "a stronger model at a higher effort, for the scaling check"
     config:
       apiBaseUrl: http://127.0.0.1:4000/v1
       apiKeyEnvar: OPENAI_API_KEY
       temperature: 0
-      max_tokens: 16384
+      max_tokens: 32768
       maxRetries: 2
+      extra_body:
+        reasoning_effort: high
 
 evaluateOptions:
   maxConcurrency: 12
