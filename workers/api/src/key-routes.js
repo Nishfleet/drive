@@ -199,10 +199,15 @@ export async function storageListRoute(request, ctx) {
  * The per-agent cap gate is after it (drive #171): the write this route serves
  * is the request that spends an agent key's powers, so the cap is denied here
  * — before the body is read and before anything is stored — and the request
- * that passes is stamped into the key's own counter row. A deployment with no
- * database has no counter row to hold, so the cap is not enforced there: the
- * D1 deployment is the live one, and its `agent_caps` rows are the state this
- * gate reads.
+ * that passes is stamped into the key's own counter row. A key that is not an
+ * agent's is never gated and never stamped, which is the store's own answer
+ * rather than a second copy of the rule here
+ * (workers/api/src/agent-caps.js isAgentKey): the person's `device` key is
+ * the mount, and the account cap (src/cap.js) is what bounds it.
+ *
+ * A deployment with no database has no counter row to hold, so the cap is not
+ * enforced there: the D1 deployment is the live one, and its `agent_caps` rows
+ * are the state this gate reads.
  * @param {Request} request
  * @param {{store: any, url: URL, db?: D1Database, now?: () => number}} ctx
  */
@@ -245,8 +250,8 @@ export async function storageWriteRoute(request, ctx) {
   // its cap is, and nothing downstream needs a second case.
   if (ctx.db) {
     const at = ctx.now ? ctx.now() : Date.now();
-    const { write: cap } = await gateAgentWrite(ctx.db, device, at);
-    if (cap.state === "read_only") {
+    const gate = await gateAgentWrite(ctx.db, device, at);
+    if (gate.capable && gate.write?.state === "read_only") {
       // The one sentence both caps at their cap read as: whether the cap is
       // the account's or this agent's own, the customer hears what to do next.
       return errorResponse(403, failureMessage("agent-cap-reached"), {

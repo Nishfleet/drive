@@ -19,6 +19,10 @@
 //      meter is what fills it in production.
 //   5. The next UTC day reads the row as a fresh day, so the agent writes again
 //      with nothing running.
+//   6. A `device` key — the person's own mount — is never capped at all: a
+//      daily request cap on a mount would stop the person's own uploads, so
+//      the cap covers agent keys only and the account cap (src/cap.js) is what
+//      bounds a device key.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -268,4 +272,36 @@ test("a key the cap has never seen reads as capped, not as uncapped", async () =
   assert.equal(row.day_requests, 1001);
   const over = await dispatch(write(key, "runaway.md"), ctx());
   assert.equal(over.status, 403, "and the next one is the request that passes the cap");
+});
+
+test("the cap is per agent: a person's own mount key is never capped", async () => {
+  // The device key is the mount. A daily request cap on it would stop the
+  // person's own uploads at 1,000 writes, which is not a spending cap at all —
+  // so isAgentKey() (workers/api/src/agent-caps.js) refuses a non-agent key
+  // before the gate reads a row, and the mount's writes are never counted.
+  const { sqlite, ctx, store } = wired();
+  const mount = await store.mintKey(ACCOUNT, { kind: "device", name: "macbook" });
+  // A row naming the mount, already over any count, cannot cap it either: the
+  // kind decides before the counters are read, so a stale or hand-edited row
+  // cannot stop a person's own drive.
+  sqlite
+    .prepare(
+      `INSERT INTO agent_caps (account_id, key_id, daily_requests, day_key, day_requests, month_key, month_spend_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(ACCOUNT.id, mount.keyId, 1, "2026-10-02", 999, "2026-10", 999999);
+
+  for (const path of ["one.md", "two.md", "three.md"]) {
+    const response = await dispatch(write(mount, path), ctx());
+    assert.equal(
+      response.status,
+      201,
+      `the mount writes ${path}: a device key has no per-agent cap`,
+    );
+  }
+  assert.equal(
+    capRow(sqlite, mount.keyId).day_requests,
+    999,
+    "and the mount's own row is left exactly as it was: its writes are never stamped",
+  );
 });

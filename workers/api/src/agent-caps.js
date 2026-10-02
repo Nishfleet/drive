@@ -18,7 +18,7 @@
 // (src/agentcaps.js agentCapState): the write route asks `gate()` first, and a
 // `read_only` answer costs the route its 403 before any byte is stored.
 
-import { agentCapState, agentCaps, dayKey } from "../../../src/agentcaps.js";
+import { agentCapState, agentCaps, dayKey, monthKey } from "../../../src/agentcaps.js";
 
 /**
  * The counter state one agent key is in, as agentCapState() answers it. Named
@@ -30,54 +30,62 @@ import { agentCapState, agentCaps, dayKey } from "../../../src/agentcaps.js";
  */
 
 /**
- * The counter row one agent key currently holds, or the all-zero shape when
- * the key has never written. A missing row is capped, not uncapped: a key
- * minted this second is already inside its defaults.
+ * The counter row one key currently holds, or null when the key has never
+ * written. Null is capped, not uncapped: a key minted this second is already
+ * inside its defaults, which is the direction a cap must fail in.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {string} keyId
+ * @returns {Promise<Record<string, unknown>|null>}
  */
 export async function readAgentCaps(db, accountId, keyId) {
   const row = await db
     .prepare(`SELECT * FROM agent_caps WHERE account_id = ?1 AND key_id = ?2`)
     .bind(accountId, keyId)
     .first();
-  return row;
+  return row === null || row === undefined ? null : /** @type {Record<string, unknown>} */ (row);
 }
 
 /**
- * One request's whole cap transaction: answer the state the request would
- * run against, and when it says the key may write, stamp this request into
- * the row. Returned in one shape so the route cannot check one thing and
- * stamp another.
+ * One request's whole cap transaction: answer the state the request would run
+ * against, and when it says the key may write, stamp this request into the
+ * row. Returned in one shape so the route cannot check one thing and stamp
+ * another.
+ *
+ * A key that is not an agent's is never gated and never stamped, and this
+ * module is where that is decided: `capable` is false for it, the route's
+ * `capable` answer skips the 403, and no counter row is written for a mount's
+ * key. The reason is in isAgentKey().
  *
  * The stamp resets a closed period by rewriting its key — the counter the
- * period does not match is zero, not carried. A row the store has never
- * written is inserted with this stamp, not created empty and patched later,
- * so a half-written row never exists.
+ * period does not match is zero, not carried, which is the same rule
+ * agentCapState() reads the row by. A row the store has never written is
+ * inserted with this stamp, not created empty and patched later, so a
+ * half-written row never exists.
  * @param {D1Database} db
  * @param {{accountId: string, id: string, kind: string}} device the authenticated key row
  * @param {number} at epoch ms, the instant of the request
- * @returns {Promise<{write: AgentCapState, day: string, month: string}>}
+ * @returns {Promise<{capable: boolean, write: AgentCapState|null}>}
  */
 export async function gateAgentWrite(db, device, at) {
+  if (!isAgentKey(device)) {
+    return { capable: false, write: null };
+  }
   const day = dayKey(at);
-  const month = day.slice(0, 7);
+  const month = monthKey(at);
   const row = await readAgentCaps(db, device.accountId, device.id);
-  const r = /** @type {Record<string, unknown>|null} */ (row);
-  const limits = agentCaps(row === null ? {} : row);
   const state = agentCapState(
-    limits,
+    agentCaps(row ?? {}),
     {
-      monthKey: String(r?.month_key ?? ""),
-      monthSpendCents: r?.month_spend_cents,
-      dayKey: String(r?.day_key ?? ""),
-      dayRequests: r?.day_requests,
+      monthKey: String(row?.month_key ?? ""),
+      monthSpendCents: row?.month_spend_cents,
+      dayKey: String(row?.day_key ?? ""),
+      dayRequests: row?.day_requests,
     },
     at,
   );
   if (state.state === "read_only") {
-    return { write: state, day, month };
+    return { capable: true, write: state };
   }
   await db
     .prepare(
@@ -93,5 +101,20 @@ export async function gateAgentWrite(db, device, at) {
     )
     .bind(device.accountId, device.id, day, month)
     .run();
-  return { write: state, day, month };
+  return { capable: true, write: state };
+}
+
+/**
+ * Whether this key is an agent's, which is the only kind the per-agent cap
+ * covers. The kinds that are not an agent's are the person's own: a `device`
+ * key is the mount, which writes continuously for as long as the drive is in
+ * use, so a daily request cap on it would stop a person's own uploads — the
+ * account cap (src/cap.js) is what bounds a device key, and it bounds the
+ * money rather than the count. A kind the cap does not know is not an agent's
+ * either, so a row that mislabels its key cannot talk its way into a cap the
+ * person never agreed to.
+ * @param {{kind: string}} device
+ */
+export function isAgentKey(device) {
+  return device.kind === "agent";
 }

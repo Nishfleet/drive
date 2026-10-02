@@ -181,10 +181,7 @@ test("the warning comes before the cap, from the same state", () => {
   // a cap that silently means something else. Each is cast through `unknown`
   // for the same reason as dayKey above: the check is for a wrong-typed row.
   assert.throws(() => agentCaps({ daily_requests: -1 }), TypeError);
-  assert.throws(
-    () => agentCaps({ monthly_cap_usd: /** @type {unknown} */ ("12") }),
-    TypeError,
-  );
+  assert.throws(() => agentCaps({ monthly_cap_usd: /** @type {unknown} */ ("12") }), TypeError);
 });
 
 test("the refusal the write route answers is the message table's own sentence", () => {
