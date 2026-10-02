@@ -19,6 +19,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 ## Set up and check fast
 
 - Run `npm ci` in a new checkout, and again after you merge `origin/main`. The packages are all in the root `package.json` (`workers/*` has none), so a stale `node_modules` fails with `Cannot find package 'validator'` or `'hono'`. This is not a bug in your change.
+- promptfoo (the agent eval, `evals/agents/`) is its own npm project, pinned there and not in the root `package.json`. Install it with `npm ci --prefix evals/agents` and check the version with `evals/agents/node_modules/.bin/promptfoo --version` (about 160 MB). Do not run `npx` or `npm exec` for it: that downloads the whole package each time and fills a runner's 3 GiB memory limit (drive#257).
 - `npm test` is the full gate: types, lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
 - `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
@@ -33,7 +34,7 @@ Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one
 
 Each line is a gate, not prose: the test or file after the dash is what enforces it. `test/pr-gate.test.mjs` fails when a line below names a file that is gone, and proves each gate against the same modules the Worker runs.
 
-A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`).
+A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`). A PR that makes a speed row faster also lowers that row in `bench/baseline.json` (`test/speed-ratchet.test.mjs`).
 
 A PR that adds a `bindings.secret()` lists the secret's name in its body under 'Secrets to set' and stays draft until it is set on drive-pricing (`test/worker-secrets.test.mjs`).
 
