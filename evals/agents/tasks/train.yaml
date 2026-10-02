@@ -1,0 +1,565 @@
+# The train split (drive issue #222): the tasks the hill-climber (#223) is
+# allowed to read. Held-out tasks and their answers live outside the repo — see
+# evals/agents/README.md — so a run against this file measures the agent, not
+# how well it memorised this file.
+#
+# Where every task came from, in the order the issue asks for:
+#   1. the docs pages' own examples (docs-site/*.md, rendered by
+#      `npm run docs:render` into docs-site/.rendered/),
+#   2. issue bodies and bug reports in this repo,
+#   3. the hard cases the issue lists, which are the tasks only a person who
+#      has used a drive finds hard.
+#
+# Every hard task says, in one line, why a person finds it hard. No task is
+# here because a model failed it.
+#
+# A grader is a check against the output text, and it is the only way this file
+# scores anything. It can be run with `npm run eval:agents`.
+
+- description: mount the drive for the first time on a machine
+  vars:
+    task: >
+      I have an invite, a Linux machine, rclone and Go installed, and the four
+      storage values in my shell environment. Walk me through mounting the
+      drive. Give the exact commands in order, and say what I should end up
+      with.
+    source: docs-site/quickstart.md, "3. Mount"
+  assert:
+    - type: javascript
+      value: "/drive mount/.test(output) && /foreground/.test(output)"
+
+- description: put the storage values somewhere they cannot leak
+  vars:
+    task: >
+      I have an endpoint, bucket, prefix and key pair. Where do they go, and
+      where do they not go?
+    source: docs-site/quickstart.md, "2. Point it at your storage"
+  assert:
+    - type: javascript
+      value: "/DRIVE_S3_ENDPOINT/.test(output) && /DRIVE_S3_SECRET_ACCESS_KEY/.test(output) && !/DRIVE_S3_SECRET_ACCESS_KEY=\\S/.test(output)"
+    - type: javascript
+      value: "/history|ps\\b/.test(output)"
+
+- description: install the command with no install script yet
+  vars:
+    task: >
+      There is no release download and no install script. What is the one way
+      to get the drive command on my machine today?
+    source: docs-site/quickstart.md, "1. Install the command"
+  assert:
+    - type: javascript
+      value: "/go install github.com\\/Nishfleet\\/drive\\/cmd\\/drive/.test(output)"
+
+- description: connect the agent tools that are already installed
+  vars:
+    task: >
+      I have Claude Code, Cursor and Gemini on this machine. Which one command
+      connects each of them to the drive, and what happens to the tools it
+      does not find?
+    source: docs-site/agents.md, "drive init connects what it finds"
+  assert:
+    - type: javascript
+      value: "/drive init/.test(output) && /connect each|each one it finds/.test(output)"
+    - type: javascript
+      value: "/mcp add/.test(output)"
+
+- description: check the mount and what this month has cost so far
+  vars:
+    task: >
+      How do I see whether the drive is mounted, what is still waiting to
+      upload, and what this month has cost so far?
+    source: docs-site/quickstart.md, "5. Check it"
+  assert:
+    - type: javascript
+      value: "/drive status/.test(output)"
+
+- description: what an agent tool's key can do, and the one thing it cannot
+  vars:
+    task: >
+      I am about to connect an agent to my drive. What can its key do, and what
+      can it never do? I want the rule, not the reassurance.
+    source: docs-site/agents.md, "What an agent key can do"
+  assert:
+    - type: javascript
+      value: "/delet/i.test(output) && /create, change and rename|create, change/i.test(output)"
+    - type: javascript
+      value: "!/can delete/i.test(output)"
+
+- description: take one agent tool off the drive and leave the others
+  vars:
+    task: >
+      I want to stop one agent tool from reaching my drive and keep the rest
+      connected. Give me the command.
+    source: docs-site/agents.md, "drive init connects what it finds"
+  assert:
+    - type: javascript
+      value: "/drive agents revoke \\w+/.test(output)"
+
+- description: give up this machine's access entirely
+  vars:
+    task: >
+      I am selling this laptop. What do I run so that its key cannot be used
+      again?
+    source: docs-site/security.md, "Revoking"
+  assert:
+    - type: javascript
+      value: "/drive logout/.test(output) && /stop|unmount/i.test(output)"
+
+- description: what happens when I hit my spending cap
+  vars:
+    task: >
+      I hit my spending cap. What happens to my files, and what happens to my
+      uploads?
+    source: docs-site/security.md, "The spending cap"
+  assert:
+    - type: javascript
+      value: "/read-only/i.test(output) && !/deleted/.test(output)"
+
+- description: the default spending cap
+  vars:
+    task: >
+      What is the default spending cap on a new drive, in dollars?
+    source: docs-site/security.md, "The spending cap" (the rendered page carries {{DEFAULT_CAP}})
+  assert:
+    - type: javascript
+      value: "/(12|twelve) dollars|\\$12/i.test(output)"
+
+- description: how the bill is counted for a file I keep for a week
+  vars:
+    task: >
+      I keep a 4 GB video on the drive for a week and then delete it. Work out
+      what that costs me, from the rule the docs give.
+    source: docs-site/how-it-works.md, "How the bill is counted"
+  assert:
+    - type: javascript
+      value: "/minute/.test(output) && /(4|four).*(GB|GB-month)|4 GB/.test(output)"
+    - type: javascript
+      value: "!/(million|billion) of requests/.test(output)"
+
+- description: how long an old version stays reachable
+  vars:
+    task: >
+      I save the same file twice a day for a week, then look three weeks later.
+      Which versions am I going to find, and how long do they stay?
+    source: docs-site/how-it-works.md, "Versions"
+  assert:
+    - type: javascript
+      value: "/1 day|one day/i.test(output) && /(30|thirty) days/i.test(output)"
+    - type: javascript
+      value: "!/every version is kept forever/.test(output)"
+
+- description: bring back an older version of a file
+  vars:
+    task: >
+      I ruined a file an hour ago. What do I run to get the version from before
+      back?
+    source: docs-site/how-it-works.md, "Restore"
+  assert:
+    - type: javascript
+      value: "/drive restore/.test(output)"
+
+- description: the price worked out for 800 GB held all month
+  vars:
+    task: >
+      I hold 800 GB on the drive for a whole month. What is my bill, and what
+      would the ceiling have been?
+    source: docs-site/pricing.md, "The bill worked out"
+  assert:
+    - type: javascript
+      value: "/(11|eleven) dollars|\\$11/i.test(output)"
+    - type: javascript
+      value: "!/(15|fifteen) dollars/.test(output)"
+
+- description: what is free every month, and what it needs from me
+  vars:
+    task: >
+      What comes free every month, and do I need a card to get it?
+    source: docs-site/pricing.md, "The free $1"
+  assert:
+    - type: javascript
+      value: "/1 dollar|\\$1/i.test(output) && /no card|without a card/i.test(output)"
+
+- description: when downloads start costing money
+  vars:
+    task: >
+      I download my whole drive back twice this month. When do downloads start
+      costing me money, and what is the rate after that?
+    source: docs-site/pricing.md, "Downloads"
+  assert:
+    - type: javascript
+      value: "/downloads/i.test(output) && /(3x|three times|three times the average|average stored)/i.test(output)"
+    - type: javascript
+      value: "/1.{0,3}(cent|¢|GB)|1¢/.test(output)"
+
+- description: the things version 1 will not do
+  vars:
+    task: >
+      I am deciding whether to move my team onto this. What will version 1 not
+      do? Be specific.
+    source: docs-site/limits.md, "Not in version 1"
+  assert:
+    - type: javascript
+      value: "/Windows/i.test(output) && /(selective sync|pin|offline)/i.test(output)"
+
+- description: where this drive is slower than the alternatives
+  vars:
+    task: >
+      Be honest with me: where is this drive slower than what I use now?
+    source: docs-site/limits.md, "Where we are slower than the alternatives"
+  assert:
+    - type: javascript
+      value: "/first open|first read|cold|latency/i.test(output) && !/(never slower|faster than everything)/i.test(output)"
+
+- description: the agent's first stop for this site, in one file
+  vars:
+    task: >
+      I am an agent reading this site. Which single URL gives me every page as
+      plain text?
+    source: docs-site/index.md, "For agents reading this site"
+  assert:
+    - type: javascript
+      value: "/llms-full\\.txt/.test(output)"
+
+- description: what a drive is, in one sentence to a new person
+  vars:
+    task: >
+      Explain this product to a non-technical person in one sentence. Use its
+      own words for what it is called.
+    source: docs-site/index.md, "Start here"
+  assert:
+    - type: javascript
+      value: "/(a )?folder that holds more than your laptop can/i.test(output)"
+
+- description: the security page's own limits on what we can reach
+  vars:
+    task: >
+      The security page lists what the company can and cannot reach. Name the
+      limits it claims for itself.
+    source: docs-site/security.md, "What we can and cannot reach"
+  assert:
+    - type: javascript
+      value: "/(cannot|can never)/i.test(output) && /(read|key|encrypt)/i.test(output)"
+    - type: javascript
+      value: "!/we can read (all )?your (files|content)/i.test(output)"
+
+- description: google drive or dropbox by another name
+  vars:
+    task: >
+      Is this just Dropbox or Google Drive with a different name? Answer from
+      the docs, not from your reading of the market.
+    source: docs-site/index.md, "Start here"; docs-site/how-it-works.md
+  assert:
+    - type: javascript
+      value: "!/(yes|basically|exactly the same as Dropbox)/i.test(output) && /(on demand|by the minute|version|agent)/i.test(output)"
+
+- description: the newest thing that shipped
+  vars:
+    task: >
+      What shipped most recently, according to the docs? Give the date and the
+      one line.
+    source: docs-site/changelog.md, latest dated entry
+  assert:
+    - type: javascript
+      value: "/2026-10-02|2026-10-0?1/.test(output)"
+
+- description: what a branch is for, and what it gives an agent
+  vars:
+    task: >
+      I want an agent to work on a folder of mine without touching my files
+      until I say so. What does this product call that, and what do I run?
+    source: docs/build-spec.md, "Commands (v1)"; cmd/drive/main.go usage
+  assert:
+    - type: javascript
+      value: "/drive branch/.test(output) && /own key|branch-scoped|branch key/i.test(output)"
+
+- description: what an agent sees in its own key's folder
+  vars:
+    task: >
+      An agent works in a branch. What does its key let it reach, and can it
+      delete anything?
+    source: docs/build-spec.md, "Keys and safety"
+  assert:
+    - type: javascript
+      value: "!/yes/.test(output) && /delete/i.test(output) && /prefix|\\.branches\\//.test(output)"
+
+- description: mount and save a file
+  metadata:
+    hard: true
+  vars:
+    task: >
+      Mount the drive, then save a file into it. Which commands, in which
+      order, and what tells you it worked?
+    why_hard: >
+      A person has to know that the mount is rclone's, so the save is only
+      proven once rclone has flushed it — a file in the cache is not yet on the
+      drive, and the docs do not say when that happens.
+    source: docs-site/quickstart.md, "3. Mount"; docs/build-spec.md, step 2
+  assert:
+    - type: javascript
+      value: "/drive mount/.test(output) && /(flush|sync|write-back|vfs)/i.test(output)"
+
+- description: make a branch and work in it
+  metadata:
+    hard: true
+  vars:
+    task: >
+      Make a branch of a folder, let an agent change three files in it, then
+      bring those changes back.
+    why_hard: >
+      It is three commands that each have a different failure: branch makes a
+      server-side copy, the agent's work is only visible when the branch is
+      read again, and approve stops dead if the original moved — so the answer
+      has to know that stop, not just the command.
+    source: docs/build-spec.md, "Commands (v1)", steps 7 and "Keys and safety"
+  assert:
+    - type: javascript
+      value: "/drive branch \\S+/.test(output) && /drive approve/.test(output) && /(clash|conflict|original changed|stops)/i.test(output)"
+
+- description: read a 5 GB file's first MB without a full download
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I want the first megabyte of a 5 GB file on my drive, and nothing else.
+      How?
+    why_hard: >
+      A drive that streams looks like it reads the whole file, so the honest
+      answer is a byte-range read through the download host — and a person only
+      learns which flag means "one range" after downloading the whole thing
+      once by accident.
+    source: docs-site/how-it-works.md, "Files on demand"
+  assert:
+    - type: javascript
+      value: "/(offset|--range|byte range|range request)/i.test(output) && !/download the whole file/.test(output)"
+
+- description: give an agent its own key and confirm it cannot delete
+  metadata:
+    hard: true
+  vars:
+    task: >
+      Give an agent its own key, then prove to yourself that it cannot delete
+      a file in your drive. Do both halves.
+    why_hard: >
+      The proof is a negative: you have to watch a delete be refused, so an
+      agent key has to be minted, aimed at a file, and the refusal read — and
+      a "you cannot delete" answer with no attempt is worth nothing.
+    source: docs-site/agents.md, "What an agent key can do"; docs-site/security.md
+  assert:
+    - type: javascript
+      value: "/delete/i.test(output) && /(refus|denied|cannot|not (allowed|permitted)|no delete)/i.test(output)"
+    - type: javascript
+      value: "!/(too hard|no way to|impossible)/i.test(output)"
+
+- description: set a spending cap
+  metadata:
+    hard: true
+  vars:
+    task: >
+      Set a spending cap for this drive so it can never cost me more than it.
+      Say what the drive does when it gets there.
+    why_hard: >
+      The number is not the hard part — what happens at it is: the drive swaps
+      write keys for read-only ones instead of deleting anything, and a person
+      who does not know that assumes hitting the cap loses files.
+    source: docs-site/security.md, "The spending cap"; docs/build-spec.md, "Keys and safety"
+  assert:
+    - type: javascript
+      value: "/\\$?\\d+(\\.\\d+)?/i.test(output) && /read-only/i.test(output) && !/delete/i.test(output)"
+
+- description: recover an older version of a file
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I edited a file every day this week and just ruined it on day 6. Bring
+      back the day-1 version.
+    why_hard: >
+      Yesterday's version is minutes away and last week's is a copy off another
+      machine, so the answer has to name which version is which — and drive's
+      own history only lists today's from storage, so the clock matters more
+      than the command.
+    source: docs-site/how-it-works.md, "Restore"
+  assert:
+    - type: javascript
+      value: "/drive restore \\S+ --version/.test(output) && /(yesterday|today|few minutes|copied)/i.test(output)"
+
+- description: keep a folder available offline
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I am getting on a plane with no wifi and want a folder of the drive
+      available offline. How do I keep it offline?
+    why_hard: >
+      Nothing to do with the API: version 1 does not pin a folder, so the honest
+      answer is to say so and offer the copy command — and every model that
+      invents a flag instead is being helpful the wrong way round.
+    source: docs-site/limits.md, "Not in version 1"
+  assert:
+    - type: javascript
+      value: "/(not|no).{0,20}(pin|offline)/i.test(output) && /(copy|rclone|cp )/.test(output)"
+    - type: javascript
+      value: "!/drive pin/.test(output)"
+
+- description: put a 10 GB branch in the sky without copying 10 GB twice
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I have a 10 GB folder and I want a branch of it. What will it cost me in
+      time, and how do I find out?
+    why_hard: >
+      A branch is a server-side copy, not a metadata trick, so its cost is a
+      real copy of every byte — and the number to give is the measured one, not
+      the one in the docs' promise.
+    source: docs/build-spec.md, "Against Space, feature by feature"; step 7
+  assert:
+    - type: javascript
+      value: "/(copy|copies)/i.test(output)"
+
+- description: two agents writing the same file
+  metadata:
+    hard: true
+  vars:
+    task: >
+      Two of my agents are told to edit the same file at the same time. What
+      stops the second one silently wiping the first one's work?
+    why_hard: >
+      It is a race with no winner by default, so the answer is a guard on the
+      write that the docs name once, in a different section, for the hosted
+      connector — not in the branch documentation at all.
+    source: docs/build-spec.md, "Sandbox platforms (build step 11)"
+  assert:
+    - type: javascript
+      value: "/If-Match|if-match|ETag/i.test(output)"
+
+- description: a branch key cannot reach my other files
+  metadata:
+    hard: true
+  vars:
+    task: >
+      An agent is working in a branch. Name the prefix its key is limited to,
+      and say whether it can delete anything.
+    why_hard: >
+      The prefix is a hidden path inside the account's own folder, so a person
+      has to know the layout (`u/<id>/.branches/<name>/`) before the answer is
+      more than "its own folder".
+    source: docs/build-spec.md, "Keys and safety"
+  assert:
+    - type: javascript
+      value: "/\\.branches\\//.test(output)"
+
+- description: fix a bill that looks wrong for one month
+  metadata:
+    hard: true
+  vars:
+    task: >
+      My bill for a month I barely used the drive looks too high. What do I
+      check, in order, before I ask for a refund?
+    why_hard: >
+      A per-minute bill with a ceiling and a free credit can look wrong three
+      different ways — the metered figure, the ceiling cap and the credit — and
+      only one of them is the bill.
+    source: docs-site/pricing.md, "The bill worked out"
+  assert:
+    - type: javascript
+      value: "/(metered|ceiling|credit)/i.test(output)"
+
+- description: tell the drive to stop charging after a month
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I am deleting a big project from my drive today and want my next bill to
+      drop. What do I need to know about when the bill changes?
+    why_hard: >
+      Storage is billed by the minute but the bill is monthly, and a person
+      expects a delete today to show on today's bill — the honest answer names
+      the boundary instead of guessing.
+    source: docs-site/pricing.md, "The bill worked out"
+  assert:
+    - type: javascript
+      value: "/(month|minute)/i.test(output) && !/immediately/.test(output)"
+
+- description: recover a file an agent removed
+  metadata:
+    hard: true
+  vars:
+    task: >
+      An agent tool removed a file from my drive ten days ago. Is it still
+      there?
+    why_hard: >
+      An agent key cannot delete at all, so "removed" has to mean hidden — and
+      the answer has to hold on to the difference between what the agent can
+      and what the clock keeps, without either claim being the whole story.
+    source: docs-site/agents.md, "What an agent key can do"; docs-site/how-it-works.md, "Restore"
+  assert:
+    - type: javascript
+      value: "!/(it is gone|permanently deleted)/i.test(output) && /(restore|hidden|version)/i.test(output)"
+
+- description: find a file by name without walking the whole drive
+  metadata:
+    hard: true
+  vars:
+    task: >
+      I have ten thousand files on the drive and I cannot remember where one
+      is. What do I run to find it by name, and what does the result come from?
+    why_hard: >
+      A mount that lists lazily makes every folder look instant, so a person
+      reaches for `find` — which walks every byte — instead of the indexed
+      search the product ships.
+    source: cmd/drive/main.go usage; docs/build-spec.md, step 4
+  assert:
+    - type: javascript
+      value: "/drive search \\S+/.test(output) && !/\\bfind /i.test(output)"
+
+- description: make a link anyone can open, logged out
+  vars:
+    task: >
+      I want to send a file to someone who does not have an account. How do I
+      make a link, and how do I turn it off later?
+    source: cmd/drive/main.go usage; docs/build-spec.md, "Commands (v1)"
+  assert:
+    - type: javascript
+      value: "/drive share \\S+/.test(output) && /drive share --revoke/.test(output)"
+
+- description: ask someone to drop a file onto my drive
+  vars:
+    task: >
+      I want a colleague to put a file into a folder of mine without giving
+      them my password or a key. What do I send them, and where does the file
+      land?
+    source: cmd/drive/main.go usage; docs/build-spec.md, "Commands (v1)"
+  assert:
+    - type: javascript
+      value: "/drive request \\S+/.test(output)"
+
+- description: remove a person from a shared drive
+  vars:
+    task: >
+      A teammate is leaving. How do I take their access to the company drive
+      away, and what happens to the link they had?
+    source: docs/build-spec.md, "Keys and safety"
+  assert:
+    - type: javascript
+      value: "/(revoke|removed|removing)/i.test(output) && /(next request|next start|at once|immediately)/i.test(output)"
+
+- description: after the cap is raised, does the drive start writing again
+  vars:
+    task: >
+      I hit my cap, then put more money on. Does the drive start writing
+      again on its own, or do I have to do something?
+    source: docs/build-spec.md, "Keys and safety"
+  assert:
+    - type: javascript
+      value: "/(restart|next (start|mount)|remount|again)/i.test(output) && !/reinstall/.test(output)"
+
+- description: the CLI reads keys from the environment, never from a flag
+  vars:
+    task: >
+      I am writing a script around the drive command. What is the safe way to
+      pass the storage key secret to it, and what should I never do?
+    source: cmd/drive/main.go usage, "The device keys are read from the environment"
+  assert:
+    - type: javascript
+      value: "/DRIVE_S3_SECRET_ACCESS_KEY/.test(output) && /(never|not).{0,40}(flag|command line|ps|history)/i.test(output)"

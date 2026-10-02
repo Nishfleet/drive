@@ -81,6 +81,7 @@ const EVERY_ROWS = [
   "agent features: undo",
   "agent features: spending cap",
   "agent features: branches with review",
+  "agents finish real tasks from the docs",
   "disk use",
   "minimum macOS",
   "pause and resume an upload",
