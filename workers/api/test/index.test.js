@@ -133,10 +133,7 @@ test("an account-only path does not take the Allow header away from a public one
   // `POST /v1/teams/:teamId/key` (drive#20) must not have taken POST away from
   // the public `POST /v1/events`, so the registry is the fixture here and this
   // is the claim.
-  const events = await dispatch(
-    new Request("https://x.test/v1/events", { method: "GET" }),
-    ctx,
-  );
+  const events = await dispatch(new Request("https://x.test/v1/events", { method: "GET" }), ctx);
   assert.equal(events.status, 405);
   assert.equal(
     events.headers.get("allow"),

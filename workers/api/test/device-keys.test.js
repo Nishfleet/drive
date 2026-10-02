@@ -276,7 +276,7 @@ test("an anonymous /v1/keys is 401, and a made-up token stays 401", async () => 
 
 test("each connected tool gets its own key: two mints are two different keys", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const { account, deviceToken } = await signIn(store, "Nish's MacBook");
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
 
   const claude = await dispatch(
     new Request("https://api.test/v1/keys", {
@@ -334,7 +334,7 @@ test("each connected tool gets its own key: two mints are two different keys", a
 
 test("a revoked agent key is refused by the storage API (the #5 bullet)", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const { account, deviceToken } = await signIn(store, "Nish's MacBook");
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
   const minted = await dispatch(
     new Request("https://api.test/v1/keys", {
       method: "POST",
