@@ -179,6 +179,7 @@ func benchStart(tb testing.TB) *benchStandin {
 	h.mount.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
 	)
 	h.mount.Stdout, h.mount.Stderr = os.Stdout, os.Stderr
 	if err := h.mount.Start(); err != nil {
@@ -575,6 +576,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 	mount.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
 	)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
@@ -627,6 +629,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 	mount.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
 	)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
@@ -742,6 +745,7 @@ func BenchmarkMountReady(b *testing.B) {
 	mount.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
 	)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
@@ -805,4 +809,174 @@ func waitFileEquals(path, want string, timeout time.Duration) bool {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return false
+}
+
+// The issue #227 table is stand-in harness proof, not h.report published rows.
+func BenchmarkPrefetchCLIColdStart(b *testing.B) {
+	bin := driveBin(b)
+	if out, err := exec.Command(bin, "version").CombinedOutput(); err != nil {
+		b.Fatalf("warmup: %v\n%s", err, out)
+	}
+	start := time.Now()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if out, err := exec.Command(bin, "version").CombinedOutput(); err != nil {
+			b.Fatalf("drive version: %v\n%s", err, out)
+		}
+	}
+	b.StopTimer()
+	b.Logf("prefetch-bench metric=cli-cold-start value=%.6f unit=s n=%d", time.Since(start).Seconds()/float64(max(b.N, 1)), b.N)
+}
+
+func BenchmarkPrefetchMountReady(b *testing.B) {
+	h := benchSetup(b)
+	home := filepath.Join(h.root, "home-ready-prefetch")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	start := time.Now()
+	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
+		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
+	mount.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+	)
+	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
+	if err := mount.Start(); err != nil {
+		b.Fatal(err)
+	}
+	defer func() {
+		_ = mount.Process.Signal(os.Interrupt)
+		_, _ = mount.Process.Wait()
+		_ = exec.Command("fusermount3", "-u", mountDir).Run()
+		_ = exec.Command("fusermount", "-u", mountDir).Run()
+	}()
+	if !waitForMount(b, mount, mountDir) {
+		b.Skip("this host does not permit an unprivileged FUSE mount")
+	}
+	d := time.Since(start)
+	b.Logf("prefetch-bench metric=mount-ready value=%.3f unit=s", d.Seconds())
+}
+
+func BenchmarkPrefetchBrowse(b *testing.B) {
+	h := benchSetup(b)
+	local := filepath.Join(h.root, "fixtures", "browse")
+	for _, sub := range []string{"next-a", "next-b"} {
+		if err := os.MkdirAll(filepath.Join(local, sub), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		for i := 0; i < 8; i++ {
+			p := filepath.Join(local, sub, fmt.Sprintf("f-%02d.txt", i))
+			if err := os.WriteFile(p, []byte("browse\n"), 0o644); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "small-a.bin"), bytes.Repeat([]byte("a"), 4096), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "small-b.bin"), bytes.Repeat([]byte("b"), 4096), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := h.rclone("copy", local, RemoteFor(h.cfg)+"/browse"); err != nil {
+		b.Fatal(err)
+	}
+	time.Sleep(6 * time.Second)
+	parent := filepath.Join(h.mountDir, "browse")
+	if _, err := os.ReadDir(parent); err != nil {
+		b.Fatalf("list parent: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := os.ReadDir(filepath.Join(parent, "next-a")); err != nil {
+		b.Fatalf("list next-a without prefetch: %v", err)
+	}
+	withoutFolder := time.Since(start)
+	start = time.Now()
+	if _, err := os.ReadFile(filepath.Join(parent, "small-a.bin")); err != nil {
+		b.Fatalf("open small-a without prefetch: %v", err)
+	}
+	withoutFile := time.Since(start)
+
+	if err := prefetchOnce(parent); err != nil {
+		b.Fatal(err)
+	}
+	start = time.Now()
+	if _, err := os.ReadDir(filepath.Join(parent, "next-b")); err != nil {
+		b.Fatalf("list next-b with prefetch: %v", err)
+	}
+	withFolder := time.Since(start)
+	start = time.Now()
+	if _, err := os.ReadFile(filepath.Join(parent, "small-b.bin")); err != nil {
+		b.Fatalf("open small-b with prefetch: %v", err)
+	}
+	withFile := time.Since(start)
+
+	b.Logf("prefetch-bench metric=next-folder-without value=%.6f unit=s", withoutFolder.Seconds())
+	b.Logf("prefetch-bench metric=next-folder-with value=%.6f unit=s", withFolder.Seconds())
+	b.Logf("prefetch-bench metric=small-file-without value=%.6f unit=s", withoutFile.Seconds())
+	b.Logf("prefetch-bench metric=small-file-with value=%.6f unit=s", withFile.Seconds())
+}
+
+func BenchmarkReadDuringPrefetch(b *testing.B) {
+	// This bench is the user-read vs prefetchOnce overlap with the same
+	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
+	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
+	// contend with the mount's own FUSE traffic.
+	h := benchSetup(b)
+	local := filepath.Join(h.root, "fixtures", "busy")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 16; i++ {
+		p := filepath.Join(local, fmt.Sprintf("p-%02d.bin", i))
+		if err := os.WriteFile(p, bytes.Repeat([]byte("p"), 64<<10), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "user-a.bin"), bytes.Repeat([]byte("u"), 1<<20), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "user-b.bin"), bytes.Repeat([]byte("v"), 1<<20), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := h.rclone("copy", local, RemoteFor(h.cfg)+"/busy"); err != nil {
+		b.Fatal(err)
+	}
+	time.Sleep(6 * time.Second)
+	busy := filepath.Join(h.mountDir, "busy")
+	// One prefetch pass in the background, the way the sidecar runs after a
+	// listing — not a spin loop, which would not be how production schedules
+	// work. userBusy is what inotify sets on a user file open, so the pass
+	// drops the rest of its file reads the moment the user read starts.
+	done := make(chan struct{})
+	go func() {
+		_ = prefetchOnce(busy)
+		close(done)
+	}()
+	prefetchUserBusy.Store(true)
+	start := time.Now()
+	if _, err := os.ReadFile(filepath.Join(busy, "user-a.bin")); err != nil {
+		prefetchUserBusy.Store(false)
+		<-done
+		b.Fatalf("read while prefetch runs: %v", err)
+	}
+	with := time.Since(start)
+	prefetchUserBusy.Store(false)
+	<-done
+	start = time.Now()
+	if _, err := os.ReadFile(filepath.Join(busy, "user-b.bin")); err != nil {
+		b.Fatalf("read with prefetch stopped: %v", err)
+	}
+	without := time.Since(start)
+	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s", with.Seconds())
+	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s", without.Seconds())
+	if with > without+20*time.Millisecond && with > without*2 {
+		b.Fatalf("user read during prefetch %s is slower than %s without", with, without)
+	}
 }

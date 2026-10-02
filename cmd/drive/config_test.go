@@ -131,6 +131,11 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
 			"--dir-cache-time 5s",
+			"--vfs-read-chunk-size 128M",
+			"--vfs-read-chunk-streams 2",
+			"--buffer-size 32M",
+			"--transfers 4",
+			"--vfs-read-ahead 128k",
 		} {
 			if !strings.Contains(line, want) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
@@ -141,6 +146,18 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 		// above, and rclone would take the next argument as the duration.
 		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", "5s") {
 			t.Errorf("%s: --dir-cache-time and 5s are not adjacent args:\n%v", tc.goos, args)
+		}
+		if args := p.Args(); !hasArgPair(args, "--vfs-read-ahead", "128k") {
+			t.Errorf("%s: --vfs-read-ahead and 128k are not adjacent args:\n%v", tc.goos, args)
+		}
+		if args := p.Args(); !hasArgPair(args, "--vfs-read-chunk-size", "128M") {
+			t.Errorf("%s: --vfs-read-chunk-size and 128M are not adjacent args:\n%v", tc.goos, args)
+		}
+		if args := p.Args(); !hasArgPair(args, "--buffer-size", "32M") {
+			t.Errorf("%s: --buffer-size and 32M are not adjacent args:\n%v", tc.goos, args)
+		}
+		if args := p.Args(); !hasArgPair(args, "--transfers", "4") {
+			t.Errorf("%s: --transfers and 4 are not adjacent args:\n%v", tc.goos, args)
 		}
 		if !strings.Contains(line, "drive:drive-standin/u/1234") {
 			t.Errorf("%s: command line missing the device remote:\n%s", tc.goos, line)
@@ -169,6 +186,9 @@ func TestLaunchdPlistCarriesTheRclonePlan(t *testing.T) {
 	args := plistProgramArguments(t, plist)
 	if !hasArgPair(args, "--dir-cache-time", "5s") {
 		t.Errorf("launchd ProgramArguments missing adjacent --dir-cache-time 5s:\n%v", args)
+	}
+	if !hasArgPair(args, "--vfs-read-ahead", "128k") {
+		t.Errorf("launchd ProgramArguments missing adjacent --vfs-read-ahead 128k:\n%v", args)
 	}
 	if p := LaunchdPlistPath("/Users/test"); p != "/Users/test/Library/LaunchAgents/com.nishfleet.drive.plist" {
 		t.Errorf("LaunchdPlistPath = %q", p)
@@ -203,6 +223,9 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 		"ExecStart=/usr/bin/rclone mount drive:drive-standin/u/1234",
 		"--vfs-cache-mode full",
 		"--dir-cache-time 5s",
+		"--vfs-read-ahead 128k",
+		"--buffer-size 32M",
+		"--transfers 4",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
