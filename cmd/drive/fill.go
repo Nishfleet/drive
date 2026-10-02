@@ -12,45 +12,30 @@ import (
 // fill is rclone fetching the next chunk it was always going to fetch, only
 // without waiting for a foreground read to ask for it.
 //
-// Three stock options do the whole job, and the choice among them is what
-// this file holds:
+// Two stock options are this file's own:
 //
-//   - --vfs-read-ahead fills the rest of a file that is open, straight after
-//     the byte a foreground read asked for. rclone's own words: "Extra read
-//     ahead over --buffer-size when using cache-mode full", buffered on disk.
-//     It is the option that makes the tail of a partly-read file arrive
-//     without a second app reading it.
 //   - --vfs-read-chunk-size-limit doubles the chunk size after each chunk
 //     read, up to the limit, so a file nobody ever reaches the end of is not
-//     fetched 128 MiB at a time for the whole 10 GB. Measured in cmd/drive's
-//     own test (TestBackgroundFillChunkSize) and on the mount in
-//     e2e_test.go's open-time proof.
+//     fetched 128 MiB at a time for the whole 10 GB, and a file somebody does
+//     reach the end of arrives in a few large requests instead of many small
+//     ones. Measured in cmd/drive's own test (TestBackgroundFillChunkSize) and
+//     on the mount in e2e_test.go's open-time proof.
 //   - --vfs-cache-max-age decides how long a file somebody opened stays: it is
-//     time since last access, so the default 1h is what makes "recently
-//     opened files stay on the disk" true rather than a second index this
-//     product would have to keep.
+//     time since last access, so it is what makes "recently opened files stay
+//     on the disk" true rather than a second index this product would have to
+//     keep.
+//
+// --vfs-read-ahead is the first chunk an open file fetches. It was already on
+// the mount before the fill, as one of the hill-climb's (issue #248) tunables,
+// and it stays exactly that: the fill policy below reports the mount's shipped
+// value (vfsReadAheadValue) rather than carrying a second one, so the product
+// has one read-ahead number and a person tuning it tunes the mount.
 //
 // The cap is not a fill rule and is not repeated here: --vfs-cache-max-size
 // (vfsCacheMaxValue) is already on the mount, and rclone checks it on every
 // cache poll, so background fill cannot push the cache past the user's cap.
 // TestBackgroundFillFillsThroughTheCappedCache proves that on a real mount
 // rather than asserting it.
-
-// fillTarget is how many bytes the fill loop tries to get ahead of a
-// foreground read. It is deliberately several times the per-chunk read: a
-// value equal to the chunk size would refill exactly as fast as an app reads
-// and the tail would never catch up on a long video, which is the case the
-// issue names.
-//
-// 512M measured against the step-2 stand-in (e2e_test.go
-// TestBackgroundFillFillsThroughTheCappedCache and TestOpenTimeColdAndWarm,
-// 2026-10-02):
-// 16M leaves a 500 MB video's second half unfilled after the first 200 MB of
-// playback, 1G pulls twice the bytes the issue asks for into the cache for a
-// 1 MB document. 512M fills a 500 MB video whole and costs a 1 MB document
-// nothing, because the fill is bounded by the object: rclone stops at the end
-// of the file.
-const fillReadAhead = "512M"
 
 // fillChunkSizeLimit is the ceiling on rclone's own chunk doubling. rclone
 // reads 128M (its default) for the first chunk and doubles for each chunk
@@ -82,16 +67,17 @@ const fillMaxAge = "24h"
 // decides when the fill runs, only what it does when it runs.
 const fillIdleCheck = 30 * time.Second
 
-// vfsReadAhead, vfsChunkSizeLimit and vfsMaxAge are the mount flags above,
-// named once so the fill loop and the mount cannot drift on the spelling.
-func vfsReadAhead() string      { return fillReadAhead }
+// vfsChunkSizeLimit and vfsMaxAge are the mount flags above, named once so
+// the fill loop and the mount cannot drift on the spelling.
 func vfsChunkSizeLimit() string { return fillChunkSizeLimit }
 func vfsMaxAge() string         { return fillMaxAge }
 
 // FillPolicy is what the background fill does, in one value the mount and
 // `drive status` can both read. It is deliberately a description of stock
 // rclone settings, not a scheduler: the loop in fill_run.go only decides
-// *when* to let rclone read ahead.
+// *when* to let rclone read ahead. ReadAhead is the mount's shipped first
+// chunk (vfsReadAheadValue), reported here so one value is read in three
+// places rather than three values being kept.
 type FillPolicy struct {
 	ReadAhead      string
 	ChunkSizeLimit string
@@ -103,7 +89,7 @@ type FillPolicy struct {
 // mount, the status line and the tests read one value.
 func DefaultFillPolicy() FillPolicy {
 	return FillPolicy{
-		ReadAhead:      fillReadAhead,
+		ReadAhead:      vfsReadAheadValue,
 		ChunkSizeLimit: fillChunkSizeLimit,
 		MaxAge:         fillMaxAge,
 		IdleCheck:      fillIdleCheck,

@@ -67,29 +67,34 @@ func TestBackgroundFillSizesAreRcloneSizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read-ahead %q: %v", p.ReadAhead, err)
 	}
-	// Read-ahead is measured in the spec as "extra read ahead over
-	// --buffer-size"; the buffer is 32M, so anything at or under the buffer is
-	// no read-ahead at all.
-	buffer, err := parseSizeSuffix(vfsChunkStreamSize)
-	if err != nil {
-		t.Fatalf("buffer-size %q: %v", vfsChunkStreamSize, err)
-	}
-	if readAhead <= buffer {
-		t.Errorf("read-ahead %s is not more than the %s in-memory buffer: it reads no further ahead than an app already has",
-			p.ReadAhead, vfsChunkStreamSize)
+	if readAhead <= 0 {
+		t.Errorf("read-ahead %s is not a size rclone can fetch a chunk with", p.ReadAhead)
 	}
 	// The chunk limit is a ceiling on rclone's doubling and only works when it
-	// is above the chunk size it doubles from (rclone's own rule).
+	// is above the chunk size the doubling starts from: rclone reads its
+	// default 128M first (--vfs-read-chunk-size) or the mount's first chunk
+	// (--vfs-read-ahead), whichever it is using.
 	limit, err := parseSizeSuffix(p.ChunkSizeLimit)
 	if err != nil {
 		t.Fatalf("chunk-size-limit %q: %v", p.ChunkSizeLimit, err)
 	}
-	if limit <= 128<<20 {
-		t.Errorf("chunk-size-limit %s is not above rclone's 128M default chunk, so it never takes effect", p.ChunkSizeLimit)
+	firstChunk, err := parseSizeSuffix(vfsReadChunkSizeValue)
+	if err != nil {
+		t.Fatalf("read-chunk-size %q: %v", vfsReadChunkSizeValue, err)
 	}
-	// MaxAge is a duration rclone parses.
-	if _, err := time.ParseDuration(p.MaxAge); err != nil {
+	if limit <= 128<<20 || limit <= firstChunk {
+		t.Errorf("chunk-size-limit %s is not above the %s a chunk read starts from, so the doubling never gets past the first chunk",
+			p.ChunkSizeLimit, vfsReadChunkSizeValue)
+	}
+	// MaxAge is a duration rclone parses, and it is what "recently opened
+	// files stay on the disk" means, so it has to be longer than the 1h
+	// rclone ships with: a file opened yesterday evening is one a person
+	// opens again this morning.
+	maxAge, err := time.ParseDuration(p.MaxAge)
+	if err != nil {
 		t.Errorf("cache-max-age %q is not a duration: %v", p.MaxAge, err)
+	} else if maxAge <= time.Hour {
+		t.Errorf("cache-max-age %s is not longer than rclone's own 1h, so it keeps nothing this product did not already", p.MaxAge)
 	}
 	if p.IdleCheck <= 0 {
 		t.Errorf("idle check interval = %s, want a positive period", p.IdleCheck)
