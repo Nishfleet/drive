@@ -34,24 +34,41 @@ export function applyMigrations(sqlite) {
 // SQLITE_RANGE ("column index out of range") on `?1` (measured node v24.5.0).
 // A numbered placeholder can also be reused (`?1` twice); expanding in
 // appearance order keeps that meaning. Production SQL stays numbered for D1.
-/** @param {string} sql */
-function anonymousPlaceholders(sql) {
+/**
+ * The SQL string only, for the calls that hand node:sqlite its values later
+ * (`prepare` cannot see them). The values must then be bound in the order the
+ * rewritten `?` appear, so an adapter that cannot rebind goes through
+ * bindForNodeSqlite instead: this one answers `?3` with the first value it is
+ * given, which is the mis-bind class drive#219 is about.
+ * @param {string} sql
+ */
+export function anonymousPlaceholders(sql) {
   return sql.replace(/\?(\d+)/g, "?");
 }
 
 /**
+ * D1's `?N` as node:sqlite can bind it: the statement, and the values in the
+ * order the rewritten anonymous `?` appear. D1 binds by number, node:sqlite
+ * binds by position, so `?3 ... ?1` must hand its values over swapped, and a
+ * number a statement uses twice is one value bound twice. One rewrite for
+ * every test adapter that speaks SQLite, so the adapters cannot disagree about
+ * what a placeholder number means (drive#219).
  * @param {string} sql
- * @param {any[]} bound
- * @returns {{sql: string, bound: any[]}}
+ * @param {Array<import("node:sqlite").SQLInputValue>} bound
+ * @returns {{sql: string, bound: Array<import("node:sqlite").SQLInputValue>}}
  */
-function bindForNodeSqlite(sql, bound) {
+export function bindForNodeSqlite(sql, bound) {
   if (!/\?\d/.test(sql)) {
     return { sql, bound };
   }
-  /** @type {any[]} */
+  /** @type {Array<import("node:sqlite").SQLInputValue>} */
   const positional = [];
   const rewritten = sql.replace(/\?(\d+)/g, (_match, digits) => {
-    positional.push(bound[Number(digits) - 1]);
+    const value = bound[Number(digits) - 1];
+    if (value === undefined && Number(digits) > bound.length) {
+      throw new Error(`the statement binds ?${digits}, and D1 gave ${bound.length} value(s)`);
+    }
+    positional.push(value);
     return "?";
   });
   return { sql: rewritten, bound: positional };

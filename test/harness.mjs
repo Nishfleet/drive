@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
+import { bindForNodeSqlite } from "./d1-sqlite.mjs";
 
 /** Every migration that applies to the customer database, in order. */
 export const DRIVE_MIGRATIONS = Object.freeze([
@@ -59,18 +60,6 @@ function sqliteValue(value) {
 }
 
 /**
- * D1 numbered placeholders (`?1`, `?2`, …) as node:sqlite can bind them.
- * node:sqlite only accepts anonymous `?`; the product SQL in src/search.js is
- * numbered because D1 is. One rewrite, used by every test adapter that speaks
- * SQLite, so a second bind path cannot drift.
- * @param {string} sql
- * @returns {string}
- */
-export function sqlitePlaceholders(sql) {
-  return sql.replace(/\?\d+/g, "?");
-}
-
-/**
  * Runs one statement and answers the way D1's bound statement does: every
  * query — a SELECT or an INSERT/UPDATE/DELETE with a `returning` clause —
  * comes back as `{ results, meta }`, and `meta.changes` is the change count.
@@ -82,12 +71,17 @@ export function sqlitePlaceholders(sql) {
  * every `returning` clause and a single-use link would look like a spent one.
  * @param {DatabaseSync} sqlite
  * @param {string} sql
- * @param {unknown[]} params
+ * @param {Array<import("node:sqlite").SQLInputValue>} params
  */
 function runOne(sqlite, sql, params) {
-  const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = params.map(sqliteValue);
-  const results = statement.all(...bound);
+  // The named placeholders D1 sends are bound by number here (drive#219), so
+  // a statement that writes `?2` before `?1` — HOUR_GB_MINUTES_SQL, and
+  // saveSnapshot's `?3 ?1 ?2` — is bound the way D1 binds it, not the way the
+  // text happens to read.
+  const translated = bindForNodeSqlite(sql, bound);
+  const statement = sqlite.prepare(translated.sql);
+  const results = statement.all(...translated.bound);
   return {
     results,
     success: true,
@@ -129,13 +123,13 @@ export function createTestD1(options = {}) {
   }
   /**
    * @param {string} sql
-   * @param {unknown[]} [params]
+   * @param {Array<import("node:sqlite").SQLInputValue>} [params]
    */
   const statement = (sql, params = []) => ({
     sql,
     params,
     /**
-     * @param {...unknown} values
+     * @param {...import("node:sqlite").SQLInputValue} values
      */
     bind(...values) {
       return statement(sql, values);
@@ -145,7 +139,8 @@ export function createTestD1(options = {}) {
     },
     async first() {
       const bound = params.map(sqliteValue);
-      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
+      const translated = bindForNodeSqlite(sql, bound);
+      const row = sqlite.prepare(translated.sql).get(...translated.bound);
       return row === undefined ? null : row;
     },
     async run() {
@@ -172,7 +167,7 @@ export function createTestD1(options = {}) {
         return { count: 0, duration: 0 };
       },
       /**
-       * @param {Array<{sql: string, params?: unknown[]}>} statements
+       * @param {Array<{sql: string, params?: Array<import("node:sqlite").SQLInputValue>}>} statements
        */
       async batch(statements) {
         return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));

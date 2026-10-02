@@ -23,7 +23,7 @@ import {
   searchSql,
   withIndex,
 } from "../src/search.js";
-import { sqlitePlaceholders } from "./harness.mjs";
+import { bindForNodeSqlite } from "./d1-sqlite.mjs";
 
 /** @typedef {import("../src/files.js").FileStore} FileStore */
 
@@ -93,14 +93,16 @@ function makeD1() {
    */
   const runOne = (sql, params = []) => {
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
-    const prepared = sqlitePlaceholders(sql);
+    const prepared = bindForNodeSqlite(sql, values);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
-        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        results: /** @type {Record<string, unknown>[]} */ (
+          sqlite.prepare(prepared.sql).all(...prepared.bound)
+        ),
         changes: 0,
       };
     }
-    const info = sqlite.prepare(prepared).run(...values);
+    const info = sqlite.prepare(prepared.sql).run(...prepared.bound);
     return { results: [], changes: Number(info.changes) };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
