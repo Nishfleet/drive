@@ -35,6 +35,15 @@
 // bytes and the average stored size that sets their free 3x — and the config's
 // $1 credit is the last term.
 //
+// The peak arrives as BYTES, because that is what the meter records (drive
+// issue #163): usage_minutes.stored_bytes is the account's stored bytes at the
+// end of every rolled hour, and the month's peak is the largest of those
+// marks. peakGb is that number already reduced to decimal GB (src/meter.js's
+// BYTES_PER_GB), and stays the accepted spelling so the callers that pass the
+// meter's reduced figure are unchanged; a caller holding the meter's raw byte
+// count passes peakBytes. One or the other, never both: a second spelling for
+// the same number is how the invoice and the ceiling drift apart.
+//
 // Every number that could be a constant is a config value in BILLING_CONFIG,
 // including the iDrive $8/TB and its B2 fallback $10/TB: the "$8" in the
 // headline is an iDrive figure and moves with the primary storage provider
@@ -155,6 +164,29 @@ function checked(value, name, { min = 0 } = {}) {
 }
 
 /**
+ * A month's peak stored bytes in decimal GB, the one conversion from the
+ * meter's unit (usage_minutes.stored_bytes, drive issue #163) into the unit
+ * the ceiling is worked out in. Exported so a caller that holds the meter's own
+ * numbers - monthUsageRollup's result, or a test writing a month's peak in
+ * bytes - reduces them here rather than dividing by a billion a second way.
+ *
+ * A peak is a whole number of bytes and nothing else: the write path
+ * (usageStatement, src/meter.js) and the read path (monthUsageRollup) both
+ * refuse a fractional byte count, and this is the third door into the same
+ * number, so it refuses one too rather than dividing a broken caller's 1.5
+ * into 1.5 GB and billing a size no drive can hold.
+ * @param {unknown} peakBytes
+ * @returns {number}
+ */
+export function storedGb(peakBytes) {
+  const bytes = checked(peakBytes, "peakBytes");
+  if (!Number.isSafeInteger(bytes)) {
+    throw new TypeError(`peakBytes must be 0 or more whole bytes, got ${String(peakBytes)}`);
+  }
+  return bytes / BYTES_PER_GB;
+}
+
+/**
  * The metered cost of a month, in dollars, before the ceiling: the 2¢/GB rate
  * on the GB-minutes the meter actually recorded, averaged over an average
  * month so a file stored for 3 days bills for 3 days. `gbMinutes` is the
@@ -252,6 +284,10 @@ export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
  *   creditCents   = the free $1 every month (build-spec.md "Free credit")
  *   totalCents    = max(0, storage + downloads - credit), never below zero
  *
+ * The peak is `month.peakBytes` (the meter's own unit, drive issue #163) or
+ * `month.peakGb` in decimal GB: exactly one of the two, so this function has a
+ * single answer for the month whichever way its caller read the rollup.
+ *
  * The ceiling caps storage only: the spec's min() is over the storage meter
  * ("monthly cost = total GB-minutes ÷ 43,800 × 2¢"), and downloads are the
  * spec's own separate line, so they ride on top of the ceiling. The free $1 is
@@ -269,11 +305,22 @@ export function monthBillCents(month) {
     throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, peakBytes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
       month
     );
   const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
-  const peakGb = checked(fields.peakGb, "month.peakGb");
+  // The peak, in GB, from whichever spelling the caller holds. Exactly one of
+  // them: a month carrying both is two answers to one question, and the second
+  // one silently winning would be a bill nobody can explain from the meter.
+  if (fields.peakBytes !== undefined && fields.peakGb !== undefined) {
+    throw new TypeError(
+      "month takes the peak as month.peakBytes or month.peakGb, never both: the peak is one number",
+    );
+  }
+  const peakGb =
+    fields.peakBytes === undefined
+      ? checked(fields.peakGb, "month.peakGb")
+      : storedGb(fields.peakBytes);
   const downloadBytes =
     fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
   const averageStoredGb =
@@ -613,7 +660,7 @@ const USAGE_HEADERS = Object.freeze({
  * like the other endpoints — after the gate, so an anonymous request is told
  * only that it is not signed in, never which methods exist.
  * @param {Request} request
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number}|null} account the signed-in account, or null when signed out
  */
 export function handleUsageRequest(request, account) {
   // The gate is first, before the method: an anonymous request learns nothing
@@ -627,6 +674,10 @@ export function handleUsageRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
+  const capUsd =
+    typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
+      ? account.capUsd
+      : BILLING_CONFIG.defaultCapUsd;
   const empty = usageSummary({
     gbMinutes: 0,
     peakGb: 0,
@@ -634,7 +685,7 @@ export function handleUsageRequest(request, account) {
     storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
+    capUsd,
     // The cardless $1 is a provisioned account's state until it adds a card
     // (issue #2). Before accounts exist the honest cap is the sign-up default.
     cardAdded: true,

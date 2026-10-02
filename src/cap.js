@@ -46,7 +46,9 @@
 // re-doing revoke-then-mint by hand.
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
-import { usageSummary } from "./billing.js";
+import { capLine, usageSummary } from "./billing.js";
+import { failureMessage } from "./messages.js";
+import { unauthorizedResponse } from "./status.js";
 
 // The capability that makes a key able to change storage. `delete` is a write
 // path too, so a key that has only delete is still a key the cap has to take
@@ -55,7 +57,12 @@ export const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 
 // What a capped key keeps: the same prefix, list and read. A capped account
 // still reads every file it paid for; it just cannot change them.
-export const READ_ONLY_CAPABILITIES = Object.freeze(["list", "read"]);
+export const READ_ONLY_CAPABILITIES = Object.freeze(
+  /** @type {ReadonlyArray<import("../workers/api/src/keyprovider.js").Capability>} */ ([
+    "list",
+    "read",
+  ]),
+);
 
 // The full capability set each kind of key gets, from build-spec.md "Keys and
 // safety": a device key may delete, and an agent, s3 or branch key may not.
@@ -421,4 +428,110 @@ function checkedCap(usd, given) {
     throw new TypeError(capShapeError(given));
   }
   return usd;
+}
+
+/**
+ * Cents the accounts row stores for a dollar cap `parseCapUsd` accepted.
+ * Rounding is the only conversion: two decimal places is already cents, and
+ * a third would have been rejected by parseCapUsd.
+ * @param {number} usd
+ */
+export function dollarsToCapCents(usd) {
+  if (!Number.isFinite(usd) || usd < 0) {
+    throw new TypeError(`A cap in cents needs a finite dollar amount, got ${String(usd)}`);
+  }
+  return Math.round(usd * 100);
+}
+
+export const CAP_ENDPOINT = "/api/cap";
+
+/**
+ * Handles POST /api/cap: parse the amount, persist `accounts.cap_cents`, and
+ * run enforceCap against the account's device rows. The CLI prints the
+ * parseCapUsd() TypeError message when the amount is bad, so that sentence
+ * is the 400 body and nothing else.
+ *
+ * @param {Request} request
+ * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function}|null} capStore
+ */
+export async function handleCapRequest(request, account, capStore) {
+  if (!account) {
+    return unauthorizedResponse();
+  }
+  if (request.method !== "POST") {
+    return new Response("Method not allowed. POST this endpoint to set the spending cap.", {
+      status: 405,
+      headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof TypeError) {
+      return jsonCapError(failureMessage("json-object-needed"), 400);
+    }
+    throw error;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return jsonCapError(failureMessage("json-object-needed"), 400);
+  }
+  const amount = /** @type {{amount?: unknown}} */ (body).amount;
+  let usd;
+  try {
+    usd = parseCapUsd(amount);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return jsonCapError(error.message, 400);
+    }
+    throw error;
+  }
+  if (capStore === null) {
+    return jsonCapError("The account store is not configured on this deployment.", 503);
+  }
+  await capStore.setCapCents(account, dollarsToCapCents(usd));
+  const keys = await capStore.listCapKeys(account.id);
+  const usage = {
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: usd,
+    cardAdded: true,
+  };
+  const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
+  await capStore.setAccountState(account.id, report.state);
+  const summary = usageSummary(usage);
+  return new Response(
+    JSON.stringify({
+      ...summary,
+      capLine: capLine(summary.cap),
+      mount: report.mount,
+    }),
+    {
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    },
+  );
+}
+
+/**
+ * @param {string} message
+ * @param {number} status
+ */
+function jsonCapError(message, status) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
 }

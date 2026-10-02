@@ -104,6 +104,18 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This drive has reached its spending cap, so it is not taking uploads right now.",
     next: "Tell the person who shared this page and try again later.",
   }),
+  // A public upload request has taken as many bytes as its own total allows
+  // (drive issue #208). The stranger cannot raise the cap; the owner can.
+  "upload-link-full": Object.freeze({
+    what: "This link has taken all the files it can.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
+  // The owner-set per-link total on POST /api/request was not a whole number
+  // of bytes in range, so nothing was minted (drive issue #208).
+  "request-max-bytes": Object.freeze({
+    what: "Set a whole number of bytes for this page's cap.",
+    next: "Pick a whole number of at least 1.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.
@@ -157,6 +169,16 @@ export const FAILURE_MESSAGES = Object.freeze({
   "sign-in-closed": Object.freeze({
     what: "Signing in is not open yet.",
     next: "Join the waitlist, and your first email will carry a sign-in link.",
+  }),
+  // The branch's snapshot is larger than one database row holds (drive#157).
+  // A branch of a folder with tens of thousands of files needs a snapshot per
+  // file, and the database refuses a row that big, so the copy was made and
+  // then rolled back: nothing is left half-made, and the one thing to do is
+  // branch a smaller folder until the snapshot moves out of the row (issue
+  // #252). The size is real, measured on this repo's own migrations.
+  "snapshot-bound": Object.freeze({
+    what: "That folder has too many files for one branch.",
+    next: "Branch a subfolder of it, and tell us the folder you wanted.",
   }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback

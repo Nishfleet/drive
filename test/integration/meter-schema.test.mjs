@@ -95,6 +95,7 @@ test("the real migrations apply cleanly, in filename order", () => {
     ["usage_minutes", "hour", "INT"],
     ["usage_minutes", "gb_minutes_live", "REAL"],
     ["usage_minutes", "download_bytes", "INT"],
+    ["usage_minutes", "stored_bytes", "INT"],
     ["usage_minutes", "rolled_up_at", "INT"],
     ["events_seen", "received_at", "INT"],
     ["meter_rollup_state", "rolled_through", "INT"],
@@ -212,7 +213,7 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
   assert.equal(rolled.versions, 2);
   const rows = sqlite
     .prepare(
-      "SELECT account_id, hour, gb_minutes_live, download_bytes FROM usage_minutes ORDER BY account_id",
+      "SELECT account_id, hour, gb_minutes_live, download_bytes, stored_bytes FROM usage_minutes ORDER BY account_id",
     )
     .all()
     .map((r) => ({
@@ -220,10 +221,29 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
       hour: r.hour,
       gb_minutes_live: r.gb_minutes_live,
       download_bytes: r.download_bytes,
+      stored_bytes: r.stored_bytes,
     }));
+  // stored_bytes is the hour's mark for the month's PEAK (drive#163): the sizes
+  // the account had live at some point in the hour, read straight back out of
+  // the real column migration 0006 added. acc-other's 10 GB is hidden at 00:45,
+  // inside the hour, so it is in the mark; the peak is a MAX over these, and a
+  // column that were never written would read 0 and cap every bill at the $12
+  // floor however big the drive really was.
   assert.deepEqual(rows, [
-    { account_id: "acc-abc", hour: midnight(), gb_minutes_live: 30, download_bytes: 0 },
-    { account_id: "acc-other", hour: midnight(), gb_minutes_live: 600, download_bytes: 0 },
+    {
+      account_id: "acc-abc",
+      hour: midnight(),
+      gb_minutes_live: 30,
+      download_bytes: 0,
+      stored_bytes: GB,
+    },
+    {
+      account_id: "acc-other",
+      hour: midnight(),
+      gb_minutes_live: 600,
+      download_bytes: 0,
+      stored_bytes: 10 * GB,
+    },
   ]);
 });
 
@@ -539,6 +559,43 @@ test("the migration is additive: it creates tables and changes nothing else", ()
     /deleted_at INTEGER(,|\s*\n)/.test(sql),
     true,
     "deleted_at stays nullable and defaulted away",
+  );
+});
+
+test("0006 adds the peak's column and takes nothing away", () => {
+  // 0005's own additive check above cannot hold this file: putting a column on
+  // a table that already holds rows IS an ALTER, and that is the shape this
+  // schema has used since 0002. What may never appear is the destructive half
+  // - a DROP, a RENAME, a table rebuild - or a NOT NULL column with no DEFAULT,
+  // which breaks the version of the code a rollback returns to by the same
+  // route: a row written between the migration landing and the code that fills
+  // the column could not be inserted at all. D1 has no down-migrations, so this
+  // file's whole rollback is rolling the code back, and that is only true while
+  // the shipped SQL says so.
+  const sql = readFileSync(
+    new URL("../../migrations/drive/0006_usage_stored_bytes.sql", import.meta.url),
+    "utf8",
+  );
+  for (const destructive of [
+    /\bDROP\s+(TABLE|COLUMN|INDEX)\b/i,
+    /\bRENAME\b/i,
+    /\bCREATE\s+TABLE\b/i,
+  ]) {
+    assert.equal(
+      destructive.test(sql),
+      false,
+      `0006_usage_stored_bytes.sql matches ${destructive}`,
+    );
+  }
+  assert.match(
+    sql,
+    /ALTER\s+TABLE\s+usage_minutes\s+ADD\s+COLUMN\s+stored_bytes\b/i,
+    "the peak's column is added to usage_minutes",
+  );
+  assert.match(
+    sql,
+    /stored_bytes\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+\d/i,
+    "a NOT NULL column carries a DEFAULT, or the deploy window cannot write a row",
   );
 });
 

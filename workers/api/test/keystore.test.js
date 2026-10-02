@@ -33,8 +33,8 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
  * @returns {Promise<{account: {id: string}, deviceToken: string, code: unknown}>}
  */
 async function signedInAccount(store, _clock) {
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
-  store.approveDeviceCode(code.userCode);
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
+  await store.approveDeviceCode(code.userCode);
   const poll = await store.pollDeviceCode(code.deviceCode);
   assert.equal(poll.status, "approved");
   // The assert above is not a type guard, so the approved arm is read through a
@@ -45,9 +45,9 @@ async function signedInAccount(store, _clock) {
   return { account: approved.account, deviceToken: approved.deviceToken, code };
 }
 
-test("a device code starts pending and reports its expiry and poll interval", () => {
+test("a device code starts pending and reports its expiry and poll interval", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "laptop" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
   assert.match(code.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
   assert.ok(code.deviceCode.length > 0);
   assert.notEqual(code.deviceCode, code.userCode);
@@ -58,10 +58,10 @@ test("a device code starts pending and reports its expiry and poll interval", ()
 test("the poll is pending until the page approves, then returns a token exactly once", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
-  const code = store.requestDeviceCode({ name: "laptop" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 
-  assert.deepEqual(store.approveDeviceCode(code.userCode), {
+  assert.deepEqual(await store.approveDeviceCode(code.userCode), {
     accountId: store.accounts.keys().next().value,
     name: "laptop",
   });
@@ -74,8 +74,8 @@ test("the poll is pending until the page approves, then returns a token exactly 
 
 test("an approved device code whose account row is gone polls expired, never a token", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "laptop" });
-  store.approveDeviceCode(code.userCode);
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  await store.approveDeviceCode(code.userCode);
   // The code is approved and names an account that no longer exists — the row
   // a store restored from a backup would not carry. A token here would name an
   // account nobody can sign in to, so the poll is an expiry, not an approval.
@@ -86,10 +86,10 @@ test("an approved device code whose account row is gone polls expired, never a t
 test("a device code expires, and an expired code is never approved", async () => {
   const clock = fixedClock();
   const store = createMemoryStore({ now: clock.now });
-  const code = store.requestDeviceCode({});
+  const code = await store.requestDeviceCode({});
   clock.advance(DEVICE_CODE_TTL_SECONDS + 1);
   assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "expired" });
-  assert.deepEqual(store.approveDeviceCode(code.userCode), { error: "expired-code" });
+  assert.deepEqual(await store.approveDeviceCode(code.userCode), { error: "expired-code" });
 });
 
 test("a device token resolves to its account, and a made-up token does not", async () => {
@@ -107,7 +107,7 @@ test("minting a key returns the secret once and stores only its hash", async () 
   assert.ok(minted.secret.length > 0);
   assert.equal(minted.prefix, `u/${account.id}/`);
   assert.deepEqual(minted.capabilities, ["list", "read", "write", "delete"]);
-  const listed = store.listKeys(account);
+  const listed = await store.listKeys(account);
   assert.equal(listed.length, 1);
   // The hash lives only on the stored row; neither the API's listing nor its
   // one-returned-secret surface it, so absence (not `undefined`) is the claim.
@@ -129,7 +129,7 @@ test("an unknown key kind is refused before any key is made", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
   await assert.rejects(() => store.mintKey(account, { kind: "root" }), /Unknown key kind/);
-  assert.equal(store.listKeys(account).length, 0);
+  assert.equal((await store.listKeys(account)).length, 0);
 });
 
 test("a revoked key is refused and does not come back", async () => {
@@ -227,7 +227,9 @@ test("a revoked device token does not resolve to an account", async () => {
   const store = createMemoryStore({ now: clock.now });
   const { deviceToken, account } = await signedInAccount(store, clock);
   assert.deepEqual(await store.accountForDeviceToken(deviceToken), account);
-  const result = await store.revokeDeviceToken(deviceToken);
+  const result = /** @type {{revoked: true, expiresAt: number, revokedAt: number}} */ (
+    /** @type {unknown} */ (await store.revokeDeviceToken(deviceToken))
+  );
   assert.equal(result.revoked, true);
   assert.equal(result.revokedAt, clock.now() / 1000);
   assert.equal(await store.accountForDeviceToken(deviceToken), null, "revoked token is null");
@@ -255,19 +257,21 @@ test("the sweep drops expired and revoked device tokens and leaves the live ones
     null,
     "expired token is refused before any sweep",
   );
-  assert.equal(store.sweepDeviceTokens(), 1, "the expired row went");
+  assert.equal(await store.sweepDeviceTokens(), 1, "the expired row went");
   assert.equal(await store.accountForDeviceToken(first.deviceToken), null);
 
   // A freshly minted token is live and survives a sweep. Minting also sweeps
   // (and dropped nothing live).
   const second = await signedInAccount(store, clock);
   assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token resolves");
-  assert.equal(store.sweepDeviceTokens(), 0, "nothing live was swept");
+  assert.equal(await store.sweepDeviceTokens(), 0, "nothing live was swept");
   assert.ok(await store.accountForDeviceToken(second.deviceToken), "the live token survived");
 
   // A revoked live token is swept too.
-  const revoked = await store.revokeDeviceToken(second.deviceToken);
+  const revoked = /** @type {{revoked: true, expiresAt: number, revokedAt: number}} */ (
+    /** @type {unknown} */ (await store.revokeDeviceToken(second.deviceToken))
+  );
   assert.equal(revoked.revoked, true);
-  assert.equal(store.sweepDeviceTokens(), 1, "the revoked live row went");
+  assert.equal(await store.sweepDeviceTokens(), 1, "the revoked live row went");
   assert.equal(await store.accountForDeviceToken(second.deviceToken), null);
 });

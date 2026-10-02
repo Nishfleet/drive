@@ -11,30 +11,38 @@ import { all, first, newId, nowSeconds, run, sha256Hex } from "../src/db.js";
  * @typedef {{first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}} Bound
  * @typedef {{calls: DbCall[], prepare: (sql: string) => {bind: (...params: unknown[]) => Bound}}} RecordingDb
  */
-/** @type {() => RecordingDb} */
+/**
+ * A recording stand-in for the D1 binding the helpers take. It speaks only the
+ * subset these helpers call, so it is handed to db.js's `D1Database` through
+ * one documented cast, the same way test/harness.mjs hands its SQLite adapter
+ * over.
+ * @returns {RecordingDb & D1Database}
+ */
 function recordingDb() {
   /** @type {DbCall[]} */
   const calls = [];
-  return {
-    calls,
-    /** @param {string} sql */
-    prepare(sql) {
-      /** @type {DbCall} */
-      const call = { sql, params: null };
-      calls.push(call);
-      return {
-        /** @param {...unknown} params */
-        bind(...params) {
-          call.params = params;
-          return {
-            first: async () => ({ sql, params }),
-            all: async () => ({ results: [{ sql, params }] }),
-            run: async () => ({ success: true, sql, params }),
-          };
-        },
-      };
-    },
-  };
+  return /** @type {RecordingDb & D1Database} */ (
+    /** @type {unknown} */ ({
+      calls,
+      /** @param {string} sql */
+      prepare(sql) {
+        /** @type {DbCall} */
+        const call = { sql, params: null };
+        calls.push(call);
+        return {
+          /** @param {...unknown} params */
+          bind(...params) {
+            call.params = params;
+            return {
+              first: async () => ({ sql, params }),
+              all: async () => ({ results: [{ sql, params }] }),
+              run: async () => ({ success: true, sql, params }),
+            };
+          },
+        };
+      },
+    })
+  );
 }
 
 test("first binds every value instead of writing it into the SQL", async () => {

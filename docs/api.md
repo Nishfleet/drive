@@ -1,6 +1,6 @@
 # api Worker contract
 
-JSON over HTTPS, served by `workers/api`. Routes are registered in `workers/api/src/routes.js`. Errors are `{"error": "<sentence>"}` with a 4xx or 5xx status. Bearer tokens are `Authorization: Bearer <device_token>`.
+JSON over HTTPS, served by `workers/api`. Routes are registered in `workers/api/src/routes.js`. Errors are `{"error": "<sentence>"}` with a 4xx or 5xx status. The account gate resolves a CLI's `Authorization: Bearer <device_token>` against the key store, and a browser's sign-in session cookie through the same `signedInAccount` gate the site's account routes use (`src/status.js`, drive#109).
 
 Every route carries an `auth` rule and the account gate is deny by default: only `auth: "public"` answers without a signed-in account, and a route that needs one answers `401` with a `www-authenticate: Bearer` challenge. `test/index.test.js` walks the registry and fails on a route with no rule, so a new route cannot ship open by accident. Request bodies that are not a JSON object are `400`. A path whose `:param` cannot be percent-decoded is `400`; a known path reached with a method it does not serve is `405` with an `allow` header.
 
@@ -13,24 +13,58 @@ The liveness probe is public on purpose: it answers before anyone is signed in, 
 | Route | Auth | Purpose |
 |---|---|---|
 | `GET /v1/health` | public | Liveness. `{ok, time}`. |
-| `POST /v1/device/code` | public | Start a device sign-in. Body `{name?}`; answer `{deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval}`. |
-| `POST /v1/device/token` | public | The CLI's poll. Body `{device_code}`; `{status: "pending"}` until approved, then `{status: "approved", deviceToken, account}`. The token is returned once. |
-| `GET /v1/device/approve` | public | The page the person approves the code on. `?user_code=` prefills the form. |
-| `POST /v1/device/approve` | public | Approve a code. A form body (`user_code=…`) or `{user_code}`. Until the account sign-in flow lands, approving makes the account. |
+| `POST /v1/device/code` | public | Start a device sign-in. Body `{name?}`; answer `{deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval}`. Past the edge limit is `429`. |
+| `POST /v1/device/token` | public | The CLI's poll. Body `{device_code}`; `{status: "pending"}` until approved, then `{status: "approved", deviceToken, account}`. The token is returned once. Past the edge limit is `429`. |
+| `GET /v1/device/approve` | account | The page the person approves the code on. `?user_code=` prefills the form. |
+| `POST /v1/device/approve` | account | Approve a code, as the signed-in person. A form body (`user_code=…`) or `{user_code}`. Anonymous is `401`; past the edge limit is `429`. |
 | `GET /v1/keys` | account | The account's keys: `{keys: [{keyId, name, kind, prefix, capabilities, createdAt, lastSeenAt, revokedAt}]}`. No secret is ever listed. |
-| `POST /v1/keys` | account | Mint a key. Body `{kind?, name?}` (`device`/`agent`/`s3`/`branch`); answer `{keyId, accessKeyId, secret, prefix, capabilities}`. The secret is in this response and nowhere else. |
-| `DELETE /v1/keys/:keyId` | account | Revoke one of the account's own keys. `204`; another account's key is `404`. |
+| `POST /v1/keys` | account | Mint a key. Body `{kind?, name?}` (`device`/`agent`/`s3`/`branch`); answer `{keyId, accessKeyId, secret, sessionToken, expiresIn, prefix, capabilities}`. The secret is in this response and nowhere else. With storage configured the pair is a temporary credential the storage endpoint itself scoped to the key's prefix, so `sessionToken` and `expiresIn` are part of it; with no storage configured they are `null` and the pair is the stand-in the api's own storage API knows. |
+| `DELETE /v1/keys/:keyId` | account | Revoke one of the account's own keys. `204`; another account's key is `404`. With storage configured this revokes the api's record immediately but cannot withdraw the endpoint's temporary credential: that one expires on its own (an hour by default) or is withdrawn by the provider's own key API, which is the vendor's step (#173). |
+| `GET /v1/export` | account | The account's own data as one JSON document (drive#34): `{generatedAt, account, keys, files, versions, complete, next}`. Every read is filtered on the account the gate resolved, so one account's export can never carry another's rows. No secret is in it: the keys are the public shape `publicDevice` already returns. A drive with more rows than one response holds is walked a page at a time — each list is read with `EXPORT_ROW_CAP` (5000) rows and a keyset cursor, `complete` is `false` while a page stopped short, and `next.fileCursor` / `next.versionCursor` continue it (`?fileCursor=`, `?versionAt=`, `?versionId=`). This route is a read: it deletes nothing and revokes nothing. |
 | `DELETE /v1/device/token` | account | Revoke the caller's own device token. The token is the one in the `Authorization: Bearer` header. `204`; subsequent requests with that token are `401`. |
 | `GET /v1/storage/list` | public | The stand-in storage API. HTTP Basic with the access key id and secret. `?path=` defaults to the key's prefix. A revoked key is `401`; a path outside the key's own prefix is `403`. The real adapter replaces this behind the same answers (build step 1). |
+| `PUT /v1/storage/object` | public | The storage API's write half (issue #20). HTTP Basic, as the listing takes it. `?path=` names the object. Checked in the same three steps: the credential, the path inside the key's own prefix, and the key's own capabilities. A key without `write` is `403` — that refusal is a read-only team member's write being refused, on the same boundary `authorizePath` draws. `201 {prefix, path, sizeBytes}`. |
+| `POST /v1/teams` | account | Create a team owned by the signed-in account. Body `{name}`; answer `201 {team}`. |
+| `GET /v1/teams` | account | The teams the account owns or is an active member of: `{teams}`. |
+| `POST /v1/teams/:teamId/members` | account | Invite a member by email with a role. Body `{email, role}` (`read_only`/`read_write`); answer `201 {member}`. The membership is `active` at once when the email is one a signed-in account already has, and `invited` otherwise. A role outside the one table is `400`; an invite by anyone but the owner is `404`. The member's key is minted with the scope `member.scope` reports. |
+| `POST /v1/teams/:teamId/key` | account | Mint the caller's own key on the team drive. Body `{name?}`; answer `201` with the same shape as `POST /v1/keys` (`{keyId, accessKeyId, secret, sessionToken, expiresIn, prefix, capabilities}`). The role is the STORED membership's, never a field in the body, so a read-only member asking for `read_write` still gets a read-only key. An account that is not on the team is `404`. |
+| `GET /v1/teams/:teamId/members` | account | The team's members, for any account on the team. A team the caller is not on is `404`. |
+| `DELETE /v1/teams/:teamId/members/:memberId` | account | The owner removes a member. `204`, with `x-drive-revoked-keys` naming how many of the removed account's team keys were revoked in the same request. The row is kept and marked `removed`; the keys die immediately, so the member's key is `401` on the next request. |
+| `POST /v1/events` | public | The bucket's event notifications (build step 1). `Authorization: Bearer <STORAGE_EVENT_TOKEN>`; the body is the provider's notification envelope and the answer is `202 {received, events}`. No token configured is `503`, a wrong token is `401`, a body without records is `400`. Each event is logged as one line naming the event, the object and its version. |
 
-The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`); a request with no token, or a token that does not resolve (unknown, expired, or revoked), is `401` and no handler runs. The device flow is RFC 8628's device authorization grant.
+The account gate resolves `Authorization: Bearer <device token>` through the key store (`workers/api/src/keystore.js`) and, for the approval page, the sign-in session cookie through `src/status.js` `signedInAccount`; a request with neither, or one that does not resolve, is `401` and no handler runs. The device flow is RFC 8628's device authorization grant: the CLI asks for a code, a signed-in person approves it, and the CLI polls until it holds a token. The pending codes and the minted tokens live in D1 (`migrations/drive/0007_device_codes.sql`, `workers/api/src/device-signin.js`), so a code started on one Worker instance is visible on the next; the device code and the token are stored only as SHA-256 digests. Each of the three POSTs spends its own per-IP and service-wide edge limit (`DEVICE_RATE_LIMITER` and `DEVICE_GLOBAL_RATE_LIMITER`) before it reaches the database, and answers `503` when either binding is missing: a deployment with no limiter is a closed door, not an open one. Consuming an approved code and writing its token are one D1 transaction, so an approved sign-in is never lost to a failure between the two, and the expiry check is inside the write that changes the row, not only in the read before it. A minted token carries the session TTL (`DEVICE_TOKEN_TTL_SECONDS`, and `expires_at`/`revoked_at` on the token row in `migrations/drive/0005_device_codes.sql`); both are refused in the store's one bearer lookup (`workers/api/src/device-signin.js`), so an expired or revoked token is `401` on every route, and `DELETE /v1/device/token` kills one without deleting the account's keys.
+
+## Exporting your own data
+
+`GET /v1/export` (drive#34) answers with the caller's own account data: the account row, the account's keys, the file-name index (`file_index`) and the version history (`file_versions`). It is a read and nothing else — it deletes nothing and revokes nothing; the two lifecycle items that do (`accounts.state` closing and signing out every device) are customer-data deletion, are reserved, and are not this route.
+
+Three rules hold the route to the account it was asked about:
+
+- **Every read is filtered on `ctx.account.id`**, the account the gate resolved from the caller's own credential. The route takes no account id, no key id and no path from the request, so there is no parameter a caller could point at another account.
+- **No secret is in the answer.** The keys come from `store.listKeys`, which is already the public shape (`keystore.js` `publicDevice`); the store keeps only a hash of each secret, so there is no secret to return. `workers/api/test/export.test.js` asserts the minted access key id and secret are absent from the answer by value.
+- **A page that stops short says so.** A drive can hold more rows than one Worker response, so each list is read with a cap (`EXPORT_ROW_CAP`, 5000 rows) and a keyset cursor. `complete` is `false` while a page stopped at the cap, and `next.fileCursor` / `next.versionCursor` carry the position that continues it; a caller passing them back as `?fileCursor=`, `?versionAt=` and `?versionId=` gets the next page. The cursors are a position in *this* account's own ordered rows, never a way to name another account. `drive export` (cmd/drive/export.go) walks the pages itself and saves one merged document, so a person never has to page by hand.
 
 ## Key scopes
 
-Storage access goes through the `KeyProvider` interface (`mint(scope)`, `revoke(keyId)`, `swapToReadOnly(keyId)`), see `workers/api/src/keyprovider.js`. `swapToReadOnly` is the one the pricing Worker already calls when the cap takes a key (see `applyCapSwap` in `src/cap.js`); `mint` and `revoke` land with the keys routes.
+Storage access goes through the `KeyProvider` interface (`mint(scope)`, `revoke(keyId)`, `swapToReadOnly(keyId)`), see `workers/api/src/keyprovider.js`. `swapToReadOnly` is the one the pricing Worker already calls when the cap takes a key (see `applyCapSwap` in `src/cap.js`); `mint` and `revoke` land with the keys routes. When storage is configured (`STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET`, `STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), `mint` is `createS3KeyProvider` (`workers/api/src/s3-keys.js`): it derives the session policy from the one capabilities table and calls STS `AssumeRole`, so the storage endpoint enforces the scope. An optional `STORAGE_ROLE_ARN` is sent as the AssumeRole `RoleArn` for providers that require one (MinIO and B2 do not; #173 checks the real vendor). A half-configured deployment mints nothing: the missing names are refused at `POST /v1/keys`, and every other route keeps answering. `revoke` at the provider is the vendor's key API and lands with iDrive e2 (#173); until then a minted credential expires on its own and the api store refuses a revoked key immediately.
 
 - device key: list, read, write and delete on `/u/<account>/`
 - agent key (and s3 key): the same prefix without delete
 - branch key: `/u/<account>/.branches/<name>/` without delete
+- team key (issue #20): `t/<teamId>/`, with the capabilities the member's role
+  carries — `read_only` is list and read, `read_write` adds write. No team role
+  ever carries delete. The role table is `TEAM_ROLE_CAPABILITIES` in
+  `workers/api/src/keyprovider.js`, beside `CAPABILITIES_BY_KIND` and for the
+  same reason: the scope is built from it and the storage write route reads the
+  authenticated device row, so a role cannot get two different powers in two
+  places. `teamScopeFor()` checks the team id before it goes in the prefix, the
+  same guard `scopeFor()` applies to an account id and a branch name.
+
+Teams live in D1 (`migrations/drive/0008_teams.sql`, `workers/api/src/teams.js`),
+beside the accounts the invite binds to, so a team and its members survive the
+isolate that created them — "the owner's removal stops the member's key" is a
+claim about the next request, and that request may be a different instance. The
+in-memory store is the stand-in for a deployment with no database, the same split
+`device-signin.js` keeps.
 
 The kind to capabilities table is `CAPABILITIES_BY_KIND` in `workers/api/src/keyprovider.js`, and it is the only copy: the pricing Worker's cap logic (`src/cap.js`) reads it too, and `test/cap-keyprovider-table.test.mjs` fails if a second copy appears. `scopeFor()` validates the account id and the branch name before they go into a prefix, so a name like `../../x` or `a/b` is refused rather than escaping the account's folder.

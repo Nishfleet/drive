@@ -98,8 +98,9 @@ const LIVENESS_QUERY = "SELECT 1";
  * list pointing at a binding that no longer exists.
  *
  * ASSETS is on the list because every page load goes through it. The rate
- * limiters are on it because the waitlist and the sign-in endpoint fail closed
- * without one (src/waitlist.js, src/signin.js). METER_DB is on it because the
+ * limiters are on it because the waitlist, the sign-in endpoint and the
+ * public upload-request route fail closed without them (src/waitlist.js,
+ * src/signin.js, src/share.js). METER_DB is on it because the
  * meter's event intake and the hourly rollup both fail closed without it
  * (src/meter.js), and a deploy that lost it would silently stop billing.
  * DRIVE_DB is on it because a deploy that lost it
@@ -117,6 +118,8 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_RATE_LIMITER",
   "SIGNIN_RATE_LIMITER",
   "SIGNIN_GLOBAL_RATE_LIMITER",
+  "REQUEST_UPLOAD_RATE_LIMITER",
+  "REQUEST_UPLOAD_LINK_RATE_LIMITER",
 ]);
 
 const JSON_HEADERS = Object.freeze({
@@ -369,13 +372,19 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
         "WAITLIST_RATE_LIMITER",
       ),
   });
-  // The sign-in endpoint's two edge limits (drive issue #147), probed the same
-  // way: the route fails closed without either, so a deploy that lost one is an
+  // The sign-in endpoint's two edge limits (drive issue #147) and the public
+  // upload-request pair (drive issue #208), probed the same way: each route
+  // fails closed without its bindings, so a deploy that lost one is an
   // outage, and a binding that is present but has no `limit` is as broken as a
   // missing one and gets the same name. The guard is written out rather than
   // trusting the REQUIRED_BINDINGS pass above, so a future edit that reorders
   // these checks cannot turn a missing binding into a TypeError.
-  for (const name of ["SIGNIN_RATE_LIMITER", "SIGNIN_GLOBAL_RATE_LIMITER"]) {
+  for (const name of [
+    "SIGNIN_RATE_LIMITER",
+    "SIGNIN_GLOBAL_RATE_LIMITER",
+    "REQUEST_UPLOAD_RATE_LIMITER",
+    "REQUEST_UPLOAD_LINK_RATE_LIMITER",
+  ]) {
     const bound = env[name];
     if (
       typeof bound !== "object" ||

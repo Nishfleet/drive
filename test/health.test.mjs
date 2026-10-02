@@ -170,6 +170,8 @@ const HEALTHY_ENV = () => ({
   // closed without either, so a healthy deploy is one with both bound.
   SIGNIN_RATE_LIMITER: fakeLimiter(),
   SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+  REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+  REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
 });
 
 const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
@@ -203,6 +205,8 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -220,6 +224,8 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -235,6 +241,8 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -249,6 +257,8 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -269,6 +279,8 @@ test("every bound D1 database is checked, not just the first", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -306,6 +318,8 @@ test("a binding that is not a database is never read as one", () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(
     d1Bindings(env).map((b) => b.name),
@@ -327,6 +341,8 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -347,6 +363,8 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -366,6 +384,8 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -403,6 +423,8 @@ test("the failing body is the name and nothing else", async () => {
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -459,7 +481,7 @@ test("an account route is not on the public allow-list", () => {
   // The point of an explicit list: the account routes stay off it, so a
   // future deny-by-default test reading this list cannot accidentally treat
   // one of them as public.
-  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage"]) {
+  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage", "/api/cap"]) {
     assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
   }
 });
@@ -490,6 +512,8 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -526,6 +550,8 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     WAITLIST_RATE_LIMITER: fakeLimiter(),
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -594,6 +620,8 @@ test("the health check never spends a real caller's rate limit quota", async () 
     },
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -622,6 +650,8 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     },
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
@@ -697,6 +727,8 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     },
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -723,6 +755,8 @@ test("a limiter that denies the probe is still healthy", async () => {
     },
     SIGNIN_RATE_LIMITER: fakeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
