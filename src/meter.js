@@ -126,7 +126,7 @@ export const MINUTE_MS = 60_000;
 // always bytes; this constant is only the divisor of the GB-minutes math.
 export const BYTES_PER_GB = 1e9;
 
-const HOUR_MS = 60 * MINUTE_MS;
+export const HOUR_MS = 60 * MINUTE_MS;
 
 /**
  * The start of the UTC hour an instant falls in. UTC on purpose: `hour` is a
@@ -698,6 +698,66 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
     );
   }
   return Object.freeze({ month: label, peakBytes });
+}
+
+// The Dodo push's as-of-this-hour read (drive issue #51): the month's
+// GB-minutes, peak, downloads and average stored size from the hour rows
+// that already exist, through the closed hour being pushed. This is a SUM
+// over stored rows, not a generate_series over missing hours, so a gap the
+// meter has not rolled yet is not invented as a $0 hour.
+export const MONTH_USAGE_THROUGH_SQL = `SELECT
+    COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
+    COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
+    COALESCE(SUM(download_bytes), 0) AS download_bytes,
+    COALESCE(AVG(stored_bytes), 0) AS average_stored_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+    AND hour <= ?3`;
+
+/**
+ * The month's usage as of one closed hour, for the Dodo push. The peak is
+ * still MAX(stored_bytes); the GB-minutes are SUM of the hours actually
+ * rolled through `through`, so the bill for hour N cannot see hour N+1.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number|Date|string} through the closed hour being billed
+ * @returns {Promise<{gbMinutes: number, peakBytes: number, downloadBytes: number, averageStoredGb: number}>}
+ */
+export async function monthUsageThrough(db, accountId, through) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`monthUsageThrough needs an account id, got ${String(accountId)}`);
+  }
+  const at = hourStart(through);
+  const row = await db.prepare(MONTH_USAGE_THROUGH_SQL).bind(accountId, at, at).first();
+  const gbMinutes = Number(row?.gb_minutes ?? 0);
+  const peakBytes = Number(row?.peak_bytes ?? 0);
+  const downloadBytes = Number(row?.download_bytes ?? 0);
+  const averageStoredBytes = Number(row?.average_stored_bytes ?? 0);
+  if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
+    throw new TypeError(`the month's gb_minutes must be 0 or more, got ${row?.gb_minutes}`);
+  }
+  if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
+    throw new TypeError(
+      `the month's peak_bytes must be 0 or more whole bytes, got ${row?.peak_bytes}`,
+    );
+  }
+  if (!Number.isSafeInteger(downloadBytes) || downloadBytes < 0) {
+    throw new TypeError(
+      `the month's download_bytes must be 0 or more whole bytes, got ${row?.download_bytes}`,
+    );
+  }
+  if (!Number.isFinite(averageStoredBytes) || averageStoredBytes < 0) {
+    throw new TypeError(
+      `the month's average stored bytes must be 0 or more, got ${row?.average_stored_bytes}`,
+    );
+  }
+  return Object.freeze({
+    gbMinutes,
+    peakBytes,
+    downloadBytes,
+    averageStoredGb: averageStoredBytes / BYTES_PER_GB,
+  });
 }
 
 /**

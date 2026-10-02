@@ -8,6 +8,7 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -19,6 +20,7 @@ import {
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
+  HOUR_MS,
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
@@ -504,7 +506,21 @@ export default {
     if (event.cron === METER_CRON) {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
-      await runMeterCron(env.METER_DB, event.scheduledTime);
+      const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      const hours = [];
+      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
+        hours.push(hour);
+      }
+      // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
+      // A missing key skips rather than failing the rollup; a failed ingest
+      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
+      // the unit tests can record the request without reaching the network.
+      const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch}} */ (env);
+      await pushBillingHours(env.METER_DB, hours, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        now: event.scheduledTime,
+      });
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
