@@ -85,14 +85,6 @@ test("AGENTS.md tells workers to use the local binary", () => {
     /\.\/node_modules\/\.bin\/promptfoo --version/,
     "workers read AGENTS.md first: the local binary is the version check",
   );
-  assert.doesNotMatch(
-    agents,
-    COLD_DOWNLOAD,
-    "AGENTS.md must not teach the cold-download command",
-  );
-  assert.doesNotMatch(
-    agents,
-    VERSION_PIN,
-    "AGENTS.md must not teach a promptfoo@version fetch",
-  );
+  assert.doesNotMatch(agents, COLD_DOWNLOAD, "AGENTS.md must not teach the cold-download command");
+  assert.doesNotMatch(agents, VERSION_PIN, "AGENTS.md must not teach a promptfoo@version fetch");
 });
