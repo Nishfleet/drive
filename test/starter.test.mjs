@@ -28,8 +28,72 @@ import {
   starterFiles,
 } from "../src/starter.js";
 
+/**
+ * An empty store: reads find nothing, so a create writes every file. The
+ * handler is exercised through the scoped store, the same object the Worker
+ * hands it, so the account prefix is the scope's work and not a prefix this
+ * test writes by hand.
+ * @param {Record<string, string>} [written] filled by a create, when a test
+ *   needs to see what landed
+ * @returns {import("../src/files.js").FileStore}
+ */
+function emptyStore(written = {}) {
+  return {
+    async list() {
+      return [];
+    },
+    async read(path) {
+      const body = written[path];
+      return body === undefined
+        ? null
+        : {
+            body: new Blob([body]).stream(),
+            contentType: "text/markdown; charset=utf-8",
+            size: body.length,
+          };
+    },
+    async write(path, body) {
+      const chunks = [];
+      for await (const chunk of /** @type {ReadableStream<Uint8Array>} */ (body)) {
+        chunks.push(Buffer.from(chunk));
+      }
+      written[path] = Buffer.concat(chunks).toString("utf8");
+    },
+    async remove() {},
+    async copy() {},
+    async listVersions() {
+      return [];
+    },
+  };
+}
+
 const page = readFileSync(new URL("../public/starter.html", import.meta.url), "utf8");
 const account = Object.freeze({ id: "acct-s", name: "Starter account" });
+
+/**
+ * A store that fails every call the starter makes, for the refusal and the
+ * failure paths. The reads throw, so a create answers the failure words and a
+ * GET's describe still works (it reads the list, not the drive).
+ * @param {string} [reason] the text the fake throws, so a test can prove the
+ *   cause never reaches the caller
+ * @returns {import("../src/files.js").FileStore}
+ */
+function failingStore(reason = "the storage backend refused the key") {
+  return {
+    async list() {
+      return [];
+    },
+    async read() {
+      throw new Error(reason);
+    },
+    async write() {},
+    async remove() {},
+    async copy() {},
+    async listVersions() {
+      return [];
+    },
+  };
+}
 
 // ------------------------------------------------------------------ template
 
@@ -50,7 +114,6 @@ test("the starter writes four files and only missing ones on re-run, in the acco
    * scope, so the account prefix is scopeStore's work and not a prefix this
    * test writes by hand: the assertion below is on the real storage keys one
    * account's files land under, and a second account sees none of them.
-   * @type {Record<string, string>}
    */
   const backing = createMemoryStore();
   const store = scopeStore(backing, account);
@@ -152,17 +215,7 @@ test("the handler answers 503 without a store", async () => {
 
 test("GET describes the template and writes nothing", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore(
-    {
-      read: () => null,
-      write: async () => {},
-      remove: async () => {},
-      list: async () => [],
-      listVersions: async () => {},
-      copy: async () => {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`),
     store,
@@ -183,25 +236,8 @@ test("POST with action=create fills missing files only", async () => {
   const { scopeStore } = await import("../src/files.js");
   /** @type {Record<string, string>} */
   const written = {};
-  const store = scopeStore(
-    {
-      async read(path) {
-        return written[path] ?? null;
-      },
-      async write(path, _body) {
-        written[path] = "written";
-      },
-      async remove() {},
-      async list() {
-        return [];
-      },
-      async listVersions() {
-        return [];
-      },
-      async copy() {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(written), account);
+  /** @param {unknown} body */
   const post = (body) =>
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -224,17 +260,7 @@ test("POST with action=create fills missing files only", async () => {
 
 test("POST with the wrong action refuses", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore(
-    {
-      read: () => null,
-      write: async () => {},
-      remove: async () => {},
-      list: async () => [],
-      listVersions: async () => {},
-      copy: async () => {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -249,17 +275,7 @@ test("POST with the wrong action refuses", async () => {
 
 test("POST with invalid JSON refuses", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore(
-    {
-      read: () => null,
-      write: async () => {},
-      remove: async () => {},
-      list: async () => [],
-      listVersions: async () => {},
-      copy: async () => {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -274,17 +290,7 @@ test("POST with invalid JSON refuses", async () => {
 
 test("the handler refuses unknown methods", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore(
-    {
-      read: () => null,
-      write: async () => {},
-      remove: async () => {},
-      list: async () => [],
-      listVersions: async () => {},
-      copy: async () => {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(), account);
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, { method: "PATCH" }),
     store,
@@ -327,25 +333,7 @@ test("the endpoint answers a create with the copy the page shows, and no second 
   const { scopeStore } = await import("../src/files.js");
   /** @type {Record<string, string>} */
   const written = {};
-  const store = scopeStore(
-    {
-      async read(path) {
-        return written[path] ?? null;
-      },
-      async write(path) {
-        written[path] = "written";
-      },
-      async remove() {},
-      async list() {
-        return [];
-      },
-      async listVersions() {
-        return [];
-      },
-      async copy() {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(written), account);
   const create = () =>
     handleStarterRequest(
       new Request(`https://drive.test${STARTER_ENDPOINT}`, {
@@ -367,20 +355,7 @@ test("the endpoint answers a create with the copy the page shows, and no second 
   // A store that fails answers the table's fallback pair and puts nothing of
   // the cause in the reply: a message never carries raw error text.
   const broken = scopeStore(
-    {
-      async read() {
-        throw new Error("the storage backend at internal-host-3 refused the key");
-      },
-      async write() {},
-      async remove() {},
-      async list() {
-        return [];
-      },
-      async listVersions() {
-        return [];
-      },
-      async copy() {},
-    },
+    failingStore("the storage backend at internal-host-3 refused the key"),
     account,
   );
   const failed = await handleStarterRequest(
@@ -401,17 +376,7 @@ test("the endpoint answers a create with the copy the page shows, and no second 
 
 test("the handler's refusals are the message table's, never a second copy", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore(
-    {
-      read: async () => null,
-      write: async () => {},
-      remove: async () => {},
-      list: async () => [],
-      listVersions: async () => [],
-      copy: async () => {},
-    },
-    account,
-  );
+  const store = scopeStore(emptyStore(), account);
   const post = (/** @type {string} */ body) =>
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",

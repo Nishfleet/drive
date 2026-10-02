@@ -24,7 +24,7 @@
 // moves this page and the pricing page together.
 import { agentCannotDeleteSentence } from "./docs.js";
 import { validatePath } from "./files.js";
-import { failureMessage } from "./messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 
 // The page itself is public/starter.html, served by the asset layer's HTML
 // handling (/starter serves /starter.html, the same way /get-started serves
@@ -155,9 +155,13 @@ export const STARTER_COPY = Object.freeze({
     what: "Nothing was missing, so nothing changed.",
     next: "The starter is already in your drive.",
   }),
+  // A store failure, and nothing else, is what the failed pair is for. The
+  // `next` is the table's own retry advice read from the entry, not from the
+  // joined sentence: a wording change in src/messages.js can then never turn
+  // the next step into half a sentence.
   failed: Object.freeze({
     what: "The starter could not be written.",
-    next: failureMessage("unexpected").split(" ").slice(1).join(" "),
+    next: FAILURE_MESSAGES.unexpected.next,
   }),
   // The list the page shows before the button, one line per file, so a person
   // can see what they are agreeing to.
@@ -177,7 +181,8 @@ export function readStarterRequest(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { error: failureMessage("json-object-needed") };
   }
-  if (body.action !== STARTER_ACTION) {
+  const action = /** @type {{action?: unknown}} */ (body).action;
+  if (action !== STARTER_ACTION) {
     return { error: failureMessage("starter-create-action") };
   }
   return { action: STARTER_ACTION };
@@ -239,6 +244,18 @@ function json(body, status = 200) {
 }
 
 /**
+ * The one answer for a failure inside this handler, whatever threw: the failed
+ * pair's own words and nothing of the cause, so a validation throw from
+ * starterFiles() on the GET reaches the page as the same words a store
+ * failure does, and never as Hono's onError with a stack in it. A message
+ * never carries raw error text (the safety rules in src/messages.js).
+ * @returns {Response}
+ */
+function failed() {
+  return json({ error: STARTER_COPY.failed.what, next: STARTER_COPY.failed.next }, 500);
+}
+
+/**
  * The starter's one route. A GET describes the template and writes nothing,
  * which is what makes the starter off by default: there is no path here that
  * creates it without a POST carrying `action: "create"`, and no caller in this
@@ -252,7 +269,7 @@ function json(body, status = 200) {
  *
  * @param {Request} request
  * @param {import("./files.js").FileStore|null} store
- * @param {{id: string, name?: string}|null} account
+ * @param {{id: string}|null} account
  * @returns {Promise<Response>}
  */
 export async function handleStarterRequest(request, store, account) {
@@ -268,8 +285,16 @@ export async function handleStarterRequest(request, store, account) {
 
   if (request.method === "GET") {
     // Describe only. The starter is off by default, so reading what it would
-    // write must not write it.
-    const files = starterFiles().map((file) => file.path);
+    // write must not write it. The describe is inside its own try because
+    // starterFiles() re-validates every path on every call, and a path that
+    // ever failed that check must answer the failure words rather than throw
+    // out of the handler.
+    let files;
+    try {
+      files = starterFiles().map((file) => file.path);
+    } catch {
+      return failed();
+    }
     return json({
       ok: true,
       action: STARTER_ACTION,
@@ -290,7 +315,7 @@ export async function handleStarterRequest(request, store, account) {
     return json({ error: failureMessage("json-object-needed") }, 400);
   }
   const read = readStarterRequest(body);
-  if (read.error) {
+  if ("error" in read) {
     return json({ error: read.error }, 400);
   }
 
@@ -299,17 +324,10 @@ export async function handleStarterRequest(request, store, account) {
     result = await createStarter(store);
   } catch {
     // A store failure is not a success and is not half reported: the route
-    // answers the table's failure words and puts nothing of the cause in the
-    // reply — a message never carries raw error text (the safety rules in
-    // src/messages.js), and a store's own exception text can name infra the
-    // customer never needs to see. A retry self-heals what was written.
-    return json(
-      {
-        error: STARTER_COPY.failed.what,
-        next: STARTER_COPY.failed.next,
-      },
-      500,
-    );
+    // answers the failure words and puts nothing of the cause in the reply. A
+    // retry self-heals what was written, because every file already on the
+    // drive is found by the read check and kept.
+    return failed();
   }
 
   const state =

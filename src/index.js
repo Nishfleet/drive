@@ -366,12 +366,14 @@ export function createApp() {
   // together: nothing in the Worker calls the create for a person, and the
   // only route that runs it is a POST behind the account gate.
   /** @param {DriveContext} c */
-  const starterHandler = (c) =>
-    handleStarterRequest(
+  const starterHandler = (c) => {
+    const account = c.get("account");
+    return handleStarterRequest(
       c.req.raw,
-      c.get("account") ? scopeStore(storeFor(c.env), c.get("account")) : null,
-      c.get("account"),
+      account ? scopeStore(storeFor(c.env), account) : null,
+      account,
     );
+  };
   app.get(STARTER_ENDPOINT, starterHandler);
   app.post(STARTER_ENDPOINT, starterHandler);
 
