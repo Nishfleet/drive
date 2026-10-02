@@ -1,0 +1,94 @@
+# GoReleaser config for the drive CLI (drive#105: one command installs the
+# CLI and rclone together).
+#
+# Stock release tooling, no hand-written install script: the .deb and .rpm
+# declare `Depends: rclone`, and the Homebrew formula in the tap declares a
+# `rclone` dependency, so the package manager installs both in one command.
+# A v* tag triggers it through a release workflow; that workflow file is a
+# follow-up (fleet-ops#105 blocks a worker token from adding a file under
+# .github/workflows, so the coordinator adds it). The two consumer commands are
+# in docs-site/quickstart.md, and both were run against the packages below.
+#
+# What was searched before choosing this: rclone's own install docs
+# (https://rclone.org/install/), the GoReleaser docs
+# (https://goreleaser.com/customization/nfpm/, .../homebrew_formulas/) and
+# Homebrew's formula-cookbook docs. Every one of those puts a single
+# `brew install <tap>/<formula>`, `apt install ./x.deb` or `dnf install x.rpm`
+# in front of a user, with the dependency resolved by the package manager, so
+# no install script is written and none is needed.
+version: 2
+
+project_name: drive
+
+builds:
+  - id: drive
+    main: ./cmd/drive
+    binary: drive
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: drive
+    ids: [drive]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# The Linux packages. `dependencies: [rclone]` is the whole of the one-command
+# promise on Linux: `apt install ./drive_x.deb` (or `dnf install ./drive_x.rpm`)
+# reaches back to the archive and installs rclone, the version `drive init`
+# then checks, in the same command (drive#105).
+nfpms:
+  - id: drive
+    package_name: drive
+    ids: [drive]
+    vendor: Nishfleet
+    homepage: https://drive-pricing.nishant345.workers.dev
+    maintainer: Nishfleet <support@nishant345.workers.dev>
+    description: A Finder drive for people and their agents, mounted with stock rclone.
+    license: Proprietary
+    formats: [deb, rpm]
+    dependencies:
+      - rclone
+    bindir: /usr/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/drive/README.md
+
+# The macOS formula. GoReleaser pushes it to the tap on each release, and
+# `brew install nishfleet/tap/drive` resolves the `rclone` dependency the same
+# way apt does on Linux. The tap repository does not exist yet: creating a
+# public repo is Nish's, so a release before that publishes the .deb/.rpm and
+# archive and fails only this publish step.
+brews:
+  - name: drive
+    ids: [drive]
+    repository:
+      owner: Nishfleet
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://drive-pricing.nishant345.workers.dev
+    description: A Finder drive for people and their agents, mounted with stock rclone.
+    license: Proprietary
+    dependencies:
+      - name: rclone
+    install: |
+      bin.install "drive"
+    test: |
+      system "#{bin}/drive version"
+
+changelog:
+  use: git
