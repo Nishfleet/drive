@@ -85,6 +85,7 @@ const SAVE_BUDGET_MS = Number(process.env.DRIVE_DEMO_SAVE_BUDGET_MS ?? 60_000);
 // has all four tools, so a gate that lives only in the demo would pin the
 // numbers on machines that can run them and never on machines that can only
 // read them: this map is what publishes the budget everywhere.
+/** @type {Record<string, number>} */
 const ROW_BUDGETS_MS = {
   "video-first-frame": VIDEO_BUDGET_MS,
   "blend-save": SAVE_BUDGET_MS,
@@ -122,7 +123,7 @@ function runs(bin) {
   return canRun(bin, ["version"]);
 }
 
-/** @param {number} ms */
+/** @param {number} n */
 const ms = (n) => Math.round(n);
 
 /**
@@ -314,7 +315,6 @@ async function startDrive(workDir, cfg) {
  * page's agent card reads from what a hand-run session recorded in
  * docs/demos.md, never from a simulated one. The skip says so in its message.
  *
- * @param {string} workDir
  * @param {string} mountDir
  * @param {import("node:test").TestContext} t
  * @returns {Promise<Measurement | null>}
@@ -809,6 +809,7 @@ async function proof(t, workDir) {
  */
 function recordedDemos() {
   const text = readFileSync(DEMOS_DOC, "utf8");
+  /** @type {Record<string, {ms: number, seconds: string}>} */
   const rows = {};
   for (const [, name, figure] of text.matchAll(/^\| `(\S+)` \|.*?\|\s*([\d.]+) s \|$/gm)) {
     rows[name] = { ms: Number(figure) * 1000, seconds: figure };
