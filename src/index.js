@@ -20,7 +20,7 @@ import {
   withIndex,
 } from "./search.js";
 import {
-  createMemoryLinkStore,
+  createD1LinkStore,
   handleRequestInfoRequest,
   handleRequestRequest,
   handleRequestUploadRequest,
@@ -81,19 +81,23 @@ function storeFor(env) {
   return filesStore;
 }
 
-// One link store per Worker isolate, the same stand-in shape storeFor() uses
-// for files: the in-memory LinkStore stands in until the accounts store lands
-// (#55), where the shares and upload_requests rows move to D1 behind the same
-// interface (src/share.js). Sharing the FileStore above is what makes a file
-// dropped through an upload page appear on the owner's drive at its next
-// listing.
-/** @type {import("./share.js").LinkStore|undefined} */
-let linksStore;
-function linksFor() {
-  if (!linksStore) {
-    linksStore = createMemoryLinkStore();
-  }
-  return linksStore;
+// One link store over the customer database, built per request from the
+// binding rather than cached on the isolate: a link and an upload request are
+// rows in DRIVE_DB (src/share.js createD1LinkStore,
+// migrations/drive/0006_share_links.sql), so a link minted on one Worker
+// instance resolves on the next one and a deploy does not take every link with
+// it (issue #207). It used to be a pair of Maps held per isolate, which is
+// exactly the bug. The store is a thin object over the binding, so there is
+// nothing to hold on to and no stale copy to serve — which is the same shape
+// storeFor() has for files. The binding is required: a deployment without
+// DRIVE_DB has no way to stand behind a link and is already failing the health
+// check's required-bindings list (src/health.js).
+/**
+ * @param {Env} env
+ * @returns {import("./share.js").LinkStore}
+ */
+function linksFor(env) {
+  return createD1LinkStore(env.DRIVE_DB);
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
@@ -260,28 +264,28 @@ export default {
       return handleShareRequest(
         request,
         storeFor(env),
-        linksFor(),
+        linksFor(env),
         await signedInAccount(request, authFor(env)),
       );
     }
     if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
-      return handleShareFileRequest(request, storeFor(env), linksFor());
+      return handleShareFileRequest(request, storeFor(env), linksFor(env));
     }
     if (url.pathname === REQUEST_ENDPOINT || url.pathname === `${REQUEST_ENDPOINT}/`) {
       return handleRequestRequest(
         request,
         storeFor(env),
-        linksFor(),
+        linksFor(env),
         await signedInAccount(request, authFor(env)),
       );
     }
     // The two public request routes are matched after the owner's /api/request
     // root so the exact root is never mistaken for its own child.
     if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
-      return handleRequestInfoRequest(request, linksFor(), capStateFor);
+      return handleRequestInfoRequest(request, linksFor(env), capStateFor);
     }
     if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
-      return handleRequestUploadRequest(request, storeFor(env), linksFor(), capStateFor);
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(env), capStateFor);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
