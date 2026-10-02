@@ -84,6 +84,12 @@ func (c *rcClient) call(ctx context.Context, method string, params map[string]st
 	// "error" field, and a non-zero exit with no JSON is a real failure, so a
 	// missing method or a dead address is reported, never swallowed into an
 	// empty stats block the fill would read as "no bytes cached".
+	// exec.Command takes an argument vector and runs no shell, so a
+	// remote or stored value cannot inject anything at this call site:
+	// binary is the rclone path ResolveRclone resolved to an absolute
+	// path before the mount started, and args is built here from the
+	// method name and the loop's own constants.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, c.binary, args...)
 	cmd.Stderr = nil
 	b, err := cmd.Output()
