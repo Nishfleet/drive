@@ -628,6 +628,9 @@ func (h *hillStandin) remount(t *testing.T, pairs [][]string) {
 	cmd.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		// The climb measures VFS flags. Prefetch is a separate login item
+		// (issue #227) and would list and warm files during the timed runs.
+		"DRIVE_PREFETCH=0",
 	)
 	if len(pairs) > 0 {
 		env, err := flagPairsEnv(pairs)
