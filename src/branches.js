@@ -668,7 +668,7 @@ export async function createBranch(db, store, account, request, now = () => Date
  * from branch time. Closed branches report zero; they need no store walk.
  *
  * One row per name, and it is the row every name-scoped read resolves to: the
- * open branch if there is one, else the newest closed row. 0011 lets a name be
+ * open branch if there is one, else the newest closed row. 0012 lets a name be
  * closed more than once, so without that rule the list would hold one line
  * per generation — the same name, the same state, the same count — and the
  * rewind list and `drive branches` would grow a dead line for every approve

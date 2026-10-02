@@ -18,8 +18,9 @@
 -- file has left behind. D1 has no down-migrations: this file is one-way.
 --
 -- 0004 added changed_by_key_id; this file runs after it, so the copy includes
--- that column. Numbered 0011 because main already shipped 0010_accounts_devices
--- (the cap key store), so the branch upgrade takes the next free number.
+-- that column. Numbered 0012 because origin/main already shipped
+-- 0010_accounts_devices and 0011_rate_limit, so the branch upgrade takes the
+-- next free number.
 
 CREATE TABLE branches_by_id (
   id INTEGER PRIMARY KEY,

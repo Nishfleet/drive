@@ -47,7 +47,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
-    "drive/0011_branch_row_id.sql",
+    "drive/0012_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -788,7 +788,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
 
 test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
   // 0003 as shipped (and as production drive-data has it) keys the table on
-  // (account_id, name, state). 0011 copies the rows into a table keyed by id.
+  // (account_id, name, state). 0012 copies the rows into a table keyed by id.
   // Apply that upgrade against a real old-schema row, then prove two approved
   // rows of one name are legal and the copied row is still there.
   const sqlite = new DatabaseSync(":memory:");
@@ -804,7 +804,7 @@ test("the branches table keys each branch by its own id, so a name can be closed
     )
     .run();
   apply("drive/0004_agent_undo.sql");
-  apply("drive/0011_branch_row_id.sql");
+  apply("drive/0012_branch_row_id.sql");
   const columns = /** @type {{name: string, pk: number}[]} */ (
     /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
   );
@@ -1065,7 +1065,7 @@ test("a create that loses the open-name race is refused before it touches the pr
 });
 
 test("the list carries one row per name: the newest generation", async () => {
-  // 0011 lets a name be closed more than once, so the table can hold several
+  // 0012 lets a name be closed more than once, so the table can hold several
   // rows for one name. The list is what `drive branches` prints, one line per
   // row, so the older generations must not come along: a name retried three
   // times would show three lines with the same name, state and count, and the

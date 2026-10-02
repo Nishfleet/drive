@@ -1,0 +1,20 @@
+-- Better Auth's rate-limit counters, on the customer database (drive issue
+-- #200). Numbered 0011 because 0006 is already share links (#213) on
+-- origin/main. Pointing `rateLimit.storage` at "database" in src/auth.js makes
+-- every Worker instance read and write this one table, so a per-IP ceiling
+-- is shared across isolates instead of reset when a caller lands on a fresh
+-- one. The statements below are exactly what Better Auth's own
+-- `getMigrations()` compiles for that option, and test/auth.test.mjs re-runs
+-- that generator and fails when this file drifts — so a library upgrade that
+-- changes the schema fails here rather than at the first rate-limited sign-in.
+--
+-- Purely additive, so a rollback of the code leaves the table in place and
+-- the previous Worker version is untouched by it (drive's D1 rule: code
+-- rolls back, data does not).
+--
+-- Rows do not need a cleanup job of their own: the library deletes rows whose
+-- lastRequest is past the longest window it has seen, inside the same increment
+-- that resets a window (createDatabaseStorageWrapper's deleteExpiredRows, read
+-- at this commit), so the table holds one row per live key and not one per
+-- address ever seen.
+create table "rateLimit" ("id" text not null primary key, "key" text not null unique, "count" integer not null, "lastRequest" bigint not null);
