@@ -18,6 +18,7 @@ minute with the bill cut off at a ceiling.
   worked sizes.
 - [FAQ](/faq) — the questions we can answer with a measured number.
 - [Limits](/limits) — what version 1 does not do, in plain words.
+- [Benchmarks](/benchmarks) — measured speed, including where we lose.
 - [Security](/security) — who can see your files, and what we cannot claim.
 - [Changelog](/changelog) — one line per shipped thing.
 

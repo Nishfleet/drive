@@ -32,6 +32,7 @@ Usage:
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount and delete this device's key and config
+  drive export [flags]     write this account's data to a file (or stdout)
   drive version            print the version
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
@@ -61,6 +62,9 @@ Link flags (share, request):
   --api         api Worker base URL (env DRIVE_API_URL)
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
+
+Export flags:
+  --out   file to write the export to; stdout when it is not given
 
 The device keys are read from the environment, never a flag, so they stay out
 of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
@@ -105,6 +109,10 @@ func main() {
 		err = runRequest(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
+	case "export":
+		err = runExport(os.Args[2:])
+	case "prefetch":
+		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":

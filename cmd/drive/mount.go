@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -39,6 +40,15 @@ type MountPlan struct {
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
 // for rclone's mount and nfsmount commands describe each one.
+//
+// The tunable values (read-ahead, chunk size, chunk streams, buffer size,
+// transfers) may be overridden by a DRIVE_BENCH_<FLAG> environment variable
+// (e.g. DRIVE_BENCH_VFS_READ_AHEAD=0). That is the speed hill-climb's (issue
+// #224) only handle on the value: the product mounts with the constants
+// above, the climb measures a candidate by setting the one variable for the
+// round, and a person's real mount never sets it. The four safety values are
+// NOT overridable, and TestVFSArgsPinsTheSafetyFlags fails if anything
+// changes them.
 func VFSArgs() []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
@@ -50,9 +60,51 @@ func VFSArgs() []string {
 		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
 		// flag, still absent after 60 s without.
 		"--dir-cache-time", vfsDirCacheTimeValue,
-		"--vfs-read-chunk-streams", "2",
-		"--buffer-size", vfsChunkStreamSize,
+		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
+		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
+		"--buffer-size", tunedVFSValue("BUFFER_SIZE", vfsChunkStreamSize),
+		"--transfers", tunedVFSValue("TRANSFERS", vfsTransfersValue),
+		// --vfs-read-ahead is the stock flag that covers "the first chunk of a
+		// file already being read" with --vfs-cache-mode full. It does not
+		// prefetch child listings when a folder is listed; that has no flag
+		// (rclone's --vfs-refresh walks the whole tree at mount start, which
+		// is the wrong trigger and delays mount-ready), so drive prefetch
+		// does only that leftover work. A round may retune the value through
+		// DRIVE_BENCH_VFS_READ_AHEAD; a person's real mount never sets it.
+		"--vfs-read-ahead", tunedVFSValue("VFS_READ_AHEAD", vfsReadAheadValue),
+		// Background fill (issue #194): the rest of a file arrives without a
+		// foreground read asking for it. The two flags below are the fill's
+		// own and each one's reason is in fill.go:
+		// --vfs-read-chunk-size-limit caps rclone's own chunk doubling, so
+		// the tail of a partly-read 10 GB file arrives in a few large
+		// requests instead of the 128M chunks the doubling would otherwise
+		// start from; --vfs-cache-max-age is how long a file somebody opened
+		// stays on the disk, which is what "recently opened files" means
+		// without a second index.
+		"--vfs-read-chunk-size-limit", vfsChunkSizeLimit(),
+		"--vfs-cache-max-age", vfsMaxAge(),
+		// The remote control is how the background fill reads the cache's
+		// live state and refreshes the directory (fill_run.go), and how
+		// `drive status` reports the cache. rclone's remote control is
+		// unauthenticated by design, so it binds to loopback only: 127.0.0.1,
+		// never :5572 on every interface.
+		"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth",
 	}
+}
+
+// tunedVFSValue returns the shipped value for a tunable flag unless the hill
+// climb has set its DRIVE_BENCH_<flag> variable, in which case the override is
+// used. A set-but-empty variable is ignored and the shipped value is used, so
+// a blank round cannot pass rclone an empty flag. Non-empty values are the
+// climb's candidates; flagPairsEnv refuses one that is not a size or a count.
+func tunedVFSValue(envSuffix, shipped string) string {
+	if v, ok := os.LookupEnv("DRIVE_BENCH_" + envSuffix); ok {
+		if strings.TrimSpace(v) == "" {
+			return shipped
+		}
+		return v
+	}
+	return shipped
 }
 
 // RemoteFor joins the bucket and optional key prefix into an rclone remote
@@ -73,15 +125,15 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		sub = "nfsmount"
 	}
 	return MountPlan{
-		GOOS:       goos,
-		RcloneBin:  rcloneBin,
-		Subcommand: sub,
-		Remote:     RemoteFor(c),
-		MountDir:   DefaultMountDir(home),
-		ConfigPath: RcloneConfigPath(home),
-		CacheDir:   DefaultCacheDir(home),
-		LogPath:    filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:    VFSArgs(),
+		GOOS:        goos,
+		RcloneBin:   rcloneBin,
+		Subcommand:  sub,
+		Remote:      RemoteFor(c),
+		MountDir:    DefaultMountDir(home),
+		ConfigPath:  RcloneConfigPath(home),
+		CacheDir:    DefaultCacheDir(home),
+		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
+		VFSArgs:     VFSArgs(),
 		DownloadURL: c.DownloadURL,
 	}
 }
@@ -220,9 +272,16 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	itemPath := LoginItemPath(goos, home)
 	// The mount dir is created only once the plan is real: --dry-run writes
 	// nothing at all, and prints the config with both keys redacted.
+	driveBin, exeErr := os.Executable()
+	if exeErr != nil {
+		return fmt.Errorf("resolve drive binary: %w", exeErr)
+	}
+	prefetchItem := []byte(PrefetchLoginItem(goos, driveBin, home))
+	prefetchPath := PrefetchLoginItemPath(goos, home)
 	if dryRun {
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- %s ---\n%s", itemPath, item)
+		fmt.Printf("--- %s ---\n%s", prefetchPath, prefetchItem)
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
 	}
@@ -236,8 +295,11 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := WriteFileAtomic(itemPath, item, 0o644); err != nil {
 		return err
 	}
+	if err := WriteFileAtomic(prefetchPath, prefetchItem, 0o644); err != nil {
+		return err
+	}
 	if foreground {
-		return mountForeground(p)
+		return mountForeground(p, home)
 	}
 	if goos == "darwin" {
 		if err := bootstrapLaunchd(itemPath); err != nil {
@@ -260,6 +322,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := waitMounted(goos, home); err != nil {
 		return err
 	}
+	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
+		return fmt.Errorf("start prefetch: %w", err)
+	}
 	fmt.Printf("Mounted at %s\n", p.MountDir)
 	return nil
 }
@@ -268,7 +333,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 // resolved by ResolveRclone before the call, never from anything remote, and
 // exec.Command takes an argument vector and runs no shell, so no remote or
 // stored value can inject anything at this call site.
-func mountForeground(p MountPlan) error {
+func mountForeground(p MountPlan, home string) error {
 	rclonePath, err := exec.LookPath(p.RcloneBin)
 	if err != nil {
 		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
@@ -282,6 +347,29 @@ func mountForeground(p MountPlan) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("rclone mount: %w", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if prefetchEnabled() {
+		go runPrefetchLoop(ctx, p.MountDir)
+	}
+	// The background fill (issue #194) runs in this process for as long as the
+	// mount does. It reaches the same rclone over the remote control the mount
+	// already binds, so there is no second daemon, no listener of our own and
+	// no file the fill keeps anywhere but rclone's capped VFS cache. It is
+	// started after rclone is up and stopped with the mount, and every pass it
+	// reports goes to the mount's log, so a fill problem is a named failure a
+	// person can read rather than a silent no-op.
+	fillCtx, cancelFill := context.WithCancel(context.Background())
+	go func() {
+		// rclone's own remote control is not listening for the first moments
+		// of the mount, so the loop's first pass waits for the mount to appear
+		// (the same proof `drive mount` already makes) instead of racing it.
+		_, _ = Mounted(p.GOOS, home)
+		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
+		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
+			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
+		}
+	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -302,9 +390,11 @@ func mountForeground(p MountPlan) error {
 		}
 	}()
 	runErr := cmd.Wait()
+	cancel()
 	signal.Stop(stop)
 	close(quit)
 	<-joined
+	cancelFill()
 	if runErr != nil {
 		return fmt.Errorf("rclone mount: %w", runErr)
 	}
@@ -357,52 +447,57 @@ func mountSystemctlActions() []string {
 // is already loaded errors), so a loaded item is booted out first, then the
 // item is bootstrapped into gui/<uid>, the session the person is logged into.
 func bootstrapLaunchd(itemPath string) error {
+	return bootstrapLaunchdLabel(LaunchdLabel, itemPath)
+}
+
+func bootstrapLaunchdLabel(label, itemPath string) error {
 	target := launchctlTarget()
-	if launchctlLoaded(target) {
-		if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+	if launchctlLoadedLabel(target, label) {
+		if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootout", target, itemPath)...).CombinedOutput(); err != nil {
 			return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 		}
 	}
-	if out, err := exec.Command("launchctl", launchctlArgv("bootstrap", target, itemPath)...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootstrap", target, itemPath)...).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap %s %s: %w: %s", target, itemPath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// bootoutLaunchd stops the login item with the current launchctl verb. An item
-// that is not loaded is already stopped, so bootout does not run.
 func bootoutLaunchd(itemPath string) error {
+	return bootoutLaunchdLabel(LaunchdLabel, itemPath)
+}
+
+func bootoutLaunchdLabel(label, itemPath string) error {
 	target := launchctlTarget()
-	if !launchctlLoaded(target) {
+	if !launchctlLoadedLabel(target, label) {
 		return nil
 	}
-	if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootout", target, itemPath)...).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// launchctlTarget is the launchd domain a login item lives in: gui/<uid>, the
-// session the person is logged into.
 func launchctlTarget() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
 
-// launchctlLoaded asks launchd whether the service is loaded. `launchctl
-// print` exits non-zero when it is not, which is exactly the question; the
-// answer only decides whether a bootout runs, so nothing else is read from it.
 func launchctlLoaded(target string) bool {
-	return exec.Command("launchctl", launchctlArgv("print", target, "")...).Run() == nil
+	return launchctlLoadedLabel(target, LaunchdLabel)
 }
 
-// launchctlArgv is the launchctl command line for one action, kept separate so
-// the deprecated load/unload verbs cannot creep back in unnoticed. print and
-// bootout address the service by domain/label; bootstrap takes the domain and
-// then the plist to load.
+func launchctlLoadedLabel(target, label string) bool {
+	return exec.Command("launchctl", launchctlArgvLabel(label, "print", target, "")...).Run() == nil
+}
+
 func launchctlArgv(action, target, itemPath string) []string {
+	return launchctlArgvLabel(LaunchdLabel, action, target, itemPath)
+}
+
+func launchctlArgvLabel(label, action, target, itemPath string) []string {
 	switch action {
 	case "print":
-		return []string{"print", target + "/" + LaunchdLabel}
+		return []string{"print", target + "/" + label}
 	case "bootout":
-		return []string{"bootout", target + "/" + LaunchdLabel}
+		return []string{"bootout", target + "/" + label}
 	case "bootstrap":
 		return []string{"bootstrap", target, itemPath}
 	}
@@ -420,6 +515,9 @@ func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {
 	return Mount(goos, home, rcloneBin, c, false, false)
 }
 func Unmount(goos, home string) error {
+	if err := stopPrefetchLoginItem(goos, home); err != nil {
+		return err
+	}
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
