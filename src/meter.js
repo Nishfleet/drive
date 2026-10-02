@@ -7,7 +7,13 @@
 // which are plain data too: `scopeStore` applies the account prefix to the
 // listing and refuses a version from outside it, and `accountPrefix` builds
 // the storage key the event intake stores, so a row this reconciler inserts
-// and a row an event inserted are one shape (drive issue #59).
+// and a row an event inserted are one shape (drive issue #59). The key
+// decoder is the api Worker's one notification-key reader
+// (workers/api/src/event-routes.js): the bucket's own event and the api
+// Worker's own event route are the same bytes, and reading them two ways is
+// how a key that names an account stops naming one. It is a pure function of
+// a string, so it pulls no Worker-only code into this module.
+import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 //
 // Three jobs, in the order the issue lists them:
@@ -888,6 +894,137 @@ class EventBodyTooLargeError extends Error {
 }
 
 /**
+ * The fields a storage notification record is recognised by. Holding one of
+ * these is what separates a record the meter can bill from any stray bytes:
+ * every mapping below reads a sizing or version field, and a body holding none
+ * of them cannot become a version row at all.
+ */
+const NOTIFICATION_RECORD_MARKERS = Object.freeze(["eventName", "b2FileId", "path", "keyName"]);
+
+/**
+ * Whether a body holds any field a storage notification record is recognised
+ * by. One record the bucket bubbles carries one of them; an object that holds
+ * none is not a record, and the intake passes it to `validateEvent` unchanged
+ * so the per-event error names what is actually missing there - which is how
+ * one malformed record in a batch stays that record's problem and does not
+ * fail the good records beside it.
+ * @param {unknown} body
+ */
+export function looksLikeNotificationRecord(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return false;
+  }
+  const record = /** @type {Record<string, unknown>} */ (body);
+  return NOTIFICATION_RECORD_MARKERS.some((marker) => record[marker] !== undefined);
+}
+
+/**
+ * One storage notification record, in the shape `validateEvent` takes.
+ *
+ * The record is what S3 puts inside a notification's `Records` array, and
+ * what the bucket delivers on its own when its rule is pointed straight at a
+ * record endpoint: the payload is the same object, only the wrapper is
+ * missing (measured 2026-10-02 against the pinned stand-in, where MinIO's
+ * webhook bubbles the record itself). One mapping serves both.
+ *
+ * The provider's own field names are read here rather than trusted: `key`,
+ * `keyName` or `s3.object.key` is the key, `size` or `s3.object.size` is the
+ * size, `versionId` or `s3.object.versionId` is the version, `eventTime` is
+ * the instant, and `eventName` decides whether the record is a write or a
+ * delete. A record holding none of the identifying fields is refused, so
+ * malformed JSON stays a 400 and nothing here guesses at a shape.
+ * @param {unknown} input
+ * @returns {Record<string, unknown>}
+ */
+export function notificationRecord(input) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new TypeError("a storage notification record must be a JSON object");
+  }
+  const event = /** @type {Record<string, unknown>} */ (input);
+  if (NOTIFICATION_RECORD_MARKERS.every((marker) => event[marker] === undefined)) {
+    throw new TypeError("this body is not a storage notification record");
+  }
+  const nested = /** @type {{s3?: {object?: Record<string, unknown>}}} */ (event).s3;
+  const object = typeof nested === "object" && nested !== null ? nested.object : undefined;
+  const record = { ...event };
+  delete record.Records;
+  // The key, under whichever of the three names the provider uses. A real
+  // `path` wins: it is the file's own path, and the key is the fallback. The
+  // key is decoded because an S3 notification form-encodes it, so
+  // `u%2Facct%2Fnotes.md` is the account folder `u/acct/` and the account
+  // check below is about accounts, not about escaping.
+  const key = event.keyName ?? event.key ?? object?.key;
+  if (typeof event.keyName !== "string" && typeof key === "string" && key !== "") {
+    record.keyName = decodeNotificationKey(key);
+  }
+  // The version the provider created, which the dedup and the row key on.
+  const version = event.b2FileId ?? event.versionId ?? object?.versionId;
+  if (typeof event.b2FileId !== "string" && typeof version === "string" && version !== "") {
+    record.b2FileId = version;
+  }
+  // A size the event names, under whichever name it uses. A string is left as
+  // it is: the intake already takes a decimal string.
+  if (record.sizeBytes === undefined && event.sizeBytes === undefined) {
+    if (event.size !== undefined) {
+      record.sizeBytes = event.size;
+    } else if (object?.size !== undefined) {
+      record.sizeBytes = object.size;
+    }
+  }
+  // The instant the provider saw the change. A notification records when the
+  // write happened and nothing else, so for a create it IS the version's
+  // creation instant: validateEvent refuses a create with no creation time
+  // rather than bill from the arrival instant, and this is where that time
+  // comes from.
+  if (typeof event.eventTime === "string") {
+    if (typeof event.eventTimestamp !== "string" && typeof event.eventTimestamp !== "number") {
+      record.eventTimestamp = event.eventTime;
+    }
+  }
+  // The event name is what says whether this is a write or a delete, so it
+  // becomes the action the intake bills on. A name outside the table is left
+  // alone and refused by validateEvent with the action in the answer.
+  if (typeof event.action !== "string" && typeof event.eventName === "string") {
+    const named = event.eventName.toLowerCase();
+    if (named.includes("objectremoved")) {
+      record.action = "deleted";
+    } else if (named.includes("objectcreated")) {
+      record.action = "uploaded";
+    }
+  }
+  // A create's creation time, from the notification's own instant.
+  if (record.action !== "deleted" && typeof record.createdAt !== "string") {
+    if (typeof record.createdAt !== "number" && typeof event.eventTime === "string") {
+      record.createdAt = event.eventTime;
+    }
+  }
+  return record;
+}
+
+/**
+ * The records of a notification body, whatever wrapper they arrived in:
+ * an S3 `Records` envelope, a bare list of records, or one record on its
+ * own. A body that is none of those is refused, not coerced.
+ * @param {unknown} parsed
+ * @returns {unknown[]}
+ */
+export function notificationRecords(parsed) {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (typeof parsed === "object" && parsed !== null) {
+    const records = /** @type {{Records?: unknown}} */ (parsed).Records;
+    if (Array.isArray(records)) {
+      return records;
+    }
+    if (records !== undefined) {
+      throw new TypeError("a notification's Records must be a list");
+    }
+  }
+  return [parsed];
+}
+
+/**
  * A byte count the meter will bill from, or null when the value is not one.
  * A provider sends JSON, so the size arrives as a number, but a webhook that
  * stringifies its numbers is a shape the intake should still take rather than
@@ -1194,6 +1331,26 @@ export async function recordEvents(db, events, now = Date.now()) {
 // storage.
 export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 
+// The header a stock bucket can actually send. MinIO's own notify webhook
+// sets `Authorization` to `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` and
+// cannot send a header of its own (there is no `MINIO_NOTIFY_WEBHOOK_HEADERS_*`
+// variable), so a rule configured the way the vendor's docs show arrives with
+// a bearer token and no x-drive-event-token (measured 2026-10-02 against the
+// pinned stand-in). Both are the same secret; this endpoint accepts either, so
+// the vendor's own event rule works without a custom-header capability MinIO
+// does not have.
+/** @param {string|undefined|null} header */
+export function bearerToken(header) {
+  if (typeof header !== "string") {
+    return null;
+  }
+  const [scheme, value] = /** @type {[string, string]} */ (header.split(" "));
+  if (scheme === undefined || value === undefined || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+  return value;
+}
+
 /**
  * Compares a presented token with the configured one without leaking the
  * secret through timing. Both sides are hashed with SHA-256 first, so the
@@ -1265,7 +1422,10 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     console.error("meter: METER_EVENT_TOKEN binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
-  if (!(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken))) {
+  if (
+    !(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken)) &&
+    !(await tokensMatch(bearerToken(request.headers.get("authorization")), eventToken))
+  ) {
     // One sentence, no echo of what was presented: a wrong token is a caller
     // with a stale or misconfigured event rule, and its text is not a hint.
     return json({ error: "The event could not be accepted from this caller." }, 401);
@@ -1285,11 +1445,24 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     console.error("meter: could not read the event body", error);
     return json({ error: "The event could not be read." }, 400);
   }
-  // A provider batch is a list of events; a single event is one object.
-  // Anything else is refused rather than coerced: a string or number body is
-  // a caller's mistake, and guessing at it is how an event gets billed to the
-  // wrong account.
-  const rawEvents = Array.isArray(parsed) ? parsed : [parsed];
+  // A provider batch is a list of events, a single event is one object, and
+  // the bucket's own notification is a `Records` envelope of S3 records.
+  // All three are shapes the providers send; anything else is refused rather
+  // than coerced, because guessing at it is how an event gets billed to the
+  // wrong account. A record inside any of them is put through
+  // `notificationRecord` first, so the provider's field names and the
+  // intake's names are one shape by the time `validateEvent` sees them.
+  let rawEvents;
+  try {
+    rawEvents = notificationRecords(parsed).map((record) =>
+      looksLikeNotificationRecord(record) ? notificationRecord(record) : record,
+    );
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return json({ error: error.message }, 400);
+    }
+    throw error;
+  }
   if (rawEvents.length === 0) {
     return json({ error: "The batch has no events in it." }, 400);
   }
