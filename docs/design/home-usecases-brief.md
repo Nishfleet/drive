@@ -72,11 +72,17 @@ again against it. Headless Chrome on `public/` served over
 |---|---|
 | Desktop 1440x900 | `scrollWidth == clientWidth == 1440`, 0 elements in `.demos` past the viewport |
 | Phone 360x780 | `scrollWidth == clientWidth == 360`, 0 elements in `.demos` past the viewport; the section is 1261 px tall, so it scrolls vertically and never horizontally |
+| Console errors | 0 from the page: the single 404 is the browser's own `favicon.ico` request, which the page does not reference |
 | Figures in the shot | the `.demos` text read back from the rendered page is the same five figures `docs/demos.md` carries, and each is `font-variant-numeric: tabular-nums` in `--accent` (rgb(31, 58, 95)) |
 | Console errors | the single 404 is the browser's own `favicon.ico` request, which the page does not reference |
 | Contrast | unchanged: this run changed no colour, only the figures, so the table above still stands |
 
 ## Open checks (not faked)
+- Cache state: the video figures are reads served by the mount's own VFS
+  cache, because the demo writes the file and reads it back through the same
+  mount (the same path a Finder window takes). A cold-read first frame needs a
+  second mount with a fresh cache dir and a re-run, and is listed here rather
+  than claimed.
 - Real iDrive e2 storage (#173): the numbers above are measured on the
   local rclone serve s3 stand-in through the product's own mount flags;
   re-run `DRIVE_STANDIN_BLENDER=… node --test test/home-demos.test.mjs`

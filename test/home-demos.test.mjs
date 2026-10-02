@@ -80,6 +80,15 @@ if (!Number.isFinite(VIDEO_GB) || VIDEO_GB < 1) {
 // or the endpoint is caught here and not on the page.
 const VIDEO_BUDGET_MS = Number(process.env.DRIVE_DEMO_VIDEO_BUDGET_MS ?? 5000);
 const SAVE_BUDGET_MS = Number(process.env.DRIVE_DEMO_SAVE_BUDGET_MS ?? 60_000);
+// The budget every published row is held to, checked in the page test as well
+// as in the demo that produced it. A record is written by the one host that
+// has all four tools, so a gate that lives only in the demo would pin the
+// numbers on machines that can run them and never on machines that can only
+// read them: this map is what publishes the budget everywhere.
+const ROW_BUDGETS_MS = {
+  "video-first-frame": VIDEO_BUDGET_MS,
+  "blend-save": SAVE_BUDGET_MS,
+};
 
 // The agent CLI and the Blender binary, named once here so the tool gate below
 // and the demos that follow can never disagree about which two they mean.
@@ -102,7 +111,10 @@ function reportResult(status, detail = "") {
  * @param {string[]} versionArgs
  */
 function canRun(bin, versionArgs) {
-  return spawnSync(bin, versionArgs, { stdio: "ignore" }).status === 0;
+  const probe = spawnSync(bin, versionArgs, { stdio: "ignore" });
+  // A binary that is not there sets `error` and no status, so the status alone
+  // would report a missing tool as one that ran and refused.
+  return probe.error === undefined && probe.status === 0;
 }
 
 /** @param {string} bin */
@@ -165,14 +177,13 @@ async function startStandin(dir) {
   await run("mkdir", ["-p", path.join(dir, bucket)]);
   const accessKey = "drive-standin-access-key";
   const secretKey = "drive-standin-secret-0123456789abcdef";
-  // This pair only ever reaches this test's own processes. It is not a real
-  // credential and never leaves the test.
+  // No credential reaches the command line: the stand-in listens on 127.0.0.1
+  // only and requires none, so the mount carries this placeholder pair in the
+  // 0600 config file below rather than in anyone's argv.
   const port = await freePort();
-  const server = spawn(
-    rcloneBin,
-    ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`, "--auth-key", `${accessKey},${secretKey}`],
-    { stdio: ["ignore", "ignore", "pipe"] },
-  );
+  const server = spawn(rcloneBin, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
   let stderr = "";
   server.stderr.on("data", (chunk) => {
     stderr += chunk;
@@ -231,6 +242,10 @@ async function startDrive(workDir, cfg) {
   const cacheDir = path.join(workDir, "cache");
   const logPath = path.join(workDir, "rclone-drive.log");
   await run("mkdir", ["-p", mountDir, cacheDir]);
+  // `--allow-non-empty` is this harness's own flag, not the product's: a
+  // reused work dir may hold the previous mount's directory, and the point of
+  // this proof is that the mount is driven with the product's VFS flags above
+  // and not that the directory must be empty.
   const child = spawn(
     rcloneBin,
     [
@@ -305,9 +320,9 @@ async function startDrive(workDir, cfg) {
  * @returns {Promise<Measurement | null>}
  */
 async function agentDemo(mountDir, t) {
-  const cli = AGENT_CLI;
-  if (!canRun(cli, ["--version"])) {
-    t.diagnostic(`${cli} is not installed here, so the agent demo is not run`);
+  const agentsCli = AGENT_CLI;
+  if (!canRun(agentsCli, ["--version"])) {
+    t.diagnostic(`${agentsCli} is not installed here, so the agent demo is not run`);
     return null;
   }
   const notesDir = path.join(mountDir, "notes");
@@ -331,25 +346,30 @@ async function agentDemo(mountDir, t) {
   ].join("\n");
 
   const started = process.hrtime.bigint();
-  const result = spawnSync(cli, ["--print", "--permission-mode", "acceptEdits", prompt], {
+  const result = spawnSync(agentsCli, ["--print", "--permission-mode", "acceptEdits", prompt], {
     cwd: notesDir,
     encoding: "utf8",
     timeout: 180_000,
   });
   const elapsed = Number(process.hrtime.bigint() - started) / 1e6;
-  if (result.error) throw new Error(`${cli} --print did not run: ${result.error.message}`);
+  if (result.error) throw new Error(`${agentsCli} --print did not run: ${result.error.message}`);
   if (result.status !== 0) {
-    throw new Error(`${cli} --print exited ${result.status}: ${result.stderr.slice(0, 400)}`);
+    throw new Error(`${agentsCli} --print exited ${result.status}: ${result.stderr.slice(0, 400)}`);
   }
-  // The read is only a read if the answer names the brief's line, and the edit
-  // only happened if the file on the drive says so: both are checked against
-  // the bytes the mount returned, not against the agent's own claim.
+  // The edit is checked against the whole file, not only the new line: what the
+  // drive holds is the file this test wrote plus the one line the agent was
+  // asked to add, so a rewrite, a truncation or a file rewritten into prose
+  // fails here instead of reading as a successful demo.
   const after = await readFile(editPath, "utf8");
-  assert.match(after, /- \[x\] run the agent demo/, "the agent's edit reached the drive");
+  assert.equal(
+    after,
+    "# Todo\n\n- [ ] measure the video\n- [x] run the agent demo\n",
+    "the drive holds the demo's file plus the agent's one added line",
+  );
   assert.match(result.stdout, /mount flags/i, "the agent read the brief off the drive");
   return {
     name: "agent",
-    detail: `${cli} read brief.md and edited todo.md on the drive`,
+    detail: `${agentsCli} read brief.md and edited todo.md on the drive`,
     ms: ms(elapsed),
     note: "one turn, two files, through the same mount a Finder window uses",
   };
@@ -637,6 +657,21 @@ function writeDemosDoc(record) {
     "",
   );
   writeFileSync(DEMOS_DOC, lines.join("\n"));
+  // The writer checks the rows it just wrote: the page test reads this file with
+  // the row pattern, so a row the pattern cannot see would be a recorded figure
+  // that never reaches the page and that no assertion anywhere notices.
+  const rows = readFileSync(DEMOS_DOC, "utf8").match(/^\| `(\S+)` \|.*?\|\s*[\d.]+ s \|$/gm) ?? [];
+  assert.equal(
+    rows.length,
+    record.measurements.length,
+    "every measurement wrote its own row, so no figure is left out of the record",
+  );
+  for (const m of record.measurements) {
+    assert.ok(
+      rows.some((row) => row.includes(`\`${m.name}\``)),
+      `the record carries ${m.name}`,
+    );
+  }
 }
 
 /** @returns {string} */
@@ -779,6 +814,27 @@ function recordedDemos() {
     rows[name] = { ms: Number(figure) * 1000, seconds: figure };
   }
   assert.ok(Object.keys(rows).length > 0, `docs/demos.md carries no measurement rows`);
+  // The figures come with the run behind them: a record that names a commit
+  // this repository does not have, or a date in a day that is not finished, is
+  // a claim about work nobody can look at. CI checks out with full history
+  // (fetch-depth: 0), so the commit is checkable everywhere.
+  const commitRow = text.match(/^- \*\*Commit:\*\* ([0-9a-f]{7,40})$/m);
+  assert.ok(commitRow, "docs/demos.md names the commit that ran the demos");
+  const commitProbe = spawnSync(
+    "git",
+    ["-C", REPO_ROOT, "cat-file", "-e", `${commitRow[1]}^{commit}`],
+    { stdio: "ignore" },
+  );
+  assert.ok(
+    commitProbe.error === undefined && commitProbe.status === 0,
+    `the record's commit ${commitRow[1]} is not a commit in this repository`,
+  );
+  const dateRow = text.match(/^- \*\*Date:\*\* (\d{4}-\d\d-\d\d)$/m);
+  assert.ok(dateRow, "docs/demos.md names the date the demos ran");
+  assert.ok(
+    new Date(`${dateRow[1]}T12:00:00Z`).getTime() <= Date.now(),
+    `the record's date ${dateRow[1]} is a day that has not happened`,
+  );
   return rows;
 }
 
@@ -798,12 +854,28 @@ test("the home page's demo section renders the recorded numbers and the date", (
   }
   // Every figure on the page is a figure a recorded run produced, in the units
   // that run printed. This is the gate: a page number with no matching row is
-  // a number nobody measured.
+  // a number nobody measured. The match is bounded, so "0.26 s" cannot be
+  // satisfied by the tail of "120.26 s" and pass without either figure being
+  // printed.
   for (const [name, { seconds }] of Object.entries(demos)) {
-    assert.ok(
-      page.includes(`${seconds} s`),
+    assert.match(
+      page,
+      new RegExp(`(?<![\\d.])${seconds.replace(/\./g, "\\.")} s\\b`),
       `the page must show the recorded figure "${seconds} s" from the ${name} run`,
     );
+  }
+  // The budget a figure is published under is checked here, where every host
+  // reads it, and not only in the demo that produced it: a record written by a
+  // fully equipped machine is still pinned on a build machine that can read the
+  // page but cannot encode a video. A row whose budget disappears is a failure,
+  // because a figure published with no budget is a figure nobody holds us to.
+  for (const [name, { ms }] of Object.entries(demos)) {
+    const budget = ROW_BUDGETS_MS[name];
+    if (budget === undefined) continue;
+    assert.ok(ms <= budget, `the ${name} figure ${ms} ms is over its ${budget} ms budget`);
+  }
+  for (const name of Object.keys(ROW_BUDGETS_MS)) {
+    assert.ok(demos[name], `the record carries the ${name} row the page budgets`);
   }
   // The size in the video row's name is a number like every other: the heading
   // has to name the size the recorded run actually produced, not a size someone
@@ -827,6 +899,17 @@ test("the home page's demo section renders the recorded numbers and the date", (
     "the video card shows the open command",
   );
   assert.match(page, /-ss \d+ -i Drive\/media\/cut\.mp4/, "the video card shows the scrub command");
+  // The scrub label is a rendering of the recorded seek: the record states the
+  // seconds and the card prints mm:ss, and nothing else binds the two, so a
+  // label that stops matching the run drifts here.
+  const seeked = text.match(/^\| `video-scrub` \|.*?seeked to (\d+)s/m);
+  assert.ok(seeked, "the record states the offset the scrub seeked to");
+  const seekSeconds = Number(seeked[1]);
+  const seekLabel = `${Math.floor(seekSeconds / 60)}:${String(seekSeconds % 60).padStart(2, "0")}`;
+  assert.ok(
+    page.includes(`scrub to ${seekLabel}`),
+    `the scrub label is the recorded seek rendered: "scrub to ${seekLabel}"`,
+  );
   assert.match(
     page,
     /blender --background Drive\/models\/part\.blend/,
@@ -838,6 +921,16 @@ test("the home page's demo section renders the recorded numbers and the date", (
     page,
     /storage stand-in/,
     "the section says the numbers came from the storage stand-in",
+  );
+  // What the section does not prove is stated on the page, not left out: the
+  // real-storage run and the Mac-side halves are named as open checks, because
+  // a measured number that reads as a real-account number is the one thing this
+  // section must not do.
+  assert.match(page, /real iDrive e2/, "the section names the real-storage run as an open check");
+  assert.match(
+    page,
+    /Mac-side halves .*open checks|\(a Finder window, Final Cut\)/,
+    "the section names the Mac-side halves as an open check",
   );
   // No rival words on the new section: the scan test covers the whole tree,
   // and this one names the failure on the page itself.
@@ -876,17 +969,41 @@ test("the three home-page demos run on a drive folder and record their numbers",
   // removes its own work dir on the way out, and a result written inside it
   // would be deleted before the outer run could read it.
   const resultFile = path.join(await mkdtemp(path.join("/tmp", "drive-demos-result-")), "result");
+  // The retry runs in a namespace, not in a different trust context, but the
+  // environment it inherits is named rather than forwarded whole: the keys this
+  // test can be pointed at (DRIVE_STANDIN_ACCESS_KEY and friends, a real
+  // iDrive e2 pair) have no business in a process whose only extra power is a
+  // private namespace. Everything else the inner run needs is listed here.
+  const INNER_ENV_KEYS = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+  ];
+  const innerEnv = Object.fromEntries(
+    INNER_ENV_KEYS.filter((key) => process.env[key] !== undefined).map((key) => [
+      key,
+      process.env[key],
+    ]),
+  );
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("DRIVE_STANDIN_") || key.startsWith("DRIVE_DEMO_")) innerEnv[key] = value;
+  }
+  Object.assign(innerEnv, {
+    DRIVE_STANDIN_IN_NS: "1",
+    DRIVE_STANDIN_RESULT: resultFile,
+    DRIVE_STANDIN_WORKDIR: retryDir,
+  });
   const inner = spawnSync(
     "unshare",
     ["-Urm", "--propagation", "private", process.execPath, TEST_FILE],
     {
       stdio: "inherit",
-      env: {
-        ...process.env,
-        DRIVE_STANDIN_IN_NS: "1",
-        DRIVE_STANDIN_RESULT: resultFile,
-        DRIVE_STANDIN_WORKDIR: retryDir,
-      },
+      env: innerEnv,
       timeout: 1_500_000,
     },
   );

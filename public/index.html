@@ -641,7 +641,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
         <p class="demo-command"><b>$</b> blender --background Drive/models/part.blend --python-expr "bpy.ops.wm.save_mainfile()"</p>
         <p class="demo-figure"><span class="demo-number">0.48 s <small>open</small></span><span class="demo-number">0.51 s <small>save back</small></span></p>
       </div>
-      <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
+      <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
