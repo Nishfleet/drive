@@ -96,6 +96,14 @@ const PUBLIC_ROUTES = new Set([
   // walk added no account here because this lane's gate is a deployment
   // secret, not a session).
   "/api/emails/send",
+  // drive issue #6: the meter's event intake. Its gate is the deployment
+  // secret METER_EVENT_TOKEN (src/meter.js checks it before the body is
+  // read), like the send lane above - no drive account exists on a provider
+  // webhook, so a 401 would be indistinguishable from a misconfigured
+  // provider, and the route reads no account data on a refusal.
+  "/api/storage-events",
+  "/api/storage-events/",
+
   // The outside outage monitor polls it from outside with no session, and it
   // answers ok/failing with no account data at all (src/health.js, #96).
   HEALTH_PATH,

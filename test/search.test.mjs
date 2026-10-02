@@ -709,12 +709,15 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
 });
 
 test("the deployed cron schedule is the one the module names", () => {
+  // The reconciler's own quiet hour, asserted rather than read back from the
+  // config: the config takes the schedule from this module's own constant, so
+  // a config that drifted would match a drifted constant and the test would
+  // say nothing.
+  assert.equal(REINDEX_SCHEDULE, "0 3 * * *", "the reconciler's quiet-hour schedule");
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   assert.match(
     config,
-    new RegExp(
-      `triggers\\.scheduled\\(\\{ schedule: "${REINDEX_SCHEDULE.replace(/\*/g, "\\*")}" \\}\\)`,
-    ),
+    /triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\)/,
     "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
   );
 });

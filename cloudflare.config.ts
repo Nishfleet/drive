@@ -1,8 +1,11 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
+import { METER_CRON } from "./src/meter.js";
+import { REINDEX_SCHEDULE } from "./src/search.js";
 
 // drive issue #11: the pricing and landing page, served as Worker static
-// assets, with /api/* routed to the Worker for the waitlist form.
+// assets, with /api/* routed to the Worker for the waitlist form and the
+// meter's event intake.
 export default defineConfig({
   worker: {
     name: "drive-pricing",
@@ -27,12 +30,19 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*"],
       notFoundHandling: "404-page",
     },
-    // drive issue #18: the file index's nightly reconciler. `scheduled` in
-    // src/index.js rebuilds one account's rows from a full store walk; the
-    // schedule is the only way a rebuild starts, so no web request can spend
-    // the walk (the safety review: reindex is not a public route). 03:00 UTC
-    // is the spec's quiet hour, before the meter's first hourly run.
-    triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
+    // Two Cron Triggers: the meter's hourly rollup (drive issue #6) and the
+    // file index's nightly reconciler (drive issue #18). `scheduled` in
+    // src/index.js tells the two apart by the cron string the platform hands
+    // it, so neither trigger spends the other's work. The reindex schedule is
+    // the only way a rebuild starts, so no web request can spend the walk
+    // (the safety review: reindex is not a public route); 03:00 UTC is the
+    // spec's quiet hour, before the meter's first hourly run. Both schedules
+    // are the constants the modules that own them export, so a changed
+    // schedule cannot drift from the trigger that runs it.
+    triggers: [
+      triggers.scheduled({ schedule: METER_CRON }),
+      triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
+    ],
     env: {
       ASSETS: bindings.assets(),
       // Two databases, one purpose each (drive issue #170). The waitlist's
@@ -53,6 +63,29 @@ export default defineConfig({
         name: "drive-data",
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
+      // The meter binds the same drive database under a name of its own (drive
+      // issue #6): src/meter.js says which tables it owns and which binding
+      // carries them, so the customer-data split is a binding line here rather
+      // than a code change in the meter. Same database, so same id:
+      // file_versions, usage_minutes, events_seen and meter_rollup_state
+      // (migrations/drive/0005_meter.sql) are created and read beside the file
+      // index, and giving them a database of their own is this line alone.
+      METER_DB: bindings.d1({
+        name: "drive-data",
+        id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
+      }),
+      // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
+      // from a Worker secret. The secret binding declares the name so the
+      // runtime knows to inject it; a missing secret produces a warning at
+      // dev/deploy, and the handler fails closed with 503 until it is set. Set
+      // it once, the same way the email token is set (it persists across
+      // deploys):
+      //   cf workers secrets update METER_EVENT_TOKEN --type secret_text \
+      //     --text <token> --worker drive-pricing
+      // (--type is required: cf refuses the update without it. #189: the
+      // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
+      // secret bindings from the previous Worker version.)
+      METER_EVENT_TOKEN: bindings.secret(),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.
