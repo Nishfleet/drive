@@ -440,7 +440,10 @@ export function createApp() {
     handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
-    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor),
+    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
+      ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
+      linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
+    }),
   );
 
   // The send lane: closed with no EMAIL_SEND_TOKEN set (src/email-send.js).

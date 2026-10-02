@@ -22,6 +22,10 @@
 //                  read-only at its spending cap — the cap is read from
 //                  src/billing.js's capStatus(), never re-decided here, so a
 //                  capped drive cannot take a new file through a request page.
+//                  A stranger is also bounded by a per-file size, a per-link
+//                  total the owner sets (low default), and the two stock
+//                  rate-limit bindings (per IP and per token), so one link
+//                  cannot fill the drive up to the cap (issue #208).
 //
 // Why a token and not a signed storage URL: revocation has to be immediate.
 // A signed URL keeps working until it expires, and the only way to kill it is
@@ -49,6 +53,7 @@ import {
   validatePath,
 } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
 /** Where a link's bytes are served. The dl Worker takes this path over. */
@@ -63,6 +68,19 @@ export const REQUEST_PAGE = "/upload.html";
 export const DEFAULT_LINK_DAYS = 7;
 /** One day in milliseconds, the unit the expiry is measured in. */
 export const DAY_MS = 24 * 60 * 60 * 1000;
+// Per-file ceiling on a public upload request (drive issue #208, from the
+// 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even
+// while the stream is copied into one buffer to count it; the platform's
+// 100 MB request-body cap is above this, so the isolate is the bound that
+// matters. The 1 GB per-link total is what stops a stranger filling the
+// drive. Refusing on Content-Length before the body is read, then counting
+// the stream, is what stops a declared size that is smaller than the body.
+export const REQUEST_FILE_MAX_BYTES = 32_000_000;
+// Per-link total, the low default. One upload page cannot fill the drive
+// while the owner sleeps: a stranger is bounded to 1 GB through the link,
+// on top of the owner's spending cap. The owner may set a different total
+// when they mint the page (POST /api/request {folder, maxBytes}).
+export const REQUEST_TOTAL_MAX_BYTES = 1_000_000_000;
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
@@ -235,6 +253,29 @@ export function validateRequestFolder(path) {
   return checked;
 }
 
+/**
+ * The per-link total the owner sets, in bytes. Absent means the low default.
+ * A value that is not a whole number of bytes of 1 or more is refused rather
+ * than silently clamped, so the owner cannot mint a page whose cap they did
+ * not mean.
+ * @param {unknown} value
+ * @returns {{maxBytes: number, error?: undefined}|{maxBytes: 0, error: string}}
+ */
+export function validateRequestMaxBytes(value) {
+  if (value === undefined || value === null) {
+    return { maxBytes: REQUEST_TOTAL_MAX_BYTES };
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > Number.MAX_SAFE_INTEGER
+  ) {
+    return { maxBytes: 0, error: failureMessage("request-max-bytes") };
+  }
+  return { maxBytes: value };
+}
+
 /** The word the owner's list shows for each state. */
 const LINK_STATE_LABELS = Object.freeze({
   active: "Open",
@@ -309,6 +350,9 @@ export function shareRow(record, now, base) {
  */
 export function requestRow(record, now, base) {
   const state = linkState(record, now);
+  const count = Number.isFinite(record.uploadCount) ? record.uploadCount : 0;
+  const bytes = Number.isFinite(record.uploadBytes) ? record.uploadBytes : 0;
+  const max = Number.isFinite(record.maxBytes) ? record.maxBytes : REQUEST_TOTAL_MAX_BYTES;
   return Object.freeze({
     token: record.token,
     folder: record.folder,
@@ -318,6 +362,13 @@ export function requestRow(record, now, base) {
     stateLabel: linkStateLabel(state),
     expiresAt: record.expiresAt,
     expiresLabel: expiresLabel(record.expiresAt),
+    uploads: count,
+    uploadBytes: bytes,
+    maxBytes: max,
+    uploadsLabel:
+      count === 0
+        ? "No uploads yet"
+        : `${count} upload${count === 1 ? "" : "s"}, ${formatBytes(bytes)} of ${formatBytes(max)}`,
   });
 }
 
@@ -358,7 +409,8 @@ export const UPLOAD_PAGE_LINE =
  *   createdAt: number, expiresAt: number, revokedAt: number|null,
  *   downloadCount: number, downloadBytes: number}} ShareRecord
  * @typedef {{token: string, accountId: string, folder: string,
- *   createdAt: number, expiresAt: number, revokedAt: number|null}} RequestRecord
+ *   createdAt: number, expiresAt: number, revokedAt: number|null,
+ *   uploadCount: number, uploadBytes: number, maxBytes: number}} RequestRecord
  * @typedef {object} LinkStore
  * @property {object} shares
  * @property {(record: ShareRecord) => Promise<ShareRecord>} shares.create
@@ -371,6 +423,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string) => Promise<RequestRecord|null>} requests.get
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -378,7 +431,8 @@ export const UPLOAD_PAGE_LINE =
 // handlers already use, and the SQL spells them in snake_case.
 const SHARE_COLUMNS =
   "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes";
-const REQUEST_COLUMNS = "token, account_id, folder, created_at, expires_at, revoked_at";
+const REQUEST_COLUMNS =
+  "token, account_id, folder, created_at, expires_at, revoked_at, upload_count, upload_bytes, max_bytes";
 
 /**
  * A share row as the ShareRecord the handlers read. A column that is NULL is
@@ -417,6 +471,9 @@ function toRequestRecord(row) {
     expiresAt: Number(row.expires_at),
     revokedAt:
       row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
+    uploadCount: Number(row.upload_count ?? 0),
+    uploadBytes: Number(row.upload_bytes ?? 0),
+    maxBytes: Number(row.max_bytes ?? REQUEST_TOTAL_MAX_BYTES),
   };
 }
 
@@ -537,7 +594,8 @@ export function createD1LinkStore(db) {
       async create(record) {
         await db
           .prepare(
-            `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` + "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` +
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
           )
           .bind(
             record.token,
@@ -546,6 +604,9 @@ export function createD1LinkStore(db) {
             record.createdAt,
             record.expiresAt,
             record.revokedAt,
+            record.uploadCount,
+            record.uploadBytes,
+            record.maxBytes,
           )
           .run();
         return { ...record };
@@ -569,6 +630,25 @@ export function createD1LinkStore(db) {
             "WHERE token = ?2 AND account_id = ?3 " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [at, token, accountId],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
+      async addUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        // One statement is the reservation: two concurrent uploads that would
+        // together pass the link total cannot both succeed, because the
+        // WHERE clause sees the other's increment. A miss is a full link,
+        // and the handler writes nothing (issue #208).
+        // ?1 and ?3 are the same size: D1 binds by number, the node:sqlite
+        // test adapter binds positionally after stripping digits, so each
+        // placeholder number appears once in textual order (the same rule
+        // the revoke statement already follows).
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = upload_count + 1, " +
+            "upload_bytes = upload_bytes + ?1 " +
+            "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token, size],
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
@@ -603,10 +683,17 @@ export function newShareRecord({ accountId, path, now, token, days = DEFAULT_LIN
 /**
  * The record for a new upload request.
  *
- * @param {{accountId: string, folder: string, now: number, token: string, days?: number}} input
+ * @param {{accountId: string, folder: string, now: number, token: string, days?: number, maxBytes?: number}} input
  * @returns {RequestRecord}
  */
-export function newRequestRecord({ accountId, folder, now, token, days = DEFAULT_LINK_DAYS }) {
+export function newRequestRecord({
+  accountId,
+  folder,
+  now,
+  token,
+  days = DEFAULT_LINK_DAYS,
+  maxBytes = REQUEST_TOTAL_MAX_BYTES,
+}) {
   return {
     token,
     accountId,
@@ -614,6 +701,9 @@ export function newRequestRecord({ accountId, folder, now, token, days = DEFAULT
     createdAt: now,
     expiresAt: linkExpiry(now, days),
     revokedAt: null,
+    uploadCount: 0,
+    uploadBytes: 0,
+    maxBytes,
   };
 }
 
@@ -985,6 +1075,10 @@ export async function handleRequestRequest(request, files, links, account, optio
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
+    const sized = validateRequestMaxBytes(body.maxBytes);
+    if (sized.error) {
+      return json({ error: sized.error }, 400);
+    }
     let exists;
     try {
       exists = await folderExists(scoped, checked.path);
@@ -999,6 +1093,7 @@ export async function handleRequestRequest(request, files, links, account, optio
       folder: checked.path,
       now,
       token: options.token ?? newLinkToken(),
+      maxBytes: sized.maxBytes,
     });
     await store.create(record);
     return json({ ok: true, request: requestRow(record, now, base) }, 201);
@@ -1083,11 +1178,18 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * dropped here shows up on the owner's drive at its next listing. The write
  * goes through scopeStore(files, the request row's account), so a dropped
  * file lands inside the owner's prefix and nowhere else.
+ *
+ * Size and rate (drive issue #208): the per-file ceiling and the link's own
+ * total are checked from Content-Length before the body is stored, and the
+ * two stock rate-limit bindings (per IP and per token) run before the lookup,
+ * so a refused upload costs no write. Uploaded bytes then count on the
+ * request row and against the owner's spending cap — the same capStatus()
+ * resolver the owner's own uploads use.
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1102,6 +1204,28 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (checked.error) {
     return json({ error: failureMessage("link-not-found") }, 404);
   }
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: options.ipLimiter,
+        key: clientIpKey(request, "request-upload"),
+        name: "REQUEST_UPLOAD_RATE_LIMITER",
+      },
+      {
+        binding: options.linkLimiter,
+        key: checked.token,
+        name: "REQUEST_UPLOAD_LINK_RATE_LIMITER",
+      },
+    ],
+    "request-upload",
+  );
+  if (limited) {
+    return limited;
+  }
+  const name = url.searchParams.get("name") || "";
+  if (!name) {
+    return json({ error: failureMessage("upload-needs-name") }, 400);
+  }
   const record = await links.requests.get(checked.token);
   if (record === null || !linkIsOpen(record, now)) {
     return json({ error: failureMessage("link-not-found") }, 404);
@@ -1111,19 +1235,85 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
   }
-  const name = url.searchParams.get("name") || "";
-  if (!name) {
-    return json({ error: "Name the file you are uploading." }, 400);
+  const sized = await takeUploadBody(request, record);
+  if (sized.error !== undefined) {
+    return json({ error: sized.error }, 413);
   }
   const path = joinPath(record.folder, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  const reserved = await links.requests.addUpload(checked.token, sized.bytes);
+  if (!reserved) {
+    return json({ error: failureMessage("upload-link-full") }, 413);
+  }
   try {
-    await scoped.write(path, /** @type {ReadableStream} */ (request.body), contentType);
+    // sized.body is a Uint8Array (or empty). FileStore.write already accepts
+    // any BodyInit: the memory store does `new Response(body).arrayBuffer()`,
+    // and the S3 stand-in PUTs the same body fetch accepts.
+    await scoped.write(path, sized.body, contentType);
   } catch (cause) {
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
+}
+
+/**
+ * The size we can know without storing: Content-Length against the per-file
+ * ceiling and the bytes this link has left, then the stream counted up to the
+ * same ceiling, the two layers src/waitlist.js already uses. A declared size
+ * over either cap is refused without reading; a request that declares nothing
+ * (or a smaller size than it actually sends) is stopped at the same limit
+ * before any write. Either miss is a 413 and no write.
+ * @param {Request} request
+ * @param {RequestRecord} record
+ * @returns {Promise<{bytes: number, body: BodyInit, error?: undefined}|{error: string, bytes?: undefined, body?: undefined}>}
+ */
+async function takeUploadBody(request, record) {
+  const used = Number.isFinite(record.uploadBytes) ? record.uploadBytes : 0;
+  const max = Number.isFinite(record.maxBytes) ? record.maxBytes : REQUEST_TOTAL_MAX_BYTES;
+  const remaining = max - used;
+  if (remaining <= 0) {
+    return { error: failureMessage("upload-link-full") };
+  }
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const length = Number(declared);
+    if (!Number.isFinite(length) || length < 0 || length > REQUEST_FILE_MAX_BYTES) {
+      return { error: failureMessage("body-too-large") };
+    }
+    if (length > remaining) {
+      return { error: failureMessage("upload-link-full") };
+    }
+  }
+  const stream = request.body;
+  if (stream === null) {
+    return { bytes: 0, body: new Uint8Array(0) };
+  }
+  const reader = stream.getReader();
+  const cap = Math.min(REQUEST_FILE_MAX_BYTES, remaining);
+  let buf = new Uint8Array(Math.min(8192, cap));
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const next = total + value.byteLength;
+    if (next > REQUEST_FILE_MAX_BYTES) {
+      await reader.cancel();
+      return { error: failureMessage("body-too-large") };
+    }
+    if (next > remaining) {
+      await reader.cancel();
+      return { error: failureMessage("upload-link-full") };
+    }
+    if (next > buf.byteLength) {
+      const grown = new Uint8Array(Math.min(cap, Math.max(next, buf.byteLength * 2)));
+      grown.set(buf.subarray(0, total));
+      buf = grown;
+    }
+    buf.set(value, total);
+    total = next;
+  }
+  return { bytes: total, body: total === buf.byteLength ? buf : buf.subarray(0, total) };
 }
