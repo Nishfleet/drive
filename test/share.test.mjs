@@ -21,7 +21,7 @@ import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } fro
 import { failureMessage } from "../src/messages.js";
 import {
   base64url,
-  createMemoryLinkStore,
+  createD1LinkStore,
   DAY_MS,
   DEFAULT_LINK_DAYS,
   folderDisplayName,
@@ -51,6 +51,7 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
+import { createTestD1 } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
 const now = Date.parse("2026-10-01T09:00:00.000Z");
@@ -65,7 +66,7 @@ const api = (path) => `https://drive.test${path}`;
 // test that proves nothing about the one the route reads.
 function drive() {
   const files = createMemoryStore();
-  const links = createMemoryLinkStore();
+  const links = createD1LinkStore(createTestD1());
   /**
    * @param {string} path
    * @param {string} name
@@ -424,7 +425,7 @@ test("the cap is resolved from the account that minted the token", async () => {
   // token, not per drive, which is what "the owner's spending cap applies"
   // (issue #19) has to mean once more than one account exists.
   const store = createMemoryStore();
-  const links = createMemoryLinkStore();
+  const links = createD1LinkStore(createTestD1());
   await handleRequestRequest(
     new Request(api(REQUEST_ENDPOINT), {
       method: "POST",
@@ -517,7 +518,7 @@ test("one account cannot revoke another account's link", async () => {
   // another account's token gets the same 404 a token nobody issued gets, so
   // it cannot turn off someone else's link and cannot learn the token exists.
   const store = createMemoryStore();
-  const links = createMemoryLinkStore();
+  const links = createD1LinkStore(createTestD1());
   const other = { id: "acct-other", name: "Other" };
   const uploaded = await handleFilesRequest(
     new Request(`${api(FILES_ENDPOINT)}/upload?path=%2F&name=secret.txt`, {
@@ -640,6 +641,7 @@ test("a store failure is logged, and its message is never returned", async () =>
       copy: async () => {
         throw new Error("the share upload path does not copy");
       },
+      listVersions: async () => [],
     };
     const { links } = drive();
     await links.requests.create(
@@ -883,7 +885,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
 
 test("an upload request refuses a file once the owner's cap is reached", async () => {
   const store = createMemoryStore();
-  const links = createMemoryLinkStore();
+  const links = createD1LinkStore(createTestD1());
   await handleRequestRequest(
     new Request(api(REQUEST_ENDPOINT), {
       method: "POST",
@@ -924,7 +926,7 @@ test("an upload request refuses a file once the owner's cap is reached", async (
 
 test("an unknown or revoked upload token is 404 on both public routes", async () => {
   const store = createMemoryStore();
-  const links = createMemoryLinkStore();
+  const links = createD1LinkStore(createTestD1());
   const info = await handleRequestInfoRequest(
     new Request("https://drive.test/api/request/info?k=not-a-token"),
     links,

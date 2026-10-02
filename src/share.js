@@ -29,13 +29,15 @@
 // is looked up on every hit cannot outlive `revoke`, and the share route sends
 // no-store so no cache can serve the bytes after the revocation either.
 //
-// The store is an injected interface (`LinkStore` below) with a memory
-// stand-in, exactly the shape src/files.js gives storage: the deployment
-// stands on memory until the accounts store lands (build step 4, #55), which
-// is where the `shares` and `upload_requests` rows move to D1. Nothing here
-// invents a second path to storage: bytes go through the FileStore interface
-// (src/files.js), so the stand-in, `rclone serve s3` and the real bucket are
-// the same to this file.
+// The store is an injected interface (`LinkStore` below), and it is the
+// customer database — DRIVE_DB, the same binding the file index and the
+// branches table use, with the rows in migrations/drive/0006_share_links.sql.
+// It was a pair of in-memory Maps once, which made a link work on exactly the
+// Worker instance that minted it and lose it on every deploy (issue #207).
+// Nothing here invents a second path to storage: bytes go through the FileStore
+// interface (src/files.js) and the link records go through the same D1
+// statements src/search.js and src/branches.js already send, so there is one
+// way to reach the customer database and one place the account is applied.
 
 import { isSameOriginRequest } from "./email-send.js";
 import {
@@ -371,92 +373,205 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  */
 
+// The columns both tables are read back through, named once so a row read and
+// a record written cannot drift: the record fields are the same words the
+// handlers already use, and the SQL spells them in snake_case.
+const SHARE_COLUMNS =
+  "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes";
+const REQUEST_COLUMNS = "token, account_id, folder, created_at, expires_at, revoked_at";
+
 /**
+ * A share row as the ShareRecord the handlers read. A column that is NULL is
+ * the zero or the null the record type already carries, so a row written
+ * before a counter existed reads as "no downloads yet" rather than as a NaN
+ * that would print in the owner's list.
+ * @param {Record<string, unknown>} row
+ * @returns {ShareRecord}
+ */
+function toShareRecord(row) {
+  return {
+    token: String(row.token),
+    accountId: String(row.account_id),
+    path: String(row.path),
+    name: String(row.name),
+    createdAt: Number(row.created_at),
+    expiresAt: Number(row.expires_at),
+    revokedAt:
+      row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
+    downloadCount: Number(row.download_count ?? 0),
+    downloadBytes: Number(row.download_bytes ?? 0),
+  };
+}
+
 /**
- * The in-memory stand-in: two Maps keyed by token. The deployment runs on it
- * until the accounts store lands (#55), the same way the Files page runs on
- * createMemoryStore() until #2; the interface is what the D1 rows will
- * implement, so no handler changes when they arrive.
+ * An upload-request row as the RequestRecord the handlers read.
+ * @param {Record<string, unknown>} row
+ * @returns {RequestRecord}
+ */
+function toRequestRecord(row) {
+  return {
+    token: String(row.token),
+    accountId: String(row.account_id),
+    folder: String(row.folder),
+    createdAt: Number(row.created_at),
+    expiresAt: Number(row.expires_at),
+    revokedAt:
+      row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
+  };
+}
+
+/**
+ * The link store over the customer database: the `shares` and
+ * `upload_requests` rows of migrations/drive/0006_share_links.sql, through the
+ * same D1 statements and the same `account_id = ?1` scoping the rest of the
+ * drive's D1 code uses (src/search.js, src/branches.js). There is one store
+ * and one table per record, so a link minted on one Worker instance resolves
+ * on any other and survives a deploy (issue #207).
  *
+ * The accountId is bound into every owner-facing statement rather than checked
+ * by the handler, so a token belonging to another account is not found: the
+ * owner route answers the same 404 for "not yours" as for "never existed" and
+ * a signed-in account can never turn off another account's link (issue #73's
+ * isolation gate). The only statement that does not name an account is the
+ * logged-out lookup by token, which is the token being the whole proof.
+ *
+ * `db` is required: a deployment with no DRIVE_DB cannot stand behind a link
+ * (src/health.js keeps the binding on its required list), and a store that
+ * quietly answered from a Map is the bug this replaced.
+ * @param {D1Database} db
  * @returns {LinkStore}
  */
-export function createMemoryLinkStore() {
-  const shares = new Map();
-  const requests = new Map();
-
+export function createD1LinkStore(db) {
+  if (!db || typeof db.prepare !== "function") {
+    throw new TypeError(`createD1LinkStore needs a D1 database, got ${String(db)}`);
+  }
   /**
-   * Revoking is scoped to the account, the same rule the list is: a token
-   * belonging to another account is not found here, so the owner route answers
-   * the same 404 for "not yours" as for "never existed" and a signed-in
-   * account can never turn off another account's link (issue #73's isolation
-   * gate). The accountId travels into the store rather than being checked in
-   * the handler, so the D1 store this interface becomes enforces it in its
-   * own query instead of every handler remembering to.
-   *
-   * @template {ShareRecord|RequestRecord} T
-   * @param {Map<string, T>} map
-   * @returns {(token: string, accountId: string, at: number) => Promise<T|null>}
+   * @param {string} sql
+   * @param {unknown[]} values
    */
-  const revokeIn = (map) => async (token, accountId, at) => {
-    const record = map.get(token);
-    if (!record || record.accountId !== accountId) {
-      return null;
-    }
-    // A second revoke is the same answer, and the first time stands: the
-    // owner's list must not re-date a revocation that already happened.
-    if (!record.revokedAt) {
-      record.revokedAt = at;
-    }
-    return { ...record };
+  const one = async (sql, values) =>
+    db
+      .prepare(sql)
+      .bind(...values)
+      .first();
+  /**
+   * @param {string} sql
+   * @param {unknown[]} values
+   */
+  const many = async (sql, values) => {
+    const result = await db
+      .prepare(sql)
+      .bind(...values)
+      .all();
+    return result?.results ?? [];
   };
 
   return {
     shares: {
       async create(record) {
-        if (shares.has(record.token)) {
-          throw new Error(`a share with token ${record.token} already exists`);
-        }
-        shares.set(record.token, { ...record });
+        // A token collision is a 2^128 accident, and the primary key is what
+        // makes it visible rather than silently overwriting somebody's link.
+        await db
+          .prepare(
+            `INSERT INTO shares (${SHARE_COLUMNS}) ` +
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+          )
+          .bind(
+            record.token,
+            record.accountId,
+            record.path,
+            record.name,
+            record.createdAt,
+            record.expiresAt,
+            record.revokedAt,
+            record.downloadCount,
+            record.downloadBytes,
+          )
+          .run();
         return { ...record };
       },
       async get(token) {
-        const record = shares.get(token);
-        return record ? { ...record } : null;
+        const row = await one(`SELECT ${SHARE_COLUMNS} FROM shares WHERE token = ?1`, [token]);
+        return row === null || row === undefined ? null : toShareRecord(row);
       },
       async list(accountId) {
-        return [...shares.values()]
-          .filter((record) => record.accountId === accountId)
-          .map((record) => ({ ...record }));
+        const rows = await many(
+          `SELECT ${SHARE_COLUMNS} FROM shares WHERE account_id = ?1 ORDER BY created_at DESC`,
+          [accountId],
+        );
+        return rows.map(toShareRecord);
       },
-      revoke: revokeIn(shares),
+      async revoke(token, accountId, at) {
+        // A second revoke is the same answer, and the first time stands: the
+        // owner's list must not re-date a revocation that already happened.
+        // COALESCE keeps the existing value when the row is already revoked,
+        // and the WHERE clause is what makes another account's token a miss.
+        // The ?N run in textual ascending order — the new value is in the SET
+        // clause, which textually precedes the WHERE — so binding by number
+        // (D1) and binding positionally (the repo's node:sqlite test adapter)
+        // agree on the same statement.
+        const row = await one(
+          `UPDATE shares SET revoked_at = COALESCE(revoked_at, ?1) ` +
+            "WHERE token = ?2 AND account_id = ?3 " +
+            `RETURNING ${SHARE_COLUMNS}`,
+          [at, token, accountId],
+        );
+        return row === null || row === undefined ? null : toShareRecord(row);
+      },
       async addDownload(token, bytes) {
-        const record = shares.get(token);
-        if (!record) {
-          throw new Error(`cannot count a download for unknown share ${token}`);
-        }
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        record.downloadCount += 1;
-        record.downloadBytes += size;
+        // Counted on the row the link resolves to, in one statement, so two
+        // concurrent downloads both land rather than one reading the other's
+        // count first. An unknown token writes nothing, which is the same
+        // answer the resolver's own 404 already gave the caller.
+        await db
+          .prepare(
+            "UPDATE shares SET download_count = download_count + 1, " +
+              "download_bytes = download_bytes + ?1 WHERE token = ?2",
+          )
+          .bind(size, token)
+          .run();
       },
     },
     requests: {
       async create(record) {
-        if (requests.has(record.token)) {
-          throw new Error(`an upload request with token ${record.token} already exists`);
-        }
-        requests.set(record.token, { ...record });
+        await db
+          .prepare(
+            `INSERT INTO upload_requests (${REQUEST_COLUMNS}) ` + "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+          )
+          .bind(
+            record.token,
+            record.accountId,
+            record.folder,
+            record.createdAt,
+            record.expiresAt,
+            record.revokedAt,
+          )
+          .run();
         return { ...record };
       },
       async get(token) {
-        const record = requests.get(token);
-        return record ? { ...record } : null;
+        const row = await one(`SELECT ${REQUEST_COLUMNS} FROM upload_requests WHERE token = ?1`, [
+          token,
+        ]);
+        return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async list(accountId) {
-        return [...requests.values()]
-          .filter((record) => record.accountId === accountId)
-          .map((record) => ({ ...record }));
+        const rows = await many(
+          `SELECT ${REQUEST_COLUMNS} FROM upload_requests WHERE account_id = ?1 ORDER BY created_at DESC`,
+          [accountId],
+        );
+        return rows.map(toRequestRecord);
       },
-      revoke: revokeIn(requests),
+      async revoke(token, accountId, at) {
+        const row = await one(
+          `UPDATE upload_requests SET revoked_at = COALESCE(revoked_at, ?1) ` +
+            "WHERE token = ?2 AND account_id = ?3 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [at, token, accountId],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
     },
   };
 }

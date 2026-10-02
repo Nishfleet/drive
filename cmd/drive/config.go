@@ -20,6 +20,12 @@ type StorageConfig struct {
 	Bucket    string
 	Prefix    string // key prefix this device mounts, e.g. /u/<id>/
 	Region    string // S3 region name; stand-ins accept any
+	// DownloadURL is the dl Worker (drive issue #58, build step 5): the host
+	// reads stream through, so the mount's reads land in that account's
+	// download bytes. Empty means no download host is configured, and the
+	// mount then reads straight from storage and counts nothing, which is the
+	// honest state of a local stand-in.
+	DownloadURL string
 }
 
 // vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
@@ -57,13 +63,14 @@ const (
 	RcloneRemoteName = "drive"
 )
 
-// LoadStorageConfig resolves the storage endpoint, bucket, prefix and region
-// from flags first, then environment variables, and the device keys from the
-// environment alone (DRIVE_S3_ACCESS_KEY_ID and DRIVE_S3_SECRET_ACCESS_KEY).
+// LoadStorageConfig resolves the storage endpoint, bucket, prefix, region and
+// the dl Worker's download URL from flags first, then environment variables,
+// and the device keys from the environment alone
+// (DRIVE_S3_ACCESS_KEY_ID and DRIVE_S3_SECRET_ACCESS_KEY).
 // It fails loudly when a required value is missing. Endpoint, bucket and keys
 // are config, not code: the same binary talks to the local stand-in or to
 // iDrive e2. There is deliberately no flag for either key.
-func LoadStorageConfig(endpoint, bucket, prefix, region string) (StorageConfig, error) {
+func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL string) (StorageConfig, error) {
 	c := StorageConfig{
 		Endpoint:  firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
 		Bucket:    firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
@@ -71,6 +78,12 @@ func LoadStorageConfig(endpoint, bucket, prefix, region string) (StorageConfig, 
 		Region:    firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
 		AccessKey: os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
 		SecretKey: os.Getenv("DRIVE_S3_SECRET_ACCESS_KEY"),
+		// The download host is optional and has no default: with none set the
+		// mount reads straight from storage (the local stand-in case), and with
+		// one set rclone streams every read through the dl Worker, which counts
+		// the bytes into that account's download total (docs/build-spec.md
+		// "The pieces", items 2 and 4).
+		DownloadURL: firstNonEmpty(downloadURL, os.Getenv("DRIVE_DOWNLOAD_URL")),
 	}
 	var missing []string
 	if c.Endpoint == "" {
@@ -101,6 +114,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region string) (StorageConfig, 
 		{"bucket", c.Bucket},
 		{"prefix", c.Prefix},
 		{"region", c.Region},
+		{"download url", c.DownloadURL},
 		{"access key", c.AccessKey},
 		{"secret key", c.SecretKey},
 	} {

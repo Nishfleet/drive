@@ -514,6 +514,14 @@ export function restorableUntil(deletedAt) {
  * @typedef {{name: string, path: string, kind: string, size?: number,
  *   modified?: number|null, contentType?: string, etag?: string|null}} FileEntry
  * @typedef {{body: ReadableStream, contentType: string, size: number, etag?: string|null}|null} FileRead
+ * @typedef {{b2FileId: string, path: string, sizeBytes: number,
+ *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} StorageVersion
+ * One version of one stored file, in the provider's own listing: the version
+ * id the meter keys `file_versions` on, the key it lives at, its size in
+ * bytes, and the instants its life begins and stops. The meter's reconciler
+ * (src/meter.js `reconcileMeter`) reads this shape, and `listVersions` below
+ * is the one call a store makes to answer it, so the reconciler never knows
+ * which provider it is fixing.
  * @typedef {object} FileStore
  * @property {(path: string) => Promise<FileEntry[]>} list Lists one folder.
  * @property {(path: string) => Promise<FileRead>} read
@@ -523,6 +531,13 @@ export function restorableUntil(deletedAt) {
  *   storage itself makes, no bytes through this Worker: `drive branch`
  *   (build step 7) is a folder copy, and a copy that streamed every byte
  *   through us would make a 10 GB branch a 10 GB download and upload.
+ * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
+ *   Every version of every file under one drive path, the provider's side of
+ *   the meter's ledger (drive issue #59). `list` returns the live tree; this
+ *   returns the versions behind it, hidden ones included, so the reconciler
+ *   can see a hide the event stream dropped. The path is a drive path, like
+ *   every other method here, and the store is the adapter that knows how its
+ *   provider spells versions.
  */
 
 /**
@@ -674,6 +689,17 @@ export function scopeStore(store, account) {
       const [source, dest] = toKeys(from, to);
       return store.copy(source, dest);
     },
+    async listVersions(path) {
+      // The versions come back under this account's own keys, so each one's
+      // path is rewritten like any other listing: a version the store
+      // returned from outside the prefix is a bug and is thrown on, and no
+      // reconciler ever reads another account's version.
+      const versions = await store.listVersions(toKey(path));
+      return versions.map((version) => ({
+        ...version,
+        path: toDrivePath(version.path),
+      }));
+    },
   };
 }
 
@@ -697,6 +723,34 @@ async function memoryEtag(bytes) {
  */
 export function createMemoryStore() {
   const objects = new Map();
+  // The version history behind the live tree, keyed by storage key: one entry
+  // per write, with the instant it started and the instant a later write (or
+  // a remove) hid it. This is the in-memory stand-in's answer to the
+  // provider's own version listing, so `listVersions` is exercisable with no
+  // bucket and the reconciler is testable through the real store interface.
+  /** @type {Map<string, Array<{id: string, createdAt: number, hiddenAt: number|null, sizeBytes: number}>>} */
+  const versions = new Map();
+  let nextVersionId = 1;
+  /** The versions of one key, hiding the live one at `at`.
+   * @param {string} key @param {number} sizeBytes @param {number} at */
+  const startVersion = (key, sizeBytes, at) => {
+    const history = versions.get(key) ?? [];
+    const live = history.find((version) => version.hiddenAt === null);
+    if (live) {
+      live.hiddenAt = at;
+    }
+    history.push({ id: `mem-${nextVersionId}`, createdAt: at, hiddenAt: null, sizeBytes });
+    nextVersionId += 1;
+    versions.set(key, history);
+  };
+  /** Hide the live version of one key at `at`, if it has one.
+   * @param {string} key @param {number} at */
+  const hideVersion = (key, at) => {
+    const live = versions.get(key)?.find((version) => version.hiddenAt === null);
+    if (live) {
+      live.hiddenAt = at;
+    }
+  };
   return {
     async list(path) {
       // The scopeStore prefix already ends in a slash, and the drive root is
@@ -742,15 +796,52 @@ export function createMemoryStore() {
     },
     async write(path, body, contentType) {
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      const now = Date.now();
+      // The previous live version is hidden the instant this one starts, the
+      // same hide-not-delete lifecycle the provider's versioning keeps.
+      startVersion(path, bytes.byteLength, now);
       objects.set(path, {
         body: bytes,
         contentType,
-        modified: Date.now(),
+        modified: now,
         etag: await memoryEtag(bytes),
       });
     },
     async remove(path) {
+      // A delete hides the live version rather than forgetting it, exactly as
+      // the drive's storage lifecycle does (build-spec.md "Old versions"), so
+      // the bytes stay readable until the provider's own retention ends them.
+      hideVersion(path, Date.now());
       objects.delete(path);
+    },
+    /**
+     * Every version of every file under one drive path. The recursive walk is
+     * the same prefix scan `list` does at one level, one level down, so an
+     * account's whole history comes back in the shape the reconciler reads
+     * (src/meter.js StorageVersion). `includeHidden` is accepted for the
+     * interface's sake; the stand-in has no hard-delete step, so every version
+     * it kept is returned either way.
+     * @param {string} path
+     */
+    async listVersions(path) {
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const found = [];
+      for (const [key, history] of versions) {
+        if (!key.startsWith(prefix)) {
+          continue;
+        }
+        for (const version of history) {
+          found.push({
+            b2FileId: version.id,
+            path: key,
+            sizeBytes: version.sizeBytes,
+            createdAt: version.createdAt,
+            hiddenAt: version.hiddenAt,
+            deletedAt: null,
+          });
+        }
+      }
+      return found.sort((a, b) => a.path.localeCompare(b.path) || a.createdAt - b.createdAt);
     },
     async copy(from, to) {
       const value = objects.get(from);
@@ -762,7 +853,9 @@ export function createMemoryStore() {
       }
       // The bytes and their fingerprint move together; only the modified time
       // is the copy's own, exactly as S3's CopyObject behaves.
-      objects.set(to, { ...value, modified: Date.now() });
+      const now = Date.now();
+      startVersion(to, value.body.byteLength, now);
+      objects.set(to, { ...value, modified: now });
     },
   };
 }
@@ -888,6 +981,56 @@ export function createS3Store(config) {
         );
       }
     },
+    /**
+     * Every version of every file under one drive path, from S3's own
+     * ListObjectVersions (the stock API for a versioned bucket: iDrive e2 and
+     * B2 both speak it). The live ListObjectsV2 walk above cannot see a hidden
+     * version, and a hidden version's stop time is what the meter bills to, so
+     * the reconciler reads this instead.
+     *
+     * The provider's spelling of the lifecycle is this method's to know: S3
+     * reports every version of a key newest first and marks it hidden at the
+     * instant the next version of the same key began, which is exactly the
+     * `created_at` -> `hidden_at` interval the meter bills. A delete marker is
+     * the hide that ended the key's latest version. B2's ListFileVersions
+     * returns the same facts under its own tags; the real provider's field
+     * names are #60's to confirm (build-spec.md, open questions).
+     * @param {string} path
+     * @returns {Promise<import("./files.js").StorageVersion[]>}
+     */
+    async listVersions(path) {
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const versions = [];
+      let keyMarker = null;
+      let versionMarker = null;
+      let seen = null;
+      // Every page, the same reason `list` loops: S3 caps one ListObjectVersions
+      // answer at 1,000 keys and answers the rest through the two markers, so a
+      // single call would truncate a large account's history.
+      for (;;) {
+        const query =
+          `?versions&prefix=${encodeURIComponent(prefix)}` +
+          (keyMarker === null ? "" : `&key-marker=${encodeURIComponent(keyMarker)}`) +
+          (versionMarker === null ? "" : `&version-id-marker=${encodeURIComponent(versionMarker)}`);
+        const response = await fetchImpl(`${base}${query}`);
+        if (!response.ok) {
+          throw new Error(`storage version list failed with ${response.status}`);
+        }
+        const xml = await response.text();
+        versions.push(...parseListVersions(xml));
+        keyMarker = tagValue(xml, "NextKeyMarker");
+        versionMarker = tagValue(xml, "NextVersionIdMarker");
+        if (keyMarker === "" || versionMarker === "") {
+          return versions;
+        }
+        if (`${keyMarker}\u0000${versionMarker}` === seen) {
+          throw new Error(
+            `storage version list repeated markers for ${prefix}; the history is not fully listed`,
+          );
+        }
+        seen = `${keyMarker}\u0000${versionMarker}`;
+      }
+    },
   };
 }
 
@@ -935,6 +1078,73 @@ export function parseListObjects(xml, prefix, path) {
     });
   }
   return entries;
+}
+
+/**
+ * S3 answers a ListObjectVersions as XML; this turns its two shapes
+ * (`<Version>` and the `<DeleteMarker>` that hid one) into the version rows
+ * the reconciler reads. A version is hidden at the instant the next version of
+ * the same key began, and a delete marker is that hide for the key's newest
+ * version; the listing is newest first, so one pass collects the times and a
+ * second assigns each version its stop. Kept small and separate so a test can
+ * feed it a captured S3 response without a bucket.
+ * @param {string} xml
+ * @returns {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>}
+ */
+export function parseListVersions(xml) {
+  if (typeof xml !== "string") {
+    throw new TypeError("parseListVersions needs the XML body");
+  }
+  /** @type {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>} */
+  const versions = [];
+  // Delete markers, keyed by the key they ended: the instant the version below
+  // them stopped being live.
+  const markers = new Map();
+  for (const match of xml.matchAll(/<DeleteMarker>([\s\S]*?)<\/DeleteMarker>/g)) {
+    const block = match[1];
+    const key = tagValue(block, "Key");
+    const at = Date.parse(tagValue(block, "LastModified"));
+    if (key !== "" && Number.isFinite(at)) {
+      const earliest = markers.get(key);
+      if (earliest === undefined || at < earliest) {
+        markers.set(key, at);
+      }
+    }
+  }
+  for (const match of xml.matchAll(/<Version>([\s\S]*?)<\/Version>/g)) {
+    const block = match[1];
+    const path = tagValue(block, "Key");
+    const b2FileId = tagValue(block, "VersionId");
+    const createdAt = Date.parse(tagValue(block, "LastModified"));
+    if (path === "" || b2FileId === "" || !Number.isFinite(createdAt)) {
+      // A version with no key, no id or no time cannot be compared with a row
+      // and cannot be billed; naming it is better than a silent drop.
+      throw new Error("S3 listed a version without a key, a version id or a time");
+    }
+    versions.push({
+      b2FileId,
+      path,
+      sizeBytes: Number(tagValue(block, "Size") || 0),
+      createdAt,
+      hiddenAt: null,
+      deletedAt: null,
+    });
+  }
+  // Newest first as S3 answers: each version's stop is the newest start among
+  // the later versions of its own key, and the key's newest version is hidden
+  // by a delete marker when one names it.
+  for (const version of versions) {
+    let hiddenAt = markers.get(version.path) ?? null;
+    for (const other of versions) {
+      if (other.path === version.path && other.createdAt > version.createdAt) {
+        if (hiddenAt === null || other.createdAt < hiddenAt) {
+          hiddenAt = other.createdAt;
+        }
+      }
+    }
+    version.hiddenAt = hiddenAt;
+  }
+  return versions;
 }
 
 /**
