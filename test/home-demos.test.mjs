@@ -81,6 +81,11 @@ if (!Number.isFinite(VIDEO_GB) || VIDEO_GB < 1) {
 const VIDEO_BUDGET_MS = Number(process.env.DRIVE_DEMO_VIDEO_BUDGET_MS ?? 5000);
 const SAVE_BUDGET_MS = Number(process.env.DRIVE_DEMO_SAVE_BUDGET_MS ?? 60_000);
 
+// The agent CLI and the Blender binary, named once here so the tool gate below
+// and the demos that follow can never disagree about which two they mean.
+const AGENT_CLI = process.env.DRIVE_STANDIN_AGENT_CLI ?? "claude";
+const BLENDER = process.env.DRIVE_STANDIN_BLENDER ?? "blender";
+
 const inNamespace = process.env.DRIVE_STANDIN_IN_NS === "1";
 const RESULT_FILE = process.env.DRIVE_STANDIN_RESULT;
 
@@ -300,7 +305,7 @@ async function startDrive(workDir, cfg) {
  * @returns {Promise<Measurement | null>}
  */
 async function agentDemo(mountDir, t) {
-  const cli = process.env.DRIVE_STANDIN_AGENT_CLI ?? "claude";
+  const cli = AGENT_CLI;
   if (!canRun(cli, ["--version"])) {
     t.diagnostic(`${cli} is not installed here, so the agent demo is not run`);
     return null;
@@ -507,7 +512,7 @@ async function videoDemo(mountDir, t) {
  * @returns {Promise<Measurement[]>}
  */
 async function blendDemo(mountDir, t) {
-  const blender = process.env.DRIVE_STANDIN_BLENDER ?? "blender";
+  const blender = BLENDER;
   if (!canRun(blender, ["--version"])) {
     t.diagnostic(`${blender} is not installed here, so the 3D demo is not run`);
     return [];
@@ -649,6 +654,13 @@ function today() {
 
 let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
+/**
+ * The three demos against a mounted drive folder, writing docs/demos.md only
+ * when all three produced a figure.
+ * @param {string} workDir
+ * @param {import("node:test").TestContext} t
+ * @returns {Promise<"proved" | "skipped">} whether this host ran the record
+ */
 async function proof(t, workDir) {
   if (inNamespace) t.diagnostic("running inside a user namespace");
   /** @type {StorageCfg | null} */
@@ -668,12 +680,30 @@ async function proof(t, workDir) {
   };
   t.after(cleanup);
 
-  if (!runs(rcloneBin)) {
-    rcloneBin = "rclone";
-    if (!runs(rcloneBin)) {
-      t.diagnostic("rclone is not runnable here");
-      return t.skip("rclone is not runnable on this host, so no demo was run");
-    }
+  if (!runs(rcloneBin)) rcloneBin = "rclone";
+  // Every tool a complete record needs is checked before any work starts. A
+  // record is all three demos or none of them, so a host that cannot run one
+  // must not spend minutes encoding a video and driving an agent turn for a
+  // record it will never write. The skip names each missing tool, so "no demos
+  // ran here" is always a named gap in the build machine and never a mystery.
+  const missing = [
+    [rcloneBin, runs(rcloneBin)],
+    ["ffmpeg", canRun("ffmpeg", ["-version"])],
+    [AGENT_CLI, canRun(AGENT_CLI, ["--version"])],
+    [BLENDER, canRun(BLENDER, ["--version"])],
+  ]
+    .filter(([, present]) => !present)
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    const names = missing.join(", ");
+    t.diagnostic(`not runnable on this host: ${names}`);
+    // The result file is written here too: a skip is an answer, and the retry
+    // outside a namespace must read it rather than run the same gates again.
+    reportResult("skipped", `this host cannot run ${names}`);
+    t.skip(
+      `this host cannot run ${names}, so no record was written; docs/demos.md keeps the last complete run`,
+    );
+    return "skipped";
   }
 
   /** @type {Measurement[]} */
@@ -728,10 +758,12 @@ async function proof(t, workDir) {
   // proof that the skip is the honest outcome. The numbers stay what the last
   // complete run recorded, and the page's own gate keeps them in step.
   if (measurements.length === 0) {
+    reportResult("skipped", "no demo could run on this host");
     t.skip("this host has no ffmpeg, no Blender and no agent CLI, so no demo could be run here");
-    return;
+    return "skipped";
   }
   assert.ok(complete, "every demo in the record must run together or the record is left alone");
+  return "proved";
 }
 
 /**
@@ -816,7 +848,9 @@ test("the three home-page demos run on a drive folder and record their numbers",
   const workDir =
     process.env.DRIVE_STANDIN_WORKDIR ?? (await mkdtemp(path.join("/tmp", "drive-demos-")));
   try {
-    await proof(t, workDir);
+    // proof() reports its own outcome: a host that skipped is an answer, and
+    // the namespace retry below must not run the same gates a second time.
+    if ((await proof(t, workDir)) !== "proved") return;
     reportResult("proved");
     return;
   } catch (err) {
