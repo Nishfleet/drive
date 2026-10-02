@@ -49,13 +49,17 @@ type DeviceCode struct {
 }
 
 // MintedKey is POST /v1/keys' answer. Secret is in this response and nowhere
-// else: the api Worker keeps only a hash, so this is the one read.
+// else: the api Worker keeps only a hash, so this is the one read. ExpiresAt
+// is the epoch second an agent's credential stops working at, and it is nil for
+// a kind that never expires (a person's own device key, issue #106). It is a
+// pointer so an absent field and a key with no expiry stay distinguishable.
 type MintedKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
 	Secret       string   `json:"secret"`
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
+	ExpiresAt    *int64   `json:"expiresAt"`
 }
 
 // Account is the account a device token belongs to.
@@ -264,6 +268,25 @@ func (c *APIClient) MintKey(kind, name string) (MintedKey, error) {
 // deleted after this returns nil.
 func (c *APIClient) RevokeKey(keyID string) error {
 	return c.do(http.MethodDelete, keysPath+"/"+url.PathEscape(keyID), nil, nil)
+}
+
+// RenewKey restarts the hour on one of this device's keys (POST
+// /v1/keys/<keyId>/renew, issue #106).
+//
+// An agent key is minted with an hour and the api Worker renews it on every
+// request that proves the tool is still using it, so a connected tool never
+// notices. A tool that sat idle for longer than its hour outlives its
+// credential, though: nothing used the key, so nothing renewed it, and its
+// next request is refused. This call is the way back, and it is the device's
+// own signed-in token that asks — a leaked storage key holds no device token,
+// so it cannot restart its own hour.
+//
+// The credential is not replaced, so the tool's own MCP entry keeps working
+// and there is nothing new to write to disk; only the server-side window
+// moves. 409 means the key is revoked, which is the state `drive agents
+// revoke` reaches on purpose.
+func (c *APIClient) RenewKey(keyID string) error {
+	return c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, nil)
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE

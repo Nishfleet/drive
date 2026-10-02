@@ -156,6 +156,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
 - A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
+- An agent key, an s3 key and a branch key live one hour, and no longer (issue #106). The api Worker renews the window on every request that proves the key is still held by something using it, so a connected tool never notices, and revoking the key stops renewal at once — which is what bounds how long a leaked credential is worth anything. A person's own device key is not given an expiry, and their device sign-in is unchanged. The renew route is behind the account gate, so a leaked storage key, which holds no device token, cannot restart its own hour.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 

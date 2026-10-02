@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // ToolMinter mints a tool's own agent key through the api Worker (build step
@@ -32,6 +33,13 @@ func (m ToolMinter) MintKey(kind, name string) (MintedKey, error) {
 // key that is refused here is a key that still works server-side.
 func (m ToolMinter) RevokeKey(keyID string) error {
 	return m.Client.RevokeKey(keyID)
+}
+
+// RenewKey restarts the hour on a key this device already holds. It changes
+// nothing on disk: the credential is not replaced, only the server-side window,
+// so the tool's own MCP entry keeps holding the key that now works again.
+func (m ToolMinter) RenewKey(keyID string) error {
+	return m.Client.RenewKey(keyID)
 }
 
 // runInit is the `drive init` command.
@@ -144,8 +152,8 @@ func initAgents(env Env, apiBase ...string) error {
 		if key == nil {
 			fmt.Printf("  %-8s connected (no agent key; sign in with `drive init` for one)\n", t.Name)
 		} else {
-			fmt.Printf("  %-8s connected (agent key %s: %s, no deleteFiles)\n",
-				t.Name, key.KeyID, strings.Join(key.Capabilities, ", "))
+			fmt.Printf("  %-8s connected (agent key %s: %s, no deleteFiles, %s)\n",
+				t.Name, key.KeyID, strings.Join(key.Capabilities, ", "), expiryLabel(key.ExpiresAt))
 		}
 		connected++
 	}
@@ -162,6 +170,14 @@ func initAgents(env Env, apiBase ...string) error {
 // second `drive init` must not leave a tool holding a key nobody knows
 // about, so the existing key is reused and only the missing one is
 // minted.
+//
+// A stored key whose hour is nearly run out is renewed instead of reused
+// (issue #106). The api Worker renews a key on every request that proves the
+// tool is still using it, so a connected tool never notices; a tool that sat
+// idle for longer than its hour outlives its credential, and its next request
+// is refused. Renewing here is what brings it back without a person minting a
+// second key, and it changes nothing on disk: the credential is not replaced,
+// only the server-side window, so the tool's own MCP entry keeps working.
 func mintToolKey(env Env, t Tool) error {
 	if env.Minter == nil {
 		return nil
@@ -170,11 +186,20 @@ func mintToolKey(env Env, t Tool) error {
 	if err != nil {
 		return err
 	}
-	if existing != nil {
+	if existing == nil {
+		if _, err := env.Minter.MintKey("agent", t.Name); err != nil {
+			return fmt.Errorf("mint its key: %w", err)
+		}
 		return nil
 	}
-	if _, err := env.Minter.MintKey("agent", t.Name); err != nil {
-		return fmt.Errorf("mint its key: %w", err)
+	if !needsRenew(existing, time.Now()) {
+		return nil
+	}
+	if err := env.Minter.RenewKey(existing.KeyID); err != nil {
+		// A renewal that fails is reported, not swallowed: the key on disk is
+		// the one the tool is using, and a tool about to be left with a key
+		// whose hour has run out is a thing a person has to be told about.
+		return fmt.Errorf("renew the %s key: %w", t.Name, err)
 	}
 	return nil
 }

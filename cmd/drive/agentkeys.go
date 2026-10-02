@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
 
 // AgentKeysPath is where the drive keeps the per-tool keys. It sits in the
@@ -24,13 +25,50 @@ func AgentKeysPath(home string) string {
 	return DefaultConfigDir(home) + "/agent-keys.json"
 }
 
-// agentKey is one connected tool's key, as stored.
+// agentKey is one connected tool's key, as stored. It is field-for-field the
+// same shape as MintedKey, so the conversion between them stays a plain type
+// conversion.
 type agentKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
 	Secret       string   `json:"secret"`
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
+	// ExpiresAt is the epoch second the api Worker stops accepting this
+	// credential, or nil for a kind that never expires (a person's own device
+	// key). The api Worker renews the window on every request that proves the
+	// tool is still using the key, so this value is the mint's answer and is
+	// not kept in step with the server: it is what a person reads, never what
+	// the CLI decides against (issue #106).
+	ExpiresAt *int64 `json:"expiresAt"`
+}
+
+// agentKeyRenewMargin is how close to its expiry a stored agent key is renewed
+// on the next `drive init` or `drive agents` run. An idle tool's credential
+// dies unused after an hour, and a person should not have to know that to get
+// it back: any drive command that finds a tool this close to the edge asks the
+// Worker to restart the hour while it still can.
+const agentKeyRenewMargin = 5 * time.Minute
+
+// needsRenew reports whether a stored key's hour should be restarted now. A key
+// with no expiry never needs one.
+func needsRenew(key *agentKey, now time.Time) bool {
+	if key == nil || key.ExpiresAt == nil {
+		return false
+	}
+	return !time.Unix(*key.ExpiresAt, 0).After(now.Add(agentKeyRenewMargin))
+}
+
+// expiryLabel renders a stored key's expiry for a person to read: the instant
+// the api Worker stops accepting the credential, or the plain statement that
+// there is none. It is the mint's answer rather than a countdown, because the
+// api Worker renews the window on every request and a countdown would read as
+// something the CLI tracks.
+func expiryLabel(expiresAt *int64) string {
+	if expiresAt == nil {
+		return "no expiry"
+	}
+	return "expires " + time.Unix(*expiresAt, 0).Local().Format("2006-01-02 15:04")
 }
 
 // loadAgentKeys reads every stored tool key. A missing file is an empty map:

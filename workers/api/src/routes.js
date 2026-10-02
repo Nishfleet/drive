@@ -16,6 +16,7 @@ import { exportRoute } from "./export-routes.js";
 import {
   listKeysRoute,
   mintKeyRoute,
+  renewKeyRoute,
   revokeKeyRoute,
   revokePresentedKeyRoute,
   storageListRoute,
@@ -120,6 +121,16 @@ export const routes = [
     path: "/v1/keys/:keyId",
     auth: "account",
     handler: revokeKeyRoute,
+  },
+  // Renewing is behind the same gate as minting, and that is the whole point
+  // (drive issue #106): the credential that asks is the signed-in device's
+  // token, so a leaked storage key — which holds no device token — can never
+  // restart its own hour.
+  {
+    method: "POST",
+    path: "/v1/keys/:keyId/renew",
+    auth: "account",
+    handler: renewKeyRoute,
   },
 
   // ---- own-data export (account lifecycle, drive#34) ----

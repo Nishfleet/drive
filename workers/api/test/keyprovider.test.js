@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "../src/keyprovider.js";
+import {
+  CAPABILITIES_BY_KIND,
+  KEY_KINDS,
+  KEY_TTL_SECONDS,
+  keyTtlSeconds,
+  scopeFor,
+} from "../src/keyprovider.js";
 
 // drive#77 finding 4: the storage prefix is the safety boundary, so scopeFor
 // validates the account id and the branch name instead of trusting them.
@@ -125,5 +131,30 @@ test("an account id and branch name from the real id format are accepted", () =>
   assert.equal(
     scopeFor("branch", accountId, { name: "fix-login" }).prefix,
     `u/${accountId}/.branches/fix-login/`,
+  );
+});
+
+// ---- the one-hour credential (drive issue #106) ----
+//
+// Space swaps a key for a one-hour scoped credential, so a leaked agent key
+// stops working on its own. The lifetime is a per-kind table for the same
+// reason the capabilities are: one place a kind's rules live, so a kind cannot
+// be given an hour in one file and forever in another.
+
+test("the one lifetime table covers every kind, and only a device key never expires", () => {
+  assert.deepEqual(Object.keys(KEY_TTL_SECONDS).sort(), [...KEY_KINDS].sort());
+  for (const kind of KEY_KINDS) {
+    if (kind === "device") {
+      assert.equal(keyTtlSeconds(kind), null, "a person's own device key never expires");
+      continue;
+    }
+    assert.equal(keyTtlSeconds(kind), 3600, `${kind} lives one hour`);
+  }
+});
+
+test("an unknown kind is refused a lifetime rather than handed an immortal credential", () => {
+  assert.throws(
+    () => keyTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root")),
+    /lifetime/i,
   );
 });

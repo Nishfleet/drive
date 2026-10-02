@@ -98,6 +98,12 @@ type Env struct {
 type KeyMinter interface {
 	MintKey(kind, name string) (MintedKey, error)
 	RevokeKey(keyID string) error
+	// RenewKey restarts the hour on a key this device already holds
+	// (POST /v1/keys/<keyId>/renew, issue #106). A tool idle for longer than an
+	// hour outlives its credential, so a drive command that finds one asks the
+	// Worker to restart the hour instead of leaving a dead key in the tool's
+	// entry.
+	RenewKey(keyID string) error
 }
 
 // agentKeyEnv is the one key an agent tool's MCP server runs on (build-spec.md

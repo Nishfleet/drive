@@ -13,20 +13,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeAPI is a stand-in api Worker: it answers the device flow and the key
 // routes, and records what the CLI sent so a test can assert the wire shape.
 type fakeAPI struct {
-	codes       map[string]DeviceCode // user code -> code, as the Worker holds it
-	approved    map[string]bool
-	keys        map[string]MintedKey // key id -> key
-	mintedKinds []string
-	mintedNames []string
-	revokedIDs  []string
-	lastAuthHdr string
-	lastPath    string
-	rejectMints bool
+	codes        map[string]DeviceCode // user code -> code, as the Worker holds it
+	approved     map[string]bool
+	keys         map[string]MintedKey // key id -> key
+	mintedKinds  []string
+	mintedNames  []string
+	revokedIDs   []string
+	renewedIDs   []string
+	lastAuthHdr  string
+	lastPath     string
+	rejectMints  bool
+	rejectRenews bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -81,15 +84,50 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mintedKinds = append(f.mintedKinds, body.Kind)
 		f.mintedNames = append(f.mintedNames, body.Name)
+		// The hour an agent key is minted with (drive issue #106): the api
+		// Worker answers POST /v1/keys with the second the credential stops
+		// working at, and only an agent key gets one.
+		var expiresAt *int64
+		if body.Kind == "agent" {
+			at := time.Now().Add(agentKeyTTL).Unix()
+			expiresAt = &at
+		}
 		key := MintedKey{
 			KeyID:        "key_" + body.Name,
 			AccessKeyID:  "ak_" + body.Name,
 			Secret:       "sk_" + body.Name,
 			Prefix:       "u/acct_1/",
 			Capabilities: []string{"list", "read", "write"},
+			ExpiresAt:    expiresAt,
 		}
 		f.keys[key.KeyID] = key
 		writeTestJSON(w, 201, key)
+	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && strings.HasSuffix(r.URL.Path, "/renew") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, keysPath+"/"), "/renew")
+		f.renewedIDs = append(f.renewedIDs, id)
+		// 409 is what a revoked key answers, the same shape the Worker serves.
+		if f.rejectRenews {
+			writeTestJSON(w, 409, map[string]string{"error": "That key is revoked."})
+			return
+		}
+		key, ok := f.keys[id]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The row comes back with a fresh hour and no secret: renewing replaces
+		// the window, never the credential.
+		at := time.Now().Add(agentKeyTTL).Unix()
+		key.ExpiresAt = &at
+		f.keys[id] = key
+		writeTestJSON(w, 200, map[string]any{
+			"keyId":        key.KeyID,
+			"name":         strings.TrimPrefix(id, "key_"),
+			"kind":         "agent",
+			"prefix":       key.Prefix,
+			"capabilities": key.Capabilities,
+			"expiresAt":    *key.ExpiresAt,
+		})
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && r.Method == http.MethodDelete:
 		f.revokedIDs = append(f.revokedIDs, strings.TrimPrefix(r.URL.Path, keysPath+"/"))
 		w.WriteHeader(http.StatusNoContent)
@@ -411,5 +449,173 @@ func TestAConnectedToolKeepsTheExistingKeyOnASecondRun(t *testing.T) {
 	}
 	if len(api.mintedNames) != 1 {
 		t.Fatalf("minted %v, want exactly one key across two runs", api.mintedNames)
+	}
+}
+
+// ---- the one-hour agent credential (drive issue #106) ----
+//
+// An agent key is minted with an hour and the api Worker renews the window on
+// every request that proves the tool is still using it. The CLI's two halves of
+// that are here: it carries and shows the expiry the mint answers with, and it
+// asks for a renewal when a stored key is about to run out.
+
+// agentKeyTTL is the hour the api Worker mints an agent key with
+// (workers/api/src/keyprovider.js AGENT_KEY_TTL_SECONDS). The fake Worker
+// answers with this window so the CLI's own handling is what the test proves.
+const agentKeyTTL = time.Hour
+
+func TestAnAgentKeyCarriesItsExpiryAndADeviceKeyDoesNot(t *testing.T) {
+	home := t.TempDir()
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	client, err := NewAPIClient(server.URL, "dtok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Home: home, Minter: ToolMinter{Client: client, Home: home}}.withDefaults()
+
+	agent, err := env.Minter.MintKey("agent", "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.ExpiresAt == nil {
+		t.Fatal("an agent key must carry the hour it was minted with")
+	}
+	stored, err := agentKeyFor(home, "claude")
+	if err != nil || stored == nil {
+		t.Fatalf("claude's key is gone: %v (%v)", stored, err)
+	}
+	if stored.ExpiresAt == nil || *stored.ExpiresAt != *agent.ExpiresAt {
+		t.Fatalf("the stored key's expiry is %v, want %v", stored.ExpiresAt, agent.ExpiresAt)
+	}
+	device, err := env.Minter.MintKey("device", "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.ExpiresAt != nil {
+		t.Fatalf("a person's own device key was given an expiry: %v", *device.ExpiresAt)
+	}
+}
+
+func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
+	at := time.Date(2026, 10, 2, 13, 4, 0, 0, time.UTC)
+	seconds := at.Unix()
+	want := "expires " + at.Local().Format("2006-01-02 15:04")
+	if got := expiryLabel(nil); got != "no expiry" {
+		t.Fatalf("a key with no expiry reads %q", got)
+	}
+	if got := expiryLabel(&seconds); got != want {
+		t.Fatalf("an expiry reads %q, want %q", got, want)
+	}
+}
+
+func TestNeedsRenewOnlyForAKeyInsideTheMargin(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	soon := now.Add(time.Minute).Unix()
+	later := now.Add(agentKeyTTL).Unix()
+	past := now.Add(-time.Minute).Unix()
+	for _, tc := range []struct {
+		name string
+		key  *agentKey
+		want bool
+	}{
+		{"no key at all", nil, false},
+		{"no expiry", &agentKey{ExpiresAt: nil}, false},
+		{"an hour left", &agentKey{ExpiresAt: &later}, false},
+		{"a minute left", &agentKey{ExpiresAt: &soon}, true},
+		{"already past", &agentKey{ExpiresAt: &past}, true},
+	} {
+		if got := needsRenew(tc.key, now); got != tc.want {
+			t.Errorf("%s: needsRenew = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
+	home := t.TempDir()
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	client, _ := NewAPIClient(server.URL, "dtok")
+	env := Env{Home: home, Minter: ToolMinter{Client: client, Home: home}}.withDefaults()
+	cursor, _ := toolByName("cursor")
+	if err := mintToolKey(env, cursor); err != nil {
+		t.Fatal(err)
+	}
+	// A key minted a moment ago has an hour left, so a second run reuses it.
+	if err := mintToolKey(env, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.renewedIDs) != 0 {
+		t.Fatalf("renewed %v, want no renewal for a key with an hour left", api.renewedIDs)
+	}
+	if len(api.mintedNames) != 1 {
+		t.Fatalf("minted %v, want exactly one key", api.mintedNames)
+	}
+
+	// Now the stored key is nearly out of hour: the tool sat idle, so nothing
+	// renewed it and its next request would be refused.
+	key, err := agentKeyFor(home, "cursor")
+	if err != nil || key == nil {
+		t.Fatalf("cursor has no key: %v (%v)", key, err)
+	}
+	almost := time.Now().Add(time.Minute).Unix()
+	key.ExpiresAt = &almost
+	// agentKey and MintedKey are field-for-field the same shape, so the
+	// conversion is the plain one the store itself uses.
+	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
+		t.Fatal(err)
+	}
+	if !needsRenew(key, time.Now()) {
+		t.Fatal("a key a minute from its expiry needs a renewal")
+	}
+	if err := mintToolKey(env, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.renewedIDs) != 1 || api.renewedIDs[0] != "key_cursor" {
+		t.Fatalf("renewed %v, want key_cursor", api.renewedIDs)
+	}
+	// The renewal did not mint a second key, and it did not change the
+	// credential the tool's MCP entry holds.
+	if len(api.mintedNames) != 1 {
+		t.Fatalf("minted %v, want the same one key", api.mintedNames)
+	}
+	after, err := agentKeyFor(home, "cursor")
+	if err != nil || after == nil {
+		t.Fatalf("cursor's key is gone after a renewal: %v (%v)", after, err)
+	}
+	if after.AccessKeyID != key.AccessKeyID || after.Secret != key.Secret {
+		t.Fatal("a renewal replaced the credential, so the tool's own entry broke")
+	}
+}
+
+func TestARenewalThatIsRefusedIsReported(t *testing.T) {
+	home := t.TempDir()
+	api := newFakeAPI()
+	api.rejectRenews = true
+	server := httptest.NewServer(api)
+	defer server.Close()
+	client, _ := NewAPIClient(server.URL, "dtok")
+	env := Env{Home: home, Minter: ToolMinter{Client: client, Home: home}}.withDefaults()
+	cursor, _ := toolByName("cursor")
+	if err := mintToolKey(env, cursor); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Minute).Unix()
+	key, err := agentKeyFor(home, "cursor")
+	if err != nil || key == nil {
+		t.Fatalf("cursor has no key: %v (%v)", key, err)
+	}
+	key.ExpiresAt = &past
+	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
+		t.Fatal(err)
+	}
+	err = mintToolKey(env, cursor)
+	if err == nil {
+		t.Fatal("a refused renewal must be reported, not swallowed")
+	}
+	if !strings.Contains(err.Error(), "renew the cursor key") {
+		t.Fatalf("the failure reads %q, and must name the tool and the renew", err)
 	}
 }
