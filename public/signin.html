@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — sign in</title>
-  <meta name="description" content="Sign in to your drive: one link by email, or Google or GitHub. No card asked.">
+  <meta name="description" content="Sign in to your drive: one link by email. No card asked.">
   <meta name="robots" content="noindex">
   <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
        table. The copy and the endpoints live in src/signin.js, the single
@@ -139,26 +139,12 @@ button:disabled {
   cursor: default;
 }
 
-.providers {
-  margin-top: 14px;
-  display: grid;
-  gap: 10px;
-}
-
-.providers button {
-  width: 100%;
-}
-
+/* drive#180: the .providers layout block went with the Google and GitHub
+   buttons it laid out; nothing else used it. */
 .hint {
   color: var(--ink-faint);
   font-size: 14px;
   margin: 10px 0 0;
-}
-
-.rule {
-  border: 0;
-  border-top: 1px solid var(--rule);
-  margin: 22px 0;
 }
 
 .status {
@@ -202,7 +188,7 @@ button:disabled {
 
   <main>
     <h1 id="signin-heading">Sign in</h1>
-    <p class="lede">One link by email, or Google or GitHub.</p>
+    <p class="lede">One link by email.</p>
     <p class="free">No card asked. $1 free every month, no card needed</p>
 
     <div class="card">
@@ -224,13 +210,6 @@ button:disabled {
         <p class="hint">We email a link that signs you in. No password to remember.</p>
       </form>
 
-      <hr class="rule">
-
-      <div class="providers">
-        <button type="button" data-method="google">Continue with Google</button>
-        <button type="button" data-method="github">Continue with GitHub</button>
-      </div>
-
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
     </div>
   </main>
@@ -251,7 +230,12 @@ button:disabled {
 // minted when the emailed link is followed, not by this page, so there is no
 // second post to make.
 const SIGNIN_ENDPOINT = "/api/signin";
-const METHODS = ["email", "google", "github"];
+// drive#180: the methods the server can complete today, which is the list of
+// controls this page renders — SIGNIN_OFFERED_METHODS in src/signin.js, which
+// test/signin.test.mjs pins against this line. Email's control is the form
+// above, so the data-method loop below binds nothing until a provider method
+// joins this list and its button joins this page.
+const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
