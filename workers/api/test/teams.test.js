@@ -394,3 +394,79 @@ test("an anonymous caller cannot see or change a team", async () => {
     assert.equal(answer.status, 401, `${method} ${path} is account-gated`);
   }
 });
+
+test("a member mints their own team key, and the role comes from the invite, not the request", async () => {
+  const t = await team();
+
+  // The read-only member asks for a key over HTTP. The route answers with the
+  // stored role's scope, whatever the body asked for.
+  const minted = await dispatch(
+    new Request(`https://api.test/v1/teams/${t.team.id}/key`, {
+      method: "POST",
+      headers: { ...bearer(t.readerToken), "content-type": "application/json" },
+      body: JSON.stringify({ name: "ravi-laptop" }),
+    }),
+    t.env,
+  );
+  assert.equal(minted.status, 201);
+  const key = await minted.json();
+  assert.equal(key.prefix, `t/${t.team.id}/`);
+  assert.deepEqual(key.capabilities, ["list", "read"], "a read-only member's key cannot write");
+  assert.ok(!key.capabilities.includes("delete"), "no team role ever carries delete");
+
+  // A body asking for read_write does not promote it: the role is the stored
+  // one, so the key is refused on a write exactly as before.
+  const escalated = await dispatch(
+    new Request(`https://api.test/v1/teams/${t.team.id}/key`, {
+      method: "POST",
+      headers: { ...bearer(t.readerToken), "content-type": "application/json" },
+      body: JSON.stringify({ name: "sneaky", role: "read_write" }),
+    }),
+    t.env,
+  );
+  assert.equal(escalated.status, 201);
+  const escalatedKey = await escalated.json();
+  assert.deepEqual(
+    escalatedKey.capabilities,
+    ["list", "read"],
+    "a member cannot mint themselves a write key by asking for one",
+  );
+
+  // The read-write member's key does write, through the same route.
+  const writerKeyRes = await dispatch(
+    new Request(`https://api.test/v1/teams/${t.team.id}/key`, {
+      method: "POST",
+      headers: { ...bearer(t.writerToken), "content-type": "application/json" },
+      body: JSON.stringify({ name: "wren-laptop" }),
+    }),
+    t.env,
+  );
+  assert.equal(writerKeyRes.status, 201);
+  const writerKey = await writerKeyRes.json();
+  assert.deepEqual(writerKey.capabilities, ["list", "read", "write"]);
+  const written = await dispatch(
+    new Request(`https://api.test/v1/storage/object?path=${writerKey.prefix}plan.md`, {
+      method: "PUT",
+      headers: basic(writerKey.accessKeyId, writerKey.secret),
+      body: "the plan",
+    }),
+    t.env,
+  );
+  assert.equal(written.status, 201, "a read-write member's key writes the shared drive");
+
+  // An account that is not on the team gets no key at all.
+  const stranger = await signIn(t.store, {
+    id: "acct_stranger",
+    name: "Sam",
+    email: "sam@example.com",
+  });
+  const refused = await dispatch(
+    new Request(`https://api.test/v1/teams/${t.team.id}/key`, {
+      method: "POST",
+      headers: { ...bearer(stranger.deviceToken), "content-type": "application/json" },
+      body: JSON.stringify({ name: "sam" }),
+    }),
+    t.env,
+  );
+  assert.equal(refused.status, 404, "an account off the team mints no key");
+});

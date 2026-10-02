@@ -193,16 +193,25 @@ export function createApp(table = routes) {
 
   for (const [path, pathRoutes] of byPath) {
     const key = methodSetKey(pathRoutes.map((route) => route.method));
-    const publics = new Set(
-      pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
-    );
-    const prior = anonymousAllow.get(key);
-    anonymousAllow.set(
-      key,
-      prior === undefined ? publics : new Set([...prior].filter((m) => publics.has(m))),
-    );
-
     const allAccount = pathRoutes.every((route) => route.auth !== "public");
+    // Only a path that actually serves something to an anonymous caller
+    // contributes to the intersection. An all-account path is gated as a whole
+    // below, so an anonymous request to it is the gate's own 401 and its
+    // methods are never named — and folding its (empty) public set in here
+    // would subtract exactly those methods from every other path that shares
+    // the method set, so an unrelated public route would lose its Allow header
+    // the moment a new account-only path shares a method with it.
+    if (!allAccount) {
+      const publics = new Set(
+        pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
+      );
+      const prior = anonymousAllow.get(key);
+      anonymousAllow.set(
+        key,
+        prior === undefined ? publics : new Set([...prior].filter((m) => publics.has(m))),
+      );
+    }
+
     if (allAccount) {
       // Every method on this path needs an account, so the whole path is
       // gated and an anonymous request is 401 without naming the methods.

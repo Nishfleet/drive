@@ -24,6 +24,7 @@ import {
   inviteMemberRoute,
   listMembersRoute,
   listTeamsRoute,
+  mintTeamKeyRoute,
   removeMemberRoute,
 } from "./team-routes.js";
 
@@ -176,6 +177,12 @@ export const routes = [
     path: "/v1/teams/:teamId/members/:memberId",
     auth: "account",
     handler: removeMemberRoute,
+  },
+  {
+    method: "POST",
+    path: "/v1/teams/:teamId/key",
+    auth: "account",
+    handler: mintTeamKeyRoute,
   },
 
   // ---- the bucket's own notifications (build step 1, drive#2) ----

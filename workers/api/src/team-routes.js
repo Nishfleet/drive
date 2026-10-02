@@ -173,3 +173,46 @@ export function publicMember(member) {
     ),
   };
 }
+
+/**
+ * POST /v1/teams/:teamId/key — mint the caller's own key on the team drive.
+ * The role comes from the STORED membership, never from the request body: a
+ * member asking for `read_write` when the owner invited them `read_only` is
+ * refused, because the only place a role may be written is the invite.
+ *
+ * The secret is in this response and nowhere else (the same rule as
+ * `POST /v1/keys`), and the scope is `teamScopeFor` over the stored role, so
+ * the key's capabilities are the one table's and the storage write route
+ * refuses a read-only one.
+ * @param {Request} request
+ * @param {{store: any, account: {id: string}, params: Record<string, string>}} ctx
+ */
+export async function mintTeamKeyRoute(request, ctx) {
+  if (request.method !== "POST") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  const team = await ctx.store.teams.teamForAccount(ctx.account, ctx.params.teamId);
+  if (team === null) {
+    return errorResponse(404, "No such team on this account.");
+  }
+  // The owner's own key on the team drive is the owner's device key scoped to
+  // the team prefix, so an owner and a read-write member hold the same kind of
+  // thing; a member's role is what differs, and a member with no stored
+  // membership has no role to mint from.
+  const isOwner = team.ownerAccountId === ctx.account.id;
+  const membership = isOwner ? null : await ctx.store.teams.acceptInvite(team.id, ctx.account.id);
+  if (!isOwner && membership === null) {
+    return errorResponse(404, "No such team on this account.");
+  }
+  const role = isOwner
+    ? "read_write"
+    : /** @type {import("./keyprovider.js").TeamRole} */ (membership?.role);
+  const read = await readJsonObject(request);
+  if ("error" in read) {
+    return errorResponse(400, read.error);
+  }
+  const name =
+    typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : role;
+  const minted = await ctx.store.mintTeamKey(ctx.account, team.id, role, { name });
+  return json(minted, 201);
+}
