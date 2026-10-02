@@ -258,12 +258,22 @@ func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
 	for _, in := range []string{
 		"",
 		"k=short",
+		// The #205 example: the old extraction kept "/?x=1" as if it were
+		// part of the token, and this paste reached RevokeShare/RevokeRequest.
+		"https://drive.test/s/AAAAA/?x=1",
 		"https://drive.test/s/AAAA/?x=1",
 		"https://drive.test/k=evil",
 		"../" + shareToken,
 	} {
-		if got, err := tokenFromArg(in); err == nil {
+		got, err := tokenFromArg(in)
+		if err == nil {
 			t.Errorf("tokenFromArg(%q) = %q, want an error", in, got)
+			continue
+		}
+		// The refusal names the shape a person must paste, not a bare
+		// "invalid".
+		if !strings.Contains(err.Error(), "22") {
+			t.Errorf("tokenFromArg(%q) error %q does not name the token shape", in, err)
 		}
 	}
 }
