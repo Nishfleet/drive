@@ -15,7 +15,7 @@
     "pretest": "npm run check",
     "docs:render": "node src/render-docs.js",
     "docs:build": "npm run docs:render && vitepress build docs-site",
-    "eval:agents": "npm run docs:render && promptfoo eval --config evals/agents/promptfooconfig.yaml",
+    "eval:agents": "npm run docs:render && npx --yes promptfoo@0.123.1 eval --config evals/agents/promptfooconfig.yaml --output evals/agents/results/latest.json ${DRIVE_EVAL_HOLDOUT:+--tests \"$DRIVE_EVAL_HOLDOUT\"}",
     "test": "npm run docs:build && node --test"
   },
   "engines": {
@@ -35,8 +35,6 @@
     "@types/node": "^24.19.0",
     "@types/validator": "^13.15.10",
     "cf": "^1.0.0-beta.10",
-    "js-yaml": "^5.4.2",
-    "promptfoo": "0.123.1",
     "typescript": "^7.0.2",
     "urlpattern-polyfill": "^10.1.0",
     "vite": "^8.3.0",

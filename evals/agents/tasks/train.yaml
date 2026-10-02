@@ -153,10 +153,10 @@
     task: >
       I ruined a file an hour ago. What do I run to get the version from before
       back?
-    source: docs-site/how-it-works.md, "Restore"
+    source: docs-site/how-it-works.md, "Restore"; docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/drive restore/.test(output)"
+      value: "/(not in the CLI|not yet|no restore command)/i.test(output)"
 
 - description: the price worked out for 800 GB held all month
   vars:
@@ -378,10 +378,10 @@
       machine, so the answer has to name which version is which — and drive's
       own history only lists today's from storage, so the clock matters more
       than the command.
-    source: docs-site/how-it-works.md, "Restore"
+    source: docs-site/how-it-works.md, "Restore"; docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/drive restore \\S+ --version/.test(output) && /(yesterday|today|few minutes|copied)/i.test(output)"
+      value: "/(not in the CLI|not yet|no restore command)/i.test(output) && /(1 day|one day|30 days|version)/i.test(output)"
 
 - description: keep a folder available offline
   metadata:

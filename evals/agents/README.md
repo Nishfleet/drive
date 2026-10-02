@@ -12,20 +12,30 @@ npm run eval:agents
 ```
 
 That renders the docs pages (`npm run docs:render`), then runs
-`promptfoo eval` against `promptfooconfig.yaml`. The `eval:agents` script in
-`package.json` is the only wiring; there is no wrapper and no helper script.
+`npx promptfoo@0.123.1 eval` against `promptfooconfig.yaml`. The version is
+pinned in the `eval:agents` script in `package.json`. There is no wrapper
+script and promptfoo is not a repo dependency, so `npm test` does not install
+it.
+
+A held-out run is the same command with the split's path set. That path is
+outside this checkout, so the hill-climber (#223) cannot read the tasks from
+the repo:
+
+```sh
+DRIVE_EVAL_HOLDOUT=/home/nish/.local/share/drive/eval-holdout.yaml npm run eval:agents
+```
 
 ## The tool, and why
 
-**[promptfoo](https://promptfoo.dev/)**, pinned in `package.json` and run from
-`node_modules`. The repo is a Node repo, its test suite already runs under
-Node, and promptfoo is the stock tool for "a set of tasks, a set of graders,
-run them against N models and report a score" with no harness to hand-write.
-Inspect (AISI) is the other stock choice the issue names; it is the better tool
-for sandboxed shell tasks, and it is the tool the grader half of this suite
-should move to when the storage stand-in is wired in (see "What is not done
-yet"). Inspect is Python, and this suite's graders are already JavaScript, so
-splitting the repo's toolchain in two buys nothing today.
+**[promptfoo](https://promptfoo.dev/)**, pinned at `0.123.1` in the one
+command. The repo is a Node repo, its test suite already runs under Node, and
+promptfoo is the stock tool for "a set of tasks, a set of graders, run them
+against N models and report a score" with no harness to hand-write. Inspect
+(AISI) is the other stock choice the issue names; it is the better tool for
+sandboxed shell tasks with an end-state grader (the file exists, the key is
+scoped). This suite's first slice is docs-and-CLI reading, whose graders are
+checks on the answer, so splitting the repo's toolchain into Python buys
+nothing today. End-state graders on a mounted stand-in are the next slice.
 
 ## What the agent gets
 
@@ -68,21 +78,17 @@ is added, is a **different model family** from the agent under test.
 
 The train split is roughly two thirds of the tasks and is this file. The
 held-out test split and its answers are **not in the repository**: they live
-outside the checkout, under the path named by `DRIVE_EVAL_HOLDOUT`, so the
-hill-climber (#223) cannot read them from the repo. `test/evals.test.mjs`
-proves no held-out file is tracked by git and that the default path is outside
-the repo. A held-out run is:
-
-```sh
-DRIVE_EVAL_HOLDOUT=/path/outside/the/repo npm run eval:agents
-```
+at `/home/nish/.local/share/drive/eval-holdout.yaml` (override with
+`DRIVE_EVAL_HOLDOUT`), so the hill-climber (#223) cannot read them from the
+repo. `test/evals.test.mjs` proves no held-out file is tracked by git.
 
 ## The models
 
-The two `providers` in `promptfooconfig.yaml` are the scaling pair: a cheaper
-model at its default effort, and a stronger model, so the same suite can show a
-stronger model and a higher effort scoring higher. The judge, when a task needs
-one, is set per assertion with a provider from a different family.
+The two `providers` in `promptfooconfig.yaml` are the scaling pair on the
+fleet's own proxy at `127.0.0.1:4000`: `worker-cheap` at default effort, and
+`worker-capable` as the stronger model. Three `repeat`s are the variance
+check. A run uses the `OPENAI_API_KEY` already on this host for that proxy.
+It does not call a paid external API.
 
 ## What is not done yet
 
@@ -99,5 +105,5 @@ docs and the CLI correctly, which is the first half of the question.
 
 `docs/scoreboard.md` carries one row, "agents finish real tasks from the docs",
 whose us-cell is a live run of this suite. `test/scoreboard.test.mjs` owns the
-row list, so a run that has no numbers yet must not add the row until it does;
-the numbers, the command that repeats them and the run id go in the us-cell.
+row list. The numbers, the command that repeats them and the run id go in the
+us-cell when a live run has them.

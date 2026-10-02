@@ -5,7 +5,8 @@ before. Below is its public documentation and the output of its command's own
 Answer the task with the exact commands, in order, and nothing else. Where the
 documentation does not say, say that it does not say, and give the nearest
 thing the documentation does give. Never invent a flag or a command that is
-not in the documentation or in the help text below.
+not in the documentation or in the help text below. Put the whole answer in
+the visible reply; do not leave it only in hidden reasoning.
 
 # drive's public documentation
 
@@ -24,6 +25,10 @@ not in the documentation or in the help text below.
 {{docs_security}}
 
 {{docs_changelog}}
+
+{{docs_faq}}
+
+{{docs_benchmarks}}
 
 # drive --help
 

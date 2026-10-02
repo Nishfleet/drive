@@ -12,14 +12,23 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import * as yaml from "js-yaml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 const evals = join(root, "evals", "agents");
+const HOLDOUT_DEFAULT = "/home/nish/.local/share/drive/eval-holdout.yaml";
 
 function read(p) {
   return readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+}
+
+function loadYaml(rel) {
+  const json = execFileSync(
+    "python3",
+    ["-c", "import sys, json, yaml; print(json.dumps(yaml.safe_load(sys.stdin)))"],
+    { input: read(rel), encoding: "utf8" },
+  );
+  return JSON.parse(json);
 }
 
 const rendered = join(root, "docs-site", ".rendered");
@@ -27,7 +36,7 @@ const rendered = join(root, "docs-site", ".rendered");
 test("the suite is wired to the stock tool and the docs render", () => {
   assert.ok(existsSync(join(evals, "promptfooconfig.yaml")), "config exists");
   assert.ok(existsSync(join(rendered, "quickstart.md")), "docs rendered");
-  const cfg = yaml.load(read("evals/agents/promptfooconfig.yaml"));
+  const cfg = loadYaml("evals/agents/promptfooconfig.yaml");
   assert.ok(cfg.description, "config has a description");
   assert.ok(
     Array.isArray(cfg.providers) && cfg.providers.length >= 2,
@@ -38,13 +47,21 @@ test("the suite is wired to the stock tool and the docs render", () => {
     labels.some((l) => /stronger|higher effort/i.test(l)),
     "one provider is labelled as the scaling pair",
   );
+  for (const p of cfg.providers) {
+    assert.match(
+      p.config?.apiBaseUrl ?? "",
+      /^http:\/\/127\.0\.0\.1:4000\//,
+      `${p.label}: providers call the local proxy, not a paid API`,
+    );
+  }
+  assert.equal(cfg.evaluateOptions?.repeat, 3, "three epochs for the variance check");
   assert.equal(cfg.tests, "file://tasks/train.yaml", "train split only in this repo");
   assert.ok(cfg.defaultTest?.vars?.docs_index?.startsWith("file://"), "docs are file refs");
   assert.ok(cfg.defaultTest?.vars?.drive_help?.startsWith("file://"), "help text is a file ref");
 });
 
 test("train.yaml has 40-60 tasks, every hard one says why a person finds it hard", () => {
-  const tasks = yaml.load(read("evals/agents/tasks/train.yaml"));
+  const tasks = loadYaml("evals/agents/tasks/train.yaml");
   assert.ok(Array.isArray(tasks), "tasks is a list");
   const n = tasks.length;
   assert.ok(n >= 40 && n <= 60, `task count ${n} is in the required 40-60`);
@@ -73,8 +90,8 @@ test("train.yaml has 40-60 tasks, every hard one says why a person finds it hard
 });
 
 test("programmatic graders only, and the judge lives on a different family", () => {
-  const tasks = yaml.load(read("evals/agents/tasks/train.yaml"));
-  const cfg = yaml.load(read("evals/agents/promptfooconfig.yaml"));
+  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const cfg = loadYaml("evals/agents/promptfooconfig.yaml");
   for (const t of tasks) {
     for (const a of t.assert) {
       if (a.type === "llm-rubric") {
@@ -91,6 +108,35 @@ test("programmatic graders only, and the judge lives on a different family", () 
       }
     }
   }
+});
+
+test("the same transcript graded twice agrees 100%", () => {
+  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const samples = [
+    "drive mount --foreground\ndrive status\nDRIVE_S3_SECRET_ACCESS_KEY from the environment, never a flag, because ps and history leak it.\nread-only at the cap, nothing is deleted.\n$12 default. $11 for 800 GB. $1 free, no card.\nllms-full.txt\na folder that holds more than your laptop can\nWindows is not in version 1, no pin, copy with rclone.\n1 day then 30 days. not in the CLI yet, no restore command.\ndrive branch notes drive approve stops if the original changed.\nIf-Match ETag. .branches/\ndrive search notes. drive share x then drive share --revoke. drive request inbox.\ndrive agents revoke claude. drive logout and unmount.\ngo install github.com/Nishfleet/drive/cmd/drive@latest\nmcp add\ncreate, change and rename, cannot delete.\nbyte range, not the whole file.\n2026-10-02 The Benchmarks page",
+    "",
+    "lorem ipsum",
+  ];
+  let n = 0;
+  let disagreements = 0;
+  for (const t of tasks) {
+    for (const a of t.assert) {
+      if (a.type !== "javascript") continue;
+      const fn = new Function("output", `"use strict"; return (${a.value});`);
+      for (const sample of samples) {
+        const first = fn(sample);
+        const second = fn(sample);
+        n += 1;
+        if (first !== second) disagreements += 1;
+      }
+    }
+  }
+  assert.ok(n > 0, "graded at least one transcript");
+  assert.equal(
+    disagreements,
+    0,
+    `same transcript graded twice must agree; ${disagreements}/${n} differed`,
+  );
 });
 
 test("held-out tasks and run artefacts are not in the repository", () => {
@@ -110,6 +156,12 @@ test("held-out tasks and run artefacts are not in the repository", () => {
   const gitignore = read("evals/agents/.gitignore");
   assert.ok(/results\//.test(gitignore), ".gitignore covers results/");
   assert.ok(/heldout\//.test(gitignore), ".gitignore covers heldout/");
+  const readme = read("evals/agents/README.md");
+  assert.ok(
+    readme.includes(HOLDOUT_DEFAULT),
+    "README names the default held-out path outside the repo",
+  );
+  assert.ok(!HOLDOUT_DEFAULT.startsWith(root), "default held-out path is outside this checkout");
 });
 
 test("the prompt reads only the docs, the help text and the task", () => {
@@ -138,7 +190,15 @@ test("package.json wires the one command and the stock tool", () => {
     pkg.scripts["eval:agents"].includes("promptfooconfig.yaml"),
     "one command uses the config",
   );
-  assert.ok(pkg.devDependencies?.promptfoo, "promptfoo is a declared dependency");
+  assert.match(
+    pkg.scripts["eval:agents"],
+    /npx --yes promptfoo@0\.123\.1/,
+    "promptfoo is pinned in the one command",
+  );
+  assert.ok(
+    !pkg.dependencies?.promptfoo && !pkg.devDependencies?.promptfoo,
+    "promptfoo is not a repo dependency, so npm test does not install it",
+  );
 });
 
 test("scoreboard carries the agents row, owned by this issue", () => {
