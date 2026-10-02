@@ -41,10 +41,12 @@ the issue named for those four bandwidths.
 |---|---|---|---|---|
 | video-start-first-byte | first-byte | streams byte ranges in real time, no 5 GB first-byte figure - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured |
 | video-start-first-byte | first-100mb | streams byte ranges in real time, no 5 GB first-100-MB figure - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured |
+| file-open | open | 4 KiB get 1.1 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | save-reaches-storage | 1gb-save | not published - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | small-edit-64mb | append-4kib | append 4 KiB to a 64 MiB file 111 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | small-edit-2gb | append-4kib | not published (Space publishes the 64 MiB case only) - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | list-folder | list-files | not published - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
+| big-folder-rename | rename | move dir, 200 x 64 KiB, 99.0 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | small-file-put-4kib | put | put 4 KiB 60.6 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | small-file-put-1mib | put | put 1 MiB 126 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | small-file-get-1mib | get | get 1 MiB 8.3 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
@@ -57,6 +59,8 @@ the issue named for those four bandwidths.
 | video-start-at-300M | first-byte | recommends more than 300 Mbps down and 100 Mbps up - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured | not yet measured |
 | video-start-at-300M | first-100mb | recommends more than 300 Mbps down and 100 Mbps up - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured | not yet measured |
 | install-to-mounted | install-to-first-file | 6-step quickstart, about five minutes - [docs.spacefs.com/start/quickstart](https://docs.spacefs.com/start/quickstart/) checked 2026-09-30 | not yet measured | not yet measured |
+| mount-ready | ready | 6-step quickstart, about five minutes - [docs.spacefs.com/start/quickstart](https://docs.spacefs.com/start/quickstart/) checked 2026-09-30 | not yet measured | not yet measured |
+| cli-cold-start | version | not published - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured |
 | cross-machine-new-file | sync | "every device connected to the same Space sees the new version within seconds", no figure - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured |
 | cross-machine-edit | sync | "every device connected to the same Space sees the new version within seconds", no figure - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured |
 | cross-machine-delete | sync | "every device connected to the same Space sees the new version within seconds", no figure - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured |

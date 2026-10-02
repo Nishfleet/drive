@@ -1,0 +1,15 @@
+{
+  "profile": "stand-in-quick",
+  "network": "loopback",
+  "unit": "s",
+  "rows": {
+    "file-open": { "tool": "go-bench", "mean": 0.000303, "stddev": 0.00005, "runs": 10 },
+    "video-start": { "tool": "go-bench", "mean": 0.000504, "stddev": 0.000169, "runs": 10 },
+    "small-file-put": { "tool": "go-bench", "mean": 5.217046, "stddev": 0.031849, "runs": 10 },
+    "small-file-get": { "tool": "go-bench", "mean": 0.003268, "stddev": 0.00071, "runs": 10 },
+    "small-edit": { "tool": "go-bench", "mean": 5.295112, "stddev": 0.025913, "runs": 10 },
+    "big-folder-rename": { "tool": "go-bench", "mean": 0.014954, "stddev": 0.002576, "runs": 10 },
+    "mount-ready": { "tool": "go-bench", "mean": 0.106818, "stddev": 0.000622, "runs": 10 },
+    "cli-cold-start": { "tool": "hyperfine", "mean": 0.002389, "stddev": 0.000359, "runs": 10 }
+  }
+}
