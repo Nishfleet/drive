@@ -183,6 +183,16 @@ function monthInstant(month) {
  * generate_series for the hours that were never rolled), and a JS loop over the
  * rows in a billing path would be a second copy of the meter. So the caller
  * reads it, and a test reads it the same way.
+ *
+ * Three anonymous placeholders and three bound values, NOT the numbered
+ * spelling MONTH_PEAK_BYTES_SQL uses: this statement runs on the RAW
+ * node:sqlite handle, where binding is positional, and test/d1-sqlite.mjs
+ * rewrites the numbered placeholders on that handle to anonymous ones because
+ * the driver rejects `?1` (drive#179). An index used twice is therefore two
+ * placeholders with one value bound, so the second comparison read NULL,
+ * matched no row, and every month summed to 0 - a bill that looks measured and
+ * is not. The bound value is passed once per placeholder here, which asks
+ * SQLite for the same window the production statement does.
  * @param {MeteredDB} meteredDb
  * @param {string} monthLabel
  * @returns {number}
@@ -194,11 +204,11 @@ function monthGbMinutes(meteredDb, monthLabel) {
       sqlite(meteredDb)
         .prepare(
           `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes FROM usage_minutes
-           WHERE account_id = ?1
-             AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
-             AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`,
+           WHERE account_id = ?
+             AND hour >= strftime('%s', ? / 1000, 'unixepoch', 'start of month') * 1000
+             AND hour <  strftime('%s', ? / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`,
         )
-        .get(ACCOUNT, from)
+        .get(ACCOUNT, from, from)
     ),
     "gb_minutes",
   );
