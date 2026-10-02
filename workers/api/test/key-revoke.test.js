@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
 
@@ -21,38 +22,95 @@ function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
   return { DEVICE_RATE_LIMITER: ip, DEVICE_GLOBAL_RATE_LIMITER: global };
 }
 
-function baseCtx(store, account) {
-  return { env: limits(), db: null, store, account, now: () => 0 };
+// Same session-cookie and account stand-in device-keys.test.js uses: only a
+// signed-in person can approve a device code (drive#174).
+const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
+
+function makeAccounts() {
+  const byToken = new Map();
+  let next = 0;
+  return {
+    byToken,
+    add(account) {
+      const token = `sess_${++next}`;
+      byToken.set(token, account);
+      return token;
+    },
+    api: {
+      async getSession({ headers }) {
+        const cookie = headers.get("cookie") ?? "";
+        const found = cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
+        const token = found?.slice(SESSION_COOKIE.length + 1);
+        const account = token === undefined ? undefined : byToken.get(token);
+        return account === undefined ? null : { user: account };
+      },
+    },
+  };
+}
+
+function baseCtx(store, account, overrides = {}) {
+  return {
+    env: { ...limits(), ...(overrides.env ?? {}) },
+    db: null,
+    store,
+    accounts: overrides.accounts,
+    account,
+    now: () => 0,
+  };
 }
 
 async function signIn(store, name) {
+  const accounts = makeAccounts();
+  const account = {
+    id: `acct_${name.replace(/\W+/g, "_")}`,
+    name,
+    email: `${name.replace(/\W+/g, "_")}@example.com`,
+  };
+  const sessionToken = accounts.add(account);
+  const ctx = () => baseCtx(store, null, { accounts });
+
   const codeRes = await dispatch(
     new Request("https://api.test/v1/device/code", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
     }),
-    baseCtx(store, null),
+    ctx(),
   );
   assert.equal(codeRes.status, 200);
   const code = await codeRes.json();
-  const page = await dispatch(new Request(`${code.verificationUriComplete}`), baseCtx(store, null));
+
+  const page = await dispatch(
+    new Request(`${code.verificationUriComplete}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` },
+    }),
+    ctx(),
+  );
   assert.equal(page.status, 200);
-  await dispatch(
+
+  const approved = await dispatch(
     new Request("https://api.test/v1/device/approve", {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `${SESSION_COOKIE}=${sessionToken}`,
+      },
       body: `user_code=${encodeURIComponent(code.userCode)}`,
     }),
-    baseCtx(store, null),
+    ctx(),
   );
+  assert.equal(approved.status, 200);
+
   const tokenRes = await dispatch(
     new Request("https://api.test/v1/device/token", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_code: code.deviceCode }),
     }),
-    baseCtx(store, null),
+    ctx(),
   );
   assert.equal(tokenRes.status, 200);
   const token = await tokenRes.json();

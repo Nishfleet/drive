@@ -50,6 +50,8 @@ Mount flags:
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
+  --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
@@ -60,9 +62,9 @@ Link flags (share, request):
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
 
-The device keys are read from the environment, never a flag, so they stay out
-of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
-DRIVE_S3_SECRET_ACCESS_KEY.
+The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
+The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
+or --secret-key-stdin. --secret-key is refused.
 
 Logout flags:
   --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
@@ -150,7 +152,7 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
 	var refusedSecret string
-	var endpoint, bucket, prefix, region string
+	var endpoint, bucket, prefix, region, downloadURL string
 	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
@@ -164,6 +166,11 @@ func runMount(args []string) error {
 	// is, and nothing after the first `--` reaches it.
 	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
 	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
+	// The dl Worker (drive issue #58). Absent, the mount reads from the
+	// endpoint and counts nothing; set, every read streams through the dl
+	// Worker so the account's download bytes are counted (docs/build-spec.md
+	// "The pieces", items 2 and 4).
+	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -193,7 +200,7 @@ func runMount(args []string) error {
 	if err != nil {
 		return err
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, secretKey)
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey)
 	if err != nil {
 		return err
 	}

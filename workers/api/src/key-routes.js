@@ -81,7 +81,7 @@ export function revokeKeyRoute(request, ctx) {
 }
 
 /**
- * POST /v1/keys/revoke — revoke the key that presents itself. A storage key is
+ * POST /api/keys/revoke — revoke the key that presents itself. A storage key is
  * the whole credential (Basic auth, the pair an S3 client presents), so the key
  * that can list and write can also turn itself off: that is what `drive logout`
  * calls when the person signs out, and it needs no second credential. The

@@ -14,10 +14,12 @@ import (
 
 // StorageConfig is the storage endpoint and keys, kept as config so switching
 // to the real storage (iDrive e2, step 1) needs no code change. Everything but
-// the keys is read from flags, falling back to the environment; the keys are
-// read from the environment only, because a command-line argument is visible
-// in `ps` output and in the shell history for as long as the process lives, and
-// a device key does not belong in either. Nothing here is provider-specific.
+// the keys is read from flags, falling back to the environment; the access key
+// id is read from the environment only, and the storage secret from the config
+// file (mode 0600), the environment, or stdin. A command-line argument is
+// visible in `ps` output and in the shell history for as long as the process
+// lives, and a device key does not belong in either. Nothing here is
+// provider-specific.
 type StorageConfig struct {
 	Endpoint  string // S3 endpoint URL, e.g. http://127.0.0.1:8080 (stand-in) or https://s3.eu-west-3.idrivee2-<n>.com
 	AccessKey string
@@ -25,6 +27,12 @@ type StorageConfig struct {
 	Bucket    string
 	Prefix    string // key prefix this device mounts, e.g. /u/<id>/
 	Region    string // S3 region name; stand-ins accept any
+	// DownloadURL is the dl Worker (drive issue #58, build step 5): the host
+	// reads stream through, so the mount's reads land in that account's
+	// download bytes. Empty means no download host is configured, and the
+	// mount then reads straight from storage and counts nothing, which is the
+	// honest state of a local stand-in.
+	DownloadURL string
 }
 
 // vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
@@ -280,14 +288,14 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 	return c, nil
 }
 
-// LoadStorageConfig resolves the storage endpoint, bucket, prefix and region
-// from flags first, then environment variables, and the device keys from the
-// environment alone (DRIVE_S3_ACCESS_KEY_ID) and the resolved secret the caller
-// resolved through ReadSecretKey — config file (mode 0600), environment, or
-// stdin, and never a flag (issue #75). It fails loudly when a required value is
-// missing. Endpoint, bucket and keys are config, not code: the same binary
-// talks to the local stand-in or to iDrive e2.
-func LoadStorageConfig(endpoint, bucket, prefix, region, secretKey string) (StorageConfig, error) {
+// LoadStorageConfig resolves the storage endpoint, bucket, prefix, region and
+// the dl Worker's download URL from flags first, then environment variables,
+// the access key from the environment alone (DRIVE_S3_ACCESS_KEY_ID), and the
+// resolved secret the caller resolved through ReadSecretKey — config file
+// (mode 0600), environment, or stdin, and never a flag (issue #75). It fails
+// loudly when a required value is missing. Endpoint, bucket and keys are
+// config, not code: the same binary talks to the local stand-in or to iDrive e2.
+func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string) (StorageConfig, error) {
 	c := StorageConfig{
 		Endpoint:  firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
 		Bucket:    firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
@@ -295,6 +303,12 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, secretKey string) (Stor
 		Region:    firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
 		AccessKey: os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
 		SecretKey: secretKey,
+		// The download host is optional and has no default: with none set the
+		// mount reads straight from storage (the local stand-in case), and with
+		// one set rclone streams every read through the dl Worker, which counts
+		// the bytes into that account's download total (docs/build-spec.md
+		// "The pieces", items 2 and 4).
+		DownloadURL: firstNonEmpty(downloadURL, os.Getenv("DRIVE_DOWNLOAD_URL")),
 	}
 	var missing []string
 	if c.Endpoint == "" {
@@ -325,6 +339,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, secretKey string) (Stor
 		{"bucket", c.Bucket},
 		{"prefix", c.Prefix},
 		{"region", c.Region},
+		{"download url", c.DownloadURL},
 		{"access key", c.AccessKey},
 		{"secret key", c.SecretKey},
 	} {
