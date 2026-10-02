@@ -25,6 +25,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Your drive is read-only because it reached its spending cap; nothing was deleted.",
     next: "Raise the cap on the usage page to start writing again.",
   }),
+  // One agent key hit its own monthly spending cap or its daily request cap
+  // (src/agentcaps.js). The account can still drive; this agent cannot write
+  // (drive#171). Nothing is deleted at a per-agent cap either.
+  "agent-cap-reached": Object.freeze({
+    what: "This agent is read-only because it reached its own spending or request cap; nothing was deleted.",
+    next: "Raise the agent's cap, or wait for its request count to reset at the next UTC day.",
+  }),
   // The key this device (or agent, or branch) was using no longer works.
   "key-revoked": Object.freeze({
     what: "This device's key was revoked, so it can't reach the drive.",
