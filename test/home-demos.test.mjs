@@ -616,10 +616,19 @@ function writeDemosDoc(record) {
   }
   lines.push(
     "",
-    "Reproduce with `node --test test/home-demos.test.mjs`. A Mac run (a real",
-    "Finder window, Final Cut, a Finder-side scrub) is out of reach for a Linux",
-    "build machine and is listed on issue #113 as an open check, never",
-    "estimated here.",
+    "Reproduce with",
+    "",
+    "```",
+    "DRIVE_STANDIN_BLENDER=/path/to/blender node --test test/home-demos.test.mjs",
+    "```",
+    "",
+    "Blender is named because a build machine may not have it on PATH; the",
+    "other two tools (ffmpeg, and the agent CLI) are found the ordinary way, and",
+    "a host missing any of the three skips the run rather than writing a partial",
+    "record. `DRIVE_STANDIN_VIDEO_GB` changes the video's size and the video",
+    "row's heading with it. A Mac run (a real Finder window, Final Cut, a",
+    "Finder-side scrub) is out of reach for a Linux build machine and is listed",
+    "on issue #113 as an open check, never estimated here.",
     "",
   );
   writeFileSync(DEMOS_DOC, lines.join("\n"));

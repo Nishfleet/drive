@@ -8,17 +8,26 @@ written here only by a run that produced it; nothing is estimated.
 
 - **Storage:** local rclone serve s3 stand-in
 - **Date:** 2026-10-02
-- **Commit:** a499071bcf5e0456a0e22a22bcc451d62af2a4cb
+- **Commit:** 35932a67415cc4ea719b1c224dc4ab262587d6a7
 
 | Demo | What was measured | Figure |
 |---|---|---|
-| `agent` | claude read brief.md and edited todo.md on the drive | 8.47 s |
-| `video-first-frame` | 5.0 GB H.264 opened and its first frame decoded off the mount | 0.16 s |
-| `video-scrub` | seeked to 1493s and decoded a frame from the same 5.0 GB file | 0.26 s |
-| `blend-open` | a 0.4 MB .blend opened off the mount in a fresh Blender process | 0.48 s |
-| `blend-save` | added a second object and saved back over the same file on the drive | 0.49 s |
+| `agent` | claude read brief.md and edited todo.md on the drive | 8.02 s |
+| `video-first-frame` | 5.0 GB H.264 opened and its first frame decoded off the mount | 0.17 s |
+| `video-scrub` | seeked to 1493s and decoded a frame from the same 5.0 GB file | 0.30 s |
+| `blend-open` | a 0.4 MB .blend opened off the mount in a fresh Blender process | 0.59 s |
+| `blend-save` | added a second object and saved back over the same file on the drive | 0.54 s |
 
-Reproduce with `node --test test/home-demos.test.mjs`. A Mac run (a real
-Finder window, Final Cut, a Finder-side scrub) is out of reach for a Linux
-build machine and is listed on issue #113 as an open check, never
-estimated here.
+Reproduce with
+
+```
+DRIVE_STANDIN_BLENDER=/path/to/blender node --test test/home-demos.test.mjs
+```
+
+Blender is named because a build machine may not have it on PATH; the
+other two tools (ffmpeg, and the agent CLI) are found the ordinary way, and
+a host missing any of the three skips the run rather than writing a partial
+record. `DRIVE_STANDIN_VIDEO_GB` changes the video's size and the video
+row's heading with it. A Mac run (a real Finder window, Final Cut, a
+Finder-side scrub) is out of reach for a Linux build machine and is listed
+on issue #113 as an open check, never estimated here.

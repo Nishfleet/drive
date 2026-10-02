@@ -43,14 +43,31 @@ uses one column on narrow viewports; no horizontal scroll at 360 px
 or 1440 px (verified against `.demos`), console-error-free.
 
 ## Contrast
-Body text on `--paper` (#faf6ee): ink-soft 7.18:1, ink 15.2:1, accent
-10.7:1 — all pass AA for normal and large text.
+Body text on `--paper` (#faf6ee): ink-soft 7.29:1, ink 15.13:1, accent
+10.65:1 — all pass AA for normal and large text.
+
+## Audit (the section, re-measured on the committed page)
+
+Headless Chrome on `public/` served over `http://127.0.0.1`, because the
+page links `/site.css` as a real stylesheet and a `file://` load 404s it.
+Viewport 1440x900 and 360x780, device scale 2.
+
+| Check | Result |
+|---|---|
+| Desktop 1440x900 | `scrollWidth == clientWidth == body.scrollWidth == 1440`, 0 elements past the viewport, 0 console errors (the only 404 is the browser's own `/favicon.ico`, which the page does not reference) |
+| Phone 360x780 | `scrollWidth == clientWidth == body.scrollWidth == 360`, 0 elements past the viewport, 0 console errors |
+| Contrast, every text node in `.demos`, WCAG AA | h2 15.13 (3.0 needed), lede 7.29, job name 15.13, command 7.29, prompt `$` 10.65, figures 10.65 (3.0 needed), figure units 7.29, caveat 7.29 — all pass |
+| Screenshots | `home-demos-desktop.png`, `home-demos-phone-360.png` |
 
 ## Open checks (not faked)
 - Real iDrive e2 storage (#173): the numbers above are measured on the
   local rclone serve s3 stand-in through the product's own mount flags;
-  re-run `DRIVE_STANDIN_ENDPOINT=… node --test test/home-demos.test.mjs`
+  re-run `DRIVE_STANDIN_BLENDER=… node --test test/home-demos.test.mjs`
   against real storage when #173 lands and update docs/demos.md — the
   page re-renders from the record, so the number follows.
 - Mac side (a real Finder window, Final Cut scrub) — listed on issue
   #113 as an open check; not measured here.
+- `drive init` itself (sign-in, then a per-tool key for every installed
+  agent) needs the live api Worker, so it is #173's run too. What the
+  agent row measures is the half the page claims: the agent reading and
+  editing through the mounted drive folder.
