@@ -16,9 +16,11 @@ would rather you read it here than find out in week three.
   download. Today you build it from the source, with one command:
   `go install github.com/Nishfleet/drive/cmd/drive@latest`. A one-line
   install is on the way.
-- **macOS is read-only for us.** We can prove the drive on a Mac only on a
-  GitHub macOS runner or by hand, so what we have measured end to end is
-  Linux.
+- **macOS is read-only for us.** The Mac mount is stock `rclone nfsmount`, which
+  uses the system's own NFS server, so there is no macFUSE to install. The mount
+  proof runs on macOS and on GitHub's Mac runners, but we cannot measure a
+  person's real Mac, so what we have measured end to end is Linux. We publish
+  the oldest Mac version the runners proved only once a run is green.
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
 - **No branch or approve commands.** Agents work in the live folder, so a
