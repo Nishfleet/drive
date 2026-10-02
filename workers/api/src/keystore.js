@@ -66,10 +66,17 @@ function digestsEqual(left, right) {
  * tests and a database-less deployment keep the in-memory one. The delegation
  * is the one call site the two implementations plug into; nothing else in this
  * module knows which backend is underneath.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore}} [options]
+ *
+ * `keyProvider` is where a minted key's credential comes from (build step 1,
+ * drive#2). With one, the credential is the storage endpoint's own, scoped by
+ * the policy it was minted with, so the endpoint refuses what the key may not
+ * do; without one (no storage configured) the credential is the stand-in the
+ * api's own storage API verifies. The choice is made once, by the factory.
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
+  const keyProvider = options.keyProvider;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
@@ -198,16 +205,34 @@ export function createMemoryStore(options = {}) {
           ? scopeFor(/** @type {any} */ (kind), account.id, { name: request.name })
           : scopeFor(/** @type {any} */ (kind), account.id);
       const keyId = newId("key");
-      const accessKeyId = newId("ak");
-      const secret = newId("sk");
+      /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
+      let credential;
+      if (keyProvider === undefined) {
+        // No storage configured: the stand-in credential the api's own storage
+        // API knows, and nothing outside the Worker has ever seen.
+        credential = {
+          accessKeyId: newId("ak"),
+          secret: newId("sk"),
+          sessionToken: null,
+          expiresIn: null,
+        };
+      } else {
+        const minted = await keyProvider.mint(scope);
+        credential = {
+          accessKeyId: minted.accessKeyId,
+          secret: minted.secret,
+          sessionToken: minted.sessionToken ?? null,
+          expiresIn: minted.expiresIn ?? null,
+        };
+      }
       /** @type {Device} */
       const device = {
         id: keyId,
         accountId: account.id,
         name: request.name ?? kind,
         kind: /** @type {any} */ (kind),
-        accessKeyId,
-        secretHash: await sha256Hex(secret),
+        accessKeyId: credential.accessKeyId,
+        secretHash: await sha256Hex(credential.secret),
         prefix: scope.prefix,
         capabilities: [...scope.capabilities],
         createdAt: nowSeconds(now()),
@@ -215,11 +240,14 @@ export function createMemoryStore(options = {}) {
         revokedAt: null,
       };
       devices.set(device.id, device);
-      byAccessKeyId.set(accessKeyId, device.id);
+      byAccessKeyId.set(credential.accessKeyId, device.id);
       return {
         keyId,
-        accessKeyId,
-        secret,
+        accessKeyId: credential.accessKeyId,
+        secret: credential.secret,
+        sessionToken: credential.sessionToken,
+        expiresIn: credential.expiresIn,
+
         prefix: device.prefix,
         capabilities: device.capabilities,
       };
