@@ -41,20 +41,13 @@ func exportCursorText(cursor *string) string {
 	return *cursor
 }
 
-// exportVersionCursorAt is the created_at half of the version cursor, or -1.
-func exportVersionCursorAt(document ExportDocument) int64 {
+// exportVersionCursorText renders the version cursor for the "did not finish"
+// error, or a dash when there is none.
+func exportVersionCursorText(document ExportDocument) string {
 	if document.Next.VersionCursor == nil {
-		return -1
+		return "-"
 	}
-	return document.Next.VersionCursor.At
-}
-
-// exportVersionCursorID is the b2_file_id half of the version cursor, or "".
-func exportVersionCursorID(document ExportDocument) string {
-	if document.Next.VersionCursor == nil {
-		return ""
-	}
-	return document.Next.VersionCursor.ID
+	return fmt.Sprintf("%d/%s", document.Next.VersionCursor.At, document.Next.VersionCursor.ID)
 }
 
 // ExportDocument is the account's own data as the route returns it: the
@@ -75,12 +68,18 @@ type ExportDocument struct {
 	// and Next carries the cursors that continue it.
 	Complete bool `json:"complete"`
 	Next     struct {
-		FileCursor    *string `json:"fileCursor"`
-		VersionCursor *struct {
-			At int64  `json:"at"`
-			ID string `json:"id"`
-		} `json:"versionCursor"`
+		FileCursor    *string              `json:"fileCursor"`
+		VersionCursor *ExportVersionCursor `json:"versionCursor"`
 	} `json:"next"`
+}
+
+// ExportVersionCursor is the position the version page stopped at: the
+// created_at of its last row and that row's b2_file_id, which together break
+// the ties between versions written in the same millisecond. A nil cursor on
+// the document means this was the last version page.
+type ExportVersionCursor struct {
+	At int64  `json:"at"`
+	ID string `json:"id"`
 }
 
 // ExportAccount is the account the export is about.
@@ -209,7 +208,7 @@ func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 		return nil, err
 	}
 	var document ExportDocument
-	if err := client.do(http.MethodGet, exportPagePath("", "", 0), nil, &document); err != nil {
+	if err := client.do(http.MethodGet, exportPagePath("", nil), nil, &document); err != nil {
 		return nil, err
 	}
 	if document.Account.ID == "" {
@@ -223,21 +222,16 @@ func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 			// rather than thrown away: what was read is still the account's
 			// own data, and the error says exactly where it stopped.
 			return nil, fmt.Errorf("the export did not finish within %d pages (%d file(s), %d version(s)); "+
-				"the last page ended at file cursor %q, version cursor %d/%s",
+				"the last page ended at file cursor %q, version cursor %s",
 				exportMaxPages, len(document.Files), len(document.Versions),
-				exportCursorText(document.Next.FileCursor), exportVersionCursorAt(document), exportVersionCursorID(document))
+				exportCursorText(document.Next.FileCursor), exportVersionCursorText(document))
 		}
 		fileCursor := ""
 		if document.Next.FileCursor != nil {
 			fileCursor = *document.Next.FileCursor
 		}
-		var versionAt int64
-		versionID := ""
-		if cursor := document.Next.VersionCursor; cursor != nil {
-			versionAt, versionID = cursor.At, cursor.ID
-		}
 		var page ExportDocument
-		if err := client.do(http.MethodGet, exportPagePath(fileCursor, versionID, versionAt), nil, &page); err != nil {
+		if err := client.do(http.MethodGet, exportPagePath(fileCursor, document.Next.VersionCursor), nil, &page); err != nil {
 			return nil, fmt.Errorf("continue the export after %d file(s): %w", len(document.Files), err)
 		}
 		document.Files = append(document.Files, page.Files...)
@@ -253,16 +247,23 @@ func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 }
 
 // exportPagePath is GET /v1/export with the cursors a previous page ended on.
-// The empty case is the first page, which carries no query at all.
-func exportPagePath(fileCursor, versionID string, versionAt int64) string {
+// The file cursor is a string and the version cursor is a pointer, so "no
+// cursor" is a real state in both and never a value that happens to be on
+// this account's first row (a zero `versionAt` would be read as `created_at >
+// 0`, which re-reads every version and double-counts it across pages). The
+// first page carries no query at all.
+//
+// @param {string} fileCursor
+// @param {ExportVersionCursor|null|undefined} versionCursor
+func exportPagePath(fileCursor string, versionCursor *ExportVersionCursor) string {
 	params := url.Values{}
 	if fileCursor != "" {
 		params.Set("fileCursor", fileCursor)
 	}
-	if versionAt >= 0 {
-		params.Set("versionAt", fmt.Sprintf("%d", versionAt))
-		if versionID != "" {
-			params.Set("versionId", versionID)
+	if versionCursor != nil {
+		params.Set("versionAt", fmt.Sprintf("%d", versionCursor.At))
+		if versionCursor.ID != "" {
+			params.Set("versionId", versionCursor.ID)
 		}
 	}
 	if len(params) == 0 {

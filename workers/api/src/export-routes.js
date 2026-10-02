@@ -101,74 +101,87 @@ export async function exportRoute(request, ctx) {
   const fileCursor = params?.get("fileCursor") ?? "";
   const versionCursorAt = Number.parseInt(params?.get("versionAt") ?? "-1", 10);
   const versionCursorId = params?.get("versionId") ?? "";
+  const hasFileCursor = fileCursor !== "";
+  // created_at is epoch milliseconds and always 0 or more, so the -1 default
+  // is a real "no cursor" state and never a value on the account's first row.
+  const hasVersionCursor = !Number.isNaN(versionCursorAt) && versionCursorAt >= 0;
+  // A page that follows a cursor reads only the list that cursor belongs to.
+  // The other list was already delivered in full on an earlier page, and
+  // reading it again would repeat every one of its rows in the merged
+  // document. The first page (no cursor at all) reads both from the start.
+  const isFirstPage = !hasFileCursor && !hasVersionCursor;
   if (ctx.db) {
-    // ?cursor resumes after the last path of the previous page (the file index
-    // is ordered by path and indexed on (account_id, name) with path as the
-    // primary key, so a keyset on path is index-backed and does not skip or
-    // repeat a row the way an offset would).
-    const fileRows = await all(
-      ctx.db,
-      `SELECT path, name, parent, size_bytes, modified_at, indexed_at
-         FROM file_index
-        WHERE account_id = ?1 AND (?2 = '' OR path > ?2)
-        ORDER BY path
-        LIMIT ?3`,
-      account.id,
-      fileCursor,
-      EXPORT_ROW_CAP + 1,
-    );
-    for (const row of fileRows) {
-      const file = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
-      files.push({
-        path: String(file.path ?? ""),
-        name: String(file.name ?? ""),
-        parent: String(file.parent ?? ""),
-        sizeBytes: Number(file.size_bytes ?? 0),
-        modifiedAt: nullable(file.modified_at, (raw) => String(raw)),
-        indexedAt: nullable(file.indexed_at, (raw) => String(raw)),
-      });
-    }
-    if (files.length > EXPORT_ROW_CAP) {
-      files.length = EXPORT_ROW_CAP;
-      filesTruncated = true;
-    }
-    if (filesTruncated) {
-      nextFileCursor = files.at(-1)?.path ?? null;
+    // ?fileCursor resumes after the last path of the previous page (the file
+    // index is ordered by path and indexed on (account_id, name) with path as
+    // the primary key, so a keyset on path is index-backed and does not skip
+    // or repeat a row the way an offset would).
+    if (hasFileCursor || isFirstPage) {
+      const fileRows = await all(
+        ctx.db,
+        `SELECT path, name, parent, size_bytes, modified_at, indexed_at
+           FROM file_index
+          WHERE account_id = ?1 AND (?2 = '' OR path > ?2)
+          ORDER BY path
+          LIMIT ?3`,
+        account.id,
+        fileCursor,
+        EXPORT_ROW_CAP + 1,
+      );
+      for (const row of fileRows) {
+        const file = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
+        files.push({
+          path: String(file.path ?? ""),
+          name: String(file.name ?? ""),
+          parent: String(file.parent ?? ""),
+          sizeBytes: Number(file.size_bytes ?? 0),
+          modifiedAt: nullable(file.modified_at, (raw) => String(raw)),
+          indexedAt: nullable(file.indexed_at, (raw) => String(raw)),
+        });
+      }
+      if (files.length > EXPORT_ROW_CAP) {
+        files.length = EXPORT_ROW_CAP;
+        filesTruncated = true;
+      }
+      if (filesTruncated) {
+        nextFileCursor = files.at(-1)?.path ?? null;
+      }
     }
     // The version index is (account_id, created_at), so the keyset is
     // (created_at, b2_file_id): created_at rides the index and b2_file_id
     // breaks the ties between versions written in the same millisecond.
-    const versionRows = await all(
-      ctx.db,
-      `SELECT b2_file_id, path, size_bytes, created_at, hidden_at, deleted_at
-         FROM file_versions
-        WHERE account_id = ?1
-          AND (?2 < 0 OR created_at > ?2 OR (created_at = ?2 AND b2_file_id > ?3))
-        ORDER BY created_at, b2_file_id
-        LIMIT ?4`,
-      account.id,
-      Number.isNaN(versionCursorAt) ? -1 : versionCursorAt,
-      versionCursorId,
-      EXPORT_ROW_CAP + 1,
-    );
-    for (const row of versionRows) {
-      const version = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
-      versions.push({
-        b2FileId: String(version.b2_file_id ?? ""),
-        path: String(version.path ?? ""),
-        sizeBytes: Number(version.size_bytes ?? 0),
-        createdAt: Number(version.created_at ?? 0),
-        hiddenAt: nullable(version.hidden_at, (raw) => Number(raw)),
-        deletedAt: nullable(version.deleted_at, (raw) => Number(raw)),
-      });
-    }
-    if (versions.length > EXPORT_ROW_CAP) {
-      versions.length = EXPORT_ROW_CAP;
-      versionsTruncated = true;
-    }
-    if (versionsTruncated) {
-      const last = versions.at(-1);
-      nextVersionCursor = last === undefined ? null : { at: last.createdAt, id: last.b2FileId };
+    if (hasVersionCursor || isFirstPage) {
+      const versionRows = await all(
+        ctx.db,
+        `SELECT b2_file_id, path, size_bytes, created_at, hidden_at, deleted_at
+           FROM file_versions
+          WHERE account_id = ?1
+            AND (?2 < 0 OR created_at > ?2 OR (created_at = ?2 AND b2_file_id > ?3))
+          ORDER BY created_at, b2_file_id
+          LIMIT ?4`,
+        account.id,
+        Number.isNaN(versionCursorAt) ? -1 : versionCursorAt,
+        versionCursorId,
+        EXPORT_ROW_CAP + 1,
+      );
+      for (const row of versionRows) {
+        const version = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
+        versions.push({
+          b2FileId: String(version.b2_file_id ?? ""),
+          path: String(version.path ?? ""),
+          sizeBytes: Number(version.size_bytes ?? 0),
+          createdAt: Number(version.created_at ?? 0),
+          hiddenAt: nullable(version.hidden_at, (raw) => Number(raw)),
+          deletedAt: nullable(version.deleted_at, (raw) => Number(raw)),
+        });
+      }
+      if (versions.length > EXPORT_ROW_CAP) {
+        versions.length = EXPORT_ROW_CAP;
+        versionsTruncated = true;
+      }
+      if (versionsTruncated) {
+        const last = versions.at(-1);
+        nextVersionCursor = last === undefined ? null : { at: last.createdAt, id: last.b2FileId };
+      }
     }
   }
 

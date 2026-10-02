@@ -241,6 +241,15 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
     // what the keyset cursor walks.
     insert.run("acct-big", `/f${String(i).padStart(6, "0")}.txt`, `f${i}.txt`, i);
   }
+  // One version row that fits in the first page. It must appear in the merged
+  // export exactly once: a later page (driven by the file cursor) must not
+  // re-read the version list and duplicate it, which is the bug a live run of
+  // `drive export` found against a hand-written stand-in on 2026-10-02.
+  sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+    )
+    .run("acct-big", "v1", "/f000000.txt", 1, 1700000000000);
 
   const first = await dispatch(
     new Request("https://api.test/v1/export", {
@@ -259,9 +268,12 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
 
   // Walking the cursor must reach the one row the first page could not hold,
   // and must not repeat a row the first page already carried.
-  /** @param {any} body @returns {{files: Array<{path: string}>, complete: boolean, next: {fileCursor: string|null}}} */
+  /** @param {any} body @returns {{files: Array<{path: string}>, versions: Array<{b2FileId: string}>, complete: boolean, next: {fileCursor: string|null}}} */
   const page = (body) => body;
   const seen = new Set(firstBody.files.map((/** @type {{path: string}} */ file) => file.path));
+  const seenVersions = new Set(
+    firstBody.versions.map((/** @type {{b2FileId: string}} */ version) => version.b2FileId),
+  );
   let cursor = firstBody.next.fileCursor;
   let pages = 1;
   let last = firstBody;
@@ -277,9 +289,22 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
       assert.equal(seen.has(file.path), false, `${file.path} was exported twice`);
       seen.add(file.path);
     }
+    for (const version of last.versions) {
+      assert.equal(
+        seenVersions.has(version.b2FileId),
+        false,
+        `version ${version.b2FileId} was exported twice`,
+      );
+      seenVersions.add(version.b2FileId);
+    }
     cursor = last.next.fileCursor;
     pages += 1;
   }
   assert.equal(seen.size, total, "walking the cursor reaches every file, once each");
+  assert.equal(
+    seenVersions.size,
+    1,
+    "the version list is delivered once, not re-read by the file-cursor pages",
+  );
   assert.equal(last.complete, true, "the last page carries the whole drive");
 });
