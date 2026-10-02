@@ -25,8 +25,6 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
   "drive/0006_share_links.sql",
-  "drive/0006_usage_stored_bytes.sql",
-  "drive/0007_device_codes.sql",
   "drive/0008_teams.sql",
   "drive/0009_upload_request_caps.sql",
   "drive/0010_accounts_devices.sql",
