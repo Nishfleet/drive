@@ -12,10 +12,13 @@ would rather you read it here than find out in week three.
 
 - **We are not open yet.** Sign-ups on the pricing page go to a waitlist, and
   an account arrives by invitation.
-- **The CLI is not packaged.** There is no install script and no release
-  download. Today you build it from the source, with one command:
-  `go install github.com/Nishfleet/drive/cmd/drive@latest`. A one-line
-  install is on the way.
+- **The packages are built but not published yet.** GoReleaser builds the
+  `.deb`, the `.rpm` and the Homebrew formula from `.goreleaser.yaml`, and a
+  release on a `v*` tag publishes them. Until that release runs, install from
+  the source with `go install github.com/Nishfleet/drive/cmd/drive@latest`, or
+  build the same package locally with
+  `goreleaser release --snapshot --clean` and install the file under `dist/`.
+  The [Quickstart](/quickstart) is written for the released commands.
 - **macOS is read-only for us.** We can prove the drive on a Mac only on a
   GitHub macOS runner or by hand, so what we have measured end to end is
   Linux.
