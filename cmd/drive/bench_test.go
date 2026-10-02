@@ -11,8 +11,9 @@ package main
 //	measure for publishing (real storage, the sizes the issue names):
 //	  DRIVE_BENCH_ENDPOINT=https://s3.<region>.idrivee2.com \
 //	  DRIVE_BENCH_REGION=<region> DRIVE_BENCH_LINK_MBPS=<measured> \
-//	  DRIVE_BENCH_ACCESS_KEY_ID=... DRIVE_BENCH_SECRET_ACCESS_KEY=... \
 //	  go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
+//	Keys come from the environment (DRIVE_BENCH_ACCESS_KEY_ID /
+//	DRIVE_BENCH_SECRET_ACCESS_KEY), never from argv.
 //
 // The same file is the gate: a scenario the issue names and no benchmark
 // measures, or a benchmark here that no published row names, fails
@@ -150,10 +151,6 @@ func benchStart(b *testing.B) *benchStandin {
 			b.Fatal(err)
 		}
 	}
-	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
-		b.Fatal(err)
-	}
-	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
 
 	if !h.real {
 		port := freePort(b)
@@ -167,6 +164,14 @@ func benchStart(b *testing.B) *benchStandin {
 		}
 		waitForPort(b, port)
 	}
+	// The config is written after the stand-in port is known, so direct rclone
+	// calls (seed, objectSize, --bwlimit) hit the same endpoint as the mount.
+	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		h.close()
+		b.Fatal(err)
+	}
+	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+
 	h.mount = exec.Command(driveBin(b), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
 		"--prefix", h.cfg.Prefix, "--foreground")
@@ -177,6 +182,7 @@ func benchStart(b *testing.B) *benchStandin {
 	)
 	h.mount.Stdout, h.mount.Stderr = os.Stdout, os.Stderr
 	if err := h.mount.Start(); err != nil {
+		h.close()
 		b.Fatal(err)
 	}
 	if !waitForMount(b, h.mount, h.mountDir) {
@@ -206,24 +212,25 @@ func (h *benchStandin) close() {
 }
 
 // seed writes a fixture of size bytes to the storage this device owns, through
-// stock rclone, and returns nothing: seeding is setup, never a measurement.
-func (h *benchStandin) seed(name string, size int64) {
+// stock rclone. Seeding is setup, never a measurement.
+func (h *benchStandin) seed(name string, size int64) error {
 	local := filepath.Join(h.root, "fixtures", name)
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
-		panic(err)
+		return err
 	}
 	if _, err := os.Stat(local); err != nil {
 		if err := writePatternFile(local, size); err != nil {
-			panic(err)
+			return err
 		}
 	}
-	h.rclone("copyto", local, RemoteFor(h.cfg)+"/"+name)
+	_, err := h.rclone("copyto", local, RemoteFor(h.cfg)+"/"+name)
+	return err
 }
 
-func (h *benchStandin) seedFolder(name string, n int) {
+func (h *benchStandin) seedFolder(name string, n int) error {
 	local := filepath.Join(h.root, "fixtures", name)
 	if err := os.MkdirAll(local, 0o755); err != nil {
-		panic(err)
+		return err
 	}
 	for i := range n {
 		p := filepath.Join(local, fmt.Sprintf("file-%05d.bin", i))
@@ -231,28 +238,32 @@ func (h *benchStandin) seedFolder(name string, n int) {
 			continue
 		}
 		if err := os.WriteFile(p, []byte(fmt.Sprintf("file %05d\n", i)), 0o644); err != nil {
-			panic(err)
+			return err
 		}
 	}
-	h.rclone("copy", local, RemoteFor(h.cfg)+"/"+name)
+	_, err := h.rclone("copy", local, RemoteFor(h.cfg)+"/"+name)
+	return err
 }
 
 // rclone runs stock rclone against the device's own remote, with this device's
 // config file, and returns its stdout.
-func (h *benchStandin) rclone(args ...string) string {
+func (h *benchStandin) rclone(args ...string) (string, error) {
 	cmd := exec.Command("rclone", args...)
 	cmd.Env = h.env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		panic(fmt.Sprintf("rclone %s: %v\n%s", strings.Join(args, " "), err, out))
+		return "", fmt.Errorf("rclone %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // objectSize is the stored byte count of one object, read from storage and not
 // from the VFS cache, so "the save has reached storage" means what it says.
 func (h *benchStandin) objectSize(name string) int64 {
-	out := h.rclone("lsjson", "--files-only", "--no-modtime", RemoteFor(h.cfg)+"/"+name)
+	out, err := h.rclone("lsjson", "--files-only", "--no-modtime", RemoteFor(h.cfg)+"/"+name)
+	if err != nil {
+		return -1
+	}
 	var entries []struct {
 		Size int64 `json:"Size"`
 	}
@@ -302,13 +313,15 @@ func benchCommit() string {
 // and 256 MiB streams.
 func BenchmarkVideoStartFirstByte(b *testing.B) {
 	h := benchSetup(b)
-	h.seed("bench-video.mp4", h.sizes.video)
+	if err := h.seed("bench-video.mp4", h.sizes.video); err != nil {
+		b.Fatal(err)
+	}
+	start := time.Now()
 	f, err := os.Open(filepath.Join(h.mountDir, "bench-video.mp4"))
 	if err != nil {
 		b.Fatalf("open the video through the mount: %v", err)
 	}
 	defer f.Close()
-	start := time.Now()
 	one := make([]byte, 1)
 	if _, err := io.ReadFull(f, one); err != nil {
 		b.Fatalf("read the first byte: %v", err)
@@ -385,7 +398,9 @@ func BenchmarkSmallEdit(b *testing.B) {
 		{"small-edit-2gb", "bench-edit-2gb.bin", h.sizes.big},
 	} {
 		b.Run(c.scenario, func(b *testing.B) {
-			h.seed(c.name, c.fileBytes)
+			if err := h.seed(c.name, c.fileBytes); err != nil {
+				b.Fatal(err)
+			}
 			f, err := os.OpenFile(filepath.Join(h.mountDir, c.name), os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
 				b.Fatalf("open the file to append through the mount: %v", err)
@@ -409,7 +424,9 @@ func BenchmarkSmallEdit(b *testing.B) {
 func BenchmarkListFolder(b *testing.B) {
 	h := benchSetup(b)
 	const folder = "bench-list"
-	h.seedFolder(folder, h.sizes.listN)
+	if err := h.seedFolder(folder, h.sizes.listN); err != nil {
+		b.Fatal(err)
+	}
 	// The mount caches a folder for --dir-cache-time (5s), and the listing
 	// must include what the seed just wrote, so the wait is part of the setup
 	// and not of the measured listing.
@@ -442,19 +459,42 @@ func BenchmarkSmallFiles(b *testing.B) {
 				b.Fatal(err)
 			}
 			start := time.Now()
-			h.rclone("copyto", local, RemoteFor(h.cfg)+"/"+c.name)
+			dst, err := os.OpenFile(filepath.Join(h.mountDir, c.name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if err != nil {
+				b.Fatalf("open the put through the mount: %v", err)
+			}
+			in, err := os.Open(local)
+			if err != nil {
+				dst.Close()
+				b.Fatal(err)
+			}
+			if _, err := io.Copy(dst, in); err != nil {
+				dst.Close()
+				in.Close()
+				b.Fatalf("write the put through the mount: %v", err)
+			}
+			in.Close()
+			dst.Close()
+			if !h.waitStored(c.name, c.bytes, 30*time.Minute) {
+				b.Fatalf("the %d byte put never reached storage (stored %d bytes)", c.bytes, h.objectSize(c.name))
+			}
 			h.report(b, c.scenario, "put", time.Since(start), c.bytes)
 		})
 	}
 	b.Run("small-file-get-1mib", func(b *testing.B) {
-		h.seed("bench-small-1mib.bin", 1<<20)
-		start := time.Now()
-		cmd := exec.Command("rclone", "cat", RemoteFor(h.cfg)+"/bench-small-1mib.bin")
-		cmd.Env = h.env
-		cmd.Stdout = io.Discard
-		if err := cmd.Run(); err != nil {
-			b.Fatalf("rclone cat: %v", err)
+		if err := h.seed("bench-small-1mib.bin", 1<<20); err != nil {
+			b.Fatal(err)
 		}
+		start := time.Now()
+		f, err := os.Open(filepath.Join(h.mountDir, "bench-small-1mib.bin"))
+		if err != nil {
+			b.Fatalf("open the get through the mount: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, f); err != nil {
+			f.Close()
+			b.Fatalf("read the get through the mount: %v", err)
+		}
+		f.Close()
 		h.report(b, "small-file-get-1mib", "get", time.Since(start), 1<<20)
 	})
 }
@@ -464,7 +504,9 @@ func BenchmarkSmallFiles(b *testing.B) {
 // can publish the bandwidth a 5 GB start really needs.
 func BenchmarkVideoStartBandwidth(b *testing.B) {
 	h := benchSetup(b)
-	h.seed("bench-video.mp4", h.sizes.video)
+	if err := h.seed("bench-video.mp4", h.sizes.video); err != nil {
+		b.Fatal(err)
+	}
 	for _, limit := range []string{"25M", "50M", "100M", "300M"} {
 		b.Run("start-at-"+limit, func(b *testing.B) {
 			cmd := exec.Command("rclone", "cat", "--bwlimit", limit, RemoteFor(h.cfg)+"/bench-video.mp4")
@@ -508,7 +550,9 @@ func BenchmarkVideoStartBandwidth(b *testing.B) {
 // minutes for its six-step quickstart.
 func BenchmarkInstallToMounted(b *testing.B) {
 	h := benchSetup(b)
-	h.seed("bench-install.bin", 1<<20)
+	if err := h.seed("bench-install.bin", 1<<20); err != nil {
+		b.Fatal(err)
+	}
 	bin := filepath.Join(h.root, "gobin", "drive")
 	start := time.Now()
 	install := exec.Command("go", "install")

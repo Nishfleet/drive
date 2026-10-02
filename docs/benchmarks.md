@@ -9,12 +9,13 @@ stay `not yet measured` until a run against real storage (issue #173: iDrive
 e2, once the `idrive` rclone remote exists on this host). Mac figures stay
 `not yet measured` until they are run on a Mac; they are never estimated.
 
-How to repeat, once real storage is configured:
+How to repeat, once real storage is configured. Credentials come from the VPS
+credential store as environment variables, never from the command line (they
+would land in shell history and in `ps`):
 
 ```
 DRIVE_BENCH_ENDPOINT=https://s3.<region>.idrivee2.com \
 DRIVE_BENCH_REGION=<region> DRIVE_BENCH_LINK_MBPS=<measured> \
-DRIVE_BENCH_ACCESS_KEY_ID=... DRIVE_BENCH_SECRET_ACCESS_KEY=... \
 go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
 ```
 
@@ -31,6 +32,10 @@ There is no measured Linux figure yet, so there is no loss to show.
 
 Host: netcup VPS, Linux. Region, link speed and commit: not yet measured
 (no real storage on this host; issue #173). Date of this table: 2026-10-02.
+
+Every Linux row except `video-start-at-*` is timed through the mounted drive.
+The `video-start-at-*` rows use stock rclone `--bwlimit`, which is the tool
+the issue named for those four bandwidths.
 
 | Scenario | Metric | Space (published, link, date) | Us | Result |
 |---|---|---|---|---|
@@ -66,3 +71,5 @@ Not yet measured. Do not estimate.
 |---|---|---|---|---|
 | mac-first-frame | first-frame | first frame or viewport of a 5 GB video within 3 s | not yet measured | not yet measured |
 | mac-1gb-save | 1gb-save | a 1 GB save reaches storage within 10 s | not yet measured | not yet measured |
+
+<!-- end published -->

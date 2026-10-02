@@ -63,10 +63,14 @@ const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.ur
 function publishedBenchmarks() {
   const text = readFileSync(BENCHMARKS, "utf8");
   const start = text.indexOf("## Linux VPS");
+  const end = text.indexOf("<!-- end published -->");
   if (start < 0) {
     throw new Error("docs/benchmarks.md has no Linux VPS section to publish");
   }
-  return text.slice(start).trim();
+  if (end < start) {
+    throw new Error("docs/benchmarks.md has no end-published marker after the Linux section");
+  }
+  return text.slice(start, end).trim();
 }
 
 /** The markers that need a file read: the FAQ and the Benchmarks table. */
