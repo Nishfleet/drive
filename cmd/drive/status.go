@@ -80,7 +80,15 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
-	if reason := readCostLine(*api); reason != "" {
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		return err
+	}
+	base := strings.TrimSpace(*api)
+	if base == "" {
+		base = creds.APIBase
+	}
+	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
@@ -185,6 +193,7 @@ type UsageSummary struct {
 	MeteredUsd float64 `json:"meteredUsd"`
 	BillUsd    float64 `json:"billUsd"`
 	CeilingUsd float64 `json:"ceilingUsd"`
+	CapLine    string  `json:"capLine"`
 	Cap        struct {
 		CapUsd       float64 `json:"capUsd"`
 		CountedUsd   float64 `json:"countedUsd"`
@@ -199,7 +208,7 @@ type UsageSummary struct {
 // true, and a person who cannot reach the usage service still needs to know
 // whether the drive is mounted. The reason is printed with it, so a missing
 // number is always a named failure rather than a quiet zero.
-func readCostLine(apiBase string) string {
+func readCostLine(apiBase, token string) string {
 	if strings.TrimSpace(apiBase) == "" {
 		return "no api Worker configured; set --api or DRIVE_API_URL"
 	}
@@ -207,8 +216,15 @@ func readCostLine(apiBase string) string {
 	if err != nil {
 		return err.Error()
 	}
+	req, err := http.NewRequest(http.MethodGet, base+USAGE_PATH, nil)
+	if err != nil {
+		return err.Error()
+	}
+	if token != "" {
+		req.Header.Set("authorization", "Bearer "+token)
+	}
 	client := &http.Client{Timeout: usageTimeout}
-	resp, err := client.Get(base + USAGE_PATH)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
 	}
@@ -220,27 +236,12 @@ func readCostLine(apiBase string) string {
 	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
 		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
 	}
-	fmt.Printf("this month: %s of %s cap (%s)\n",
-		USD(u.MeteredUsd), USD(u.Cap.CapUsd), costState(u.Cap.State))
-	return ""
-}
-
-// costState turns the cap's own state into the word on this line, and says
-// what to do about it. `active` is the quiet word; `read_only` is the one a
-// person has to act on, so it carries the reason (src/billing.js
-// `capStatus()`).
-func costState(state string) string {
-	if state == "read_only" {
-		return "read-only, writes are off until the cap is raised"
+	line := strings.TrimSpace(u.CapLine)
+	if line == "" {
+		return "the usage response had no capLine"
 	}
-	return state
-}
-
-// USD renders dollars the way a bill and a terminal agree on: cents always, so
-// "$0.00" never looks like a missing number and "$12.00" never looks like a
-// whole dollar the cap does not mean.
-func USD(amount float64) string {
-	return fmt.Sprintf("$%.2f", amount)
+	fmt.Println(line)
+	return ""
 }
 
 // parseAPIBase checks the api Worker URL and drops its trailing slash, so the
