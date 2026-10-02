@@ -1,0 +1,562 @@
+package main
+
+// The speed benchmarks behind every figure in `docs/benchmarks.md` and on the
+// public Benchmarks page (drive issue #99). They are Go benchmarks in this
+// package, so the whole suite is `go test` with no script anywhere: Go skips
+// every Benchmark function unless -bench is passed, so `npm test` and the CI
+// `go` job stay green without paying for a multi-gigabyte run.
+//
+//	prove the harness (local S3 stand-in, small sizes, about a minute):
+//	  go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
+//	measure for publishing (real storage, the sizes the issue names):
+//	  DRIVE_BENCH_ENDPOINT=https://s3.<region>.idrivee2.com \
+//	  DRIVE_BENCH_REGION=<region> DRIVE_BENCH_LINK_MBPS=<measured> \
+//	  DRIVE_BENCH_ACCESS_KEY_ID=... DRIVE_BENCH_SECRET_ACCESS_KEY=... \
+//	  go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
+//
+// The same file is the gate: a scenario the issue names and no benchmark
+// measures, or a benchmark here that no published row names, fails
+// `test/benchmarks.test.mjs`.
+//
+// Storage, keys and region are configuration only (issue #2's standing
+// decision): the same benchmarks run against the loopback stand-in and against
+// the real account. A figure measured against the stand-in is a harness proof,
+// never a published number, so every line this file prints names which of the
+// two it came from.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// benchSizes are the sizes each scenario runs at. `full` is the size the issue
+// names and the only one that may be published; `quick` proves the harness on
+// a stand-in in about a minute and must never be published.
+type benchSizes struct {
+	video   int64 // the video file the start-time scenarios read
+	big     int64 // the file the small-edit scenario appends to
+	save    int64 // the save-the-file scenario writes
+	listN   int   // files in the list-a-folder scenario
+	read100 int64 // bytes the start-time scenarios time as "first 100 MB"
+}
+
+func benchScale() benchSizes {
+	if os.Getenv("DRIVE_BENCH_SCALE") == "quick" {
+		return benchSizes{video: 64 << 20, big: 32 << 20, save: 16 << 20, listN: 50, read100: 8 << 20}
+	}
+	return benchSizes{video: 5 << 30, big: 2 << 30, save: 1 << 30, listN: 10000, read100: 100 << 20}
+}
+
+// benchStorage names the account the run measures. With no endpoint set the
+// suite brings up the loopback stand-in itself (`rclone serve s3`, the same
+// stock server the step-1 proof uses) and marks every figure as a stand-in.
+func benchStorage() StorageConfig {
+	endpoint := os.Getenv("DRIVE_BENCH_ENDPOINT")
+	cfg := testStorage()
+	cfg.Region = envOr("DRIVE_BENCH_REGION", "us-east-1")
+	if endpoint == "" {
+		cfg.Endpoint = "http://127.0.0.1:" + envOr("DRIVE_BENCH_PORT", "0")
+		cfg.AccessKey, cfg.SecretKey = "ACCESSKEYID", "SECRETACCESSKEY"
+	} else {
+		cfg.Endpoint = endpoint
+		cfg.AccessKey = os.Getenv("DRIVE_BENCH_ACCESS_KEY_ID")
+		cfg.SecretKey = os.Getenv("DRIVE_BENCH_SECRET_ACCESS_KEY")
+		if cfg.AccessKey == "" || cfg.SecretKey == "" {
+			// A real endpoint with no keys would measure a 403 and print it as
+			// a number. Fail instead of publishing an error code as a speed.
+			fmt.Fprintln(os.Stderr, "bench: DRIVE_BENCH_ACCESS_KEY_ID and DRIVE_BENCH_SECRET_ACCESS_KEY are required with a real endpoint")
+			os.Exit(2)
+		}
+	}
+	cfg.Bucket = envOr("DRIVE_BENCH_BUCKET", "bucket")
+	cfg.Prefix = envOr("DRIVE_BENCH_PREFIX", "u/bench")
+	return cfg
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// benchStandin is a loopback S3 server plus the drive mount on it: the setup
+// every benchmark in this file shares, brought up once for the whole -bench
+// run and torn down by TestMain.
+type benchStandin struct {
+	root     string
+	home     string
+	dataDir  string // where the stand-in keeps objects, and where fixtures are written
+	mountDir string
+	cfg      StorageConfig
+	serve    *exec.Cmd
+	mount    *exec.Cmd
+	real     bool
+	sizes    benchSizes
+	env      []string // RCLONE_CONFIG for direct rclone calls
+}
+
+var (
+	benchOnce sync.Once
+	benchH    *benchStandin
+)
+
+// benchTeardown is called by TestMain: the stand-in server and the mount are
+// child processes, so a run that did not stop them would leave orphans behind.
+func benchTeardown() {
+	if benchH != nil {
+		benchH.close()
+	}
+}
+
+// setup brings up the shared harness once per run and skips (never fails) on a
+// host with no FUSE or no rclone, so the benchmarks are runnable anywhere the
+// product mounts.
+func benchSetup(b *testing.B) *benchStandin {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		b.Skip("rclone is not installed")
+	}
+	benchOnce.Do(func() {
+		benchH = benchStart(b)
+	})
+	if benchH == nil {
+		b.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
+	}
+	return benchH
+}
+
+func benchStart(b *testing.B) *benchStandin {
+	h := &benchStandin{cfg: benchStorage(), sizes: benchScale()}
+	h.real = !strings.HasPrefix(h.cfg.Endpoint, "http://127.0.0.1:")
+	root, err := os.MkdirTemp("", "drive-bench-*")
+	if err != nil {
+		b.Fatal(err)
+	}
+	h.root = root
+	h.home = filepath.Join(root, "home")
+	h.mountDir = filepath.Join(h.home, "Drive")
+	h.dataDir = filepath.Join(root, "data", "bucket")
+	for _, d := range []string{h.dataDir, h.mountDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+
+	if !h.real {
+		port := freePort(b)
+		h.cfg.Endpoint = "http://127.0.0.1:" + port
+		h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+			"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
+			"--addr", "127.0.0.1:"+port, "--log-level", "INFO")
+		h.serve.Stdout, h.serve.Stderr = os.Stdout, os.Stderr
+		if err := h.serve.Start(); err != nil {
+			b.Fatal(err)
+		}
+		waitForPort(b, port)
+	}
+	h.mount = exec.Command(driveBin(b), "mount",
+		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
+		"--prefix", h.cfg.Prefix, "--foreground")
+	// Keys reach the child through the environment, never argv (see config.go).
+	h.mount.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+	)
+	h.mount.Stdout, h.mount.Stderr = os.Stdout, os.Stderr
+	if err := h.mount.Start(); err != nil {
+		b.Fatal(err)
+	}
+	if !waitForMount(b, h.mount, h.mountDir) {
+		h.close()
+		return nil
+	}
+	return h
+}
+
+func (h *benchStandin) close() {
+	for _, cmd := range []*exec.Cmd{h.mount, h.serve} {
+		if cmd == nil || cmd.Process == nil {
+			continue
+		}
+		_ = cmd.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() { _, _ = cmd.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", h.mountDir).Run()
+		_ = exec.Command("fusermount", "-u", h.mountDir).Run()
+	}
+}
+
+// seed writes a fixture of size bytes to the storage this device owns, through
+// stock rclone, and returns nothing: seeding is setup, never a measurement.
+func (h *benchStandin) seed(name string, size int64) {
+	local := filepath.Join(h.root, "fixtures", name)
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		panic(err)
+	}
+	if _, err := os.Stat(local); err != nil {
+		if err := writePatternFile(local, size); err != nil {
+			panic(err)
+		}
+	}
+	h.rclone("copyto", local, RemoteFor(h.cfg)+"/"+name)
+}
+
+func (h *benchStandin) seedFolder(name string, n int) {
+	local := filepath.Join(h.root, "fixtures", name)
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		panic(err)
+	}
+	for i := range n {
+		p := filepath.Join(local, fmt.Sprintf("file-%05d.bin", i))
+		if _, err := os.Stat(p); err == nil {
+			continue
+		}
+		if err := os.WriteFile(p, []byte(fmt.Sprintf("file %05d\n", i)), 0o644); err != nil {
+			panic(err)
+		}
+	}
+	h.rclone("copy", local, RemoteFor(h.cfg)+"/"+name)
+}
+
+// rclone runs stock rclone against the device's own remote, with this device's
+// config file, and returns its stdout.
+func (h *benchStandin) rclone(args ...string) string {
+	cmd := exec.Command("rclone", args...)
+	cmd.Env = h.env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		panic(fmt.Sprintf("rclone %s: %v\n%s", strings.Join(args, " "), err, out))
+	}
+	return string(out)
+}
+
+// objectSize is the stored byte count of one object, read from storage and not
+// from the VFS cache, so "the save has reached storage" means what it says.
+func (h *benchStandin) objectSize(name string) int64 {
+	out := h.rclone("lsjson", "--files-only", "--no-modtime", RemoteFor(h.cfg)+"/"+name)
+	var entries []struct {
+		Size int64 `json:"Size"`
+	}
+	if err := json.Unmarshal([]byte(out), &entries); err != nil || len(entries) == 0 {
+		return -1
+	}
+	return entries[0].Size
+}
+
+// waitStored polls storage until the object is the wanted size, so a write is
+// timed until it lands rather than until the page cache accepted it. rclone's
+// --vfs-write-back is 5s, so the first poll is already past the write-back.
+func (h *benchStandin) waitStored(name string, want int64, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if h.objectSize(name) == want {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
+}
+
+// report prints one publishable line per figure: the scenario, which storage it
+// came from, the region, the measured link speed, the commit and the value.
+func (h *benchStandin) report(b *testing.B, scenario, metric string, d time.Duration, bytes int64) {
+	storage := "stand-in"
+	if h.real {
+		storage = "real"
+	}
+	b.Logf("bench scenario=%s storage=%s region=%s link_mbps=%s commit=%s metric=%s value=%.3f unit=s bytes=%d",
+		scenario, storage, envOr("DRIVE_BENCH_REGION", "unmeasured"),
+		envOr("DRIVE_BENCH_LINK_MBPS", "unmeasured"), benchCommit(),
+		metric, d.Seconds(), bytes)
+}
+
+func benchCommit() string {
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// BenchmarkVideoStartFirstByte times the first byte and the first 100 MB of the
+// 5 GB video through the mount, the same scenario Space publishes for 64 MiB
+// and 256 MiB streams.
+func BenchmarkVideoStartFirstByte(b *testing.B) {
+	h := benchSetup(b)
+	h.seed("bench-video.mp4", h.sizes.video)
+	f, err := os.Open(filepath.Join(h.mountDir, "bench-video.mp4"))
+	if err != nil {
+		b.Fatalf("open the video through the mount: %v", err)
+	}
+	defer f.Close()
+	start := time.Now()
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(f, one); err != nil {
+		b.Fatalf("read the first byte: %v", err)
+	}
+	h.report(b, "video-start-first-byte", "first-byte", time.Since(start), 1)
+
+	rest := make([]byte, 32<<10)
+	got := int64(1)
+	start = time.Now()
+	for got < h.sizes.read100 {
+		n, err := io.ReadFull(f, rest)
+		got += int64(n)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			b.Fatalf("read through the mount: %v", err)
+		}
+	}
+	h.report(b, "video-start-first-byte", "first-100mb", time.Since(start), got-1)
+}
+
+// BenchmarkSaveReachesStorage times a 1 GB save from the write() that starts
+// it until the whole object is in storage, read back from storage.
+func BenchmarkSaveReachesStorage(b *testing.B) {
+	h := benchSetup(b)
+	const name = "bench-save.bin"
+	// Start from no object at all, so the clock cannot credit a previous run.
+	if out, err := exec.Command("rclone", "deletefile", RemoteFor(h.cfg)+"/"+name).CombinedOutput(); err != nil {
+		b.Logf("delete a leftover %s before the run (nothing there yet): %v\n%s", name, err, out)
+	}
+	local := filepath.Join(h.root, "fixtures", "bench-save.bin")
+	if err := writePatternFile(local, h.sizes.save); err != nil {
+		b.Fatal(err)
+	}
+
+	start := time.Now()
+	in, err := os.Open(local)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out, err := os.OpenFile(filepath.Join(h.mountDir, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		in.Close()
+		b.Fatalf("open the save for writing through the mount: %v", err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		in.Close()
+		b.Fatalf("write the save through the mount: %v", err)
+	}
+	out.Close()
+	in.Close()
+	if !h.waitStored(name, h.sizes.save, 30*time.Minute) {
+		b.Fatalf("the %d byte save never reached storage (stored %d bytes)", h.sizes.save, h.objectSize(name))
+	}
+	h.report(b, "save-reaches-storage", "1gb-save", time.Since(start), h.sizes.save)
+}
+
+// BenchmarkSmallEdit appends 4 KiB to a 64 MiB file and to a 2 GB file and
+// times each until the new size is in storage. Space publishes the 64 MiB case.
+func BenchmarkSmallEdit(b *testing.B) {
+	h := benchSetup(b)
+	const edit = "bench-edit.txt"
+	const size = 4096
+	for _, c := range []struct {
+		scenario, name string
+		fileBytes      int64
+	}{
+		{"small-edit-64mb", "bench-edit-64mb.bin", 64 << 20},
+		{"small-edit-2gb", "bench-edit-2gb.bin", h.sizes.big},
+	} {
+		b.Run(c.scenario, func(b *testing.B) {
+			h.seed(c.name, c.fileBytes)
+			f, err := os.OpenFile(filepath.Join(h.mountDir, c.name), os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				b.Fatalf("open the file to append through the mount: %v", err)
+			}
+			start := time.Now()
+			if _, err := f.Write(bytes.Repeat([]byte("e"), size)); err != nil {
+				f.Close()
+				b.Fatalf("append through the mount: %v", err)
+			}
+			f.Close()
+			if !h.waitStored(c.name, c.fileBytes+size, 30*time.Minute) {
+				b.Fatalf("the %d byte edit never reached storage (stored %d bytes)", size, h.objectSize(c.name)-c.fileBytes)
+			}
+			h.report(b, c.scenario, "append-4kib", time.Since(start), size)
+		})
+	}
+}
+
+// BenchmarkListFolder times a listing of 10,000 files through the mount, which
+// is what an app does when it opens the folder.
+func BenchmarkListFolder(b *testing.B) {
+	h := benchSetup(b)
+	const folder = "bench-list"
+	h.seedFolder(folder, h.sizes.listN)
+	// The mount caches a folder for --dir-cache-time (5s), and the listing
+	// must include what the seed just wrote, so the wait is part of the setup
+	// and not of the measured listing.
+	time.Sleep(6 * time.Second)
+	start := time.Now()
+	entries, err := os.ReadDir(filepath.Join(h.mountDir, folder))
+	if err != nil {
+		b.Fatalf("list the folder through the mount: %v", err)
+	}
+	h.report(b, "list-folder", fmt.Sprintf("list-%d-files", h.sizes.listN), time.Since(start), int64(len(entries)))
+	if len(entries) != h.sizes.listN {
+		b.Fatalf("listed %d files, want %d", len(entries), h.sizes.listN)
+	}
+}
+
+// BenchmarkSmallFiles times a 4 KiB put, a 1 MiB put and a 1 MiB get, the
+// three figures Space publishes for files under 1 MiB.
+func BenchmarkSmallFiles(b *testing.B) {
+	h := benchSetup(b)
+	for _, c := range []struct {
+		scenario, name string
+		bytes          int64
+	}{
+		{"small-file-put-4kib", "bench-small-4kib.bin", 4096},
+		{"small-file-put-1mib", "bench-small-1mib.bin", 1 << 20},
+	} {
+		b.Run(c.scenario, func(b *testing.B) {
+			local := filepath.Join(h.root, "fixtures", c.name)
+			if err := writePatternFile(local, c.bytes); err != nil {
+				b.Fatal(err)
+			}
+			start := time.Now()
+			h.rclone("copyto", local, RemoteFor(h.cfg)+"/"+c.name)
+			h.report(b, c.scenario, "put", time.Since(start), c.bytes)
+		})
+	}
+	b.Run("small-file-get-1mib", func(b *testing.B) {
+		h.seed("bench-small-1mib.bin", 1<<20)
+		start := time.Now()
+		cmd := exec.Command("rclone", "cat", RemoteFor(h.cfg)+"/bench-small-1mib.bin")
+		cmd.Env = h.env
+		cmd.Stdout = io.Discard
+		if err := cmd.Run(); err != nil {
+			b.Fatalf("rclone cat: %v", err)
+		}
+		h.report(b, "small-file-get-1mib", "get", time.Since(start), 1<<20)
+	})
+}
+
+// BenchmarkVideoStartBandwidth times the first byte and the first 100 MB of the
+// video at 25, 50, 100 and 300 Mbps, with rclone's own --bwlimit, so the page
+// can publish the bandwidth a 5 GB start really needs.
+func BenchmarkVideoStartBandwidth(b *testing.B) {
+	h := benchSetup(b)
+	h.seed("bench-video.mp4", h.sizes.video)
+	for _, limit := range []string{"25M", "50M", "100M", "300M"} {
+		b.Run("start-at-"+limit, func(b *testing.B) {
+			cmd := exec.Command("rclone", "cat", "--bwlimit", limit, RemoteFor(h.cfg)+"/bench-video.mp4")
+			cmd.Env = h.env
+			pipe, err := cmd.StdoutPipe()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				b.Fatal(err)
+			}
+			defer func() {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}()
+			first := make([]byte, 1)
+			start := time.Now()
+			if _, err := io.ReadFull(pipe, first); err != nil {
+				b.Fatalf("read the first byte at --bwlimit %s: %v", limit, err)
+			}
+			scenario := "video-start-at-" + limit
+			h.report(b, scenario, "first-byte", time.Since(start), 1)
+
+			got := int64(1)
+			rest := make([]byte, 32<<10)
+			start = time.Now()
+			for got < h.sizes.read100 {
+				n, err := pipe.Read(rest)
+				got += int64(n)
+				if err != nil {
+					break
+				}
+			}
+			h.report(b, scenario, "first-100mb", time.Since(start), got-1)
+		})
+	}
+}
+
+// BenchmarkInstallToMounted times the path a new user walks: install the
+// binary, mount the drive, and read the first file. Space publishes about five
+// minutes for its six-step quickstart.
+func BenchmarkInstallToMounted(b *testing.B) {
+	h := benchSetup(b)
+	h.seed("bench-install.bin", 1<<20)
+	bin := filepath.Join(h.root, "gobin", "drive")
+	start := time.Now()
+	install := exec.Command("go", "install")
+	install.Env = append(os.Environ(), "GOBIN="+filepath.Join(h.root, "gobin"))
+	if out, err := install.CombinedOutput(); err != nil {
+		b.Fatalf("go install: %v\n%s", err, out)
+	}
+	home := filepath.Join(h.root, "home-install")
+	mountDir := filepath.Join(home, "Drive")
+	for _, d := range []string{mountDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	mount := exec.Command(bin, "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
+		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
+	mount.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+	)
+	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
+	if err := mount.Start(); err != nil {
+		b.Fatalf("mount with the installed binary: %v", err)
+	}
+	defer func() {
+		_ = mount.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() { _, _ = mount.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = mount.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", mountDir).Run()
+		_ = exec.Command("fusermount", "-u", mountDir).Run()
+	}()
+	if !waitForMount(b, mount, mountDir) {
+		b.Skip("this host does not permit an unprivileged FUSE mount")
+	}
+	f, err := os.Open(filepath.Join(mountDir, "bench-install.bin"))
+	if err != nil {
+		b.Fatalf("read the first file after the mount: %v", err)
+	}
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(f, one); err != nil {
+		b.Fatalf("read the first byte after the mount: %v", err)
+	}
+	f.Close()
+	h.report(b, "install-to-mounted", "install-to-first-file", time.Since(start), 1)
+}
