@@ -70,6 +70,11 @@ test("the suite is wired to the stock tool and the docs render", () => {
     );
   }
   assert.equal(cfg.evaluateOptions?.repeat, 3, "three epochs for the variance check");
+  assert.equal(
+    cfg.defaultTest?.options?.transform,
+    "output.slice(-600)",
+    "graders score the short visible reply, not a leading thinking dump",
+  );
   assert.equal(cfg.tests, "file://tasks/train.yaml", "train split only in this repo");
   assert.ok(cfg.defaultTest?.vars?.docs_index?.startsWith("file://"), "docs are file refs");
   assert.ok(cfg.defaultTest?.vars?.drive_help?.startsWith("file://"), "help text is a file ref");

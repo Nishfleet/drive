@@ -72,9 +72,13 @@ here because a model failed it.
 Programmatic first. A grader is a check against the answer text, and it lives
 inline in `tasks/*.yaml` as a promptfoo `javascript` assertion — a pure
 function of the output, so grading the same transcript twice gives the same
-score the second time. An LLM judge is used only where the output is prose, and
-its rubric is a list of checkable claims rather than a score; a judge, when one
-is added, is a **different model family** from the agent under test.
+score the second time. `promptfooconfig.yaml` runs promptfoo's stock
+`options.transform` (`output.slice(-600)`) before those assertions, so a
+grader scores the short visible reply the prompt asked for, not a leading
+thinking dump that quotes the docs. An LLM judge is used only where the output
+is prose, and its rubric is a list of checkable claims rather than a score; a
+judge, when one is added, is a **different model family** from the agent under
+test.
 
 ## Splits, and where the held-out set lives
 

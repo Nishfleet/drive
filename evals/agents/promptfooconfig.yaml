@@ -54,6 +54,7 @@ outputPath: results/latest.json
 defaultTest:
   options:
     timeout: 120000
+    transform: "output.slice(-600)"
   vars:
     docs_index: file://../../docs-site/.rendered/index.md
     docs_quickstart: file://../../docs-site/.rendered/quickstart.md

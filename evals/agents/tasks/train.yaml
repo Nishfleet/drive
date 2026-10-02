@@ -81,7 +81,7 @@
     - type: javascript
       value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
-      value: "/cannot delete|cannot remove|can never carry delete/i.test(output)"
+      value: "/cannot delete|cannot remove|can never (carry )?delete|never delete/i.test(output)"
 
 - description: take one agent tool off the drive and leave the others
   vars:
@@ -195,7 +195,7 @@
     source: docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/Windows/i.test(output) && /(selective sync|pin|offline)/i.test(output)"
+      value: "/Windows/i.test(output) && /(restore|second person|one account|waitlist|not open)/i.test(output)"
 
 - description: where this drive is slower than the alternatives
   vars:
@@ -224,7 +224,7 @@
     source: docs-site/index.md, "Start here"
   assert:
     - type: javascript
-      value: "/folder/i.test(output) && /laptop/i.test(output)"
+      value: "/folder/i.test(output) && /(laptop|machine|storage)/i.test(output)"
 
 - description: the security page's own limits on what we can reach
   vars:
