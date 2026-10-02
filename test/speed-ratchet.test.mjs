@@ -171,7 +171,15 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
   const exp = JSON.parse(readFileSync(out, "utf8"));
   const measured = exp.results[0];
   assert.ok(measured.times.length >= 10, "hyperfine ran 10+ times");
+  assert.ok(
+    measured.mean >= 0.04,
+    `sleep 0.05 must actually sleep (mean=${measured.mean}s); a broken sleep would not prove the ratchet`,
+  );
   const cli = baseline.rows["cli-cold-start"];
+  assert.ok(
+    measured.mean > cli.mean + Math.max(cli.stddev, 0.002),
+    `sleep 0.05 mean=${measured.mean} must sit above cli-cold-start ${cli.mean}+band, not on a slow-host jitter edge`,
+  );
   assert.equal(
     ratchetVerdict(cli, { mean: measured.mean, stddev: measured.stddev }),
     "slower",

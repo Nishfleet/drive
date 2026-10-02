@@ -727,8 +727,8 @@ func BenchmarkBigFolderRename(b *testing.B) {
 }
 
 // BenchmarkMountReady times a new mount from process start until the mount
-// point is live. That is "mount ready", separate from install-to-mounted
-// which also times go install and the first read.
+// point is live. benchSetup brings up the stand-in server the second mount
+// talks to; the clock starts after that, so this number is only the new mount.
 func BenchmarkMountReady(b *testing.B) {
 	h := benchSetup(b)
 	home := filepath.Join(h.root, "home-ready")
@@ -771,11 +771,11 @@ func BenchmarkMountReady(b *testing.B) {
 }
 
 // BenchmarkCLIColdStart times `drive version` in a new process: the CLI's
-// cold start. It does not need the mount; benchSetup is only so the line
-// names stand-in vs real the same way every other row does.
+// cold start. It does not mount; a zero-value harness is enough for the
+// published line to name stand-in vs real the same way every other row does.
 func BenchmarkCLIColdStart(b *testing.B) {
-	h := benchSetup(b)
 	bin := driveBin(b)
+	h := &benchStandin{}
 	start := time.Now()
 	cmd := exec.Command(bin, "version")
 	if out, err := cmd.CombinedOutput(); err != nil {
