@@ -71,6 +71,35 @@ export function sqlitePlaceholders(sql) {
 }
 
 /**
+ * The same rewrite, on the raw engine a test reads a row back with.
+ *
+ * A test proves a store wrote a row by reading the row straight off the disk,
+ * not through the adapter that wrote it, so `createTestD1` hands its
+ * `DatabaseSync` back as `db.sqlite`. That handle is the engine the adapter
+ * above speaks, so it is rewritten the same way: node:sqlite's `prepare` takes
+ * only the anonymous `?` and raises SQLITE_RANGE ("column index out of range",
+ * errcode 25) on `?1` from node v24.5.0 on, so the numbered placeholders the
+ * product SQL sends to D1 have to become anonymous before the engine sees them
+ * here too. Without this the adapter path is safe and the raw handle is not,
+ * which is exactly the shape a bug hides in (drive#220:
+ * `test/integration/teams-d1.test.mjs` reads a row back with
+ * `WHERE team_id = ?1` and failed this way).
+ *
+ * The wrapper rewrites the SQL only. Every raw read in the suite binds its
+ * values in the order the SQL numbered them, so the caller's argument list
+ * needs no change; a statement that REUSES an index needs one value per use,
+ * and that is the adapter's `bindForNodeSqlite` (test/d1-sqlite.mjs), which
+ * expands the bound list along with the SQL.
+ * @param {DatabaseSync} sqlite
+ * @returns {DatabaseSync}
+ */
+export function withSqlitePlaceholders(sqlite) {
+  const prepare = sqlite.prepare.bind(sqlite);
+  sqlite.prepare = (sql) => prepare(sqlitePlaceholders(sql));
+  return sqlite;
+}
+
+/**
  * Runs one statement and answers the way D1's bound statement does: every
  * query — a SELECT or an INSERT/UPDATE/DELETE with a `returning` clause —
  * comes back as `{ results, meta }`, and `meta.changes` is the change count.
@@ -85,7 +114,7 @@ export function sqlitePlaceholders(sql) {
  * @param {unknown[]} params
  */
 function runOne(sqlite, sql, params) {
-  const statement = sqlite.prepare(sqlitePlaceholders(sql));
+  const statement = sqlite.prepare(sql);
   const bound = params.map(sqliteValue);
   const results = statement.all(...bound);
   return {
@@ -123,7 +152,7 @@ function runOne(sqlite, sql, params) {
  * @returns {TestD1}
  */
 export function createTestD1(options = {}) {
-  const sqlite = new DatabaseSync(":memory:");
+  const sqlite = withSqlitePlaceholders(new DatabaseSync(":memory:"));
   for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -145,7 +174,7 @@ export function createTestD1(options = {}) {
     },
     async first() {
       const bound = params.map(sqliteValue);
-      const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
+      const row = sqlite.prepare(sql).get(...bound);
       return row === undefined ? null : row;
     },
     async run() {

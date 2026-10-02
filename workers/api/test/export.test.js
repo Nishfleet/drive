@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import "urlpattern-polyfill";
 import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
+import { withSqlitePlaceholders } from "../../../test/harness.mjs";
 import { createD1DeviceSigninStore } from "../src/device-signin.js";
 import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
@@ -219,7 +220,7 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
   // stopped would keep a data loss they never saw, so a short page must carry
   // `complete: false` and a cursor, and the cursor must pick up exactly where
   // the first page left off with no gap and no repeat.
-  const sqlite = new DatabaseSync(":memory:");
+  const sqlite = withSqlitePlaceholders(new DatabaseSync(":memory:"));
   const db = exportD1(sqlite);
   const clock = fixedClock();
   const store = createMemoryStore();
