@@ -13,6 +13,9 @@ the live site.
 - The Benchmarks page: every speed scenario the suite measures, next to the
   published rival figure for the same case, with losses labelled losses. Linux
   and Mac numbers that have not been run yet say so; nothing here is estimated.
+- The share card is now rendered from a committed source page, and its price is
+  gated against the one price config, so a re-priced product moves the card
+  with the page instead of leaving a stale picture behind.
 
 ## 2026-09-30
 
