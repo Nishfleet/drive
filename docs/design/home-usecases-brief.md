@@ -73,6 +73,21 @@ again against it. Headless Chrome on `public/` served over
 | Desktop 1440x900 | `scrollWidth == clientWidth == 1440`, 0 elements in `.demos` past the viewport |
 | Phone 360x780 | `scrollWidth == clientWidth == 360`, 0 elements in `.demos` past the viewport; the section is 1261 px tall, so it scrolls vertically and never horizontally |
 | Console errors | 0 from the page: the single 404 is the browser's own `favicon.ico` request, which the page does not reference |
+
+## Third audit, 2026-10-03 (after the page note named the cache state)
+
+The section note now says the video figures are reads the mount's own cache
+serves, so the two shots were taken again against the page as it stands.
+Headless Chrome on `public/` served over `http://127.0.0.1`, viewport
+1440x900 and 360x780, device scale 2, screenshots as element captures of
+`.demos`.
+
+| Check | Result |
+|---|---|
+| Desktop 1440x900 | `scrollWidth == clientWidth == 1440`, 0 elements in `.demos` past the viewport, 0 console errors, the section is 869 px tall |
+| Phone 360x780 | `scrollWidth == clientWidth == 360`, 0 elements in `.demos` past the viewport, 0 console errors, the section is 1348 px tall |
+| Figures in the shot | the five figures read back from the rendered page are the five `docs/demos.md` carries (9.01 s, 0.26 s, 0.37 s, 0.48 s, 0.51 s), each `font-variant-numeric: tabular-nums` in `--accent` rgb(31, 58, 95) |
+| Commands in the shot | the card texts read back are the three commands: the `claude --print` one, the two `ffmpeg` ones (open and `-ss 1493` scrub), the `blender --background` one |
 | Figures in the shot | the `.demos` text read back from the rendered page is the same five figures `docs/demos.md` carries, and each is `font-variant-numeric: tabular-nums` in `--accent` (rgb(31, 58, 95)) |
 | Console errors | the single 404 is the browser's own `favicon.ico` request, which the page does not reference |
 | Contrast | unchanged: this run changed no colour, only the figures, so the table above still stands |
