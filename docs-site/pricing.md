@@ -32,10 +32,10 @@ Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
 {{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
 for.
 
-## Version history is not in version 1
+## Version history
 
-Version history is not available in version 1. What is not in version 1 is on
-the [Limits](/limits) page.
+Version history is not in version 1. See [Limits](/limits) for what is not in
+version 1.
 
 ## The bill worked out
 
