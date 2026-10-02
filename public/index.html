@@ -279,6 +279,99 @@ main {
   font-size: 15px;
 }
 
+/* ---- Real work on the drive (drive #113) --------------------------------
+
+The three demos are one column of rows, not three equal cards: each row is a
+named job, the exact command that ran it, and the figure the recorded run
+measured. The video row carries two figures because a scrub is a second read.
+Nothing here is a badge or a logo; the proof is the command and its number. */
+
+.demos {
+  border-top: 1px solid var(--rule);
+  padding: clamp(30px, 4.5vh, 52px) 0 clamp(30px, 4.5vh, 48px);
+}
+
+.demos h2 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(26px, 3.4vw, 36px);
+  letter-spacing: -0.01em;
+}
+
+.demos-lede {
+  margin: 0 0 clamp(20px, 3vh, 30px);
+  max-width: 46em;
+  font-size: 17px;
+  color: var(--ink-soft);
+}
+
+.demo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px clamp(18px, 3vw, 40px);
+  padding: clamp(16px, 2.4vh, 22px) 0;
+  border-top: 1px solid var(--ink);
+}
+
+/* The command is the evidence, so it keeps the full row under the name. */
+.demo-command,
+.demo-figure {
+  grid-column: 1 / -1;
+}
+
+.demo-name {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.demo-command {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.demo-command b {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.demo-figure {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 20px;
+}
+
+.demo-number {
+  font-family: var(--mono);
+  font-size: clamp(26px, 3.6vw, 34px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+.demo-number small {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.demos-note {
+  margin: clamp(18px, 2.6vh, 26px) 0 0;
+  max-width: 60em;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
 /* ---- Worked examples ---------------------------------------------------- */
 
 .examples {
@@ -528,6 +621,27 @@ main {
         <span class="strip-empty">empty &middot; $0</span>
       </div>
       <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $11 a month: $12 of storage, less the free $1. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+    </section>
+
+    <section class="demos" aria-labelledby="demos-heading">
+      <h2 id="demos-heading">Real work on the drive</h2>
+      <p class="demos-lede">Three jobs a person already does, each one run through the mounted drive folder and timed. The command beside each figure is the command that produced it.</p>
+      <div class="demo">
+        <h3 class="demo-name">An agent reads and edits your files</h3>
+        <p class="demo-command"><b>$</b> claude --print "read notes/brief.md and edit notes/todo.md"<br>run in the mounted drive folder, one turn</p>
+        <p class="demo-figure"><span class="demo-number">9.01 s <small>whole turn</small></span></p>
+      </div>
+      <div class="demo">
+        <h3 class="demo-name">A 5 GB video opens and scrubs</h3>
+        <p class="demo-command"><b>$</b> ffmpeg -i Drive/media/cut.mp4 -frames:v 1 first.png<br><b>$</b> ffmpeg -ss 1493 -i Drive/media/cut.mp4 -frames:v 1 scrub.png</p>
+        <p class="demo-figure"><span class="demo-number">0.26 s <small>first frame</small></span><span class="demo-number">0.37 s <small>scrub to 24:53</small></span></p>
+      </div>
+      <div class="demo">
+        <h3 class="demo-name">A Blender scene opens and saves back</h3>
+        <p class="demo-command"><b>$</b> blender --background Drive/models/part.blend --python-expr "bpy.ops.wm.save_mainfile()"</p>
+        <p class="demo-figure"><span class="demo-number">0.48 s <small>open</small></span><span class="demo-number">0.51 s <small>save back</small></span></p>
+      </div>
+      <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
