@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
+import { authFor } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
+import { signedInAccount } from "../../../src/status.js";
+import { createD1DeviceSigninStore } from "./device-signin.js";
 import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
@@ -15,14 +18,14 @@ import { routes } from "./routes.js";
  * The stand-in key store this Worker hands its routes.
  * @typedef {ReturnType<typeof createMemoryStore>} KeyStore
  *
- * The slice of Cloudflare's D1 database the routes touch, as db.js declares it.
- * @typedef {import("./db.js").D1Like} D1Like
- *
  * What a handler gets besides the request. `store` is the stand-in key store
  * (createMemoryStore below) and `db` the Worker's D1 binding; both are optional
  * because a deployment without them answers its closed door rather than
- * pretending to hold keys.
- * @typedef {{env: object, db?: D1Like|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * pretending to hold keys. `accounts` is the sign-in flow's Better Auth
+ * instance (src/auth.js `authFor`), read through src/status.js
+ * `signedInAccount` for the browser half of a device approval; a deployment
+ * with no database, secret or address has no instance and stays signed out.
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL}} Ctx
  *
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware and read from the context by every handler, so a handler
@@ -31,15 +34,15 @@ import { routes } from "./routes.js";
  */
 
 /**
- * The account gate: a request's account comes from its own `Authorization:
- * Bearer <device token>` header and nothing else. The token is hashed and
- * looked up in the key store, so a caller cannot name an account, and no
- * cookie, query value or body field is trusted (the same rule
- * src/status.js `signedInAccount` already follows for the site Worker). The
- * header is read with http.js `bearerToken`, the one place that shape is
- * parsed, and the expiry and revocation checks live in the store's one lookup
- * (keystore.js `accountForDeviceToken`), so a dead token fails here for every
- * route at once rather than in each handler.
+ * The account gate: a request's account comes from its own credentials and
+ * nothing else. A CLI request proves one with an `Authorization: Bearer
+ * <device token>` header, hashed and looked up in the key store; a browser
+ * approving a device proves one with the sign-in session cookie, resolved
+ * through the same src/status.js `signedInAccount` gate every site account
+ * route uses (drive#109), against `ctx.accounts`. No cookie value, query value
+ * or body field is trusted, and the expiry and revocation checks live in the
+ * store's one lookup (device-signin.js `accountForDeviceToken`), so a dead
+ * token fails here for every route at once.
  * @param {Request} request
  * @param {KeyStore|null|undefined} store the key store, or null/undefined where there is none
  * @returns {Promise<{id: string, name: string}|null>}
@@ -128,11 +131,12 @@ export function createApp(table = routes) {
   /** @type {Hono<{Bindings: Ctx, Variables: ApiVariables}>} */
   const app = new Hono({ strict: false });
 
-  // The account is resolved once per request from the request's own bearer
-  // token (drive#55), never trusted from the context, so a handler cannot be
-  // handed an account the caller never proved. `ctx.account` is honoured only
-  // where there is no store to resolve one with, which is the tests' own
-  // store-less context; the Worker export always passes a store.
+  // The account is resolved once per request from the request's own
+  // credentials (drive#55, drive#136), never trusted from the context: a CLI
+  // request proves one with its bearer token. That lookup is the cheap one
+  // (one hash and one row) and runs for every request; `ctx.account` is
+  // honoured only where there is no store to resolve one with, which is the
+  // tests' own store-less context.
   app.use("*", async (c, next) => {
     const ctx = c.env;
     const bearer = await accountForRequest(c.req.raw, ctx.store);
@@ -142,10 +146,21 @@ export function createApp(table = routes) {
   });
 
   /**
-   * 401 with a bearer challenge and no account data.
+   * The gate: 401 with a bearer challenge and no account data, unless the
+   * request already proved an account with a bearer token or the session
+   * cookie the sign-in flow minted. A cookie is only read here, on a path that
+   * needs an account, so a public route never pays for a session lookup
+   * (drive#109); a deployment with no sign-in instance (`ctx.accounts` null)
+   * stays signed out, the closed door src/auth.js `authFor` documents.
    * @type {import("hono").MiddlewareHandler<{Bindings: Ctx, Variables: ApiVariables}>}
    */
   const gate = async (c, next) => {
+    if (c.get("account") == null && c.env.accounts) {
+      const session = await signedInAccount(c.req.raw, c.env.accounts);
+      if (session !== null) {
+        c.set("account", session);
+      }
+    }
     if (c.get("account") == null) {
       return errorResponse(401, failureMessage("unauthorized"), {
         "www-authenticate": 'Bearer realm="drive"',
@@ -276,11 +291,12 @@ function appFor(table) {
 
 /**
  * Dispatches to the registry. Kept separate from the Worker export so tests
- * can inject a database, a key provider and a signed-in account. The ctx is
- * per-request state: it is passed to the app's `fetch` (Hono's env slot), not
- * baked into the app, so the app is built once per table and shared.
+ * can inject a database, a key store, a sign-in instance and a signed-in
+ * account. The ctx is per-request state: it is passed to the app's `fetch`
+ * (Hono's env slot), not baked into the app, so the app is built once per table
+ * and shared.
  * @param {Request} request
- * @param {Ctx} ctx {env, db, store, now, account}
+ * @param {Ctx} ctx {env, db, store, now, accounts, account}
  * @param {ReadonlyArray<Route>} [table]
  */
 export async function dispatch(request, ctx, table = routes) {
@@ -293,12 +309,17 @@ export async function dispatch(request, ctx, table = routes) {
 // the same methods, so no route changes.
 /** @type {ReturnType<typeof createMemoryStore>|undefined} */
 let keyStore;
+/** The database the cached key store was built for, so a later request with a
+ * bound DB does not keep a memory sign-in store from the first request. */
+/** @type {D1Database|undefined} */
+let keyStoreDb;
 
 /**
- * The Worker's own env as this entry reads it: the D1 binding named DB, plus
- * whatever else the runtime bound (the generated `Env` covers the pricing
- * Worker's bindings, not this Worker's, so the pair is declared here).
- * @typedef {{DB?: D1Like, [key: string]: unknown}} ApiEnv
+ * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB
+ * (cloudflare.config.ts), plus whatever else the runtime bound (the generated
+ * `Env` covers the pricing Worker's bindings, not this Worker's, so the pair is
+ * declared here). The sign-in keys are read from it too, by authFor.
+ * @typedef {{ASSETS: any, DRIVE_DB: D1Database, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL: import("@cloudflare/workers-types").SendEmail, WAITLIST_DB: D1Database, WAITLIST_RATE_LIMITER: import("@cloudflare/workers-types").RateLimit, [key: string]: unknown}} ApiEnv
  */
 
 /**
@@ -306,18 +327,19 @@ let keyStore;
  * createMemoryStore gives the tests, so a route cannot tell the difference.
  * The env is what will choose it, and the parameter is named here so the
  * signature the type check reads and the one the runtime calls are the same
- * function. Biome's unused-parameter rule reads `env` as unused and wants an
- * underscore, which would break the JSDoc `@param` it sits under, so the
- * parameter is read with a void here and the type check is the one that
- * guards the name.
- *
+ * function. `env` is read below, so there is no unused parameter to void.
  * @param {ApiEnv} env
- * @returns {ReturnType<typeof createMemoryStore>}
  */
 function storeFor(env) {
-  void env;
-  if (keyStore === undefined) {
-    keyStore = createMemoryStore();
+  if (keyStore === undefined || keyStoreDb !== env.DRIVE_DB) {
+    // The device sign-in half is D1-backed whenever the deployment binds a
+    // database, so a code started on one instance is visible on the next and
+    // survives a restart (drive#136 finding 1); without one it stays the
+    // in-memory stand-in. The key half is still the stand-in until drive#2.
+    keyStore = createMemoryStore({
+      signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
+    });
+    keyStoreDb = env.DRIVE_DB;
   }
   return keyStore;
 }
@@ -328,6 +350,18 @@ export default {
    * @param {ApiEnv} env
    */
   async fetch(request, env) {
-    return dispatch(request, { env, db: env.DB, store: storeFor(env), now: Date.now });
+    return dispatch(request, {
+      env,
+      db: env.DRIVE_DB,
+      store: storeFor(env),
+      // The same sign-in gate the site Worker's account routes resolve
+      // (src/auth.js `authFor`, over the same DRIVE_DB), so one session cookie
+      // is one account in both Workers and the approval page needs no second
+      // session system of its own. No database, secret or address is the closed
+      // door `authFor` already documents: null, and every account route 401s.
+      /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
+      accounts: authFor(env),
+      now: Date.now,
+    });
   },
 };
