@@ -29,7 +29,8 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
+import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor, teamScopeFor } from "./keyprovider.js";
+import { createTeamStore } from "./teams.js";
 
 // Kept as keystore re-exports so the one place that named a device-code or
 // device-token window keeps naming it; the values live with the store that
@@ -72,7 +73,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -84,17 +85,66 @@ export function createMemoryStore(options = {}) {
   const devices = new Map();
   /** @type {Map<string, string>} accessKeyId -> device id */
   const byAccessKeyId = new Map();
-  /** @type {Map<string, Map<string, Uint8Array>>} account id -> full path -> bytes */
+  /** @type {Map<string, Uint8Array>} full path -> bytes (one global namespace; the prefix scopes what each key sees) */
   const objects = new Map();
 
-  /** @param {string} accountId */
-  function objectTable(accountId) {
-    let table = objects.get(accountId);
-    if (table === undefined) {
-      table = new Map();
-      objects.set(accountId, table);
+  /**
+   * The one mint: a scope, an account, a name and a kind become a device row
+   * and a credential. Both `mintKey` (a kind's own scope) and `mintTeamKey` (a
+   * role's team scope) call it, so there is one place a key row is built and a
+   * second way to mint one cannot drift.
+   * @param {{id: string}} account
+   * @param {import("./keyprovider.js").KeyScope} scope
+   * @param {string} kind the kind the capabilities came from, for the row
+   * @param {string} name
+   */
+  async function mintScopedKey(account, scope, kind, name) {
+    const keyId = newId("key");
+    /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
+    let credential;
+    if (keyProvider === undefined) {
+      // No storage configured: the stand-in credential the api's own storage
+      // API knows, and nothing outside the Worker has ever seen.
+      credential = {
+        accessKeyId: newId("ak"),
+        secret: newId("sk"),
+        sessionToken: null,
+        expiresIn: null,
+      };
+    } else {
+      const minted = await keyProvider.mint(scope);
+      credential = {
+        accessKeyId: minted.accessKeyId,
+        secret: minted.secret,
+        sessionToken: minted.sessionToken ?? null,
+        expiresIn: minted.expiresIn ?? null,
+      };
     }
-    return table;
+    /** @type {Device} */
+    const device = {
+      id: keyId,
+      accountId: account.id,
+      name,
+      kind: /** @type {any} */ (kind),
+      accessKeyId: credential.accessKeyId,
+      secretHash: await sha256Hex(credential.secret),
+      prefix: scope.prefix,
+      capabilities: [...scope.capabilities],
+      createdAt: nowSeconds(now()),
+      lastSeenAt: null,
+      revokedAt: null,
+    };
+    devices.set(device.id, device);
+    byAccessKeyId.set(credential.accessKeyId, device.id);
+    return {
+      keyId,
+      accessKeyId: credential.accessKeyId,
+      secret: credential.secret,
+      sessionToken: credential.sessionToken,
+      expiresIn: credential.expiresIn,
+      prefix: device.prefix,
+      capabilities: device.capabilities,
+    };
   }
 
   return {
@@ -191,9 +241,10 @@ export function createMemoryStore(options = {}) {
     /**
      * Mint a key for an account and kind. The secret is returned exactly once;
      * only its hash is kept. `kind` chooses the capabilities from the one
-     * table (keyprovider.js), so an agent key can never carry `delete`.
+     * table (keyprovider.js), so an agent key can never carry `delete`. An
+     * explicit `scope` overrides the kind's default (used for team keys).
      * @param {{id: string}} account
-     * @param {{kind?: string, name?: string}} [request]
+     * @param {{kind?: string, name?: string, scope?: import("./keyprovider.js").KeyScope}} [request]
      */
     async mintKey(account, request = {}) {
       const kind = request.kind ?? "agent";
@@ -201,56 +252,11 @@ export function createMemoryStore(options = {}) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
       const scope =
-        kind === "branch"
+        request.scope ??
+        (kind === "branch"
           ? scopeFor(/** @type {any} */ (kind), account.id, { name: request.name })
-          : scopeFor(/** @type {any} */ (kind), account.id);
-      const keyId = newId("key");
-      /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
-      let credential;
-      if (keyProvider === undefined) {
-        // No storage configured: the stand-in credential the api's own storage
-        // API knows, and nothing outside the Worker has ever seen.
-        credential = {
-          accessKeyId: newId("ak"),
-          secret: newId("sk"),
-          sessionToken: null,
-          expiresIn: null,
-        };
-      } else {
-        const minted = await keyProvider.mint(scope);
-        credential = {
-          accessKeyId: minted.accessKeyId,
-          secret: minted.secret,
-          sessionToken: minted.sessionToken ?? null,
-          expiresIn: minted.expiresIn ?? null,
-        };
-      }
-      /** @type {Device} */
-      const device = {
-        id: keyId,
-        accountId: account.id,
-        name: request.name ?? kind,
-        kind: /** @type {any} */ (kind),
-        accessKeyId: credential.accessKeyId,
-        secretHash: await sha256Hex(credential.secret),
-        prefix: scope.prefix,
-        capabilities: [...scope.capabilities],
-        createdAt: nowSeconds(now()),
-        lastSeenAt: null,
-        revokedAt: null,
-      };
-      devices.set(device.id, device);
-      byAccessKeyId.set(credential.accessKeyId, device.id);
-      return {
-        keyId,
-        accessKeyId: credential.accessKeyId,
-        secret: credential.secret,
-        sessionToken: credential.sessionToken,
-        expiresIn: credential.expiresIn,
-
-        prefix: device.prefix,
-        capabilities: device.capabilities,
-      };
+          : scopeFor(/** @type {any} */ (kind), account.id));
+      return mintScopedKey(account, scope, kind, request.name ?? kind);
     },
 
     /**
@@ -310,22 +316,99 @@ export function createMemoryStore(options = {}) {
      * @param {string} path
      * @param {Uint8Array} bytes
      */
-    putObject(accountId, path, bytes) {
-      objectTable(accountId).set(path, bytes);
+    /**
+     * Revoke every key one account holds scoped to `teamId`. This is the
+     * removal half of drive#20's acceptance: the owner removes a member and
+     * their team key stops working from the next request. The device rows are
+     * marked revoked here, and the storage list/write routes refuse a revoked
+     * key through the same `authenticate` the account's own revoke uses, so
+     * there is no separate path where a removed member's key still works.
+     * @param {string} accountId
+     * @param {string} teamId
+     * @returns {Promise<number>} how many keys were revoked
+     */
+    async revokeTeamKeys(accountId, teamId) {
+      // The team prefix is the one every member key carries whatever the role:
+      // `teamScopeFor` builds it from the team id, and the role only chooses
+      // the capabilities, so one call names the prefix and the capability set
+      // is irrelevant to the match.
+      const prefix = teamScopeFor("read_only", teamId).prefix;
+      let revoked = 0;
+      for (const device of devices.values()) {
+        if (
+          device.accountId === accountId &&
+          device.prefix === prefix &&
+          device.revokedAt === null
+        ) {
+          device.revokedAt = nowSeconds(now());
+          revoked++;
+        }
+      }
+      return revoked;
     },
 
     /**
-     * Stand-in storage: the paths under `prefix` for an account. The real
+     * Mint a key for a team member's role on the team, scoped to the team
+     * prefix with the role's capabilities (keyprovider.js `teamScopeFor`).
+     * @param {{id: string}} account
+     * @param {string} teamId
+     * @param {import("./keyprovider.js").TeamRole} role
+     * @param {{name?: string}} [request]
+     */
+    async mintTeamKey(account, teamId, role, request = {}) {
+      const scope = teamScopeFor(role, teamId);
+      return mintScopedKey(account, scope, "device", request.name ?? role);
+    },
+
+    /**
+     * Stand-in storage: write bytes at a full path. One global namespace, the
+     * one the bucket has; what a key may touch is its own prefix, which
+     * `authorizePath` and the storage routes enforce.
+     * @param {string} path
+     * @param {Uint8Array} bytes
+     */
+    putObject(path, bytes) {
+      objects.set(path, bytes);
+    },
+
+    /**
+     * Stand-in storage: the bytes at `path`, or null.
+     * @param {string} path
+     * @returns {Uint8Array|null}
+     */
+    getObject(path) {
+      const bytes = objects.get(path);
+      return bytes ?? null;
+    },
+
+    /**
+     * Stand-in storage: the paths under `prefix`. The real
      * adapter talks to iDrive e2 / B2 (build step 1); the shape the storage
      * API returns is the same.
-     * @param {string} accountId
      * @param {string} prefix
      * @returns {string[]}
      */
-    listObjects(accountId, prefix) {
-      const table = objectTable(accountId);
-      return [...table.keys()].filter((path) => path.startsWith(prefix)).sort();
+    listObjects(prefix) {
+      return [...objects.keys()].filter((path) => path.startsWith(prefix)).sort();
     },
+
+    /**
+     * Whether the key may write: its own row's capabilities are the
+     * authority, so the storage write route checks the same row
+     * the bearer gate used — no second copy of the rule exists.
+     * @param {{capabilities: string[]}} device
+     */
+    canWrite(device) {
+      return device.capabilities.includes("write");
+    },
+
+    /**
+     * The team store: teams, members, and the invite-by-email lookup. The D1
+     * store when the deployment binds a database (workers/api/src/teams.js
+     * `createD1TeamStore`), and the in-memory stand-in when it does not, so a
+     * route reads `store.teams` either way and neither path is special-cased.
+     */
+    teams: options.teams ?? createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
   };
 }
 
@@ -387,10 +470,18 @@ export function authorizePath(device, rawPath) {
 /**
  * Whether a key may delete. An agent, s3 or branch key may not
  * (docs/build-spec.md, "Keys and safety"); the one table is the source, so a
- * corrupted row cannot grant it.
- * @param {{kind: string}} device
+ * corrupted row cannot grant it. A row that carries its own capabilities wins
+ * over the kind's: a team key (drive#20) is minted with the `device` kind so
+ * the kind table's lookup still answers, but its row lists the role's own
+ * capabilities, and a read-only member's key must not read as delete-capable
+ * because of the label. A row with no capabilities field (the tests' bare
+ * `{kind}` shape) falls back to the kind table.
+ * @param {{kind: string, capabilities?: string[]}} device
  */
 export function canDelete(device) {
+  if (Array.isArray(device.capabilities)) {
+    return device.capabilities.includes("delete");
+  }
   const kind = /** @type {import("./keyprovider.js").KeyKind} */ (device.kind);
   return CAPABILITIES_BY_KIND[kind].includes("delete");
 }
