@@ -22,6 +22,7 @@ import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
+  bearerToken,
   EVENT_ACTIONS,
   EVENT_TOKEN_HEADER,
   EVENTS_PER_BATCH,
@@ -32,11 +33,14 @@ import {
   handleStorageEventRequest,
   hourStart,
   listMeteredAccounts,
+  looksLikeNotificationRecord,
   MAX_CATCHUP_HOURS,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  notificationRecord,
+  notificationRecords,
   reconcileMeter,
   recordEvent,
   recordUsage,
@@ -1145,6 +1149,194 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   );
   assert.equal(unbound.status, 503);
   assert.equal((await unbound.json()).error, "The meter cannot reach its database right now.");
+});
+
+// --- The bucket's own event shape (drive issue #60) ----------------------
+
+/**
+ * A delivery the pinned stand-in's own event rule sends: MinIO's notify
+ * webhook puts `Bearer <token>` in `Authorization` and cannot set a header of
+ * its own, and it bubbles the S3 record itself with no `Records` wrapper
+ * (measured 2026-10-02).
+ * @param {{authorization?: string|null, body: string}} options
+ */
+function standinDelivery({ authorization = "Bearer wrong", body }) {
+  /** @type {Record<string, string>} */
+  const headers = { "content-type": "application/json" };
+  if (authorization !== null) {
+    headers.authorization = authorization;
+  }
+  return new Request("https://drive.example/api/storage-events", {
+    method: "POST",
+    headers,
+    body,
+  });
+}
+
+/** One S3 record, exactly as MinIO's webhook bubbles it. */
+function standinRecord() {
+  return {
+    eventVersion: "2.0",
+    eventSource: "minio:s3",
+    eventTime: "2026-10-02T10:00:00.000Z",
+    eventName: "s3:ObjectCreated:Put",
+    s3: {
+      bucket: { name: "drive-standin" },
+      object: { key: "u%2Fabc123%2Fnotes.md", size: GB, versionId: "v1" },
+    },
+  };
+}
+
+test("the bearer header a stock bucket can send is accepted, next to the route's own", async () => {
+  assert.equal(bearerToken("Bearer abc"), "abc");
+  assert.equal(bearerToken("bearer abc"), "abc", "the scheme case does not matter");
+  assert.equal(bearerToken("abc"), null, "a bare value is not a bearer token");
+  assert.equal(bearerToken("Basic abc"), null);
+  assert.equal(bearerToken(null), null);
+  assert.equal(bearerToken("Bearer"), null);
+
+  const { db } = makeMeteredDB();
+  const body = JSON.stringify(standinRecord());
+  const refused = await handleStorageEventRequest(standinDelivery({ body }), db, TOKEN);
+  assert.equal(refused.status, 401, "the wrong token is still refused");
+  assert.equal(db.tables.file_versions.size, 0, "and stores nothing");
+
+  const accepted = await handleStorageEventRequest(
+    standinDelivery({ authorization: `Bearer ${TOKEN}`, body }),
+    db,
+    TOKEN,
+  );
+  assert.equal(accepted.status, 200, `MinIO's own bearer header must be accepted: ${body}`);
+  assert.deepEqual(await accepted.json(), { ok: true, stored: 1, deduped: 0 });
+  const row = db.tables.file_versions.get("abc123|v1");
+  assert.ok(row, "the record became one version row");
+  assert.equal(row.size_bytes, GB);
+  assert.equal(row.created_at, Date.parse("2026-10-02T10:00:00.000Z"));
+});
+
+test("the route's own header still works alongside the bearer one", async () => {
+  const { db } = makeMeteredDB();
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN, "content-type": "application/json" },
+      body: JSON.stringify(standinRecord()),
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(db.tables.file_versions.size, 1);
+});
+
+test("an S3 Records envelope is billed, and a bare record from the same bucket is too", async () => {
+  const { db } = makeMeteredDB();
+  const record = standinRecord();
+  const envelope = JSON.stringify({ Records: [record] });
+  const first = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: envelope,
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(first.status, 200, "the wrapper every provider pads its notification in is billed");
+  assert.deepEqual(await first.json(), { ok: true, stored: 1, deduped: 0 });
+  assert.ok(db.tables.file_versions.get("abc123|v1"));
+
+  // The same record with its id and time moved, so it is a second version
+  // rather than the dedup eating it.
+  const second = {
+    ...record,
+    s3: { ...record.s3, object: { ...record.s3.object, versionId: "v2" } },
+  };
+  const bare = await handleStorageEventRequest(
+    standinDelivery({ authorization: `Bearer ${TOKEN}`, body: JSON.stringify(second) }),
+    db,
+    TOKEN,
+  );
+  assert.equal(bare.status, 200, "the bare record the bucket bubbles is billed too");
+  assert.deepEqual(await bare.json(), { ok: true, stored: 1, deduped: 0 });
+  assert.equal(db.tables.file_versions.get("abc123|v2").size_bytes, GB);
+});
+
+test("a batch of records and a single record are one code path, and a delete is a hide", async () => {
+  const { db } = makeMeteredDB();
+  const write = standinRecord();
+  const remove = {
+    ...write,
+    eventName: "s3:ObjectRemoved:Delete",
+    eventTime: "2026-10-02T11:00:00.000Z",
+  };
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: JSON.stringify({ Records: [write, remove] }),
+    }),
+    db,
+    TOKEN,
+  );
+  assert.deepEqual(await response.json(), { ok: true, stored: 2, deduped: 0 });
+  const row = db.tables.file_versions.get("abc123|v1");
+  assert.equal(row.created_at, Date.parse("2026-10-02T10:00:00.000Z"));
+  assert.equal(row.hidden_at, Date.parse("2026-10-02T11:00:00.000Z"));
+});
+
+test("the record mapping is one mapping, and refuses a body with no event in it", () => {
+  assert.throws(() => notificationRecord({ hello: "world" }), /not a storage notification/);
+  assert.equal(looksLikeNotificationRecord({ hello: "world" }), false);
+  assert.equal(looksLikeNotificationRecord({ eventName: "x" }), true);
+  assert.equal(looksLikeNotificationRecord("nope"), false);
+  assert.throws(() => notificationRecord(["nope"]), /must be a JSON object/);
+  assert.throws(() => notificationRecord(null), /must be a JSON object/);
+  assert.throws(() => notificationRecords({ Records: "nope" }), /must be a list/);
+  assert.deepEqual(notificationRecords({ Records: [1, 2] }), [1, 2]);
+  assert.deepEqual(notificationRecords([1, 2]), [1, 2]);
+  assert.deepEqual(notificationRecords({ eventName: "x" }), [{ eventName: "x" }]);
+
+  const mapped = notificationRecord({
+    eventName: "s3:ObjectCreated:Post",
+    key: "u%2Fabc123%2Fa.txt",
+    size: GB,
+    versionId: "v9",
+    eventTime: "2026-10-02T10:00:00.000Z",
+  });
+  assert.equal(
+    mapped.keyName,
+    "u/abc123/a.txt",
+    "the form-encoded key is read as the bucket wrote it",
+  );
+  assert.equal(mapped.b2FileId, "v9");
+  assert.equal(mapped.sizeBytes, GB);
+  assert.equal(mapped.action, "uploaded");
+  assert.equal(mapped.createdAt, "2026-10-02T10:00:00.000Z");
+  const check = validateEvent(mapped);
+  assert.equal(check.error, undefined);
+  assert.equal(check.accountId, "abc123");
+
+  const nested = notificationRecord({
+    eventName: "s3:ObjectRemoved:Delete",
+    s3: { object: { key: "u%2Fabc123%2Fa.txt", versionId: "v9" } },
+    eventTime: "2026-10-02T10:05:00.000Z",
+  });
+  assert.equal(nested.keyName, "u/abc123/a.txt");
+  assert.equal(nested.b2FileId, "v9");
+  assert.equal(nested.action, "deleted");
+  assert.equal(
+    nested.createdAt,
+    undefined,
+    "a delete never seeds a creation time from its own instant",
+  );
+  assert.equal(validateEvent(nested).hiddenAt, Date.parse("2026-10-02T10:05:00.000Z"));
+  assert.equal(
+    validateEvent({ ...nested, eventTimestamp: undefined }).error,
+    "The event does not say when the version stopped being visible.",
+  );
+  // A size-less delete still gets its row: the hide is what stops billing.
+  assert.equal(validateEvent(nested).sizeBytes, 0);
 });
 
 test("the token compare is constant-shape and never a prefix match", async () => {
