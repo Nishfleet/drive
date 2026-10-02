@@ -370,14 +370,12 @@ async function videoDemo(mountDir, t) {
   const videoPath = path.join(mountDir, "media", "cut.mp4");
   await mkdir(path.dirname(videoPath), { recursive: true });
   // `-f lavfi` needs no stock footage: the file is generated, so nothing
-  // borrowed from elsewhere is presented as ours. The bitrate is chosen so the
-  // encoded file lands on the requested size rather than near it: the file is
-  // then measured and the measurement is the size the page prints, so an
-  // encode that comes out smaller is a failure here and not a smaller claim
-  // there. 1.15 bits per pixel per frame is a real H.264 rate for this source,
-  // and 10% headroom absorbs the container and audio-less mux overhead.
-  const target = VIDEO_GB * 1024 ** 3;
-  const seconds = Math.max(120, Math.ceil((target / (30_000_000 * 1.15)) * 8));
+  // borrowed from elsewhere is presented as ours. `-fs` is ffmpeg's own output
+  // size limit and is what makes the size reproducible: the encoder stops once
+  // the muxed file reaches the requested bytes, so the measurement the page
+  // prints is the size this run produced rather than a bitrate guess. `-t` is a
+  // safety ceiling above the size limit, never the thing that stops the encode.
+  const target = Math.round(VIDEO_GB * 1024 ** 3);
   const make = spawnSync(
     "ffmpeg",
     [
@@ -388,19 +386,21 @@ async function videoDemo(mountDir, t) {
       "lavfi",
       "-i",
       "testsrc2=size=1280x720:rate=30",
+      "-fs",
+      String(target),
       "-t",
-      String(seconds),
+      "4000",
       "-c:v",
       "libx264",
       "-preset",
       "veryfast",
       "-b:v",
-      "30M",
+      "80M",
       "-pix_fmt",
       "yuv420p",
       videoPath,
     ],
-    { stdio: ["ignore", "inherit", "inherit"], timeout: 900_000 },
+    { stdio: ["ignore", "inherit", "inherit"], timeout: 2_400_000 },
   );
   if (make.status !== 0) throw new Error(`ffmpeg exited ${make.status} writing the demo video`);
   const size = (await stat(videoPath)).size;
@@ -408,6 +408,17 @@ async function videoDemo(mountDir, t) {
   // the requested size was; the request is the floor, not the target.
   const floor = Math.max(1, Math.floor(VIDEO_GB - 0.5)) * 1024 ** 3;
   assert.ok(size >= floor, `the video is ${size} bytes, under the ${floor} the issue asks for`);
+  // The duration is now whatever the size limit bought, so the scrub offset is
+  // read from the file itself: half the real duration is a real seek.
+  const probed = spawnSync(
+    "ffprobe",
+    ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", videoPath],
+    { encoding: "utf8" },
+  );
+  const duration = Number((probed.stdout ?? "").trim());
+  if (probed.status !== 0 || !Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`ffprobe could not read the demo video's duration: ${probed.stderr}`);
+  }
 
   // The first frame: decode the head of the file off the mount. The clock
   // starts before the read and stops once a decoded frame is in hand, which is
@@ -423,8 +434,8 @@ async function videoDemo(mountDir, t) {
   if (decode.status !== 0) throw new Error(`ffmpeg exited ${decode.status} decoding the first frame`);
 
   // The scrub: seek deep into the same file and decode a frame from there, the
-  // read a timeline drag makes. Two seconds in, so the offset is a real seek
-  // and not the head of the file again.
+  // read a timeline drag makes, half the real duration in so the offset is a
+  // real seek and not the head of the file again.
   const scrubFrame = path.join(mountDir, "..", "scrub-frame.png");
   const scrubStart = process.hrtime.bigint();
   const scrub = spawnSync(
@@ -434,7 +445,7 @@ async function videoDemo(mountDir, t) {
       "-loglevel",
       "error",
       "-ss",
-      String(Math.floor(seconds / 2)),
+      String(Math.floor(duration / 2)),
       "-i",
       videoPath,
       "-frames:v",
@@ -460,7 +471,7 @@ async function videoDemo(mountDir, t) {
     },
     {
       name: "video-scrub",
-      detail: `seeked to ${Math.floor(seconds / 2)}s and decoded a frame from the same ${(size / 1024 ** 3).toFixed(1)} GB file`,
+      detail: `seeked to ${Math.floor(duration / 2)}s and decoded a frame from the same ${(size / 1024 ** 3).toFixed(1)} GB file`,
       ms: ms(scrubMs),
       note: scrubFrameExists ? undefined : "the scrub frame decoded",
     },
