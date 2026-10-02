@@ -358,7 +358,10 @@ func mountForeground(p MountPlan, home string) error {
 	// no file the fill keeps anywhere but rclone's capped VFS cache. It is
 	// started after rclone is up and stopped with the mount, and every pass it
 	// reports goes to the mount's log, so a fill problem is a named failure a
-	// person can read rather than a silent no-op.
+	// person can read rather than a silent no-op. It is also what keeps a file
+	// or folder the person chose to keep offline (#115) in the cache, by
+	// re-reading it on every pass so rclone's own eviction order takes from
+	// the rest of the drive first.
 	fillCtx, cancelFill := context.WithCancel(context.Background())
 	go func() {
 		// rclone's own remote control is not listening for the first moments
@@ -366,7 +369,7 @@ func mountForeground(p MountPlan, home string) error {
 		// (the same proof `drive mount` already makes) instead of racing it.
 		_, _ = Mounted(p.GOOS, home)
 		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
-		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
+		for err := range RunFillLoop(fillCtx, c, home) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
 		}
 	}()

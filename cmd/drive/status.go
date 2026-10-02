@@ -80,6 +80,23 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
+	// What this computer is keeping on purpose (issue #115). The list is read
+	// from the one file `drive offline` writes, and the sizes from the mount, so
+	// this line is the same numbers `drive offline --list` prints and neither
+	// can drift from the other.
+	idx, err := LoadOffline(home)
+	if err != nil {
+		return err
+	}
+	if idx.Empty() {
+		fmt.Println("offline: none")
+	} else {
+		usage, err := MeasureOffline(mountDir, idx.Paths)
+		if err != nil {
+			return err
+		}
+		printOfflineUsage(usage)
+	}
 	creds, err := LoadCredentials(home)
 	if err != nil {
 		return err

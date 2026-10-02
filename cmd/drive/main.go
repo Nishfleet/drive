@@ -25,8 +25,10 @@ Usage:
   drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
+  drive offline <path>...  keep a file or folder on this computer (also --list)
+  drive online [path]...   let the disk go again; with no argument, all of it
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
-  drive status [flags]     the mount, the upload queue, and this month's cost
+  drive status [flags]     the mount, the upload queue, what is kept offline, and this month's cost
   drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
@@ -107,6 +109,10 @@ func main() {
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
+	case "offline":
+		err = runOffline(os.Args[2:])
+	case "online":
+		err = runOnline(os.Args[2:])
 	case "uninstall":
 		err = runUninstall(os.Args[2:])
 	case "status":

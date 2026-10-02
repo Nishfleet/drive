@@ -622,8 +622,9 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string) error {
-			return fillReadFile(filepath.Join(mountDir, fillName))
+		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
+			_, err := fillReadFile(filepath.Join(mountDir, fillName))
+			return err
 		})
 		filled <- err
 	}()

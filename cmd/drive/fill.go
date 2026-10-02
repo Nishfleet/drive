@@ -110,9 +110,15 @@ func DefaultFillPolicy() FillPolicy {
 // it filled even on a busy machine; that is the promise they were given, and
 // the cost is the bytes, not their foreground speed (the cap still holds).
 func ShouldFill(offline bool, load1, load5 float64) bool {
-	if offline {
-		return true
-	}
+	return offline || MachineIdle(load1, load5)
+}
+
+// MachineIdle is the load-average half of ShouldFill on its own. It is split out
+// because a fill pass needs both halves for different jobs: ShouldFill decides
+// whether the pass runs at all, and MachineIdle tells the reader whether this
+// is an idle pass (so the rest of the drive is filled) or an offline-only pass
+// (so the kept-offline set is kept warm and nothing else is downloaded).
+func MachineIdle(load1, load5 float64) bool {
 	return load1 < idleLoad && load5 < idleLoad
 }
 

@@ -169,15 +169,15 @@ func TestFillReaderReadsThroughTheMount(t *testing.T) {
 	// not report an error for a tree it can read, and must not read a file
 	// that has been removed under it.
 	read := fillReader(dir)
-	if err := read("drive:bucket/u/1"); err != nil {
+	if err := read("drive:bucket/u/1", true); err != nil {
 		t.Fatalf("fill read: %v", err)
 	}
 	// A file that vanished between the walk and the read is not an error: the
 	// next pass sees the new tree.
-	if err := fillReadFile(filepath.Join(dir, "gone.bin")); err != nil {
+	if _, err := fillReadFile(filepath.Join(dir, "gone.bin")); err != nil {
 		t.Errorf("a removed file failed the fill: %v", err)
 	}
-	if err := fillReadFile(dir); err == nil {
+	if _, err := fillReadFile(dir); err == nil {
 		t.Error("reading a directory as a file returned no error")
 	}
 }
@@ -272,7 +272,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := &countedBackend{used: capBytes, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			t.Error("the fill read a file although the cache was already at the cap")
 			return nil
 		})
@@ -289,7 +289,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 
 	t.Run("a busy machine does not fill", func(t *testing.T) {
 		b := &countedBackend{used: 0, cap: 20 << 30, addPerRead: 1 << 30}
-		res, err := fillPass(context.Background(), b, false, 2.5, 2.0, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 2.5, 2.0, func(string, bool) error {
 			t.Error("the fill read a file on a busy machine")
 			return nil
 		})
@@ -310,7 +310,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		// cannot stop rclone mid-read, so it must say so rather than report
 		// success with the cache over the user's cap.
 		b := &countedBackend{used: capBytes - (1 << 20), cap: capBytes, addPerRead: 4 << 30}
-		_, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		_, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			b.used += b.addPerRead
 			return nil
 		})
@@ -325,7 +325,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 	t.Run("a fill under the cap succeeds and reports rclone's own numbers", func(t *testing.T) {
 		capBytes, _ := parseSizeSuffix("20G")
 		b := &countedBackend{used: 1 << 30, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			b.used += b.addPerRead
 			return nil
 		})
