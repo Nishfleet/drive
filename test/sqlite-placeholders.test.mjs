@@ -16,10 +16,25 @@
 // the suite on every Node build.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestD1, sqlitePlaceholders, withSqlitePlaceholders } from "./harness.mjs";
+
+test("the meter adapter uses the harness rewrite, not a private copy", () => {
+  const source = readFileSync(new URL("./d1-sqlite.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /import \{ sqlitePlaceholders \} from "\.\/harness\.mjs"/,
+    "the meter adapter must import the one rewrite",
+  );
+  assert.equal(
+    source.includes("function anonymousPlaceholders"),
+    false,
+    "a second rewrite in the meter adapter can drift from the harness",
+  );
+});
 
 test("the rewrite turns D1's numbered placeholders into the anonymous form node:sqlite binds", () => {
   assert.equal(sqlitePlaceholders("SELECT 1 WHERE a = ?1"), "SELECT 1 WHERE a = ?");

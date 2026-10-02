@@ -321,8 +321,10 @@ function makeMeteredDB(onQuery) {
       return statement;
     }
     return new Proxy(statement, {
-      get(target, property, receiver) {
-        const member = Reflect.get(target, property, receiver);
+      get(target, property) {
+        // Native StatementSync getters (sourceSQL) throw Illegal invocation
+        // when `this` is the proxy, so they are read off the real statement.
+        const member = Reflect.get(target, property, target);
         if (typeof member !== "function") {
           return member;
         }
