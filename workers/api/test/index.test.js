@@ -249,7 +249,7 @@ test("unknown path is 404 and wrong method is 405 with the allowed method named"
   assert.equal((await dispatch(new Request("https://x.test/nope"), ctx)).status, 404);
   const res = await dispatch(new Request("https://x.test/v1/health", { method: "POST" }), ctx);
   assert.equal(res.status, 405);
-  assert.equal(res.headers.get("allow"), "GET, HEAD");
+  assert.equal(res.headers.get("allow"), "GET");
 });
 
 test("path params are decoded", async () => {

@@ -23,6 +23,7 @@ import {
   FILES_ENDPOINT,
   handleFilesRequest,
 } from "../src/files.js";
+import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
 import { STATUS_ENDPOINT } from "../src/status.js";

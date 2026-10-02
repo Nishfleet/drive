@@ -198,9 +198,7 @@ function capStateFor(_accountId) {
 // public routes declared above, so the two public POST routes keep the repo's
 // own same-origin rule (src/waitlist.js, src/email-send.js) and the token
 // lanes keep their tokens. The browser-facing write lane under /api/files
-// additionally takes Hono's built-in csrf() middleware below; it reads no
-// header the CLI cannot send, so curl and the Go CLI pass it and the account
-// gate is what holds them.
+// additionally takes Hono's built-in csrf() middleware below.
 //
 // @type {import("hono").MiddlewareHandler}
 async function accountGate(c, next) {
@@ -210,6 +208,27 @@ async function accountGate(c, next) {
   c.set("account", account);
   await next();
 }
+
+// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
+// before a custom origin/secFetchSite handler is consulted (its undefined
+// short-circuit returns false), which would refuse curl and the Go CLI — the
+// callers the repo's same-origin rule deliberately lets through, because a
+// caller that sends no browser header is not a browser and the account gate
+// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
+// src/files.js for the three state-changing routes). So the built-in
+// middleware runs only when a browser evidence header is present; a
+// non-browser request falls straight through to the handler, whose own
+// same-origin check answers with the product's sentence rather than a bare
+// "Forbidden". The browser case is still Hono's middleware deciding.
+const browserCsrf = csrf({
+  origin: (origin, c) => origin === new URL(c.req.url).origin,
+  secFetchSite: (site) => site === "same-origin",
+});
+/** @type {import("hono").MiddlewareHandler} */
+const csrfWhenBrowser = (c, next) =>
+  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
+    ? next()
+    : browserCsrf(c, next);
 
 const filesHandler = (c) => {
   const account = c.get("account");
@@ -250,10 +269,7 @@ export function createApp(env) {
   // account gate is what holds it.
   app.use(
     `${FILES_ENDPOINT}/*`,
-    csrf({
-      origin: (origin, c) => origin === undefined || origin === new URL(c.req.url).origin,
-      secFetchSite: (site) => site === undefined || site === "same-origin",
-    }),
+    csrfWhenBrowser,
   );
 
   // ---------------------------------------------------------- account routes
