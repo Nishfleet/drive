@@ -340,6 +340,82 @@ func hasArgPair(args []string, flag, value string) bool {
 	return false
 }
 
+// A scoped storage credential is an STS session: the access key, the secret
+// and the session token the storage server minted together. rclone signs with
+// all three or the server answers InvalidTokenId (measured against the pinned
+// MinIO, issue #241), so a config that renders only two of them cannot mount a
+// key the api Worker actually mints. A deployment with a permanent credential
+// has no token, and then the line is simply absent.
+func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
+	c := testStorage()
+	if strings.Contains(RcloneConfig(c), "session_token") {
+		t.Errorf("a permanent credential must not gain a session_token line:\n%s", RcloneConfig(c))
+	}
+	c.SessionToken = "FQoGZXIvYXdzEExampleSessionToken"
+	got := RcloneConfig(c)
+	if !strings.Contains(got, "session_token = "+c.SessionToken) {
+		t.Errorf("rclone config missing the session token rclone signs with:\n%s", got)
+	}
+	// It has to be the s3 backend's own option name, or rclone ignores the
+	// line and signs without it.
+	if !strings.Contains(got, "type = s3") {
+		t.Errorf("the session token needs the s3 backend to mean anything:\n%s", got)
+	}
+	// A dry run and a log must not print it: it is a credential like the other
+	// two, and the access key is already redacted there.
+	redacted := RcloneConfigRedacted(c)
+	if strings.Contains(redacted, c.SessionToken) {
+		t.Errorf("redacted config still carries the session token:\n%s", redacted)
+	}
+	if !strings.Contains(redacted, "session_token = <redacted>") {
+		t.Errorf("redacted config missing the redacted session token line:\n%s", redacted)
+	}
+}
+
+// The token comes from the same safe sources as the secret and the access key:
+// the environment for a scripted run, never a flag, because a session token in
+// argv is readable in /proc/<pid>/cmdline for the life of the process (#75).
+func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "envsessiontoken")
+
+	c, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret")
+	if err != nil {
+		t.Fatalf("LoadStorageConfig: %v", err)
+	}
+	if c.SessionToken != "envsessiontoken" {
+		t.Errorf("SessionToken = %q, want the environment's value", c.SessionToken)
+	}
+	// A deployment with permanent credentials sets nothing, and that is not a
+	// missing value: it is the shape of every non-scoped key.
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "")
+	c, err = LoadStorageConfig("", "", "", "", "", "drivetestsecret")
+	if err != nil {
+		t.Fatalf("LoadStorageConfig without a session token: %v", err)
+	}
+	if c.SessionToken != "" {
+		t.Errorf("SessionToken = %q, want empty", c.SessionToken)
+	}
+}
+
+// The token is an INI value like every other one, so the same newline check
+// that refuses an injected rclone option has to hold for it.
+func TestLoadStorageConfigRejectsASessionTokenThatWouldInjectAnOption(t *testing.T) {
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "tok\nno_check_certificate = true")
+	if _, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret"); err == nil {
+		t.Fatal("got nil error for a session token that would inject an rclone option")
+	} else if !strings.Contains(err.Error(), "session token") {
+		t.Errorf("got %q, want it to name the session token", err)
+	}
+}
+
 func TestRcloneConfigRedactedHidesBothKeys(t *testing.T) {
 	c := testStorage()
 	got := RcloneConfigRedacted(c)

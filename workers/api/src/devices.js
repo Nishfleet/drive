@@ -333,6 +333,60 @@ export function createD1DeviceStore(db, options = {}) {
     setAccountState,
 
     /**
+     * The account's month so far, in the shape usageSummary() reads, for the
+     * cap swap `drive cap` runs. The two numbers that decide the cap are both
+     * the meter's own: the month's GB-minutes is the sum of the rolled
+     * `usage_minutes` rows, and the month's peak is the MAX of their
+     * `stored_bytes` marks (src/meter.js monthUsageRollup owns the peak's
+     * rule; this reads the same column it does). One statement, so the two
+     * figures describe the same snapshot of the month.
+     *
+     * A month with no rolled rows reads 0/0, which is the $0 an empty month
+     * bills and below every cap, so the swap does nothing on a drive that
+     * stored nothing. `capUsd` is the amount just set, so the state this read
+     * produces is the one the CLI just asked for.
+     * @param {string} accountId
+     * @param {{capUsd: number}} options
+     */
+    async monthUsage(accountId, options) {
+      const month = new Date();
+      const start = Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), 1);
+      const end = Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1);
+      const row = await first(
+        db,
+        `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
+                COALESCE(MAX(stored_bytes), 0) AS peak_bytes
+           FROM usage_minutes
+          WHERE account_id = ?1 AND hour >= ?2 AND hour < ?3`,
+        accountId,
+        start,
+        end,
+      );
+      const gbMinutes = Number(row?.gb_minutes ?? 0);
+      const peakBytes = Number(row?.peak_bytes ?? 0);
+      if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
+        throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
+      }
+      if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
+        throw new TypeError(`usage_minutes.stored_bytes must be 0 or more, got ${peakBytes}`);
+      }
+      const peakGb = peakBytes / 1e9;
+      return {
+        // The storage the month is billed on, as usageSummary reads it: the
+        // month's GB-minutes and the peak in GB, and the peak doubled as
+        // storedGb because this read answers for the month, not one instant.
+        gbMinutes,
+        peakGb,
+        storedGb: peakGb,
+        storedDaily: [],
+        downloadBytes: 0,
+        averageStoredGb: peakGb,
+        capUsd: options.capUsd,
+        cardAdded: true,
+      };
+    },
+
+    /**
      * A KeyProvider bound to one account, so `mint(scope)` can persist the
      * row without the caller smuggling an account id through the scope.
      * @param {string} accountId
