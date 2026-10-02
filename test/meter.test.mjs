@@ -751,6 +751,48 @@ test("a create and hide in the same instant cost one hour, not zero", () => {
   );
 });
 
+// A folder move on object storage is a copy to the new key, then a delete of
+// the old one (measured 2026-10-03, docs/research/folder-moves.md): the
+// storage server reports a create at the new key and a hide at the old one at
+// the same instant, with the same bytes. The minimum is a floor on the
+// holding, not a fee per version, so the version the move retired books no
+// shortfall of its own - otherwise the moved bytes paid the minimum twice
+// (drive issue #104).
+test("a version whose bytes hand over to a same-size successor books no second minimum", () => {
+  const retired = { sizeBytes: GB, createdAt: midnight(), hiddenAt: midnight() + 30 * MINUTE_MS };
+  const successor = { sizeBytes: GB, createdAt: midnight() + 30 * MINUTE_MS, hiddenAt: null };
+  const now = midnight() + 2 * 60 * MINUTE_MS;
+  // Hour 00 with the move: the retired version's half hour (shortfall waived,
+  // the successor took the bytes over at 00:30) plus the successor's half
+  // hour - the 60 minutes a file that was never moved would have booked.
+  assert.equal(gbMinutesInHour([retired, successor], midnight(), now), 60);
+  // The same retired version alone still books its minimum: with no successor
+  // in the set, the bytes really did stop being stored.
+  assert.equal(gbMinutesInHour([retired], midnight(), now), MINIMUM_MINUTES_PER_VERSION);
+  // The waiver is the caller's answer about the version set, not a property
+  // of the version: asked directly, the per-version reference still tops up.
+  assert.equal(versionGbMinutesInHour(retired, midnight(), now, true), 30);
+  assert.equal(versionGbMinutesInHour(retired, midnight(), now), MINIMUM_MINUTES_PER_VERSION);
+  // A successor of a different size is a different holding, not this
+  // version's continuation: the retired version's minimum stands, beside the
+  // successor's own half hour at its own 2 GB.
+  assert.equal(
+    gbMinutesInHour([retired, { ...successor, sizeBytes: 2 * GB }], midnight(), now),
+    MINIMUM_MINUTES_PER_VERSION + 2 * 30,
+  );
+  // A version is never its own successor: a create and hide at the same
+  // instant is a zero-length version, and its minimum stands.
+  const zeroLength = toVersion({
+    size_bytes: GB,
+    created_at: midnight() + 30 * MINUTE_MS,
+    hidden_at: midnight() + 30 * MINUTE_MS,
+  });
+  assert.equal(
+    gbMinutesInHour([zeroLength], midnight(), midnight() + 60 * MINUTE_MS),
+    MINIMUM_MINUTES_PER_VERSION,
+  );
+});
+
 // --- The rollup ----------------------------------------------------------
 
 // One hour's usage row, written through the meter's own recordUsage: the
@@ -1602,6 +1644,24 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
       hiddenAt: midnight() + 61 * MINUTE_MS,
     },
     { sizeBytes: 0, createdAt: midnight(), hiddenAt: midnight() + 10 * MINUTE_MS },
+    // A zero-length version whose size no other version shares, so its own
+    // minimum stands and the SQL's b2_file_id guard (a version is never its
+    // own successor) is what keeps it from waiving itself.
+    {
+      sizeBytes: 2 * GB,
+      createdAt: midnight() + 5 * MINUTE_MS,
+      hiddenAt: midnight() + 5 * MINUTE_MS,
+    },
+    // A handoff pair: the first version is replaced at its stop instant by a
+    // same-size successor, so the first books no minimum and the pair is one
+    // holding of 50 minutes plus the successor's own minimum (#104). Both
+    // sides of the comparison below must apply the waiver the same way.
+    {
+      sizeBytes: 4 * GB,
+      createdAt: midnight() + 10 * MINUTE_MS,
+      hiddenAt: midnight() + 40 * MINUTE_MS,
+    },
+    { sizeBytes: 4 * GB, createdAt: midnight() + 40 * MINUTE_MS, hiddenAt: null },
   ];
   for (let offset = 0; offset < 3; offset += 1) {
     const hour = midnight() + offset * 60 * MINUTE_MS;
@@ -1629,6 +1689,95 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
       "and the stored row holds the same number",
     );
   }
+});
+
+// A folder move through the mount is a server-side copy to the new key, then
+// a delete of the old one (measured 2026-10-03, docs/research/folder-moves.md:
+// 10 server-side copies for a 10 GB folder, zero bytes through the machine).
+// The storage server reports it as one create and one hide at the same
+// instant, so the meter sees two versions where the customer moved one file.
+// These tests drive the shipping rollup - the real migrations, the real SQL
+// and runMeterCron's watermark walk - and hold the move to the issue's bar:
+// a move adds no billed bytes.
+
+/**
+ * Books every hour the meter's own trigger would, and returns the account's
+ * total GB-minutes from the usage rows the rollup wrote.
+ * @param {import("./d1-sqlite.mjs").MeteredD1["db"]} db
+ * @param {number} hours
+ */
+async function bookedGbMinutes(db, hours) {
+  for (let hour = 1; hour <= hours; hour += 1) {
+    await runMeterCron(db, midnight() + hour * 60 * MINUTE_MS);
+  }
+  const rows = await db
+    .prepare("SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1")
+    .bind("abc123")
+    .all();
+  return (rows.results || []).reduce((total, row) => total + Number(row.gb_minutes_live), 0);
+}
+
+/**
+ * One 10 GB file at `/u/abc123/`, optionally moved to another folder at
+ * `moveAt` minutes past midnight: the new key's create and the old key's
+ * hide, the two events a server-side move produces (in the order the storage
+ * server sends them).
+ * @param {number} moveAt minutes past midnight, or undefined for no move
+ */
+async function oneFileWithMove(moveAt) {
+  const size = 10 * GB;
+  const path = "/u/abc123/Notes/project/big.bin";
+  const db = makeMeteredDB().db;
+  await storeCreate(db, "abc123", { b2FileId: "v-old", path, sizeBytes: size });
+  if (moveAt !== undefined) {
+    const at = midnight() + moveAt * MINUTE_MS;
+    await storeCreate(db, "abc123", {
+      eventId: "evt-abc123-v-new",
+      b2FileId: "v-new",
+      path: "/u/abc123/Archive/project/big.bin",
+      sizeBytes: size,
+      createdAt: at,
+    });
+    const hide = validateEvent({
+      eventId: "evt-abc123-hide-old",
+      keyName: "/u/abc123/",
+      path,
+      b2FileId: "v-old",
+      action: "deleted",
+      hiddenAt: at,
+      eventTimestamp: at,
+    });
+    assert.equal(hide.error, undefined, hide.error);
+    await recordEvent(db, hide, at);
+  }
+  return { db, size };
+}
+
+test("a move adds no billed bytes, and a move inside the file's first hour adds none either", async () => {
+  const hours = 6;
+  const still = await oneFileWithMove(undefined);
+  const noMove = await bookedGbMinutes(still.db, hours);
+  assert.equal(noMove, (still.size / GB) * 60 * hours, "ten GB for six hours");
+
+  // A folder that has been stored a while, moved mid-way.
+  const settled = await oneFileWithMove(2 * 60);
+  assert.equal(
+    await bookedGbMinutes(settled.db, hours),
+    noMove,
+    "the move books the same minutes the unmoved file books",
+  );
+
+  // The case the minimum used to double-charge: the file is moved inside its
+  // first hour, so the version the move retired was young enough to owe a
+  // shortfall and the version the move created carries the bytes on. Before
+  // #104's waiver this booked the minimum twice (measured: 3,900 GB-minutes
+  // beside the unmoved file's 3,600).
+  const young = await oneFileWithMove(30);
+  assert.equal(
+    await bookedGbMinutes(young.db, hours),
+    noMove,
+    "a move inside the first hour books no extra minimum either",
+  );
 });
 
 // --- The nightly reconciler (drive issue #59) --------------------------

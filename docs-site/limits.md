@@ -34,8 +34,11 @@ would rather you read it here than find out in week three.
   connection will stutter. A drive that holds local copies of the files you
   keep offline is faster to reopen.
 - **Rename and move are not free.** A folder move is a copy and a delete on
-  plain object storage. It does not copy the bytes through your machine, but
-  it is still not an instant rename, and a big move takes time.
+  plain object storage, so renaming a 200-file folder takes about 0.6 seconds
+  and moving a 10 GB folder about 18 seconds on our test storage (a local
+  stand-in, so read both as an order of magnitude) — the storage server makes
+  the copy, so nothing is re-uploaded through your machine, and a move never
+  adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
 - **One machine's disk is still a cache.** Your machine holds what it has

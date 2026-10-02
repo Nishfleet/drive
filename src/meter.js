@@ -37,7 +37,14 @@ import { accountPrefix, scopeStore } from "./files.js";
 // decisions table:
 //   - A version is billed from created_at until hidden_at.
 //   - At least 60 minutes per version (the 1-hour minimum, the decision table's
-//     "default yes until Nish answers").
+//     "default yes until Nish answers"), with one exception (drive issue #104):
+//     a version that stopped at the instant a same-size successor version began
+//     books no shortfall of its own. A folder move is a copy-then-delete, so
+//     the retired version's bytes never left the drive and the successor bills
+//     them from that instant; the minimum is booked once per holding, by the
+//     version that ends it. Without the exception a moved folder paid the
+//     moved bytes' minimum twice - once on the version the move retired, once
+//     again under the new key.
 //   - GB-minutes = size in GB x whole stored minutes.
 //
 // How the two rules share out one version across hours, so that a day's
@@ -113,7 +120,11 @@ export function toMillis(value, field) {
 
 // The 1-hour minimum. A version that is replaced in the same minute it was
 // written still costs one hour: the minimum is what keeps a burst of saves on
-// one file a bounded cost instead of free.
+// one file a bounded cost instead of free. Bounded once per holding, not once
+// per save or per move: a version whose bytes hand straight over to a
+// same-size successor at its own stop instant (a move's copy-then-delete, a
+// save's replace) adds no minimum of its own, because the holding never
+// stopped (drive issue #104).
 export const MINIMUM_MINUTES_PER_VERSION = 60;
 
 export const MINUTE_MS = 60_000;
@@ -249,9 +260,15 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
  * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
+ * @param {boolean} [continued] the version stopped at the instant a same-size
+ *   successor version began, so its bytes were billed on by that successor and
+ *   it books no minimum of its own (a folder move's copy-then-delete, a save's
+ *   replace - drive issue #104). The rollup computes this per row in SQL; the
+ *   JS reference takes it from the caller so the two cannot disagree about a
+ *   version in isolation.
  * @returns {number} whole booked minutes
  */
-export function versionBookedMinutes(version, hour, now = Date.now()) {
+export function versionBookedMinutes(version, hour, now = Date.now(), continued = false) {
   const start = hourStart(hour);
   const overlap = versionOverlapMinutes(version, start, now);
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
@@ -271,7 +288,12 @@ export function versionBookedMinutes(version, hour, now = Date.now()) {
     return overlap;
   }
   const lifetime = versionLifetimeMinutes(version, now);
-  if (lifetime >= MINIMUM_MINUTES_PER_VERSION) {
+  if (lifetime >= MINIMUM_MINUTES_PER_VERSION || continued) {
+    // The minimum is a floor on a holding, not a fee per version: where the
+    // bytes handed straight over to a same-size successor (a folder move's
+    // copy-then-delete, a save's replace), the successor bills them from the
+    // same instant, and booking the shortfall here too would charge the moved
+    // or replaced bytes' minimum twice (drive issue #104).
     return overlap;
   }
   // The shortfall against the 1-hour minimum, booked once, in the hour the
@@ -292,14 +314,15 @@ export function versionBookedMinutes(version, hour, now = Date.now()) {
  * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
+ * @param {boolean} [continued] see versionBookedMinutes (drive issue #104)
  * @returns {number} byte-minutes
  */
-export function versionBookedByteMinutes(version, hour, now = Date.now()) {
+export function versionBookedByteMinutes(version, hour, now = Date.now(), continued = false) {
   const size = wholeBytes(version.sizeBytes);
   if (size === null) {
     throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
   }
-  return versionBookedMinutes(version, hour, now) * size;
+  return versionBookedMinutes(version, hour, now, continued) * size;
 }
 
 /**
@@ -311,9 +334,10 @@ export function versionBookedByteMinutes(version, hour, now = Date.now()) {
  * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}} version
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
+ * @param {boolean} [continued] see versionBookedMinutes (drive issue #104)
  */
-export function versionGbMinutesInHour(version, hour, now = Date.now()) {
-  return versionBookedByteMinutes(version, hour, now) / BYTES_PER_GB;
+export function versionGbMinutesInHour(version, hour, now = Date.now(), continued = false) {
+  return versionBookedByteMinutes(version, hour, now, continued) / BYTES_PER_GB;
 }
 
 /**
@@ -327,9 +351,26 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   if (!Array.isArray(versions)) {
     throw new TypeError(`gbMinutesInHour needs an array of versions, got ${String(versions)}`);
   }
+  // The same successor rule the rollup's SQL encodes as NOT EXISTS (drive
+  // issue #104): a version that stopped at the instant a same-size version
+  // began books no minimum of its own. The list is the same version set the
+  // SQL reads the table for, so the reference and the statement agree.
+  const continued = new Set(
+    versions.filter((version, index) => {
+      if (version.hiddenAt === null || version.hiddenAt === undefined) {
+        return false;
+      }
+      return versions.some(
+        (other, otherIndex) =>
+          otherIndex !== index &&
+          Number(other.sizeBytes) === Number(version.sizeBytes) &&
+          toMillis(other.createdAt, "createdAt") === toMillis(version.hiddenAt, "hiddenAt"),
+      );
+    }),
+  );
   let units = 0;
   for (const version of versions) {
-    units += versionBookedByteMinutes(version, hour, now);
+    units += versionBookedByteMinutes(version, hour, now, continued.has(version));
   }
   return units / BYTES_PER_GB;
 }
@@ -354,6 +395,15 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // by the hour end: a closed hour is already over, so the rollup instant needs
 // no third parameter here (the JS reference takes `now` and ignores it for the
 // same reason).
+//
+// The minimum's one exception (drive issue #104): a version that stopped at
+// the instant a same-size successor version began books no 1-hour shortfall.
+// A folder move is a copy-then-delete, so the retired version's bytes were
+// never gone and the successor bills them from that instant; without this the
+// move paid the moved bytes' minimum twice. The NOT EXISTS is the rule
+// gbMinutesInHour applies within its list (and a version is never its own
+// successor: the b2_file_id pair is the row's primary key). The probe is one
+// seek on file_versions_account_created_at_idx per young hidden version.
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
@@ -417,6 +467,13 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
         + (CASE
           WHEN hidden_at IS NOT NULL AND hidden_at >= ?1 AND hidden_at < ?2 AND hidden_at >= created_at
             AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
+            AND NOT EXISTS (
+              SELECT 1 FROM file_versions s
+              WHERE s.account_id = file_versions.account_id
+                AND s.size_bytes = file_versions.size_bytes
+                AND s.created_at = file_versions.hidden_at
+                AND s.b2_file_id <> file_versions.b2_file_id
+            )
             THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
             ELSE 0
           END)
