@@ -499,6 +499,15 @@ test("an hour that starts a month belongs to that month, not the one before", as
     from: monthInstant("2026-09"),
     hours: monthHours("2026-09"),
   });
+  // October is rolled too, because this file is never hidden: it really is
+  // live into October, so a month with no October rollup is a month the meter
+  // never measured - and monthUsageRollup refuses that by name rather than
+  // reporting a $0 peak for a drive that held data. Rolling it is what makes
+  // the peak below a real reading rather than a refused one.
+  await rollTheMonth(meteredDb, {
+    from: monthInstant("2026-10"),
+    hours: monthHours("2026-10"),
+  });
   // The same file is inside September for its first half hour and October for
   // its second, and each month reads only the part that belongs to it.
   assert.equal(
@@ -512,8 +521,12 @@ test("an hour that starts a month belongs to that month, not the one before", as
     monthInstant("2026-10"),
     monthEnd("2026-10"),
   );
-  assert.equal(monthGbMinutes(meteredDb, "2026-10"), 0, "October holds nothing yet");
-  assert.equal(october.peakBytes, 0, "and its peak is nothing");
+  assert.equal(
+    monthGbMinutes(meteredDb, "2026-10"),
+    31 * 24 * 60,
+    "October holds the whole of the month (31 x 24 hours) - the file never hid",
+  );
+  assert.equal(october.peakBytes, GB, "and its peak is the file, marked in October's own hours");
 });
 
 /**
@@ -799,6 +812,67 @@ test("a month with no hours is an empty month, not a missing one", async () => {
   assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 0);
 });
 
+test("a version hidden at the exact instant a month starts never held time in it", async () => {
+  // The half-open window, pinned at the month boundary as the hour boundary is
+  // pinned in its own case. A version hidden at EXACTLY 00:00:00 on 1 October
+  // held no minute of October, so it does not make October a month the meter
+  // failed to measure. With a `>=` here the reader would see a live version,
+  // refuse a month that is really empty, and bill nobody - a drive that had
+  // deleted everything on the last second of September would be un-billable
+  // for October, because the version row never goes away.
+  const meteredDb = metered();
+  const from = monthInstant("2026-10");
+  const hiddenAt = from;
+  const uploaded = validateEvent({
+    eventId: "evt-163-boundary",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/boundary.bin`,
+    b2FileId: "file-163-boundary",
+    sizeBytes: 900 * GB,
+    createdAt: at("2026-09-15T00:00:00.000Z"),
+    action: "uploaded",
+  });
+  assert.equal(uploaded.error, undefined, uploaded.error);
+  await recordEvent(meteredDb.db, uploaded, at("2026-09-15T00:00:00.000Z"));
+  const hidden = validateEvent({
+    eventId: "evt-163-boundary-hide",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/boundary.bin`,
+    b2FileId: "file-163-boundary",
+    action: "hidden",
+    eventTimestamp: hiddenAt,
+  });
+  assert.equal(hidden.error, undefined, hidden.error);
+  await recordEvent(meteredDb.db, hidden, hiddenAt);
+  // October's hours are rolled and every one of them is empty: the file was
+  // hidden before the first one began.
+  await rollTheMonth(meteredDb, { from, hours: monthHours("2026-10") });
+  const october = await monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-10"));
+  assert.equal(
+    october.peakBytes,
+    0,
+    "a version hidden at the month's first instant is not in that month",
+  );
+  // One minute later it IS in the month, which is what makes the lower bound
+  // strict rather than a version check that simply never fires.
+  const later = validateEvent({
+    eventId: "evt-163-boundary-2",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/boundary-2.bin`,
+    b2FileId: "file-163-boundary-2",
+    sizeBytes: 900 * GB,
+    createdAt: at("2026-10-01T00:01:00.000Z"),
+    action: "uploaded",
+  });
+  assert.equal(later.error, undefined, later.error);
+  await recordEvent(meteredDb.db, later, at("2026-10-01T00:01:00.000Z"));
+  sqlite(meteredDb).prepare("UPDATE usage_minutes SET stored_bytes = 0").run();
+  await assert.rejects(
+    () => monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-10")),
+    /2026-10 has no stored-bytes mark on \d+ metered hour/,
+  );
+});
+
 test("a month metered without a single stored-bytes mark is refused, never billed as $0", async () => {
   // The unreadable peak. usage_minutes.stored_bytes defaults to 0, so a month
   // whose hours were rolled by a version that never wrote the column looks
@@ -824,8 +898,20 @@ test("a month metered without a single stored-bytes mark is refused, never bille
   sqlite(meteredDb).prepare("UPDATE usage_minutes SET stored_bytes = 0").run();
   await assert.rejects(
     () => monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09")),
-    /2026-09 has 4 metered hours and no stored-bytes mark/,
+    /2026-09 has no stored-bytes mark on 4 metered hours, so the meter never measured the peak/,
   );
+  // The same refusal with NO hour rows at all, which is the shape that used to
+  // slip through: the old guard only ran when hours > 0, so a month the cron
+  // never rolled read a $0 peak for a drive that was holding a file. A missing
+  // measurement is not an empty month, whichever way it is missing.
+  sqlite(meteredDb).prepare("DELETE FROM usage_minutes").run();
+  await assert.rejects(
+    () => monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09")),
+    /2026-09 has no stored-bytes mark on 0 metered hours, so the meter never measured the peak/,
+  );
+  // Put the hours back for the cases below, which read the partially measured
+  // month and then the one real mark.
+  await rollTheMonth(meteredDb, { from, hours: 4 });
   // The same zeros for an account with nothing stored is a real empty month:
   // no live version means nothing to be charged for, and it reads 0.
   const emptyAccount = await monthUsageRollup(

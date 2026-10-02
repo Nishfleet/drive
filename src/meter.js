@@ -474,9 +474,11 @@ const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
  * two, and no float drift between them.
  *
  * HOUR_STORED_BYTES_SQL is this statement's other half - the same window and
- * the same GROUP BY, bytes instead of minutes - and rollupHour reads both, so
- * an hour costs two reads whatever the account count and the two can be
- * checked against each other rather than trusted to agree.
+ * the same GROUP BY, bytes instead of minutes - and both halves are read
+ * together as HOUR_USAGE_SQL, the minutes query LEFT JOINed to the bytes
+ * query. One statement, so the hour's two figures are two columns of ONE
+ * snapshot of the versions and cannot disagree with each other, and an hour
+ * costs one read whatever the account count (drive issue #163).
  * @param {D1Database} db
  * @param {number} hourStartMs epoch ms of the hour start
  * @param {number} nowMs epoch ms, the rollup instant
@@ -568,11 +570,16 @@ export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, n
 // the old month's last - a file spanning that instant is split across the two
 // months and neither month carries both hours (drive issue #163).
 // The peak is the MAX over the month's hour marks. marked_hours counts the
-// rows that carry one (any mark at all, including a 0), and hours counts the
-// rows, so a month whose every row reads 0 - no hour ever wrote a mark - is
-// distinguishable from a month of genuinely empty hours: an account with
-// version rows live in the month but no mark anywhere is a month the meter
-// never measured, and its peak is not readable.
+// rows that carry a POSITIVE mark and hours counts the rows, so a month whose
+// every row reads 0 - no hour ever wrote a real size - is distinguishable from
+// a month of genuinely empty hours: an account with version rows live in the
+// month but no positive mark anywhere is a month the meter never measured, and
+// its peak is not readable. (A measured 0 and an unmeasured 0 are the same
+// number on purpose: migration 0006's NOT NULL DEFAULT 0 cannot tell them
+// apart, and the deploy window that produces an unmeasured 0 is bounded and
+// re-rolled by the reconciler #59. A MAX is not lowered by a 0, so the only
+// shape in which no hour measured anything is the all-zero one, and that is
+// the shape the reader refuses.)
 export const MONTH_PEAK_BYTES_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(CASE WHEN stored_bytes > 0 THEN 1 ELSE 0 END), 0) AS marked_hours,
@@ -585,13 +592,17 @@ export const MONTH_PEAK_BYTES_SQL = `SELECT
 // Whether the account has a version live at any point in the month - the fact
 // that makes an all-zero peak "unmeasured" rather than "empty". A version
 // created inside the month, or still live across its start, is the difference
-// between the two readings.
+// between the two readings. The window is half-open like every other window in
+// this module: a version hidden at EXACTLY the month's first instant held no
+// time in the month (hidden_at > monthStart, strict), so it does not make the
+// month look measured-or-not. This matches the hour overlap (hidden_at >
+// hourStart) so a version is counted the same way at both granularities.
 const MONTH_HAS_VERSIONS_SQL = `SELECT EXISTS(
     SELECT 1 FROM file_versions
     WHERE account_id = ?1
       AND created_at < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
       AND (hidden_at IS NULL
-           OR hidden_at >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
+           OR hidden_at > strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
   ) AS has_versions`;
 
 /**
@@ -645,30 +656,33 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   }
   const { label, at } = monthWindow(month, now);
   const row = await db.prepare(MONTH_PEAK_BYTES_SQL).bind(accountId, at).first();
-  const hours = Number(row?.hours ?? 0);
   const markedHours = Number(row?.marked_hours ?? 0);
   const peakBytes = Number(row?.peak_bytes ?? 0);
-  // A month whose every hour reads 0 while the account had versions live in it
-  // is a month the meter did not measure, not a month the account stored
-  // nothing: its peak is not readable, and billing it from those zeros would
-  // charge for storage nobody recorded - or, read the other way, silently bill
-  // $0 for a month that held data. That is refused here, by name. A month of
-  // genuinely empty hours (the account stored nothing, so no hour marked a
-  // byte) is a real $0 month and reads as one: it has no live version either,
-  // which is what the second read confirms.
+  const hours = Number(row?.hours ?? 0);
+  // A month whose every hour reads 0 - or that has no hours at all - while the
+  // account had versions live in it is a month the meter did not measure, not a
+  // month the account stored nothing: its peak is not readable, and billing it
+  // from those zeros would charge for storage nobody recorded - or, read the
+  // other way, silently bill $0 for a month that held data. That is refused
+  // here, by name. The check does NOT require hours > 0: a month with no usage
+  // rows at all but a live version is the same failure (the cron never ran) and
+  // must fail closed the same way, never return 0 and bill as an empty month.
+  // A month of genuinely empty hours (the account stored nothing, so no hour
+  // marked a byte) is a real $0 month and reads as one: it has no live version
+  // either, which is what the second read confirms.
   //
   // A PARTIALLY marked month is deliberately not refused: the only way one
   // arises is the deploy window, where the hours before 0006 landed have the
   // column's 0 default and every hour after it carries a real mark. Those early
   // zeros cannot lower a MAX, and the hours that do carry a mark are the later
   // ones, so the peak this reads is the drive's true largest size, not a subset
-  // of it. The unmeasurable case is the all-zero one above, which is the only
-  // shape in which no hour measured anything at all.
-  if (hours > 0 && markedHours === 0 && peakBytes === 0) {
+  // of it. The unmeasurable case is the no-positive-mark one above, which is the
+  // only shape in which no hour measured anything at all.
+  if (markedHours === 0 && peakBytes === 0) {
     const live = await db.prepare(MONTH_HAS_VERSIONS_SQL).bind(accountId, at).first();
     if (live?.has_versions) {
       throw new RangeError(
-        `month ${label} has ${hours} metered hours and no stored-bytes mark, so the meter never measured the peak`,
+        `month ${label} has no stored-bytes mark on ${hours} metered ${hours === 1 ? "hour" : "hours"}, so the meter never measured the peak`,
       );
     }
   }
