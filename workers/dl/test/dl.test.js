@@ -17,6 +17,7 @@ import { downloadKey, handleDownload } from "../src/index.js";
 
 const HOST = "https://dl.drive.test";
 
+/** @param {number} size @param {number} [fill] */
 const bytesOf = (size, fill = 7) => new Uint8Array(size).fill(fill);
 
 /**
@@ -27,8 +28,9 @@ const bytesOf = (size, fill = 7) => new Uint8Array(size).fill(fill);
  * @param {Record<string, {bytes: Uint8Array}>} objects storage keys -> objects
  */
 function countingStore(objects) {
+  /** @type {string[]} */
   const reads = [];
-  const unreachable = (method) => async () => {
+  const unreachable = (/** @type {string} */ method) => async () => {
     throw new Error(`the dl Worker must not ${method} storage`);
   };
   return {
@@ -38,14 +40,14 @@ function countingStore(objects) {
       write: unreachable("write"),
       remove: unreachable("remove"),
       copy: unreachable("copy"),
-      async read(key) {
+      async read(/** @type {string} */ key) {
         reads.push(key);
         const found = objects[key];
         if (found === undefined) {
           return null;
         }
         return {
-          body: new Blob([found.bytes]).stream(),
+          body: new Blob([/** @type {BlobPart} */ (found.bytes)]).stream(),
           contentType: "application/octet-stream",
           size: found.bytes.byteLength,
         };
@@ -76,7 +78,7 @@ function makeCtx(db, objects, { accounts = ["acct_alice"], now = midnight() } = 
     },
     ctx: /** @type {any} */ ({
       store,
-      db,
+      db: /** @type {any} */ (db),
       accounts: (/** @type {string} */ accountId) => accounts.includes(accountId),
       now: () => now,
       waitUntil: (/** @type {Promise<unknown>} */ promise) => pending.push(promise),
@@ -90,10 +92,7 @@ test("a download lands in download_bytes at its exact byte count", async () => {
   // shortcut or a chunk boundary could not land on it by accident.
   const size = 1_234_567;
   const harness = makeCtx(db, { "u/acct_alice/video.mov": { bytes: bytesOf(size, 3) } });
-  const res = await handleDownload(
-    new Request(`${HOST}/u/acct_alice/video.mov`),
-    harness.ctx,
-  );
+  const res = await handleDownload(new Request(`${HOST}/u/acct_alice/video.mov`), harness.ctx);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-length"), String(size));
   // The bytes are the storage's own, streamed straight through: the response
@@ -115,13 +114,10 @@ test("the counter adds across an hour and never touches the rollup's column", as
   // The rollup writes gb_minutes_live and leaves download_bytes alone; the dl
   // Worker adds to download_bytes and leaves gb_minutes_live alone. Two
   // writers, one row, either order.
-  await recordUsage(db, "acct_alice", midnight(), 42.5, midnight() + 60_000);
+  await recordUsage(/** @type {any} */ (db), "acct_alice", midnight(), 42.5, midnight() + 60_000);
   const harness = makeCtx(db, { "u/acct_alice/a.bin": { bytes: bytesOf(1000) } });
   for (let read = 0; read < 2; read++) {
-    const res = await handleDownload(
-      new Request(`${HOST}/u/acct_alice/a.bin`),
-      harness.ctx,
-    );
+    const res = await handleDownload(new Request(`${HOST}/u/acct_alice/a.bin`), harness.ctx);
     assert.equal(res.status, 200);
     await harness.drain();
   }
@@ -137,7 +133,13 @@ test("the rollup after the downloads keeps the bytes and replaces its own column
   await harness.drain();
   // The rollup then books the hour's GB-minutes over the same row (drive#6's
   // own guarantee), and the download bytes must survive it.
-  await recordUsage(db, "acct_alice", midnight(), 7.25, midnight() + 3_600_000);
+  await recordUsage(
+    /** @type {any} */ (db),
+    "acct_alice",
+    midnight(),
+    7.25,
+    midnight() + 3_600_000,
+  );
   const row = db.tables.usage_minutes.get(`acct_alice|${midnight()}`);
   assert.equal(row.download_bytes, 4096, "the rollup never zeroes the other writer's column");
   assert.equal(row.gb_minutes_live, 7.25);
@@ -151,10 +153,7 @@ test("one account's path cannot read another account's bytes", async () => {
   });
   // The last one is alice asking for her own file: it proves the refusals
   // above are about the account, not about the path shape.
-  const own = await handleDownload(
-    new Request(`${HOST}/u/acct_alice/secret.txt`),
-    harness.ctx,
-  );
+  const own = await handleDownload(new Request(`${HOST}/u/acct_alice/secret.txt`), harness.ctx);
   assert.equal(own.status, 200, "an account's own key still serves");
   for (const path of [
     "/u/acct_alice/bob/secret.txt",
@@ -166,7 +165,11 @@ test("one account's path cannot read another account's bytes", async () => {
   }
   assert.deepEqual(
     harness.reads,
-    ["u/acct_alice/secret.txt", "u/acct_alice/bob/secret.txt", "u/acct_alice/u/acct_bob/secret.txt"],
+    [
+      "u/acct_alice/secret.txt",
+      "u/acct_alice/bob/secret.txt",
+      "u/acct_alice/u/acct_bob/secret.txt",
+    ],
     "every path resolves to a key under its own account folder, or is refused",
   );
   await harness.drain();
@@ -180,10 +183,7 @@ test("one account's path cannot read another account's bytes", async () => {
 test("an unknown /u/<id>/ is a 404 with no storage reached", async () => {
   const { db } = makeMeteredDB();
   const harness = makeCtx(db, { "u/acct_nobody/ghost.bin": { bytes: bytesOf(5) } });
-  const res = await handleDownload(
-    new Request(`${HOST}/u/acct_nobody/ghost.bin`),
-    harness.ctx,
-  );
+  const res = await handleDownload(new Request(`${HOST}/u/acct_nobody/ghost.bin`), harness.ctx);
   assert.equal(res.status, 404);
   assert.deepEqual(harness.reads, [], "the account is checked before storage is");
   await harness.drain();
@@ -203,14 +203,8 @@ test("a path that names no account folder is the same 404", async () => {
 test("a file that is not in the drive is a 404, in the same words an unknown account gets", async () => {
   const { db } = makeMeteredDB();
   const harness = makeCtx(db, { "u/acct_alice/here.txt": { bytes: bytesOf(3) } });
-  const missing = await handleDownload(
-    new Request(`${HOST}/u/acct_alice/gone.txt`),
-    harness.ctx,
-  );
-  const unknown = await handleDownload(
-    new Request(`${HOST}/u/acct_nobody/gone.txt`),
-    harness.ctx,
-  );
+  const missing = await handleDownload(new Request(`${HOST}/u/acct_alice/gone.txt`), harness.ctx);
+  const unknown = await handleDownload(new Request(`${HOST}/u/acct_nobody/gone.txt`), harness.ctx);
   assert.equal(missing.status, 404);
   assert.equal(await missing.text(), await unknown.text(), "one 404, one sentence");
   assert.deepEqual(
@@ -285,7 +279,9 @@ test("downloadKey builds the key from the path's own account segment", () => {
   });
   // A "/u/" deeper in the path is part of the file's own name, never a second
   // account: the key is under alice's folder and bob's bytes are not in it.
-  assert.equal(downloadKey("/u/alice/u/bob/secret").key, "u/alice/u/bob/secret");
+  const nested = downloadKey("/u/alice/u/bob/secret");
+  assert.ok(nested !== null);
+  assert.equal(nested.key, "u/alice/u/bob/secret");
   for (const path of [
     "/",
     "/u",

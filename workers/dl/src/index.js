@@ -65,10 +65,12 @@ import { folderAccount, recordDownloadBytes } from "../../../src/meter.js";
  * cannot check an account against.
  * @typedef {object} DlContext
  * @property {FileStore|null} store
- * @property {import("../../../src/meter.js").D1Database|null} db
+ * @property {D1Database|null} db
  * @property {(accountId: string) => boolean|Promise<boolean>} accounts
  * @property {() => number} now
  * @property {(promise: Promise<unknown>) => void} waitUntil
+ * @property {ExecutionContext} [platform] the runtime's own context, the
+ *   `waitUntil` a deployed Worker actually has
  */
 
 /** How a download is served: an attachment, with the file's own bytes. */
@@ -135,7 +137,7 @@ export function downloadKey(pathname) {
  * @param {Request} request
  * @param {DlContext} ctx
  * @param {ExecutionContext} [platform] the runtime's context, used for
- *   `waitUntil` when the caller did not supply its own
+ *   `waitUntil` when the caller's own context has none
  * @returns {Promise<Response>}
  */
 export async function handleDownload(request, ctx, platform) {
@@ -253,7 +255,7 @@ export function createApp() {
   // and the account segment is read from it by downloadKey above rather than
   // by a pattern, so the routing cannot be the thing that decides an account.
   app.on(["GET", "HEAD"], "/*", (c) =>
-    handleDownload(c.req.raw, c.env, c.env.platform ?? undefined),
+    handleDownload(c.req.raw, c.env, /** @type {ExecutionContext|undefined} */ (c.env.platform)),
   );
   return app;
 }
@@ -265,6 +267,5 @@ export function createApp() {
  * @type {ExportedHandler<DlContext & {platform?: ExecutionContext}>}
  */
 export default {
-  fetch: (request, env, ctx) =>
-    createApp().fetch(request, /** @type {DlContext} */ (env), ctx),
+  fetch: (request, env, ctx) => createApp().fetch(request, /** @type {DlContext} */ (env), ctx),
 };
