@@ -77,8 +77,9 @@ func VFSArgs() []string {
 
 // tunedVFSValue returns the shipped value for a tunable flag unless the hill
 // climb has set its DRIVE_BENCH_<flag> variable, in which case the override is
-// used. A set-but-empty variable is an error, not an empty flag value, so a
-// malformed round cannot mount with a value rclone would reject at start.
+// used. A set-but-empty variable is ignored and the shipped value is used, so
+// a blank round cannot pass rclone an empty flag. Non-empty values are the
+// climb's candidates; flagPairsEnv refuses one that is not a size or a count.
 func tunedVFSValue(envSuffix, shipped string) string {
 	if v, ok := os.LookupEnv("DRIVE_BENCH_" + envSuffix); ok {
 		if strings.TrimSpace(v) == "" {

@@ -414,6 +414,22 @@ func TestFlagPairsEnvUsesTheProductHandle(t *testing.T) {
 	if _, err := flagPairsEnv([][]string{{"--vfs-write-back", "1s"}}); err == nil {
 		t.Fatal("a safety flag must not be overridable through the climb handle")
 	}
+	if _, err := flagPairsEnv([][]string{{"--transfers", "abc"}}); err == nil {
+		t.Fatal("a non-numeric candidate must be refused before rclone sees it")
+	}
+}
+
+func TestRenameCmdPutsTheHyperfineParameterInsideTheQuotedPath(t *testing.T) {
+	h := &hillStandin{mountDir: "/tmp/Drive"}
+	for _, row := range hillClimbRows() {
+		if row.copies < 2 {
+			continue
+		}
+		cmd := row.cmd(h)
+		if !strings.Contains(cmd, "'/tmp/Drive/") || !strings.Contains(cmd, "-{i}'") {
+			t.Fatalf("parameterised cmd must quote the path with {{i}} inside: %s", cmd)
+		}
+	}
 }
 
 func TestMountSpeedHillClimb(t *testing.T) {
@@ -494,6 +510,9 @@ func TestMountSpeedHillClimb(t *testing.T) {
 
 	for _, profile := range profiles {
 		setNetem(t, profile)
+		t.Cleanup(func() {
+			_ = exec.Command(tcBin, "qdisc", "del", "dev", "lo", "root").Run()
+		})
 		h := startStandin(t, allRows, profile.set)
 		base := measure(profile, "shipped", nil, h)
 		t.Logf("profile=%s set=%s flags=shipped rows=%d", profile.name, profile.set, len(base))
@@ -560,6 +579,9 @@ func TestMountSpeedHillClimb(t *testing.T) {
 		verdict := "REVERT"
 		if both && len(rs) > 0 {
 			verdict = "KEEP"
+			if f.baseline != f.candidate {
+				t.Errorf("hill-climb kept %s=%s but config still ships %s; update the constant", f.name, f.candidate, f.baseline)
+			}
 		}
 		t.Logf("FINAL %s %s %s->%s", verdict, f.name, f.baseline, f.candidate)
 		for _, r := range rs {
@@ -577,6 +599,9 @@ func hyperfine(t *testing.T, runs int, prepare, cmd string, copies int) (hyperfi
 		for i := range copies {
 			ids[i] = strconv.Itoa(i)
 		}
+		// Each copy is a fresh folder, so the first timed run is the
+		// measurement. Warmup would consume a copy. Noise is the spread
+		// across the ten copies (combineStats).
 		args = append(args, "--warmup", "0", "--runs", "1", "--parameter-list", "i", strings.Join(ids, ","))
 	} else {
 		args = append(args, "--warmup", "2", "--runs", strconv.Itoa(runs))
@@ -724,9 +749,35 @@ func flagPairsEnv(pairs [][]string) ([]string, error) {
 		if strings.TrimSpace(p[1]) == "" {
 			return nil, fmt.Errorf("%s has an empty candidate", p[0])
 		}
+		if !validClimbValue(p[1]) {
+			return nil, fmt.Errorf("%s candidate %q is not a size or a count", p[0], p[1])
+		}
 		env = append(env, "DRIVE_BENCH_"+f.env+"="+p[1])
 	}
 	return env, nil
+}
+
+func validClimbValue(v string) bool {
+	if v == "" {
+		return false
+	}
+	n := 0
+	for _, c := range v {
+		if c >= '0' && c <= '9' {
+			n++
+			continue
+		}
+		break
+	}
+	if n == 0 {
+		return false
+	}
+	rest := v[n:]
+	switch rest {
+	case "", "K", "M", "G", "T", "k", "m":
+		return true
+	}
+	return false
 }
 
 func tunableByFlag(flag string) (hillClimbFlag, bool) {
