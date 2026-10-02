@@ -107,7 +107,7 @@ test("minting a key returns the secret once and stores only its hash", async () 
   assert.ok(minted.secret.length > 0);
   assert.equal(minted.prefix, `u/${account.id}/`);
   assert.deepEqual(minted.capabilities, ["list", "read", "write", "delete"]);
-  const listed = store.listKeys(account);
+  const listed = await store.listKeys(account);
   assert.equal(listed.length, 1);
   // The hash lives only on the stored row; neither the API's listing nor its
   // one-returned-secret surface it, so absence (not `undefined`) is the claim.
@@ -129,7 +129,7 @@ test("an unknown key kind is refused before any key is made", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
   await assert.rejects(() => store.mintKey(account, { kind: "root" }), /Unknown key kind/);
-  assert.equal(store.listKeys(account).length, 0);
+  assert.equal((await store.listKeys(account)).length, 0);
 });
 
 test("a revoked key is refused and does not come back", async () => {

@@ -103,6 +103,10 @@ test("the issue's named scenarios are in the Go suite", () => {
     "small-edit-2gb",
     "list-folder",
     "install-to-mounted",
+    "mount-ready",
+    "cli-cold-start",
+    "file-open",
+    "big-folder-rename",
     "small-file-put-4kib",
     "small-file-put-1mib",
     "small-file-get-1mib",
@@ -121,6 +125,10 @@ test("the issue's named scenarios are in the Go suite", () => {
   assert.match(benchGo, /func BenchmarkSmallEdit/);
   assert.match(benchGo, /func BenchmarkListFolder/);
   assert.match(benchGo, /func BenchmarkInstallToMounted/);
+  assert.match(benchGo, /func BenchmarkFileOpen/);
+  assert.match(benchGo, /func BenchmarkBigFolderRename/);
+  assert.match(benchGo, /func BenchmarkMountReady/);
+  assert.match(benchGo, /func BenchmarkCLIColdStart/);
   assert.match(benchGo, /func BenchmarkSmallFiles/);
   assert.match(benchGo, /func BenchmarkVideoStartBandwidth/);
   assert.match(benchGo, /func BenchmarkCrossMachineSync/);

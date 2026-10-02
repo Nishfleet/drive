@@ -432,58 +432,20 @@ test("the failing body is the name and nothing else", async () => {
   assert.equal(typeof body.failing, "string");
 });
 
-// --- public allow-list ----------------------------------------------------
-
-/**
- * The explicit public allow-list for this Worker's /api/* routes: the ones
- * that answer an anonymous request on purpose. It is a list, not a predicate,
- * so a route only becomes public by being written down here, and #73's
- * deny-by-default test can consume the same list when it lands. Anything not on
- * it must be gated on an account (or a deployment token, for the send route)
- * and must answer 401/403 to an anonymous caller, never 200.
- *
- * /api/health is public because the outside monitor (#36) holds no drive
- * account and an outage has to be observable to something that has none; the
- * route reads no account data, so being public exposes nothing.
- */
-const PUBLIC_API_ROUTES = Object.freeze(["/api/waitlist", HEALTH_PATH]);
+// --- public by design -----------------------------------------------------
 
 test("the endpoint needs no account, session or cookie", async () => {
-  // Public by design and on the deny-by-default test's public allow-list
-  // (#73): an outage monitor holds no drive account, and it must still get an
-  // answer. It reads no account data to give it that.
+  // /api/health is public because the outside monitor (#36) holds no drive
+  // account and an outage has to be observable to something that has none; the
+  // route reads no account data, so being public exposes nothing. The single
+  // public allow-list lives in test/account-gate.test.mjs (#73), which walks
+  // this route as public and is the one place a route becomes an exemption.
   const response = await handleHealthRequest(
     new Request(`https://drive.test${HEALTH_PATH}`),
     HEALTHY_ENV(),
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
-});
-
-test("the health route is on the explicit public allow-list", async () => {
-  // Issue #96 asks for the route to be on the deny-by-default test's public
-  // allow-list (#73). That test is not on main yet and its branch is in
-  // flight, so the list lives here until it lands; the assertion that matters
-  // is checked either way: a route on the list answers an anonymous request,
-  // and this one is on it.
-  assert.ok(
-    PUBLIC_API_ROUTES.includes(HEALTH_PATH),
-    `${HEALTH_PATH} must be on the public allow-list`,
-  );
-  const response = await handleHealthRequest(
-    new Request(`https://drive.test${HEALTH_PATH}`),
-    HEALTHY_ENV(),
-  );
-  assert.equal(response.status, 200);
-});
-
-test("an account route is not on the public allow-list", () => {
-  // The point of an explicit list: the account routes stay off it, so a
-  // future deny-by-default test reading this list cannot accidentally treat
-  // one of them as public.
-  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage"]) {
-    assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
-  }
 });
 
 test("the bound is a deadline shared by every dependency, not one per check", async () => {

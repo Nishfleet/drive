@@ -24,9 +24,8 @@ file, and then shows up on your other machines.
 
 ## Versions
 
-Every save keeps the version it replaced. A file's history holds every change
-for one day, then one version per day for 30 days. Version history is included;
-there is no extra charge for it.
+Version history is not in version 1. See [Limits](/limits) for what is not in
+version 1.
 
 ## Restore
 

@@ -64,7 +64,12 @@ test("all returns the result rows and binds in order", async () => {
 test("run reports success and binds every value", async () => {
   const db = recordingDb();
   const result = await run(db, "insert into accounts (id) values (?)", "acct_1");
-  assert.equal(/** @type {{success: boolean}} */ (/** @type {unknown} */ (result)).success, true);
+  // Bind the shape after the object check, so `result` stays the value `run`
+  // returned and the assertion reads off a checked local rather than a
+  // double cast that hides whether the helper ever handed one back.
+  assert.ok(typeof result === "object" && result !== null, "run resolves to D1's result object");
+  const written = /** @type {{success: boolean}} */ (result);
+  assert.equal(written.success, true);
   assert.deepEqual(db.calls[0].params, ["acct_1"]);
 });
 

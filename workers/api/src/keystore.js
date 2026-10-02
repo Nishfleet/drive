@@ -73,11 +73,12 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
   const keyProvider = options.keyProvider;
+  const deviceStore = options.deviceStore;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
@@ -136,6 +137,9 @@ export function createMemoryStore(options = {}) {
     };
     devices.set(device.id, device);
     byAccessKeyId.set(credential.accessKeyId, device.id);
+    if (deviceStore !== undefined) {
+      await deviceStore.put(device);
+    }
     return {
       keyId,
       accessKeyId: credential.accessKeyId,
@@ -264,6 +268,9 @@ export function createMemoryStore(options = {}) {
      * @param {{id: string}} account
      */
     listKeys(account) {
+      if (deviceStore?.listPublic) {
+        return deviceStore.listPublic(account);
+      }
       return [...devices.values()]
         .filter((device) => device.accountId === account.id)
         .sort((a, b) => a.createdAt - b.createdAt)
@@ -277,6 +284,9 @@ export function createMemoryStore(options = {}) {
      * @param {string} keyId
      */
     revokeKey(account, keyId) {
+      if (deviceStore?.revokeKey) {
+        return deviceStore.revokeKey(account, keyId);
+      }
       const device = devices.get(keyId);
       if (device === undefined || device.accountId !== account.id) {
         return { error: "not-found" };
@@ -297,17 +307,17 @@ export function createMemoryStore(options = {}) {
     async authenticate(accessKeyId, secret) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
-      if (device === undefined) {
+      if (device !== undefined && device.revokedAt === null) {
+        if (digestsEqual(device.secretHash, await sha256Hex(secret))) {
+          device.lastSeenAt = nowSeconds(now());
+          return device;
+        }
         return null;
       }
-      if (device.revokedAt !== null) {
-        return null;
+      if (deviceStore?.authenticate) {
+        return deviceStore.authenticate(accessKeyId, secret);
       }
-      if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
-        return null;
-      }
-      device.lastSeenAt = nowSeconds(now());
-      return device;
+      return null;
     },
 
     /**
@@ -427,6 +437,7 @@ export function createMemoryStore(options = {}) {
  * @property {number} createdAt
  * @property {number|null} lastSeenAt
  * @property {number|null} revokedAt
+ * @property {string[]|null} [cappedFrom] the capabilities the cap took, when it did
  */
 
 /**

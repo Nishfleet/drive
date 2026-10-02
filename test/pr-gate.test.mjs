@@ -91,7 +91,11 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   // The gates the lines rest on. The line-by-line pointer check above already
   // proves each exists; these prove the *gates* are still wired, so a line
   // cannot name a test that runs but no longer enforces anything.
-  assert.match(srcFile("index.js"), /export default \{\n {2}async fetch/);
+  // The default export is a Worker object literal whose first member is the
+  // async fetch handler; the indent width is not the contract, the member is.
+  // Reflowing this file must not break the gate (drive#183), so match the
+  // shape with tolerant whitespace instead of pinning two spaces.
+  assert.match(srcFile("index.js"), /export default \{\s{2,}async fetch/);
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["src/status.js", /export async function signedInAccount\(request, store\)/],
@@ -130,6 +134,7 @@ const ROUTES = [
   { method: "GET", path: STATUS_ENDPOINT, source: "status.js", usedAs: "STATUS_ENDPOINT" },
   { method: "ALL", path: FILES_ENDPOINT, source: "files.js", usedAs: "FILES_ENDPOINT" },
   { method: "GET", path: USAGE_ENDPOINT, source: "billing.js", usedAs: "USAGE_ENDPOINT" },
+  { method: "POST", path: "/api/cap", source: "cap.js", usedAs: "CAP_ENDPOINT" },
   { method: "POST", path: "/api/emails/send", source: "email-send.js", usedAs: "SEND_EMAIL_PATH" },
 ];
 

@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
+    "prebuild": "npm run docs:build",
     "pretypecheck": "cf workers types",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
