@@ -10,7 +10,11 @@ import { test } from "node:test";
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-const COLD_DOWNLOAD = /(?:npx --yes |npm exec )promptfoo@/;
+// Any of these in a script or AGENTS.md is the drive#257 stall: npm fetches
+// promptfoo into a temp tree. The local binary is ./node_modules/.bin/promptfoo.
+const COLD_DOWNLOAD =
+  /\b(?:npx(?:\s+-{1,2}y(?:es)?)?|npm\s+(?:exec|x)|pnpm\s+dlx)\b[\s\S]{0,80}promptfoo/;
+const VERSION_PIN = /promptfoo@/;
 
 test("promptfoo is an exact pin in package.json and the lockfile", () => {
   const pkg = JSON.parse(read("package.json"));
@@ -31,6 +35,21 @@ test("promptfoo is an exact pin in package.json and the lockfile", () => {
     undefined,
     "promptfoo is a devDependency: production install must not pull the eval tool",
   );
+  assert.equal(
+    pkg.optionalDependencies?.promptfoo,
+    undefined,
+    "promptfoo is not optional: npm ci must install the local binary",
+  );
+  assert.equal(
+    pkg.peerDependencies?.promptfoo,
+    undefined,
+    "promptfoo is not a peer: the pin lives in devDependencies",
+  );
+  assert.match(
+    pkg.engines?.node ?? "",
+    /^>=24\b/,
+    "promptfoo 0.123.1 needs Node >=22.22; this repo already pins >=24",
+  );
 
   const resolved = lock.packages?.["node_modules/promptfoo"];
   assert.equal(
@@ -50,20 +69,30 @@ test("no script cold-downloads promptfoo through npm exec", () => {
   for (const [name, command] of Object.entries(pkg.scripts ?? {})) {
     assert.ok(
       !COLD_DOWNLOAD.test(command),
-      `${name}: "${command}" downloads promptfoo on every run; call the local binary after npm ci`,
+      `${name}: "${command}" downloads promptfoo on every run; call ./node_modules/.bin/promptfoo after npm ci`,
+    );
+    assert.ok(
+      !VERSION_PIN.test(command),
+      `${name}: "${command}" pins promptfoo with @version, which makes npm fetch a new tree`,
     );
   }
 });
 
 test("AGENTS.md tells workers to use the local binary", () => {
+  const agents = read("AGENTS.md");
   assert.match(
-    read("AGENTS.md"),
-    /npx promptfoo --version/,
+    agents,
+    /\.\/node_modules\/\.bin\/promptfoo --version/,
     "workers read AGENTS.md first: the local binary is the version check",
   );
   assert.doesNotMatch(
-    read("AGENTS.md"),
+    agents,
     COLD_DOWNLOAD,
     "AGENTS.md must not teach the cold-download command",
+  );
+  assert.doesNotMatch(
+    agents,
+    VERSION_PIN,
+    "AGENTS.md must not teach a promptfoo@version fetch",
   );
 });
