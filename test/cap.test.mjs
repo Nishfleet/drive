@@ -843,6 +843,18 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
   assert.match(err.error, /Run: drive cap 20/);
 
+  const mangled = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    }),
+    { id: "acct-1", name: "You" },
+    capStore,
+  );
+  assert.equal(mangled.status, 400);
+  assert.deepEqual(await mangled.json(), { error: tableMessage("json-object-needed") });
+
   const anon = await handleCapRequest(
     new Request("https://drive.test/api/cap", { method: "POST" }),
     null,

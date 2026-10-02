@@ -464,8 +464,11 @@ export async function handleCapRequest(request, account, capStore) {
   let body;
   try {
     body = await request.json();
-  } catch {
-    return jsonCapError(failureMessage("json-object-needed"), 400);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof TypeError) {
+      return jsonCapError(failureMessage("json-object-needed"), 400);
+    }
+    throw error;
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return jsonCapError(failureMessage("json-object-needed"), 400);
@@ -495,10 +498,7 @@ export async function handleCapRequest(request, account, capStore) {
     capUsd: usd,
     cardAdded: true,
   };
-  const report = await enforceCap(
-    { usage, keys },
-    capStore.keyProviderFor(account.id),
-  );
+  const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   return new Response(

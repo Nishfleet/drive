@@ -52,12 +52,7 @@ test("the key store writes cap_cents and device rows the real schema holds", asy
   const deviceRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.equal(deviceRow.account_id, account.id);
   assert.equal(deviceRow.b2_key_id, minted.accessKeyId);
-  assert.deepEqual(JSON.parse(String(deviceRow.capabilities)), [
-    "list",
-    "read",
-    "write",
-    "delete",
-  ]);
+  assert.deepEqual(JSON.parse(String(deviceRow.capabilities)), ["list", "read", "write", "delete"]);
   assert.equal(deviceRow.prefix, `u/${account.id}/`);
 });
 

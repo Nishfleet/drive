@@ -4,7 +4,9 @@ import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
-
+import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { bearerToken } from "../workers/api/src/http.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
@@ -53,9 +55,6 @@ import {
   unauthorizedResponse,
 } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
-import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
-import { bearerToken } from "../workers/api/src/http.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.

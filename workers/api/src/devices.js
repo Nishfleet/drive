@@ -10,8 +10,8 @@
 // until then a minted session expires on its own and the row here is what
 // makes the api's own storage API refuse a write immediately.
 
-import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { BILLING_CONFIG } from "../../../src/billing.js";
+import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { publicDevice } from "./keystore.js";
 
@@ -76,7 +76,8 @@ function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
-    lastSeenAt: r.last_seen_at === null || r.last_seen_at === undefined ? null : Number(r.last_seen_at),
+    lastSeenAt:
+      r.last_seen_at === null || r.last_seen_at === undefined ? null : Number(r.last_seen_at),
     revokedAt: r.revoked_at === null || r.revoked_at === undefined ? null : Number(r.revoked_at),
     ...(parseCappedFrom(r.capped_from) === null
       ? {}
@@ -214,9 +215,7 @@ export function createD1DeviceStore(db, options = {}) {
      */
     async listPublic(account) {
       const result = await db
-        .prepare(
-          "SELECT * FROM devices WHERE account_id = ?1 ORDER BY created_at",
-        )
+        .prepare("SELECT * FROM devices WHERE account_id = ?1 ORDER BY created_at")
         .bind(account.id)
         .all();
       return (result.results ?? [])
@@ -247,9 +246,7 @@ export function createD1DeviceStore(db, options = {}) {
             kind: device.kind,
             prefix: device.prefix,
             capabilities: Object.freeze([...device.capabilities]),
-            ...(device.cappedFrom
-              ? { cappedFrom: Object.freeze([...device.cappedFrom]) }
-              : {}),
+            ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
           }),
         );
     },
@@ -294,12 +291,7 @@ export function createD1DeviceStore(db, options = {}) {
         return { error: "not-found" };
       }
       if (device.revokedAt === null) {
-        await run(
-          db,
-          "UPDATE devices SET revoked_at = ?1 WHERE id = ?2",
-          nowSeconds(now()),
-          keyId,
-        );
+        await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
       }
       return { revoked: true };
     },
