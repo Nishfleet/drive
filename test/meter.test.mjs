@@ -22,6 +22,7 @@ import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
+  bearerToken,
   EVENT_ACTIONS,
   EVENT_TOKEN_HEADER,
   EVENTS_PER_BATCH,
@@ -32,11 +33,14 @@ import {
   handleStorageEventRequest,
   hourStart,
   listMeteredAccounts,
+  looksLikeNotificationRecord,
   MAX_CATCHUP_HOURS,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  notificationRecord,
+  notificationRecords,
   reconcileMeter,
   recordEvent,
   recordUsage,
@@ -749,21 +753,34 @@ test("a create and hide in the same instant cost one hour, not zero", () => {
 
 // --- The rollup ----------------------------------------------------------
 
-test("a rollup writes the hour's GB-minutes and leaves download bytes alone", async () => {
+// One hour's usage row, written through the meter's own recordUsage: the
+// stored-bytes mark is the month's peak's only source (drive issue #163), so
+// this is where a test pins that the mark is written, rewritten and validated.
+/**
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {number} gbMinutes
+ * @param {number} storedBytes
+ * @param {number} now
+ */
+const recordTheHour = (db, gbMinutes, storedBytes, now) =>
+  recordUsage(db, "abc123", midnight(), gbMinutes, storedBytes, now);
+
+test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves download bytes alone", async () => {
   const { db, sqlite } = makeMeteredDB();
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 60 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 60 * MINUTE_MS);
   const row = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(row.gb_minutes_live, 42.5);
+  assert.equal(row.stored_bytes, 7 * GB, "the hour records how big the drive was");
   assert.equal(row.download_bytes, 0);
   assert.equal(row.hour, midnight());
   assert.equal(row.rolled_up_at, midnight() + 60 * MINUTE_MS);
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 90 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 90 * MINUTE_MS);
   assert.equal(db.tables.usage_minutes.size, 1);
   assert.equal(db.tables.usage_minutes.get(`abc123|${midnight()}`).gb_minutes_live, 42.5);
   sqlite
     .prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2 AND hour = ?3")
     .run(1234, "abc123", midnight());
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 120 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 120 * MINUTE_MS);
   assert.equal(
     sqlite
       .prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
@@ -771,11 +788,29 @@ test("a rollup writes the hour's GB-minutes and leaves download bytes alone", as
     1234,
     "the meter must never zero another writer's column",
   );
+  // A re-rolled hour replaces its stored bytes, so a re-roll recomputes the
+  // peak from the versions and never adds to it (drive issue #163).
+  await recordTheHour(db, 42.5, 9 * GB, midnight() + 150 * MINUTE_MS);
+  assert.equal(
+    db.tables.usage_minutes.get(`abc123|${midnight()}`).stored_bytes,
+    9 * GB,
+    "the hour's stored bytes are rewritten, never added to",
+  );
   assert.equal(
     db.tables.usage_minutes.get(`abc123|${midnight()}`).rolled_up_at,
-    midnight() + 120 * MINUTE_MS,
+    midnight() + 150 * MINUTE_MS,
   );
-  await assert.rejects(() => recordUsage(db, "abc123", midnight(), -1, midnight()), TypeError);
+  await assert.rejects(() => recordTheHour(db, -1, GB, midnight()), TypeError);
+  await assert.rejects(
+    () => recordTheHour(db, 1, -1, midnight()),
+    TypeError,
+    "a negative byte count is refused, not stored as 0",
+  );
+  await assert.rejects(
+    () => recordTheHour(db, 1, 1.5, midnight()),
+    TypeError,
+    "a fractional byte count is refused: bytes are whole",
+  );
 });
 
 test("one account's hour is summed from its own versions, and only that account's", async () => {
@@ -1116,6 +1151,194 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   assert.equal((await unbound.json()).error, "The meter cannot reach its database right now.");
 });
 
+// --- The bucket's own event shape (drive issue #60) ----------------------
+
+/**
+ * A delivery the pinned stand-in's own event rule sends: MinIO's notify
+ * webhook puts `Bearer <token>` in `Authorization` and cannot set a header of
+ * its own, and it bubbles the S3 record itself with no `Records` wrapper
+ * (measured 2026-10-02).
+ * @param {{authorization?: string|null, body: string}} options
+ */
+function standinDelivery({ authorization = "Bearer wrong", body }) {
+  /** @type {Record<string, string>} */
+  const headers = { "content-type": "application/json" };
+  if (authorization !== null) {
+    headers.authorization = authorization;
+  }
+  return new Request("https://drive.example/api/storage-events", {
+    method: "POST",
+    headers,
+    body,
+  });
+}
+
+/** One S3 record, exactly as MinIO's webhook bubbles it. */
+function standinRecord() {
+  return {
+    eventVersion: "2.0",
+    eventSource: "minio:s3",
+    eventTime: "2026-10-02T10:00:00.000Z",
+    eventName: "s3:ObjectCreated:Put",
+    s3: {
+      bucket: { name: "drive-standin" },
+      object: { key: "u%2Fabc123%2Fnotes.md", size: GB, versionId: "v1" },
+    },
+  };
+}
+
+test("the bearer header a stock bucket can send is accepted, next to the route's own", async () => {
+  assert.equal(bearerToken("Bearer abc"), "abc");
+  assert.equal(bearerToken("bearer abc"), "abc", "the scheme case does not matter");
+  assert.equal(bearerToken("abc"), null, "a bare value is not a bearer token");
+  assert.equal(bearerToken("Basic abc"), null);
+  assert.equal(bearerToken(null), null);
+  assert.equal(bearerToken("Bearer"), null);
+
+  const { db } = makeMeteredDB();
+  const body = JSON.stringify(standinRecord());
+  const refused = await handleStorageEventRequest(standinDelivery({ body }), db, TOKEN);
+  assert.equal(refused.status, 401, "the wrong token is still refused");
+  assert.equal(db.tables.file_versions.size, 0, "and stores nothing");
+
+  const accepted = await handleStorageEventRequest(
+    standinDelivery({ authorization: `Bearer ${TOKEN}`, body }),
+    db,
+    TOKEN,
+  );
+  assert.equal(accepted.status, 200, `MinIO's own bearer header must be accepted: ${body}`);
+  assert.deepEqual(await accepted.json(), { ok: true, stored: 1, deduped: 0 });
+  const row = db.tables.file_versions.get("abc123|v1");
+  assert.ok(row, "the record became one version row");
+  assert.equal(row.size_bytes, GB);
+  assert.equal(row.created_at, Date.parse("2026-10-02T10:00:00.000Z"));
+});
+
+test("the route's own header still works alongside the bearer one", async () => {
+  const { db } = makeMeteredDB();
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN, "content-type": "application/json" },
+      body: JSON.stringify(standinRecord()),
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(db.tables.file_versions.size, 1);
+});
+
+test("an S3 Records envelope is billed, and a bare record from the same bucket is too", async () => {
+  const { db } = makeMeteredDB();
+  const record = standinRecord();
+  const envelope = JSON.stringify({ Records: [record] });
+  const first = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: envelope,
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(first.status, 200, "the wrapper every provider pads its notification in is billed");
+  assert.deepEqual(await first.json(), { ok: true, stored: 1, deduped: 0 });
+  assert.ok(db.tables.file_versions.get("abc123|v1"));
+
+  // The same record with its id and time moved, so it is a second version
+  // rather than the dedup eating it.
+  const second = {
+    ...record,
+    s3: { ...record.s3, object: { ...record.s3.object, versionId: "v2" } },
+  };
+  const bare = await handleStorageEventRequest(
+    standinDelivery({ authorization: `Bearer ${TOKEN}`, body: JSON.stringify(second) }),
+    db,
+    TOKEN,
+  );
+  assert.equal(bare.status, 200, "the bare record the bucket bubbles is billed too");
+  assert.deepEqual(await bare.json(), { ok: true, stored: 1, deduped: 0 });
+  assert.equal(db.tables.file_versions.get("abc123|v2").size_bytes, GB);
+});
+
+test("a batch of records and a single record are one code path, and a delete is a hide", async () => {
+  const { db } = makeMeteredDB();
+  const write = standinRecord();
+  const remove = {
+    ...write,
+    eventName: "s3:ObjectRemoved:Delete",
+    eventTime: "2026-10-02T11:00:00.000Z",
+  };
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: JSON.stringify({ Records: [write, remove] }),
+    }),
+    db,
+    TOKEN,
+  );
+  assert.deepEqual(await response.json(), { ok: true, stored: 2, deduped: 0 });
+  const row = db.tables.file_versions.get("abc123|v1");
+  assert.equal(row.created_at, Date.parse("2026-10-02T10:00:00.000Z"));
+  assert.equal(row.hidden_at, Date.parse("2026-10-02T11:00:00.000Z"));
+});
+
+test("the record mapping is one mapping, and refuses a body with no event in it", () => {
+  assert.throws(() => notificationRecord({ hello: "world" }), /not a storage notification/);
+  assert.equal(looksLikeNotificationRecord({ hello: "world" }), false);
+  assert.equal(looksLikeNotificationRecord({ eventName: "x" }), true);
+  assert.equal(looksLikeNotificationRecord("nope"), false);
+  assert.throws(() => notificationRecord(["nope"]), /must be a JSON object/);
+  assert.throws(() => notificationRecord(null), /must be a JSON object/);
+  assert.throws(() => notificationRecords({ Records: "nope" }), /must be a list/);
+  assert.deepEqual(notificationRecords({ Records: [1, 2] }), [1, 2]);
+  assert.deepEqual(notificationRecords([1, 2]), [1, 2]);
+  assert.deepEqual(notificationRecords({ eventName: "x" }), [{ eventName: "x" }]);
+
+  const mapped = notificationRecord({
+    eventName: "s3:ObjectCreated:Post",
+    key: "u%2Fabc123%2Fa.txt",
+    size: GB,
+    versionId: "v9",
+    eventTime: "2026-10-02T10:00:00.000Z",
+  });
+  assert.equal(
+    mapped.keyName,
+    "u/abc123/a.txt",
+    "the form-encoded key is read as the bucket wrote it",
+  );
+  assert.equal(mapped.b2FileId, "v9");
+  assert.equal(mapped.sizeBytes, GB);
+  assert.equal(mapped.action, "uploaded");
+  assert.equal(mapped.createdAt, "2026-10-02T10:00:00.000Z");
+  const check = validateEvent(mapped);
+  assert.equal(check.error, undefined);
+  assert.equal(check.accountId, "abc123");
+
+  const nested = notificationRecord({
+    eventName: "s3:ObjectRemoved:Delete",
+    s3: { object: { key: "u%2Fabc123%2Fa.txt", versionId: "v9" } },
+    eventTime: "2026-10-02T10:05:00.000Z",
+  });
+  assert.equal(nested.keyName, "u/abc123/a.txt");
+  assert.equal(nested.b2FileId, "v9");
+  assert.equal(nested.action, "deleted");
+  assert.equal(
+    nested.createdAt,
+    undefined,
+    "a delete never seeds a creation time from its own instant",
+  );
+  assert.equal(validateEvent(nested).hiddenAt, Date.parse("2026-10-02T10:05:00.000Z"));
+  assert.equal(
+    validateEvent({ ...nested, eventTimestamp: undefined }).error,
+    "The event does not say when the version stopped being visible.",
+  );
+  // A size-less delete still gets its row: the hide is what stops billing.
+  assert.equal(validateEvent(nested).sizeBytes, 0);
+});
+
 test("the token compare is constant-shape and never a prefix match", async () => {
   assert.equal(await tokensMatch(TOKEN, TOKEN), true);
   assert.equal(await tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
@@ -1294,10 +1517,12 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     queries2,
     `a catch-up must cost hours, not accounts: 25 accounts took ${queries25} round trips, one took ${queries2}`,
   );
-  // The budget the trigger is designed to: three round trips per hour
-  // (the hour's read, the hour's batch, the hour's watermark) plus the three
-  // around them - the watermark read, the earliest-version read that floors
-  // a first run, and the dedup purge - whatever the customer count.
+  // The budget the trigger is designed to: three round trips per hour (the
+  // hour's read - ONE statement for both the GB-minutes and the peak's
+  // stored bytes, so they are one snapshot - the hour's batch, the hour's
+  // watermark) plus the three around them: the watermark read, the
+  // earliest-version read that floors a first run, and the dedup purge,
+  // whatever the customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,

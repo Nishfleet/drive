@@ -129,6 +129,8 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 | `usage_minutes` | account_id, hour, gb_minutes_live, download_bytes | Rolled up hourly |
 | `billing_pushes` | account_id, hour, dodo_event_id, amount_units, pushed_at | Stops double-charging if a push retries |
 | `branches` | id, account_id, name, source_prefix, branch_prefix, created_at, snapshot (JSON path to size and modified time), state (`open` / `approved` / `discarded`) | The snapshot finds clashes at approve time |
+| `teams` | id, owner_account_id, name, created_at | One shared drive; its prefix is `t/<id>/` (issue #20) |
+| `team_members` | id, team_id, account_id, email, role (`read_only` / `read_write`), state (`invited` / `active` / `removed`), invited_at, joined_at, revoked_at | `account_id` is empty until an email invite binds to a signed-in account; a removed row is kept, not deleted |
 | `events_seen` | b2_event_id, received_at | Drops duplicate B2 events |
 
 ## How the money is worked out
@@ -146,6 +148,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - A device key is limited to `/u/<id>/`, with capabilities `listFiles, readFiles, writeFiles, deleteFiles` (people can really delete; the file stays hidden 1 day in B2 because the drive uses rclone's default hide-not-delete, then sits in Hetzner's old-versions folder for 30 days).
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
+- A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
@@ -164,7 +167,7 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
 | Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
-| Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
+| Teams: pooled storage, whole-drive sharing, member access | One team drive shared by several accounts, a role per member, removal that kills the key | Match | Issue 20: `t/<teamId>/` keys, `TEAM_ROLE_CAPABILITIES` (`workers/api/src/keyprovider.js`), `workers/api/src/teams.js` |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
 | $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (Space charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
 
@@ -203,6 +206,70 @@ Step 1 asks three questions of the storage provider before anything is built on 
 What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitnami package, started by the test setup — the same `test/step1-storage.test.mjs` runs in CI's `verify` job (`npm test`) and on a developer's machine, and the setup is the only thing that decides which. MinIO's own downloads and Docker Hub images were withdrawn and its repository is archived, so the pinned last release is the stock server that has all three of versioning, lifecycle rules and bucket notifications. iDrive e2 replaces it by setting `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET` and the master credential (`STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), with no code change.
 
 The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01), so SSE-B2 is set on the real bucket with the vendor in #173, where the rest of that bucket's configuration lands too.
+
+## Build step 5: the meter against a stock S3 stand-in (2026-10-02)
+
+Build step 5's done-when is one number from each of two sources that share
+nothing: a full day's GB-minutes from `usage_minutes`, and the storage
+provider's own report of the same account's bytes. `test/step5-meter-standin.test.mjs`
+runs it end to end against the same pinned stand-in build step 1 uses (the
+last MinIO release), in CI's `verify` job and on a developer's machine, with
+the endpoint, region, bucket and credentials read from `DRIVE_STANDIN_*` so
+iDrive e2 is the same build with different values. It replaces the
+`rclone serve s3` on a local folder this issue's text names, because rclone's
+S3 server has no versioning and no event rules at all: it cannot produce a
+hidden version, a delete marker or a notification, so the issue's own second
+bullet is unanswerable without a server that has them. rclone serve s3 is
+still the stand-in for the proofs that need no versioning
+(`test/standin-search.test.mjs`, `test/two-mount-sync.test.mjs`).
+
+What one run proves, with the real records it ran on (2026-10-02,
+`node --test test/step5-meter-standin.test.mjs`, account
+`acct_35f83f85a74ab6b1650a2c24eab6c3b9`):
+
+- **A real file uploaded, replaced and read back through the stand-in.** A
+  40 MB save (version `7c1cf71e-6d35-4fe3-9765-3e24a93f4d96`), an 8 MB edit
+  over it (version `830568a0-86c2-40d1-b9b7-70d19bf3e5e3`, which hides the
+  first), a 6 MB photo in a subfolder (version `679fc287-706e-403f-8b07-c19541a17d0f`)
+  and its delete (delete-marker version `011d015c-decf-4168-b603-818a4829f127`),
+  each call signed with the account's own scoped key from the api Worker's
+  `POST /v1/keys`.
+- **The provider's own event rule, pointed at the Worker.** Four webhook
+  deliveries, each accepted (202), each carrying `Authorization: Bearer <the
+  rule's token>` and no `x-drive-event-token`, and each landing as a version
+  row without any replay.
+- **The provider's own report.** `ListObjectVersions` on the account's
+  prefix: 6 000 000 bytes hidden at the marker, 8 000 000 live, 40 000 000
+  hidden when the edit began.
+- **The day.** `2026-10-01T07:00Z` to `2026-10-02T07:00Z`, 24 closed UTC
+  hours, the hourly trigger fired once per hour with its own
+  `scheduledTime` (`runMeterCron`, the Cron Trigger's own function):
+  **3.04 GB-minutes metered, 3.04 GB-minutes from the provider's own report,
+  drift 0.0000%** (the bar is 1%).
+
+Two things the run tells, both now the code's shape:
+
+1. **The bucket sends a bearer token, not a header of its own.** Measured
+   against the pinned stand-in on 2026-10-02: MinIO's notify webhook puts
+   `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` in `Authorization` and has no
+   variable to set a header of its own, so a rule configured the vendor's own
+   way arrives with no `x-drive-event-token`. `POST /api/storage-events`
+   therefore accepts the same secret from either header
+   (`bearerToken`, src/meter.js); the endpoint is still closed — a missing or
+   wrong token is still the 401 it always was, and the proof shows it.
+2. **A provider's event never says what it replaced.** The edit's
+   `ObjectCreated:Put` carries no hide for the version it replaced, and a
+   delete's marker is a version of its own, so the meter learns a hide from
+   the provider's own version listing through the nightly reconciler (#59).
+   The run above reports `hidden=2 marked=1` before the day is rolled.
+
+Both delivery shapes are read by one mapping: an S3 `Records` envelope, a
+bare list of records, and the single record a bucket bubbles to a
+record-endpoint ARN all go through `notificationRecord` (src/meter.js), which
+takes the provider's own field names (`key`, `size`, `versionId`, `eventTime`,
+`eventName`) and hands `validateEvent` the intake's. A record the mapping does
+not recognise is passed through unchanged, so a malformed record in a batch
+still fails as itself and the good records beside it are stored.
 
 ## How we know it is up (the outage alert)
 
