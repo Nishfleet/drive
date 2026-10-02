@@ -9,8 +9,9 @@
 // requirement (drive#189).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -18,6 +19,9 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 /**
  * Names declared as `bindings.secret()` in a cf config. Line comments are
  * stripped first so a commented-out binding is not a deploy requirement.
+ * The live form in cloudflare.config.ts is `NAME: bindings.secret(),`
+ * (METER_EVENT_TOKEN today); that is the pattern this reads, not wrangler
+ * `secrets.required` or an env-var map.
  *
  * @param {string} config
  * @returns {string[]}
@@ -32,7 +36,8 @@ function declaredSecrets(config) {
 /**
  * Names listed under `## Known Worker secrets` in AGENTS.md. Only list
  * items of the form `- \`NAME\`` count, so prose that mentions
- * `bindings.secret()` is not a listed secret.
+ * `bindings.secret()` is not a listed secret. The section runs until the
+ * next same-level `## ` heading; a `###` subsection stays inside.
  *
  * @param {string} agents
  * @returns {string[]}
@@ -40,10 +45,13 @@ function declaredSecrets(config) {
 function listedSecrets(agents) {
   const start = agents.indexOf("## Known Worker secrets");
   assert.notEqual(start, -1, "AGENTS.md must carry a 'Known Worker secrets' list");
-  const section = agents.slice(start);
-  const next = section.indexOf("\n## ", 1);
-  const list = next === -1 ? section : section.slice(0, next);
-  return [...list.matchAll(/^- `([A-Z][A-Z0-9_]+)`/gm)].map((match) => match[1]);
+  const lines = agents.slice(start).split("\n");
+  const body = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (/^## /.test(lines[i])) break;
+    body.push(lines[i]);
+  }
+  return [...body.join("\n").matchAll(/^- `([A-Z][A-Z0-9_]+)`/gm)].map((match) => match[1]);
 }
 
 test("a commented-out bindings.secret() is not a declared secret", () => {
@@ -54,6 +62,39 @@ test("a commented-out bindings.secret() is not a declared secret", () => {
     }
   `);
   assert.deepEqual(names, ["LIVE"]);
+});
+
+test("listedSecrets keeps names after a ### subsection", () => {
+  const names = listedSecrets(`## Known Worker secrets
+
+- \`FIRST\`
+
+### Note
+
+- \`SECOND\`
+
+## Before you open a PR
+`);
+  assert.deepEqual(names, ["FIRST", "SECOND"]);
+});
+
+test("the live cloudflare.config.ts uses NAME: bindings.secret() for declared secrets", () => {
+  const configPath = fileURLToPath(new URL("../cloudflare.config.ts", import.meta.url));
+  assert.ok(existsSync(configPath), "the gate reads cloudflare.config.ts from the repo root");
+  const config = read("cloudflare.config.ts");
+  const declared = declaredSecrets(config);
+  assert.ok(
+    declared.includes("METER_EVENT_TOKEN"),
+    "cloudflare.config.ts declares METER_EVENT_TOKEN: bindings.secret() (drive#57); that is the form this regex reads",
+  );
+  const withoutLineComments = config.replace(/^\s*\/\/.*$/gm, "");
+  for (const name of declared) {
+    assert.match(
+      withoutLineComments,
+      new RegExp(`^\\s*${name}\\s*:\\s*bindings\\.secret\\s*\\(`, "m"),
+      `${name} must appear as \`${name}: bindings.secret(\` in cloudflare.config.ts`,
+    );
+  }
 });
 
 test("every declared bindings.secret() is on the Known Worker secrets list", () => {
@@ -72,8 +113,13 @@ test("AGENTS.md tells a PR that adds a bindings.secret() to list it and stay dra
   const start = agents.indexOf("## Before you open a PR");
   assert.notEqual(start, -1, "AGENTS.md must carry the 'Before you open a PR' list");
   const section = agents.slice(start);
-  const next = section.indexOf("\n## ", 1);
-  const list = next === -1 ? section : section.slice(0, next);
+  const lines = section.split("\n");
+  const body = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (/^## /.test(lines[i])) break;
+    body.push(lines[i]);
+  }
+  const list = body.join("\n");
   assert.ok(list.includes("Secrets to set"), "the line names the PR-body heading 'Secrets to set'");
   assert.ok(list.includes("drive-pricing"), "the line names the Worker the secret is set on");
   assert.ok(list.includes("draft"), "the line says the PR stays draft until the secret is set");
