@@ -25,6 +25,7 @@ import {
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 import { failureMessage } from "../src/messages.js";
+import { sqliteNumberedBind } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -62,32 +63,13 @@ function makeD1() {
     changed_db: false,
     changes: 0,
   });
-  /** D1 binds numbered placeholders (`?1`, `?3`) by number; node:sqlite takes
-   * values in the order the `?` appear. Rewriting `?N` to `?` alone would
-   * silently bind the numbers in text order, so a D1 UPDATE whose third
-   * placeholder appears first would write the wrong column. Reordering to
-   * text order by the number each `?` carries is what makes the two agree.
-   * @param {string} sql
-   * @param {unknown[]} params
-   * @returns {{prepared: string, values: unknown[]}}
-   */
-  const numberedBind = (sql, params) => {
-    /** @type {unknown[]} */
-    const values = [];
-    const rewritten = sql.replace(/\?\d+/g, (token) => {
-      const index = Number(token.slice(1)) - 1;
-      values.push(params[index]);
-      return "?";
-    });
-    return { prepared: rewritten, values };
-  };
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
    * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
-    const { prepared, values: numberedValues } = numberedBind(sql, params);
+    const { prepared, values: numberedValues } = sqliteNumberedBind(sql, params);
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (numberedValues);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
@@ -703,6 +685,66 @@ test("a name branched, discarded, and branched again: the new branch is open and
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
 });
 
+test("the route answers a closed branch with an empty diff and its state", async () => {
+  // The name-reuse lifecycle makes this reachable: a name that was approved
+  // and branched again leaves an older closed row, and a GET on it used to
+  // diff the emptied prefix against the snapshot, which reported every file of
+  // the original as removed. The honest answer is that nothing is pending, so
+  // the diff is empty and the state names why.
+  const { raw, db } = await driven();
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    raw,
+    ACCOUNT,
+  );
+  const approved = await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
+    db,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(approved.status, 200);
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    raw,
+    ACCOUNT,
+  );
+
+  const answer = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(answer.status, 200);
+  assert.deepEqual(await answer.json(), {
+    branch: { name: "work", sourcePrefix: "/Photos", state: "open", changedBy: "" },
+    diff: { added: [], changed: [], removed: [], sourceChanged: [] },
+  });
+
+  // The older closed generation of the same name is answered the same way, and
+  // it is the newest closed row the name resolves to once the new one closes.
+  await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
+    db,
+    raw,
+    ACCOUNT,
+  );
+  const closed = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(closed.status, 200);
+  assert.deepEqual(await closed.json(), {
+    branch: { name: "work", sourcePrefix: "/Photos", state: "approved", changedBy: "" },
+    diff: { added: [], changed: [], removed: [], sourceChanged: [] },
+  });
+});
+
 test("the route rejects a third segment and answers 405 for GET on approve/discard", async () => {
   const { raw, db } = await driven();
   const account = ACCOUNT;
@@ -1020,4 +1062,154 @@ test("a create that loses the open-name race is refused before it touches the pr
   assert.equal(after.state, "open");
   assert.deepEqual(after.snapshot, winnerBranch.snapshot);
   assert.deepEqual((await diffBranch(scoped, after)).removed, []);
+});
+
+test("the list carries one row per name: the newest generation", async () => {
+  // 0011 lets a name be closed more than once, so the table can hold several
+  // rows for one name. The list is what `drive branches` prints, one line per
+  // row, so the older generations must not come along: a name retried three
+  // times would show three lines with the same name, state and count, and the
+  // rewind list would grow a dead entry for every approve that was retried.
+  const { scoped, db } = await driven();
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, ACCOUNT, "work");
+  assert.ok(first);
+  // Closed the way a live branch is closed, without the cleanup, so the row's
+  // own copies stay behind for the second create to clear.
+  db.sqlite.prepare("UPDATE branches SET state = 'approved' WHERE id = ?").run(first.id);
+  const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(second.state, "open");
+  const third = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "other" });
+  assert.equal(third.state, "open");
+
+  const listed = await listBranches(db, scoped, ACCOUNT);
+  assert.deepEqual(
+    listed.map((branch) => branch.name),
+    ["other", "work"],
+  );
+  // The open row wins over the closed one for that name, which is the row
+  // every name-scoped read (the diff, approve and discard) already resolves to.
+  assert.equal(listed.find((branch) => branch.name === "work")?.state, "open");
+
+  await discardBranch(db, scoped, ACCOUNT, "work");
+  const afterDiscard = await listBranches(db, scoped, ACCOUNT);
+  assert.deepEqual(
+    afterDiscard.map((branch) => branch.name),
+    ["other", "work"],
+  );
+  assert.equal(afterDiscard.find((branch) => branch.name === "work")?.state, "discarded");
+});
+
+test("a create whose prefix clear fails closes its own claim row", async () => {
+  // The claim is taken before anything is copied, so a storage write that
+  // fails halfway has to give the name back. An open-name index is what makes
+  // a claimed row visible: left open by a failed close it answers 409 to every
+  // later branch of that name, and `drive discard <name>` is the only way out.
+  const { raw, scoped, db } = await driven();
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, ACCOUNT, "work");
+  assert.ok(first);
+  db.sqlite.prepare("UPDATE branches SET state = 'approved' WHERE id = ?").run(first.id);
+
+  const broken = {
+    ...scopeStore(raw, ACCOUNT),
+    remove: async () => {
+      throw new Error("storage is down");
+    },
+  };
+  const result = await createBranch(db, broken, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(result.error, failureMessage("storage-down"));
+  assert.equal(result.status, 500);
+  // The abandoned claim is closed, so the name is free again: the next create
+  // of it is a fresh branch, not a 409 on a row nobody owns.
+  const claimed = await getBranch(db, ACCOUNT, "work");
+  assert.ok(claimed);
+  assert.equal(claimed.state, "discarded");
+  const again = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(again.state, "open");
+});
+
+test("a create whose claim row cannot be closed says so and names the recovery", async () => {
+  // The other half of the same window: the abandon itself fails, which happens
+  // when the database is what is down. The close is retried once, and a close
+  // that still fails is escalated rather than swallowed, because the row it
+  // leaves open is a 409 on every later branch of that name and only
+  // `drive discard <name>` clears it.
+  const { scoped, db: real } = await driven();
+  await createBranch(real, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(real, ACCOUNT, "work");
+  assert.ok(first);
+  real.sqlite.prepare("UPDATE branches SET state = 'approved' WHERE id = ?").run(first.id);
+
+  /** @type {string[]} */
+  const logged = [];
+  const failing = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      prepare(/** @type {string} */ sql) {
+        const closes = sql.includes("state = 'discarded'");
+        return {
+          /** @param {...unknown} values */
+          bind(...values) {
+            return {
+              async first() {
+                return real
+                  .prepare(sql)
+                  .bind(...values)
+                  .first();
+              },
+              async run() {
+                if (closes) {
+                  throw new Error("the database refused the close");
+                }
+                return await real
+                  .prepare(sql)
+                  .bind(...values)
+                  .run();
+              },
+              async all() {
+                return await real
+                  .prepare(sql)
+                  .bind(...values)
+                  .all();
+              },
+            };
+          },
+          async run() {
+            if (closes) {
+              throw new Error("the database refused the close");
+            }
+            return await real.prepare(sql).run();
+          },
+          async all() {
+            return await real.prepare(sql).all();
+          },
+        };
+      },
+    })
+  );
+  const brokenStore = {
+    ...scoped,
+    remove: async () => {
+      throw new Error("storage is down");
+    },
+  };
+
+  const errorLog = console.error;
+  console.error = (...args) => logged.push(args.map((arg) => String(arg)).join(" "));
+  let result;
+  try {
+    result = await createBranch(failing, brokenStore, ACCOUNT, { folder: "/Photos", name: "work" });
+  } finally {
+    console.error = errorLog;
+  }
+
+  // The answer still names the database as what failed, and the log names the
+  // row that a failed close left behind, so the wedge is findable.
+  assert.ok("error" in result);
+  assert.equal(result.error, failureMessage("storage-down"));
+  assert.equal("status" in result && result.status, 500);
+  assert.ok(
+    logged.some((line) => line.includes("could not be closed") && line.includes(String(first.id))),
+    `the failed close is escalated: ${logged.join(" | ")}`,
+  );
 });

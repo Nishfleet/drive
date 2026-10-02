@@ -523,17 +523,41 @@ export async function createBranch(db, store, account, request, now = () => Date
     }
     const raced = await getBranch(db, account, name);
     if (raced && raced.state === "open") {
+      // An open row of the same name is read here, so a row whose branch_prefix
+      // is not under .branches/ would also look like a lost race. That row
+      // cannot be written by this path (the prefix is built from the name, a
+      // single segment), so it is 0003's IF NOT EXISTS surviving a copy, and
+      // the re-read is not the place to second-guess it.
       return { error: failureMessage("branch-exists"), status: 409 };
     }
     return { error: failureMessage("unexpected"), status: 500 };
   }
   // Only this row's id is the claim; a later open branch of the same name is
-  // a different row and these writes must not move it.
+  // a different row and these writes must not move it. The close reports
+  // whether it landed, because a claim that stays open is not a cosmetic
+  // problem: the open-name index then answers 409 to every later branch of
+  // that name, so the caller hears about the failure instead of a clean answer
+  // over a leaked claim (`drive discard <name>` is what clears it).
   const abandonClaim = async () => {
-    await db
-      .prepare("UPDATE branches SET state = 'discarded' WHERE id = ?1 AND state = 'open'")
-      .bind(claimId)
-      .run();
+    const attempt = async () => {
+      try {
+        const done = await db
+          .prepare("UPDATE branches SET state = 'discarded' WHERE id = ?1 AND state = 'open'")
+          .bind(claimId)
+          .run();
+        return done.success === true;
+      } catch (error) {
+        console.error?.(`branch claim close failed for ${account.id}/${name}: ${errorText(error)}`);
+        return false;
+      }
+    };
+    // A close that fails on a transient database error is worth exactly one
+    // retry: the write is idempotent, and the answer 0-changes row is already
+    // closed rather than a lost close.
+    if (await attempt()) {
+      return true;
+    }
+    return await attempt();
   };
   // A name branched before leaves its last copy under .branches/<name>/. Clear
   // it before copying, or a file the original no longer has stays in the new
@@ -543,7 +567,12 @@ export async function createBranch(db, store, account, request, now = () => Date
     await removePrefixFiles(store, branchPrefix);
   } catch (error) {
     console.error?.(`branch prefix clear failed for ${account.id}/${name}: ${errorText(error)}`);
-    await abandonClaim();
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until `drive discard` clears it",
+      );
+    }
     return { error: failureMessage("storage-down"), status: 500 };
   }
   /** @type {Record<string, Fingerprint>} */
@@ -559,7 +588,12 @@ export async function createBranch(db, store, account, request, now = () => Date
         `branch copy cleanup failed for ${account.id}/${name}: ${errorText(cleanupError)}`,
       );
     }
-    await abandonClaim();
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until `drive discard` clears it",
+      );
+    }
     return { error: failureMessage("storage-down"), status: 500 };
   }
   try {
@@ -576,7 +610,12 @@ export async function createBranch(db, store, account, request, now = () => Date
     }
     if (typeof saved.meta.changes !== "number") {
       await removePrefixFiles(store, branchPrefix);
-      await abandonClaim();
+      if (!(await abandonClaim())) {
+        console.error?.(
+          `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+            "the name stays claimed until `drive discard` clears it",
+        );
+      }
       return { error: failureMessage("unexpected"), status: 500 };
     }
     if (saved.meta.changes === 0) {
@@ -603,7 +642,12 @@ export async function createBranch(db, store, account, request, now = () => Date
         `branch snapshot cleanup failed for ${account.id}/${name}: ${errorText(cleanupError)}`,
       );
     }
-    await abandonClaim();
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until `drive discard` clears it",
+      );
+    }
     return { error: failureMessage(oversize ? "snapshot-bound" : "unexpected"), status: 500 };
   }
   return {
@@ -622,6 +666,14 @@ export async function createBranch(db, store, account, request, now = () => Date
  * changed and whether the original moved under it. The count is the live diff,
  * so it is the number `drive diff` would print, not a number taken on trust
  * from branch time. Closed branches report zero; they need no store walk.
+ *
+ * One row per name, and it is the row every name-scoped read resolves to: the
+ * open branch if there is one, else the newest closed row. 0011 lets a name be
+ * closed more than once, so without that rule the list would hold one line
+ * per generation — the same name, the same state, the same count — and the
+ * rewind list and `drive branches` would grow a dead line for every approve
+ * that was ever retried. The history stays on the table; it is this list that
+ * shows the branch a person can still act on.
  * @param {D1Database} db
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
@@ -630,12 +682,26 @@ export async function listBranches(db, store, account) {
   const result = await db
     .prepare(
       "SELECT id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
-        "FROM branches WHERE account_id = ?1 ORDER BY created_at DESC, name",
+        "FROM branches WHERE account_id = ?1 " +
+        // The open row first, then the newest closed row, then the row's own
+        // id as the tie-break, so two rows written in the same second still
+        // sort the same way every time.
+        "ORDER BY (state = 'open') DESC, created_at DESC, id DESC",
     )
     .bind(account.id)
     .all();
   const branches = [];
+  /** @type {Set<string>} */
+  const seenNames = new Set();
   for (const row of result?.results ?? []) {
+    // The row's own name, as the column stores it: the one-per-name rule needs
+    // it before the row is turned into a branch, and `toBranch` reads every
+    // other column with the same String() coercion.
+    const name = String(row.name);
+    if (seenNames.has(name)) {
+      continue;
+    }
+    seenNames.add(name);
     const branch = toBranch(row);
     let changed = 0;
     let sourceChanged = 0;

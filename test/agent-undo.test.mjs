@@ -37,6 +37,7 @@ import {
   rewindBranchRow,
   rewindPreview,
 } from "../src/rewind.js";
+import { sqliteNumberedBind } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -93,29 +94,13 @@ function makeD1() {
     changed_db: false,
     changes: 0,
   });
-  /** D1 binds numbered placeholders (`?1`, `?3`) by number; node:sqlite takes
-   * values in the order the `?` appear, so `?N` is rewritten to `?` and the
-   * values are reordered to text order by the number each `?` carried.
-   * @param {string} sql
-   * @param {unknown[]} params
-   * @returns {{prepared: string, values: unknown[]}}
-   */
-  const numberedBind = (sql, params) => {
-    /** @type {unknown[]} */
-    const ordered = [];
-    const prepared = sql.replace(/\?\d+/g, (token) => {
-      ordered.push(params[Number(token.slice(1)) - 1]);
-      return "?";
-    });
-    return { prepared, values: ordered };
-  };
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
    * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
-    const { prepared, values: numberedValues } = numberedBind(sql, params);
+    const { prepared, values: numberedValues } = sqliteNumberedBind(sql, params);
     const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (numberedValues);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {

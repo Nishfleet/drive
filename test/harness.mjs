@@ -71,6 +71,29 @@ export function sqlitePlaceholders(sql) {
 }
 
 /**
+ * D1 numbered placeholders with their values, in the order node:sqlite binds
+ * them. Rewriting `?N` to `?` alone is not enough: node:sqlite takes values in
+ * the order the `?` appear, so a D1 UPDATE whose third placeholder appears
+ * first would write the wrong column. Reordering to text order by the number
+ * each `?` carries is what makes the two engines agree, and it lives here
+ * beside `sqlitePlaceholders` so a test that binds by number has one emulation
+ * to read (drive#165: two local copies of this had already drifted into being
+ * two things to maintain).
+ * @param {string} sql
+ * @param {unknown[]} params
+ * @returns {{prepared: string, values: unknown[]}}
+ */
+export function sqliteNumberedBind(sql, params) {
+  /** @type {unknown[]} */
+  const values = [];
+  const prepared = sql.replace(/\?\d+/g, (token) => {
+    values.push(params[Number(token.slice(1)) - 1]);
+    return "?";
+  });
+  return { prepared, values };
+}
+
+/**
  * Runs one statement and answers the way D1's bound statement does: every
  * query — a SELECT or an INSERT/UPDATE/DELETE with a `returning` clause —
  * comes back as `{ results, meta }`, and `meta.changes` is the change count.

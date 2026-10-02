@@ -6,10 +6,16 @@
 -- this file is the upgrade.
 --
 -- SQLite cannot ALTER a primary key. The rows are copied into a new table,
--- then the old table is replaced. Previous Worker code never reads `id`, so a
--- revert of the JS still runs against the new schema. Live row count at the
--- check was 0; the copy is still the path so a row written between the check
--- and apply is not dropped.
+-- then the old table is replaced. Live row count at the read-only check was 0;
+-- the copy is still the path so a row written between the check and apply is
+-- not dropped.
+--
+-- A code revert still runs: `id` is auto-assigned, so every write the previous
+-- Worker made still lands, and the one-open-name index is the one 0003 already
+-- carried. What does not come back is the old code's name-scoped close, which
+-- moved every generation of a reused name at once -- the bug this file fixes
+-- (drive#165) -- so the JS rolls forward or not at all, never to a schema this
+-- file has left behind. D1 has no down-migrations: this file is one-way.
 --
 -- 0004 added changed_by_key_id; this file runs after it, so the copy includes
 -- that column. Numbered 0011 because main already shipped 0010_accounts_devices
