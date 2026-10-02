@@ -129,6 +129,8 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 | `usage_minutes` | account_id, hour, gb_minutes_live, download_bytes | Rolled up hourly |
 | `billing_pushes` | account_id, hour, dodo_event_id, amount_units, pushed_at | Stops double-charging if a push retries |
 | `branches` | id, account_id, name, source_prefix, branch_prefix, created_at, snapshot (JSON path to size and modified time), state (`open` / `approved` / `discarded`) | The snapshot finds clashes at approve time |
+| `teams` | id, owner_account_id, name, created_at | One shared drive; its prefix is `t/<id>/` (issue #20) |
+| `team_members` | id, team_id, account_id, email, role (`read_only` / `read_write`), state (`invited` / `active` / `removed`), invited_at, joined_at, revoked_at | `account_id` is empty until an email invite binds to a signed-in account; a removed row is kept, not deleted |
 | `events_seen` | b2_event_id, received_at | Drops duplicate B2 events |
 
 ## How the money is worked out
@@ -146,6 +148,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - A device key is limited to `/u/<id>/`, with capabilities `listFiles, readFiles, writeFiles, deleteFiles` (people can really delete; the file stays hidden 1 day in B2 because the drive uses rclone's default hide-not-delete, then sits in Hetzner's old-versions folder for 30 days).
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
+- A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
@@ -164,7 +167,7 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
 | Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
-| Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
+| Teams: pooled storage, whole-drive sharing, member access | One team drive shared by several accounts, a role per member, removal that kills the key | Match | Issue 20: `t/<teamId>/` keys, `TEAM_ROLE_CAPABILITIES` (`workers/api/src/keyprovider.js`), `workers/api/src/teams.js` |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
 | $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (Space charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
 

@@ -9,6 +9,7 @@ import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
 import { createS3KeyProvider } from "./s3-keys.js";
+import { createD1TeamStore } from "./teams.js";
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -401,6 +402,13 @@ function storeFor(env) {
     keyStore = createMemoryStore({
       signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
       keyProvider: keyProviderFor(env) ?? undefined,
+      // Teams are D1-backed for the same reason (drive#20): a team and its
+      // members must survive the isolate that created them, because "the owner
+      // removes a member and the key stops working" is a claim about the next
+      // request, which may be a different instance. The store is a field on
+      // the same memory store object, so the routes read `store.teams` either
+      // way and the in-memory path (no DRIVE_DB) is the stand-in.
+      teams: env.DRIVE_DB ? createD1TeamStore(env.DRIVE_DB) : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }

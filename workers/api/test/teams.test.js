@@ -18,8 +18,8 @@ import { test } from "node:test";
 
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore } from "../src/keystore.js";
 import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../src/keyprovider.js";
+import { createMemoryStore } from "../src/keystore.js";
 
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
@@ -53,10 +53,14 @@ function makeAccounts() {
 
 /** The edge limits the device routes fail closed without. */
 function makeRateLimiter() {
-  return { async limit() { return { success: true }; } };
+  return {
+    async limit() {
+      return { success: true };
+    },
+  };
 }
 
-/** @param {ReturnType<typeof createMemoryStore>} store */
+/** @param {ReturnType<typeof createMemoryStore>} store @param {ReturnType<typeof makeAccounts>} accounts */
 function ctxFor(store, accounts) {
   return {
     env: {
@@ -163,7 +167,10 @@ async function team() {
     dispatch(
       new Request(`https://api.test${path}`, {
         method,
-        headers: body === undefined ? bearer(token) : { ...bearer(token), "content-type": "application/json" },
+        headers:
+          body === undefined
+            ? bearer(token)
+            : { ...bearer(token), "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
       env,
@@ -195,8 +202,17 @@ async function team() {
   const writerKey = await store.mintTeamKey(writer, team.id, "read_write", { name: "wren" });
 
   return {
-    store, env, team, as, ownerToken, readerToken, writerToken,
-    readerMember, writerMember, readerKey, writerKey,
+    store,
+    env,
+    team,
+    as,
+    ownerToken,
+    readerToken,
+    writerToken,
+    readerMember,
+    writerMember,
+    readerKey,
+    writerKey,
     ownerAccount: owner,
   };
 }
@@ -210,10 +226,11 @@ test("two real accounts share one team drive, and a read-only member's write is 
 
   // The read-write member writes to the shared drive.
   const write = await dispatch(
-    new Request(
-      `https://api.test/v1/storage/object?path=${t.writerKey.prefix}plan.md`,
-      { method: "PUT", headers: basic(t.writerKey.accessKeyId, t.writerKey.secret), body: "the plan" },
-    ),
+    new Request(`https://api.test/v1/storage/object?path=${t.writerKey.prefix}plan.md`, {
+      method: "PUT",
+      headers: basic(t.writerKey.accessKeyId, t.writerKey.secret),
+      body: "the plan",
+    }),
     t.env,
   );
   assert.equal(write.status, 201, "a read-write member's write lands");
@@ -235,10 +252,11 @@ test("two real accounts share one team drive, and a read-only member's write is 
 
   // The read-only member's write is refused: 403, and nothing is written.
   const refused = await dispatch(
-    new Request(
-      `https://api.test/v1/storage/object?path=${t.readerKey.prefix}intruder.md`,
-      { method: "PUT", headers: basic(t.readerKey.accessKeyId, t.readerKey.secret), body: "nope" },
-    ),
+    new Request(`https://api.test/v1/storage/object?path=${t.readerKey.prefix}intruder.md`, {
+      method: "PUT",
+      headers: basic(t.readerKey.accessKeyId, t.readerKey.secret),
+      body: "nope",
+    }),
     t.env,
   );
   assert.equal(refused.status, 403, "a read-only member's write is refused");
@@ -310,7 +328,11 @@ test("only the owner may invite, and a role outside the table is refused", async
     }),
     t.env,
   );
-  assert.equal(refused.status, 404, "a member is not the owner, so the team is not theirs to invite into");
+  assert.equal(
+    refused.status,
+    404,
+    "a member is not the owner, so the team is not theirs to invite into",
+  );
 
   // A role that is not in the one table is a 400, not a default.
   const badRole = await dispatch(

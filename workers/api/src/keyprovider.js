@@ -60,9 +60,7 @@ export const TEAM_ROLES = ["read_only", "read_write"];
  */
 export const TEAM_ROLE_CAPABILITIES = Object.freeze({
   read_only: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read"])),
-  read_write: Object.freeze(
-    /** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"]),
-  ),
+  read_write: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
 });
 
 // A prefix is the storage safety boundary: whatever lands in it can only ever

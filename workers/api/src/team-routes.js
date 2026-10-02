@@ -44,7 +44,11 @@ export function listTeamsRoute(request, ctx) {
   if (request.method !== "GET") {
     return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
   }
-  return json({ teams: ctx.store.teams.listTeams(ctx.account).map(publicTeam) });
+  return ctx.store.teams
+    .listTeams(ctx.account)
+    .then((/** @type {import("./teams.js").Team[]} */ teams) =>
+      json({ teams: teams.map(publicTeam) }),
+    );
 }
 
 /**
@@ -71,30 +75,33 @@ export async function inviteMemberRoute(request, ctx) {
   try {
     role = checkedTeamRole(read.body.role);
   } catch (error) {
-    return errorResponse(400, error.message);
+    return errorResponse(
+      400,
+      error instanceof Error ? error.message : "That role is not one this drive has.",
+    );
   }
-  const member = ctx.store.teams.inviteMember(ctx.account, ctx.params.teamId, email, role);
+  const member = await ctx.store.teams.inviteMember(ctx.account, ctx.params.teamId, email, role);
   if ("error" in member) {
     return errorResponse(404, "No such team on this account.");
   }
   return json({ member: publicMember(member) }, 201);
 }
-
 /**
  * GET /v1/teams/:teamId/members — the team's members, the owner's own view
  * of who is on the drive.
  * @param {Request} request
  * @param {{store: any, account: {id: string}, params: Record<string, string>}} ctx
  */
-export function listMembersRoute(request, ctx) {
+export async function listMembersRoute(request, ctx) {
   if (request.method !== "GET") {
     return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
   }
-  const team = ctx.store.teams.teamForAccount(ctx.account, ctx.params.teamId);
+  const team = await ctx.store.teams.teamForAccount(ctx.account, ctx.params.teamId);
   if (team === null) {
     return errorResponse(404, "No such team on this account.");
   }
-  return json({ members: ctx.store.teams.listMembers(ctx.account, team.id).map(publicMember) });
+  const members = await ctx.store.teams.listMembers(ctx.account, team.id);
+  return json({ members: members.map(publicMember) });
 }
 
 /**
@@ -109,7 +116,11 @@ export async function removeMemberRoute(request, ctx) {
   if (request.method !== "DELETE") {
     return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
   }
-  const result = ctx.store.teams.removeMember(ctx.account, ctx.params.teamId, ctx.params.memberId);
+  const result = await ctx.store.teams.removeMember(
+    ctx.account,
+    ctx.params.teamId,
+    ctx.params.memberId,
+  );
   if ("error" in result) {
     return errorResponse(404, "No such member on this team.");
   }
@@ -130,7 +141,12 @@ export async function removeMemberRoute(request, ctx) {
  * @param {{id: string, ownerAccountId: string, name: string, createdAt: number}} team
  */
 export function publicTeam(team) {
-  return { id: team.id, name: team.name, ownerAccountId: team.ownerAccountId, createdAt: team.createdAt };
+  return {
+    id: team.id,
+    name: team.name,
+    ownerAccountId: team.ownerAccountId,
+    createdAt: team.createdAt,
+  };
 }
 
 /**

@@ -138,14 +138,12 @@ export async function storageListRoute(request, ctx) {
     });
   }
   const path = authorized.path.endsWith("/") ? authorized.path : `${authorized.path}/`;
-  const objects = ctx.store
-    .listObjects(path)
-    .map((/** @type {string} */ fullPath) => ({
-      path: `/${fullPath}`,
-      // The object's key in the stand-in is its account-relative path, so the
-      // listing tells a caller only about files under its own prefix.
-      url: `${ctx.url.origin}/${fullPath}`,
-    }));
+  const objects = ctx.store.listObjects(path).map((/** @type {string} */ fullPath) => ({
+    path: `/${fullPath}`,
+    // The object's key in the stand-in is its account-relative path, so the
+    // listing tells a caller only about files under its own prefix.
+    url: `${ctx.url.origin}/${fullPath}`,
+  }));
   return json({ prefix: device.prefix, path: `/${path}`, objects });
 }
 

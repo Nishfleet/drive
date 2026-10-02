@@ -73,7 +73,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -87,6 +87,65 @@ export function createMemoryStore(options = {}) {
   const byAccessKeyId = new Map();
   /** @type {Map<string, Uint8Array>} full path -> bytes (one global namespace; the prefix scopes what each key sees) */
   const objects = new Map();
+
+  /**
+   * The one mint: a scope, an account, a name and a kind become a device row
+   * and a credential. Both `mintKey` (a kind's own scope) and `mintTeamKey` (a
+   * role's team scope) call it, so there is one place a key row is built and a
+   * second way to mint one cannot drift.
+   * @param {{id: string}} account
+   * @param {import("./keyprovider.js").KeyScope} scope
+   * @param {string} kind the kind the capabilities came from, for the row
+   * @param {string} name
+   */
+  async function mintScopedKey(account, scope, kind, name) {
+    const keyId = newId("key");
+    /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
+    let credential;
+    if (keyProvider === undefined) {
+      // No storage configured: the stand-in credential the api's own storage
+      // API knows, and nothing outside the Worker has ever seen.
+      credential = {
+        accessKeyId: newId("ak"),
+        secret: newId("sk"),
+        sessionToken: null,
+        expiresIn: null,
+      };
+    } else {
+      const minted = await keyProvider.mint(scope);
+      credential = {
+        accessKeyId: minted.accessKeyId,
+        secret: minted.secret,
+        sessionToken: minted.sessionToken ?? null,
+        expiresIn: minted.expiresIn ?? null,
+      };
+    }
+    /** @type {Device} */
+    const device = {
+      id: keyId,
+      accountId: account.id,
+      name,
+      kind: /** @type {any} */ (kind),
+      accessKeyId: credential.accessKeyId,
+      secretHash: await sha256Hex(credential.secret),
+      prefix: scope.prefix,
+      capabilities: [...scope.capabilities],
+      createdAt: nowSeconds(now()),
+      lastSeenAt: null,
+      revokedAt: null,
+    };
+    devices.set(device.id, device);
+    byAccessKeyId.set(credential.accessKeyId, device.id);
+    return {
+      keyId,
+      accessKeyId: credential.accessKeyId,
+      secret: credential.secret,
+      sessionToken: credential.sessionToken,
+      expiresIn: credential.expiresIn,
+      prefix: device.prefix,
+      capabilities: device.capabilities,
+    };
+  }
 
   return {
     /** The stand-in's accounts, for the tests and the stand-in's one query.
@@ -197,53 +256,7 @@ export function createMemoryStore(options = {}) {
         (kind === "branch"
           ? scopeFor(/** @type {any} */ (kind), account.id, { name: request.name })
           : scopeFor(/** @type {any} */ (kind), account.id));
-      const keyId = newId("key");
-      /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
-      let credential;
-      if (keyProvider === undefined) {
-        // No storage configured: the stand-in credential the api's own storage
-        // API knows, and nothing outside the Worker has ever seen.
-        credential = {
-          accessKeyId: newId("ak"),
-          secret: newId("sk"),
-          sessionToken: null,
-          expiresIn: null,
-        };
-      } else {
-        const minted = await keyProvider.mint(scope);
-        credential = {
-          accessKeyId: minted.accessKeyId,
-          secret: minted.secret,
-          sessionToken: minted.sessionToken ?? null,
-          expiresIn: minted.expiresIn ?? null,
-        };
-      }
-      /** @type {Device} */
-      const device = {
-        id: keyId,
-        accountId: account.id,
-        name: request.name ?? kind,
-        kind: /** @type {any} */ (kind),
-        accessKeyId: credential.accessKeyId,
-        secretHash: await sha256Hex(credential.secret),
-        prefix: scope.prefix,
-        capabilities: [...scope.capabilities],
-        createdAt: nowSeconds(now()),
-        lastSeenAt: null,
-        revokedAt: null,
-      };
-      devices.set(device.id, device);
-      byAccessKeyId.set(credential.accessKeyId, device.id);
-      return {
-        keyId,
-        accessKeyId: credential.accessKeyId,
-        secret: credential.secret,
-        sessionToken: credential.sessionToken,
-        expiresIn: credential.expiresIn,
-
-        prefix: device.prefix,
-        capabilities: device.capabilities,
-      };
+      return mintScopedKey(account, scope, kind, request.name ?? kind);
     },
 
     /**
@@ -315,10 +328,18 @@ export function createMemoryStore(options = {}) {
      * @returns {Promise<number>} how many keys were revoked
      */
     async revokeTeamKeys(accountId, teamId) {
-      const prefix = teamScopeFor(/** @type {any} */ ("read_only"), teamId).prefix;
+      // The team prefix is the one every member key carries whatever the role:
+      // `teamScopeFor` builds it from the team id, and the role only chooses
+      // the capabilities, so one call names the prefix and the capability set
+      // is irrelevant to the match.
+      const prefix = teamScopeFor("read_only", teamId).prefix;
       let revoked = 0;
       for (const device of devices.values()) {
-        if (device.accountId === accountId && device.prefix === prefix && device.revokedAt === null) {
+        if (
+          device.accountId === accountId &&
+          device.prefix === prefix &&
+          device.revokedAt === null
+        ) {
           device.revokedAt = nowSeconds(now());
           revoked++;
         }
@@ -331,14 +352,21 @@ export function createMemoryStore(options = {}) {
      * prefix with the role's capabilities (keyprovider.js `teamScopeFor`).
      * @param {{id: string}} account
      * @param {string} teamId
-     * @param {string} role
+     * @param {import("./keyprovider.js").TeamRole} role
      * @param {{name?: string}} [request]
      */
     async mintTeamKey(account, teamId, role, request = {}) {
-      const scope = teamScopeFor(/** @type {any} */ (role), teamId);
-      return this.mintKey(account, { ...request, kind: "device", scope });
+      const scope = teamScopeFor(role, teamId);
+      return mintScopedKey(account, scope, "device", request.name ?? role);
     },
 
+    /**
+     * Stand-in storage: write bytes at a full path. One global namespace, the
+     * one the bucket has; what a key may touch is its own prefix, which
+     * `authorizePath` and the storage routes enforce.
+     * @param {string} path
+     * @param {Uint8Array} bytes
+     */
     putObject(path, bytes) {
       objects.set(path, bytes);
     },
@@ -374,8 +402,13 @@ export function createMemoryStore(options = {}) {
       return device.capabilities.includes("write");
     },
 
-    /** The team store: teams, members, and the invite-by-email lookup. */
-    teams: createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
+    /**
+     * The team store: teams, members, and the invite-by-email lookup. The D1
+     * store when the deployment binds a database (workers/api/src/teams.js
+     * `createD1TeamStore`), and the in-memory stand-in when it does not, so a
+     * route reads `store.teams` either way and neither path is special-cased.
+     */
+    teams: options.teams ?? createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
   };
 }
 
