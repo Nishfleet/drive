@@ -102,6 +102,8 @@ func main() {
 		err = runRequest(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
+	case "prefetch":
+		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
