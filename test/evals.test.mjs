@@ -233,12 +233,12 @@ test("package.json wires the one command and the stock tool", () => {
   );
   assert.match(
     pkg.scripts["eval:agents"],
-    /npx --yes promptfoo@0\.123\.1/,
-    "promptfoo is pinned in the one command",
+    /evals\/agents\/node_modules\/\.bin\/promptfoo/,
+    "one command uses the local pinned binary, not a cold download",
   );
   assert.ok(
     !pkg.dependencies?.promptfoo && !pkg.devDependencies?.promptfoo,
-    "promptfoo is not a repo dependency, so npm test does not install it",
+    "promptfoo is not a root dependency, so a root npm ci does not install it",
   );
 });
 

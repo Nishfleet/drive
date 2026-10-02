@@ -144,7 +144,7 @@
     source: docs-site/how-it-works.md, "Versions"
   assert:
     - type: javascript
-      value: "/1 day|one day/i.test(output) && /(30|thirty) days/i.test(output)"
+      value: "/not in version 1/i.test(output)"
     - type: javascript
       value: "!/every version is kept forever/.test(output)"
 
@@ -362,7 +362,7 @@
     source: docs-site/security.md, "The spending cap"; docs/build-spec.md, "Keys and safety"
   assert:
     - type: javascript
-      value: "/\\$12/.test(output) && /read-only/i.test(output) && /nothing is deleted/.test(output)"
+      value: "/drive cap/.test(output) && /read-only/i.test(output) && /nothing is deleted/.test(output)"
 
 - description: recover an older version of a file
   metadata:
@@ -379,7 +379,7 @@
     source: docs-site/how-it-works.md, "Restore"; docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/(not in the CLI|not yet|no restore command)/i.test(output) && /(1 day|one day|30 days|version)/i.test(output)"
+      value: "/(not in the CLI|not yet|no restore command|not in version 1)/i.test(output)"
 
 - description: keep a folder available offline
   metadata:

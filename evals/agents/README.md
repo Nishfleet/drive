@@ -11,11 +11,12 @@ and the `drive` command's own help. This directory is that eval (drive issue
 npm run eval:agents
 ```
 
-That renders the docs pages (`npm run docs:render`), then runs
-`npx promptfoo@0.123.1 eval` against `promptfooconfig.yaml`. The version is
-pinned in the `eval:agents` script in `package.json`. There is no wrapper
-script and promptfoo is not a repo dependency, so `npm test` does not install
-it.
+That renders the docs pages (`npm run docs:render`), then runs the promptfoo
+binary pinned in `evals/agents/` against `promptfooconfig.yaml`. Install that
+project once with `npm ci --prefix evals/agents`. There is no wrapper script
+and promptfoo is not a root dependency, so a root `npm ci` does not install
+it. Do not run `npx` or `npm exec` for it: that downloads the package each
+time and fills a runner's memory limit (drive#257).
 
 A held-out run is the same command with the split's path set. That path is
 outside this checkout, so the hill-climber (#223) cannot read the tasks from
@@ -27,15 +28,16 @@ DRIVE_EVAL_HOLDOUT=/home/nish/.local/share/drive/eval-holdout.yaml npm run eval:
 
 ## The tool, and why
 
-**[promptfoo](https://promptfoo.dev/)**, pinned at `0.123.1` in the one
-command. The repo is a Node repo, its test suite already runs under Node, and
-promptfoo is the stock tool for "a set of tasks, a set of graders, run them
-against N models and report a score" with no harness to hand-write. Inspect
-(AISI) is the other stock choice the issue names; it is the better tool for
-sandboxed shell tasks with an end-state grader (the file exists, the key is
-scoped). This suite's first slice is docs-and-CLI reading, whose graders are
-checks on the answer, so splitting the repo's toolchain into Python buys
-nothing today. End-state graders on a mounted stand-in are the next slice.
+**[promptfoo](https://promptfoo.dev/)**, pinned at `0.123.1` in
+`evals/agents/package.json`. The repo is a Node repo, its test suite already
+runs under Node, and promptfoo is the stock tool for "a set of tasks, a set of
+graders, run them against N models and report a score" with no harness to
+hand-write. Inspect (AISI) is the other stock choice the issue names; it is
+the better tool for sandboxed shell tasks with an end-state grader (the file
+exists, the key is scoped). This suite's first slice is docs-and-CLI reading,
+whose graders are checks on the answer, so splitting the repo's toolchain into
+Python buys nothing today. End-state graders on a mounted stand-in are the
+next slice.
 
 ## What the agent gets
 
@@ -87,8 +89,8 @@ repo. `test/evals.test.mjs` proves no held-out file is tracked by git.
 The two `providers` in `promptfooconfig.yaml` are the scaling pair on the
 fleet's own proxy at `127.0.0.1:4000`: `worker-cheap` at default effort, and
 `worker-capable` as the stronger model. Three `repeat`s are the variance
-check. A run uses the `OPENAI_API_KEY` already on this host for that proxy.
-It does not call a paid external API.
+check. A run sends the fleet worker virtual key as `OPENAI_API_KEY` (promptfoo's
+stock OpenAI-compatible env). It does not call a paid external API.
 
 ## What is not done yet
 

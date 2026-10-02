@@ -27,14 +27,14 @@ providers:
       apiBaseUrl: http://127.0.0.1:4000/v1
       apiKeyEnvar: OPENAI_API_KEY
       temperature: 0
-      max_tokens: 2048
+      max_tokens: 4096
   - id: openai:chat:worker-capable
     label: "a stronger model at a higher effort, for the scaling check"
     config:
       apiBaseUrl: http://127.0.0.1:4000/v1
       apiKeyEnvar: OPENAI_API_KEY
       temperature: 0
-      max_tokens: 2048
+      max_tokens: 4096
 
 evaluateOptions:
   maxConcurrency: 2
@@ -47,7 +47,7 @@ outputPath: results/latest.json
 # text, which `test/evals.test.mjs` proves still matches cmd/drive/main.go.
 defaultTest:
   options:
-    timeout: 60000
+    timeout: 120000
   vars:
     docs_index: file://../../docs-site/.rendered/index.md
     docs_quickstart: file://../../docs-site/.rendered/quickstart.md

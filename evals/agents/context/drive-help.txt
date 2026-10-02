@@ -13,12 +13,14 @@ Usage:
   drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
+  drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
-  drive logout [flags]     stop the mount and delete this device's key and config
+  drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
   drive version            print the version
 
@@ -40,6 +42,7 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
@@ -53,6 +56,12 @@ Link flags (share, request):
 Export flags:
   --out   file to write the export to; stdout when it is not given
 
-The device keys are read from the environment, never a flag, so they stay out
-of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
-DRIVE_S3_SECRET_ACCESS_KEY.
+The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
+The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
+or --secret-key-stdin. --secret-key is refused.
+
+Logout flags:
+  --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
+  --force       discard files waiting to upload instead of refusing to logout
+  --forget-pending  clear the failed-revoke record, after you have revoked the
+               key on the devices page in the web app
