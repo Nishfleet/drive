@@ -46,8 +46,6 @@ evaluateOptions:
   maxConcurrency: 12
   repeat: 3
 
-outputPath: results/latest.json
-
 # Every test sees the same reading stack: drive's public docs, rendered by
 # `npm run docs:render` from docs-site/*.md, and the drive command's own help
 # text, which `test/evals.test.mjs` proves still matches cmd/drive/main.go.

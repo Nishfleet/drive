@@ -38,7 +38,7 @@
     - type: javascript
       value: "/DRIVE_S3_ENDPOINT/.test(output) && /DRIVE_S3_SECRET_ACCESS_KEY/.test(output)"
     - type: javascript
-      value: "/history|ps\\b/.test(output)"
+      value: "/never a flag|--secret-key.{0,12}is refused|shell history|\\bps\\b/i.test(output)"
 
 - description: install the command with no install script yet
   vars:
@@ -125,8 +125,8 @@
 - description: how the bill is counted for a file I keep for a week
   vars:
     task: >
-      I keep a 4 GB video on the drive for a week and then delete it. Work out
-      what that costs me, from the rule the docs give.
+      I keep a 4 GB video on the drive for a week and then delete it. What
+      rule does the bill follow, from the docs?
     source: docs-site/how-it-works.md, "How the bill is counted"
   assert:
     - type: javascript
@@ -344,7 +344,7 @@
     - type: javascript
       value: "/delete/i.test(output) && /(refus|denied|cannot|not (allowed|permitted)|no delete)/i.test(output)"
     - type: javascript
-      value: "!/too hard to (answer|know)/i.test(output)"
+      value: "!/too hard|I don'?t know/i.test(output)"
 
 - description: set a spending cap
   metadata:

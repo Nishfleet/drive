@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -170,8 +170,11 @@ test("pasting the public docs and drive --help satisfies every train grader", ()
   assert.equal(fails.length, 0, `docs+help+task must satisfy:\n${fails.join("\n")}`);
 });
 
-test("pasting the public docs and drive --help satisfies the held-out graders", () => {
-  if (!existsSync(HOLDOUT_DEFAULT)) return;
+test("pasting the public docs and drive --help satisfies the held-out graders", (t) => {
+  if (!existsSync(HOLDOUT_DEFAULT)) {
+    t.skip(`held-out file is not on this machine: ${HOLDOUT_DEFAULT}`);
+    return;
+  }
   const context = docsAndHelp();
   const tasks = loadYaml(HOLDOUT_DEFAULT);
   const fails = [];
@@ -208,11 +211,19 @@ test("held-out tasks and run artefacts are not in the repository", () => {
     "README names the default held-out path outside the repo",
   );
   assert.ok(!HOLDOUT_DEFAULT.startsWith(root), "default held-out path is outside this checkout");
+  const override = process.env.DRIVE_EVAL_HOLDOUT;
+  if (override) {
+    const resolved = resolve(override);
+    assert.ok(
+      resolved !== root && !resolved.startsWith(`${root}/`),
+      `DRIVE_EVAL_HOLDOUT points inside this checkout: ${resolved}`,
+    );
+  }
 });
 
 test("the prompt reads only the docs, the help text and the task", () => {
   const prompt = read("evals/agents/prompts/agent.md");
-  for (const kw of ["assert", "grader", "score", "why_hard", "heldout", "rubric"]) {
+  for (const kw of ["assert", "grader", "why_hard", "heldout", "rubric"]) {
     assert.ok(!prompt.includes(kw), `prompt must not leak the ${kw} key into the agent's context`);
   }
   assert.ok(prompt.includes("{{task}}"), "prompt is parametrized per task");

@@ -23,7 +23,7 @@ outside this checkout, so the hill-climber (#223) cannot read the tasks from
 the repo:
 
 ```sh
-DRIVE_EVAL_HOLDOUT=/home/nish/.local/share/drive/eval-holdout.yaml npm run eval:agents
+npm run eval:agents -- --tests /home/nish/.local/share/drive/eval-holdout.yaml
 ```
 
 ## The tool, and why
@@ -84,17 +84,18 @@ test.
 
 The train split is roughly two thirds of the tasks and is this file. The
 held-out test split and its answers are **not in the repository**: they live
-at `/home/nish/.local/share/drive/eval-holdout.yaml` (override with
-`DRIVE_EVAL_HOLDOUT`), so the hill-climber (#223) cannot read them from the
-repo. `test/evals.test.mjs` proves no held-out file is tracked by git.
+at `/home/nish/.local/share/drive/eval-holdout.yaml` (pass that path to
+`--tests`), so the hill-climber (#223) cannot read them from a checkout.
+`test/evals.test.mjs` proves no held-out file is tracked by git.
 
 ## The models
 
 The two `providers` in `promptfooconfig.yaml` are the scaling pair on the
 fleet's own proxy at `127.0.0.1:4000`: `worker-cheap` at default effort, and
-`worker-capable` as the stronger model. Three `repeat`s are the variance
-check. A run sends the fleet worker virtual key as `OPENAI_API_KEY` (promptfoo's
-stock OpenAI-compatible env). It does not call a paid external API.
+`worker-capable` as the stronger model. Temperature is 0. Three `repeat`s
+still measure spread, because reasoning models vary at temperature 0. A run
+sends the fleet worker virtual key as `OPENAI_API_KEY` (promptfoo's stock
+OpenAI-compatible env). It does not call a paid external API.
 
 ## What is not done yet
 
