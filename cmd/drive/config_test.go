@@ -58,7 +58,7 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
 	if _, err := LoadStorageConfig("", "", "", ""); err == nil {
 		t.Fatal("expected an error when no storage config is given")
-	} else if !strings.Contains(err.Error(), "missing storage config") {
+	} else if !strings.Contains(err.Error(), "missing its storage settings") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")

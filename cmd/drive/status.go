@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -37,8 +38,12 @@ const USAGE_PATH = "/api/usage"
 // status line into a hung terminal.
 const usageTimeout = 10 * time.Second
 
-// runStatus is `drive status`: the mount state, the upload queue and the
-// month's cost.
+// runStatus is `drive status`: is it working, what is waiting, how much am I
+// spending (drive#117). Three questions, one line each, and a next step on
+// every line that is not good news. It stays under ten lines by printing only
+// the answers: the path it is mounted at, the upload queue, the month's
+// cost. The rclone config path and the login item path are debug detail, not
+// answers, so they are no longer printed.
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -47,41 +52,71 @@ func runStatus(args []string) error {
 		return errFlagParse
 	}
 	home := common.home
+	goos := CurrentGOOS()
 	mountDir := DefaultMountDir(home)
-	on, err := Mounted(CurrentGOOS(), home)
+	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
 	}
-	state := "not mounted"
+	var readErr error
 	if on {
-		state = "mounted"
+		_, readErr = countEntries(mountDir, 2*time.Second)
 	}
-	fmt.Printf("drive: %s\n", state)
-	fmt.Printf("mount dir: %s\n", mountDir)
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	loginItem := LoginItemPath(CurrentGOOS(), home)
-	exists := "absent"
-	if _, err := os.Stat(loginItem); err == nil {
-		exists = "present"
-	}
-	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
-		fmt.Printf("entries: %d\n", n)
-	}
+	renderMountState(os.Stdout, on, readErr, mountDir, goos, home)
 	// The upload queue is read from the cache directory the mount was started
 	// with (`--cache-dir`, the same DefaultCacheDir), so it is the queue of
 	// this mount and not of some other drive.
 	queue, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
-		return err
+		fmt.Printf("uploads: %s\n", failDetail("queue-unreadable", err, DefaultCacheDir(home)).Error())
+	} else {
+		label := UploadLabel(queue)
+		if queue.Bytes > 0 {
+			label += " (" + humanBytes(queue.Bytes) + ")"
+		}
+		fmt.Printf("uploads: %s\n", label)
 	}
-	fmt.Printf("uploads: %s\n", UploadLabel(queue))
 	if reason := readCostLine(*api); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
+}
+
+// renderMountState prints the mount's answer to "is it working": mounted and
+// answering, mounted but not answering, or not mounted with the exact start
+// command. It is a function so all three branches stay testable without a
+// real FUSE mount.
+func renderMountState(w io.Writer, on bool, readErr error, mountDir, goos, home string) {
+	switch {
+	case on && readErr == nil:
+		fmt.Fprintf(w, "drive: mounted at %s\n", mountDir)
+	case on:
+		// A mount the kernel knows but that does not answer is the one state
+		// where "mounted" would be a lie: say so, and name the log and the
+		// restart commands.
+		silence := failDetail("folder-silent", readErr, (2 * time.Second).String(), mountLogHint(goos, home))
+		fmt.Fprintf(w, "drive: not responding at %s (%s)\n", mountDir, silence.What)
+		fmt.Fprintf(w, "  next: %s\n", silence.Next)
+	default:
+		fmt.Fprintf(w, "drive: not mounted\n")
+		fmt.Fprintf(w, "  next: run `drive mount` (see `drive mount --help` for its flags)\n")
+	}
+}
+
+// humanBytes renders a byte count the way the queue line reads it: one decimal
+// below a mebibyte, whole units above. The go.mod has no dependencies by
+// design, so this is the whole function rather than a new module.
+func humanBytes(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1024*1024*1024))
+	}
 }
 
 // VFSMeta is the part of rclone's VFS cache metadata this file reads. rclone
@@ -193,13 +228,12 @@ type UsageSummary struct {
 
 // readCostLine prints this month's cost and the cap, and returns the reason
 // the numbers are unknown (empty when they are known). It never invents a
-// number and never fails the whole command: the mount lines above are already
-// true, and a person who cannot reach the usage service still needs to know
-// whether the drive is mounted. The reason is printed with it, so a missing
-// number is always a named failure rather than a quiet zero.
+// number, never fails the whole command, and never prints a raw network
+// error: every reason is the message table's words (drive#117), so a missing
+// number is always a named failure with a next step rather than a quiet zero.
 func readCostLine(apiBase string) string {
 	if strings.TrimSpace(apiBase) == "" {
-		return "no api Worker configured; set --api or DRIVE_API_URL"
+		return fail("no-api").Error()
 	}
 	base, err := parseAPIBase(apiBase)
 	if err != nil {
@@ -208,15 +242,18 @@ func readCostLine(apiBase string) string {
 	client := &http.Client{Timeout: usageTimeout}
 	resp, err := client.Get(base + USAGE_PATH)
 	if err != nil {
-		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
+		return failDetail("offline", err).Error()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("GET %s: %s", base+USAGE_PATH, resp.Status)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fail("not-signed-in").Error()
+		}
+		return fail("api-down").Error()
 	}
 	var u UsageSummary
 	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
-		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
+		return failDetail("api-answer", err).Error()
 	}
 	fmt.Printf("this month: %s of %s cap (%s)\n",
 		USD(u.MeteredUsd), USD(u.Cap.CapUsd), costState(u.Cap.State))
@@ -225,11 +262,11 @@ func readCostLine(apiBase string) string {
 
 // costState turns the cap's own state into the word on this line, and says
 // what to do about it. `active` is the quiet word; `read_only` is the one a
-// person has to act on, so it carries the reason (src/billing.js
-// `capStatus()`).
+// person has to act on, so it carries the cap-reached words from the message
+// table - the same words the web pages use (src/messages.js, drive#117).
 func costState(state string) string {
 	if state == "read_only" {
-		return "read-only, writes are off until the cap is raised"
+		return fail("cap-reached").Error()
 	}
 	return state
 }
@@ -243,23 +280,23 @@ func USD(amount float64) string {
 
 // parseAPIBase checks the api Worker URL and drops its trailing slash, so the
 // endpoint path is appended the same way every time. A URL is operator
-// config, but it is printed and put in an error, so the same rejection
-// config.go applies to a rclone config value applies here: a newline would
-// break the line it is printed on, and a NUL byte is never a URL.
+// config, but it is printed and put in an error, so a newline would break the
+// line it is printed on and a NUL byte is never a URL: both come back as the
+// api-url table failure, which names the fix.
 func parseAPIBase(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
-		return "", err
+		return "", failf("api-url", trimmed)
 	}
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("api Worker URL %q: %w", trimmed, err)
+		return "", failf("api-url", trimmed)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("api Worker URL %q must be http or https", trimmed)
+		return "", failf("api-url", trimmed)
 	}
 	if u.Host == "" {
-		return "", fmt.Errorf("api Worker URL %q has no host", trimmed)
+		return "", failf("api-url", trimmed)
 	}
 	return strings.TrimSuffix(trimmed, "/"), nil
 }

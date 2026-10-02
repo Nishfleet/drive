@@ -4,7 +4,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -43,7 +45,7 @@ func runInit(args []string) error {
 		return errFlagParse
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		return usageFailure(usage, fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	return initAgents(Env{Home: *home}.withDefaults(), *api)
 }
@@ -59,7 +61,7 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		return env, nil
 	}
 	if strings.TrimSpace(apiBase) == "" {
-		return env, errors.New("no api Worker configured; set --api or DRIVE_API_URL")
+		return env, fail("no-api")
 	}
 	creds, err := LoadCredentials(env.Home)
 	if err != nil {
@@ -82,7 +84,10 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err := SaveCredentials(env.Home, creds); err != nil {
 			return env, err
 		}
-		fmt.Printf("signed in to %s as %s\n", client.Base, creds.AccountName)
+		// The account name is the one fact that says whose drive this is now.
+		// The api base is not printed: the person either typed it or it came
+		// from the environment, and an address is not news.
+		fmt.Printf("Signed in as %s\n", creds.AccountName)
 	}
 	client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
 	if err != nil {
@@ -92,13 +97,27 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 	return env, nil
 }
 
+// failureKind names the message table kind of err, or "" when err did not
+// come from the table. Callers use it to tell "the caller asked for no api"
+// (a note, keep going) from every other sign-in failure (real, stop).
+func failureKind(err error) string {
+	var f *failure
+	if errors.As(err, &f) {
+		return f.Kind
+	}
+	return ""
+}
+
 // initAgents signs the device in, then finds every installed agent tool and
 // connects it to the drive folder with its own key. A tool that fails is
 // reported but does not stop the rest; a non-zero exit is returned if any
 // tool failed. The environment is injected so the command is tested without
 // touching a real machine or the network.
+//
+// The first run prints only what a person needs (drive#117): sign in, one line
+// per agent tool, and one closing line - where the drive is and what to try, or
+// the exact command that mounts it next.
 func initAgents(env Env, apiBase ...string) error {
-	fmt.Printf("drive folder: %s\n", env.DriveDir)
 	base := ""
 	if len(apiBase) > 0 {
 		base = apiBase[0]
@@ -109,17 +128,30 @@ func initAgents(env Env, apiBase ...string) error {
 		// it just has no per-tool storage key to put in the entry. That is said
 		// out loud rather than silently skipped. Any other sign-in failure is
 		// real and stops the run.
-		if !strings.Contains(err.Error(), "no api Worker configured") {
+		if failureKind(err) != "no-api" {
 			return err
 		}
-		fmt.Println("note: no api Worker configured; connecting without per-tool keys (set --api or DRIVE_API_URL)")
+		fmt.Println("note: no drive api configured, so tools connect without their own keys (run `drive init --api <url>` for keys)")
 	}
 	env = signedIn
+	// Nothing on the first run may sit silent for more than two seconds: say
+	// what is happening, then print the result per tool.
+	all := tools()
+	// Nothing on the first run may sit silent for more than two seconds: name
+	// what is happening before the slow part (a key mint, a tool's own add),
+	// then print the result per tool.
+	installing := 0
+	for _, t := range all {
+		if on, _ := t.Installed(env); on {
+			installing++
+		}
+	}
+	if installing > 0 {
+		fmt.Printf("Connecting %d agent tool(s)\n", installing)
+	}
 	connected, failed := 0, 0
-	for _, t := range tools() {
-		installed, _ := t.Installed(env)
-		if !installed {
-			fmt.Printf("  %-8s not installed\n", t.Name)
+	for _, t := range all {
+		if on, _ := t.Installed(env); !on {
 			continue
 		}
 		// Each tool gets its own key from the api Worker (build step 4,
@@ -144,18 +176,38 @@ func initAgents(env Env, apiBase ...string) error {
 		if key == nil {
 			fmt.Printf("  %-8s connected (no agent key; sign in with `drive init` for one)\n", t.Name)
 		} else {
-			fmt.Printf("  %-8s connected (agent key %s: %s, no deleteFiles)\n",
-				t.Name, key.KeyID, strings.Join(key.Capabilities, ", "))
+			// The key id is not on screen: `drive agents revoke <tool>` names
+			// the tool, so the id is debug detail. The capabilities are the
+			// point - an agent key can never delete.
+			fmt.Printf("  %-8s connected (key: %s, never delete)\n",
+				t.Name, strings.Join(key.Capabilities, ", "))
 		}
 		connected++
+	}
+	for _, t := range all {
+		if on, _ := t.Installed(env); !on {
+			fmt.Printf("  %-8s not installed\n", t.Name)
+		}
 	}
 	if connected == 0 && failed == 0 {
 		fmt.Println("no agent tools found; install one and run `drive init` again")
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d agent tool(s) could not be connected", failed)
+		return failf("tool-failed", fmt.Sprint(failed))
 	}
+	printFirstRunNext(os.Stdout, CurrentGOOS(), env.Home, env.DriveDir)
 	return nil
+}
+
+// printFirstRunNext ends the first run on one clear line (drive#117): where
+// the drive is and what to try when it is already mounted, and the exact
+// command that mounts it when it is not. It is last, and it is one line.
+func printFirstRunNext(w io.Writer, goos, home, driveDir string) {
+	if on, err := Mounted(goos, home); err == nil && on {
+		fmt.Fprintf(w, "Your drive is at %s. Try: echo hello > %q\n", driveDir, filepath.Join(driveDir, "hello.txt"))
+		return
+	}
+	fmt.Fprintf(w, "Next: mount the drive - `drive mount` (give it --endpoint, --bucket and --prefix; see `drive mount --help`)\n")
 }
 
 // mintToolKey gives this tool its own key, unless it already has one: a
@@ -174,7 +226,7 @@ func mintToolKey(env Env, t Tool) error {
 		return nil
 	}
 	if _, err := env.Minter.MintKey("agent", t.Name); err != nil {
-		return fmt.Errorf("mint its key: %w", err)
+		return failDetail(apiFailureKind(err), err)
 	}
 	return nil
 }
@@ -190,7 +242,7 @@ func runAgents(args []string) error {
 		switch {
 		case a == "--home":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--home needs a value")
+				return usageFailure(agentsUsage, "--home needs a value")
 			}
 			home = args[i+1]
 			i++
@@ -198,7 +250,7 @@ func runAgents(args []string) error {
 			home = strings.TrimPrefix(a, "--home=")
 		case a == "--api":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--api needs a value")
+				return usageFailure(agentsUsage, "--api needs a value")
 			}
 			api = args[i+1]
 			i++
@@ -208,12 +260,20 @@ func runAgents(args []string) error {
 			fmt.Print(agentsUsage)
 			return nil
 		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown flag %q", a)
+			return usageFailure(agentsUsage, fmt.Sprintf("unknown flag %q", a))
 		default:
 			positional = append(positional, a)
 		}
 	}
 	return agents(Env{Home: home}.withDefaults(), positional, api)
+}
+
+// usageFailure prints the command's usage and the reason to stderr, and
+// returns errFlagParse so main exits 2 (usage, not failure). A bad flag or a
+// bad subcommand is not a system failure: the usage block is the next step.
+func usageFailure(usage, reason string) error {
+	fmt.Fprintf(os.Stderr, "%s\n%s", reason, usage)
+	return errFlagParse
 }
 
 // agents is runAgents' body with the environment injected.
@@ -227,10 +287,11 @@ func agents(env Env, positional []string, apiBase ...string) error {
 	}
 	sub := positional[0]
 	if sub != "connect" && sub != "revoke" {
-		return fmt.Errorf("unknown `drive agents` subcommand %q (use connect or revoke, or no argument to list)", sub)
+		return usageFailure(agentsUsage,
+			fmt.Sprintf("unknown `drive agents` subcommand %q (use connect or revoke, or no argument to list)", sub))
 	}
 	if len(positional) != 2 {
-		return fmt.Errorf("usage: drive agents %s <tool>", sub)
+		return usageFailure(agentsUsage, fmt.Sprintf("usage: drive agents %s <tool>", sub))
 	}
 	t, err := toolByName(positional[1])
 	if err != nil {
@@ -238,18 +299,18 @@ func agents(env Env, positional []string, apiBase ...string) error {
 	}
 	installed, where := t.Installed(env)
 	if !installed {
-		return fmt.Errorf("%s is not installed (%s not found on PATH and no config directory); install it first",
-			t.Name, strings.Join(t.Binaries, " or "))
+		return failDetail("tool-not-installed", fmt.Errorf("%s not found on PATH and no config directory",
+			strings.Join(t.Binaries, " or ")), t.Name)
 	}
 	env, err = signedInEnv(env, base)
 	if err != nil {
 		// Same rule as `drive init`: a device with no api Worker can still
 		// disconnect a tool locally, but it has no server-side key to revoke.
 		// Any other failure is real and stops the run.
-		if !strings.Contains(err.Error(), "no api Worker configured") {
+		if failureKind(err) != "no-api" {
 			return err
 		}
-		fmt.Println("note: no api Worker configured; no server-side key to revoke (set --api or DRIVE_API_URL)")
+		fmt.Println("note: no drive api configured, so there is no server-side key to revoke (run the command with `--api <url>` for one)")
 	}
 	if sub == "connect" {
 		if t.KeyEnv != "" && env.Minter != nil {
@@ -274,11 +335,10 @@ func agents(env Env, positional []string, apiBase ...string) error {
 	}
 	if key != nil {
 		if env.Minter == nil {
-			return fmt.Errorf("%s has an agent key but this device cannot reach the api Worker; "+
-				"set --api or DRIVE_API_URL and run this again", t.Name)
+			return failf("no-api-for-key", t.Name)
 		}
 		if err := env.Minter.RevokeKey(key.KeyID); err != nil {
-			return fmt.Errorf("revoke the %s key: %w", t.Name, err)
+			return failDetail(apiFailureKind(err), err, t.Name)
 		}
 		if err := removeAgentKey(env.Home, t.Name); err != nil {
 			return err

@@ -32,13 +32,10 @@ import (
 func Logout(goos, home string, force bool) error {
 	pending, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
-		return err
+		return failDetail("queue-unreadable", err, DefaultCacheDir(home))
 	}
 	if pending.Files > 0 && !force {
-		return fmt.Errorf(
-			"%d file(s) waiting to upload (%d bytes) are still in the cache; "+
-				"start the mount and let them finish, or run `drive logout --force` to discard them",
-			pending.Files, pending.Bytes)
+		return failf("uploads-stuck", fmt.Sprint(pending.Files), fmt.Sprint(pending.Bytes))
 	}
 	// Stop the mount before the key goes, so nothing is mid-upload when the
 	// config it reads disappears. Unmount stops the login item; stopMount then
@@ -50,16 +47,19 @@ func Logout(goos, home string, force bool) error {
 	// is measured, not the exit code: only a still-mounted drive fails.
 	stopErr := Unmount(goos, home)
 	if err := stopMount(goos, home); err != nil {
+		mountDir := DefaultMountDir(home)
 		if stopErr != nil {
-			return fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err)
+			return failDetail("unmount-failed",
+				fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err),
+				mountDir)
 		}
-		return err
+		return failDetail("unmount-failed", err, mountDir)
 	}
 	if stopErr != nil {
 		// The mount is down and the login item is about to be deleted, so the
 		// only thing the disable error could have been protecting (a login
 		// item restarting the drive) is already handled. Note it and continue.
-		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
+		fmt.Fprintf(os.Stderr, "note: the login item could not be disabled; it is deleted below, so the drive will not start at the next login\n")
 	}
 	// The login item file survives Unmount (it only unloads/disables), and the
 	// rclone config is the key. Remove both; a missing one is not an error.
@@ -76,9 +76,9 @@ func Logout(goos, home string, force bool) error {
 	// Prove the key is gone rather than trust the unlink: the acceptance is
 	// "leaves no key or config behind", so a leftover file is a failure.
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
-		return fmt.Errorf("logout left %s behind", RcloneConfigPath(home))
+		return failf("logout-leftover", RcloneConfigPath(home))
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err)
+		return failDetail("unexpected", fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
 	}
 	fmt.Printf("logged out: the mount is stopped and %s is deleted\n", DefaultConfigDir(home))
 	return nil
@@ -136,7 +136,8 @@ func runFusermount(mountDir string) error {
 }
 
 // unmountError turns a failed unmount command into an error with the tool's
-// own output, or nil when it exited 0.
+// own output, or nil when it exited 0. The output goes to the caller's detail
+// (DRIVE_DEBUG), never straight to the terminal.
 func unmountError(name string, err error, out []byte) error {
 	if err == nil {
 		return nil
@@ -152,7 +153,7 @@ func expectUnmounted(goos, home string) error {
 		return err
 	}
 	if on {
-		return fmt.Errorf("unmount %s: still mounted after fusermount", DefaultMountDir(home))
+		return failf("unmount-failed", DefaultMountDir(home))
 	}
 	return nil
 }
@@ -161,7 +162,7 @@ func expectUnmounted(goos, home string) error {
 // success it is (logout is safe to run twice).
 func removeIfPresent(path string) error {
 	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove %s: %w", path, err)
+		return failDetail("unexpected", fmt.Errorf("remove %s: %w", path, err))
 	}
 	return nil
 }

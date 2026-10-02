@@ -86,7 +86,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region string) (StorageConfig, 
 		missing = append(missing, "secret key (DRIVE_S3_SECRET_ACCESS_KEY)")
 	}
 	if len(missing) > 0 {
-		return c, fmt.Errorf("missing storage config: %s", strings.Join(missing, ", "))
+		return c, failf("missing-config", strings.Join(missing, ", "))
 	}
 	// These values are written into the rclone config as INI values, one per
 	// line. A newline or carriage return in any of them would end the line and
@@ -126,7 +126,7 @@ func checkPrefix(prefix string) error {
 	}
 	for _, seg := range strings.Split(trimmed, "/") {
 		if seg == ".." {
-			return fmt.Errorf("invalid prefix: %q walks out of this device's folder", prefix)
+			return failf("bad-prefix", prefix)
 		}
 	}
 	return nil
@@ -136,10 +136,10 @@ func checkPrefix(prefix string) error {
 // generated rclone config.
 func checkConfigValue(name, value string) error {
 	if strings.ContainsAny(value, "\r\n") {
-		return fmt.Errorf("invalid %s: a newline would inject an rclone option", name)
+		return failf("invalid-config", name)
 	}
 	if strings.Contains(value, "\x00") {
-		return fmt.Errorf("invalid %s: contains a NUL byte", name)
+		return failf("invalid-config", name)
 	}
 	return nil
 }

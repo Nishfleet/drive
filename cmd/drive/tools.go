@@ -233,14 +233,15 @@ func tools() []Tool {
 	}
 }
 
-// toolByName returns the adapter for name, or an error naming what exists.
+// toolByName returns the adapter for name, or a table failure naming what
+// exists and how to see it.
 func toolByName(name string) (Tool, error) {
 	for _, t := range tools() {
 		if t.Name == name {
 			return t, nil
 		}
 	}
-	return Tool{}, fmt.Errorf("unknown tool %q (known: %s)", name, strings.Join(toolNames(), ", "))
+	return Tool{}, failf("unknown-tool", name, strings.Join(toolNames(), ", "))
 }
 
 func toolNames() []string {

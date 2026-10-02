@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,11 +238,20 @@ func TestAWorkersRefusalIsTheSentenceAPersonReads(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the refused mint to fail")
 	}
+	// The table's words frame the Worker's own sentence, so the person reads
+	// what happened and the one next step, and the service's own words are
+	// between them.
+	if !strings.Contains(err.Error(), "The drive's api refused the request.") {
+		t.Fatalf("the table words were lost: %v", err)
+	}
 	if !strings.Contains(err.Error(), "Unknown key kind") {
 		t.Fatalf("the Worker's own sentence was lost: %v", err)
 	}
-	if !strings.Contains(err.Error(), "400") {
-		t.Fatalf("the status is part of the message: %v", err)
+	// The raw HTTP status stays in the chain (DRIVE_DEBUG shows it), not on the
+	// line the first words are read from.
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Status, "400") {
+		t.Fatalf("the refusal's status is not in the error chain: %v", err)
 	}
 }
 

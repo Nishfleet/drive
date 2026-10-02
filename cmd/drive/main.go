@@ -27,6 +27,10 @@ Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
 
+Every failure prints what happened and the exact next step (drive#117).
+DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
+the mount's own log.
+
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
@@ -81,8 +85,9 @@ func main() {
 		if errors.Is(err, errFlagParse) {
 			os.Exit(2)
 		}
-		fmt.Fprintln(os.Stderr, "drive:", err)
-		os.Exit(1)
+		// Every failure a person reads goes through the message table:
+		// what happened, then the exact next step (drive#117).
+		os.Exit(printFailure(os.Stderr, err))
 	}
 }
 

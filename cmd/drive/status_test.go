@@ -165,10 +165,12 @@ func TestReadCostLineSaysReadOnlyAndWhatToDo(t *testing.T) {
 			t.Errorf("readCostLine said %q, want the numbers", reason)
 		}
 	})
-	// A read-only drive is the one cost line that has to carry an action:
-	// every error says what to do next (issue #35).
-	if !strings.Contains(line, "read-only") || !strings.Contains(line, "cap is raised") {
-		t.Errorf("got %q, want the read-only state and what to do about it", line)
+	// A read-only drive is the one cost line that has to carry an action.
+	// Its words are the message table's cap-reached entry, the same words the
+	// web pages show (drive#117), not a second phrasing written here.
+	want := fail("cap-reached").Error()
+	if !strings.Contains(line, "read-only") || !strings.Contains(line, want) {
+		t.Errorf("got %q, want the read-only state and the cap-reached words %q", line, want)
 	}
 }
 
@@ -176,18 +178,24 @@ func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	cases := []struct {
 		name string
 		base string
-		want string
+		kind string
 	}{
-		{"unconfigured", "", "no api Worker configured"},
-		{"bad url", "ftp://drive.example", "must be http or https"},
-		{"no host", "https://", "no host"},
+		{"unconfigured", "", "no-api"},
+		{"bad url", "ftp://drive.example", "api-url"},
+		{"no host", "https://", "api-url"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			line := captureStdout(t, func() {
 				reason := readCostLine(tc.base)
-				if !strings.Contains(reason, tc.want) {
-					t.Errorf("reason %q does not name %q", reason, tc.want)
+				// Every reason is the message table's words: what happened and
+				// the exact next step, never a raw network or storage error.
+				want := failf(tc.kind, tc.base).Error()
+				if reason != want {
+					t.Errorf("reason %q, want the %s table entry %q", reason, tc.kind, want)
+				}
+				if !strings.Contains(reason, "Next:") {
+					t.Errorf("reason %q names no next step", reason)
 				}
 			})
 			// An unknown number is never printed as a number: the line names
@@ -205,8 +213,13 @@ func TestReadCostLineNamesAnUnreachableService(t *testing.T) {
 	}))
 	defer srv.Close()
 	reason := readCostLine(srv.URL)
-	if !strings.Contains(reason, "500") {
-		t.Errorf("reason %q, want the failing status named", reason)
+	// A service that answers but cannot serve is the api-down words, with a
+	// next step and no raw status text (drive#117).
+	if want := fail("api-down").Error(); reason != want {
+		t.Errorf("reason %q, want %q", reason, want)
+	}
+	if strings.Contains(reason, "500") || strings.Contains(reason, "nope") {
+		t.Errorf("reason %q carries raw error text; it must not", reason)
 	}
 }
 
