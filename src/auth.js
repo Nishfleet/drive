@@ -91,11 +91,42 @@ export function createAuth(options) {
     // permanent: a Host header a stranger chose must not be able to decide
     // where the sign-in link in their own inbox points.
     baseURL: options.baseURL,
+    // The library default, named here so the magic-link forward in src/signin.js
+    // reads the same path the handler mounts. Left implicit, `auth.options` has
+    // no `basePath` for checkJs (drive#200).
+    basePath: "/api/auth",
     // No password and no social providers: the spec's screen asks for one
     // thing (an email link) and the OAuth client ids are Nish's credentials,
     // never values in this repo.
     emailAndPassword: { enabled: false },
     socialProviders: {},
+    // Better Auth's built-in rate limiter: by default it keeps its counters in
+    // memory, one set per Worker instance, so an attacker spread across
+    // isolates is barely limited (drive issue #200). Pointing it at the
+    // customer D1 makes the counter one per address across every instance.
+    rateLimit: {
+      storage: "database",
+      enabled: true,
+      // The magic-link send is the one route that mints a link into an inbox,
+      // so it gets its own per-IP ceiling below the library's stock one (the
+      // magic-link plugin already applies a per-IP rule of 5/60s; this custom
+      // rule lowers it to 3/60s). The key Better Auth builds is IP plus path,
+      // so the limit is per address by construction.
+      //
+      // Per IP, not per address, because the thing this bounds is mail volume:
+      // one inbox is already bounded by the plugin's own per-address rule, so
+      // the only abuse left is one address sending many links to many inboxes
+      // (or one host spraying). Three per minute is the ceiling because the
+      // page sends one link per press, so a person who mistypes can retry
+      // three times and is then told to wait a minute. A shared address (an
+      // office NAT, a mobile carrier) shares one ceiling, which is a real cost
+      // and is accepted: the failure is a person waiting a minute and pressing
+      // again, and the alternative, keying on something the caller chooses,
+      // is the forgeable header this is here to avoid.
+      customRules: {
+        "/sign-in/magic-link": { window: 60, max: 3 },
+      },
+    },
     session: {
       expiresIn: SESSION_TTL_SECONDS,
       // Refresh a session that is still being used, so an active person is not
@@ -107,6 +138,17 @@ export function createAuth(options) {
       // The site is served over HTTPS only (Cloudflare terminates TLS), so the
       // session cookie is `__Secure-` prefixed and never travels in clear.
       useSecureCookies: true,
+      // The one trustworthy source of the per-IP rate limit key. Cloudflare sets
+      // `cf-connecting-ip` to the caller's address on every request it serves and
+      // the caller cannot forge it, so the counter keys on the real client.
+      // `x-forwarded-for` is deliberately not consulted: behind the edge it can
+      // hold a caller-supplied chain whose first element an attacker controls, and
+      // a key built from it would let one client reset its own ceiling by choosing
+      // the header. This is the same header the edge per-IP limiter keys on
+      // (src/rate-limit.js), so the two layers bound the same caller.
+      ipAddress: {
+        ipAddressHeaders: ["cf-connecting-ip"],
+      },
     },
     plugins: [
       magicLink({

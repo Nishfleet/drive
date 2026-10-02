@@ -53,6 +53,19 @@ import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
+/** @typedef {import("./auth.js").Auth} Auth */
+
+/**
+ * What a caller is told when the address is not one a link can be sent to. One
+ * sentence in one place: the start step's own shape check and the start step's
+ * hand-off to the library both answer with it, so the two cannot drift into
+ * saying the same thing in two words. It is a step-validation string and not a
+ * message-table entry, the same class as the two rejections readStart makes
+ * above it — the table holds the failures a person cannot act around, and a
+ * mistyped address is fixed by retyping it.
+ */
+const BAD_ADDRESS_MESSAGE = "Enter an email address we can send the link to.";
+
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
 /** The one endpoint the page posts to. */
@@ -201,7 +214,7 @@ function readStart(body) {
   // local part, an @ and a domain with a dot. Deliberately not a full RFC 5322
   // grammar — the link that comes back is the real proof the address works.
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return { error: "Enter an email address we can send the link to." };
+    return { error: BAD_ADDRESS_MESSAGE };
   }
   return { step: "start", method, email };
 }
@@ -319,18 +332,50 @@ export async function handleSigninRequest(request, env) {
   if (read.method !== "email") {
     return json(signinClosedBody(), 503);
   }
+  const email = read.email;
+  if (typeof email !== "string") {
+    return json({ error: BAD_ADDRESS_MESSAGE }, 400);
+  }
   try {
-    await auth.api.signInMagicLink({
-      body: { email: /** @type {string} */ (read.email) },
-      headers: request.headers,
-    });
-  } catch (error) {
-    // A mailer that threw has not sent the link, so the failure is the
-    // route's answer: the person is told sign-in did not happen rather than
-    // shown a screen that waits for an email that is not coming.
-    if (isTooManyRequests(error)) {
-      return json({ error: failureMessage("rate-limited") }, 429);
+    // Hand the send to Better Auth's own handler so its rate limiter runs.
+    // The in-process `auth.api` call bypasses the router's onRequest hook, so
+    // a per-IP ceiling stored in D1 would never see the request; the handler
+    // routes the call through that hook, building the rate-limit key (IP plus
+    // path) from this request's headers. The route's own origin check, body
+    // parse and closed-door guard have already run above; this only needs the
+    // email the start step validated and the headers the limiter reads IP from.
+    const authResponse = await auth.handler(signinLinkRequest(auth, email, request));
+    // Better Auth answers 429 from its rate limiter; translate that into the
+    // message table's words rather than passing its body through, and carry the
+    // library's own retry-after through as the `retry-after` header the edge
+    // limiter sets (src/rate-limit.js), so a client gets one backoff signal.
+    if (authResponse.status === 429) {
+      const retryAfter = authResponse.headers.get("x-retry-after");
+      return json(
+        { error: failureMessage("rate-limited") },
+        429,
+        retryAfter === null ? {} : { "retry-after": retryAfter },
+      );
     }
+    // A 400 from the library is its own answer about an address the start step
+    // already accepted, so it is passed on as a 400 rather than closed as an
+    // outage: a caller who mistyped would otherwise be told sign-in is
+    // temporarily closed, which is the one thing they cannot act on. The words
+    // are the start step's, not the library's body — see BAD_ADDRESS_MESSAGE.
+    if (authResponse.status === 400) {
+      return json({ error: BAD_ADDRESS_MESSAGE }, 400);
+    }
+    // Any other non-200 is a real failure — a database error, a token that
+    // could not be stored, or a mailer that threw: the closed door, never a
+    // 202 for a link that never left.
+    if (authResponse.status !== 200) {
+      return json(signinClosedBody(), 503);
+    }
+  } catch {
+    // A rate-limit refusal arrives as the 429 Response handled above, never a
+    // throw. This catch is for anything else `auth.handler` lets escape — a torn
+    // D1 binding, a runtime fault — which is the closed door, never a 202 for a
+    // send that never landed.
     return json(signinClosedBody(), 503);
   }
   return json(
@@ -395,26 +440,52 @@ export async function handleSigninLinkVerify(request, env) {
 }
 
 /**
- * A rate limit is the message table's words and a 429; nothing else from the
- * library becomes a stranger-visible sentence, because an unknown failure is
- * the same closed door a deployment with no auth gives.
- * @param {unknown} error
- * @returns {boolean}
+ * The internal Better Auth request that the start step forwards a send to.
+ *
+ * The route never calls `auth.api.signInMagicLink` directly because that
+ * bypasses the router's onRequest hook — and with it the per-IP rate limiter
+ * Better Auth stores in D1 (drive issue #200). Forwarding a real request
+ * through `auth.handler` puts the call in that hook, so the counter is
+ * checked and incremented the same way a browser hit the library route.
+ *
+ * The URL is the library's own endpoint under the configured auth base path;
+ * the body carries only the address the start step already validated. Of the
+ * caller's headers it forwards only what the callee reads — the `origin` its
+ * origin check validates against and the `cf-connecting-ip` its rate limiter
+ * keys on — never the whole header set (see the note in the body below).
+ * @param {Auth} auth the Better Auth instance from `authFor`
+ * @param {string} email the address the start step validated
+ * @param {Request} request the caller's request, whose origin and client-IP headers are forwarded
+ * @returns {Request}
  */
-function isTooManyRequests(error) {
-  if (typeof error !== "object" || error === null) {
-    return false;
+function signinLinkRequest(auth, email, request) {
+  const basePath = auth.options.basePath;
+  const base = /** @type {string} */ (auth.options.baseURL);
+  // Forward only what the callee reads, not the caller's whole header set. The
+  // library validates the origin from `origin` and resolves the per-IP
+  // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
+  // src/auth.js); a JSON body is all it parses. The caller's `content-length`
+  // names this route's body, not the JSON built here, so carrying it across
+  // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
+  // signed-in person a magic-link send has no need to impersonate. `accept` is
+  // not forwarded either: the library's answer is JSON and the route reads the
+  // status, never a negotiated representation.
+  const headers = new Headers();
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    headers.set("origin", origin);
   }
-  const status = /** @type {{status?: unknown, body?: unknown}} */ (error).status;
-  if (status === 429 || status === "TOO_MANY_REQUESTS") {
-    return true;
+  const clientIp = request.headers.get("cf-connecting-ip");
+  if (clientIp !== null) {
+    headers.set("cf-connecting-ip", clientIp);
   }
-  const body = /** @type {{body?: unknown}} */ (error).body;
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    /** @type {{code?: unknown}} */ (body).code === "TOO_MANY_REQUESTS"
-  );
+  // The body is the library's own shape, not the route's `step` wrapper.
+  headers.set("content-type", "application/json");
+  return new Request(`${base}${basePath}/sign-in/magic-link`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ email }),
+  });
 }
 
 /**
