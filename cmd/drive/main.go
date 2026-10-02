@@ -26,11 +26,12 @@ Usage:
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
-  drive logout [flags]     stop the mount and delete this device's key and config
+  drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
   drive version            print the version
 
@@ -52,6 +53,7 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
@@ -65,9 +67,15 @@ Link flags (share, request):
 Export flags:
   --out   file to write the export to; stdout when it is not given
 
-The device keys are read from the environment, never a flag, so they stay out
-of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
-DRIVE_S3_SECRET_ACCESS_KEY.
+The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
+The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
+or --secret-key-stdin. --secret-key is refused.
+
+Logout flags:
+  --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
+  --force       discard files waiting to upload instead of refusing to logout
+  --forget-pending  clear the failed-revoke record, after you have revoked the
+               key on the devices page in the web app
 `
 const version = "0.1.0"
 
@@ -100,6 +108,8 @@ func main() {
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "cap":
+		err = runCap(os.Args[2:])
 	case "share":
 		err = runShare(os.Args[2:])
 	case "request":
@@ -152,12 +162,21 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
+	var refusedSecret string
 	var endpoint, bucket, prefix, region, downloadURL string
-	var foreground, dryRun bool
+	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
+	// The old secret flag is registered only so the flag package consumes it
+	// correctly and can report whether it was passed; the value lands in a
+	// variable that is never read or printed, and any use is refused with the
+	// ways that are safe. A value like --bucket secret-key=x is a bucket, not
+	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
+	// is, and nothing after the first `--` reaches it.
+	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
+	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
 	// The dl Worker (drive issue #58). Absent, the mount reads from the
 	// endpoint and counts nothing; set, every read streams through the dl
 	// Worker so the account's download bytes are counted (docs/build-spec.md
@@ -172,7 +191,27 @@ func runMount(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL)
+	refused := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "secret-key" {
+			refused = true
+		}
+	})
+	if refused {
+		// The value did land in this process's command line before it was
+		// refused — the shell history and ps already hold it — so the refusal
+		// cannot unsay that. It says so, and it says to replace the key, because
+		// a value that has been through argv is a value that has been exposed.
+		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
+	}
+	// The secret's sources are the config file this CLI wrote (mode 0600), the
+	// environment, or stdin (--secret-key-stdin). None of them is argv, which is
+	// world-readable in ps for the life of the process.
+	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
+	if err != nil {
+		return err
+	}
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey)
 	if err != nil {
 		return err
 	}
