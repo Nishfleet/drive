@@ -70,6 +70,11 @@ export const SITE = Object.freeze({
 // page's.
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
+  // The notes starter (drive issue #15). It is the one public page that is an
+  // optional, off-by-default starting point rather than the product's own
+  // surface, and the crowd it is for finds it by search, so it is indexable and
+  // in the sitemap. Its price line is PRICE's, like every other page's.
+  Object.freeze({ path: "/starter.html", indexable: true }),
   Object.freeze({ path: "/get-started.html", indexable: false }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
   // reached it would see an empty listing, never a public page (issue #31).

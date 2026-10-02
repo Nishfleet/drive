@@ -329,8 +329,8 @@ test("the sitemap lists the docs pages on the canonical origin, in order", () =>
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
   assert.deepEqual(
     locations,
-    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) => `${SITE.origin}${path}`),
-    "the sitemap must list the home page and every docs page, in order",
+    [SITE.homePath, "/starter.html", ...DOC_PAGES.map((page) => page.url)].map((path) => `${SITE.origin}${path}`),
+    "the sitemap must list the home page, the starter, and every docs page, in order",
   );
   // A docs URL in the sitemap that nothing serves is the drift the issue names:
   // a page that exists on disk and is not in the sitemap, or the reverse.

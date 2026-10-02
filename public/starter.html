@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive — notes starter</title>
+  <meta name="description" content="An optional notes starter for your drive: a vault your notes app opens, a daily note, and one note your agent reads. Off by default, and never required.">
+  <!-- drive issue #15: canonical, Open Graph and the JSON-LD a Rich Results /
+       AI-answer crawler reads. Every value mirrors src/seo.js, and every price
+       in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
+       fails CI when the tags and that config drift apart. This page is the one
+       indexable page that is not the product's own surface, so it carries the
+       same complete card. -->
+  <!-- rel="canonical" declares a URL for a crawler to read; the browser never
+       fetches it as a subresource, so there is nothing whose bytes an integrity
+       hash could verify. That is why the nosemgrep rule id is on the tag: this
+       html.security rule only honors a same-line suppression, and the finding is
+       a false positive. -->
+  <link rel="canonical" href="https://drive-pricing.nishant345.workers.dev/starter.html"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/starter.html">
+  <meta property="og:site_name" content="Drive">
+  <meta property="og:title" content="Drive — 2¢ per GB, never more than $12 a TB">
+  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Drive — 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $12 a TB">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Drive",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "macOS, Linux",
+  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.",
+  "url": "https://drive-pricing.nishant345.workers.dev/",
+  "image": "https://drive-pricing.nishant345.workers.dev/og.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "12.00",
+    "priceCurrency": "USD",
+    "priceSpecification": {
+      "@type": "UnitPriceSpecification",
+      "price": "12.00",
+      "priceCurrency": "USD",
+      "unitText": "TB-month"
+    },
+    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. The bill is the metered cost capped at max($12, $8 × TB stored) less the $1 free every month, never below zero: a flat $12 up to 1.5 TB, then $8 for each TB after."
+  }
+}
+  </script>
+  <link rel="stylesheet" href="/site.css">
+  <style>
+/* Notes starter: the palette, the reset and the chrome the other pages use are
+   in the shared site stylesheet (public/site.css, drive #71); what is left here
+   is this page's own layout, with no custom property declared because every
+   token it needs belongs to the shared file. System font stacks only: no web
+   font files, so nothing blocks first paint. */
+
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.skip-link:focus {
+  z-index: 10;
+}
+
+.masthead {
+  max-width: 940px;
+}
+
+.masthead a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.wordmark {
+  font-size: 28px;
+}
+
+main {
+  max-width: 940px;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+section {
+  padding: clamp(28px, 5vh, 48px) 0 0;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0 0 12px;
+}
+
+ul {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+li {
+  margin-bottom: 6px;
+}
+
+/* The optional-and-never-required rule, set first and highest on the page so
+   it is the first thing a reader sees after the heading. */
+.optional {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  max-width: 62ch;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.optional .what {
+  margin: 0;
+  font-weight: 600;
+}
+
+.optional .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+.files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 62ch;
+}
+
+.files li {
+  margin: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 15px;
+  overflow-wrap: break-word;
+}
+
+.files li:last-child {
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The one action. It is a button the page only enables for a signed-in
+   session, so a reader who is not signed in sees the walk-through and not a
+   control that would answer 401. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+button {
+  font: inherit;
+  font-size: 15px;
+  padding: 10px 18px;
+  min-height: 44px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+button:disabled {
+  border-color: var(--rule);
+  background: var(--paper-raised);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.status {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  max-width: 62ch;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.status[data-state="done"] {
+  border-left-color: var(--good);
+}
+
+.status[data-state="error"] {
+  border-left-color: var(--bad);
+}
+
+.status .what {
+  margin: 0;
+  font-weight: 600;
+}
+
+.status .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+.signed-out {
+  margin: 0;
+  max-width: 62ch;
+}
+
+.free {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.footer {
+  max-width: 940px;
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#starter-heading">Skip to the starter</a>
+  <header class="masthead">
+    <span class="wordmark">Drive</span>
+    <span class="tagline">A Finder drive for people and their agents.</span>
+    <a href="/">Pricing</a>
+    <a href="/starter" aria-current="page">Notes starter</a>
+    <a href="/get-started">Get started</a>
+    <a href="/signin">Sign in</a>
+  </header>
+
+  <main>
+    <section aria-labelledby="starter-heading">
+      <h1 id="starter-heading">Notes starter</h1>
+      <p class="lede">Optional. Off by default, and never required.</p>
+    </section>
+
+    <section aria-labelledby="what-heading">
+      <div class="optional">
+        <p class="what">Optional. Off by default, and never required.</p>
+        <p class="next">Create it only if you want it. Your drive is the same either way.</p>
+      </div>
+      <h2 id="what-heading">What it writes</h2>
+      <p>
+        Four files, all inside one <code>Notes</code> folder. Delete any you do
+        not want, and the starter runs again later and only fills in what is
+        missing, so it never overwrites the notes you already have.
+      </p>
+      <ul class="files" id="starter-files">
+        <!-- Filled by starter.js from the endpoint's own list, so the page
+             cannot name a file the create does not write. -->
+      </ul>
+    </section>
+
+    <section aria-labelledby="how-heading">
+      <h2 id="how-heading">How it works</h2>
+      <p>
+        The starter writes into your own drive, through the same path every other
+        write takes, so it syncs to every machine you sign in on. There is no
+        separate notes product and no second place for the files to live.
+      </p>
+      <p>
+        Open your drive folder in Obsidian as a vault, or point any notes app at
+        the <code>Notes</code> folder. Point an agent at the same folder and it
+        reads and writes the files you do; an agent cannot permanently delete a
+        file, and one tap puts back anything it removes.
+      </p>
+      <p class="free">No card asked. $1 free every month, no card needed</p>
+    </section>
+
+    <section aria-labelledby="create-heading">
+      <h2 id="create-heading">Create it</h2>
+      <p id="starter-gate">
+        <a href="/signin">Sign in</a> to create the starter.
+      </p>
+      <div class="actions" id="starter-actions" hidden>
+        <button type="button" id="starter-button">Create the notes starter</button>
+        <span id="starter-note" role="status" aria-live="polite"></span>
+      </div>
+      <div class="status" id="starter-status" role="status" aria-live="polite" hidden>
+        <p class="what"></p>
+        <p class="next"></p>
+      </div>
+    </section>
+
+    <noscript>
+      <p>The starter is created from your drive page after you sign in. Turn
+      JavaScript on to create it here, or open your drive folder and make the
+      <code>Notes</code> folder yourself — the drive is the same either way.</p>
+    </noscript>
+  </main>
+
+  <footer class="footer">
+    <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
+  </footer>
+
+  <script>
+// The starter's own script (drive#15). It reads the file list and the copy from
+// the endpoint, so the page carries no second copy of either, and it posts one
+// request to create the starter. Nothing on this page writes until a signed-in
+// person presses the button: that is the "off by default" rule, and it is also
+// enforced by the Worker.
+const STARTER_ENDPOINT = "/api/starter";
+// The message table's own two sentences (src/messages.js), which the page falls
+// back to when the browser never reached the service; test/starter.test.mjs
+// reads this page and fails CI when either string drifts from the table.
+const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
+const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
+
+const filesList = document.getElementById("starter-files");
+const gate = document.getElementById("starter-gate");
+const actions = document.getElementById("starter-actions");
+const button = document.getElementById("starter-button");
+const note = document.getElementById("starter-note");
+const status = document.getElementById("starter-status");
+
+function setStatus(state, what, next) {
+  status.hidden = false;
+  status.dataset.state = state;
+  status.querySelector(".what").textContent = what;
+  status.querySelector(".next").textContent = next;
+}
+
+// The endpoint is behind the account gate, so a signed-out reader is answered
+// 401. That is the honest signal that the page shows the sign-in line instead
+// of a button: nothing here decides anything the gate has not already decided.
+fetch(STARTER_ENDPOINT)
+  .then((response) => {
+    if (!response.ok) throw new Error(`status: ${response.status}`);
+    return response.json();
+  })
+  .then((payload) => {
+    if (Array.isArray(payload.files)) {
+      for (const path of payload.files) {
+        const item = document.createElement("li");
+        item.textContent = path;
+        filesList.append(item);
+      }
+    }
+    gate.hidden = true;
+    actions.hidden = false;
+  })
+  .catch(() => {
+    gate.hidden = false;
+  });
+
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  note.textContent = "Creating…";
+  try {
+    const response = await fetch(STARTER_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "create" }),
+    });
+    const payload = await response.json();
+    if (response.ok && payload.ok) {
+      setStatus("done", payload.what, payload.next);
+      note.textContent = "";
+      return;
+    }
+    setStatus(
+      "error",
+      typeof payload.error === "string" && payload.error.length > 0
+        ? payload.error
+        : UNEXPECTED_MESSAGE,
+      typeof payload.next === "string" && payload.next.length > 0
+        ? payload.next
+        : UNEXPECTED_MESSAGE,
+    );
+  } catch (error) {
+    // The raw error goes to the console; the live region only ever shows a
+    // message built from the table.
+    console.error("starter: create failed", error);
+    setStatus("error", UNEXPECTED_MESSAGE, UNEXPECTED_MESSAGE);
+  } finally {
+    button.disabled = false;
+    note.textContent = "";
+  }
+});
+  </script>
+</body>
+</html>

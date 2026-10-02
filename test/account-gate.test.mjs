@@ -30,6 +30,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
+import { handleStarterRequest, STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
@@ -115,8 +116,13 @@ const ACCOUNT_ROUTES = [
   // it reads, and the walk requires the same 401.
   `${REWIND_ENDPOINT}`,
   `${REWIND_ENDPOINT}/`,
+  // drive issue #15: the notes starter. The endpoint is behind
+  // the account gate like every route that writes files, so the
+  // walk requires it to answer 401 anonymously, and the walk
+  // classifies the path so a GET without an account is also 401.
+  `${STARTER_ENDPOINT}`,
+  `${STARTER_ENDPOINT}/`,
 ];
-
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
 // own token check must be what is tested rather than a crash on absent input:
@@ -223,6 +229,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(STARTER_ENDPOINT) ||
         route.startsWith(SHARE_ENDPOINT) ||
         route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,
