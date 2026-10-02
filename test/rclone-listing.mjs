@@ -38,9 +38,20 @@ export function rcloneListingRows(objects, prefix, delimiter) {
   // Contents, which is what rclone does, so the split only happens when the
   // store sent one.
   const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
+  // The folder a key below the prefix cuts off, as the text after the prefix
+  // up to and including the first delimiter. Carrying the delimiter in the
+  // segment is what makes the answer right for both prefix shapes rclone
+  // accepts, and the difference is real: asked for `u/1/photos`, the key
+  // `u/1/photos/note.txt` leaves `/note.txt` and a real `rclone serve s3`
+  // reports the common prefix `u/1/photos/`; asked for `u/1/photos/`, the same
+  // key leaves `note.txt` and it reports the file. Cutting the segment on the
+  // delimiter without keeping it would answer the first case with no rows at
+  // all, which is the empty listing this stand-in exists to catch.
   const folders = [
-    ...new Set(children.filter(deeper).map((name) => rest(name).split(delimiter)[0])),
-  ].filter((name) => name !== "");
+    ...new Set(
+      children.filter(deeper).map((name) => rest(name).slice(0, rest(name).indexOf(delimiter) + 1)),
+    ),
+  ];
   const files = children
     .filter((name) => !deeper(name))
     .map((name) => ({ name, size: (objects.get(name) ?? "").length }));
@@ -57,10 +68,12 @@ export function rcloneListingRows(objects, prefix, delimiter) {
  * @returns {string}
  */
 export function listObjectsXml({ bucket, prefix, delimiter, folders, files }) {
+  // `folders` already carries the delimiter rclone cut it at, so the Prefix is
+  // the asked-for prefix plus that segment and nothing else.
   const common = folders
     .map(
       (name) =>
-        `  <CommonPrefixes>\n    <Prefix>${xml(`${prefix}${name}${delimiter}`)}</Prefix>\n  </CommonPrefixes>`,
+        `  <CommonPrefixes>\n    <Prefix>${xml(`${prefix}${name}`)}</Prefix>\n  </CommonPrefixes>`,
     )
     .join("\n");
   const contents = files
