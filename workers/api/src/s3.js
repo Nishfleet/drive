@@ -12,7 +12,7 @@
 // layer that reports success for a call it could not read is how a key ends up
 // unscoped.
 
-import { signRequest } from "./sigv4.js";
+import { AwsClient } from "aws4fetch";
 
 /**
  * An S3 answer: the status, the headers (the version id and ETag a write
@@ -94,22 +94,30 @@ export function ok(operation, response) {
 }
 
 /**
+ * A credential the endpoint can verify: an access key id, its secret, and the
+ * session token a temporary credential also carries.
+ * @typedef {object} S3Credentials
+ * @property {string} accessKeyId
+ * @property {string} secretAccessKey
+ * @property {string} [sessionToken] required for a temporary credential
+ */
+
+/**
  * @typedef {object} S3ClientConfig
  * @property {string} endpoint e.g. https://s3.eu-west-3.idrivee2.com
  * @property {string} region
- * @property {SigV4Credentials} credentials
+ * @property {S3Credentials} credentials
  * @property {string} [service] the SigV4 service, "s3" unless signing the
  *   STS AssumeRole call, which is "sts" and is served on the same origin
  * @property {typeof fetch} [fetchImpl]
  */
 
 /**
- * @typedef {import("./sigv4.js").SigV4Credentials} SigV4Credentials
- */
-
-/**
- * A signed S3 client. `send` returns every answer, refusals included;
- * `ok` above turns a refusal into an error for the callers that promised one.
+ * A signed S3 client. Signing is `aws4fetch` (`AwsClient`), the stock
+ * Worker-side SigV4 library; this file only builds the path-style URL, sends
+ * the signed request, and reads the XML. `send` returns every answer, refusals
+ * included; `ok` above turns a refusal into an error for the callers that
+ * promised one.
  * @param {S3ClientConfig} config
  */
 export function createS3Client(config) {
@@ -118,6 +126,14 @@ export function createS3Client(config) {
     throw new TypeError("An S3 client needs an endpoint, a region and a credential.");
   }
   const origin = endpoint.replace(/\/+$/, "");
+  const aws = new AwsClient({
+    accessKeyId: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+    service,
+    retries: 0,
+  });
 
   return {
     /**
@@ -133,28 +149,17 @@ export function createS3Client(config) {
         // `?`, `#` or a space, and the URL pathname setter would otherwise read
         // `?` as the start of the query and `#` as a fragment, so a file named
         // `report#2.txt` would sign and fetch `<prefix>report`. The URL is then
-        // what signRequest canonicalises and returns, so the address signed and
-        // the address sent are the same string.
+        // what aws4fetch canonicalises, so the address signed and the address
+        // sent are the same string.
         url.pathname = `${url.pathname}/${target.key.split("/").map(encodeURIComponent).join("/")}`;
       }
       for (const [name, value] of Object.entries(target.query ?? {})) {
         url.searchParams.set(name, value);
       }
-      // The signature covers the canonical form, so this is the URL that is
-      // sent: signing one address and fetching another is SignatureDoesNotMatch.
-      const signed = await signRequest({
-        method,
-        url: url.toString(),
-        credentials,
-        region,
-        service,
-        headers: target.headers ?? {},
-        body: target.body ?? "",
-      });
-      // The body is sent exactly as it was hashed: a `Uint8Array` is copied
+      // The body is sent exactly as it was signed: a `Uint8Array` is copied
       // into a plain-ArrayBuffer view (the bytes themselves, for a binary
       // upload), a string is text, and an absent body is absent. Sending
-      // anything other than the hashed bytes is SignatureDoesNotMatch.
+      // anything other than the signed bytes is SignatureDoesNotMatch.
       /** @type {string|Uint8Array<ArrayBuffer>|undefined} */
       let body;
       if (target.body === undefined || target.body === "") {
@@ -165,11 +170,12 @@ export function createS3Client(config) {
         body = new Uint8Array(target.body.byteLength);
         body.set(target.body);
       }
-      const response = await fetchImpl(signed.url, {
+      const signed = await aws.sign(url.toString(), {
         method: method.toUpperCase(),
-        headers: signed.headers,
+        headers: target.headers ?? {},
         body,
       });
+      const response = await fetchImpl(signed);
       return { status: response.status, headers: response.headers, text: await response.text() };
     },
   };
@@ -201,12 +207,15 @@ export async function provisionBucket(client, config) {
     ok("create the bucket", created);
   }
 
-  const versioning = ok("enable bucket versioning", await client.send("PUT", {
-    bucket,
-    query: { versioning: "" },
-    headers: { "content-type": "application/xml" },
-    body: "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
-  }));
+  const versioning = ok(
+    "enable bucket versioning",
+    await client.send("PUT", {
+      bucket,
+      query: { versioning: "" },
+      headers: { "content-type": "application/xml" },
+      body: "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+    }),
+  );
 
   // S3 refuses a lifecycle body without a Content-MD5, so it is computed here
   // rather than left to the caller to remember.
@@ -218,12 +227,15 @@ export async function provisionBucket(client, config) {
     `<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>` +
     `</Rule></LifecycleConfiguration>`;
   const md5 = await contentMd5(lifecycleBody);
-  const lifecycle = ok("set the hidden-version lifecycle rule", await client.send("PUT", {
-    bucket,
-    query: { lifecycle: "" },
-    headers: { "content-type": "application/xml", "content-md5": md5 },
-    body: lifecycleBody,
-  }));
+  const lifecycle = ok(
+    "set the hidden-version lifecycle rule",
+    await client.send("PUT", {
+      bucket,
+      query: { lifecycle: "" },
+      headers: { "content-type": "application/xml", "content-md5": md5 },
+      body: lifecycleBody,
+    }),
+  );
 
   let notification = null;
   if (notificationQueueArn) {
@@ -232,12 +244,15 @@ export async function provisionBucket(client, config) {
       `<Queue>${notificationQueueArn}</Queue>` +
       `<Event>s3:ObjectCreated:*</Event><Event>s3:ObjectRemoved:*</Event>` +
       `</QueueConfiguration></NotificationConfiguration>`;
-    notification = ok("set the bucket event notifications", await client.send("PUT", {
-      bucket,
-      query: { notification: "" },
-      headers: { "content-type": "application/xml" },
-      body: notificationBody,
-    }));
+    notification = ok(
+      "set the bucket event notifications",
+      await client.send("PUT", {
+        bucket,
+        query: { notification: "" },
+        headers: { "content-type": "application/xml" },
+        body: notificationBody,
+      }),
+    );
   }
 
   return { versioning, lifecycle, notification };
@@ -261,14 +276,17 @@ export async function contentMd5(text) {
   view.setUint32(padded.length - 4, Math.floor(bitLength / 0x100000000), true);
 
   /** @type {Int32Array} */
-  const state = new Int32Array([
-    0x67452301, -0x10325477, -0x67452302, 0x10325476,
-  ]);
+  const state = new Int32Array([0x67452301, -0x10325477, -0x67452302, 0x10325476]);
   const shifts = [
-    [7, 12, 17, 22], [5, 9, 14, 20], [4, 11, 16, 23], [6, 10, 15, 21],
+    [7, 12, 17, 22],
+    [5, 9, 14, 20],
+    [4, 11, 16, 23],
+    [6, 10, 15, 21],
   ];
-  const table = Array.from({ length: 64 }, (_, i) =>
-    Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) | 0);
+  const table = Array.from(
+    { length: 64 },
+    (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) | 0,
+  );
 
   for (let offset = 0; offset < padded.length; offset += 64) {
     /** @type {Int32Array} */
@@ -334,19 +352,26 @@ export async function contentMd5(text) {
  * @param {{bucket: string}} config
  */
 export async function readBucketConfig(client, config) {
-  const versioning = ok("read bucket versioning", await client.send("GET", {
-    bucket: config.bucket,
-    query: { versioning: "" },
-  }));
+  const versioning = ok(
+    "read bucket versioning",
+    await client.send("GET", {
+      bucket: config.bucket,
+      query: { versioning: "" },
+    }),
+  );
   const lifecycle = await client.send("GET", { bucket: config.bucket, query: { lifecycle: "" } });
-  const notification = await client.send("GET", { bucket: config.bucket, query: { notification: "" } });
+  const notification = await client.send("GET", {
+    bucket: config.bucket,
+    query: { notification: "" },
+  });
   return {
     versioning: unescapeXml(tagValue(versioning.text, "Status") ?? ""),
     lifecycleDays: Number(tagValue(lifecycle.text, "NoncurrentDays") ?? ""),
     lifecycleDaysKnown: lifecycle.status === 200,
     notificationArn: unescapeXml(tagValue(notification.text, "Queue") ?? ""),
-    notificationEvents: [...notification.text.matchAll(/<Event>([^<]*)<\/Event>/g)]
-      .map((match) => match[1]),
+    notificationEvents: [...notification.text.matchAll(/<Event>([^<]*)<\/Event>/g)].map(
+      (match) => match[1],
+    ),
   };
 }
 

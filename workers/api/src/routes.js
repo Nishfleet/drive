@@ -11,13 +11,8 @@ import {
   requestDeviceCodeRoute,
   revokeDeviceTokenRoute,
 } from "./device-routes.js";
-import {
-  listKeysRoute,
-  mintKeyRoute,
-  revokeKeyRoute,
-  storageListRoute,
-} from "./key-routes.js";
 import { storageEventsRoute } from "./event-routes.js";
+import { listKeysRoute, mintKeyRoute, revokeKeyRoute, storageListRoute } from "./key-routes.js";
 
 /**
  * The auth rules a route may carry. The account gate is deny by default:

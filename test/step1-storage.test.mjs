@@ -35,25 +35,26 @@
 //   DRIVE_STANDIN_EVENT_TOKEN   the shared token the bucket sends
 //   DRIVE_STANDIN_ENGINE        force docker or podman
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { spawnSync, spawn } from "node:child_process";
 import { platform } from "node:os";
+import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { dispatch } from "../workers/api/src/index.js";
-import { createMemoryStore } from "../workers/api/src/keystore.js";
-import { createS3KeyProvider, policyForScope } from "../workers/api/src/s3-keys.js";
 import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "../workers/api/src/keyprovider.js";
+import { createMemoryStore } from "../workers/api/src/keystore.js";
 import {
   createS3Client,
   parseListVersions,
   provisionBucket,
   readBucketConfig,
 } from "../workers/api/src/s3.js";
+import { createS3KeyProvider, policyForScope } from "../workers/api/src/s3-keys.js";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
 // images were taken down at the end of 2025 and its GitHub repo is archived;
@@ -69,7 +70,8 @@ const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 8743);
 // thing for gitleaks to read, and this one only ever addresses this test's own
 // throwaway container. MinIO refuses a root password shorter than 8 characters,
 // which is why the VPS's `tests3` rclone pair (6) cannot be a stand-in root.
-const ROOT_ACCESS_KEY = process.env.DRIVE_STANDIN_ACCESS_KEY ?? `drive-standin-${randomBytes(6).toString("hex")}`;
+const ROOT_ACCESS_KEY =
+  process.env.DRIVE_STANDIN_ACCESS_KEY ?? `drive-standin-${randomBytes(6).toString("hex")}`;
 const ROOT_SECRET_KEY = process.env.DRIVE_STANDIN_SECRET_KEY ?? randomBytes(24).toString("hex");
 // The suffix names the notification target inside MinIO; the ARN below and the
 // MINIO_NOTIFY_WEBHOOK_* variables both use it.
@@ -81,6 +83,7 @@ const CONFIGURED_WEBHOOK = process.env.DRIVE_STANDIN_WEBHOOK_URL ?? null;
 // credential above; it is what the Worker's POST /v1/events demands.
 const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? randomBytes(24).toString("hex");
 
+/** @param {string} text */
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 /** @param {string} bin @param {string[]} args */
@@ -88,6 +91,7 @@ function runs(bin, args) {
   return spawnSync(bin, args, { stdio: "ignore" }).status === 0;
 }
 
+/** @returns {string|null} */
 function containerEngine() {
   const forced = process.env.DRIVE_STANDIN_ENGINE;
   if (forced) {
@@ -101,19 +105,32 @@ function containerEngine() {
   return null;
 }
 
+/** @returns {Promise<number>} */
 async function freePort() {
   const server = createNetServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  assert.ok(
+    address !== null && typeof address !== "string",
+    "the ephemeral listener has a TCP port",
+  );
+  const { port } = address;
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
 
-async function waitForHealth(endpoint, seconds, t) {
+/**
+ * @param {string} endpoint
+ * @param {number} seconds
+ * @param {import("node:test").TestContext} [_t]
+ */
+async function waitForHealth(endpoint, seconds, _t) {
   const deadline = Date.now() + seconds * 1000;
   for (;;) {
     try {
-      const response = await fetch(`${endpoint}/minio/health/live`, { signal: AbortSignal.timeout(2000) });
+      const response = await fetch(`${endpoint}/minio/health/live`, {
+        signal: AbortSignal.timeout(2000),
+      });
       if (response.ok) {
         return;
       }
@@ -121,7 +138,9 @@ async function waitForHealth(endpoint, seconds, t) {
       // still starting
     }
     if (Date.now() > deadline) {
-      throw new Error(`the S3 stand-in at ${endpoint} never answered /minio/health/live within ${seconds}s`);
+      throw new Error(
+        `the S3 stand-in at ${endpoint} never answered /minio/health/live within ${seconds}s`,
+      );
     }
     await sleep(500);
   }
@@ -135,6 +154,7 @@ async function waitForHealth(endpoint, seconds, t) {
  * the container through the engine's own environment (`-e NAME` with no value)
  * rather than through argv, so no credential is ever on a command line.
  * @param {{webhookUrl: string}} config
+ * @param {import("node:test").TestContext} t
  */
 async function startStandin(config, t) {
   if (CONFIGURED_ENDPOINT) {
@@ -155,24 +175,47 @@ async function startStandin(config, t) {
   const volume = `${name}-data`;
   spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
   spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
-  const child = spawn(engine, [
-    "run", "-d", "--name", name, "--user", "0", "--network", "host",
-    "-e", "MINIO_ROOT_USER", "-e", "MINIO_ROOT_PASSWORD",
-    "-e", `MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`,
-    "-e", `MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`,
-    "-e", `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`,
-    "-v", `${volume}:/data`, IMAGE, "server", "/data", "--address", `:${PORT}`,
-  ], {
-    stdio: ["ignore", "ignore", "pipe"],
-    env: {
-      ...process.env,
-      MINIO_ROOT_USER: ROOT_ACCESS_KEY,
-      MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
-      [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
-      [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: config.webhookUrl,
-      [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
+  const child = spawn(
+    engine,
+    [
+      "run",
+      "-d",
+      "--name",
+      name,
+      "--user",
+      "0",
+      "--network",
+      "host",
+      "-e",
+      "MINIO_ROOT_USER",
+      "-e",
+      "MINIO_ROOT_PASSWORD",
+      "-e",
+      `MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`,
+      "-e",
+      `MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`,
+      "-e",
+      `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`,
+      "-v",
+      `${volume}:/data`,
+      IMAGE,
+      "server",
+      "/data",
+      "--address",
+      `:${PORT}`,
+    ],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        MINIO_ROOT_USER: ROOT_ACCESS_KEY,
+        MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
+        [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
+        [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: config.webhookUrl,
+        [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
+      },
     },
-  });
+  );
   // Clean up the container and its volume even if the health check
   // fails: a crashed stand-in should not leak resources on the
   // runner, and a failure here is the failure to prove, not a pass.
@@ -181,7 +224,9 @@ async function startStandin(config, t) {
     spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
   });
   let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
   const status = await new Promise((resolve) => child.once("exit", (code) => resolve(code)));
   if (status !== 0) {
     throw new Error(`\`${engine} run\` exited ${status}: ${stderr}`);
@@ -199,10 +244,13 @@ async function startStandin(config, t) {
  * @param {URL} webhookUrl
  */
 async function startEventReceiver(webhookUrl) {
+  /** @type {Array<{status: number, body: string}>} */
   const answers = [];
   const server = createServer((request, response) => {
     let body = "";
-    request.on("data", (chunk) => { body += chunk; });
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
     request.on("end", async () => {
       const answer = await dispatch(
         new Request("https://api.test/v1/events", {
@@ -221,44 +269,38 @@ async function startEventReceiver(webhookUrl) {
       response.end();
     });
   });
-  await new Promise((resolve) => server.listen(Number(webhookUrl.port), webhookUrl.hostname, resolve));
+  await new Promise((resolve) => {
+    server.listen(Number(webhookUrl.port), webhookUrl.hostname, () => resolve(undefined));
+  });
   return { answers, stop: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-/** Walk the device flow over the real registry and return the signed-in device. */
+/**
+ * Walk the device flow on the store the Worker uses and return the signed-in
+ * device. Approval is the store's own (workers/api/test/keystore.test.js): the
+ * HTTP half of sign-in is not this issue's proof, and after main's account
+ * gate a request to `/v1/device/approve` needs a session this test does not
+ * mint.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} name
+ */
 async function signIn(store, name) {
-  const context = (account) => ({ env: {}, db: null, store, account, now: () => 0 });
-  const codeAnswer = await dispatch(
-    new Request("https://api.test/v1/device/code", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
-    }),
-    context(null),
+  const code = await store.requestDeviceCode({ name });
+  await store.approveDeviceCode(code.userCode);
+  const poll = await store.pollDeviceCode(code.deviceCode);
+  assert.equal(poll.status, "approved", "the device sign-in must be approved");
+  const approved = /** @type {{account: {id: string}, deviceToken: string}} */ (
+    /** @type {unknown} */ (poll)
   );
-  const code = await codeAnswer.json();
-  await dispatch(
-    new Request("https://api.test/v1/device/approve", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `user_code=${encodeURIComponent(code.userCode)}`,
-    }),
-    context(null),
-  );
-  const tokenAnswer = await dispatch(
-    new Request("https://api.test/v1/device/token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ device_code: code.deviceCode }),
-    }),
-    context(null),
-  );
-  const token = await tokenAnswer.json();
-  assert.equal(token.status, "approved", "the device sign-in must be approved");
-  return { token: token.deviceToken, account: token.account };
+  return { token: approved.deviceToken, account: approved.account };
 }
 
-/** Mint a key through the Worker's own route, the way a device does. */
+/**
+ * Mint a key through the Worker's own route, the way a device does.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} deviceToken
+ * @param {{kind?: string, name?: string}} request
+ */
 async function mintKey(store, deviceToken, request) {
   const response = await dispatch(
     new Request("https://api.test/v1/keys", {
@@ -275,6 +317,10 @@ async function mintKey(store, deviceToken, request) {
   return response.json();
 }
 
+/**
+ * @param {string} endpoint
+ * @param {{accessKeyId: string, secret: string, sessionToken?: string|null}} minted
+ */
 function s3For(endpoint, minted) {
   return createS3Client({
     endpoint,
@@ -282,12 +328,23 @@ function s3For(endpoint, minted) {
     credentials: {
       accessKeyId: minted.accessKeyId,
       secretAccessKey: minted.secret,
-      sessionToken: minted.sessionToken,
+      sessionToken: minted.sessionToken ?? undefined,
     },
   });
 }
 
+/** @param {{text: string}} response */
 const accessDenied = (response) => response.text.match(/<Code>([^<]*)</)?.[1];
+
+test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
+  assert.equal(
+    existsSync(new URL("../workers/api/src/sigv4.js", import.meta.url)),
+    false,
+    "workers/api/src/sigv4.js was replaced by aws4fetch",
+  );
+  const s3 = readFileSync(new URL("../workers/api/src/s3.js", import.meta.url), "utf8");
+  assert.match(s3, /from "aws4fetch"/);
+});
 
 test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event", async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
@@ -302,7 +359,9 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
   const standin = await startStandin({ webhookUrl: webhookUrl.toString() }, t);
   if (standin === null) {
-    t.diagnostic("no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT, so there is no stand-in to prove against");
+    t.diagnostic(
+      "no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT, so there is no stand-in to prove against",
+    );
     return t.skip("no container engine for the S3 stand-in");
   }
   const endpoint = standin.endpoint;
@@ -317,7 +376,9 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     notificationQueueArn: NOTIFICATION_ARN,
     hiddenVersionDays: 1,
   });
-  t.diagnostic(`provisioned ${BUCKET} on ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}`);
+  t.diagnostic(
+    `provisioned ${BUCKET} on ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}`,
+  );
 
   const keyStore = createMemoryStore({
     keyProvider: createS3KeyProvider({
@@ -331,86 +392,144 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
   const logMock = t.mock.method(console, "log");
 
-  await t.test("the bucket carries versioning, the hidden-version rule and the worker's event target", async () => {
-    const config = await readBucketConfig(root, { bucket: BUCKET });
-    t.diagnostic(`bucket config: ${JSON.stringify(config)}`);
-    assert.equal(config.versioning, "Enabled", "the bucket must have versioning on");
-    assert.equal(config.lifecycleDaysKnown, true, "the hidden-version lifecycle rule must be readable back");
-    assert.equal(config.lifecycleDays, 1, "hidden versions are kept one day");
-    assert.equal(config.notificationArn, NOTIFICATION_ARN, "the bucket must notify the worker's target");
-    assert.ok(config.notificationEvents.includes("s3:ObjectCreated:*"), "a save must be in the notification set");
-    assert.ok(config.notificationEvents.includes("s3:ObjectRemoved:*"), "a delete must be in the notification set");
-  });
+  await t.test(
+    "the bucket carries versioning, the hidden-version rule and the worker's event target",
+    async () => {
+      const config = await readBucketConfig(root, { bucket: BUCKET });
+      t.diagnostic(`bucket config: ${JSON.stringify(config)}`);
+      assert.equal(config.versioning, "Enabled", "the bucket must have versioning on");
+      assert.equal(
+        config.lifecycleDaysKnown,
+        true,
+        "the hidden-version lifecycle rule must be readable back",
+      );
+      assert.equal(config.lifecycleDays, 1, "hidden versions are kept one day");
+      assert.equal(
+        config.notificationArn,
+        NOTIFICATION_ARN,
+        "the bucket must notify the worker's target",
+      );
+      assert.ok(
+        config.notificationEvents.includes("s3:ObjectCreated:*"),
+        "a save must be in the notification set",
+      );
+      assert.ok(
+        config.notificationEvents.includes("s3:ObjectRemoved:*"),
+        "a delete must be in the notification set",
+      );
+    },
+  );
 
-  await t.test("a delete leaves a hidden version and the restore brings back the same checksum", async () => {
-    const owner = await signIn(keyStore, "proof-owner");
-    const deviceKey = await mintKey(keyStore, owner.token, { kind: "device", name: "proof-laptop" });
-    const agentKey = await mintKey(keyStore, owner.token, { kind: "agent", name: "proof-agent" });
-    t.diagnostic(`minted device ${deviceKey.keyId} (${deviceKey.accessKeyId}) and agent ${agentKey.keyId} (${agentKey.accessKeyId}) for ${owner.account.id}`);
-    assert.ok(deviceKey.capabilities.includes("delete"), "a device key can delete");
-    assert.ok(!agentKey.capabilities.includes("delete"), "an agent key cannot delete");
+  await t.test(
+    "a delete leaves a hidden version and the restore brings back the same checksum",
+    async () => {
+      const owner = await signIn(keyStore, "proof-owner");
+      const deviceKey = await mintKey(keyStore, owner.token, {
+        kind: "device",
+        name: "proof-laptop",
+      });
+      const agentKey = await mintKey(keyStore, owner.token, { kind: "agent", name: "proof-agent" });
+      t.diagnostic(
+        `minted device ${deviceKey.keyId} (${deviceKey.accessKeyId}) and agent ${agentKey.keyId} (${agentKey.accessKeyId}) for ${owner.account.id}`,
+      );
+      assert.ok(deviceKey.capabilities.includes("delete"), "a device key can delete");
+      assert.ok(!agentKey.capabilities.includes("delete"), "an agent key cannot delete");
 
-    const device = s3For(endpoint, deviceKey);
-    const agent = s3For(endpoint, agentKey);
-    const key = `${deviceKey.prefix}report.txt`;
-    const first = "drive step 1 payload\n";
-    const second = "drive step 1 payload, edited\n";
+      const device = s3For(endpoint, deviceKey);
+      const agent = s3For(endpoint, agentKey);
+      const key = `${deviceKey.prefix}report.txt`;
+      const first = "drive step 1 payload\n";
+      const second = "drive step 1 payload, edited\n";
 
-    const savedAt = new Date().toISOString();
-    const wrote = await device.send("PUT", {
-      bucket: BUCKET, key, body: first, headers: { "content-type": "text/plain" },
-    });
-    assert.equal(wrote.status, 200, `the first save must succeed: ${wrote.text}`);
-    t.diagnostic(`first save ${savedAt}: version ${wrote.headers.get("x-amz-version-id")} etag ${wrote.headers.get("etag")}`);
+      const savedAt = new Date().toISOString();
+      const wrote = await device.send("PUT", {
+        bucket: BUCKET,
+        key,
+        body: first,
+        headers: { "content-type": "text/plain" },
+      });
+      assert.equal(wrote.status, 200, `the first save must succeed: ${wrote.text}`);
+      t.diagnostic(
+        `first save ${savedAt}: version ${wrote.headers.get("x-amz-version-id")} etag ${wrote.headers.get("etag")}`,
+      );
 
-    const edited = await device.send("PUT", {
-      bucket: BUCKET, key, body: second, headers: { "content-type": "text/plain" },
-    });
-    assert.equal(edited.status, 200, `the edit must succeed: ${edited.text}`);
-    const secondVersion = edited.headers.get("x-amz-version-id");
-    const secondEtag = edited.headers.get("etag");
-    t.diagnostic(`edit ${new Date().toISOString()}: version ${secondVersion} etag ${secondEtag}`);
+      const edited = await device.send("PUT", {
+        bucket: BUCKET,
+        key,
+        body: second,
+        headers: { "content-type": "text/plain" },
+      });
+      assert.equal(edited.status, 200, `the edit must succeed: ${edited.text}`);
+      const secondVersion = edited.headers.get("x-amz-version-id");
+      const secondEtag = edited.headers.get("etag");
+      t.diagnostic(`edit ${new Date().toISOString()}: version ${secondVersion} etag ${secondEtag}`);
 
-    // The agent key's delete is refused by storage, not by the api: the key
-    // carries no `s3:DeleteObject`.
-    const agentDelete = await agent.send("DELETE", { bucket: BUCKET, key });
-    assert.equal(agentDelete.status, 403, "an agent key's delete must be refused by storage");
-    assert.equal(accessDenied(agentDelete), "AccessDenied", "the refusal must be the endpoint's AccessDenied");
-    t.diagnostic(`agent delete refused ${new Date().toISOString()}: 403 ${accessDenied(agentDelete)}`);
+      // The agent key's delete is refused by storage, not by the api: the key
+      // carries no `s3:DeleteObject`.
+      const agentDelete = await agent.send("DELETE", { bucket: BUCKET, key });
+      assert.equal(agentDelete.status, 403, "an agent key's delete must be refused by storage");
+      assert.equal(
+        accessDenied(agentDelete),
+        "AccessDenied",
+        "the refusal must be the endpoint's AccessDenied",
+      );
+      t.diagnostic(
+        `agent delete refused ${new Date().toISOString()}: 403 ${accessDenied(agentDelete)}`,
+      );
 
-    // The device key deletes. On a versioned bucket that leaves a delete
-    // marker: the file is hidden, not gone.
-    const deleted = await device.send("DELETE", { bucket: BUCKET, key });
-    assert.equal(deleted.status, 204, `the device delete must succeed: ${deleted.text}`);
-    const markerVersion = deleted.headers.get("x-amz-version-id");
-    t.diagnostic(`device delete ${new Date().toISOString()}: delete-marker version ${markerVersion}`);
+      // The device key deletes. On a versioned bucket that leaves a delete
+      // marker: the file is hidden, not gone.
+      const deleted = await device.send("DELETE", { bucket: BUCKET, key });
+      assert.equal(deleted.status, 204, `the device delete must succeed: ${deleted.text}`);
+      const markerVersion = deleted.headers.get("x-amz-version-id");
+      t.diagnostic(
+        `device delete ${new Date().toISOString()}: delete-marker version ${markerVersion}`,
+      );
 
-    const hidden = await device.send("GET", { bucket: BUCKET, key });
-    assert.equal(hidden.status, 404, "a deleted file must read as gone");
+      const hidden = await device.send("GET", { bucket: BUCKET, key });
+      assert.equal(hidden.status, 404, "a deleted file must read as gone");
 
-    const listing = await device.send("GET", {
-      bucket: BUCKET, query: { versions: "", prefix: deviceKey.prefix },
-    });
-    assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
-    const versions = parseListVersions(listing.text, deviceKey.prefix);
-    t.diagnostic(`versions after the delete: ${JSON.stringify(versions.map((v) => ({ version: v.versionId.slice(0, 8), deleteMarker: v.deleteMarker, latest: v.latest, size: v.sizeBytes, at: v.lastModified })))}`);
-    assert.equal(versions.length, 3, "two saves and the delete marker");
-    const marker = versions.find((version) => version.deleteMarker && version.versionId === markerVersion);
-    assert.ok(marker, `the delete marker ${markerVersion} must be in the listing`);
-    assert.ok(
-      versions.some((version) => version.versionId === secondVersion && version.deleteMarker === false),
-      "the edited version is still there, hidden behind the marker",
-    );
+      const listing = await device.send("GET", {
+        bucket: BUCKET,
+        query: { versions: "", prefix: deviceKey.prefix },
+      });
+      assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
+      const versions = parseListVersions(listing.text, deviceKey.prefix);
+      t.diagnostic(
+        `versions after the delete: ${JSON.stringify(versions.map((v) => ({ version: v.versionId.slice(0, 8), deleteMarker: v.deleteMarker, latest: v.latest, size: v.sizeBytes, at: v.lastModified })))}`,
+      );
+      assert.equal(versions.length, 3, "two saves and the delete marker");
+      const marker = versions.find(
+        (version) => version.deleteMarker && version.versionId === markerVersion,
+      );
+      assert.ok(marker, `the delete marker ${markerVersion} must be in the listing`);
+      assert.ok(
+        versions.some(
+          (version) => version.versionId === secondVersion && version.deleteMarker === false,
+        ),
+        "the edited version is still there, hidden behind the marker",
+      );
 
-    // Restore: remove the marker, which puts the last save back.
-    const restored = await device.send("DELETE", { bucket: BUCKET, key, query: { versionId: marker.versionId } });
-    assert.equal(restored.status, 204, `removing the marker must succeed: ${restored.text}`);
-    const back = await device.send("GET", { bucket: BUCKET, key });
-    assert.equal(back.status, 200, `the file must come back: ${back.text}`);
-    assert.equal(sha256(back.text), sha256(second), "the restored bytes must be the last save's checksum");
-    assert.equal(back.headers.get("etag"), secondEtag, "and the last save's own ETag");
-    t.diagnostic(`restored ${new Date().toISOString()}: sha256 ${sha256(back.text).slice(0, 16)} etag ${back.headers.get("etag")} (the edit's)`);
-  });
+      // Restore: remove the marker, which puts the last save back.
+      const restored = await device.send("DELETE", {
+        bucket: BUCKET,
+        key,
+        query: { versionId: marker.versionId },
+      });
+      assert.equal(restored.status, 204, `removing the marker must succeed: ${restored.text}`);
+      const back = await device.send("GET", { bucket: BUCKET, key });
+      assert.equal(back.status, 200, `the file must come back: ${back.text}`);
+      assert.equal(
+        sha256(back.text),
+        sha256(second),
+        "the restored bytes must be the last save's checksum",
+      );
+      assert.equal(back.headers.get("etag"), secondEtag, "and the last save's own ETag");
+      t.diagnostic(
+        `restored ${new Date().toISOString()}: sha256 ${sha256(back.text).slice(0, 16)} etag ${back.headers.get("etag")} (the edit's)`,
+      );
+    },
+  );
 
   await t.test("an agent key cannot list, read or write another account's folder", async () => {
     const one = await signIn(keyStore, "account-one");
@@ -418,26 +537,46 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     const agentOne = await mintKey(keyStore, one.token, { kind: "agent", name: "agent-one" });
     const deviceTwo = await mintKey(keyStore, two.token, { kind: "device", name: "laptop-two" });
     assert.notEqual(one.account.id, two.account.id, "the two sign-ins must be two accounts");
-    t.diagnostic(`account one ${one.account.id} -> agent ${agentOne.keyId}; account two ${two.account.id} -> device ${deviceTwo.keyId}`);
+    t.diagnostic(
+      `account one ${one.account.id} -> agent ${agentOne.keyId}; account two ${two.account.id} -> device ${deviceTwo.keyId}`,
+    );
 
     const twoClient = s3For(endpoint, deviceTwo);
     const twoKey = `${deviceTwo.prefix}private.txt`;
-    const placed = await twoClient.send("PUT", { bucket: BUCKET, key: twoKey, body: "not for agents\n" });
+    const placed = await twoClient.send("PUT", {
+      bucket: BUCKET,
+      key: twoKey,
+      body: "not for agents\n",
+    });
     assert.equal(placed.status, 200, `account two's save must succeed: ${placed.text}`);
 
     const oneAgent = s3For(endpoint, agentOne);
-    const own = await oneAgent.send("PUT", { bucket: BUCKET, key: `${agentOne.prefix}own.txt`, body: "mine\n" });
+    const own = await oneAgent.send("PUT", {
+      bucket: BUCKET,
+      key: `${agentOne.prefix}own.txt`,
+      body: "mine\n",
+    });
     assert.equal(own.status, 200, `the agent's own write must succeed: ${own.text}`);
-    const ownList = await oneAgent.send("GET", { bucket: BUCKET, query: { "list-type": "2", prefix: agentOne.prefix } });
+    const ownList = await oneAgent.send("GET", {
+      bucket: BUCKET,
+      query: { "list-type": "2", prefix: agentOne.prefix },
+    });
     assert.equal(ownList.status, 200, `the agent's own listing must succeed: ${ownList.text}`);
 
-    const foreignList = await oneAgent.send("GET", { bucket: BUCKET, query: { "list-type": "2", prefix: deviceTwo.prefix } });
+    const foreignList = await oneAgent.send("GET", {
+      bucket: BUCKET,
+      query: { "list-type": "2", prefix: deviceTwo.prefix },
+    });
     assert.equal(foreignList.status, 403, "listing another account's folder must be refused");
     assert.equal(accessDenied(foreignList), "AccessDenied", "the refusal must be AccessDenied");
     const foreignRead = await oneAgent.send("GET", { bucket: BUCKET, key: twoKey });
     assert.equal(foreignRead.status, 403, "reading another account's file must be refused");
     assert.equal(accessDenied(foreignRead), "AccessDenied", "the refusal must be AccessDenied");
-    const foreignWrite = await oneAgent.send("PUT", { bucket: BUCKET, key: `${deviceTwo.prefix}intruder.txt`, body: "no\n" });
+    const foreignWrite = await oneAgent.send("PUT", {
+      bucket: BUCKET,
+      key: `${deviceTwo.prefix}intruder.txt`,
+      body: "no\n",
+    });
     assert.equal(foreignWrite.status, 403, "writing into another account's folder must be refused");
     t.diagnostic(
       `agent ${agentOne.keyId} against ${two.account.id}/: ` +
@@ -447,7 +586,10 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
   await t.test("a saved file produces an event that reaches the api Worker", async () => {
     const account = await signIn(keyStore, "event-account");
-    const deviceKey = await mintKey(keyStore, account.token, { kind: "device", name: "event-laptop" });
+    const deviceKey = await mintKey(keyStore, account.token, {
+      kind: "device",
+      name: "event-laptop",
+    });
     const client = s3For(endpoint, deviceKey);
     const key = `${deviceKey.prefix}notified.txt`;
     const savedAt = new Date().toISOString();
@@ -459,9 +601,11 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     let line = null;
     for (;;) {
       const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
-      line = lines.find(
-        (candidate) => candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
-      ) ?? null;
+      line =
+        lines.find(
+          (candidate) =>
+            candidate.includes("storage event s3:ObjectCreated:Put") && candidate.includes(key),
+        ) ?? null;
       if (line !== null) {
         break;
       }
@@ -476,67 +620,86 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
 
     const forThisSave = receiver.answers.find((answer) => answer.body.includes(key));
     assert.ok(forThisSave, `an answer naming ${key} must have reached the worker's route`);
-    assert.equal(forThisSave.status, 202, "the event route accepts a notification carrying the bucket's token");
+    assert.equal(
+      forThisSave.status,
+      202,
+      "the event route accepts a notification carrying the bucket's token",
+    );
     const accepted = JSON.parse(forThisSave.body);
     assert.ok(accepted.received >= 1, "the save arrives as at least one event");
-    const event = accepted.events.find((candidate) => candidate.key === key);
+    const event = accepted.events.find(
+      /** @param {{key: string}} candidate */
+      (candidate) => candidate.key === key,
+    );
     assert.ok(event, `the event names ${key}`);
     assert.equal(event.bucket, BUCKET, "the event names the bucket");
     assert.ok(event.versionId, "the event carries the saved version's id");
-    t.diagnostic(`event at ${event.eventTime}: ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId}`);
-  });
-
-  await t.test("a key with a space, a hash and a question mark round-trips and its event decodes", async () => {
-    // The three places a real Finder filename breaks a naive S3 call: the URL
-    // (`?` starts the query, `#` starts the fragment, a space is not a legal
-    // path character), the request body (a binary save is bytes, not text), and
-    // the notification (S3 form-encodes a space as `+`). The three are one
-    // proof because the same save has to survive all of them.
-    const account = await signIn(keyStore, "awkward-name-account");
-    const deviceKey = await mintKey(keyStore, account.token, { kind: "device", name: "awkward-laptop" });
-    const client = s3For(endpoint, deviceKey);
-    const key = `${deviceKey.prefix}q3 report#2?.bin`;
-    const bytes = new Uint8Array([0, 1, 2, 250, 251, 252, 253, 254, 255]);
-
-    const savedAt = new Date().toISOString();
-    const saved = await client.send("PUT", {
-      bucket: BUCKET,
-      key,
-      body: bytes,
-      headers: { "content-type": "application/octet-stream" },
-    });
-    assert.equal(saved.status, 200, `a binary save under an awkward name must succeed: ${saved.text}`);
-    t.diagnostic(`awkward save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
-
-    const back = await client.send("GET", { bucket: BUCKET, key });
-    assert.equal(back.status, 200, `the awkward key must read back: ${back.text}`);
-    // The ETag of a single-part save is the MD5 of exactly the bytes stored, so
-    // this is the binary round-trip check: the bytes that went out are the
-    // bytes that came back, under a name the URL had to encode.
-    assert.equal(
-      (back.headers.get("etag") ?? "").replace(/"/g, ""),
-      createHash("md5").update(bytes).digest("hex"),
-      "the stored bytes must be the bytes that were sent",
+    t.diagnostic(
+      `event at ${event.eventTime}: ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId}`,
     );
-
-    // Poll receiver.answers (the Worker's own route) rather than the
-    // log mock: the route is the contract, and a logger swap breaks
-    // this proof, not a silent timeout.
-    const deadline = Date.now() + 30_000;
-    let answer = null;
-    for (;;) {
-      answer = receiver.answers.find((a) => a.body.includes(key)) ?? null;
-      if (answer !== null) {
-        break;
-      }
-      if (Date.now() > deadline) {
-        t.diagnostic(`receiver answers after 30s: ${JSON.stringify(receiver.answers)}`);
-        throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
-      }
-      await sleep(500);
-    }
-    t.diagnostic(`receiver answer: ${JSON.stringify(answer.body)}`);
   });
+
+  await t.test(
+    "a key with a space, a hash and a question mark round-trips and its event decodes",
+    async () => {
+      // The three places a real Finder filename breaks a naive S3 call: the URL
+      // (`?` starts the query, `#` starts the fragment, a space is not a legal
+      // path character), the request body (a binary save is bytes, not text), and
+      // the notification (S3 form-encodes a space as `+`). The three are one
+      // proof because the same save has to survive all of them.
+      const account = await signIn(keyStore, "awkward-name-account");
+      const deviceKey = await mintKey(keyStore, account.token, {
+        kind: "device",
+        name: "awkward-laptop",
+      });
+      const client = s3For(endpoint, deviceKey);
+      const key = `${deviceKey.prefix}q3 report#2?.bin`;
+      const bytes = new Uint8Array([0, 1, 2, 250, 251, 252, 253, 254, 255]);
+
+      const savedAt = new Date().toISOString();
+      const saved = await client.send("PUT", {
+        bucket: BUCKET,
+        key,
+        body: bytes,
+        headers: { "content-type": "application/octet-stream" },
+      });
+      assert.equal(
+        saved.status,
+        200,
+        `a binary save under an awkward name must succeed: ${saved.text}`,
+      );
+      t.diagnostic(`awkward save ${savedAt}: version ${saved.headers.get("x-amz-version-id")}`);
+
+      const back = await client.send("GET", { bucket: BUCKET, key });
+      assert.equal(back.status, 200, `the awkward key must read back: ${back.text}`);
+      // The ETag of a single-part save is the MD5 of exactly the bytes stored, so
+      // this is the binary round-trip check: the bytes that went out are the
+      // bytes that came back, under a name the URL had to encode.
+      assert.equal(
+        (back.headers.get("etag") ?? "").replace(/"/g, ""),
+        createHash("md5").update(bytes).digest("hex"),
+        "the stored bytes must be the bytes that were sent",
+      );
+
+      // Poll receiver.answers (the Worker's own route) rather than the
+      // log mock: the route is the contract, and a logger swap breaks
+      // this proof, not a silent timeout.
+      const deadline = Date.now() + 30_000;
+      let answer = null;
+      for (;;) {
+        answer = receiver.answers.find((a) => a.body.includes(key)) ?? null;
+        if (answer !== null) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          t.diagnostic(`receiver answers after 30s: ${JSON.stringify(receiver.answers)}`);
+          throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
+        }
+        await sleep(500);
+      }
+      t.diagnostic(`receiver answer: ${JSON.stringify(answer.body)}`);
+    },
+  );
 
   await t.test("the session policy is derived from the one capabilities table", () => {
     // A change to the table that quietly widened an agent key would fail here
@@ -552,12 +715,19 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
         `${kind}: a policy delete must match the one capabilities table`,
       );
       assert.ok(
-        policy.Statement.some((statement) =>
-          statement.Resource.includes(`arn:aws:s3:::${BUCKET}/${scope.prefix}*`)),
+        policy.Statement.some((statement) => {
+          const resource = statement.Resource;
+          return (
+            Array.isArray(resource) && resource.includes(`arn:aws:s3:::${BUCKET}/${scope.prefix}*`)
+          );
+        }),
         `${kind}: every statement must stay inside the key's own prefix`,
       );
       if (!scope.capabilities.includes("list")) {
-        assert.ok(!actions.includes("s3:ListBucket"), `${kind}: no list capability, no bucket listing`);
+        assert.ok(
+          !actions.includes("s3:ListBucket"),
+          `${kind}: no list capability, no bucket listing`,
+        );
       }
     }
   });

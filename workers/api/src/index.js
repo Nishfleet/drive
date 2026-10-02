@@ -340,9 +340,9 @@ function keyProviderFor(env) {
     "STORAGE_MASTER_ACCESS_KEY_ID",
     "STORAGE_MASTER_SECRET_ACCESS_KEY",
   ];
-  const values = names.map((name) => env[name]).filter(
-    (value) => typeof value === "string" && value.length > 0,
-  );
+  const values = names
+    .map((name) => env[name])
+    .filter((value) => typeof value === "string" && value.length > 0);
   if (values.length === 0) {
     return null;
   }

@@ -20,7 +20,7 @@
 // storage API. Withdrawing the credential at the provider is the vendor's key
 // API and lands with iDrive e2 (issue #173).
 
-import { S3Error, createS3Client, ok, tagValue } from "./s3.js";
+import { createS3Client, ok, S3Error, tagValue } from "./s3.js";
 
 /**
  * @typedef {import("./keyprovider.js").Capability} Capability
@@ -85,9 +85,7 @@ export function policyForScope(scope, bucket) {
     // A prefix without its trailing slash would make `u/a*` also match
     // `u/ab/…` — a cross-account widening. scopeFor() always ends the prefix
     // with a slash; this refuses a scope that does not rather than widening.
-    throw new TypeError(
-      `A key prefix must end with "/", got ${JSON.stringify(scope.prefix)}.`,
-    );
+    throw new TypeError(`A key prefix must end with "/", got ${JSON.stringify(scope.prefix)}.`);
   }
   const objectActions = scope.capabilities.flatMap(
     (capability) => OBJECT_ACTIONS_BY_CAPABILITY[capability] ?? [],
@@ -161,7 +159,7 @@ export function createS3KeyProvider(config) {
     masterAccessKeyId,
     masterSecretAccessKey,
     sessionSeconds = 3600,
-    sessionName = "drive-key-${crypto.randomUUID().slice(0, 8)}",
+    sessionName,
     roleArn,
     fetchImpl = fetch,
   } = config;
@@ -197,7 +195,7 @@ export function createS3KeyProvider(config) {
         Action: "AssumeRole",
         Version: "2011-06-15",
         DurationSeconds: String(sessionSeconds),
-        RoleSessionName: sessionName,
+        RoleSessionName: sessionName ?? `drive-key-${crypto.randomUUID().slice(0, 8)}`,
         Policy: JSON.stringify(policy),
         ...(roleArn === undefined || roleArn === "" ? {} : { RoleArn: roleArn }),
       }).toString();

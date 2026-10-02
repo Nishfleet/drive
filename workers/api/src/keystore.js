@@ -210,7 +210,12 @@ export function createMemoryStore(options = {}) {
       if (keyProvider === undefined) {
         // No storage configured: the stand-in credential the api's own storage
         // API knows, and nothing outside the Worker has ever seen.
-        credential = { accessKeyId: newId("ak"), secret: newId("sk"), sessionToken: null, expiresIn: null };
+        credential = {
+          accessKeyId: newId("ak"),
+          secret: newId("sk"),
+          sessionToken: null,
+          expiresIn: null,
+        };
       } else {
         const minted = await keyProvider.mint(scope);
         credential = {

@@ -1,7 +1,7 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dispatch } from "../src/index.js";
+import { test } from "node:test";
 import { parseStorageEvents } from "../src/event-routes.js";
+import { dispatch } from "../src/index.js";
 
 // The event intake is a public route because the caller is the storage server,
 // which holds no device token — so its own refusals are the whole of its
@@ -42,9 +42,14 @@ function call(options = {}) {
         "content-type": "application/json",
         ...(options.authorization === undefined ? {} : { authorization: options.authorization }),
       },
-      body: options.method === "GET" ? undefined : options.body ?? JSON.stringify(ENVELOPE),
+      body: options.method === "GET" ? undefined : (options.body ?? JSON.stringify(ENVELOPE)),
     }),
-    { env: options.env ?? { STORAGE_EVENT_TOKEN: TOKEN }, db: null, store: undefined, now: () => 0 },
+    {
+      env: options.env ?? { STORAGE_EVENT_TOKEN: TOKEN },
+      db: null,
+      store: undefined,
+      now: () => 0,
+    },
   );
 }
 
@@ -59,7 +64,7 @@ test("a missing or wrong bearer token is a 401", async () => {
   assert.equal(missing.status, 401);
   assert.equal(missing.headers.get("www-authenticate"), 'Bearer realm="drive"');
 
-  const wrong = await call({ authorization: "Bearer not-the-token" });
+  const wrong = await call({ authorization: "Bearer wrong" });
   assert.equal(wrong.status, 401);
 });
 

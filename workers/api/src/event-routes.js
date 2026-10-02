@@ -20,8 +20,9 @@
 // deliberately NOT the one user-facing table in src/messages.js. The one gate
 // that table drives, test/messages.test.mjs, covers the table and the shipped
 // page; a bucket reading an XML/`{"error"}` body is not a person.
-import { errorResponse, json } from "./http.js";
+
 import { sha256Hex } from "./db.js";
+import { errorResponse, json } from "./http.js";
 
 /**
  * Constant-time comparison of two hex digests: a plain `===` on a shared
@@ -95,7 +96,10 @@ export function parseStorageEvents(body) {
     if (typeof record !== "object" || record === null) {
       return { error: "A notification record is not an object." };
     }
-    const typed = /** @type {{eventName?: unknown, eventTime?: unknown, s3?: {bucket?: {name?: unknown}, object?: {key?: unknown, versionId?: unknown}}}} */ (record);
+    const typed =
+      /** @type {{eventName?: unknown, eventTime?: unknown, s3?: {bucket?: {name?: unknown}, object?: {key?: unknown, versionId?: unknown}}}} */ (
+        record
+      );
     const eventName = typed.eventName;
     const bucket = typed.s3?.bucket?.name;
     const rawKey = typed.s3?.object?.key;
