@@ -27,10 +27,24 @@ const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.met
   .filter((name) => name.endsWith(".sql"))
   .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
+test("no two migrations create the same table, so the apply order is never ambiguous", () => {
+  /** @type {Map<string, string>} */
+  const created = new Map();
+  for (const name of migrationFiles) {
+    const sql = readFileSync(new URL(`../../migrations/drive/${name}`, import.meta.url), "utf8");
+    for (const match of sql.matchAll(/CREATE TABLE(?: IF NOT EXISTS)?\s+"?([A-Za-z_]\w*)"?/gi)) {
+      const table = match[1];
+      const owner = created.get(table);
+      assert.equal(owner, undefined, `${table} is created by both ${owner} and ${name}`);
+      created.set(table, name);
+    }
+  }
+});
+
 test("the real migrations create billing_pushes and accounts", () => {
   assert.ok(
-    migrationFiles.includes("0010_billing_pushes.sql"),
-    "0010_billing_pushes.sql is missing",
+    migrationFiles.includes("0011_billing_pushes.sql"),
+    "0011_billing_pushes.sql is missing",
   );
   const { sqlite } = makeMeteredDB();
   const tables = sqlite
@@ -62,11 +76,14 @@ test("the real migrations create billing_pushes and accounts", () => {
     .join(",");
   assert.equal(key, "account_id,hour");
   const migration = readFileSync(
-    new URL("../../migrations/drive/0010_billing_pushes.sql", import.meta.url),
+    new URL("../../migrations/drive/0011_billing_pushes.sql", import.meta.url),
     "utf8",
   );
   assert.match(migration, /CREATE TABLE IF NOT EXISTS billing_pushes/);
-  assert.match(migration, /CREATE TABLE IF NOT EXISTS accounts/);
+  // accounts belongs to 0010_accounts_devices.sql. A second CREATE for it here
+  // would be dead when that file runs first and would silently win otherwise,
+  // because both files would share a numeric prefix and the deploy sorts on it.
+  assert.doesNotMatch(migration, /CREATE TABLE IF NOT EXISTS accounts/);
   assert.doesNotMatch(migration, /DROP (TABLE|COLUMN)/i);
 });
 
