@@ -667,7 +667,7 @@ test("the page offers no provider the server cannot complete (drive#180)", async
     // button, and no button words. The label is the module's, not an
     // uppercased method name, so "github" is checked as "GitHub" (drive#180).
     if (!offered) {
-      const button = `Continue with ${SIGNIN_METHOD_LABELS[method]}`;
+      const button = `Continue with ${SIGNIN_METHOD_LABELS[/** @type {keyof typeof SIGNIN_METHOD_LABELS} */ (method)]}`;
       assert.equal(page.includes(button), false, `no ${method} button copy while it is unoffered`);
     }
   }
@@ -679,6 +679,8 @@ test("the page offers no provider the server cannot complete (drive#180)", async
     const read = readSigninRequest(
       method === "email" ? { method, email: "you@example.com" } : { method },
     );
+    assert.equal("error" in read, false, `${method} must not be refused`);
+    assert.ok("method" in read, `${method} stays readable by the endpoint`);
     assert.equal(read.method, method, `${method} stays readable by the endpoint`);
   }
   // The offered list is a subset of the accepted list: the screen offers
@@ -699,7 +701,9 @@ test("the page offers no provider the server cannot complete (drive#180)", async
   for (const method of SIGNIN_METHODS) {
     if (!SIGNIN_OFFERED_METHODS.includes(method)) {
       assert.equal(
-        description.includes(SIGNIN_METHOD_LABELS[method]),
+        description.includes(
+          SIGNIN_METHOD_LABELS[/** @type {keyof typeof SIGNIN_METHOD_LABELS} */ (method)],
+        ),
         false,
         `the meta description must not name ${method} while it is unoffered`,
       );
