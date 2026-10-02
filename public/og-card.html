@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- The share card's source (drive issue #123). public/og.png is rendered
+       from this page, so the next price change is an edit to the sentences
+       below and a re-render, not a redraw. test/og-card.test.mjs reads those
+       strings and fails CI when they drift from src/pricing.js (PRICE), the
+       one price source, the way test/pricing-copy.test.mjs gates the pricing
+       page. This page is noindex: nobody navigates here, it exists so the card
+       is reproducible from the repo.
+
+       Render (1200x630), from the repo root, with the site served so /site.css
+       resolves:
+         python3 -m http.server 8137 --directory public &
+         npx playwright screenshot --viewport-size "1200,630" \
+           http://127.0.0.1:8137/og-card.html public/og.png
+  -->
+  <title>Drive — share card source</title>
+  <meta name="description" content="The 1200x630 share card, rendered from the pricing page's own palette and the one price config so a repriced product moves the card with the page.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+/* The share card: the pricing page's own price statement on a 1200x630
+   canvas, in the page's own palette. Everything but the composition comes
+   from the shared stylesheet (drive #71); this block declares no custom
+   property, so the palette cannot drift from public/site.css. */
+
+html,
+body {
+  width: 1200px;
+  height: 630px;
+}
+
+/* The shared stylesheet resets no margin, and a <p> at 150px would carry a
+   150px margin of its own, so the card zeroes the ones it sets here. This is
+   a rule, not a custom property, so the card still owns no palette token. */
+p {
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 96px;
+}
+
+.wordmark {
+  font-size: 34px;
+  margin-bottom: 28px;
+}
+
+.amount {
+  display: block;
+  font-family: var(--serif);
+  font-size: 150px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.unit {
+  display: block;
+  font-size: 44px;
+  line-height: 1.15;
+  margin-top: 6px;
+}
+
+.ceiling {
+  font-size: 32px;
+  line-height: 1.3;
+  color: var(--ink-soft);
+  margin-top: 30px;
+}
+
+.free {
+  font-size: 32px;
+  line-height: 1.3;
+  color: var(--accent);
+  font-weight: 600;
+  margin-top: 10px;
+}
+  </style>
+</head>
+<body>
+  <span class="wordmark">Drive</span>
+  <p class="amount">2¢</p>
+  <p class="unit">per GB, billed by the minute</p>
+  <p class="ceiling">Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.</p>
+  <p class="free">$1 free every month, no card needed</p>
+</body>
+</html>
