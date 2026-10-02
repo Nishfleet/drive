@@ -32,7 +32,7 @@
   },
   "overrides": [
     {
-      "includes": ["public/files.html", "public/index.html"],
+      "includes": ["public/files.html", "public/index.html", "public/upload.html"],
       "linter": {
         "rules": {
           "complexity": {

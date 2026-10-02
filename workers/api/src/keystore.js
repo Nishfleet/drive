@@ -1,63 +1,41 @@
-// The key store: accounts, signed-in devices, one-time device codes, the
-// per-kind storage keys, and the stand-in object bytes the storage API lists.
+// The key store: the per-kind storage keys and the stand-in object bytes the
+// storage API lists. The device sign-in half (codes, the signed-in approval,
+// and the minted device token) lives in device-signin.js, which is the store
+// that can be backed by D1.
 //
 // Build step 4 (drive#55) needs three things the api Worker did not have yet:
 // a device sign-in flow, one storage key per account and kind (a device key
 // for the mount, an agent key per tool), and an authentication check that
-// refuses a revoked key and a path outside the key's own prefix.
+// refuses a revoked key and a path outside the key's own prefix. The device
+// sign-in flow is delegated; the other two are here.
 //
 // The real store is D1 plus the storage provider's key API (build step 1,
 // drive#2, still parked on the credential decision), so this module is the
 // stand-in the routes and the tests run against: the shapes here are the
-// shapes the D1 tables in docs/build-spec.md already name (`accounts`,
-// `devices`), and swapping it for D1 is a new factory with the same methods,
-// not a route change. Secrets are SHA-256 hashed on the way in and never
-// stored or returned again (docs/build-spec.md, "The B2 secret is shown once
-// to the device, never stored").
+// shapes the D1 tables in docs/build-spec.md already name (`devices`), and
+// swapping it for D1 is a new factory with the same methods, not a route
+// change. Secrets are SHA-256 hashed on the way in and never stored or
+// returned again (docs/build-spec.md, "The B2 secret is shown once to the
+// device, never stored").
 //
 // Nothing here reads a request or a clock of its own: the clock is injected
 // (now) so a device code can be tested as expired without sleeping, and the
 // routes below own the HTTP shape.
 
 import { newId, nowSeconds, sha256Hex } from "./db.js";
+import {
+  createMemoryDeviceSigninStore,
+  DEVICE_CODE_INTERVAL_SECONDS,
+  DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
+} from "./device-signin.js";
 import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor } from "./keyprovider.js";
 
-// How long a device code is good for, and how often the CLI may poll
-// (RFC 8628's device_code and interval). Ten minutes is long enough to find a
-// phone, short enough that a code left on a terminal screen dies.
-export const DEVICE_CODE_TTL_SECONDS = 600;
-export const DEVICE_CODE_INTERVAL_SECONDS = 5;
-
-// The user code a person types on the approval page. The alphabet leaves out
-// vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
-// (so a code read aloud cannot be mistyped into another valid one).
-const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
-const USER_CODE_LENGTH = 8;
-
-/**
- * A random user code, grouped as XXXX-XXXX for reading aloud. The alphabet's
- * 20 letters do not divide 256 evenly, so a byte above the last full group is
- * rejected rather than biased toward the alphabet's low end.
- * @param {() => Uint8Array} randomBytes
- */
-function newUserCode(randomBytes) {
-  const bytes = randomBytes();
-  const limit = Math.floor(256 / USER_CODE_ALPHABET.length) * USER_CODE_ALPHABET.length;
-  let out = "";
-  for (let i = 0; i < USER_CODE_LENGTH; i++) {
-    let byte = bytes[i];
-    while (byte >= limit) {
-      // Reached only when the injected generator returns a high byte; the
-      // platform generator (crypto.getRandomValues) feeds it fresh bytes.
-      byte = randomBytes()[0];
-    }
-    out += USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
-    if (i === 3) {
-      out += "-";
-    }
-  }
-  return out;
-}
+// Kept as keystore re-exports so the one place that named a device-code or
+// device-token window keeps naming it; the values live with the store that
+// enforces them (device-signin.js), which is the store the D1 deployment uses
+// and the only one left — the per-isolate Maps #122 built them over are gone.
+export { DEVICE_CODE_INTERVAL_SECONDS, DEVICE_CODE_TTL_SECONDS, DEVICE_TOKEN_TTL_SECONDS };
 
 /**
  * Constant-time string comparison for two equal-length hex digests. A plain
@@ -79,43 +57,33 @@ function digestsEqual(left, right) {
 }
 
 /**
- * The one account name before a person has one: named for where it signed in.
- * @param {unknown} deviceName
- */
-function accountName(deviceName) {
-  const trimmed = typeof deviceName === "string" ? deviceName.trim() : "";
-  return trimmed.length > 0 ? trimmed : "My drive";
-}
-
-/**
- * The stand-in store. One instance per Worker isolate (src/index.js), the same
- * choice the Web Files page made for its bytes (src/files.js) until the real
- * store lands.
+ * The stand-in key and object store. One instance per Worker isolate
+ * (src/index.js), the same choice the Web Files page made for its bytes
+ * (src/files.js) until the real store lands.
+ *
+ * The device sign-in half is delegated to `options.signin`, so the deployment
+ * chooses the D1 store (device-signin.js `createD1DeviceSigninStore`) and the
+ * tests and a database-less deployment keep the in-memory one. The delegation
+ * is the one call site the two implementations plug into; nothing else in this
+ * module knows which backend is underneath.
+ *
  * `keyProvider` is where a minted key's credential comes from (build step 1,
  * drive#2). With one, the credential is the storage endpoint's own, scoped by
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
   const keyProvider = options.keyProvider;
-  const randomBytes =
-    options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
+  const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
 
-  /** @type {Map<string, {id: string, name: string, email: string|null, createdAt: number}>} */
-  const accounts = new Map();
   /** @type {Map<string, Device>} */
   const devices = new Map();
   /** @type {Map<string, string>} accessKeyId -> device id */
   const byAccessKeyId = new Map();
-  /** @type {Map<string, {accountId: string, name: string, createdAt: number}>} token hash -> device token */
-  const deviceTokens = new Map();
-  /** @type {Map<string, DeviceCode>} */
-  const codes = new Map();
-  /** @type {Map<string, string>} user code -> device code */
-  const userCodes = new Map();
   /** @type {Map<string, Map<string, Uint8Array>>} account id -> full path -> bytes */
   const objects = new Map();
 
@@ -129,71 +97,33 @@ export function createMemoryStore(options = {}) {
     return table;
   }
 
-  /**
-   * @param {string} name
-   * @returns {{id: string, name: string, email: string|null, createdAt: number}}
-   */
-  function createAccount(name) {
-    const account = { id: newId("acct"), name, email: null, createdAt: nowSeconds(now()) };
-    accounts.set(account.id, account);
-    return account;
-  }
-
   return {
-    /** Every account, for the tests and the stand-in's one query. */
-    accounts,
+    /** The stand-in's accounts, for the tests and the stand-in's one query.
+     * The D1 sign-in store has no accounts of its own (the sign-in flow owns
+     * them, src/auth.js), so the map is the in-memory one's only. */
+    accounts: signin.accounts ?? new Map(),
 
     /**
      * Start a device sign-in: a code the CLI polls with and a short code the
      * person types on the approval page. The CLI's `deviceCode` is a secret;
      * the `userCode` is the thing shown to the person.
      * @param {{name?: string}} [request]
+     * @returns {Promise<import("./device-signin.js").DeviceCodeResult>}
      */
-    requestDeviceCode(request = {}) {
-      const deviceCode = newId("dev");
-      const userCode = newUserCode(randomBytes);
-      const code = /** @type {DeviceCode} */ ({
-        deviceCode,
-        userCode,
-        name: accountName(request.name),
-        status: "pending",
-        accountId: null,
-        createdAt: nowSeconds(now()),
-      });
-      codes.set(deviceCode, code);
-      userCodes.set(userCode, deviceCode);
-      return {
-        deviceCode: code.deviceCode,
-        userCode: code.userCode,
-        expiresIn: DEVICE_CODE_TTL_SECONDS,
-        interval: DEVICE_CODE_INTERVAL_SECONDS,
-      };
+    async requestDeviceCode(request = {}) {
+      return signin.requestDeviceCode(request);
     },
 
     /**
-     * The person approved the code on the web page: make the account (there is
-     * no email sign-in yet, build step 4 owns only the device half) and mark
-     * the code ready. Approving twice is a no-op once the code is approved.
+     * A signed-in person approved the code on the web page: attach their
+     * account and mark the code ready. Approving twice is a no-op once the
+     * account is attached.
      * @param {string} userCode
+     * @param {{id: string, name?: string, email?: string}} [account]
+     * @returns {Promise<import("./device-signin.js").ApproveResult>}
      */
-    approveDeviceCode(userCode) {
-      const deviceCode = userCodes.get(userCode);
-      const code = deviceCode === undefined ? undefined : codes.get(deviceCode);
-      if (code === undefined) {
-        return { error: "unknown-code" };
-      }
-      if (code.status === "used") {
-        return { error: "used-code" };
-      }
-      if (nowSeconds(now()) - code.createdAt > DEVICE_CODE_TTL_SECONDS) {
-        return { error: "expired-code" };
-      }
-      if (code.status !== "approved") {
-        const account = createAccount(code.name);
-        code.accountId = account.id;
-        code.status = "approved";
-      }
-      return { accountId: code.accountId, name: code.name };
+    async approveDeviceCode(userCode, account) {
+      return signin.approveDeviceCode(userCode, account);
     },
 
     /**
@@ -204,52 +134,58 @@ export function createMemoryStore(options = {}) {
      * backup, say) answers `expired` rather than a token that names no
      * account: there is nothing for that token to be.
      * @param {string} deviceCode
-     * @returns {Promise<{status: "unknown"|"expired"|"pending"}
-     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null, createdAt: number}}>}
+     * @returns {Promise<import("./device-signin.js").PollResult>}
      */
-    async pollDeviceCode(deviceCode) {
-      const code = codes.get(deviceCode);
-      if (code === undefined) {
-        return { status: "unknown" };
-      }
-      if (nowSeconds(now()) - code.createdAt > DEVICE_CODE_TTL_SECONDS) {
-        return { status: "expired" };
-      }
-      if (code.status === "pending") {
-        return { status: "pending" };
-      }
-      if (code.status === "used") {
-        return { status: "expired" };
-      }
-      const account = accounts.get(/** @type {string} */ (code.accountId));
-      if (account === undefined) {
-        return { status: "expired" };
-      }
-      const token = newId("dtok");
-      deviceTokens.set(await sha256Hex(token), {
-        accountId: account.id,
-        name: code.name,
-        createdAt: nowSeconds(now()),
-      });
-      code.status = "used";
-      return {
-        status: "approved",
-        deviceToken: token,
-        account,
-      };
+    pollDeviceCode(deviceCode) {
+      return signin.pollDeviceCode(deviceCode);
     },
 
     /**
      * The account a device token belongs to, or null. The token is hashed
      * before lookup, so the store never holds the value the CLI holds.
+     *
+     * This is the one place a bearer token becomes an account, so it is where
+     * a token past its expiry or one that has been revoked stops being one:
+     * both answer `null`, the same answer a token that was never minted gets,
+     * so the account gate cannot tell a dead credential from a made-up one.
+     * Checking here rather than in each route is the point — there is one
+     * lookup, so there is one place to be wrong.
      * @param {string} token
      */
-    async accountForDeviceToken(token) {
-      const row = deviceTokens.get(await sha256Hex(token));
-      if (row === undefined) {
-        return null;
-      }
-      return accounts.get(row.accountId) ?? null;
+    accountForDeviceToken(token) {
+      return signin.accountForDeviceToken(token);
+    },
+
+    /**
+     * Revoke one device token: `drive logout`'s server-side half, and the way a
+     * token that leaked is killed without deleting the account's keys. The raw
+     * token is hashed before lookup, exactly as `accountForDeviceToken` hashes
+     * it, so the store never holds the value the CLI holds.
+     *
+     * Revoking is idempotent: a second revoke reports what the first did,
+     * because from here on the token is dead either way. A token the store
+     * never held answers `not-found` rather than claiming a revoke that
+     * changed nothing — that difference is what a caller can promise a person.
+     * @param {string} token
+     * @returns {Promise<import("./device-signin.js").RevokeResult>}
+     */
+    revokeDeviceToken(token) {
+      return signin.revokeDeviceToken(token);
+    },
+
+    /**
+     * The token rows that can no longer authenticate: expired or revoked. The
+     * bearer lookup already refuses both, so dropping them is housekeeping and
+     * never the security boundary — a store that never swept would refuse the
+     * same tokens and only hold more rows. Minting calls this on every new
+     * token; it is exposed for the tests, and for a deployment that wants to
+     * run it on a timer.
+     * @param {number} [at] epoch seconds to judge the rows at; injected so a
+     *   test can sweep a row it cannot otherwise wait for.
+     * @returns {Promise<number>} how many rows went
+     */
+    async sweepDeviceTokens(at) {
+      return signin.sweepDeviceTokens(at);
     },
 
     /**
@@ -421,16 +357,6 @@ export function publicDevice(device) {
     revokedAt: device.revokedAt,
   };
 }
-
-/**
- * @typedef {object} DeviceCode
- * @property {string} deviceCode
- * @property {string} userCode
- * @property {string} name
- * @property {"pending"|"approved"|"used"} status
- * @property {string|null} accountId
- * @property {number} createdAt
- */
 
 /**
  * Whether a path is inside the key's own prefix. The prefix is the safety

@@ -74,32 +74,29 @@ const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "co
  * disagree about a number. The Go CLI lands with build steps 2 and 4 (issues
  * #3, #5); these lines are its contract, pinned by test/usage.test.mjs so the
  * command can be wired without re-deciding the output.
- * @param {ReturnType<typeof import("./billing.js").usageSummary>} summary
+ * @param {unknown} summary
  * @returns {readonly string[]}
  */
 export function usageLines(summary) {
-  if (
-    typeof summary !== "object" ||
-    summary === null ||
-    typeof summary.labels !== "object" ||
-    summary.labels === null
-  ) {
+  if (typeof summary !== "object" || summary === null) {
     throw new TypeError(`usageLines needs a usageSummary() result, got ${String(summary)}`);
   }
-  // Each label the four lines print is checked, so a payload missing one fails
-  // here with the field named instead of printing "undefined" or "NaN" in a
-  // terminal the person is trying to read.
+  const payload = /** @type {{labels?: unknown}} */ (summary);
+  if (typeof payload.labels !== "object" || payload.labels === null) {
+    throw new TypeError(`usageLines needs a usageSummary() result, got ${String(summary)}`);
+  }
+  const labels = /** @type {Record<string, unknown>} */ (payload.labels);
   for (const key of LINE_LABEL_KEYS) {
-    if (typeof summary.labels[key] !== "string") {
+    if (typeof labels[key] !== "string") {
       throw new TypeError(
-        `usageLines needs summary.labels.${key} as a string, got ${String(summary.labels[key])}`,
+        `usageLines needs summary.labels.${key} as a string, got ${String(labels[key])}`,
       );
     }
   }
   return Object.freeze([
-    `${USAGE_LABELS.storedNow}: ${summary.labels.storedNow}`,
-    `${USAGE_LABELS.gbMonths}: ${summary.labels.gbMonths}`,
-    `${USAGE_LABELS.downloads}: ${summary.labels.downloads}`,
-    `${USAGE_LABELS.cost}: ${summary.labels.cost}`,
+    `${USAGE_LABELS.storedNow}: ${labels.storedNow}`,
+    `${USAGE_LABELS.gbMonths}: ${labels.gbMonths}`,
+    `${USAGE_LABELS.downloads}: ${labels.downloads}`,
+    `${USAGE_LABELS.cost}: ${labels.cost}`,
   ]);
 }

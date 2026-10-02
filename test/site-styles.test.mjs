@@ -21,10 +21,11 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 // Every shipped page, walked the way test/seo.test.mjs walks them: the
 // verbatim assets in public/ plus the Vite entry at the repo root, so a page
 // added later is covered without editing this list.
+/** @type {Array<[string, URL]>} */
 const PAGES = [
   ...readdirSync(PUBLIC_DIR)
     .filter((name) => name.endsWith(".html"))
-    .map((name) => [`public/${name}`, new URL(name, PUBLIC_DIR)]),
+    .map((name) => /** @type {[string, URL]} */ ([`public/${name}`, new URL(name, PUBLIC_DIR)])),
   ["get-started.html", new URL("../get-started.html", import.meta.url)],
 ];
 
@@ -62,6 +63,7 @@ const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
  * stripped and the property name matched exactly (so `--my--paper` is not a
  * declaration of `--paper`, and a token named in a comment is not one).
  */
+/** @param {string} css */
 function declaredTokens(css) {
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const found = new Map();
@@ -73,6 +75,7 @@ function declaredTokens(css) {
   return found;
 }
 
+/** @param {string} html */
 const styleBlocks = (html) => html.match(/<style>[\s\S]*?<\/style>/g) ?? [];
 
 test("the shared stylesheet declares the palette and the type, once each", () => {

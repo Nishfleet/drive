@@ -31,8 +31,8 @@ would rather you read it here than find out in week three.
 
 - **First open of a large file.** A file streams on demand, so a 5 GB video
   starts before the whole file has arrived, but the first open on a slow
-  connection will stutter. A drive that keeps local copies of the files you
-  pin is faster to reopen.
+  connection will stutter. A drive that holds local copies of the files you
+  keep offline is faster to reopen.
 - **Rename and move are not free.** A folder move is a copy and a delete on
   plain object storage. It does not copy the bytes through your machine, but
   it is still not an instant rename, and a big move takes time.

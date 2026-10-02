@@ -31,11 +31,8 @@
   },
   // The product code — the pricing Worker in src/ and the api Worker in
   // workers/api/src — checked with checkJs and strict. The two test trees
-  // (test/** and workers/api/test/**) are drive#162's remainder: their fakes
-  // are not yet JSDoc-typed, and the 415 errors are all there, so including
-  // them here would leave `npm run typecheck` (and therefore `npm test`) red
-  // on main instead of green. #162 adds them back to this include list when
-  // they are clean; this is the tracked exclusion, not a silent one.
-  "include": ["src", "workers/api/src", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"],
-  "exclude": ["test", "workers/api/test"]
+  // (test/** and workers/api/test/**) were drive#162's remainder: their fakes
+  // are now JSDoc-typed, so including them here leaves `npm run typecheck`
+  // (and therefore `npm test`) green on main. This is the tracked inclusion.
+  "include": ["src", "test", "workers", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"]
 }

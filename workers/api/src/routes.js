@@ -9,6 +9,7 @@ import {
   approvePageRoute,
   pollDeviceTokenRoute,
   requestDeviceCodeRoute,
+  revokeDeviceTokenRoute,
 } from "./device-routes.js";
 import {
   listKeysRoute,
@@ -42,11 +43,16 @@ export const routes = [
 
   // ---- device sign-in (build step 4, drive#55) ----
   //
-  // Public, and each for its own reason. The CLI has no credential before it
-  // asks for one, so /v1/device/code and /v1/device/token cannot require one.
-  // The approval page is public because the person is signing in there; it
-  // takes a short code and nothing else, and it stands in for the account
-  // sign-in flow (device-routes.js says so in the page's own words).
+  // The CLI's two calls are public, each for its own reason: the CLI has no
+  // credential before it asks for one, so /v1/device/code and /v1/device/token
+  // cannot require one. The approval page and its POST are account routes
+  // (drive#136 finding 2): only a signed-in person may approve a code, so the
+  // dispatcher answers 401 to an anonymous request (resolving the sign-in
+  // session cookie through the same `signedInAccount` gate drive#109 uses) and
+  // no handler runs. The page is served by the api Worker because it is part
+  // of the device flow; the identity it checks is the sign-in flow's
+  // (drive#130). The GET is gated too, so the whole path answers 401 before it
+  // names a method, the same rule every other account path follows.
   {
     method: "POST",
     path: "/v1/device/code",
@@ -62,14 +68,23 @@ export const routes = [
   {
     method: "GET",
     path: "/v1/device/approve",
-    auth: "public",
+    auth: "account",
     handler: approvePageRoute,
   },
   {
     method: "POST",
     path: "/v1/device/approve",
-    auth: "public",
+    auth: "account",
     handler: approveDeviceCodeRoute,
+  },
+
+  // Revoke the caller's own device token: the account gate already resolved
+  // the account from the bearer, so the handler only revokes that one token.
+  {
+    method: "DELETE",
+    path: "/v1/device/token",
+    auth: "account",
+    handler: revokeDeviceTokenRoute,
   },
 
   // ---- keys (build step 4, drive#55) ----

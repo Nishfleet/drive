@@ -1,7 +1,7 @@
-import { createAccountStore } from "./accounts.js";
-import { handleUsageRequest, USAGE_ENDPOINT } from "./billing.js";
+import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
+import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
-import { handleSendEmailRequest, sendEmail } from "./email-send.js";
+import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -10,6 +10,13 @@ import {
   scopeStore,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import {
+  handleStorageEventRequest,
+  METER_CRON,
+  METER_RECONCILE_SCHEDULE,
+  reconcileMeter,
+  runMeterCron,
+} from "./meter.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -18,7 +25,18 @@ import {
   SEARCH_ENDPOINT,
   withIndex,
 } from "./search.js";
-import { handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import {
+  createD1LinkStore,
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleRequestUploadRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+  REQUEST_ENDPOINT,
+  SHARE_ENDPOINT,
+  SHARE_LINK_PREFIX,
+} from "./share.js";
+import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
@@ -69,81 +87,54 @@ function storeFor(env) {
   return filesStore;
 }
 
-// The account store for sign-in: one place to plug the api Worker's D1 in
-// (#2), so the sign-in route never reads a binding of its own and a test can
-// hand the handler a fake. One store per Worker isolate, holding the accounts,
-// their one-time codes and their sessions (src/accounts.js). The real D1
-// store is #2; swapping it is one factory with the same three methods.
-/** @type {ReturnType<typeof createAccountStore>|undefined} */
-let accountsStore;
-/**
- * The two settings this module reads that are not bindings in
- * cloudflare.config.ts, so they are not on the generated `Env`: `ACCOUNTS_STORE`
- * is the store a test injects to drive the real dispatch, and `MAIL_FROM` is the
- * deployment's sending address (a secret, so it never appears in the config).
- * Widened here as the optional pair they are — the same move `devStorage` makes
- * for the two dev-only S3 vars.
- * @param {Env} env
- * @returns {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}}
- */
-function accountEnv(env) {
-  return /** @type {Env & {ACCOUNTS_STORE?: ReturnType<typeof createAccountStore>, MAIL_FROM?: string}} */ (
-    env
-  );
-}
-
+// One link store over the customer database, built per request from the
+// binding rather than cached on the isolate: a link and an upload request are
+// rows in DRIVE_DB (src/share.js createD1LinkStore,
+// migrations/drive/0006_share_links.sql), so a link minted on one Worker
+// instance resolves on the next one and a deploy does not take every link with
+// it (issue #207). It used to be a pair of Maps held per isolate, which is
+// exactly the bug. The store is a thin object over the binding, so there is
+// nothing to hold on to and no stale copy to serve — which is the same shape
+// storeFor() has for files. The binding is required: a deployment without
+// DRIVE_DB has no way to stand behind a link and is already failing the health
+// check's required-bindings list (src/health.js).
 /**
  * @param {Env} env
- * @returns {ReturnType<typeof createAccountStore>}
+ * @returns {import("./share.js").LinkStore}
  */
-function accountsStoreFor(env) {
-  const settings = accountEnv(env);
-  // A store passed on the env wins, and that is how a test drives the real
-  // dispatch (test/account-gate.test.mjs builds a store with a mailer that
-  // captures the code, so it can read what left by email). A deployment never
-  // sets it,
-  // so the one-isolate cache below is what production uses.
-  if (settings.ACCOUNTS_STORE) {
-    return settings.ACCOUNTS_STORE;
-  }
-  if (!accountsStore) {
-    accountsStore = createAccountStore({
-      // The code leaves by email through the same provider every drive email
-      // uses (src/email-send.js). With no EMAIL binding the store is built
-      // without a mailer, and a start that cannot be mailed is reported as
-      // failed rather than as a code sent — the route reads the store's answer
-      // either way, so nothing here decides what a person is told.
-      sendCode: settings.EMAIL
-        ? async ({ to, code }) => {
-            await sendEmail(settings.EMAIL, {
-              to,
-              kind: "signin-code",
-              from: settings.MAIL_FROM ?? "",
-              rendered: signinCodeEmail(code),
-            });
-          }
-        : undefined,
-    });
-  }
-  return accountsStore;
+function linksFor(env) {
+  return createD1LinkStore(env.DRIVE_DB);
 }
 
-// The one email the sign-in code arrives in. It is rendered here rather than in
-// src/emails.js because it carries a secret and that module's templates are the
-// five the spec names for customers (welcome, cap, read-only, payment, receipt)
-// — a secret is not one of them, and a template table that also held codes
-// would be a place to leak one from.
+// The owner's spending-cap state for the public upload routes, read from the
+// same src/billing.js summary the usage page shows, and resolved per account so
+// the cap answered is always the one belonging to the account that minted the
+// token (src/share.js handleRequestInfoRequest and
+// handleRequestUploadRequest both take a resolver, not a value). Until the
+// meter lands (#6) an account has no usage rows, so this is the empty month
+// the usage endpoint already answers with — the honest cap for a drive with
+// nothing stored. When the meter lands, this one function is the swap point:
+// it reads the token owner's usage_minutes rows and answers their cap, and no
+// upload route changes.
 /**
- * @param {string} code
- * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ * The `_accountId` is the swap point's seam: the meter (issue #6) will read
+ * the named account's usage_minutes rows here, and until it lands every
+ * account gets the empty month the usage endpoint answers with.
+ *
+ * @param {string} _accountId
  */
-function signinCodeEmail(code) {
-  return {
-    subject: `Your drive sign-in code: ${code}`,
-    text: `Your drive sign-in code is ${code}. It is good for 10 minutes. If you did not ask to sign in, ignore this email.`,
-    html: `<p>Your drive sign-in code is <strong>${code}</strong>.</p><p>It is good for 10 minutes. If you did not ask to sign in, ignore this email.</p>`,
-    saved: null,
-  };
+function capStateFor(_accountId) {
+  const empty = usageSummary({
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  });
+  return empty.cap.state;
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
@@ -167,16 +158,20 @@ export default {
     if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
       return handleWaitlistRequest(request, env.WAITLIST_DB, env.WAITLIST_RATE_LIMITER);
     }
+    // The meter's event intake (issue #6). The storage provider's event rule
+    // lands here with the shared token in a header; the dedup in
+    // src/meter.js makes the provider's own retries safe, so no rate limiter
+    // is bound to this path.
+    if (url.pathname === "/api/storage-events" || url.pathname === "/api/storage-events/") {
+      return handleStorageEventRequest(request, env.METER_DB, env.METER_EVENT_TOKEN);
+    }
     // The first-run page's live flip (issue #32). runWorkerFirst sends every
     // /api/* here; the branch just has to come before the asset fallthrough.
     // The handler is closed until the sign-in flow resolves an account
     // (issue #45), so an anonymous poll gets 401 and no device data. The path
     // is the module's own constant, so the route and the page cannot drift.
     if (url.pathname === STATUS_ENDPOINT || url.pathname === `${STATUS_ENDPOINT}/`) {
-      return handleFirstRunStatusRequest(
-        request,
-        await signedInAccount(request, accountsStoreFor(env)),
-      );
+      return handleFirstRunStatusRequest(request, await signedInAccount(request, authFor(env)));
     }
     // Search reads only the D1 file index (issue #18), behind the same account
     // gate every drive read that names files goes through (`signedInAccount`,
@@ -191,7 +186,7 @@ export default {
       return handleSearchRequest(
         request,
         env.DRIVE_DB,
-        await signedInAccount(request, accountsStoreFor(env)),
+        await signedInAccount(request, authFor(env)),
       );
     }
     // The files handler is behind the same account gate as the page's poll
@@ -208,7 +203,7 @@ export default {
       // signed-in callers and tells a stranger nothing about itself. The
       // index wrapper sits outside the scope the handler applies, so it sees
       // the account's own storage keys and writes only that account's rows.
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleFilesRequest(
         request,
         account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
@@ -220,7 +215,7 @@ export default {
     // and the store is handed in unscoped (the handler scopes it) and without
     // withIndex, so a branch's own copies never land in the search index.
     if (url.pathname === BRANCHES_ENDPOINT || url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleBranchesRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // Agent undo (build step 11, issue #13): the one-click rewind of an
@@ -231,7 +226,7 @@ export default {
     // reads and writes the one branches table and the one file store; there is
     // no second copy of the agent's work anywhere.
     if (url.pathname === REWIND_ENDPOINT || url.pathname.startsWith(`${REWIND_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, accountsStoreFor(env));
+      const account = await signedInAccount(request, authFor(env));
       return handleRewindRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
     }
     // The usage page's and the CLI's read of the month's money (issues #7 and
@@ -239,15 +234,64 @@ export default {
     // fallthrough, and the account gate is what keeps one account's numbers
     // from being shown to another (issue #73).
     if (url.pathname === USAGE_ENDPOINT || url.pathname === `${USAGE_ENDPOINT}/`) {
-      return handleUsageRequest(request, await signedInAccount(request, accountsStoreFor(env)));
+      return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
     }
-    // The sign-in screen's start and finish (build step 9, issue #10). The
-    // account store (src/accounts.js) records the one-time code against the
-    // address and, on the finish step, mints the session cookie every account
-    // route above is gated on. It is registered here, ahead of the asset
-    // fallthrough, because /api/signin must reach the Worker.
+    // The sign-in screen's two steps (build step 9, issue #10; Better Auth
+    // over D1, #181). The start step mails a single-use link; the sign-out
+    // step revokes the session. The link itself is the next branch below.
+    // Registered here, ahead of the asset fallthrough, because /api/signin
+    // must reach the Worker. The handler enforces the two edge limits (issue
+    // #147, env.SIGNIN_RATE_LIMITER / env.SIGNIN_GLOBAL_RATE_LIMITER) before
+    // it reads the body, so a start that mails a real email is bounded at the
+    // edge and a refused request costs no parse and no send.
     if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, accountsStoreFor(env));
+      return handleSigninRequest(request, env);
+    }
+    // The link a sign-in email carries (drive#181): GET only, the token is
+    // the whole proof. The route verifies it against Better Auth, sets the
+    // session cookie the account routes are gated on, and sends a signed-in
+    // person to their files. No session is required to reach it — signing
+    // in is the only way to get one, so it must be reachable without one —
+    // and the closed-door check inside handleSigninLinkVerify keeps a
+    // deployment with no auth bound from minting sessions it cannot stand
+    // behind.
+    if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
+      return handleSigninLinkVerify(request, env);
+    }
+    // Share links and upload requests (issue #19). The share/request roots
+    // are the owner's side and stand behind the same gate as /api/files
+    // (issue #73): a caller that cannot prove an account gets 401 with no
+    // link, no file and no list. /s/<token>, the request info and the upload
+    // route are the logged-out side and carry the token in the path or the
+    // query instead of a session, so they do not ask the gate for an account
+    // — the token is the whole proof, and one that expires or is revoked
+    // answers 404 (src/share.js).
+    if (url.pathname === SHARE_ENDPOINT || url.pathname === `${SHARE_ENDPOINT}/`) {
+      return handleShareRequest(
+        request,
+        storeFor(env),
+        linksFor(env),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
+      return handleShareFileRequest(request, storeFor(env), linksFor(env));
+    }
+    if (url.pathname === REQUEST_ENDPOINT || url.pathname === `${REQUEST_ENDPOINT}/`) {
+      return handleRequestRequest(
+        request,
+        storeFor(env),
+        linksFor(env),
+        await signedInAccount(request, authFor(env)),
+      );
+    }
+    // The two public request routes are matched after the owner's /api/request
+    // root so the exact root is never mistaken for its own child.
+    if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
+      return handleRequestInfoRequest(request, linksFor(env), capStateFor);
+    }
+    if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(env), capStateFor);
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and
@@ -266,19 +310,63 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // The nightly reconciler (build-spec.md piece 6, drive issue #18):
-  // `reconcileIndex` walks one account's store once and rebuilds its rows, so
-  // an event the write path missed is corrected within a day. The schedule is
-  // the only way a rebuild starts: it is invoked by the platform and cannot be
-  // started by a browser request, which a route on /api/search/index would
-  // have allowed (issue #18 safety review). The accounts to walk are the ones
-  // the index already holds rows for — a scheduled run has no request and so
-  // no signed-in account, and this repo has no accounts table until the device
-  // sign-in store lands (#5), so the index's own rows are the only honest list:
-  // an account the drive has never served has nothing to rebuild, and no
-  // invented identity is indexed. Each account's rows are rebuilt from its own
-  // prefix (scopeStore), the same scoping a request path gets.
-  async scheduled(_event, env, context, store = storeFor(env)) {
+  // Three Cron Triggers share this one handler, and the platform's cron string
+  // tells them apart, so no trigger spends another's work:
+  //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
+  //     has not been rolled yet into usage_minutes, oldest first
+  //     (src/meter.js runMeterCron). A D1 failure throws, so Cloudflare
+  //     records the trigger as failed and retries, and the catch-up takes
+  //     the next one over - a failed rollup must never read as a quiet zero.
+  //     The schedule string lives in cloudflare.config.ts, pinned to
+  //     src/meter.js's METER_CRON by test/meter.test.mjs.
+  //   - The meter's nightly reconciler (build-spec.md piece 6, drive issue
+  //     #59): `reconcileMeter` walks each metered account's versions in the
+  //     storage provider, fixes the rows the event stream missed, and rewinds
+  //     the rollup watermark to the earliest corrected hour so the next hourly
+  //     run re-rolls it (the overwrite-not-add re-roll #6 built). Awaited, so a
+  //     D1 failure is Cloudflare's to record and retry: a repair that silently
+  //     did nothing would read as a healthy run.
+  //   - The nightly reconciler (build-spec.md piece 6, drive issue #18):
+  //     `reconcileIndex` walks one account's store once and rebuilds its rows,
+  //     so an event the write path missed is corrected within a day. The
+  //     schedule is the only way a rebuild starts: it is invoked by the
+  //     platform and cannot be started by a browser request, which a route on
+  //     /api/search/index would have allowed (issue #18 safety review). The
+  //     accounts to walk are the ones the index already holds rows for — a
+  //     scheduled run has no request and so no signed-in account, and this
+  //     repo has no accounts table until the device sign-in store lands (#5),
+  //     so the index's own rows are the only honest list: an account the
+  //     drive has never served has nothing to rebuild, and no invented
+  //     identity is indexed. Each account's rows are rebuilt from its own
+  //     prefix (scopeStore), the same scoping a request path gets.
+  /**
+   * @param {ScheduledController} event
+   * @param {Env} env
+   * @param {ExecutionContext} context
+   * @param {import("./files.js").FileStore} [store] the storage store,
+   *   injectable so the reindex's own tests hand one in instead of standing
+   *   in the runtime's fetch
+   * @returns {Promise<void>}
+   */
+  async scheduled(event, env, context, store = storeFor(env)) {
+    // The meter's trip. The controller carries the schedule string the
+    // trigger fired for (event.cron), so a run on the meter's schedule does
+    // the meter's work and nothing else.
+    if (event.cron === METER_CRON) {
+      // Awaited, so a D1 failure is Cloudflare's to record and retry: a
+      // rollup that returned early would read as a quiet zero.
+      await runMeterCron(env.METER_DB, event.scheduledTime);
+      return;
+    }
+    // The meter's nightly trip. Awaited for the same reason: a repair that
+    // failed must be a failed trigger, not a run that reported success having
+    // fixed nothing. The store is the one every account-scoped handler uses;
+    // `reconcileMeter` scopes it per account, so the provider listing never
+    // crosses accounts.
+    if (event.cron === METER_RECONCILE_SCHEDULE) {
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      return;
+    }
     context.waitUntil(
       (async () => {
         if (!env.DRIVE_DB) {
