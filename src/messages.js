@@ -123,6 +123,11 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
   }),
+  // A URL with more segments than /api/branches/<name>/<action>.
+  "branch-path-unknown": Object.freeze({
+    what: "That is not a branch path.",
+    next: "Open the branch from the list.",
+  }),
   // The file this call named is not in this account's drive, on the read,
   // preview, download and delete paths alike. The file may never have been
   // there, or it may be in the trash under Recently deleted, so the next step

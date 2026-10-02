@@ -120,10 +120,15 @@ function makeD1() {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -165,7 +170,7 @@ function makeD1() {
           return /** @type {D1Result<T>} */ ({
             results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: { ...meta(), changes: out.changes },
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -177,7 +182,7 @@ function makeD1() {
           return /** @type {D1Result<T>} */ ({
             results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: { ...meta(), changes: out.changes },
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })

@@ -24,6 +24,7 @@ import {
   sameFile,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { failureMessage } from "../src/messages.js";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -82,7 +83,7 @@ function makeD1() {
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
+   * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
     const { prepared, values: numberedValues } = numberedBind(sql, params);
@@ -91,10 +92,15 @@ function makeD1() {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -136,7 +142,7 @@ function makeD1() {
           return /** @type {D1Result<T>} */ ({
             results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: { ...meta(), changes: out.changes },
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -148,7 +154,7 @@ function makeD1() {
           return /** @type {D1Result<T>} */ ({
             results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: { ...meta(), changes: out.changes },
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })
@@ -515,6 +521,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   // rather than in listBranches. A 10,000-file branch is a 10,000-entry body
   // otherwise, and nothing on the wire reads it.
   assert.equal("snapshot" in listedBody.branches[0], false, "the list must not ship the snapshot");
+  assert.equal("id" in listedBody.branches[0], false, "the list must not ship the row id");
   // The fields the CLI and the screen do read are all still there.
   assert.equal(listedBody.branches[0].name, "work");
   assert.equal(listedBody.branches[0].state, "open");
@@ -677,6 +684,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
     account,
   );
   assert.equal(extra.status, 404);
+  assert.deepEqual(await extra.json(), { error: failureMessage("branch-path-unknown") });
 
   // GET /approve → 405 with Allow: POST.
   const getApprove = await handleBranchesRequest(
@@ -743,6 +751,29 @@ test("the branches table keys each branch by its own id, so a name can be closed
   );
 });
 
+test("a delayed write for a closed generation cannot move a newer open row", async () => {
+  // Close writes name the row's own id, so a late UPDATE from generation A
+  // cannot close or snapshot generation B of the same name.
+  const { scoped, db } = await driven();
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, ACCOUNT, "work");
+  assert.ok(first);
+  await discardBranch(db, scoped, ACCOUNT, "work");
+  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const second = await getBranch(db, ACCOUNT, "work");
+  assert.ok(second);
+  assert.notEqual(second.id, first.id);
+  const stale = await db
+    .prepare("UPDATE branches SET state = 'approved' WHERE id = ?1 AND state = 'open'")
+    .bind(first.id)
+    .run();
+  assert.equal(stale.meta.changes, 0);
+  const still = await getBranch(db, ACCOUNT, "work");
+  assert.ok(still);
+  assert.equal(still.state, "open");
+  assert.equal(still.id, second.id);
+});
+
 test("approving a name whose branch was discarded is a 409, never a delete of the original", async () => {
   // The dangerous path the closed-row fallback opens: getBranch returns the
   // discarded row, and if approveBranch did not refuse a non-open state its
@@ -783,7 +814,7 @@ test("a create whose claim is closed mid-copy reports 409 and leaves no stray co
               },
               async run() {
                 if (sql.startsWith("INSERT INTO branches")) {
-                  return { success: true, meta: { changes: 1 } };
+                  return { success: true, meta: { changes: 1, last_row_id: 1 } };
                 }
                 if (sql.startsWith("UPDATE branches SET snapshot")) {
                   // The claim was closed underneath this create.
@@ -854,10 +885,11 @@ test("the prefix clear refuses anything that is not a folder under .branches", a
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "the source is untouched");
 });
 
-test("a discard of a row whose prefix is not under .branches is a 500, never a delete", async () => {
+test("a discard of a row whose prefix is not under .branches never deletes the original", async () => {
   // The discard path goes through the same guard, so a forged branch_prefix
-  // cannot make `drive discard` delete the original: the clear throws, the
-  // catch turns it into storage-down, and the row is left open.
+  // cannot make `drive discard` delete the original: the row closes first,
+  // the clear throws, and the catch logs rather than turning a closed branch
+  // into a 500 that would invite a retry.
   const { scoped, db } = await driven();
   db.sqlite
     .prepare(
@@ -866,11 +898,10 @@ test("a discard of a row whose prefix is not under .branches is a 500, never a d
     )
     .run(ACCOUNT.id, "evil", "/Photos", "/Photos", "2026-01-01T00:00:00Z");
   const result = await discardBranch(db, scoped, ACCOUNT, "evil");
-  assert.ok("error" in result);
-  assert.equal(result.status, 500);
+  assert.equal(result.state, "discarded");
   const evil = await getBranch(db, ACCOUNT, "evil");
   assert.ok(evil);
-  assert.equal(evil.state, "open");
+  assert.equal(evil.state, "discarded");
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
   assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
 });
@@ -905,6 +936,7 @@ test("a create that loses the open-name race is refused before it touches the pr
                   return null;
                 }
                 return {
+                  id: 1,
                   name: "work",
                   source_prefix: "/Photos",
                   branch_prefix: "/.branches/work",
