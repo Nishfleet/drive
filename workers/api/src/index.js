@@ -182,10 +182,18 @@ export function createApp(table = routes) {
   }
 
   /**
-   * The methods an anonymous caller may be told about, keyed by the path's
-   * method set (`methodSetKey`): the 405 below names only these to a caller
-   * with no account. Two paths that share a method set keep the intersection,
-   * the smaller disclosure.
+   * The methods an anonymous caller may be told about, keyed by the path the
+   * 405 came from: the 405 below names only the matched path's own public
+   * methods to a caller with no account, and nothing of any other path.
+   *
+   * The key is the path plus the method set Hono reported for it, because
+   * Hono's `methodNotAllowed` hands back every method the matched path
+   * registers and says nothing about which path matched; the pair identifies
+   * it. Two paths that share a method set keep separate answers, because
+   * keying on the method set alone made one path's gated route empty an
+   * unrelated public path's 405: `/v1/export` (a gated single-GET route,
+   * drive#34) intersected with the public `/v1/health`, and an anonymous
+   * `POST /v1/health` then answered a 405 that named no method at all.
    * @type {Map<string, Set<string>>}
    */
   const anonymousAllow = new Map();
@@ -195,11 +203,7 @@ export function createApp(table = routes) {
     const publics = new Set(
       pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
     );
-    const prior = anonymousAllow.get(key);
-    anonymousAllow.set(
-      key,
-      prior === undefined ? publics : new Set([...prior].filter((m) => publics.has(m))),
-    );
+    anonymousAllow.set(`${path} ${key}`, publics);
 
     const allAccount = pathRoutes.every((route) => route.auth !== "public");
     if (allAccount) {
@@ -239,7 +243,9 @@ export function createApp(table = routes) {
           (method) =>
             method !== "HEAD" &&
             (c.get("account") != null ||
-              (anonymousAllow.get(methodSetKey(methods)) ?? new Set()).has(method)),
+              (anonymousAllow.get(`${c.req.path} ${methodSetKey(methods)}`) ?? new Set()).has(
+                method,
+              )),
         );
         return errorResponse(405, "That method is not allowed here.", {
           allow: allow.join(", "),
