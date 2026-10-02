@@ -712,7 +712,7 @@ export const MONTH_USAGE_THROUGH_SQL = `SELECT
     COALESCE(AVG(stored_bytes), 0) AS average_stored_bytes
   FROM usage_minutes
   WHERE account_id = ?1
-    AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+    AND hour >= ?2
     AND hour <= ?3`;
 
 /**
@@ -729,7 +729,7 @@ export async function monthUsageThrough(db, accountId, through) {
     throw new TypeError(`monthUsageThrough needs an account id, got ${String(accountId)}`);
   }
   const at = hourStart(through);
-  const row = await db.prepare(MONTH_USAGE_THROUGH_SQL).bind(accountId, at, at).first();
+  const row = await db.prepare(MONTH_USAGE_THROUGH_SQL).bind(accountId, monthStart(at), at).first();
   const gbMinutes = Number(row?.gb_minutes ?? 0);
   const peakBytes = Number(row?.peak_bytes ?? 0);
   const downloadBytes = Number(row?.download_bytes ?? 0);

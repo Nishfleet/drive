@@ -11,6 +11,12 @@
 // Dodo's own docs name, and there is no option that points anywhere else.
 // Switching to live is Nish's call. No card is taken here.
 //
+// Catch-up hours omit `timestamp`. Dodo's ingest docs (test.dodopayments.com
+// /events/ingest, "Time Validation"): a timestamp older than 1 hour is
+// rejected; omit it and the event defaults to now. The hour we mean is the
+// event_id, not the ingest clock, so a 12-hour catch-up is one batch of
+// "now" events whose amount_units still sum to the month's capped bill.
+//
 // fetch is an argument so node --test can record the request; production
 // passes the platform's fetch. A missing API key skips the ingest rather
 // than failing the meter's rollup: the meter is the source of truth, and a
@@ -27,7 +33,10 @@ const INGEST_BATCH = 1000;
 /**
  * Dodo's idempotency key for one account-hour. The same hour always mints
  * the same id, so a retried push is ignored on Dodo's side as well as in
- * billing_pushes.
+ * billing_pushes. Dodo's ingest docs: "Event Id acts as an idempotency key.
+ * Any subsequent requests with the same event_id will be ignored." A cron
+ * retry after a successful ingest and a failed D1 write therefore cannot
+ * mint a second charge: the second POST carries the same event_id.
  * @param {string} accountId
  * @param {number} hour
  */
@@ -100,8 +109,12 @@ export async function pushBillingHours(db, hours, options = {}) {
         averageStoredGb: usage.averageStoredGb,
       });
       const previously = running.get(accountId) ?? 0;
-      const amountUnits = bill.totalCents - previously;
-      running.set(accountId, bill.totalCents);
+      // High-water: a reroll that lowered this month's bill (a late hide)
+      // must not send a negative unit to Dodo. amount_units stays 0 until
+      // the bill passes what was already pushed, so Dodo never uncharges
+      // and never sees a negative delta.
+      const amountUnits = Math.max(0, bill.totalCents - previously);
+      running.set(accountId, previously + amountUnits);
       const eventId = billingEventId(accountId, hour);
       pending.push({
         accountId,
@@ -139,17 +152,19 @@ export async function pushBillingHours(db, hours, options = {}) {
       apiKey,
       batch.map((item) => item.event),
     );
+    // Record the batch we just ingested before the next POST, so a later
+    // batch's failure cannot leave those events without a local row.
+    await db.batch(
+      batch.map((item) =>
+        db
+          .prepare(
+            `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)`,
+          )
+          .bind(item.accountId, item.hour, item.eventId, item.amountUnits, pushedAt),
+      ),
+    );
   }
-
-  const statements = pending.map((item) =>
-    db
-      .prepare(
-        `INSERT INTO billing_pushes (account_id, hour, dodo_event_id, amount_units, pushed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)`,
-      )
-      .bind(item.accountId, item.hour, item.eventId, item.amountUnits, pushedAt),
-  );
-  await db.batch(statements);
   return { pushed: pending.length };
 }
 

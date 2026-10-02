@@ -20,7 +20,13 @@ import {
   pushBillingHours,
 } from "../src/dodo.js";
 import worker from "../src/index.js";
-import { BYTES_PER_GB, METER_CRON, MINUTE_MS, recordUsage } from "../src/meter.js";
+import {
+  BYTES_PER_GB,
+  METER_CRON,
+  MINUTE_MS,
+  monthUsageThrough,
+  recordUsage,
+} from "../src/meter.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
@@ -132,6 +138,8 @@ test("a day of stored GB pushes the capped bill, with the free $1 as a dollar li
   assert.equal(call.method, "POST");
   assert.equal(call.authorization, `Bearer ${KEY}`);
   assert.equal(call.payload.events.length, 24);
+  const eventIds = call.payload.events.map((event) => event.event_id);
+  assert.equal(new Set(eventIds).size, 24, "Dodo rejects duplicate event_id values in one request");
   const units = call.payload.events.map((event) => {
     assert.equal(event.customer_id, CUSTOMER);
     assert.equal(event.event_name, DODO_EVENT_NAME);
@@ -174,6 +182,59 @@ test("a retried hour is ignored: one event id, one billing_pushes row", async ()
   assert.equal(recorder.calls[0].payload.events.length, 1);
   assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, day.from));
   assert.equal(day.sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
+});
+
+test("an October hour does not count September's GB-minutes", async () => {
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const september = Date.parse("2026-09-30T23:00:00.000Z");
+  const october = Date.parse("2026-10-01T00:00:00.000Z");
+  await recordUsage(db, ACCOUNT, september, 800 * 60, 800 * BYTES_PER_GB, october);
+  await recordUsage(db, ACCOUNT, october, 10 * 60, 10 * BYTES_PER_GB, october + HOUR_MS);
+  const throughSeptember = await monthUsageThrough(db, ACCOUNT, september);
+  const throughOctober = await monthUsageThrough(db, ACCOUNT, october);
+  assert.equal(throughSeptember.gbMinutes, 800 * 60);
+  assert.equal(throughOctober.gbMinutes, 10 * 60, "October's window starts at monthStart()");
+  const recorder = recordingFetch();
+  await pushBillingHours(db, [october], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: october + HOUR_MS,
+  });
+  const metadata = recorder.calls[0].payload.events[0].metadata;
+  const octoberBill = monthBillCents({
+    gbMinutes: 10 * 60,
+    peakBytes: 10 * BYTES_PER_GB,
+  });
+  assert.equal(metadata.storage_cents, octoberBill.storageCents);
+  assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
+});
+
+test("a bill that falls after a reroll sends 0, never a negative unit", async () => {
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const hour0 = midnight();
+  const hour1 = hour0 + HOUR_MS;
+  await recordUsage(db, ACCOUNT, hour0, 2000 * 43800, 2000 * BYTES_PER_GB, hour1);
+  const recorder = recordingFetch();
+  await pushBillingHours(db, [hour0], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: hour1,
+  });
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 1500);
+  await recordUsage(db, ACCOUNT, hour0, 60, BYTES_PER_GB, hour1);
+  await recordUsage(db, ACCOUNT, hour1, 60, BYTES_PER_GB, hour1 + HOUR_MS);
+  await pushBillingHours(db, [hour1], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: hour1 + HOUR_MS,
+  });
+  assert.equal(recorder.calls[1].payload.events[0].metadata.amount_units, 0);
+  assert.ok(
+    recorder.calls[1].payload.events[0].metadata.amount_units >= 0,
+    "Dodo never receives a negative unit",
+  );
 });
 
 test("Dodo receives the ceiling-capped amount, never the uncapped meter", async () => {
