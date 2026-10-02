@@ -154,8 +154,7 @@ func runExport(args []string) error {
 	}
 	// The document is written from the route's own fields, so what a person
 	// keeps is the server's account data rather than this command's rendering
-	// of it. 0600, like every other file the CLI writes with credentials in
-	// it: the export names the account's keys and folders.
+	// of it.
 	raw, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode the export: %w", err)
@@ -164,12 +163,18 @@ func runExport(args []string) error {
 	summary := fmt.Sprintf("%d file(s) and %d key(s) for %s",
 		len(document.Files), len(document.Keys), exportAccountLabel(document.Account))
 	if *out == "" {
+		// To stdout the document is the machine-readable output, so the human
+		// summary goes to stderr and a redirect (`drive export > account.json`)
+		// keeps stdout pure JSON. A caller who redirects owns the file's mode;
+		// the same data written through --out is 0600 below.
 		if _, err := os.Stdout.Write(raw); err != nil {
 			return fmt.Errorf("write the export to stdout: %w", err)
 		}
 		fmt.Fprintln(os.Stderr, "exported "+summary)
 		return nil
 	}
+	// 0600, like the credentials file: the export names the account's keys and
+	// folders, so it is not world-readable when written by this command.
 	if err := WriteFileAtomic(*out, raw, 0o600); err != nil {
 		return err
 	}
