@@ -486,6 +486,13 @@ export async function createBranch(db, store, account, request, now = () => Date
     // The copy is on disk but the row did not land, so the branch would be
     // invisible and a retry would see the name as free. Clean the copy up, then
     // report the failure rather than returning 201 for a half-made branch.
+    //
+    // A row over the database's own row limit lands here with the column's name
+    // in the error, never silently (drive#157): D1's row limit is 1 MiB and a
+    // 100,000-file branch snapshots to ~11 MiB, measured against these
+    // migrations (test/branches-snapshot.test.mjs is the pinned number, and
+    // `snapshot-bound` in src/messages.js is what the person is told).
+    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch insert failed for ${account.id}/${name}: ${errorText(error)}`);
     try {
       for (const rel of Object.keys(snapshot)) {
@@ -500,7 +507,7 @@ export async function createBranch(db, store, account, request, now = () => Date
     } catch {
       /* best-effort cleanup; the 500 is the answer */
     }
-    return { error: failureMessage("unexpected"), status: 500 };
+    return { error: failureMessage(oversize ? "snapshot-bound" : "unexpected"), status: 500 };
   }
   return {
     name,
