@@ -8,6 +8,7 @@ import { createD1DeviceSigninStore } from "./device-signin.js";
 import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
+import { createS3KeyProvider } from "./s3-keys.js";
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -315,6 +316,66 @@ let keyStore;
 let keyStoreDb;
 
 /**
+ * The storage configuration a deployment carries, or null when it carries
+ * none. All five values or none: a half-configured deployment would mint keys
+ * the storage endpoint has never heard of, which reads at the user as "your
+ * new key does not work". A half-configured deployment is therefore refused
+ * at the MINT, not at every route: the error comes back as a provider whose
+ * `mint` throws, so the one operation that needs the storage credential is
+ * the one that fails and every other route keeps answering. (Rotating the
+ * master credential needs the isolate to restart, the same way the stand-in
+ * store does; a redeploy restarts it.)
+ *
+ * The half-configured stub matches the KeyProvider shape (`mint`, `revoke`,
+ * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
+ * method. The real S3 provider's `revoke` is still the vendor key API (#173).
+ * @param {{[key: string]: unknown}} env
+ * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ */
+function keyProviderFor(env) {
+  const names = [
+    "STORAGE_ENDPOINT",
+    "STORAGE_REGION",
+    "STORAGE_BUCKET",
+    "STORAGE_MASTER_ACCESS_KEY_ID",
+    "STORAGE_MASTER_SECRET_ACCESS_KEY",
+  ];
+  const values = names
+    .map((name) => env[name])
+    .filter((value) => typeof value === "string" && value.length > 0);
+  if (values.length === 0) {
+    return null;
+  }
+  if (values.length < names.length) {
+    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
+    const problem = new Error(
+      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
+    );
+    return {
+      mint() {
+        throw problem;
+      },
+      revoke() {
+        throw problem;
+      },
+      swapToReadOnly() {
+        throw problem;
+      },
+    };
+  }
+  return createS3KeyProvider({
+    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
+    region: /** @type {string} */ (env.STORAGE_REGION),
+    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
+    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
+    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
+    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
+      ? { roleArn: env.STORAGE_ROLE_ARN }
+      : {}),
+  });
+}
+
+/**
  * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB
  * (cloudflare.config.ts), plus whatever else the runtime bound (the generated
  * `Env` covers the pricing Worker's bindings, not this Worker's, so the pair is
@@ -335,9 +396,11 @@ function storeFor(env) {
     // The device sign-in half is D1-backed whenever the deployment binds a
     // database, so a code started on one instance is visible on the next and
     // survives a restart (drive#136 finding 1); without one it stays the
-    // in-memory stand-in. The key half is still the stand-in until drive#2.
+    // in-memory stand-in. The storage key half is the S3 provider when the
+    // five STORAGE_* values are set, otherwise the stand-in credential.
     keyStore = createMemoryStore({
       signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
+      keyProvider: keyProviderFor(env) ?? undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }
