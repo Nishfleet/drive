@@ -28,16 +28,18 @@ type StorageConfig struct {
 	DownloadURL string
 }
 
-// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
-// vfsChunkStreamSize are the stock rclone VFS flags this product mounts with.
-// They are the same on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs
-// is the one place that turns them into an argument vector.
+// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue,
+// vfsDirCacheTimeValue, vfsChunkStreamSize and vfsReadAheadValue are the stock
+// rclone VFS flags this product mounts with. They are the same on Mac
+// (nfsmount) and Linux (mount), and mount.go VFSArgs is the one place that
+// turns them into an argument vector.
 const (
 	vfsCacheModeValue    = "full"
 	vfsWriteBackValue    = "5s"
 	vfsCacheMaxValue     = "20G"
-	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
-	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
+	vfsDirCacheTimeValue = "5s"   // see VFSArgs: S3 sends no change notifications
+	vfsChunkStreamSize   = "32M"  // streaming read-ahead for big files
+	vfsReadAheadValue    = "128k" // extra disk read-ahead with cache-mode full (issue #227)
 )
 
 // Default paths, overridable for tests.
@@ -53,12 +55,24 @@ func LaunchdPlistPath(home string) string {
 func SystemdUnitPath(home string) string {
 	return filepath.Join(home, ".config", "systemd", "user", SystemdUnitName)
 }
+func PrefetchLaunchdPlistPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", PrefetchLaunchdLabel+".plist")
+}
+func PrefetchSystemdUnitPath(home string) string {
+	return filepath.Join(home, ".config", "systemd", "user", PrefetchSystemdUnitName)
+}
 
 const (
 	// LaunchdLabel is the launchd login-item label on macOS.
 	LaunchdLabel = "com.nishfleet.drive"
+	// PrefetchLaunchdLabel is the second login item that warms the next folder
+	// after a listing (issue #227). The mount item stays rclone: a login item
+	// has no DRIVE_S3_* environment, and the keys live in rclone.conf.
+	PrefetchLaunchdLabel = "com.nishfleet.drive.prefetch"
 	// SystemdUnitName is the systemd user unit on Linux (step 3).
 	SystemdUnitName = "drive-mount.service"
+	// PrefetchSystemdUnitName is the sidecar that runs `drive prefetch`.
+	PrefetchSystemdUnitName = "drive-prefetch.service"
 	// RcloneRemoteName is the remote name this product owns in the rclone config.
 	RcloneRemoteName = "drive"
 )
