@@ -99,8 +99,10 @@ const LIVENESS_QUERY = "SELECT 1";
  *
  * ASSETS is on the list because every page load goes through it. The rate
  * limiters are on it because the waitlist and the sign-in endpoint fail closed
- * without one (src/waitlist.js, src/signin.js). Both databases are on it: a
- * deploy that lost DRIVE_DB
+ * without one (src/waitlist.js, src/signin.js). METER_DB is on it because the
+ * meter's event intake and the hourly rollup both fail closed without it
+ * (src/meter.js), and a deploy that lost it would silently stop billing.
+ * DRIVE_DB is on it because a deploy that lost it
  * would serve every page and sign-up while every file, search and branch
  * request failed, which is exactly the outage this endpoint exists to catch
  * (drive issue #170). The email binding is not: only the token-gated internal
@@ -109,6 +111,7 @@ const LIVENESS_QUERY = "SELECT 1";
  */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
+  "METER_DB",
   "DRIVE_DB",
   "ASSETS",
   "WAITLIST_RATE_LIMITER",
