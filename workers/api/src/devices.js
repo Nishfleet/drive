@@ -1,5 +1,5 @@
 // The D1 key store for cap enforcement (drive issue #64): `accounts.cap_cents`
-// and `devices` with `b2_key_id` / `capabilities` (migrations/drive/0009).
+// and `devices` with `b2_key_id` / `capabilities` (migrations/drive/0010).
 //
 // The in-memory key store (keystore.js) is the stand-in a deployment without
 // a database keeps; this module is the real rows. Cap enforcement
@@ -103,7 +103,7 @@ function digestsEqual(left, right) {
 
 /**
  * The D1-backed device and cap store. Every method is a prepared statement
- * against `migrations/drive/0009_accounts_devices.sql`, so a key minted on
+ * against `migrations/drive/0010_accounts_devices.sql`, so a key minted on
  * one Worker instance is the row the cap swap on the next instance reads.
  *
  * @param {D1Database} db

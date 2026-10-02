@@ -7,7 +7,7 @@
 //      ROWS, not a per-isolate Map. A swap through one store instance is
 //      visible through a second, freshly built store over the same database.
 //   2. Both the new READ and the new WRITE land on the real migrations
-//      (`migrations/drive/0009_accounts_devices.sql`), applied with every
+//      (`migrations/drive/0010_accounts_devices.sql`), applied with every
 //      other drive table, so a statement this store adds without a column
 //      fails here rather than in production.
 //
