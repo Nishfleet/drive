@@ -28,6 +28,13 @@ DRIVE_BENCH_SCALE=quick go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x
 The public page injects the two sections below. A loss is labelled `lose`.
 There is no measured Linux figure yet, so there is no loss to show.
 
+Cold and warm file-open times (issue #194: the 1 MB document, the
+500 MB video's play start and the 10 GB file, five runs each, median
+reported, measured through the mount with `go test ./cmd/drive
+-run TestOpenTimeColdAndWarm -v`) are stand-in figures on this host, so
+they are not in this table; they wait for the same real-storage run
+(issue #242) as every other Linux row.
+
 ## Linux VPS
 
 Host: netcup VPS, Linux. Region, link speed and commit: not yet measured
