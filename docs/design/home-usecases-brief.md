@@ -59,6 +59,23 @@ Viewport 1440x900 and 360x780, device scale 2.
 | Contrast, every text node in `.demos`, WCAG AA | h2 15.13 (3.0 needed), lede 7.29, job name 15.13, command 7.29, prompt `$` 10.65, figures 10.65 (3.0 needed), figure units 7.29, caveat 7.29 — all pass |
 | Screenshots | `home-demos-desktop.png`, `home-demos-phone-360.png` |
 
+## Second audit, 2026-10-02 (re-shot after the record was re-measured)
+
+The three demos were run again on this host and produced new figures
+(`agent` 9.01 s, `video-first-frame` 0.26 s, `video-scrub` 0.37 s,
+`blend-open` 0.48 s, `blend-save` 0.51 s, recorded in `docs/demos.md`), so
+the page was updated from the record and the two screenshots were shot
+again against it. Headless Chrome on `public/` served over
+`http://127.0.0.1:4599`, same viewports and device scale as above.
+
+| Check | Result |
+|---|---|
+| Desktop 1440x900 | `scrollWidth == clientWidth == 1440`, 0 elements in `.demos` past the viewport |
+| Phone 360x780 | `scrollWidth == clientWidth == 360`, 0 elements in `.demos` past the viewport; the section is 1261 px tall, so it scrolls vertically and never horizontally |
+| Figures in the shot | the `.demos` text read back from the rendered page is the same five figures `docs/demos.md` carries, and each is `font-variant-numeric: tabular-nums` in `--accent` (rgb(31, 58, 95)) |
+| Console errors | the single 404 is the browser's own `favicon.ico` request, which the page does not reference |
+| Contrast | unchanged: this run changed no colour, only the figures, so the table above still stands |
+
 ## Open checks (not faked)
 - Real iDrive e2 storage (#173): the numbers above are measured on the
   local rclone serve s3 stand-in through the product's own mount flags;

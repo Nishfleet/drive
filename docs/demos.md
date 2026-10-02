@@ -8,15 +8,15 @@ written here only by a run that produced it; nothing is estimated.
 
 - **Storage:** local rclone serve s3 stand-in
 - **Date:** 2026-10-02
-- **Commit:** 35932a67415cc4ea719b1c224dc4ab262587d6a7
+- **Commit:** 28b87680d03baaaf4887ae6c76953c756af3f908
 
 | Demo | What was measured | Figure |
 |---|---|---|
-| `agent` | claude read brief.md and edited todo.md on the drive | 8.02 s |
-| `video-first-frame` | 5.0 GB H.264 opened and its first frame decoded off the mount | 0.17 s |
-| `video-scrub` | seeked to 1493s and decoded a frame from the same 5.0 GB file | 0.30 s |
-| `blend-open` | a 0.4 MB .blend opened off the mount in a fresh Blender process | 0.59 s |
-| `blend-save` | added a second object and saved back over the same file on the drive | 0.54 s |
+| `agent` | claude read brief.md and edited todo.md on the drive | 9.01 s |
+| `video-first-frame` | 5.0 GB H.264 opened and its first frame decoded off the mount | 0.26 s |
+| `video-scrub` | seeked to 1493s and decoded a frame from the same 5.0 GB file | 0.37 s |
+| `blend-open` | a 0.4 MB .blend opened off the mount in a fresh Blender process | 0.48 s |
+| `blend-save` | added a second object and saved back over the same file on the drive | 0.51 s |
 
 Reproduce with
 
