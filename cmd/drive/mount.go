@@ -29,6 +29,12 @@ type MountPlan struct {
 	CacheDir   string
 	LogPath    string
 	VFSArgs    []string
+	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
+	// when none is configured. It is a mount argument, not a line in the
+	// rclone config the user owns: rclone streams every read through the
+	// host, and the host counts the bytes, so a mount that did not point at
+	// it would serve reads nobody bills.
+	DownloadURL string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -76,6 +82,7 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		CacheDir:   DefaultCacheDir(home),
 		LogPath:    filepath.Join(DefaultConfigDir(home), "mount.log"),
 		VFSArgs:    VFSArgs(),
+		DownloadURL: c.DownloadURL,
 	}
 }
 
@@ -93,6 +100,16 @@ func (p MountPlan) Args() []string {
 		"--log-file", p.LogPath,
 		"--log-level", "INFO",
 	)
+	// The download host, when one is configured (issue #58). It is the S3
+	// provider's own flag --s3-download-url, the one rclone's docs list for
+	// "tell the backend where downloads can be fetched from", so reads on the
+	// mount go to the dl Worker and are counted. With none configured the
+	// mount reads from the endpoint itself and no flag is passed: rclone
+	// errors on an empty value, and an uncounted read is already the state of
+	// a local stand-in.
+	if p.DownloadURL != "" {
+		args = append(args, "--s3-download-url", p.DownloadURL)
+	}
 	return args
 }
 

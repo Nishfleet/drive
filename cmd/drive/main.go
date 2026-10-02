@@ -50,6 +50,7 @@ Mount flags:
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
+  --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
@@ -143,12 +144,17 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region string
+	var endpoint, bucket, prefix, region, downloadURL string
 	var foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
+	// The dl Worker (drive issue #58). Absent, the mount reads from the
+	// endpoint and counts nothing; set, every read streams through the dl
+	// Worker so the account's download bytes are counted (docs/build-spec.md
+	// "The pieces", items 2 and 4).
+	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -158,7 +164,7 @@ func runMount(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region)
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL)
 	if err != nil {
 		return err
 	}
