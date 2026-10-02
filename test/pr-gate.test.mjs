@@ -265,18 +265,21 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       );
       /** @param {string} name @returns {string} */
       const rest = (name) => name.slice(prefix.length);
+      // A listing with no delimiter answers every key inside the prefix as
+      // Contents, which is what rclone does, so the split only happens when the
+      // store sent one.
+      const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
       const folderNames = [
-        ...new Set(
-          children
-            .filter((name) => rest(name).includes(delimiter))
-            .map((name) => rest(name).split(delimiter)[0]),
-        ),
+        ...new Set(children.filter(deeper).map((name) => rest(name).split(delimiter)[0])),
       ].filter((name) => name !== "");
       const common = folderNames
-        .map((name) => `<CommonPrefixes><Prefix>${prefix}${name}/</Prefix></CommonPrefixes>`)
+        .map(
+          (name) =>
+            `<CommonPrefixes><Prefix>${prefix}${name}${delimiter}</Prefix></CommonPrefixes>`,
+        )
         .join("");
       const contents = children
-        .filter((name) => !rest(name).includes(delimiter))
+        .filter((name) => !deeper(name))
         .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
         .join("");
       return new Response(
@@ -366,18 +369,16 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   // slash (`u/a//`) matches no key rclone stores, which is the empty drive the
   // Web Files page showed against real storage.
   assert.equal((await put(a, who("a", "A"), "/", "holiday.jpg", "A's own bytes")).status, 201);
+  /** @type {{rows: Array<{name: string}>}} */
   const root = await (await get(a, who("a", "A"), "", "/")).json();
-  assert.deepEqual(
-    root.rows.map((row) => row.name),
-    ["photos", "holiday.jpg"],
-  );
+  // The rows, not their order: rclone answers the folders it cut off before
+  // the keys inside the prefix, and the handler does not promise an order.
+  assert.deepEqual(root.rows.map((row) => row.name).sort(), ["holiday.jpg", "photos"]);
   // The same bucket, the other account: the root listing is the account's own
   // rows, and A's root file is not one of them.
+  /** @type {{rows: Array<{name: string}>}} */
   const bRoot = await (await get(b, who("b", "B"), "", "/")).json();
-  assert.deepEqual(
-    bRoot.rows.map((row) => row.name),
-    ["photos"],
-  );
+  assert.deepEqual(bRoot.rows.map((row) => row.name).sort(), ["photos"]);
   // Every listing asked for the account's own prefix once, and no prefix has a
   // second separator in it.
   assert.ok(

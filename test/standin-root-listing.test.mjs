@@ -62,15 +62,12 @@ async function freePort() {
 // Contents entry per key inside the prefix. A prefix that matches nothing
 // answers with the header pair and no rows, which is the empty root this issue
 // found.
-/**
- * @param {{bucket: string, prefix: string, delimiter: string, folders: string[],
- *   files: Array<{name: string, size: number}>}} answer
- * @returns {string}
- */
+/** @param {{bucket: string, prefix: string, delimiter: string, folders: string[], files: Array<{name: string, size: number}>}} answer @returns {string} */
 const listXml = ({ bucket, prefix, delimiter, folders, files }) => {
   const common = folders
     .map(
-      (name) => `  <CommonPrefixes>\n    <Prefix>${prefix}${name}/</Prefix>\n  </CommonPrefixes>`,
+      (name) =>
+        `  <CommonPrefixes>\n    <Prefix>${prefix}${name}${delimiter}</Prefix>\n  </CommonPrefixes>`,
     )
     .join("\n");
   const contents = files
@@ -119,15 +116,17 @@ const rcloneShaped = (objects, bucket) => {
       const children = [...objects.keys()].filter(
         (name) => name.startsWith(prefix) && name !== prefix,
       );
+      /** @param {string} name @returns {string} */
+      const rest = (name) => name.slice(prefix.length);
+      // A listing with no delimiter answers every key inside the prefix as
+      // Contents, which is what rclone does, so the split happens only when the
+      // store sent a delimiter.
+      const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
       const folders = [
-        ...new Set(
-          children
-            .filter((name) => name.slice(prefix.length).includes(delimiter))
-            .map((name) => name.slice(prefix.length).split(delimiter)[0]),
-        ),
+        ...new Set(children.filter(deeper).map((name) => rest(name).split(delimiter)[0])),
       ].filter((name) => name !== "");
       const files = children
-        .filter((name) => !name.slice(prefix.length).includes(delimiter))
+        .filter((name) => !deeper(name))
         .map((name) => ({ name, size: (objects.get(name) ?? "").length }));
       return new Response(listXml({ bucket, prefix, delimiter, folders, files }), {
         status: 200,
@@ -155,17 +154,16 @@ test("the stand-in keys objects the way `rclone serve s3` does, and the root lis
   // The drive root of the first account: the folder the delimiter cut off and
   // the file inside the prefix. Nothing about the rows is canned here — the
   // stand-in answers from the keys the account owns, so a store that asked for
-  // the wrong prefix gets an empty root back.
+  // the wrong prefix gets an empty root back. The rows are sorted for the
+  // assertion, and the size is a number because src/files.js parses S3's
+  // `<Size>` with `Number(...)`.
   const root = await scopeStore(store, ACCOUNT).list("/");
-  assert.deepEqual(
-    root.map((entry) => [entry.name, entry.kind, entry.path]),
-    [
-      ["photos", "folder", "/photos"],
-      ["holiday.jpg", "image", "/holiday.jpg"],
-    ],
-  );
+  assert.deepEqual(root.map((entry) => [entry.name, entry.kind, entry.path]).sort(), [
+    ["holiday.jpg", "image", "/holiday.jpg"],
+    ["photos", "folder", "/photos"],
+  ]);
   assert.equal(
-    root.find((entry) => entry.name === "holiday.jpg")?.size,
+    Number(root.find((entry) => entry.name === "holiday.jpg")?.size),
     "A's holiday bytes".length,
     "the row carries the object's own size",
   );
@@ -189,9 +187,11 @@ test("the stand-in keys objects the way `rclone serve s3` does, and the root lis
     assert.ok(!prefix.includes("//"), `a listing prefix carries one separator: ${prefix}`);
   }
 
-  // The counterfactual, on this same stand-in: the prefix the issue's line
-  // built asks rclone for `u/1//`, which matches no key it would ever store, so
-  // the drive root comes back empty. That is the bug measured, not described.
+  // The counterfactual, on this same stand-in and through the shipped
+  // store: asked for the prefix the issue's line built, `u/1//`, the store
+  // finds no key rclone would ever store and the drive root comes back empty.
+  // That is the bug measured rather than described, and the real server's own
+  // answer to the same prefix is measured in the real test below.
   const buggy = await store.list("u/1//");
   assert.deepEqual(buggy, [], "a prefix with a second separator matches no object");
 });
@@ -253,15 +253,15 @@ test("on a real `rclone serve s3`, the drive root returns the files the account 
   // for every account, scoped per request.
   const store = createS3Store({ endpoint, bucket });
   const rows = await scopeStore(store, ACCOUNT).list("/");
-  assert.deepEqual(
-    rows.map((entry) => [entry.name, entry.kind, entry.path]),
-    [
-      ["photos", "folder", "/photos"],
-      ["holiday.jpg", "image", "/holiday.jpg"],
-    ],
-  );
+  // The rows, sorted for the assertion: rclone answers the folders it cut off
+  // before the keys inside the prefix, and nothing in the drive promises the
+  // page an order, so the row set is what is pinned here.
+  assert.deepEqual(rows.map((entry) => [entry.name, entry.kind, entry.path]).sort(), [
+    ["holiday.jpg", "image", "/holiday.jpg"],
+    ["photos", "folder", "/photos"],
+  ]);
   assert.equal(
-    rows.find((entry) => entry.name === "holiday.jpg")?.size,
+    Number(rows.find((entry) => entry.name === "holiday.jpg")?.size),
     "A's holiday bytes".length,
     "the row is the object rclone stores, with its own size",
   );
@@ -276,13 +276,10 @@ test("on a real `rclone serve s3`, the drive root returns the files the account 
   assert.equal(response.status, 200);
   /** @type {{rows: Array<{name: string, kind: string}>}} */
   const body = await response.json();
-  assert.deepEqual(
-    body.rows.map((row) => [row.name, row.kind]),
-    [
-      ["photos", "folder"],
-      ["holiday.jpg", "image"],
-    ],
-  );
+  assert.deepEqual(body.rows.map((row) => [row.name, row.kind]).sort(), [
+    ["holiday.jpg", "image"],
+    ["photos", "folder"],
+  ]);
 
   // The other account, over the same bucket and the same endpoint: its own
   // row, and none of the first account's bytes or rows.
