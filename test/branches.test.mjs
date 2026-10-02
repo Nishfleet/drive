@@ -294,6 +294,42 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
 });
 
+test("the folder walk hands each copy the size its listing reported", async () => {
+  // A file over S3's 5 GiB single-copy ceiling can only be copied the multipart
+  // way, and the only place its size is free is the listing the branch walk is
+  // already reading (drive#157): one extra request per file to learn it again
+  // is what a 100,000-file branch must not do. The size here is reported by the
+  // listing (no 6 GB of bytes exist in this test), which is where a real one
+  // gets it.
+  const { scoped, db } = await driven();
+  await scoped.write("/Photos/archive.iso", new Blob(["iso"]).stream(), "application/octet-stream");
+  const sixGb = 6 * 1024 ** 3;
+  /** @type {Array<{from: string, to: string, size: number|undefined}>} */
+  const copies = [];
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../src/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.name === "archive.iso" ? { ...entry, size: sixGb } : entry,
+      );
+    },
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return scoped.copy(from, to, size);
+    },
+  };
+  const branch = await createBranch(db, store, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(branch.files, 3);
+  assert.deepEqual(copies, [
+    { from: "/Photos/a.txt", to: `/${BRANCHES_FOLDER}/work/a.txt`, size: 1 },
+    { from: "/Photos/archive.iso", to: `/${BRANCHES_FOLDER}/work/archive.iso`, size: sixGb },
+    { from: "/Photos/sub/b.txt", to: `/${BRANCHES_FOLDER}/work/sub/b.txt`, size: 2 },
+  ]);
+});
+
 test("a branch never shows up as a folder in the drive root", async () => {
   const { scoped, db } = await driven();
   await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });

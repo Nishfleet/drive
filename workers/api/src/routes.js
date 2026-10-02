@@ -12,10 +12,12 @@ import {
   revokeDeviceTokenRoute,
 } from "./device-routes.js";
 import { storageEventsRoute } from "./event-routes.js";
+import { exportRoute } from "./export-routes.js";
 import {
   listKeysRoute,
   mintKeyRoute,
   revokeKeyRoute,
+  revokePresentedKeyRoute,
   storageListRoute,
   storageWriteRoute,
 } from "./key-routes.js";
@@ -120,12 +122,36 @@ export const routes = [
     handler: revokeKeyRoute,
   },
 
+  // ---- own-data export (account lifecycle, drive#34) ----
+  //
+  // A read of the signed-in account's own data: the account row, the
+  // account's keys, the file-name index and the version history. No other
+  // account's rows can appear — every statement is filtered on the account the
+  // gate resolved (export-routes.js). Account deletion and signing out every
+  // device, the two lifecycle items that delete customer data, are reserved
+  // and are not this route.
+  {
+    method: "GET",
+    path: "/v1/export",
+    auth: "account",
+    handler: exportRoute,
+  },
+
   // ---- the stand-in storage API (drive#55) ----
   //
   // Public in the registry because the key is the whole credential: Basic
   // auth with the access key id as the user and the secret as the password,
   // the same pair an S3 client presents. A revoked key is 401 and a path
   // outside the key's own prefix is 403 (key-routes.js).
+  // Public like the storage routes: the presented key IS the credential that
+  // revokes itself — `drive logout` calls this with what the rclone config
+  // holds, so a sign-out needs no session token.
+  {
+    method: "POST",
+    path: "/api/keys/revoke",
+    auth: "public",
+    handler: revokePresentedKeyRoute,
+  },
   {
     method: "GET",
     path: "/v1/storage/list",
