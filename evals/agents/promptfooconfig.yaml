@@ -37,7 +37,7 @@ providers:
       max_tokens: 4096
 
 evaluateOptions:
-  maxConcurrency: 2
+  maxConcurrency: 12
   repeat: 3
 
 outputPath: results/latest.json
