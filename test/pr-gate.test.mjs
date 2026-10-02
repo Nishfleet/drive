@@ -232,6 +232,9 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   const objects = new Map();
   /** @type {string[]} */
   const seen = [];
+  /** The prefix each listing asked for: the storage key the drive root hangs on. */
+  /** @type {string[]} */
+  const listed = [];
   /** @type {typeof fetch} */
   const server = async (url, init = {}) => {
     const method = init.method || "GET";
@@ -247,14 +250,39 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       return new Response(null, { status: 204 });
     }
     if (search.includes("list-type=2")) {
-      const prefix = new URLSearchParams(search).get("prefix");
-      const contents = [...objects.keys()]
-        .filter((name) => name.startsWith(prefix) && name !== prefix)
+      // One object per storage key, keyed the way `rclone serve s3` keys a file
+      // — a folder for every segment in the path — and answered the way rclone
+      // answers: with the delimiter the store sent, a key below the prefix is
+      // reported as a CommonPrefixes folder and a key inside it as Contents.
+      // The store root's listing depends on that split, so the stand-in has to
+      // make it (the keys of the account are the bucket, and `u/a//` matches
+      // no key rclone would ever store — drive issue #118).
+      const prefix = new URLSearchParams(search).get("prefix") ?? "";
+      const delimiter = new URLSearchParams(search).get("delimiter") ?? "";
+      listed.push(prefix);
+      const children = [...objects.keys()].filter(
+        (name) => name.startsWith(prefix) && name !== prefix,
+      );
+      /** @param {string} name @returns {string} */
+      const rest = (name) => name.slice(prefix.length);
+      const folderNames = [
+        ...new Set(
+          children
+            .filter((name) => rest(name).includes(delimiter))
+            .map((name) => rest(name).split(delimiter)[0]),
+        ),
+      ].filter((name) => name !== "");
+      const common = folderNames
+        .map((name) => `<CommonPrefixes><Prefix>${prefix}${name}/</Prefix></CommonPrefixes>`)
+        .join("");
+      const contents = children
+        .filter((name) => !rest(name).includes(delimiter))
         .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
         .join("");
-      return new Response(`<?xml version="1.0"?><ListBucketResult>${contents}</ListBucketResult>`, {
-        status: 200,
-      });
+      return new Response(
+        `<?xml version="1.0"?><ListBucketResult>${common}${contents}</ListBucketResult>`,
+        { status: 200 },
+      );
     }
     return objects.has(key)
       ? new Response(objects.get(key), { status: 200 })
@@ -333,6 +361,32 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
     "A's own bytes",
   );
   assert.deepEqual([...objects.keys()].sort(), ["u/a/photos/note.txt", "u/b/photos/note.txt"]);
+  // The drive root, the one listing the issue found empty: A's file at the
+  // root asks storage for `u/a/`, so the rows are the account's own. A second
+  // slash (`u/a//`) matches no key rclone stores, which is the empty drive the
+  // Web Files page showed against real storage.
+  assert.equal((await put(a, who("a", "A"), "/", "holiday.jpg", "A's own bytes")).status, 201);
+  const root = await (await get(a, who("a", "A"), "", "/")).json();
+  assert.deepEqual(
+    root.rows.map((row) => row.name),
+    ["photos", "holiday.jpg"],
+  );
+  // The same bucket, the other account: the root listing is the account's own
+  // rows, and A's root file is not one of them.
+  const bRoot = await (await get(b, who("b", "B"), "", "/")).json();
+  assert.deepEqual(
+    bRoot.rows.map((row) => row.name),
+    ["photos"],
+  );
+  // Every listing asked for the account's own prefix once, and no prefix has a
+  // second separator in it.
+  assert.ok(
+    listed.includes("u/a/") && listed.includes("u/b/"),
+    `both accounts listed their own root: ${JSON.stringify(listed)}`,
+  );
+  for (const prefix of listed) {
+    assert.ok(!prefix.includes("//"), `a listing prefix carries one separator: ${prefix}`);
+  }
   // Every request A made named A's prefix and no other account's.
   for (const request of seen) {
     const prefix = request.includes("u/a") ? "a" : request.includes("u/b") ? "b" : null;
