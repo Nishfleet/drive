@@ -553,6 +553,9 @@ export async function listBranches(db, store, account) {
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
+ * @returns {Promise<{name: string, state: string, applied: {added: string[], changed: string[], removed: string[]}}
+ *   |{error: string, status: number, files: string[]}
+ *   |{error: string, status: number}>}
  */
 export async function approveBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
@@ -653,6 +656,8 @@ export async function approveBranch(db, store, account, name) {
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
+ * @returns {Promise<{name: string, state: string, removed: number}
+ *   |{error: string, status: number}>}
  */
 export async function discardBranch(db, store, account, name) {
   const branch = await getBranch(db, account, name);
@@ -730,7 +735,7 @@ function sourceMoved(named, total) {
  *   POST   /api/branches/<name>/discard   throw it away
  *
  * @param {Request} request
- * @param {D1Database} db the branches table
+ * @param {unknown} db the branches table
  * @param {import("./files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
@@ -742,19 +747,20 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   if (!db || !store) {
     return json({ error: failureMessage("unexpected") }, 503);
   }
+  const database = /** @type {D1Database} */ (db);
   const scoped = scopeStore(store, account);
   const url = new URL(request.url);
   const rest = url.pathname.slice(BRANCHES_ENDPOINT.length).replace(/\/$/, "");
   if (rest === "") {
     if (request.method === "GET") {
-      return json({ branches: await listBranches(db, scoped, account) });
+      return json({ branches: await listBranches(database, scoped, account) });
     }
     if (request.method === "POST") {
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);
       }
-      const result = await createBranch(db, scoped, account, read.body, now);
+      const result = await createBranch(database, scoped, account, read.body, now);
       if (result.error) {
         return json(result, result.status);
       }
@@ -779,7 +785,7 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     if (request.method !== "GET") {
       return plain("Method not allowed. GET the branch's diff.", 405, { allow: "GET" });
     }
-    const branch = await getBranch(db, account, name);
+    const branch = await getBranch(database, account, name);
     if (!branch) {
       return json({ error: failureMessage("branch-not-found") }, 404);
     }
@@ -795,15 +801,18 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     });
   }
   if (action === "approve" && request.method === "POST") {
-    const result = await approveBranch(db, scoped, account, name);
-    if (result.error) {
+    const result = await approveBranch(database, scoped, account, name);
+    // `approveBranch` answers a union, so the failed arm is the one that
+    // carries a status; `"error" in result` is that arm's discriminator and
+    // narrows the success arm to the object `json` sends with a 200.
+    if ("error" in result) {
       return json(result, result.status);
     }
     return json(result);
   }
   if (action === "discard" && request.method === "POST") {
-    const result = await discardBranch(db, scoped, account, name);
-    if (result.error) {
+    const result = await discardBranch(database, scoped, account, name);
+    if ("error" in result) {
       return json(result, result.status);
     }
     return json(result);

@@ -75,12 +75,15 @@ const MOUNT_FLAGS = [
   "5s",
 ];
 
+/** @param {string} p */
 const sha256 = async (p) =>
   createHash("sha256")
     .update(await readFile(p))
     .digest("hex");
+/** @param {string} seed */
 const payload = (seed) => `${seed}\n${"drive step 3 payload ".repeat(64)}\n`;
 
+/** @param {string} bin */
 function runs(bin) {
   const probe = spawnSync(bin, ["version"], { stdio: "ignore" });
   return probe.status === 0;
@@ -96,10 +99,15 @@ let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 // The run inside the user namespace reports its outcome here, so the outer run
 // can tell a proven namespace run from one that skipped and exited 0.
 const RESULT_FILE = process.env.DRIVE_STANDIN_RESULT;
+/**
+ * @param {string} status
+ * @param {string} [detail]
+ */
 function reportResult(status, detail = "") {
   if (RESULT_FILE) writeFileSync(RESULT_FILE, detail ? `${status}: ${detail}\n` : `${status}\n`);
 }
 
+/** @param {string} p */
 function sha256OfFile(p) {
   const sum = spawnSync("sha256sum", [p], { encoding: "utf8" });
   if (sum.status !== 0) throw new Error(`sha256sum ${p} exited ${sum.status}: ${sum.stderr}`);
@@ -111,6 +119,10 @@ function sha256OfFile(p) {
 // download, not a compromised mirror (the sums come over the same channel).
 // Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns that
 // copy's integrity, so only the default download is checked here.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {string} zip
+ */
 function verifyReleaseChecksum(t, zip) {
   const name = path.basename(zip);
   const sumsUrl = `${RCLONE_RELEASE_URL}/SHA256SUMS`;
@@ -133,6 +145,7 @@ function verifyReleaseChecksum(t, zip) {
 // delete the only done-when evidence this step produces and leave CI green.
 // The download lands in a fresh private directory every run, so a binary left
 // behind in a shared temp path is never executed unverified.
+/** @param {import("node:test").TestContext} t */
 async function findStockRclone(t) {
   if (runs(rcloneBin)) return rcloneBin;
   const explicit = process.env.DRIVE_STANDIN_RCLONE;
@@ -173,14 +186,24 @@ async function findStockRclone(t) {
 
 // --- stand-in and machines --------------------------------------------------
 
+/** @returns {Promise<number>} */
 async function freePort() {
   const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string", "the stand-in listens on TCP");
+  const { port } = address;
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
 
+/**
+ * Storage the two mounts share: a real endpoint from the environment, or the
+ * local stand-in. `stop` is null for a real endpoint (nothing to tear down)
+ * and a closer for the stand-in.
+ * @typedef {{endpoint: string, bucket: string, prefix: string, accessKey: string, secretKey: string, source: string, stop: (() => Promise<void>) | null}} StorageCfg
+ * @returns {StorageCfg | null}
+ */
 function configuredStorage() {
   const {
     DRIVE_STANDIN_ENDPOINT,
@@ -191,15 +214,19 @@ function configuredStorage() {
   if (!DRIVE_STANDIN_ENDPOINT) return null;
   return {
     endpoint: DRIVE_STANDIN_ENDPOINT,
-    bucket: DRIVE_STANDIN_BUCKET,
+    bucket: DRIVE_STANDIN_BUCKET ?? "",
     prefix: process.env.DRIVE_STANDIN_PREFIX ?? "",
-    accessKey: DRIVE_STANDIN_ACCESS_KEY,
-    secretKey: DRIVE_STANDIN_SECRET_KEY,
+    accessKey: DRIVE_STANDIN_ACCESS_KEY ?? "",
+    secretKey: DRIVE_STANDIN_SECRET_KEY ?? "",
     source: "DRIVE_STANDIN_* environment (real storage)",
     stop: null,
   };
 }
 
+/**
+ * @param {string} dir
+ * @returns {Promise<StorageCfg>}
+ */
 async function startStandin(dir) {
   const bucket = "bucket";
   await run("mkdir", ["-p", path.join(dir, bucket)]);
@@ -249,6 +276,13 @@ async function startStandin(dir) {
   };
 }
 
+/**
+ * @typedef {{label: string, mountDir: string, child: import("node:child_process").ChildProcess}} Machine
+ * @param {string} label
+ * @param {string} workDir
+ * @param {StorageCfg} cfg
+ * @returns {Promise<Machine>}
+ */
 async function startMachine(label, workDir, cfg) {
   const configPath = path.join(workDir, `rclone-${label}.conf`);
   await writeFile(
@@ -301,7 +335,9 @@ async function startMachine(label, workDir, cfg) {
       const log = await readFile(logPath, "utf8").catch(() => "");
       const tail = log.split("\n").slice(-6).join("\n");
       const refused = /Operation not permitted|fusermount:/.test(`${stderr}${tail}`);
-      const err = new Error(`rclone mount ${label} exited ${child.exitCode}\n${stderr}${tail}`);
+      const err = /** @type {Error & {refusedFuse?: boolean}} */ (
+        new Error(`rclone mount ${label} exited ${child.exitCode}\n${stderr}${tail}`)
+      );
       if (refused) err.refusedFuse = true;
       throw err;
     }
@@ -326,6 +362,7 @@ async function startMachine(label, workDir, cfg) {
   }
 }
 
+/** @param {Machine} m */
 async function stopMachine(m) {
   m.child.kill("SIGTERM");
   const exited = new Promise((resolve) => m.child.once("exit", resolve));
@@ -335,6 +372,12 @@ async function stopMachine(m) {
   await run("fusermount", ["-uz", m.mountDir]).catch(() => {});
 }
 
+/**
+ * @param {string} mountDir
+ * @param {string} name
+ * @param {number} seconds
+ * @returns {Promise<{seconds: number} | null>}
+ */
 async function waitForFile(mountDir, name, seconds) {
   const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
@@ -366,8 +409,14 @@ test("the mount flags in docs/build-spec.md are the flags the proof runs", async
   }
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {string} workDir
+ */
 async function proof(t, workDir) {
+  /** @type {Machine[]} */
   const running = [];
+  /** @type {StorageCfg | null} */
   let standin = null;
   // One teardown, both for the t.after at test end and for the direct-mount
   // failure path: the catch in the test calls it before re-executing inside a
@@ -383,6 +432,7 @@ async function proof(t, workDir) {
   // Two lines instead of one, so nothing runs inside the call to standin(): the
   // right-hand side can await, and an assignment inside a call reads like a
   // side effect the function might not perform (drive issue #92).
+  /** @type {StorageCfg | null} */
   let cfg = configuredStorage();
   if (!cfg) {
     standin = await startStandin(path.join(workDir, "standin"));
@@ -476,8 +526,9 @@ test("a save on one machine reaches the other, both ways, with matching checksum
     reportResult("proved");
     return;
   } catch (err) {
-    if (!err.refusedFuse) throw err;
-    t.diagnostic(`a direct mount was refused here: ${err.message.split("\n")[0]}`);
+    const refused = /** @type {Error & {refusedFuse?: boolean}} */ (err);
+    if (!refused.refusedFuse) throw err;
+    t.diagnostic(`a direct mount was refused here: ${refused.message.split("\n")[0]}`);
   }
 
   // This host refuses an unprivileged FUSE mount (AppArmor on the VPS), so run

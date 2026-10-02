@@ -19,17 +19,23 @@ class BodyTooLargeError extends Error {
 
 /**
  * Returns { email, source } or { error }.
- * @param {{email?: unknown, source?: unknown}} input
+ * `input` is the parsed body, which is `unknown`: the guard this function is
+ * exists to reject a body that is not an object at all, so its parameter
+ * cannot be typed as if it already were one. After the by-shape check the
+ * value is bound to one local so each property read below is a plain object
+ * read (drive #162).
+ * @param {unknown} input
  * @returns {{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
  */
 export function validateSignup(input) {
   if (typeof input !== "object" || input === null) {
     return { error: "Send a JSON object with an email." };
   }
-  if (typeof input.email !== "string") {
+  const signup = /** @type {{email?: unknown, source?: unknown}} */ (input);
+  if (typeof signup.email !== "string") {
     return { error: "An email address is required." };
   }
-  const email = input.email.trim().toLowerCase();
+  const email = signup.email.trim().toLowerCase();
   if (email.length === 0) {
     return { error: "An email address is required." };
   }
@@ -39,7 +45,7 @@ export function validateSignup(input) {
   if (!isEmail(email)) {
     return { error: "That does not look like an email address." };
   }
-  const requested = typeof input.source === "string" ? input.source.trim() : "";
+  const requested = typeof signup.source === "string" ? signup.source.trim() : "";
   const source = SOURCES.includes(requested) ? requested : SOURCES[0];
   return { email, source };
 }

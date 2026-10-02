@@ -43,9 +43,18 @@ test("scopeFor reads its capabilities from the one table", () => {
 });
 
 test("an unknown kind is refused, and not through the prototype chain", () => {
-  assert.throws(() => scopeFor("mystery", "a1"), /Unknown key kind/);
-  assert.throws(() => scopeFor("constructor", "a1"), /Unknown key kind/);
-  assert.throws(() => scopeFor("__proto__", "a1"), /Unknown key kind/);
+  assert.throws(
+    () => scopeFor(/** @type {never} */ (/** @type {unknown} */ ("mystery")), "a1"),
+    /Unknown key kind/,
+  );
+  assert.throws(
+    () => scopeFor(/** @type {never} */ (/** @type {unknown} */ ("constructor")), "a1"),
+    /Unknown key kind/,
+  );
+  assert.throws(
+    () => scopeFor(/** @type {never} */ (/** @type {unknown} */ ("__proto__")), "a1"),
+    /Unknown key kind/,
+  );
 });
 
 const badAccountIds = [
@@ -67,7 +76,7 @@ const badAccountIds = [
 test("an account id that could point outside its own folder is refused", () => {
   for (const accountId of badAccountIds) {
     assert.throws(
-      () => scopeFor("device", accountId),
+      () => scopeFor("device", /** @type {string} */ (/** @type {unknown} */ (accountId))),
       /account id/i,
       `account id ${JSON.stringify(accountId)} must be refused`,
     );
@@ -90,7 +99,12 @@ const badBranchNames = [
 test("a branch name that could point outside the branches folder is refused", () => {
   for (const name of badBranchNames) {
     assert.throws(
-      () => scopeFor("branch", "a1", { name }),
+      () =>
+        scopeFor(
+          "branch",
+          "a1",
+          /** @type {{name?: string}} */ (/** @type {unknown} */ ({ name })),
+        ),
       /branch name/i,
       `branch name ${JSON.stringify(name)} must be refused`,
     );
@@ -98,7 +112,10 @@ test("a branch name that could point outside the branches folder is refused", ()
 });
 
 test("a branch key without options at all is refused", () => {
-  assert.throws(() => scopeFor("branch", "a1", null), /options/i);
+  assert.throws(
+    () => scopeFor("branch", "a1", /** @type {{name?: string}} */ (/** @type {unknown} */ (null))),
+    /options/i,
+  );
   assert.throws(() => scopeFor("branch", "a1", {}), /branch name/i);
 });
 

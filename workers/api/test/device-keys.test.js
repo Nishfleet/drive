@@ -6,10 +6,15 @@ import { createMemoryStore, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js"
 
 // A clock the test owns, so a device token can be pushed past its TTL without
 // sleeping; the store reads `now` from the context it is given.
+/**
+ * @param {number} [startMs]
+ * @returns {{now: () => number, advance: (seconds: number) => void}}
+ */
 function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
   let now = startMs;
   return {
     now: () => now,
+    /** @param {number} seconds */
     advance: (seconds) => {
       now += seconds * 1000;
     },
@@ -20,10 +25,15 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
 // binding's whole contract is `limit({ key }) -> { success }`, the same fake
 // the site Worker's tests drive; every call is recorded so a test can assert
 // the bucket and that a refused request never reaches the store.
+/**
+ * @param {{success?: boolean}} [options]
+ */
 function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
   const calls = [];
   return {
     calls,
+    /** @param {{key: string}} options */
     async limit(options) {
       calls.push(options);
       return { success };
@@ -44,6 +54,7 @@ function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
 //   - each connected tool has its own key, and reading another user's prefix
 //     fails.
 
+/** @param {ReturnType<typeof createMemoryStore>} store @param {{id: string, name: string}|null} account */
 function baseCtx(store, account) {
   // The two edge limits the device routes fail closed without (drive issue
   // #147): fake pass-throughs, so every test that walks the device flow does
@@ -51,7 +62,11 @@ function baseCtx(store, account) {
   return { env: limits(), db: null, store, account, now: () => 0 };
 }
 
-/** Walk the device flow and return the signed-in account and its token. */
+/** Walk the device flow and return the signed-in account and its token.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} name
+ * @returns {Promise<{account: {id: string, name: string}, deviceToken: string}>}
+ */
 async function signIn(store, name) {
   const codeRes = await dispatch(
     new Request("https://api.test/v1/device/code", {
@@ -95,10 +110,12 @@ async function signIn(store, name) {
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
+/** @param {string} token @returns {{authorization: string}} */
 function bearer(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+/** @param {string} accessKeyId @param {string} secret @returns {{authorization: string}} */
 function basic(accessKeyId, secret) {
   return { authorization: `Basic ${btoa(`${accessKeyId}:${secret}`)}` };
 }
@@ -368,6 +385,11 @@ test("a storage request with no or bad Basic auth is a 401 with a challenge", as
 // and the revoke route lets `drive logout` kill it server-side. Both land in
 // the bearer lookup, so a dead token is a 401 on /v1/keys before any handler.
 
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {{id: string, name: string}|null} account
+ * @param {{now: () => number}} clock
+ */
 function clockCtx(store, account, clock) {
   return { env: {}, db: null, store, account, now: clock.now };
 }

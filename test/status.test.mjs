@@ -53,11 +53,24 @@ import {
 } from "../src/status.js";
 import { createTestAuth, signIn } from "./harness.mjs";
 
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
 // The page's shell, read for the structure the module fills and the script tag
 // that loads it. Its copy is not read here: there is no copy in it to drift.
 const shell = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const now = Date.parse("2026-09-30T12:00:00.000Z");
+/** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
 
 test("the install command is drive init, and the steps walk through it", () => {
@@ -257,6 +270,7 @@ test("a request can only prove an account through a session Better Auth minted",
     new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
     made.auth,
   );
+  assert.ok(proved);
   assert.equal(proved.email, "someone@example.com", "a minted session is an account");
   assert.equal(proved.id, account.id, "the session names the account that signed in");
   assert.equal(
@@ -285,12 +299,12 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // sign-in flow yet the Worker's gate is closed, so the route answers 401.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/first-run-status", "/api/first-run-status/"]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
     assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
   }
   // The waitlist route is untouched, and a stray path is still the asset 404.
-  const asset = await worker.fetch(new Request("https://drive.test/get-started"), env);
+  const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
 });
 
