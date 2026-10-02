@@ -27,6 +27,7 @@ import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 /** @param {string} path @returns {string} */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -232,7 +233,6 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   const objects = new Map();
   /** @type {string[]} */
   const seen = [];
-  /** The prefix each listing asked for: the storage key the drive root hangs on. */
   /** @type {string[]} */
   const listed = [];
   /** @type {typeof fetch} */
@@ -250,42 +250,10 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       return new Response(null, { status: 204 });
     }
     if (search.includes("list-type=2")) {
-      // One object per storage key, keyed the way `rclone serve s3` keys a file
-      // — a folder for every segment in the path — and answered the way rclone
-      // answers: with the delimiter the store sent, a key below the prefix is
-      // reported as a CommonPrefixes folder and a key inside it as Contents.
-      // The store root's listing depends on that split, so the stand-in has to
-      // make it (the keys of the account are the bucket, and `u/a//` matches
-      // no key rclone would ever store — drive issue #118).
-      const prefix = new URLSearchParams(search).get("prefix") ?? "";
-      const delimiter = new URLSearchParams(search).get("delimiter") ?? "";
-      listed.push(prefix);
-      const children = [...objects.keys()].filter(
-        (name) => name.startsWith(prefix) && name !== prefix,
-      );
-      /** @param {string} name @returns {string} */
-      const rest = (name) => name.slice(prefix.length);
-      // A listing with no delimiter answers every key inside the prefix as
-      // Contents, which is what rclone does, so the split only happens when the
-      // store sent one.
-      const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
-      const folderNames = [
-        ...new Set(children.filter(deeper).map((name) => rest(name).split(delimiter)[0])),
-      ].filter((name) => name !== "");
-      const common = folderNames
-        .map(
-          (name) =>
-            `<CommonPrefixes><Prefix>${prefix}${name}${delimiter}</Prefix></CommonPrefixes>`,
-        )
-        .join("");
-      const contents = children
-        .filter((name) => !deeper(name))
-        .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
-        .join("");
-      return new Response(
-        `<?xml version="1.0"?><ListBucketResult>${common}${contents}</ListBucketResult>`,
-        { status: 200 },
-      );
+      return rcloneListResponse(objects, search, {
+        bucket: "drive",
+        onPrefix: (p) => listed.push(p),
+      });
     }
     return objects.has(key)
       ? new Response(objects.get(key), { status: 200 })

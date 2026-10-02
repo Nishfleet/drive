@@ -22,12 +22,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const OTHER = { id: "2", name: "Someone else" };
@@ -46,49 +46,6 @@ function rcloneRuns(bin) {
   return spawnSync(bin, ["version"], { stdio: "ignore" }).status === 0;
 }
 
-/** @returns {Promise<number>} */
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
-  const address = server.address();
-  assert.ok(address !== null && typeof address !== "string", "the stand-in listens on TCP");
-  const { port } = address;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
-// The XML `rclone serve s3` answers a ListObjectsV2 with, with the capture's
-// own shape: a CommonPrefixes entry per folder the delimiter cut off and a
-// Contents entry per key inside the prefix. A prefix that matches nothing
-// answers with the header pair and no rows, which is the empty root this issue
-// found.
-/** @param {{bucket: string, prefix: string, delimiter: string, folders: string[], files: Array<{name: string, size: number}>}} answer @returns {string} */
-const listXml = ({ bucket, prefix, delimiter, folders, files }) => {
-  const common = folders
-    .map(
-      (name) =>
-        `  <CommonPrefixes>\n    <Prefix>${prefix}${name}${delimiter}</Prefix>\n  </CommonPrefixes>`,
-    )
-    .join("\n");
-  const contents = files
-    .map(
-      ({ name, size }) =>
-        `  <Contents>\n    <Key>${name}</Key>\n    <Size>${size}</Size>\n  </Contents>`,
-    )
-    .join("\n");
-  const rows = [common, contents].filter((row) => row !== "").join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-  <Name>${bucket}</Name>
-  <IsTruncated>false</IsTruncated>
-  <Delimiter>${delimiter}</Delimiter>
-  <Prefix>${prefix}</Prefix>
-  <MaxKeys>1000</MaxKeys>
-${rows}
-  <KeyCount>${folders.length + files.length}</KeyCount>
-</ListBucketResult>`;
-};
-
 // A stand-in that keys its objects exactly as rclone does: `u/<id>/a/b.txt` is
 // one key, a folder level for every segment, and a listing answers one level of
 // the prefix it was asked for.
@@ -106,31 +63,7 @@ const rcloneShaped = (objects, bucket) => {
       return new Response(null, { status: 200 });
     }
     if (search.includes("list-type=2")) {
-      const query = new URLSearchParams(search);
-      const prefix = query.get("prefix") ?? "";
-      const delimiter = query.get("delimiter") ?? "";
-      prefixes.push(prefix);
-      // One object per key, and the delimiter cuts one level off the prefix,
-      // exactly as rclone answers: a key below the prefix is a folder, a key
-      // inside it is a row.
-      const children = [...objects.keys()].filter(
-        (name) => name.startsWith(prefix) && name !== prefix,
-      );
-      /** @param {string} name @returns {string} */
-      const rest = (name) => name.slice(prefix.length);
-      // A listing with no delimiter answers every key inside the prefix as
-      // Contents, which is what rclone does, so the split happens only when the
-      // store sent a delimiter.
-      const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
-      const folders = [
-        ...new Set(children.filter(deeper).map((name) => rest(name).split(delimiter)[0])),
-      ].filter((name) => name !== "");
-      const files = children
-        .filter((name) => !deeper(name))
-        .map((name) => ({ name, size: (objects.get(name) ?? "").length }));
-      return new Response(listXml({ bucket, prefix, delimiter, folders, files }), {
-        status: 200,
-      });
+      return rcloneListResponse(objects, search, { bucket, onPrefix: (p) => prefixes.push(p) });
     }
     return objects.has(key)
       ? new Response(objects.get(key), { status: 200 })
@@ -187,11 +120,11 @@ test("the stand-in keys objects the way `rclone serve s3` does, and the root lis
     assert.ok(!prefix.includes("//"), `a listing prefix carries one separator: ${prefix}`);
   }
 
-  // The counterfactual, on this same stand-in and through the shipped
-  // store: asked for the prefix the issue's line built, `u/1//`, the store
-  // finds no key rclone would ever store and the drive root comes back empty.
-  // That is the bug measured rather than described, and the real server's own
-  // answer to the same prefix is measured in the real test below.
+  // The bug shape the issue found: a prefix with a second separator
+  // matches no key rclone stores, so the root comes back empty.
+  // The pin that survives a prefix-construction refactor is the
+  // emitted prefix above (each account's own `u/<id>/` once); this
+  // counterfactual shows the empty root the old buggy line would have returned.
   const buggy = await store.list("u/1//");
   assert.deepEqual(buggy, [], "a prefix with a second separator matches no object");
 });
@@ -212,12 +145,11 @@ test("on a real `rclone serve s3`, the drive root returns the files the account 
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, body);
   }
-  const port = await freePort();
   const rclone = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
   // No --auth-key: the shipped S3 store sends unsigned requests (the scoped,
   // signed adapter is issue #2), so an authenticated stand-in would refuse the
   // very requests this proof measures.
-  const server = spawn(rclone, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
+  const server = spawn(rclone, ["serve", "s3", dir, "--addr", "127.0.0.1:0"], {
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
@@ -226,20 +158,28 @@ test("on a real `rclone serve s3`, the drive root returns the files the account 
   });
   t.after(() => server.kill("SIGTERM"));
   const deadline = Date.now() + 20_000;
+  /** @type {number|null} */
+  let port = null;
   for (;;) {
     if (server.exitCode !== null) {
       throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
     }
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/${BUCKET}?list-type=2&prefix=u%2F1%2F&delimiter=%2F`,
-      );
-      if (response.ok) {
-        await response.text();
-        break;
+    if (port === null) {
+      const m = stderr.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+      if (m) port = Number(m[1]);
+    }
+    if (port !== null) {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/${BUCKET}?list-type=2&prefix=u%2F1%2F&delimiter=%2F`,
+        );
+        if (response.ok) {
+          await response.text();
+          break;
+        }
+      } catch {
+        // Not listening yet.
       }
-    } catch {
-      // Not listening yet.
     }
     if (Date.now() > deadline) {
       throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
