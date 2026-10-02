@@ -72,7 +72,10 @@ test("bench/baseline.json names every ratchet row, with 10+ runs and noise small
       ratchetBand(row) < Math.max(0.5 * row.mean, 0.05),
       `${id}: noise ${row.stddev} must be smaller than the regression it is meant to catch`,
     );
-    assert.ok(row.tool === "hyperfine" || row.tool === "go-bench", `${id}: tool is hyperfine or go-bench`);
+    assert.ok(
+      row.tool === "hyperfine" || row.tool === "go-bench",
+      `${id}: tool is hyperfine or go-bench`,
+    );
   }
 });
 
@@ -102,7 +105,10 @@ test("hyperfine JSON export is the stats the CLI row compares", () => {
   assert.ok(r.times.length >= 10);
   assert.equal(typeof r.mean, "number");
   assert.equal(typeof r.stddev, "number");
-  assert.equal(ratchetVerdict({ mean: 0.002, stddev: 0.0003 }, { mean: r.mean, stddev: r.stddev }), "ok");
+  assert.equal(
+    ratchetVerdict({ mean: 0.002, stddev: 0.0003 }, { mean: r.mean, stddev: r.stddev }),
+    "ok",
+  );
   assert.equal(
     ratchetVerdict({ mean: 0.002, stddev: 0.0003 }, { mean: 0.002 + 0.05, stddev: 0.0003 }),
     "slower",
@@ -127,7 +133,11 @@ test("docs/scoreboard.md points each ratchet row at bench/baseline.json", () => 
     const found = rows.find((cells) => cells[0] === metric);
     assert.ok(found, `scoreboard missing ${metric}`);
     const us = found[2];
-    assert.match(us, /bench\/baseline\.json/, `${metric}: the us cell must point at the baseline file`);
+    assert.match(
+      us,
+      /bench\/baseline\.json/,
+      `${metric}: the us cell must point at the baseline file`,
+    );
     for (const id of ids) {
       assert.match(us, new RegExp(`\`${id}\``), `${metric}: the us cell must name row ${id}`);
     }
