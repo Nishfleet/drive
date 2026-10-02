@@ -68,6 +68,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
 | `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
+| `drive uninstall` | Stop the mount and remove the login item that starts it at the next login. The files in the drive folder, the key and the config are kept — `drive logout` is the command that revokes the key and deletes the config. |
 
 ## Screens (v1)
 
