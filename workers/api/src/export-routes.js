@@ -25,6 +25,14 @@ import { all } from "./db.js";
 import { errorResponse, json } from "./http.js";
 
 /**
+ * How many rows one export page carries. A Worker response cannot hold a
+ * drive's whole file history, so the export is a bounded page and says so;
+ * the cap is a round number that keeps the JSON well inside a Worker's
+ * response limits while still being one document a person can read.
+ */
+export const EXPORT_ROW_CAP = 5000;
+
+/**
  * A nullable column as the export carries it: a time a row does not have yet
  * (a key never seen, a version not yet hidden) is `null`, never an epoch zero,
  * so a saved document cannot claim something happened in 1970. Anything that
@@ -42,7 +50,7 @@ function nullable(value, read) {
 /**
  * GET /v1/export — the caller's own account data as one JSON document.
  * @param {Request} request
- * @param {{store: {listKeys: (account: {id: string}) => Array<{keyId: string, name: string, kind: string, prefix: string, capabilities: string[], createdAt: number, lastSeenAt: number|null, revokedAt: number|null}>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number}} ctx
+ * @param {{store: {listKeys: (account: {id: string}) => Array<{keyId: string, name: string, kind: string, prefix: string, capabilities: string[], createdAt: number, lastSeenAt: number|null, revokedAt: number|null}>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number, url?: URL}} ctx
  */
 export async function exportRoute(request, ctx) {
   if (request.method !== "GET") {
@@ -57,31 +65,57 @@ export async function exportRoute(request, ctx) {
     return errorResponse(401, "Sign in to export your drive.");
   }
 
-  const keys = ctx.store.listKeys(account).map((key) => ({
-    keyId: key.keyId,
-    name: key.name,
-    kind: key.kind,
-    prefix: key.prefix,
-    capabilities: key.capabilities,
-    createdAt: key.createdAt,
-    lastSeenAt: key.lastSeenAt,
-    revokedAt: key.revokedAt,
-  }));
+  // `listKeys` already answers the public shape (keystore.js `publicDevice`:
+  // the key id, kind, prefix, capabilities and the three instants, with no
+  // secret at all — the store keeps only a hash). The export carries those
+  // rows as they are, so the key half cannot gain a field the rest of the api
+  // never shows and there is no second copy of the shape to drift.
+  const keys = ctx.store.listKeys(account);
+  // The file index and the version history are the customer database's
+  // (DRIVE_DB). A deployment with no database bound has no files to name, so
   // The file index and the version history are the customer database's
   // (DRIVE_DB). A deployment with no database bound has no files to name, so
   // the answer carries empty lists rather than failing: an account with no
   // database yet has an account and keys and nothing else, and that is a
   // truthful export.
+  //
+  // Each list is read with a cap (EXPORT_ROW_CAP) and a keyset cursor, so a
+  // drive with more rows than one Worker response can hold is walked a page at
+  // a time instead of read whole. The reads are bounded by the cap, and
+  // `truncated` is set whenever a page came back full, so a partial export can
+  // never be mistaken for a complete one — a person who is told "you have no
+  // versions" when the page simply stopped would keep a data loss they never
+  // saw. The cursor is the last row's sort key, so the next page continues
+  // where this one stopped.
   const files = [];
   const versions = [];
+  let filesTruncated = false;
+  let versionsTruncated = false;
+  let nextFileCursor = null;
+  let nextVersionCursor = null;
+  // The cursors a previous page ended on, read back from the request so a
+  // caller can walk a large drive page by page with the same route. They are
+  // the last row's sort key and nothing else: a cursor is a position in this
+  // account's own ordered rows, never a way to name another account.
+  const params = ctx.url?.searchParams;
+  const fileCursor = params?.get("fileCursor") ?? "";
+  const versionCursorAt = Number.parseInt(params?.get("versionAt") ?? "-1", 10);
+  const versionCursorId = params?.get("versionId") ?? "";
   if (ctx.db) {
+    // ?cursor resumes after the last path of the previous page (the file index
+    // is ordered by path and indexed on (account_id, name) with path as the
+    // primary key, so a keyset on path is index-backed and does not skip or
+    // repeat a row the way an offset would).
     const fileRows = await all(
       ctx.db,
       `SELECT path, name, parent, size_bytes, modified_at, indexed_at
          FROM file_index
-        WHERE account_id = ?1
-        ORDER BY path`,
+        WHERE account_id = ?1 AND (?2 = '' OR path > ?2)
+        ORDER BY path
+        LIMIT ?3`,
       account.id,
+      fileCursor,
+      EXPORT_ROW_CAP + 1,
     );
     for (const row of fileRows) {
       const file = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
@@ -94,13 +128,28 @@ export async function exportRoute(request, ctx) {
         indexedAt: nullable(file.indexed_at, (raw) => String(raw)),
       });
     }
+    if (files.length > EXPORT_ROW_CAP) {
+      files.length = EXPORT_ROW_CAP;
+      filesTruncated = true;
+    }
+    if (filesTruncated) {
+      nextFileCursor = files.at(-1)?.path ?? null;
+    }
+    // The version index is (account_id, created_at), so the keyset is
+    // (created_at, b2_file_id): created_at rides the index and b2_file_id
+    // breaks the ties between versions written in the same millisecond.
     const versionRows = await all(
       ctx.db,
       `SELECT b2_file_id, path, size_bytes, created_at, hidden_at, deleted_at
          FROM file_versions
         WHERE account_id = ?1
-        ORDER BY created_at, b2_file_id`,
+          AND (?2 < 0 OR created_at > ?2 OR (created_at = ?2 AND b2_file_id > ?3))
+        ORDER BY created_at, b2_file_id
+        LIMIT ?4`,
       account.id,
+      Number.isNaN(versionCursorAt) ? -1 : versionCursorAt,
+      versionCursorId,
+      EXPORT_ROW_CAP + 1,
     );
     for (const row of versionRows) {
       const version = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
@@ -112,6 +161,14 @@ export async function exportRoute(request, ctx) {
         hiddenAt: nullable(version.hidden_at, (raw) => Number(raw)),
         deletedAt: nullable(version.deleted_at, (raw) => Number(raw)),
       });
+    }
+    if (versions.length > EXPORT_ROW_CAP) {
+      versions.length = EXPORT_ROW_CAP;
+      versionsTruncated = true;
+    }
+    if (versionsTruncated) {
+      const last = versions.at(-1);
+      nextVersionCursor = last === undefined ? null : { at: last.createdAt, id: last.b2FileId };
     }
   }
 
@@ -125,5 +182,14 @@ export async function exportRoute(request, ctx) {
     keys,
     files,
     versions,
+    // A partial export says so. A person told "you have no versions" when the
+    // page simply stopped would keep a data loss they never saw, so a list
+    // that stopped at the cap carries the flag and the cursor that continues
+    // it. An export that fit carries `complete: true`.
+    complete: !filesTruncated && !versionsTruncated,
+    next: {
+      fileCursor: nextFileCursor,
+      versionCursor: nextVersionCursor,
+    },
   });
 }

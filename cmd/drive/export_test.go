@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The api Worker's own answer for GET /v1/export, exactly the shape
@@ -27,7 +29,9 @@ const exportBody = `{
   "versions": [
     {"b2FileId": "f1", "path": "/notes.txt", "sizeBytes": 120,
      "createdAt": 1759000000000, "hiddenAt": null, "deletedAt": null}
-  ]
+  ],
+  "complete": true,
+  "next": {"fileCursor": null, "versionCursor": null}
 }`
 
 // exportServer stands in for the api Worker: it answers the one route with
@@ -159,5 +163,85 @@ func TestExportRejectsAnUnexpectedArgument(t *testing.T) {
 	home := t.TempDir()
 	if err := runExport([]string{"--home", home, "extra"}); err == nil {
 		t.Fatal("an unexpected argument must be refused")
+	}
+}
+
+func TestExportWalksEveryPageAndMergesThem(t *testing.T) {
+	// The route is a bounded page, so a drive larger than one page is walked
+	// cursor by cursor here and merged into the one document the person saves.
+	// Two pages: the first reports `complete: false` and a cursor, the second
+	// completes. The saved document must carry both pages' files, and the
+	// keys exactly once (the route reads the whole key list on every page).
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		pages++
+		if r.URL.Query().Get("fileCursor") == "" {
+			fmt.Fprint(w, `{"account":{"id":"acct_1","name":"N","email":"n@x.com"},
+        "keys":[{"keyId":"k1","name":"mac","kind":"device","prefix":"u/a/",
+                 "capabilities":[],"createdAt":1,"lastSeenAt":null,"revokedAt":null}],
+        "files":[{"path":"/a.txt","name":"a.txt","parent":"/","sizeBytes":1}],
+        "complete":false,"next":{"fileCursor":"/a.txt","versionCursor":null}}`)
+			return
+		}
+		fmt.Fprint(w, `{"account":{"id":"acct_1","name":"N","email":"n@x.com"},
+        "keys":[{"keyId":"k1","name":"mac","kind":"device","prefix":"u/a/",
+                 "capabilities":[],"createdAt":1,"lastSeenAt":null,"revokedAt":null}],
+        "files":[{"path":"/b.txt","name":"b.txt","parent":"/","sizeBytes":2}],
+        "complete":true,"next":{"fileCursor":null,"versionCursor":null}}`)
+	}))
+	defer server.Close()
+	home := exportHome(t, server.URL, "dtok_test")
+
+	out := filepath.Join(home, "account.json")
+	if err := runExport([]string{"--home", home, "--out", out}); err != nil {
+		t.Fatal(err)
+	}
+	if pages != 2 {
+		t.Errorf("the export made %d requests, want 2 (one page, then the cursor)", pages)
+	}
+	raw, _ := os.ReadFile(out)
+	var document ExportDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Files) != 2 {
+		t.Errorf("export files = %d, want both pages' files merged", len(document.Files))
+	}
+	if len(document.Keys) != 1 {
+		t.Errorf("export keys = %d, want the one key (not doubled by paging)", len(document.Keys))
+	}
+	if !document.Complete {
+		t.Error("the merged document should be complete")
+	}
+}
+
+func TestExportStopsWhenAPageNeverCompletes(t *testing.T) {
+	// A server that always reports `complete: false` with a moving cursor
+	// would otherwise loop forever holding a hung terminal. The walk is
+	// bounded, so it gives up with a named error and writes nothing.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		// A cursor that moves by one each time, so the loop's own page bound
+		// is what stops it.
+		n := r.URL.Query().Get("n")
+		step := 0
+		fmt.Sscanf(n, "%d", &step)
+		fmt.Fprintf(w, `{"account":{"id":"acct_1","name":"N","email":"n@x.com"},
+        "keys":[],"files":[],"complete":false,
+        "next":{"fileCursor":"/f%d","versionCursor":null}}`, step+1)
+	}))
+	defer server.Close()
+	home := exportHome(t, server.URL, "dtok_test")
+
+	done := make(chan error, 1)
+	go func() { done <- runExport([]string{"--home", home}) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a server that never completes must end in an error, not a hang")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the export loop did not stop against a server that never completes")
 	}
 }

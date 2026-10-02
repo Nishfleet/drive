@@ -74,6 +74,39 @@ function methodSetKey(methods) {
 }
 
 /**
+ * The registered path a concrete request path matches, or null when it matches
+ * none. Hono reports a param route's 405 with the concrete path
+ * (`/v1/keys/k1` for the registered `/v1/keys/:keyId`) and `routePath` is the
+ * wildcard middleware's own `/*` there, so the 405's Allow lookup needs the
+ * registered spelling back. Matching is by segment count with `:params`
+ * matching any one segment, which is the shape the registry itself uses; a
+ * path Hono matched always resolves, and a path it did not match is already a
+ * 404 that never reaches the 405 callback.
+ * @param {ReadonlyMap<string, unknown>} registered
+ * @param {string} pathname
+ * @returns {string|null}
+ */
+function registeredPathFor(registered, pathname) {
+  if (registered.has(pathname)) {
+    return pathname;
+  }
+  const segments = pathname.split("/");
+  for (const path of registered.keys()) {
+    const pattern = path.split("/");
+    if (pattern.length !== segments.length) {
+      continue;
+    }
+    const matches = pattern.every(
+      (part, index) => part.startsWith(":") || part === segments[index],
+    );
+    if (matches) {
+      return path;
+    }
+  }
+  return null;
+}
+
+/**
  * Call a registry handler with the decoded params and the standard ctx shape.
  * A path whose percent-escape cannot be decoded is a `400` here, before any
  * handler runs: Hono leaves a malformed escape untouched rather than
@@ -239,13 +272,19 @@ export function createApp(table = routes) {
         /** @type {import("hono").Context<{Bindings: Ctx, Variables: ApiVariables}>} */ c,
         /** @type {string[]} */ methods,
       ) => {
+        // The registered path, not the concrete one: Hono reports a param
+        // route's 405 with the path the request actually carried
+        // (`/v1/keys/k1`), while the map is keyed by the registry's spelling
+        // (`/v1/keys/:keyId`). A path that matches no registered one is one
+        // Hono did not route at all, which is a 404, so the null case is the
+        // closed default: no method is disclosed.
+        const registered = registeredPathFor(byPath, c.req.path);
+        const key = registered === null ? null : `${registered} ${methodSetKey(methods)}`;
         const allow = methods.filter(
           (method) =>
             method !== "HEAD" &&
             (c.get("account") != null ||
-              (anonymousAllow.get(`${c.req.path} ${methodSetKey(methods)}`) ?? new Set()).has(
-                method,
-              )),
+              (key === null ? undefined : anonymousAllow.get(key))?.has(method) === true),
         );
         return errorResponse(405, "That method is not allowed here.", {
           allow: allow.join(", "),

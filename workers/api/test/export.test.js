@@ -7,6 +7,7 @@ import { test } from "node:test";
 import "urlpattern-polyfill";
 import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
 import { createD1DeviceSigninStore } from "../src/device-signin.js";
+import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
 
@@ -44,10 +45,12 @@ function exportD1(sqlite) {
     /** @type {unknown} */ ({
       ...inner,
       /** db.batch (workers/api/src/db.js) hands over prepared, bound
-       * statements; d1Over's `_exec` re-runs one against SQLite. */
+       * statements; d1Over's `_exec` re-runs one against SQLite. D1's batch
+       * answers `Promise<D1Result[]>`, so the array of promises is awaited
+       * here rather than handed back unresolved. */
       /** @param {Array<{_exec: () => Promise<unknown>}>} stmts */
-      batch(stmts) {
-        return stmts.map((statement) => statement._exec());
+      async batch(stmts) {
+        return Promise.all(stmts.map((statement) => statement._exec()));
       },
     })
   );
@@ -86,11 +89,12 @@ test("GET /v1/export returns only the caller's account data", async () => {
   const tokenA = await mint(accountA);
   const tokenB = await mint(accountB);
 
-  // Each account mints one key (device/agent) — the memory store holds
-  // them locally keyed by account id, and the export reads them via
-  // store.listKeys(account).
-  await store.mintKey(accountA, { kind: "agent", name: "tool-a" });
-  await store.mintKey(accountB, { kind: "device", name: "tool-b" });
+  // Each account mints one key (device/agent). The mint's access key id and
+  // secret are the material that must never reach the export, so they are held
+  // here and checked for by value below rather than by the word "secret",
+  // which a leak would not contain.
+  const mintedA = await store.mintKey(accountA, { kind: "agent", name: "tool-a" });
+  const mintedB = await store.mintKey(accountB, { kind: "device", name: "tool-b" });
 
   // Seed file index rows for both accounts and version rows for A only.
   db.prepare(
@@ -172,9 +176,33 @@ test("GET /v1/export returns only the caller's account data", async () => {
   assert.equal(bText.includes("notes.txt"), false, "A's file must not leak into B's export");
   assert.equal(bText.includes("tool-a"), false, "A's key must not leak into B's export");
 
-  // No secret value appears in either answer (keys are never returned raw).
-  assert.equal(text.includes("secret"), false, "no secret leaks into the export");
-  assert.equal(bText.includes("secret"), false, "no secret leaks into the export");
+  // No key material appears in either answer: not the secret, not the access
+  // key id, and not the store's own hash of the secret. Checked by value,
+  // because a leak is a value, not a field name.
+  for (const [label, document_text] of [
+    ["A", text],
+    ["B", bText],
+  ]) {
+    for (const material of [
+      mintedA.secret,
+      mintedA.accessKeyId,
+      mintedB.secret,
+      mintedB.accessKeyId,
+    ]) {
+      assert.equal(
+        document_text.includes(material),
+        false,
+        `${label}'s export must not carry key material ${material.slice(0, 4)}…`,
+      );
+    }
+    for (const field of ["secret", "secretHash", "accessKeyId", "sessionToken"]) {
+      assert.equal(
+        document_text.includes(`"${field}"`),
+        false,
+        `${label}'s export must not carry the ${field} field`,
+      );
+    }
+  }
 });
 
 test("GET /v1/export is an account route gated by auth:account", async () => {
@@ -183,4 +211,75 @@ test("GET /v1/export is an account route gated by auth:account", async () => {
   assert.ok(route, "/v1/export must be registered");
   assert.equal(route.method, "GET");
   assert.equal(route.auth, "account", "export is account-gated");
+});
+
+test("a page that stops at the cap says so, and the cursor continues it", async () => {
+  // A Worker response cannot hold a drive's whole file history, so the export
+  // is a bounded page. A person told "you have no files" when the page simply
+  // stopped would keep a data loss they never saw, so a short page must carry
+  // `complete: false` and a cursor, and the cursor must pick up exactly where
+  // the first page left off with no gap and no repeat.
+  const sqlite = new DatabaseSync(":memory:");
+  const db = exportD1(sqlite);
+  const clock = fixedClock();
+  const store = createMemoryStore();
+  const account = { id: "acct-big", name: "Big", email: "big@x.com" };
+  const ctx = { env: {}, db, store, now: clock.now };
+
+  const code = await store.requestDeviceCode({ name: account.name });
+  await store.approveDeviceCode(code.userCode, account);
+  const polled = await store.pollDeviceCode(code.deviceCode);
+  const token = polled.status === "approved" ? polled.deviceToken : "";
+
+  // One more file than a page holds, so the first page must stop short.
+  const total = EXPORT_ROW_CAP + 1;
+  const insert = sqlite.prepare(
+    "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', ?4)",
+  );
+  for (let i = 0; i < total; i++) {
+    // Zero-padded so the path order is the same as the numeric order, which is
+    // what the keyset cursor walks.
+    insert.run("acct-big", `/f${String(i).padStart(6, "0")}.txt`, `f${i}.txt`, i);
+  }
+
+  const first = await dispatch(
+    new Request("https://api.test/v1/export", {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    ctx,
+  );
+  const firstBody = await first.json();
+  assert.equal(firstBody.files.length, EXPORT_ROW_CAP, "a page carries the cap, no more");
+  assert.equal(firstBody.complete, false, "a short page must not claim to be the whole drive");
+  assert.equal(
+    typeof firstBody.next.fileCursor,
+    "string",
+    "a short page carries the cursor that continues it",
+  );
+
+  // Walking the cursor must reach the one row the first page could not hold,
+  // and must not repeat a row the first page already carried.
+  /** @param {any} body @returns {{files: Array<{path: string}>, complete: boolean, next: {fileCursor: string|null}}} */
+  const page = (body) => body;
+  const seen = new Set(firstBody.files.map((/** @type {{path: string}} */ file) => file.path));
+  let cursor = firstBody.next.fileCursor;
+  let pages = 1;
+  let last = firstBody;
+  while (cursor !== null && pages < 10) {
+    const next = await dispatch(
+      new Request(`https://api.test/v1/export?fileCursor=${encodeURIComponent(cursor)}`, {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      ctx,
+    );
+    last = page(await next.json());
+    for (const file of last.files) {
+      assert.equal(seen.has(file.path), false, `${file.path} was exported twice`);
+      seen.add(file.path);
+    }
+    cursor = last.next.fileCursor;
+    pages += 1;
+  }
+  assert.equal(seen.size, total, "walking the cursor reaches every file, once each");
+  assert.equal(last.complete, true, "the last page carries the whole drive");
 });

@@ -252,6 +252,35 @@ test("unknown path is 404 and wrong method is 405 with the allowed method named"
   assert.equal(res.headers.get("allow"), "GET");
 });
 
+test("a 405 names the matched path's own public methods, not another path's", async () => {
+  // drive#34: the Allow map used to be keyed by the path's method set alone,
+  // so a new gated single-GET route (/v1/export) intersected with the public
+  // /v1/health and emptied GET from this unrelated 405. Each path now answers
+  // from its own entry. This walks the shapes: a public literal path, a
+  // trailing slash, and a param path whose Allow must survive the concrete
+  // path Hono reports for it.
+  const health = await dispatch(new Request("https://x.test/v1/health", { method: "POST" }), ctx);
+  assert.equal(health.status, 405);
+  assert.equal(health.headers.get("allow"), "GET", "a public GET path names its GET");
+
+  const slashed = await dispatch(new Request("https://x.test/v1/health/", { method: "POST" }), ctx);
+  assert.equal(slashed.status, 405);
+  assert.equal(slashed.headers.get("allow"), "GET", "a trailing slash resolves to the same path");
+
+  // The param route is account-gated, so an anonymous call is the gate's 401
+  // rather than a 405. A signed-in caller's 405 must still name the method.
+  const signed = await dispatch(new Request("https://x.test/v1/keys/k1", { method: "POST" }), {
+    ...ctx,
+    account: { id: "acct_1", name: "Account" },
+  });
+  assert.equal(signed.status, 405);
+  assert.equal(
+    signed.headers.get("allow"),
+    "DELETE",
+    "a param route's 405 survives the concrete path the request carried",
+  );
+});
+
 test("path params are decoded", async () => {
   /** @type {TestRoute[]} */
   const table = [

@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -24,6 +25,37 @@ import (
 // (workers/api/src/export-routes.js). One path, named in one place, so it
 // cannot drift from the route it calls.
 const EXPORT_PATH = "/v1/export"
+
+// exportMaxPages bounds the walk over a drive's pages. A page carries
+// EXPORT_ROW_CAP rows (5000), so this is a drive with far more rows than any
+// real account reaches; it is here so a server that never reports completion
+// ends the command with a named error instead of holding a terminal open.
+const exportMaxPages = 1000
+
+// exportCursorText renders a file cursor for the "did not finish" error, or a
+// dash when there is none.
+func exportCursorText(cursor *string) string {
+	if cursor == nil {
+		return "-"
+	}
+	return *cursor
+}
+
+// exportVersionCursorAt is the created_at half of the version cursor, or -1.
+func exportVersionCursorAt(document ExportDocument) int64 {
+	if document.Next.VersionCursor == nil {
+		return -1
+	}
+	return document.Next.VersionCursor.At
+}
+
+// exportVersionCursorID is the b2_file_id half of the version cursor, or "".
+func exportVersionCursorID(document ExportDocument) string {
+	if document.Next.VersionCursor == nil {
+		return ""
+	}
+	return document.Next.VersionCursor.ID
+}
 
 // ExportDocument is the account's own data as the route returns it: the
 // account row, its keys, the file index and the version history. The field
@@ -38,6 +70,17 @@ type ExportDocument struct {
 	Keys        []ExportKey     `json:"keys"`
 	Files       []ExportFile    `json:"files"`
 	Versions    []ExportVersion `json:"versions"`
+	// Complete is the route's own word for "this page is the whole drive". A
+	// false here means the drive holds more rows than one response can carry,
+	// and Next carries the cursors that continue it.
+	Complete bool `json:"complete"`
+	Next     struct {
+		FileCursor    *string `json:"fileCursor"`
+		VersionCursor *struct {
+			At int64  `json:"at"`
+			ID string `json:"id"`
+		} `json:"versionCursor"`
+	} `json:"next"`
 }
 
 // ExportAccount is the account the export is about.
@@ -148,23 +191,82 @@ func exportAccountLabel(account ExportAccount) string {
 	return account.ID
 }
 
-// fetchExport runs the one GET against the api Worker's export route and
-// decodes the document. Every non-2xx is a named error carrying the Worker's
-// own sentence (the api's {"error"} shape, cmd/drive/api.go `APIError`), never
-// a quiet empty document: an empty export that reads as "you have no files" is
-// the one wrong answer this command could give.
+// fetchExport walks the api Worker's export route and returns the whole
+// document. Every non-2xx is a named error carrying the Worker's own sentence
+// (the api's {"error"} shape, cmd/drive/api.go `APIError`), never a quiet empty
+// document: an empty export that reads as "you have no files" is the one wrong
+// answer this command could give.
+//
+// The route is a bounded page (workers/api/src/export-routes.js
+// `EXPORT_ROW_CAP`), so a drive larger than one page is walked here, cursor by
+// cursor, and the files and versions of every page are merged into the one
+// document the person saves. A page is only merged once it has been read, so a
+// failure part way through returns an error and writes nothing: half an export
+// that looks whole is worse than none.
 func fetchExport(apiBase, deviceToken string) (*ExportDocument, error) {
 	client, err := NewAPIClient(apiBase, deviceToken)
 	if err != nil {
 		return nil, err
 	}
 	var document ExportDocument
-	if err := client.do(http.MethodGet, EXPORT_PATH, nil, &document); err != nil {
+	if err := client.do(http.MethodGet, exportPagePath("", "", 0), nil, &document); err != nil {
 		return nil, err
 	}
 	if document.Account.ID == "" {
 		return nil, fmt.Errorf("GET %s%s answered without an account; run `drive init` again",
 			client.Base, EXPORT_PATH)
 	}
+	for pages := 0; !document.Complete; pages++ {
+		if pages >= exportMaxPages {
+			// A server that keeps asking for a page would hold a hung
+			// terminal, so the walk is bounded and the last page is kept
+			// rather than thrown away: what was read is still the account's
+			// own data, and the error says exactly where it stopped.
+			return nil, fmt.Errorf("the export did not finish within %d pages (%d file(s), %d version(s)); "+
+				"the last page ended at file cursor %q, version cursor %d/%s",
+				exportMaxPages, len(document.Files), len(document.Versions),
+				exportCursorText(document.Next.FileCursor), exportVersionCursorAt(document), exportVersionCursorID(document))
+		}
+		fileCursor := ""
+		if document.Next.FileCursor != nil {
+			fileCursor = *document.Next.FileCursor
+		}
+		var versionAt int64
+		versionID := ""
+		if cursor := document.Next.VersionCursor; cursor != nil {
+			versionAt, versionID = cursor.At, cursor.ID
+		}
+		var page ExportDocument
+		if err := client.do(http.MethodGet, exportPagePath(fileCursor, versionID, versionAt), nil, &page); err != nil {
+			return nil, fmt.Errorf("continue the export after %d file(s): %w", len(document.Files), err)
+		}
+		document.Files = append(document.Files, page.Files...)
+		document.Versions = append(document.Versions, page.Versions...)
+		// The keys are not paged: the route reads the account's whole key
+		// list on every page, so merging them again would double them in the
+		// saved document. The account row and the generated-at stamp are the
+		// first page's, and only the cursor and the completion flag move.
+		document.Complete = page.Complete
+		document.Next = page.Next
+	}
 	return &document, nil
+}
+
+// exportPagePath is GET /v1/export with the cursors a previous page ended on.
+// The empty case is the first page, which carries no query at all.
+func exportPagePath(fileCursor, versionID string, versionAt int64) string {
+	params := url.Values{}
+	if fileCursor != "" {
+		params.Set("fileCursor", fileCursor)
+	}
+	if versionAt >= 0 {
+		params.Set("versionAt", fmt.Sprintf("%d", versionAt))
+		if versionID != "" {
+			params.Set("versionId", versionID)
+		}
+	}
+	if len(params) == 0 {
+		return EXPORT_PATH
+	}
+	return EXPORT_PATH + "?" + params.Encode()
 }
