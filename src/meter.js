@@ -1339,11 +1339,12 @@ export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 // pinned stand-in). Both are the same secret; this endpoint accepts either, so
 // the vendor's own event rule works without a custom-header capability MinIO
 // does not have.
+/** @param {string|undefined|null} header */
 export function bearerToken(header) {
   if (typeof header !== "string") {
     return null;
   }
-  const [scheme, value] = header.split(" ");
+  const [scheme, value] = /** @type {[string, string]} */ (header.split(" "));
   if (scheme === undefined || value === undefined || scheme.toLowerCase() !== "bearer") {
     return null;
   }

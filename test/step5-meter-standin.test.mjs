@@ -428,6 +428,8 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 
   // Wait for the notifications to arrive before the delete, so the rollup below
   // sees a settled event stream.
+  /** @param {number} count
+   * @param {number} seconds */
   const waitFor = async (count, seconds) => {
     const deadline = Date.now() + seconds * 1000;
     for (;;) {
@@ -436,7 +438,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
       }
       if (Date.now() > deadline) {
         throw new Error(
-          `only ${receiver.answers.length} of ${count} deliveries arrived in ${seconds}s: ${JSON.stringify(receiver.answers.map((a) => a.status))}`,
+          `only ${receiver.answers.length} of ${count} deliveries arrived in ${seconds}s: ${JSON.stringify(receiver.answers.map((/** @type {{status: number}} */ a) => a.status))}`,
         );
       }
       await sleep(250);
@@ -459,11 +461,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   // which header carried the credential, not what the credential is.
   t.diagnostic(
     `the bucket's own deliveries answered: ${JSON.stringify(
-      receiver.answers.map((a) => ({
-        status: a.status,
-        authorization: a.headers.authorization === undefined ? "none" : "Bearer <redacted>",
-        eventToken: a.headers["x-drive-event-token"] === undefined ? "none" : "present",
-      })),
+      receiver.answers.map(
+        (/** @type {{status: number, headers: Record<string, string>}} */ a) => ({
+          status: a.status,
+          authorization: a.headers.authorization === undefined ? "none" : "Bearer <redacted>",
+          eventToken: a.headers["x-drive-event-token"] === undefined ? "none" : "present",
+        }),
+      ),
     )}`,
   );
   // The provider's own report: this account's prefix, read back from the
@@ -473,7 +477,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     query: { versions: "", prefix: key.prefix },
   });
   assert.equal(listing.status, 200, `the versions listing must answer: ${listing.text}`);
-  const listed = parseListVersions(listing.text, key.prefix).filter((version) =>
+  const listed = parseListVersions(listing.text).filter((version) =>
     version.path.startsWith(key.prefix),
   );
   t.diagnostic(
@@ -488,9 +492,11 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     `file_versions: ${JSON.stringify(versions.map((r) => ({ version: String(r.b2_file_id).slice(0, 8), path: r.path, size: r.size_bytes, created: new Date(r.created_at).toISOString(), hidden: r.hidden_at === null ? null : new Date(r.hidden_at).toISOString() })))}`,
   );
   assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
-  assert.equal(
-    db.tables.event_dead_letters,
-    undefined,
+  // The dead-letter table was an earlier design that was replaced by the
+  // per-event rejection in the intake (src/meter.js recordEvents). The test
+  // keeps the assertion as a gate: the name must not appear in the schema.
+  assert.ok(
+    !Object.hasOwn(db.tables, "event_dead_letters"),
     "there is no dead-letter table to hold them",
   );
 
@@ -551,6 +557,8 @@ test("a full day of GB-minutes matches the storage provider's own report within 
  * bucket, and the parser is the shipped one (src/files.js
  * `createS3Store.listVersions` answers with it), so a version's stop time here
  * is the stop time the product reads in production.
+ * The reconciler only calls listVersions; the other methods are stubs that
+ * throw if reached, which would indicate a bug in the reconciler.
  * @param {ReturnType<typeof createS3Client>} client
  */
 function signedListingStore(client) {
@@ -566,6 +574,21 @@ function signedListingStore(client) {
         throw new Error(`the provider's own version listing failed with ${response.status}`);
       }
       return parseListVersions(response.text);
+    },
+    async list() {
+      throw new Error("the reconciler never lists a folder");
+    },
+    async read() {
+      throw new Error("the reconciler never reads a file");
+    },
+    async write() {
+      throw new Error("the reconciler never writes a file");
+    },
+    async remove() {
+      throw new Error("the reconciler never removes a file");
+    },
+    async copy() {
+      throw new Error("the reconciler never copies a file");
     },
   };
 }
