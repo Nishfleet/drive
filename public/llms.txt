@@ -22,8 +22,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
   storage each month, and a card is only needed to go past it. It comes off the
   bill as a dollar line, after the ceiling and the downloads.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
-- Version history: free. Every earlier version is kept 1 day, then one per day
-  for 30 days; any file can be restored.
+- Version history: not yet available in version 1.
 - No plan sizes and no fixed plans: you are billed for the GB you store, so a
   1 TB drive kept 60% full bills $11 a month ($12 of storage, less the $1).
 
