@@ -7,10 +7,13 @@ import { createMemoryStore } from "../src/keystore.js";
 // The edge limits the device flow answers behind (drive issue #147). The
 // binding's whole contract is `limit({ key }) -> { success }`; a fake that
 // always succeeds, so the device routes do not fail closed.
+/** @param {{success?: boolean}} [options] */
 function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
   const calls = [];
   return {
     calls,
+    /** @param {{key: string}} options */
     async limit(options) {
       calls.push(options);
       return { success };
@@ -27,16 +30,19 @@ function limits(ip = makeRateLimiter(), global = makeRateLimiter()) {
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
 function makeAccounts() {
+  /** @type {Map<string, {id: string, name: string, email: string}>} */
   const byToken = new Map();
   let next = 0;
   return {
     byToken,
+    /** @param {{id: string, name: string, email: string}} account @returns {string} */
     add(account) {
       const token = `sess_${++next}`;
       byToken.set(token, account);
       return token;
     },
     api: {
+      /** @param {{headers: Headers}} options */
       async getSession({ headers }) {
         const cookie = headers.get("cookie") ?? "";
         const found = cookie
@@ -51,6 +57,7 @@ function makeAccounts() {
   };
 }
 
+/** @param {ReturnType<typeof createMemoryStore>} store @param {{id: string, name: string}|null} account @param {{accounts?: ReturnType<typeof makeAccounts>, env?: Record<string, unknown>}} [overrides] */
 function baseCtx(store, account, overrides = {}) {
   return {
     env: { ...limits(), ...(overrides.env ?? {}) },
@@ -62,6 +69,10 @@ function baseCtx(store, account, overrides = {}) {
   };
 }
 
+/**
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {string} name
+ */
 async function signIn(store, name) {
   const accounts = makeAccounts();
   const account = {
@@ -118,17 +129,19 @@ async function signIn(store, name) {
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
+/** @param {string} token @returns {{authorization: string}} */
 function bearer(token) {
   return { authorization: `Bearer ${token}` };
 }
 
+/** @param {string} accessKeyId @param {string} secret @returns {{authorization: string}} */
 function basic(accessKeyId, secret) {
   return { authorization: `Basic ${btoa(`${accessKeyId}:${secret}`)}` };
 }
 
 test("the key that presents itself can revoke itself (drive logout's endpoint)", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const { account, deviceToken } = await signIn(store, "Nish's MacBook");
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
   const minted = await dispatch(
     new Request("https://api.test/v1/keys", {
       method: "POST",
@@ -176,8 +189,8 @@ test("the key that presents itself can revoke itself (drive logout's endpoint)",
   assert.equal(again.status, 401);
 
   // Bytes written under a revoked key's prefix are never deleted by the route.
-  store.putObject(account.id, `${key.prefix}leftover`, new Uint8Array([1]));
-  assert.equal(store.listObjects(account.id, key.prefix).length, 1);
+  store.putObject(`${key.prefix}leftover`, new Uint8Array([1]));
+  assert.equal(store.listObjects(key.prefix).length, 1);
 });
 
 test("a wrong secret, a revoked key, or no credentials refuse through /api/keys/revoke", async () => {
