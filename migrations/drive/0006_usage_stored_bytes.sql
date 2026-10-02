@@ -11,8 +11,20 @@
 -- the old columns differently, and the version of the code a rollback returns
 -- to keeps answering the GB-minutes the column never touched.
 --
--- 0 is what a row from before this column existed reads as, and "no mark" is a
--- state the rollup leaves too (a row the old code wrote before the deploy):
--- byte counts are always 0 or more, so 0 cannot be mistaken for a real mark
--- and a month's peak is the MAX over the hour rows that do carry one.
+-- The default is what makes the apply-before-deploy window safe, and it is 0
+-- rather than NULL on purpose: NOT NULL DEFAULT 0 is the additive shape this
+-- schema has used since 0002 (see the file's own header), and a row written
+-- between this migration landing and the code that writes the column reads 0.
+--
+-- A 0 mark is honest for that window and cannot be told apart from an hour
+-- that really was empty. That is acceptable because the window is bounded by
+-- the deploy (issue #187 applies both databases' migrations before the Worker
+-- ships) and because a month's peak is a MAX: one marked 0 hour cannot raise
+-- it, and the hours either side of it carry the real sizes. The reconciler
+-- (#59) re-rolls those hours from the stored versions the first time it runs
+-- after the deploy, which is when the real marks land.
+--
+-- What the column deliberately does NOT do is claim a peak for a month the
+-- meter never measured: that is the reader's rule, not the column's, and
+-- monthUsageRollup (src/meter.js) states it.
 ALTER TABLE usage_minutes ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0;

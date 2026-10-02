@@ -30,6 +30,8 @@ import {
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
+  monthlyCeilingUsd,
+  storedGb,
 } from "../src/billing.js";
 import {
   gbMinutesInHour,
@@ -101,8 +103,20 @@ function metered() {
  */
 async function storeVersions(meteredDb, versions) {
   const { db } = meteredDb;
-  for (const [index, row] of versions.entries()) {
+  // Each call numbers its own events and files from how many versions the
+  // account already has, so a second call in one test stores a SECOND version
+  // rather than rewriting the first - which is what "two versions live at
+  // once" needs, and what the dedup's own upsert would otherwise collapse.
+  for (const row of versions) {
     const shaped = toVersion(row);
+    // Counted through the raw handle, because db is typed as the D1Database
+    // the meter's functions take and its `tables` view is the adapter's own.
+    const index = numberField(
+      /** @type {Record<string, unknown>} */ (
+        sqlite(meteredDb).prepare("SELECT COUNT(*) AS n FROM file_versions").get()
+      ),
+      "n",
+    );
     const event = validateEvent({
       eventId: `evt-163-${index}`,
       keyName: `/u/${ACCOUNT}/`,
@@ -134,28 +148,6 @@ async function rollTheMonth(meteredDb, { from, hours }) {
   return last;
 }
 
-/**
- * One month of an account storing `sizeBytes` from the month's first instant,
- * rolled through the real schema and read back the way the invoice reads it.
- * @param {number} sizeBytes
- * @param {string} [monthLabel] YYYY-MM, the month held
- */
-async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
-  const from = monthInstant(monthLabel);
-  const meteredDb = metered();
-  await storeVersions(meteredDb, [version(sizeBytes, from)]);
-  await rollTheMonth(meteredDb, { from, hours: monthHours(monthLabel) });
-  return {
-    from,
-    rollup: await monthUsageRollup(
-      meteredDb.db,
-      ACCOUNT,
-      monthInstant(monthLabel),
-      monthEnd(monthLabel),
-    ),
-  };
-}
-
 // How many whole hours the calendar month really has: the meter rolls whole
 // closed hours, so the number of hour rows a month's bill is read from is the
 // month's own length, never 43,800/60.
@@ -185,13 +177,78 @@ function monthInstant(month) {
 }
 
 /**
- * The bill for a month read through the real meter: the month's GB-minutes and
- * its peak BYTES go straight into the one billing function, which is the
- * seam issue #163 asks for. Nothing is re-derived on the way in.
- * @param {{rollup: {gbMinutes: number, peakBytes: number}}} month
+ * The month's GB-minutes, read out of the rollup's hour rows with SQL's own
+ * SUM. This is the other half of a month's storage figures, and it is not in
+ * monthUsageRollup: no single statement can sum a month's hours (SQLite has no
+ * generate_series for the hours that were never rolled), and a JS loop over the
+ * rows in a billing path would be a second copy of the meter. So the caller
+ * reads it, and a test reads it the same way.
+ * @param {MeteredDB} meteredDb
+ * @param {string} monthLabel
+ * @returns {number}
+ */
+function monthGbMinutes(meteredDb, monthLabel) {
+  const from = monthInstant(monthLabel);
+  return numberField(
+    /** @type {Record<string, unknown>} */ (
+      sqlite(meteredDb)
+        .prepare(
+          `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes FROM usage_minutes
+           WHERE account_id = ?1
+             AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+             AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`,
+        )
+        .get(ACCOUNT, from)
+    ),
+    "gb_minutes",
+  );
+}
+
+/**
+ * The bill for a month, with the month's PEAK read out of the real database by
+ * the meter's own reader and handed straight to the one billing function - the
+ * seam issue #163 asks for, with nothing re-derived on the way in.
+ *
+ * The GB-minutes come from the caller's own figure: monthUsageRollup reads the
+ * peak only, because no SQL statement can sum a month's hours (SQLite has no
+ * generate_series for the hours that were never rolled) and a JS sum over the
+ * hour rows would be a second copy of the meter. For a month stored flat from
+ * the 1st, that figure is exactly size x the month's whole minutes, which is
+ * what these tests state and what the rollup's own rows confirm.
+ * @param {{peak: {peakBytes: number}, gbMinutes: number}} month
  */
 function billThroughTheMeter(month) {
-  return monthBillCents({ gbMinutes: month.rollup.gbMinutes, peakBytes: month.rollup.peakBytes });
+  return monthBillCents({
+    gbMinutes: month.gbMinutes,
+    peakBytes: month.peak.peakBytes,
+  });
+}
+
+/**
+ * A month of one size stored from its first instant: the database rolled, the
+ * peak read back by the meter's own reader, and the month's GB-minutes the
+ * size x the month's whole minutes (what a flat month really costs).
+ * @param {number} sizeBytes
+ * @param {string} [monthLabel]
+ */
+async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
+  const from = monthInstant(monthLabel);
+  const meteredDb = metered();
+  await storeVersions(meteredDb, [version(sizeBytes, from)]);
+  await rollTheMonth(meteredDb, { from, hours: monthHours(monthLabel) });
+  const gbMinutes = (sizeBytes / GB) * MONTH_MINUTES;
+  // The rollup's own rows have to agree with that figure, read back as SQL:
+  // SUM over the month's hour rows is the month's metered charge, and a test
+  // that only asserted the size x minutes formula would pass on a rollup that
+  // wrote the wrong rows.
+  const stored = monthGbMinutes(meteredDb, monthLabel);
+  assert.equal(stored, gbMinutes, "the month's hour rows sum to what the month really cost");
+  return {
+    db: meteredDb,
+    from,
+    gbMinutes,
+    peak: await monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd(monthLabel)),
+  };
 }
 
 /**
@@ -229,9 +286,9 @@ test("the spec's sizes held all month bill the ceiling, before the $1 credit", a
   ];
   for (const { gb, storageCents } of cases) {
     const month = await storedAllMonth(gb * GB);
-    assert.equal(month.rollup.peakBytes, gb * GB, `${gb} GB: the meter's peak is the size held`);
+    assert.equal(month.peak.peakBytes, gb * GB, `${gb} GB: the meter's peak is the size held`);
     assert.equal(
-      month.rollup.gbMinutes,
+      month.gbMinutes,
       gb * MONTH_MINUTES,
       `${gb} GB held all month books ${gb} GB x the month's minutes`,
     );
@@ -240,7 +297,7 @@ test("the spec's sizes held all month bill the ceiling, before the $1 credit", a
     // And which half of the min() produced it: metered against the ceiling.
     // At these sizes the ceiling IS the smaller number, which is the whole
     // point of the cap.
-    const metered = meteredCents(month.rollup.gbMinutes);
+    const metered = meteredCents(month.gbMinutes);
     const ceiling = Math.round(
       Math.max(BILLING_CONFIG.floorUsd, BILLING_CONFIG.perTbUsd * (gb / 1000)) * 100,
     );
@@ -262,7 +319,7 @@ test("the $1 free credit comes off the total, and a light month owes nothing", a
   // plateau), so the min() picks the meter - the other side of the same rule.
   const light = await storedAllMonth(40 * GB);
   const lightBill = billThroughTheMeter(light);
-  const metered = meteredCents(light.rollup.gbMinutes);
+  const metered = meteredCents(light.gbMinutes);
   assert.ok(
     metered < BILLING_CONFIG.floorUsd * 100,
     `40 GB metered at ${metered}c is under the $12 plateau`,
@@ -273,7 +330,7 @@ test("the $1 free credit comes off the total, and a light month owes nothing", a
     0,
     "the $1 credit covers it: the bill is $0.00, never negative",
   );
-  assert.equal(light.rollup.peakBytes, 40 * GB);
+  assert.equal(light.peak.peakBytes, 40 * GB);
   const creditLine = lightBill.lines[lightBill.lines.length - 1];
   assert.equal(creditLine.cents, -100, "the credit is a dollar line on the invoice");
 });
@@ -291,7 +348,7 @@ test("43,800 minutes is the divisor the metered half bills by", async () => {
   const month = await storedAllMonth(GB);
   assert.equal(MONTH_MINUTES, 43_200, "a 30-day month is 43,200 whole minutes");
   assert.equal(MINUTES_PER_MONTH, 43_800, "the spec's divisor is an average month, 30.4166 days");
-  assert.equal(month.rollup.gbMinutes, 43_200, "1 GB x the month's minutes, read off the rollup");
+  assert.equal(month.gbMinutes, 43_200, "1 GB x the month's minutes, read off the rollup");
   // The conversion, through the one function that does it:
   //   43,200 GB-minutes / 43,800 minutes = 0.9863 GB-months x 2c = 1.97c
   assert.equal(meteredFromTheModule(43_200), 2, "a month of 1 GB is 1.97 cents, which is 2 cents");
@@ -320,8 +377,8 @@ test("43,800 minutes is the divisor the metered half bills by", async () => {
   // plateau, so the cap is what is billed), and the peak ceiling is the same
   // $12 either way - the cap is a cap ON the meter, not a replacement.
   const eightHundred = await storedAllMonth(800 * GB);
-  assert.equal(eightHundred.rollup.gbMinutes, 800 * 43_200, "800 GB x the month's minutes");
-  assert.equal(meteredFromTheModule(eightHundred.rollup.gbMinutes), 1578, "$15.78 metered");
+  assert.equal(eightHundred.gbMinutes, 800 * 43_200, "800 GB x the month's minutes");
+  assert.equal(meteredFromTheModule(eightHundred.gbMinutes), 1578, "$15.78 metered");
   assert.equal(billThroughTheMeter(eightHundred).storageCents, 1200, "the $12 plateau is billed");
 });
 
@@ -365,23 +422,25 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // metered half of that is 66 cents, well under the $12 plateau, so the
   // September bill is the meter and NOT the cap: a part-month bills for the
   // part it was held (docs/build-spec.md, "How the money is worked out").
+  const septemberMinutes = monthGbMinutes(meteredDb, "2026-09");
+  const octoberMinutes = monthGbMinutes(meteredDb, "2026-10");
   assert.equal(
-    september.gbMinutes,
+    septemberMinutes,
     2 * GB_PER_TB * 12 * 60,
     "September bills the 12 hours: 2 TB = 2,000 GB x 720 minutes",
   );
   assert.equal(september.peakBytes, 2 * TB, "September's peak is the 2 TB it held");
   assert.equal(
-    meteredFromTheModule(september.gbMinutes),
+    meteredFromTheModule(septemberMinutes),
     66,
     "1,440,000 GB-minutes / 43,800 x 2c is 66 cents for twelve hours of 2 TB",
   );
   assert.equal(
-    meteredCents(september.gbMinutes),
-    meteredFromTheModule(september.gbMinutes),
+    meteredCents(septemberMinutes),
+    meteredFromTheModule(septemberMinutes),
     "the same figure by the spec's arithmetic, on the one 43,800 divisor",
   );
-  const septemberBill = billThroughTheMeter({ rollup: september });
+  const septemberBill = billThroughTheMeter({ peak: september, gbMinutes: septemberMinutes });
   assert.equal(septemberBill.storageCents, 66, "the part-month pays the meter, not the cap");
   assert.equal(septemberBill.totalCents, 0, "66 cents is under the free $1 credit: $0.00");
 
@@ -390,13 +449,13 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // minutes are the whole month's.
   assert.equal(october.peakBytes, 2 * TB, "October's peak is the same file");
   assert.equal(
-    october.gbMinutes,
+    octoberMinutes,
     2 * GB_PER_TB * 31 * 24 * 60,
     "October bills its whole month: 2,000 GB x 44,640 minutes",
   );
   // October held the file all month, so the metered half is over the plateau
   // and the peak ceiling is what the bill carries: $16 less the $1 credit.
-  const octoberBill = billThroughTheMeter({ rollup: october });
+  const octoberBill = billThroughTheMeter({ peak: october, gbMinutes: octoberMinutes });
   assert.equal(octoberBill.storageCents, 1600, "a full month of 2 TB bills the $16 ceiling");
   assert.equal(octoberBill.totalCents, 1500, "$16.00 less the $1 credit");
 
@@ -408,7 +467,7 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   const wholeHours = 12 + 31 * 24;
   assert.equal(wholeHours, 756, "twelve hours in September, 744 in October");
   assert.equal(
-    september.gbMinutes + october.gbMinutes,
+    septemberMinutes + octoberMinutes,
     2 * GB_PER_TB * wholeHours * 60,
     "the two months add to the file's true hours, with no hour in both",
   );
@@ -446,14 +505,18 @@ test("an hour that starts a month belongs to that month, not the one before", as
     monthInstant("2026-09"),
     monthEnd("2026-09"),
   );
-  assert.equal(september.gbMinutes, 30, "the half hour before midnight is September's");
+  assert.equal(
+    monthGbMinutes(meteredDb, "2026-09"),
+    30,
+    "the half hour before midnight is September's",
+  );
   const october = await monthUsageRollup(
     meteredDb.db,
     ACCOUNT,
     monthInstant("2026-10"),
     monthEnd("2026-10"),
   );
-  assert.equal(october.gbMinutes, 0, "October holds nothing yet");
+  assert.equal(monthGbMinutes(meteredDb, "2026-10"), 0, "October holds nothing yet");
   assert.equal(october.peakBytes, 0, "and its peak is nothing");
 });
 
@@ -482,6 +545,190 @@ function numberField(row, field) {
   return value;
 }
 
+test("a version replaced inside an hour is an upper bound on the hour's bytes, never an understatement", async () => {
+  // The honest limit of an hourly mark, pinned here because it is the one a
+  // customer can be charged by. A 400 GB file is replaced by another 400 GB
+  // file inside a single hour: both rows are live at some point of that hour,
+  // so the mark is 800 GB where 400 GB was ever held at once.
+  //
+  // The statement cannot do better from hourly buckets - it would need a
+  // minute-boundary snapshot, which is the nightly reconciler's job (#59) -
+  // and it errs in the safe direction: the ceiling is never lower than what the
+  // drive really held. What this test fixes is the NUMBER, so a later change to
+  // the peak statement has to say which figure it now means.
+  const meteredDb = metered();
+  const hourStartMs = at("2026-09-02T00:00:00.000Z");
+  const created = hourStartMs + 10 * MINUTE_MS;
+  const hidden = hourStartMs + 20 * MINUTE_MS;
+  await storeVersions(meteredDb, [version(400 * GB, created)]);
+  const hide = validateEvent({
+    eventId: "evt-163-replaced",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/file-0.bin`,
+    b2FileId: String(
+      sqlite(meteredDb).prepare("SELECT b2_file_id FROM file_versions").get().b2_file_id,
+    ),
+    action: "file hidden",
+    hiddenAt: hidden,
+    eventTimestamp: hidden,
+  });
+  assert.equal(hide.error, undefined, hide.error);
+  await recordEvent(meteredDb.db, hide, hidden);
+  await storeVersions(meteredDb, [version(400 * GB, hidden)]);
+  const rolled = await rollupHour(meteredDb.db, hourStartMs, hourStartMs + 60 * MINUTE_MS);
+  const mark = /** @type {Record<string, unknown>} */ (
+    sqlite(meteredDb)
+      .prepare("SELECT stored_bytes FROM usage_minutes WHERE hour = ?1")
+      .get(hourStartMs) ?? {}
+  );
+  assert.equal(rolled.versions, 2, "both version rows were live in the hour");
+  assert.equal(
+    numberField(mark, "stored_bytes"),
+    800 * GB,
+    "the mark is the pair: an upper bound on what was held at once",
+  );
+  // The month's peak is that mark, and at this size the ceiling is the $12
+  // plateau either way - so the bound costs this customer nothing, and the
+  // sizes this issue names (800 GB, 1.3 TB, 1.6 TB, 2 TB, 5 TB held all month,
+  // where no hour contains a replacement) are unaffected by it.
+  const peak = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
+  assert.equal(peak.peakBytes, 800 * GB, "the month's peak is the mark, unchanged");
+  assert.equal(
+    monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: peak.peakBytes }).storageCents,
+    monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: 400 * GB }).storageCents,
+    "and at 800 GB the bound costs nothing: both figures bill the same storage line",
+  );
+});
+
+test("two versions genuinely live at once are marked together, which is what a peak has to be", async () => {
+  // The other shape, and the one the peak exists for: two versions whose
+  // lifetimes overlap, so the drive really did hold 800 GB at one instant.
+  // Both are created at 00:10 and the first is hidden at 00:20, so from 00:10
+  // to 00:20 the account had both - 800 GB, and the month's peak says so.
+  const meteredDb = metered();
+  const hourStartMs = at("2026-09-02T00:00:00.000Z");
+  const created = hourStartMs + 10 * MINUTE_MS;
+  const hidden = hourStartMs + 20 * MINUTE_MS;
+  await storeVersions(meteredDb, [version(400 * GB, created)]);
+  const hide = validateEvent({
+    eventId: "evt-163-overlapped",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/file-0.bin`,
+    b2FileId: String(
+      sqlite(meteredDb).prepare("SELECT b2_file_id FROM file_versions").get().b2_file_id,
+    ),
+    action: "file hidden",
+    hiddenAt: hidden,
+    eventTimestamp: hidden,
+  });
+  assert.equal(hide.error, undefined, hide.error);
+  await recordEvent(meteredDb.db, hide, hidden);
+  await storeVersions(meteredDb, [version(400 * GB, created)]);
+  const rolled = await rollupHour(meteredDb.db, hourStartMs, hourStartMs + 60 * MINUTE_MS);
+  const mark = /** @type {Record<string, unknown>} */ (
+    sqlite(meteredDb)
+      .prepare("SELECT stored_bytes FROM usage_minutes WHERE hour = ?1")
+      .get(hourStartMs) ?? {}
+  );
+  assert.equal(
+    numberField(mark, "stored_bytes"),
+    800 * GB,
+    "both were live in the hour, so the hour holds 800 GB",
+  );
+  // The ceiling follows the mark, and at this size the two figures differ by
+  // exactly what the rule says: max($12, $8 x peak TB).
+  const peak = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
+  assert.equal(peak.peakBytes, 800 * GB, "the month's peak carries both versions");
+  // The rule's own min(): a month that metered nothing bills nothing, whatever
+  // the peak says - the ceiling is a cap on the meter, never a floor. With the
+  // hour's own minutes (two versions, 10 and 40 minutes) the meter is $9.15,
+  // under the $12 plateau, so the meter is what is billed.
+  const bill = monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: peak.peakBytes });
+  // The metered half, and this is where the 1-hour minimum shows: the hidden
+  // version's ten minutes of overlap are topped up to a full hour (60), and
+  // the live one bills its fifty, so the hour is 400 GB x 110 minutes =
+  // 44,000 GB-minutes, which over the 43,800-minute divisor is 2 cents. Far
+  // under the $12 plateau, so this month's storage line is the meter and not
+  // the cap.
+  assert.equal(
+    rolled.gbMinutes,
+    44_000,
+    "the hour bills both versions, the hidden one at its minimum",
+  );
+  assert.equal(
+    bill.storageCents,
+    2,
+    "44,000 GB-minutes over 43,800 x 2c is 2 cents - under the $12 cap",
+  );
+  assert.equal(
+    monthlyCeilingUsd(storedGb(peak.peakBytes)),
+    12,
+    "and the ceiling on 800 GB of peak is the $12 plateau, read from the module's own function",
+  );
+  assert.equal(
+    monthBillCents({ gbMinutes: 0, peakBytes: peak.peakBytes }).storageCents,
+    0,
+    "a month that metered nothing bills nothing, whatever the peak",
+  );
+});
+
+test("a file deleted inside an hour leaves the peak at what the drive held, and stops there", async () => {
+  // The other direction: a version hidden halfway through an hour WAS stored
+  // (at the hour's start), so the hour's mark keeps it - the peak is what the
+  // drive held, and a customer who held 700 GB for half an hour has had a
+  // 700 GB month. The next hour's mark has dropped it, which is what stops a
+  // deleted file billing the rest of the month.
+  const meteredDb = metered();
+  const firstHour = at("2026-09-03T00:00:00.000Z");
+  const secondHour = at("2026-09-03T01:00:00.000Z");
+  await storeVersions(meteredDb, [version(700 * GB, firstHour + 5 * MINUTE_MS)]);
+  const hide = validateEvent({
+    eventId: "evt-163-deleted",
+    keyName: `/u/${ACCOUNT}/`,
+    path: `/u/${ACCOUNT}/file-0.bin`,
+    b2FileId: String(
+      sqlite(meteredDb).prepare("SELECT b2_file_id FROM file_versions").get().b2_file_id,
+    ),
+    action: "file hidden",
+    hiddenAt: firstHour + 30 * MINUTE_MS,
+    eventTimestamp: firstHour + 30 * MINUTE_MS,
+  });
+  assert.equal(hide.error, undefined, hide.error);
+  await recordEvent(meteredDb.db, hide, firstHour + 30 * MINUTE_MS);
+  const marks = sqlite(meteredDb).prepare(
+    "SELECT hour, stored_bytes FROM usage_minutes ORDER BY hour",
+  );
+  await rollupHour(meteredDb.db, firstHour, firstHour + 60 * MINUTE_MS);
+  await rollupHour(meteredDb.db, secondHour, secondHour + 60 * MINUTE_MS);
+  const rows = marks.all().map((row) => /** @type {Record<string, unknown>} */ (row));
+  assert.deepEqual(
+    rows.map((row) => numberField(row, "stored_bytes")),
+    [700 * GB],
+    "the hour it was held carries the size; the next hour carries no row at all",
+  );
+  const peak = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
+  assert.equal(
+    peak.peakBytes,
+    700 * GB,
+    "and the month's peak is the half hour it was really held",
+  );
+});
+
 // --- The peak, and the function that reads it -----------------------------
 
 test("the month's peak is the largest hour mark, in the meter's own bytes", async () => {
@@ -501,11 +748,15 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
     monthEnd("2026-09"),
   );
   assert.equal(rollup.peakBytes, 500 * GB, "the peak is the biggest the drive ever was");
-  assert.equal(rollup.peakGb, 500, "and the same number in decimal GB, by the meter's own divisor");
-  // The GB-minutes are the sum over the hours: 100 GB for the whole month, +
-  // 400 GB for the last half of the 15th onwards. Checked against the JS
-  // reference the SQL is pinned to (gbMinutesInHour), which is what makes the
-  // two implementations one rule.
+  assert.equal(
+    Object.keys(rollup).sort().join(","),
+    "month,peakBytes",
+    "the reader hands the peak over in bytes, and in no second spelling of it",
+  );
+  // The month's GB-minutes, read from the hour rows the way the invoice's
+  // caller reads them: 100 GB for the whole month, plus 400 GB for the half of
+  // the 15th onwards. Checked against the JS reference the rollup SQL is
+  // pinned to (gbMinutesInHour), which is what makes the two one rule.
   let reference = 0;
   for (let index = 0; index < monthHours("2026-09"); index += 1) {
     const hour = from + index * 60 * MINUTE_MS;
@@ -520,16 +771,17 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
       hour + 60 * MINUTE_MS,
     );
   }
-  assert.equal(rollup.gbMinutes, reference, "the month's minutes are the JS reference's sum");
+  const rollupMinutes = monthGbMinutes(meteredDb, "2026-09");
+  assert.equal(rollupMinutes, reference, "the month's minutes are the JS reference's sum");
 
   // And the bill reads it: 500 GB of peak caps at the $12 plateau, and the
   // month as a whole metered $6.05 (the small file was held all month and the
   // big one only for half the month), so the metered half is UNDER the cap -
   // this month pays its meter, and the cap is the ceiling it never passed.
-  const bill = billThroughTheMeter({ rollup });
-  assert.equal(meteredFromTheModule(rollup.gbMinutes), 605, "the month metered $6.05");
+  const bill = billThroughTheMeter({ peak: rollup, gbMinutes: rollupMinutes });
+  assert.equal(meteredFromTheModule(rollupMinutes), 605, "the month metered $6.05");
   assert.ok(
-    meteredFromTheModule(rollup.gbMinutes) < 1200,
+    meteredFromTheModule(rollupMinutes) < 1200,
     "so this month's bill is its meter, not the $12 plateau",
   );
   assert.equal(bill.storageCents, 605, "500 GB peak, $6.05 metered: the meter is smaller");
@@ -546,10 +798,57 @@ test("a month with no hours is an empty month, not a missing one", async () => {
     monthInstant("2026-09"),
     monthEnd("2026-09"),
   );
-  assert.equal(empty.gbMinutes, 0);
-  assert.equal(empty.peakBytes, 0);
+  assert.equal(empty.peakBytes, 0, "an account with no rows holds nothing");
   assert.equal(empty.month, "2026-09", "the month a read answers for is the month's own label");
-  assert.equal(billThroughTheMeter({ rollup: empty }).totalCents, 0);
+  assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 0);
+});
+
+test("a month metered without a single stored-bytes mark is refused, never billed as $0", async () => {
+  // The unreadable peak. usage_minutes.stored_bytes defaults to 0, so a month
+  // whose hours were rolled by a version that never wrote the column looks
+  // exactly like a month of empty hours - GB-minutes on every row, zero bytes
+  // on every row. If that were read as the peak, the month would bill $0.00
+  // for storage it plainly had.
+  //
+  // So the reader refuses it BY NAME when the account had a version live in
+  // the month. A month of genuinely empty hours still reads 0, because the
+  // account has nothing to be charged for - the two are told apart by a fact
+  // about the versions, not by guessing at the zeros.
+  const meteredDb = metered();
+  const from = monthInstant("2026-09");
+  await storeVersions(meteredDb, [version(800 * GB, from)]);
+  await rollTheMonth(meteredDb, { from, hours: 4 });
+  // The measured month: every hour the rollup wrote carries the real size.
+  assert.equal(
+    (await monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09"))).peakBytes,
+    800 * GB,
+    "a fully measured month reads its peak",
+  );
+  // The unreadable one: the marks go, the metered minutes stay.
+  sqlite(meteredDb).prepare("UPDATE usage_minutes SET stored_bytes = 0").run();
+  await assert.rejects(
+    () => monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09")),
+    /2026-09 has 4 metered hours and no stored-bytes mark/,
+  );
+  // The same zeros for an account with nothing stored is a real empty month:
+  // no live version means nothing to be charged for, and it reads 0.
+  const emptyAccount = await monthUsageRollup(
+    meteredDb.db,
+    "someone-with-nothing",
+    from,
+    monthEnd("2026-09"),
+  );
+  assert.equal(emptyAccount.peakBytes, 0, "no versions and no marks: an empty month reads $0");
+  // And the refusal is about the data, not the month: put one real mark back
+  // and the same month reads again.
+  sqlite(meteredDb)
+    .prepare("UPDATE usage_minutes SET stored_bytes = ?1 WHERE hour = ?2")
+    .run(800 * GB, from + 60 * MINUTE_MS);
+  assert.equal(
+    (await monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09"))).peakBytes,
+    800 * GB,
+    "one measured hour is enough to read the month's peak",
+  );
 });
 
 test("a month the calendar does not have, or has not reached, is refused by name", async () => {
@@ -611,8 +910,13 @@ test("the trigger rolls a whole month of hours and every one records the size", 
     monthEnd("2026-09"),
   );
   assert.equal(month.peakBytes, 800 * GB);
-  assert.equal(month.gbMinutes, 800 * MONTH_MINUTES);
-  const bill = billThroughTheMeter({ rollup: month });
+  const triggerMinutes = monthGbMinutes(meteredDb, "2026-09");
+  assert.equal(
+    triggerMinutes,
+    800 * MONTH_MINUTES,
+    "and the trigger's own month bills its whole size",
+  );
+  const bill = billThroughTheMeter({ peak: month, gbMinutes: triggerMinutes });
   assert.equal(bill.storageCents, 1200, "the $12 plateau, from the real trigger");
   assert.equal(bill.totalCents, 1100, "$12.00 of storage less the $1 credit");
 });

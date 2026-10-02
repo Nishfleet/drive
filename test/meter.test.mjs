@@ -1323,19 +1323,17 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     queries2,
     `a catch-up must cost hours, not accounts: 25 accounts took ${queries25} round trips, one took ${queries2}`,
   );
-  // The budget the trigger is designed to: four round trips per hour (the
-  // hour's GB-minutes read, the hour's stored-bytes read for the peak, the
-  // hour's batch, the hour's watermark) plus the three around them - the
-  // watermark read, the earliest-version read that floors a first run, and the
-  // dedup purge - whatever the customer count. The peak is a second read on
-  // purpose: it is the ceiling's source of truth (drive issue #163) and it is
-  // grouped by account like the minutes, so an hour still costs the same
+  // The budget the trigger is designed to: three round trips per hour (the
+  // hour's read - ONE statement for both the GB-minutes and the peak's
+  // stored bytes, so they are one snapshot - the hour's batch, the hour's
+  // watermark) plus the three around them: the watermark read, the
+  // earliest-version read that floors a first run, and the dedup purge,
   // whatever the customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,
-    4 * MAX_CATCHUP_HOURS + 3,
-    "four round trips per hour plus the three around them",
+    3 * MAX_CATCHUP_HOURS + 3,
+    "three round trips per hour plus the three around them",
   );
   assert.equal(rolled.accounts, 25);
   assert.equal(
