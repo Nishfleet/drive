@@ -72,6 +72,23 @@ func VFSArgs() []string {
 		// does only that leftover work. A round may retune the value through
 		// DRIVE_BENCH_VFS_READ_AHEAD; a person's real mount never sets it.
 		"--vfs-read-ahead", tunedVFSValue("VFS_READ_AHEAD", vfsReadAheadValue),
+		// Background fill (issue #194): the rest of a file arrives without a
+		// foreground read asking for it. The two flags below are the fill's
+		// own and each one's reason is in fill.go:
+		// --vfs-read-chunk-size-limit caps rclone's own chunk doubling, so
+		// the tail of a partly-read 10 GB file arrives in a few large
+		// requests instead of the 128M chunks the doubling would otherwise
+		// start from; --vfs-cache-max-age is how long a file somebody opened
+		// stays on the disk, which is what "recently opened files" means
+		// without a second index.
+		"--vfs-read-chunk-size-limit", vfsChunkSizeLimit(),
+		"--vfs-cache-max-age", vfsMaxAge(),
+		// The remote control is how the background fill reads the cache's
+		// live state and refreshes the directory (fill_run.go), and how
+		// `drive status` reports the cache. rclone's remote control is
+		// unauthenticated by design, so it binds to loopback only: 127.0.0.1,
+		// never :5572 on every interface.
+		"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth",
 	}
 }
 
@@ -282,7 +299,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if foreground {
-		return mountForeground(p)
+		return mountForeground(p, home)
 	}
 	if goos == "darwin" {
 		if err := bootstrapLaunchd(itemPath); err != nil {
@@ -316,7 +333,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 // resolved by ResolveRclone before the call, never from anything remote, and
 // exec.Command takes an argument vector and runs no shell, so no remote or
 // stored value can inject anything at this call site.
-func mountForeground(p MountPlan) error {
+func mountForeground(p MountPlan, home string) error {
 	rclonePath, err := exec.LookPath(p.RcloneBin)
 	if err != nil {
 		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
@@ -335,6 +352,24 @@ func mountForeground(p MountPlan) error {
 	if prefetchEnabled() {
 		go runPrefetchLoop(ctx, p.MountDir)
 	}
+	// The background fill (issue #194) runs in this process for as long as the
+	// mount does. It reaches the same rclone over the remote control the mount
+	// already binds, so there is no second daemon, no listener of our own and
+	// no file the fill keeps anywhere but rclone's capped VFS cache. It is
+	// started after rclone is up and stopped with the mount, and every pass it
+	// reports goes to the mount's log, so a fill problem is a named failure a
+	// person can read rather than a silent no-op.
+	fillCtx, cancelFill := context.WithCancel(context.Background())
+	go func() {
+		// rclone's own remote control is not listening for the first moments
+		// of the mount, so the loop's first pass waits for the mount to appear
+		// (the same proof `drive mount` already makes) instead of racing it.
+		_, _ = Mounted(p.GOOS, home)
+		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
+		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
+			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
+		}
+	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -359,6 +394,7 @@ func mountForeground(p MountPlan) error {
 	signal.Stop(stop)
 	close(quit)
 	<-joined
+	cancelFill()
 	if runErr != nil {
 		return fmt.Errorf("rclone mount: %w", runErr)
 	}
