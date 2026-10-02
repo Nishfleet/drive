@@ -139,7 +139,7 @@ export async function storageListRoute(request, ctx) {
   }
   const path = authorized.path.endsWith("/") ? authorized.path : `${authorized.path}/`;
   const objects = ctx.store
-    .listObjects(device.accountId, path)
+    .listObjects(path)
     .map((/** @type {string} */ fullPath) => ({
       path: `/${fullPath}`,
       // The object's key in the stand-in is its account-relative path, so the
@@ -147,4 +147,58 @@ export async function storageListRoute(request, ctx) {
       url: `${ctx.url.origin}/${fullPath}`,
     }));
   return json({ prefix: device.prefix, path: `/${path}`, objects });
+}
+
+/**
+ * PUT /v1/storage/object?path=… — the stand-in storage API's write half
+ * (drive#20). The key is the whole credential (HTTP Basic, as the listing
+ * route takes it), so the write is checked in the same three steps the listing
+ * is: the credential, the path's place inside the key's own prefix, and the
+ * key's own capabilities. A read-only key is refused here with `403` — that
+ * refusal is the issue's "read-only member's write is refused" acceptance, and
+ * it is the same boundary `authorizePath` draws for prefixes.
+ *
+ * The capability gate reads the authenticated device row, not a second copy of
+ * the rule, so a role cannot grant two different powers in two places.
+ * @param {Request} request
+ * @param {{store: any, url: URL}} ctx
+ */
+export async function storageWriteRoute(request, ctx) {
+  if (request.method !== "PUT") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "PUT" });
+  }
+  const credentials = basicCredentials(request);
+  if (credentials === null) {
+    return errorResponse(401, "Provide the key's access key id and secret.", {
+      "www-authenticate": 'Basic realm="drive"',
+    });
+  }
+  const device = await ctx.store.authenticate(credentials.accessKeyId, credentials.secret);
+  if (device === null) {
+    return errorResponse(401, "This key was revoked or is not valid.", {
+      "www-authenticate": 'Basic realm="drive"',
+    });
+  }
+  const requested = ctx.url.searchParams.get("path");
+  if (requested === null || requested === "") {
+    return errorResponse(400, "Name the path to write with the path query value.");
+  }
+  const authorized = authorizePath(device, requested);
+  if ("error" in authorized) {
+    return errorResponse(403, "That path is outside this key's folder.", {
+      "www-authenticate": 'Basic realm="drive"',
+    });
+  }
+  // The capability gate, after the prefix gate: a path outside the key's own
+  // folder is refused whatever the key may do, and a key without `write` may
+  // not write any path inside it.
+  if (!ctx.store.canWrite(device)) {
+    return errorResponse(403, "This key cannot write to the drive.");
+  }
+  const body = new Uint8Array(await request.arrayBuffer());
+  ctx.store.putObject(authorized.path, body);
+  return json(
+    { prefix: device.prefix, path: `/${authorized.path}`, sizeBytes: body.byteLength },
+    201,
+  );
 }
