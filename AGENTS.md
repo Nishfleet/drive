@@ -15,6 +15,8 @@ Each line is a gate, not prose: the test or file after the dash is what enforces
 
 A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`).
 
+A PR that adds a `bindings.secret()` lists the secret's name in its body under 'Secrets to set' and stays draft until it is set on drive-pricing (`test/worker-secrets.test.mjs`).
+
 - [ ] The route is in the `src/index.js` table, behind the account gate (`signedInAccount`, `src/status.js`) or on the public list there, with the anonymous-401 proof in `test/status.test.mjs`.
 - [ ] Every read and write stays in the account its store was built for — `src/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves, through the request path, that one account's requests can neither read nor list another account's bytes.
 - [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `src/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or as preview bytes a browser cannot read as a page — the preview serves the file's kind, never the upload's claim, with `nosniff` and a sandbox (`src/files.js`).
@@ -24,3 +26,9 @@ A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that
 - [ ] User-facing failure words are the one table's (`src/messages.js`), and `test/messages.test.mjs` fails on a string that drifts from it.
 - [ ] Customer-facing copy uses our words, never a rival's terms (`test/own-words.test.mjs`).
 - [ ] The PR says what was proven on real records and what was not, with the path, id or timestamp that proves it (`docs/build-spec.md`).
+
+## Known Worker secrets
+
+Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
+
+- `METER_EVENT_TOKEN`
