@@ -470,10 +470,18 @@ export function authorizePath(device, rawPath) {
 /**
  * Whether a key may delete. An agent, s3 or branch key may not
  * (docs/build-spec.md, "Keys and safety"); the one table is the source, so a
- * corrupted row cannot grant it.
- * @param {{kind: string}} device
+ * corrupted row cannot grant it. A row that carries its own capabilities wins
+ * over the kind's: a team key (drive#20) is minted with the `device` kind so
+ * the kind table's lookup still answers, but its row lists the role's own
+ * capabilities, and a read-only member's key must not read as delete-capable
+ * because of the label. A row with no capabilities field (the tests' bare
+ * `{kind}` shape) falls back to the kind table.
+ * @param {{kind: string, capabilities?: string[]}} device
  */
 export function canDelete(device) {
+  if (Array.isArray(device.capabilities)) {
+    return device.capabilities.includes("delete");
+  }
   const kind = /** @type {import("./keyprovider.js").KeyKind} */ (device.kind);
   return CAPABILITIES_BY_KIND[kind].includes("delete");
 }

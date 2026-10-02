@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { dispatch } from "../src/index.js";
 import { TEAM_ROLE_CAPABILITIES, teamScopeFor } from "../src/keyprovider.js";
-import { createMemoryStore } from "../src/keystore.js";
+import { canDelete, createMemoryStore } from "../src/keystore.js";
 
 const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 
@@ -469,4 +469,30 @@ test("a member mints their own team key, and the role comes from the invite, not
     t.env,
   );
   assert.equal(refused.status, 404, "an account off the team mints no key");
+});
+
+test("a team key is never delete-capable, whatever its kind label says", async () => {
+  // A team key is minted with the `device` kind so the kind table still
+  // resolves it, but a team member's row carries the ROLE's capabilities. A
+  // read-only member's row must not read as delete-capable because of the
+  // label, and no team role grants delete at all. `canDelete` prefers the
+  // row's own capabilities for exactly this case.
+  const t = await team();
+  const reader = await t.store.mintTeamKey(t.readerMember.accountId, t.team.id, "read_only", {
+    name: "reader",
+  });
+  const writer = await t.store.mintTeamKey(t.writerMember.accountId, t.team.id, "read_write", {
+    name: "writer",
+  });
+  for (const key of [reader, writer]) {
+    assert.ok(!key.capabilities.includes("delete"), "no team key carries delete");
+  }
+
+  const readerDevice = await t.store.authenticate(reader.accessKeyId, reader.secret);
+  const writerDevice = await t.store.authenticate(writer.accessKeyId, writer.secret);
+  assert.equal(canDelete(readerDevice), false, "a read-only team key may not delete");
+  assert.equal(canDelete(writerDevice), false, "a read-write team key may not delete either");
+  // The bare kind label alone would have said `true` (device keys delete); the
+  // row's own capabilities are what the check reads.
+  assert.equal(canDelete({ kind: "device" }), true, "a real device key still deletes");
 });
