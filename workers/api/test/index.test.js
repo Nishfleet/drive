@@ -122,6 +122,35 @@ test("a mixed path gates only its account methods, and its 405 names nothing gat
   );
 });
 
+test("an account-only path does not take the Allow header away from a public one", async () => {
+  // The 405 middleware names the methods an anonymous caller may reach, looked
+  // up by the path's METHOD SET, so two paths that register the same methods
+  // share one answer and the smaller disclosure wins. That folding is what
+  // makes an account-only path dangerous: an all-account path is gated as a
+  // whole (an anonymous request to it is 401, and its methods are never
+  // named), so if it took part in the intersection its empty public set would
+  // subtract those methods from every public path that shares the set. Adding
+  // `POST /v1/teams/:teamId/key` (drive#20) must not have taken POST away from
+  // the public `POST /v1/events`, so the registry is the fixture here and this
+  // is the claim.
+  const events = await dispatch(new Request("https://x.test/v1/events", { method: "GET" }), ctx);
+  assert.equal(events.status, 405);
+  assert.equal(
+    events.headers.get("allow"),
+    "POST",
+    "the public events route still names its own method to an anonymous caller",
+  );
+
+  // The account-only path is still the gate's own 401, never a 405 that would
+  // disclose the method it registers.
+  const teamKey = await dispatch(
+    new Request("https://x.test/v1/teams/team_1/key", { method: "GET" }),
+    ctx,
+  );
+  assert.equal(teamKey.status, 401, "an account-only path is gated as a whole");
+  assert.equal(teamKey.headers.get("allow"), null, "and names no methods");
+});
+
 test("a trailing slash is served, never redirected", async () => {
   // The old dispatcher stripped a trailing slash before matching and served;
   // an API that answered a 301 would surprise every client. strict:false does

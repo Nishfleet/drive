@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!public/docs", "!docs-site/.rendered", "!.cloudflare", "!node_modules"]
+    "includes": [
+      "**",
+      "!public/docs",
+      "!docs-site/.rendered",
+      "!.cloudflare",
+      "!node_modules",
+      "!.lighthouseci"
+    ]
   },
   "formatter": {
     "enabled": true,

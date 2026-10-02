@@ -13,7 +13,21 @@ import {
 } from "./device-routes.js";
 import { storageEventsRoute } from "./event-routes.js";
 import { exportRoute } from "./export-routes.js";
-import { listKeysRoute, mintKeyRoute, revokeKeyRoute, storageListRoute } from "./key-routes.js";
+import {
+  listKeysRoute,
+  mintKeyRoute,
+  revokeKeyRoute,
+  storageListRoute,
+  storageWriteRoute,
+} from "./key-routes.js";
+import {
+  createTeamRoute,
+  inviteMemberRoute,
+  listMembersRoute,
+  listTeamsRoute,
+  mintTeamKeyRoute,
+  removeMemberRoute,
+} from "./team-routes.js";
 
 /**
  * The auth rules a route may carry. The account gate is deny by default:
@@ -133,6 +147,58 @@ export const routes = [
     path: "/v1/storage/list",
     auth: "public",
     handler: storageListRoute,
+  },
+  {
+    method: "PUT",
+    path: "/v1/storage/object",
+    auth: "public",
+    handler: storageWriteRoute,
+  },
+
+  // ---- teams (drive#20) ----
+  //
+  // Account routes, so the gate resolved the caller first. A team is addressed
+  // by its own id and every route checks the membership the store holds, so a
+  // member of another team is a 404 rather than another team's members. The
+  // member's key is minted with the scope `publicMember` reports (the same
+  // capabilities table, keyprovider.js), and DELETE .../members/:memberId
+  // revokes the keys it finds, so a removed member's key stops working on the
+  // next request.
+  {
+    method: "POST",
+    path: "/v1/teams",
+    auth: "account",
+    handler: createTeamRoute,
+  },
+  {
+    method: "GET",
+    path: "/v1/teams",
+    auth: "account",
+    handler: listTeamsRoute,
+  },
+  {
+    method: "POST",
+    path: "/v1/teams/:teamId/members",
+    auth: "account",
+    handler: inviteMemberRoute,
+  },
+  {
+    method: "GET",
+    path: "/v1/teams/:teamId/members",
+    auth: "account",
+    handler: listMembersRoute,
+  },
+  {
+    method: "DELETE",
+    path: "/v1/teams/:teamId/members/:memberId",
+    auth: "account",
+    handler: removeMemberRoute,
+  },
+  {
+    method: "POST",
+    path: "/v1/teams/:teamId/key",
+    auth: "account",
+    handler: mintTeamKeyRoute,
   },
 
   // ---- the bucket's own notifications (build step 1, drive#2) ----

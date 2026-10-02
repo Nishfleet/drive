@@ -113,8 +113,17 @@ test("the counter adds across an hour and never touches the rollup's column", as
   const { db } = makeMeteredDB();
   // The rollup writes gb_minutes_live and leaves download_bytes alone; the dl
   // Worker adds to download_bytes and leaves gb_minutes_live alone. Two
-  // writers, one row, either order.
-  await recordUsage(/** @type {any} */ (db), "acct_alice", midnight(), 42.5, midnight() + 60_000);
+  // writers, one row, either order. The rollup's third figure is the hour's
+  // stored bytes (drive#163, the month's peak): the one object this account has
+  // is the 1000 bytes below, so that is the mark the row carries.
+  await recordUsage(
+    /** @type {any} */ (db),
+    "acct_alice",
+    midnight(),
+    42.5,
+    1000,
+    midnight() + 60_000,
+  );
   const harness = makeCtx(db, { "u/acct_alice/a.bin": { bytes: bytesOf(1000) } });
   for (let read = 0; read < 2; read++) {
     const res = await handleDownload(new Request(`${HOST}/u/acct_alice/a.bin`), harness.ctx);
@@ -132,12 +141,15 @@ test("the rollup after the downloads keeps the bytes and replaces its own column
   await handleDownload(new Request(`${HOST}/u/acct_alice/a.bin`), harness.ctx);
   await harness.drain();
   // The rollup then books the hour's GB-minutes over the same row (drive#6's
-  // own guarantee), and the download bytes must survive it.
+  // own guarantee), and the download bytes must survive it. The hour's stored
+  // bytes go in with them (drive#163): the account's one object is the 4096
+  // bytes the download served.
   await recordUsage(
     /** @type {any} */ (db),
     "acct_alice",
     midnight(),
     7.25,
+    4096,
     midnight() + 3_600_000,
   );
   const row = db.tables.usage_minutes.get(`acct_alice|${midnight()}`);

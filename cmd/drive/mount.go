@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -52,6 +53,13 @@ func VFSArgs() []string {
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-streams", "2",
 		"--buffer-size", vfsChunkStreamSize,
+		// --vfs-read-ahead is the stock flag that covers "the first chunk of a
+		// file already being read" with --vfs-cache-mode full. It does not
+		// prefetch child listings when a folder is listed; that has no flag
+		// (rclone's --vfs-refresh walks the whole tree at mount start, which
+		// is the wrong trigger and delays mount-ready), so drive prefetch
+		// does only that leftover work.
+		"--vfs-read-ahead", vfsReadAheadValue,
 	}
 }
 
@@ -73,15 +81,15 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		sub = "nfsmount"
 	}
 	return MountPlan{
-		GOOS:       goos,
-		RcloneBin:  rcloneBin,
-		Subcommand: sub,
-		Remote:     RemoteFor(c),
-		MountDir:   DefaultMountDir(home),
-		ConfigPath: RcloneConfigPath(home),
-		CacheDir:   DefaultCacheDir(home),
-		LogPath:    filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:    VFSArgs(),
+		GOOS:        goos,
+		RcloneBin:   rcloneBin,
+		Subcommand:  sub,
+		Remote:      RemoteFor(c),
+		MountDir:    DefaultMountDir(home),
+		ConfigPath:  RcloneConfigPath(home),
+		CacheDir:    DefaultCacheDir(home),
+		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
+		VFSArgs:     VFSArgs(),
 		DownloadURL: c.DownloadURL,
 	}
 }
@@ -220,9 +228,16 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	itemPath := LoginItemPath(goos, home)
 	// The mount dir is created only once the plan is real: --dry-run writes
 	// nothing at all, and prints the config with both keys redacted.
+	driveBin, exeErr := os.Executable()
+	if exeErr != nil {
+		return fmt.Errorf("resolve drive binary: %w", exeErr)
+	}
+	prefetchItem := []byte(PrefetchLoginItem(goos, driveBin, home))
+	prefetchPath := PrefetchLoginItemPath(goos, home)
 	if dryRun {
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- %s ---\n%s", itemPath, item)
+		fmt.Printf("--- %s ---\n%s", prefetchPath, prefetchItem)
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
 	}
@@ -234,6 +249,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if err := WriteFileAtomic(itemPath, item, 0o644); err != nil {
+		return err
+	}
+	if err := WriteFileAtomic(prefetchPath, prefetchItem, 0o644); err != nil {
 		return err
 	}
 	if foreground {
@@ -260,6 +278,9 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := waitMounted(goos, home); err != nil {
 		return err
 	}
+	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
+		return fmt.Errorf("start prefetch: %w", err)
+	}
 	fmt.Printf("Mounted at %s\n", p.MountDir)
 	return nil
 }
@@ -282,6 +303,11 @@ func mountForeground(p MountPlan) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("rclone mount: %w", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if prefetchEnabled() {
+		go runPrefetchLoop(ctx, p.MountDir)
+	}
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -302,6 +328,7 @@ func mountForeground(p MountPlan) error {
 		}
 	}()
 	runErr := cmd.Wait()
+	cancel()
 	signal.Stop(stop)
 	close(quit)
 	<-joined
@@ -357,52 +384,57 @@ func mountSystemctlActions() []string {
 // is already loaded errors), so a loaded item is booted out first, then the
 // item is bootstrapped into gui/<uid>, the session the person is logged into.
 func bootstrapLaunchd(itemPath string) error {
+	return bootstrapLaunchdLabel(LaunchdLabel, itemPath)
+}
+
+func bootstrapLaunchdLabel(label, itemPath string) error {
 	target := launchctlTarget()
-	if launchctlLoaded(target) {
-		if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+	if launchctlLoadedLabel(target, label) {
+		if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootout", target, itemPath)...).CombinedOutput(); err != nil {
 			return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 		}
 	}
-	if out, err := exec.Command("launchctl", launchctlArgv("bootstrap", target, itemPath)...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootstrap", target, itemPath)...).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap %s %s: %w: %s", target, itemPath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// bootoutLaunchd stops the login item with the current launchctl verb. An item
-// that is not loaded is already stopped, so bootout does not run.
 func bootoutLaunchd(itemPath string) error {
+	return bootoutLaunchdLabel(LaunchdLabel, itemPath)
+}
+
+func bootoutLaunchdLabel(label, itemPath string) error {
 	target := launchctlTarget()
-	if !launchctlLoaded(target) {
+	if !launchctlLoadedLabel(target, label) {
 		return nil
 	}
-	if out, err := exec.Command("launchctl", launchctlArgv("bootout", target, itemPath)...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("launchctl", launchctlArgvLabel(label, "bootout", target, itemPath)...).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// launchctlTarget is the launchd domain a login item lives in: gui/<uid>, the
-// session the person is logged into.
 func launchctlTarget() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
 
-// launchctlLoaded asks launchd whether the service is loaded. `launchctl
-// print` exits non-zero when it is not, which is exactly the question; the
-// answer only decides whether a bootout runs, so nothing else is read from it.
 func launchctlLoaded(target string) bool {
-	return exec.Command("launchctl", launchctlArgv("print", target, "")...).Run() == nil
+	return launchctlLoadedLabel(target, LaunchdLabel)
 }
 
-// launchctlArgv is the launchctl command line for one action, kept separate so
-// the deprecated load/unload verbs cannot creep back in unnoticed. print and
-// bootout address the service by domain/label; bootstrap takes the domain and
-// then the plist to load.
+func launchctlLoadedLabel(target, label string) bool {
+	return exec.Command("launchctl", launchctlArgvLabel(label, "print", target, "")...).Run() == nil
+}
+
 func launchctlArgv(action, target, itemPath string) []string {
+	return launchctlArgvLabel(LaunchdLabel, action, target, itemPath)
+}
+
+func launchctlArgvLabel(label, action, target, itemPath string) []string {
 	switch action {
 	case "print":
-		return []string{"print", target + "/" + LaunchdLabel}
+		return []string{"print", target + "/" + label}
 	case "bootout":
-		return []string{"bootout", target + "/" + LaunchdLabel}
+		return []string{"bootout", target + "/" + label}
 	case "bootstrap":
 		return []string{"bootstrap", target, itemPath}
 	}
@@ -412,6 +444,9 @@ func launchctlArgv(action, target, itemPath string) []string {
 // Unmount stops the mount and the login item. Running it twice is not an
 // error: an absent login item means the drive is already stopped.
 func Unmount(goos, home string) error {
+	if err := stopPrefetchLoginItem(goos, home); err != nil {
+		return err
+	}
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

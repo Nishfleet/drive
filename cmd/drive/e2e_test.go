@@ -252,7 +252,7 @@ func md5File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func freePort(t *testing.T) string {
+func freePort(t testing.TB) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -266,7 +266,7 @@ func freePort(t *testing.T) string {
 	return port
 }
 
-func waitForPort(t *testing.T, port string) {
+func waitForPort(t testing.TB, port string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
@@ -284,7 +284,7 @@ func waitForPort(t *testing.T, port string) {
 // becomes a mount point while rclone is still running means the host refuses
 // the FUSE mount (a CI runner without /dev/fuse): that is a skip, reported by
 // the caller. An rclone that has already exited is a real failure.
-func waitForMount(t *testing.T, cmd *exec.Cmd, dir string) bool {
+func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -308,7 +308,7 @@ var (
 	builtBinDir string
 )
 
-func driveBin(t *testing.T) string {
+func driveBin(t testing.TB) string {
 	t.Helper()
 	if builtBinary != "" {
 		return builtBinary
@@ -331,6 +331,10 @@ func driveBin(t *testing.T) string {
 // test owns it (any test may have been the one to build it).
 func TestMain(m *testing.M) {
 	code := m.Run()
+	// The benchmark harness (bench_test.go) is started once for a -bench run
+	// and owns two child processes, so it stops them here rather than leaving
+	// orphans behind on the host.
+	benchTeardown()
 	if builtBinDir != "" {
 		_ = os.RemoveAll(builtBinDir)
 	}

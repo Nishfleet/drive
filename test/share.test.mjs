@@ -39,7 +39,9 @@ import {
   newRequestRecord,
   newShareRecord,
   REQUEST_ENDPOINT,
+  REQUEST_FILE_MAX_BYTES,
   REQUEST_PAGE,
+  REQUEST_TOTAL_MAX_BYTES,
   requestUrl,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
@@ -48,6 +50,7 @@ import {
   UPLOAD_PAGE_COPY,
   UPLOAD_PAGE_LINE,
   validateRequestFolder,
+  validateRequestMaxBytes,
   validateShareFile,
   validateToken,
 } from "../src/share.js";
@@ -176,6 +179,39 @@ function drive() {
     request,
     requestList,
     revokeRequest,
+  };
+}
+
+/** A rate-limit binding that always lets the caller through. */
+function allowLimiter() {
+  return {
+    async limit() {
+      return { success: true };
+    },
+  };
+}
+
+/** A rate-limit binding that always denies. */
+function denyLimiter() {
+  return {
+    async limit() {
+      return { success: false };
+    },
+  };
+}
+
+/**
+ * Options the public upload route needs in tests: the two edge limiters
+ * production binds, plus the clock. A call that omits them is the fail-closed
+ * 503, which is not what the size/cap tests are asking.
+ * @param {{now?: number, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ */
+function withLimits(options = {}) {
+  return {
+    now,
+    ipLimiter: allowLimiter(),
+    linkLimiter: allowLimiter(),
+    ...options,
   };
 }
 
@@ -462,7 +498,7 @@ test("the cap is resolved from the account that minted the token", async () => {
     links,
     /** @param {string} accountId */
     (accountId) => (accountId === account.id ? "read_only" : "active"),
-    { now },
+    withLimits(),
   );
   assert.equal(capped.status, 403);
 });
@@ -657,7 +693,7 @@ test("a store failure is logged, and its message is never returned", async () =>
           boom,
           links,
           () => "active",
-          { now },
+          withLimits(),
         ),
     ]) {
       const response = await call();
@@ -838,7 +874,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
     files,
     links,
     () => "active",
-    { now },
+    withLimits(),
   );
   assert.equal(dropped.status, 201);
   const body = await dropped.json();
@@ -875,7 +911,7 @@ test("done when: a file dropped on an upload page appears in the folder", async 
     files,
     links,
     () => "active",
-    { now },
+    withLimits(),
   );
   assert.equal(traversal.status, 201);
   assert.equal((await traversal.json()).path, "/..-evil.txt");
@@ -916,12 +952,397 @@ test("an upload request refuses a file once the owner's cap is reached", async (
     store,
     links,
     () => "read_only",
-    { now },
+    withLimits(),
   );
   assert.equal(upload.status, 403);
   assert.equal((await upload.json()).error, failureMessage("upload-paused-at-cap"));
   // Nothing was written, and the cap deleted nothing.
   assert.deepEqual(await store.list("/"), []);
+});
+
+test("an upload larger than the per-file cap is refused before any bytes are stored", async () => {
+  // The Content-Length is the size we can know without reading the body
+  // (drive issue #208). A declared size over the per-file ceiling is 413
+  // with the table's words, and the store is still empty.
+  assert.equal(REQUEST_FILE_MAX_BYTES, 32_000_000);
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=huge.bin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(REQUEST_FILE_MAX_BYTES + 1),
+      },
+      body: "x",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error, failureMessage("body-too-large"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("an upload that would pass the link's total cap is refused before any bytes are stored", async () => {
+  // The owner-set total (here 10 bytes) is the link's own ceiling, so a
+  // second file that would take the running total over it is refused and
+  // the first file is the only one stored (issue #208).
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  const minted = await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 10 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  assert.equal(minted.status, 201);
+  assert.equal((await minted.json()).request.maxBytes, 10);
+  const first = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": "6" },
+      body: "aaaaaa",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(first.status, 201);
+  const second = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=b.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": "6" },
+      body: "bbbbbb",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(second.status, 413);
+  assert.equal((await second.json()).error, failureMessage("upload-link-full"));
+  const names = (await scopeStore(store, account).list("/")).map((entry) => entry.name);
+  assert.deepEqual(names, ["a.txt"]);
+});
+
+test("a streamed upload that would pass the link's total is refused before any bytes are stored", async () => {
+  // No Content-Length: the stream is counted as it arrives, the same second
+  // layer src/waitlist.js uses, so a body that never declared its size still
+  // cannot fill past the owner-set total (issue #208).
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 4 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "hello",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error, failureMessage("upload-link-full"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("an upload that declares a small size but sends more is refused before any bytes are stored", async () => {
+  // Trusting Content-Length alone would store the real body and count the
+  // declared size, so a stranger could fill the drive while the link total
+  // stayed near empty (issue #208). The stream is counted regardless.
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 8 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("this is more than eight"));
+      controller.close();
+    },
+  });
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=lie.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": "1" },
+      body,
+      // `duplex` is a Node/undici RequestInit field the Workers RequestInit type
+      // does not carry; a streamed body needs it set or the constructor throws.
+      ...{ duplex: "half" },
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error, failureMessage("upload-link-full"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("a public upload without its rate-limit bindings is refused before any bytes are stored", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      body: "x",
+    }),
+    store,
+    links,
+    () => "active",
+    { now },
+  );
+  assert.equal(upload.status, 503);
+  assert.equal((await upload.json()).error, failureMessage("unexpected"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("a rate-limited upload is refused before any bytes are stored", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      headers: { "cf-connecting-ip": "203.0.113.9" },
+      body: "x",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits({ ipLimiter: denyLimiter() }),
+  );
+  assert.equal(upload.status, 429);
+  assert.equal((await upload.json()).error, failureMessage("rate-limited"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("a link-rate-limited upload is refused before any bytes are stored", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      headers: { "cf-connecting-ip": "203.0.113.9" },
+      body: "x",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits({ linkLimiter: denyLimiter() }),
+  );
+  assert.equal(upload.status, 429);
+  assert.equal((await upload.json()).error, failureMessage("rate-limited"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("an owner-set total that is not a whole number of bytes is refused", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  assert.deepEqual(validateRequestMaxBytes(undefined), { maxBytes: REQUEST_TOTAL_MAX_BYTES });
+  assert.deepEqual(validateRequestMaxBytes(10), { maxBytes: 10 });
+  for (const maxBytes of [0, -1, 1.5, "10", Number.MAX_SAFE_INTEGER + 1]) {
+    const minted = await handleRequestRequest(
+      new Request(api(REQUEST_ENDPOINT), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folder: "/", maxBytes }),
+      }),
+      store,
+      links,
+      account,
+      { now, token: TOKEN },
+    );
+    assert.equal(minted.status, 400, `${String(maxBytes)} must be refused`);
+    assert.equal((await minted.json()).error, failureMessage("request-max-bytes"));
+  }
+});
+
+test("two concurrent uploads that would together pass the link total store only what fits", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 10 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const [first, second] = await Promise.all([
+    handleRequestUploadRequest(
+      new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain", "content-length": "6" },
+        body: "aaaaaa",
+      }),
+      store,
+      links,
+      () => "active",
+      withLimits(),
+    ),
+    handleRequestUploadRequest(
+      new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=b.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain", "content-length": "6" },
+        body: "bbbbbb",
+      }),
+      store,
+      links,
+      () => "active",
+      withLimits(),
+    ),
+  ]);
+  const statuses = [first.status, second.status].sort((left, right) => left - right);
+  assert.deepEqual(statuses, [201, 413]);
+  const names = (await scopeStore(store, account).list("/")).map((entry) => entry.name);
+  assert.equal(names.length, 1);
+});
+
+test("an unnamed upload is refused before any bytes are stored", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}`, {
+      method: "POST",
+      body: "hello",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 400);
+  assert.equal((await upload.json()).error, failureMessage("upload-needs-name"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("the owner sees what came in through a link and can close it", async () => {
+  const { files, links, request, requestList, revokeRequest } = drive();
+  const minted = await request("/", { token: TOKEN });
+  assert.equal(minted.status, 201);
+  const mintedRow = (await minted.json()).request;
+  assert.equal(mintedRow.uploadsLabel, "No uploads yet");
+  assert.equal(mintedRow.maxBytes, REQUEST_TOTAL_MAX_BYTES);
+  const dropped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": "5" },
+      body: "hello",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 201);
+  const listed = await requestList();
+  const rows = (await listed.json()).requests;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].uploads, 1);
+  assert.equal(rows[0].uploadBytes, 5);
+  assert.match(rows[0].uploadsLabel, /1 upload/);
+  const closed = await revokeRequest(TOKEN);
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json()).request.state, "revoked");
+  const after = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=late.txt`, {
+      method: "POST",
+      body: "nope",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(after.status, 404);
 });
 
 test("an unknown or revoked upload token is 404 on both public routes", async () => {
@@ -943,7 +1364,7 @@ test("an unknown or revoked upload token is 404 on both public routes", async ()
     store,
     links,
     () => "active",
-    { now },
+    withLimits(),
   );
   assert.equal(upload.status, 404);
   assert.deepEqual(await store.list("/"), []);

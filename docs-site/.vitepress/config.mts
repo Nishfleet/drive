@@ -53,6 +53,7 @@ export default defineConfig({
       { text: "Pricing and your bill", link: "/pricing" },
       { text: "FAQ", link: "/faq" },
       { text: "Limits", link: "/limits" },
+      { text: "Benchmarks", link: "/benchmarks" },
       { text: "Security", link: "/security" },
       { text: "Changelog", link: "/changelog" },
     ],

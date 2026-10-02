@@ -73,6 +73,8 @@ const MOUNT_FLAGS = [
   "20G",
   "--dir-cache-time",
   "5s",
+  "--vfs-read-ahead",
+  "128k",
 ];
 
 /** @param {string} p */
