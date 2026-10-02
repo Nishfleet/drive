@@ -167,19 +167,37 @@ export function syncStatus(device, now = Date.now()) {
 
 // The upload-progress line, as a table of fragments so the page can carry the
 // same words it cannot import (`drive status` prints the assembled line).
+// `paused` and `resumed` are the two states `drive pause` and `drive resume`
+// name, printed by the status line and by the CLI's own command output; the Go
+// CLI mirrors this table (cmd/drive/pause.go) and
+// TestStatusWordsMatchThePageWords joins the two copies.
 export const UPLOAD_LABEL = Object.freeze({
   upToDate: "Up to date",
   oneFile: "Uploading 1 file",
   manyFiles: "Uploading {files} files",
   noCount: "Uploading",
   progress: "{uploaded} of {total} ({percent}%)",
+  // A paused queue is not a moving one. Its line names the state first and
+  // then what is still waiting, so a person reads "Paused" and not
+  // "Uploading" for bytes that are not leaving.
+  paused: "Paused",
+  resumed: "Resumed",
+  pausedOne: "1 file waiting",
+  pausedMany: "{files} files waiting",
+  pausedLine: "Paused: {waiting} ({left} left)",
 });
 
 /**
  * Upload progress for `drive status` and the page's activity line: how much of
  * the queue has gone up. Zero total means nothing is waiting, which is a
  * complete state ("Up to date"), not an error and not a division by zero.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number}} upload
+ *
+ * A `paused` upload is the same arithmetic in a stopped state (drive issue
+ * #100): the label leads with the pause word and the bytes still to send, so a
+ * paused drive never reads as an uploading one. An explicit `paused: false`
+ * behaves like an absent flag, so a caller that always sets the field does not
+ * pause its own queue.
+ * @param {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean}} upload
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
@@ -202,6 +220,22 @@ export function uploadProgress(upload) {
   }
   const percent = Math.round((uploadedBytes / totalBytes) * 100);
   const files = Number.isInteger(upload.files) && upload.files > 0 ? upload.files : null;
+  const left = formatBytes(totalBytes - uploadedBytes);
+  if (upload.paused === true) {
+    const waiting =
+      files === null
+        ? null
+        : files === 1
+          ? UPLOAD_LABEL.pausedOne
+          : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
+    const label =
+      waiting === null
+        ? `${UPLOAD_LABEL.paused}: ${left} left`
+        : UPLOAD_LABEL.pausedLine
+            .replace("{waiting}", waiting)
+            .replace("{left}", left);
+    return { percent, label };
+  }
   const head =
     files === null
       ? UPLOAD_LABEL.noCount

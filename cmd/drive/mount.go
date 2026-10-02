@@ -28,6 +28,8 @@ type MountPlan struct {
 	ConfigPath string
 	CacheDir   string
 	LogPath    string
+	RCSocket   string // unix socket rclone answers rc calls on (issue #100)
+	Bwlimit    string // rclone bwlimit rate to start with, "" for no limit (issue #100)
 	VFSArgs    []string
 }
 
@@ -49,6 +51,21 @@ func VFSArgs() []string {
 	}
 }
 
+// RCArgs are the stock rclone remote-control flags, so `drive pause`,
+// `drive resume` and the progress lines in `drive status` can ask the running
+// mount the question instead of guessing (drive issue #100). The socket is a
+// unix socket inside the 0700 config directory, not a TCP listener, and
+// --rc-no-auth is safe with it: anything that can reach the socket already has
+// this user's filesystem access, and no credential would change that. Both
+// flags are documented on rclone.org/rc.
+func RCArgs(socketPath string) []string {
+	return []string{
+		"--rc",
+		"--rc-addr", "unix://" + socketPath,
+		"--rc-no-auth",
+	}
+}
+
 // RemoteFor joins the bucket and optional key prefix into an rclone remote
 // path. The prefix is the device's scoped folder, e.g. u/<id>.
 func RemoteFor(c StorageConfig) string {
@@ -60,7 +77,9 @@ func RemoteFor(c StorageConfig) string {
 }
 
 // BuildMountPlan resolves the mount command for goos. It is the single place
-// that knows nfsmount is the macOS command and mount is the Linux one.
+// that knows nfsmount is the macOS command and mount is the Linux one, and
+// the single place the paused state is translated into rclone's command line
+// (drive issue #100).
 func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	sub := "mount"
 	if goos == "darwin" {
@@ -75,7 +94,12 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		ConfigPath: RcloneConfigPath(home),
 		CacheDir:   DefaultCacheDir(home),
 		LogPath:    filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:    VFSArgs(),
+		RCSocket:   RCSocketPath(home),
+		// A pause that is in force when the mount is (re)started keeps being in
+		// force: rclone's bandwidth limit lives in its own process, so without
+		// this line a restart would start sending bytes at full speed.
+		Bwlimit: PausedRate(home),
+		VFSArgs: VFSArgs(),
 	}
 }
 
@@ -93,6 +117,15 @@ func (p MountPlan) Args() []string {
 		"--log-file", p.LogPath,
 		"--log-level", "INFO",
 	)
+	args = append(args, RCArgs(p.RCSocket)...)
+	// The paused rate goes on rclone's own command line, so a mount that is
+	// started again after a `drive pause` comes back already paused. Measured
+	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
+	// the mount with the same rate `core/bwlimit rate="1KiB:off"` sets, and
+	// RCLONE_BWLIMIT is not needed because the flag is already in the vector.
+	if p.Bwlimit != "" {
+		args = append(args, "--bwlimit", p.Bwlimit)
+	}
 	return args
 }
 

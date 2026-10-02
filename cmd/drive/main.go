@@ -20,6 +20,8 @@ Usage:
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive pause [flags]      stop the bytes leaving the device; survives a restart
+  drive resume [flags]     start the bytes leaving the device again
   drive logout [flags]     stop the mount and delete this device's key and config
   drive version            print the version
 
@@ -60,6 +62,10 @@ func main() {
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "pause":
+		err = runPause(os.Args[2:])
+	case "resume":
+		err = runResume(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
 	case "version", "--version", "-v":
