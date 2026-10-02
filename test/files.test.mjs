@@ -1151,4 +1151,174 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   assert.equal(call.headers["x-amz-copy-source"], "/drive/u/acct-a/Photos/a%20b.txt");
   assert.equal(call.url, "http://127.0.0.1:9000/drive/u/acct-a/.branches/work/a%20b.txt");
   assert.equal(call.headers["content-type"], undefined, "a server-side copy sends no body");
+
+  // The same store, over a file past the point where CopyObject can copy it at
+  // all: S3 caps one copy at 5 GiB and refuses a bigger source, so a branch of
+  // a folder holding a 6 GB file is a multipart copy — CreateMultipartUpload,
+  // one UploadPartCopy per byte range, CompleteMultipartUpload (drive#157).
+  // Still no bytes through the Worker: every call is a PUT with no body.
+  const gib = 1024 ** 3;
+  const sixGb = 6 * gib;
+  const partSize = 16 * 1024 ** 2;
+  /** @type {Array<{method: string, url: string, headers: Record<string, string>, body: string|null}>} */
+  const big = [];
+  /** @type {typeof fetch} */
+  const bigFetch = async (url, init) => {
+    /** @type {Record<string, string>} */
+    const headers = /** @type {Record<string, string>} */ (init?.headers || {});
+    const call = { method: init?.method || "GET", url: String(url), headers, body: typeof init?.body === "string" ? init.body : null };
+    big.push(call);
+    if (call.url.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><Bucket>drive</Bucket><Key>k</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (call.url.includes("partNumber=")) {
+      return new Response(
+        `<CopyPartResult><ETag>&#34;etag-${new URL(call.url).searchParams.get("partNumber")}&#34;</ETag><LastModified>2026-10-02T00:00:00.000Z</LastModified></CopyPartResult>`,
+      );
+    }
+    return new Response("<CompleteMultipartUploadResult><Key>k</Key><ETag>whole</ETag></CompleteMultipartUploadResult>");
+  };
+  const bigStore = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl: bigFetch }),
+    { id: "acct-a" },
+  );
+  // The size is the one the listing of that folder carried (drive#157): a
+  // folder walk already holding every file's size must not pay a request per
+  // file to learn it again.
+  await bigStore.copy("/Photos/archive.iso", "/.branches/work/archive.iso", sixGb);
+
+  const target = "http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso";
+  const started = big[0];
+  assert.equal(started.method, "POST", "a multipart copy starts with CreateMultipartUpload");
+  assert.equal(started.url, `${target}?uploads`);
+  const parts = big.filter((entry) => entry.url.includes("partNumber="));
+  const rangeCount = Math.ceil(sixGb / partSize);
+  assert.equal(parts.length, rangeCount, "one UploadPartCopy per byte range, none for the bytes twice");
+  for (const [index, part] of parts.entries()) {
+    const start = index * partSize;
+    const end = Math.min(start + partSize, sixGb) - 1;
+    assert.equal(part.method, "PUT");
+    assert.equal(
+      part.headers["x-amz-copy-source"],
+      "/drive/u/acct-a/Photos/archive.iso",
+      "every range copies from the same source object",
+    );
+    assert.equal(part.headers["x-amz-copy-source-range"], `bytes=${start}-${end}`);
+    assert.equal(part.body, null, "a copy part carries no bytes through the Worker");
+    assert.equal(part.headers["content-type"], undefined);
+  }
+  assert.equal(
+    parts[rangeCount - 1].headers["x-amz-copy-source-range"],
+    `bytes=${sixGb - partSize}-${sixGb - 1}`,
+    "the last range ends on the source's last byte",
+  );
+  const completed = big[big.length - 1];
+  assert.equal(completed.method, "POST");
+  assert.equal(completed.url, `${target}?uploadId=upload-1`);
+  assert.equal(completed.headers["content-type"], "application/xml");
+  const completion = completed.body ?? "";
+  assert.ok(
+    completion.startsWith("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&#34;etag-1&#34;</ETag></Part>"),
+    "the completion names the first part with the ETag that part answered",
+  );
+  assert.ok(
+    completion.endsWith("</CompleteMultipartUpload>"),
+    "the completion is one CompleteMultipartUpload body",
+  );
+  assert.equal(completion.split("<Part>").length - 1, rangeCount, "every range is in the completion");
+  assert.ok(completion.includes(`<PartNumber>${rangeCount}</PartNumber><ETag>&#34;etag-${rangeCount}&#34;</ETag>`));
+  assert.equal(big.length, rangeCount + 2, "one start, one call per range, one completion");
+});
+
+test("a copy the storage refuses as too big becomes a multipart copy, even with no size", async () => {
+  // `approve` copies a branch back without a size in hand (drive#157), so the
+  // store has to learn it from the storage itself: S3's own refusal for a
+  // source over its 5 GiB single-copy ceiling is the signal, and the byte
+  // length comes from the source's own HEAD. Without that answer the copy is a
+  // named failure, not a copy that silently moved nothing.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const sixGb = 6 * 1024 ** 3;
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    const call = String(url);
+    seen.push(`${init?.method || "GET"} ${call}`);
+    if (init?.method === "HEAD") {
+      return new Response(null, { status: 200, headers: { "content-length": String(sixGb) } });
+    }
+    if (call.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><Bucket>drive</Bucket><Key>k</Key><UploadId>upload-2</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (call.includes("partNumber=")) {
+      return new Response(`<CopyPartResult><ETag>&#34;p${new URL(call).searchParams.get("partNumber")}&#34;</ETag></CopyPartResult>`);
+    }
+    if (init?.method === "PUT") {
+      return new Response(
+        "<Error><Code>InvalidRequest</Code><Message>The specified copy source is larger than the maximum allowable size for a copy source: 5368709120</Message></Error>",
+        { status: 400 },
+      );
+    }
+    return new Response("<CompleteMultipartUploadResult></CompleteMultipartUploadResult>");
+  };
+  const store = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await store.copy("/Photos/archive.iso", "/.branches/work/archive.iso");
+
+  assert.equal(seen[0].startsWith("PUT "), true, "the one-call copy is tried first");
+  assert.equal(seen[1], "HEAD http://127.0.0.1:9000/drive/u/acct-a/Photos/archive.iso", "then the size is read");
+  assert.equal(seen[2].endsWith("/.branches/work/archive.iso?uploads"), true);
+  assert.equal(seen[seen.length - 1], "POST http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-2");
+  assert.equal(seen.filter((entry) => entry.includes("partNumber=")).length, 384);
+});
+
+test("a multipart copy that fails aborts its upload, so its parts stop being billed", async () => {
+  // Every S3-shaped provider bills the parts of an unfinished multipart upload,
+  // and `drive branch` copies whole folders: a copy that gave up halfway must
+  // not leave that bill behind, and must say which part failed.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    const call = String(url);
+    seen.push(`${init?.method || "GET"} ${call}`);
+    if (call.endsWith("?uploads")) {
+      return new Response(
+        "<InitiateMultipartUploadResult><Bucket>drive</Bucket><Key>k</Key><UploadId>upload-3</UploadId></InitiateMultipartUploadResult>",
+      );
+    }
+    if (call.includes("partNumber=")) {
+      return call.includes("partNumber=3")
+        ? new Response(
+            "<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>",
+            { status: 500 },
+          )
+        : new Response("<CopyPartResult><ETag>&#34;p&#34;</ETag></CopyPartResult>");
+    }
+    return new Response("<CompleteMultipartUploadResult></CompleteMultipartUploadResult>");
+  };
+  const store = scopeStore(
+    createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl }),
+    { id: "acct-a" },
+  );
+  await assert.rejects(
+    store.copy("/Photos/archive.iso", "/.branches/work/archive.iso", 6 * 1024 ** 3),
+    (error) => {
+      assert.match(String(error instanceof Error ? error.message : error), /part 3/);
+      assert.match(String(error instanceof Error ? error.message : error), /InternalError/);
+      return true;
+    },
+  );
+  assert.equal(
+    seen[seen.length - 1],
+    "DELETE http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-3",
+    "the upload is aborted after a failed part",
+  );
 });

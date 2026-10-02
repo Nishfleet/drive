@@ -237,6 +237,11 @@ async function fileFingerprint(store, path) {
  * returning the snapshot of the original: the files' `{size, etag, modified}`
  * at the moment the branch was taken. This is what `drive branch` does and
  * what `approve` diffs against.
+ *
+ * The size comes from the listing that found the file, and is handed to the
+ * copy: over S3's 5 GiB single-copy limit a copy has to be a multipart copy,
+ * and a folder walk that already holds each file's size must not pay a second
+ * request per file to learn it again (drive#157).
  * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
@@ -265,7 +270,7 @@ async function copyFolder(store, source, dest) {
       if (rel === null) {
         continue;
       }
-      await store.copy(entry.path, `${dest}/${rel}`);
+      await store.copy(entry.path, `${dest}/${rel}`, entry.size);
       snapshot[rel] = fingerprint(entry);
     }
   }
@@ -579,6 +584,11 @@ export async function approveBranch(db, store, account, name) {
   const applied = { added: [], changed: [], removed: [] };
   let appliedAny = false;
   let failure = null;
+  // No size is handed to these copies (the diff lists names, not bytes), and
+  // that is safe: a file over S3's 5 GiB single-copy limit is refused as too
+  // big and the store copies it the multipart way instead (drive#157). One
+  // extra HEAD for that one file is cheaper than listing every branch file
+  // again to carry a size this path does not have.
   try {
     for (const rel of diff.added) {
       const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
