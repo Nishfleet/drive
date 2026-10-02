@@ -50,12 +50,24 @@ import {
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
+// The Worker entrypoint as these tests drive it: `fetch` and `scheduled` are
+// optional on the runtime's handler type and take an execution context the
+// tests have no use for, so the two calls made here are typed as made.
+const meterWorker =
+  /** @type {{fetch(request: Request, env?: unknown): Promise<Response>, scheduled(event: unknown, env?: unknown): Promise<unknown>}} */ (
+    /** @type {unknown} */ (worker)
+  );
+
 const TOKEN = "test-event-token";
 
 // A complete create event for one account's one version: what the provider
 // sends, with every field a create must carry. Tests that are about the
 // rollup rather than about validation say "store this version" with it
 // instead of spelling out the same eight fields each time.
+/**
+ * @param {string} accountId
+ * @param {Record<string, unknown>} [overrides]
+ */
 const createEvent = (accountId, overrides = {}) => ({
   eventId: `evt-${accountId}-${overrides.b2FileId ?? "file-1"}`,
   keyName: `/u/${accountId}/`,
@@ -67,6 +79,11 @@ const createEvent = (accountId, overrides = {}) => ({
   ...overrides,
 });
 
+/**
+ * @param {import("./d1-sqlite.mjs").MeteredD1} db
+ * @param {string} accountId
+ * @param {Record<string, any>} [overrides]
+ */
 async function storeCreate(db, accountId, overrides = {}) {
   const receivedAt = overrides.createdAt ?? midnight();
   const event = validateEvent(createEvent(accountId, overrides));
@@ -87,7 +104,7 @@ test("every timestamp is epoch milliseconds, and an unusable one is loud", () =>
   assert.throws(() => toMillis("not a date", "createdAt"), TypeError);
   assert.throws(() => toMillis(Number.NaN, "createdAt"), TypeError);
   assert.throws(() => toMillis(new Date("nope"), "createdAt"), TypeError);
-  assert.throws(() => toMillis(null, "createdAt"), TypeError);
+  assert.throws(() => toMillis(/** @type {any} */ (null), "createdAt"), TypeError);
 });
 
 test("an hour bucket is the UTC hour, and the minute inside it does not move it", () => {
@@ -238,9 +255,14 @@ test("several versions in one hour add up, and a zero-size file is free", () => 
     { sizeBytes: 0, createdAt: midnight(), hiddenAt: null },
   ];
   assert.equal(gbMinutesInHour(versions, midnight(), now), 3 * 60);
-  assert.throws(() => gbMinutesInHour("nope", midnight(), now), TypeError);
+  assert.throws(() => gbMinutesInHour(/** @type {any} */ ("nope"), midnight(), now), TypeError);
   assert.throws(
-    () => versionGbMinutesInHour({ sizeBytes: -1, createdAt: midnight() }, midnight(), now),
+    () =>
+      versionGbMinutesInHour(
+        { sizeBytes: -1, createdAt: midnight(), hiddenAt: null },
+        midnight(),
+        now,
+      ),
     TypeError,
   );
 });
@@ -256,8 +278,8 @@ test("a version row is read from the column names D1 returns", () => {
   assert.deepEqual(toVersion(row), { sizeBytes: GB, createdAt: midnight(), hiddenAt: null });
   const hidden = toVersion({ ...row, hidden_at: midnight() + 5 * MINUTE_MS });
   assert.equal(hidden.hiddenAt, midnight() + 5 * MINUTE_MS);
-  assert.throws(() => toVersion({ ...row, size_bytes: "big" }), TypeError);
-  assert.throws(() => toVersion({ ...row, created_at: "later" }), TypeError);
+  assert.throws(() => toVersion({ ...row, size_bytes: /** @type {any} */ ("big") }), TypeError);
+  assert.throws(() => toVersion({ ...row, created_at: /** @type {any} */ ("later") }), TypeError);
 });
 
 // --- Event intake --------------------------------------------------------
@@ -313,7 +335,7 @@ test("a valid event becomes the meter's own shape", () => {
 });
 
 test("an event with a bad field is refused with one sentence, never a stack", () => {
-  const bad = (overrides) =>
+  const bad = (/** @type {Record<string, unknown>} */ overrides) =>
     validateEvent({
       eventId: "evt-1",
       keyName: "/u/abc123/",
@@ -324,6 +346,7 @@ test("an event with a bad field is refused with one sentence, never a stack", ()
       action: "uploaded",
       ...overrides,
     });
+  /** @type {[Record<string, unknown>, string][]} */
   const cases = [
     [{ b2FileId: "  " }, "The event does not name a file version."],
     [{ sizeBytes: -1 }, "The event's size is not a whole number of bytes."],
@@ -606,7 +629,7 @@ test("a hide that outruns its create bills the same minutes, whichever order the
   const now = midnight() + 60 * MINUTE_MS;
   assert.equal(versionGbMinutesInHour(toVersion(a), midnight(), now), 60);
   assert.equal(versionGbMinutesInHour(toVersion(b), midnight(), now), 60);
-  const dayTotal = async (db) => {
+  const dayTotal = async (/** @type {import("./d1-sqlite.mjs").MeteredD1} */ db) => {
     let day = 0;
     for (let h = 0; h < 24; h += 1) {
       day += (await runMeterCron(db, midnight() + (h + 1) * 60 * MINUTE_MS)).gbMinutes;
@@ -826,7 +849,7 @@ test("an hour that has not closed yet is refused, so a rollup is never half an h
   const { db } = makeMeteredDB();
   await assert.rejects(() => rollupHour(db, midnight(), midnight() + 30 * MINUTE_MS), RangeError);
   await assert.rejects(
-    () => rollupHour(db, "", midnight(), midnight() + 60 * MINUTE_MS),
+    () => /** @type {any} */ (rollupHour)(db, "", midnight(), midnight() + 60 * MINUTE_MS),
     TypeError,
   );
 });
@@ -957,7 +980,7 @@ test("a decimal-string size is accepted, because a webhook may stringify its num
 
 test("the intake refuses what it cannot bill, and says why in one sentence", async () => {
   const { db } = makeMeteredDB();
-  const post = (body) =>
+  const post = (/** @type {string} */ body) =>
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
       headers: { [EVENT_TOKEN_HEADER]: TOKEN },
@@ -1067,11 +1090,13 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   );
   assert.equal(huge.status, 413);
   assert.equal(db.tables.events_seen.size, 1);
-  const broken = {
-    prepare: () => {
-      throw new Error("D1 is down");
-    },
-  };
+  const broken = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      prepare: () => {
+        throw new Error("D1 is down");
+      },
+    })
+  );
   const failed = await handleStorageEventRequest(
     post(
       JSON.stringify({
@@ -1395,7 +1420,7 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
       `hour offset ${offset}: SQL ${rolled.gbMinutes} vs the JS reference ${expected}`,
     );
     assert.equal(
-      db.tables.usage_minutes.get("acct0|" + hour).gb_minutes_live,
+      db.tables.usage_minutes.get(`acct0|${hour}`).gb_minutes_live,
       expected,
       "and the stored row holds the same number",
     );
@@ -1422,7 +1447,7 @@ test("the cron trigger the config declares is the one the meter exports", () => 
 
 test("the entrypoint routes the intake and runs the trigger", async () => {
   const { db } = makeMeteredDB();
-  const posted = await worker.fetch(
+  const posted = await meterWorker.fetch(
     new Request("https://drive.example/api/storage-events", {
       method: "POST",
       headers: { "content-type": "application/json", [EVENT_TOKEN_HEADER]: TOKEN },
@@ -1446,7 +1471,7 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   // read back out of the tables it wrote: the mark moved to the hour it
   // rolled, and that hour holds the create's 1-hour minimum.
   assert.equal(
-    await worker.scheduled(
+    await meterWorker.scheduled(
       { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
       { METER_DB: db },
     ),
@@ -1455,12 +1480,15 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
   const rolled = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(rolled.gb_minutes_live, 60);
-  const waitlist = await worker.fetch(
+  const waitlist = await meterWorker.fetch(
     new Request("https://drive.example/api/waitlist", { method: "GET" }),
     {},
   );
   assert.equal(waitlist.status, 405);
-  const status = await worker.fetch(new Request("https://drive.example/api/first-run-status"), {});
+  const status = await meterWorker.fetch(
+    new Request("https://drive.example/api/first-run-status"),
+    {},
+  );
   assert.equal(status.status, 401);
 });
 
