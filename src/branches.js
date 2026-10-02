@@ -491,7 +491,8 @@ export async function createBranch(db, store, account, request, now = () => Date
     // in the error, never silently (drive#157): D1's row limit is 1 MiB and a
     // 100,000-file branch snapshots to ~11 MiB, measured against these
     // migrations (test/branches-snapshot.test.mjs is the pinned number, and
-    // `snapshot-bound` in src/messages.js is what the person is told).
+    // `snapshot-bound` in src/messages.js is what the person is told, and the
+    // phase-2 design is issue #252).
     const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch insert failed for ${account.id}/${name}: ${errorText(error)}`);
     try {

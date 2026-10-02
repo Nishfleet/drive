@@ -1166,7 +1166,12 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   const bigFetch = async (url, init) => {
     /** @type {Record<string, string>} */
     const headers = /** @type {Record<string, string>} */ (init?.headers || {});
-    const call = { method: init?.method || "GET", url: String(url), headers, body: typeof init?.body === "string" ? init.body : null };
+    const call = {
+      method: init?.method || "GET",
+      url: String(url),
+      headers,
+      body: typeof init?.body === "string" ? init.body : null,
+    };
     big.push(call);
     if (call.url.endsWith("?uploads")) {
       return new Response(
@@ -1178,7 +1183,9 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
         `<CopyPartResult><ETag>&#34;etag-${new URL(call.url).searchParams.get("partNumber")}&#34;</ETag><LastModified>2026-10-02T00:00:00.000Z</LastModified></CopyPartResult>`,
       );
     }
-    return new Response("<CompleteMultipartUploadResult><Key>k</Key><ETag>whole</ETag></CompleteMultipartUploadResult>");
+    return new Response(
+      "<CompleteMultipartUploadResult><Key>k</Key><ETag>whole</ETag></CompleteMultipartUploadResult>",
+    );
   };
   const bigStore = scopeStore(
     createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl: bigFetch }),
@@ -1195,7 +1202,11 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   assert.equal(started.url, `${target}?uploads`);
   const parts = big.filter((entry) => entry.url.includes("partNumber="));
   const rangeCount = Math.ceil(sixGb / partSize);
-  assert.equal(parts.length, rangeCount, "one UploadPartCopy per byte range, none for the bytes twice");
+  assert.equal(
+    parts.length,
+    rangeCount,
+    "one UploadPartCopy per byte range, none for the bytes twice",
+  );
   for (const [index, part] of parts.entries()) {
     const start = index * partSize;
     const end = Math.min(start + partSize, sixGb) - 1;
@@ -1220,15 +1231,25 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   assert.equal(completed.headers["content-type"], "application/xml");
   const completion = completed.body ?? "";
   assert.ok(
-    completion.startsWith("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&#34;etag-1&#34;</ETag></Part>"),
+    completion.startsWith(
+      "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&#34;etag-1&#34;</ETag></Part>",
+    ),
     "the completion names the first part with the ETag that part answered",
   );
   assert.ok(
     completion.endsWith("</CompleteMultipartUpload>"),
     "the completion is one CompleteMultipartUpload body",
   );
-  assert.equal(completion.split("<Part>").length - 1, rangeCount, "every range is in the completion");
-  assert.ok(completion.includes(`<PartNumber>${rangeCount}</PartNumber><ETag>&#34;etag-${rangeCount}&#34;</ETag>`));
+  assert.equal(
+    completion.split("<Part>").length - 1,
+    rangeCount,
+    "every range is in the completion",
+  );
+  assert.ok(
+    completion.includes(
+      `<PartNumber>${rangeCount}</PartNumber><ETag>&#34;etag-${rangeCount}&#34;</ETag>`,
+    ),
+  );
   assert.equal(big.length, rangeCount + 2, "one start, one call per range, one completion");
 });
 
@@ -1255,7 +1276,9 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
       );
     }
     if (call.includes("partNumber=")) {
-      return new Response(`<CopyPartResult><ETag>&#34;p${new URL(call).searchParams.get("partNumber")}&#34;</ETag></CopyPartResult>`);
+      return new Response(
+        `<CopyPartResult><ETag>&#34;p${new URL(call).searchParams.get("partNumber")}&#34;</ETag></CopyPartResult>`,
+      );
     }
     if (init?.method === "PUT") {
       return new Response(
@@ -1272,9 +1295,16 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
   await store.copy("/Photos/archive.iso", "/.branches/work/archive.iso");
 
   assert.equal(seen[0].startsWith("PUT "), true, "the one-call copy is tried first");
-  assert.equal(seen[1], "HEAD http://127.0.0.1:9000/drive/u/acct-a/Photos/archive.iso", "then the size is read");
+  assert.equal(
+    seen[1],
+    "HEAD http://127.0.0.1:9000/drive/u/acct-a/Photos/archive.iso",
+    "then the size is read",
+  );
   assert.equal(seen[2].endsWith("/.branches/work/archive.iso?uploads"), true);
-  assert.equal(seen[seen.length - 1], "POST http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-2");
+  assert.equal(
+    seen[seen.length - 1],
+    "POST http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-2",
+  );
   assert.equal(seen.filter((entry) => entry.includes("partNumber=")).length, 384);
 });
 

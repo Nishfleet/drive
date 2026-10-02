@@ -162,7 +162,7 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | "Search 10x faster than Spotlight" | Nothing yet | **Gap** | Issue 18 |
 | Public file links and upload requests | Nothing yet | **Gap** | Issue 19 |
 | Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
-| Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
+| Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead. Measured 2026-10-02 (issue 157): a 6 GB file is one multipart copy (5 GiB is CopyObject's single-copy ceiling, so bigger files are `CreateMultipartUpload` + `UploadPartCopy` + `CompleteMultipartUpload`), 384 parts of 16 MiB, 81 s against a local MinIO and the same whole-object checksum at the branch path. The remaining limit is the per-file snapshot: 8,800 files fit one D1 row, 10,000 do not (issue 252 moves it out of the row) |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
 | Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |

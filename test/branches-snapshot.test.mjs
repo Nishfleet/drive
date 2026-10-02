@@ -15,15 +15,16 @@
 //
 // The numbers below are the fixture's: a 100,000-file branch averages ~117
 // bytes an entry and comes to ~11 MiB, which is eleven times over. Phase 2
-// (move the snapshot out of the row) is issue #256; what this file stops is the
+// (move the snapshot out of the row) is issue #252; what this file stops is the
 // failure being silent, which is what `snapshot-bound` in src/messages.js is
-// for and what `createBranch` asks for when the row does not land.
+// for and what `createBranch` asks for when the row does not land. The
+// phase-2 design itself is issue #252.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createBranch, listBranches } from "../src/branches.js";
-import { failureMessage } from "../src/messages.js";
 import { createMemoryStore, scopeStore } from "../src/files.js";
+import { failureMessage } from "../src/messages.js";
 import { createTestD1 } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -67,6 +68,7 @@ test("a 100,000-file branch snapshots to ~11 MiB, eleven times what one row hold
   const json = snapshotJson(100000);
   const bytes = Buffer.byteLength(json);
   const perEntry = bytes / 100000;
+  /** @param {number} value @returns {number} */
   const t = (value) => Number(value.toFixed(1));
   assert.equal(t(perEntry), 117, `one snapshot entry measured ${t(perEntry)} bytes`);
   assert.equal(t(bytes / 1024), 11425.8, `100,000 entries measured ${t(bytes / 1024)} KiB`);
@@ -75,7 +77,7 @@ test("a 100,000-file branch snapshots to ~11 MiB, eleven times what one row hold
     `100,000 entries must be over the row limit (${bytes} bytes, limit ${D1_ROW_LIMIT})`,
   );
   // The pinned measurement the acceptance asks for, and the reason phase 2
-  // (issue #256) needs the snapshot out of the row rather than a wider column.
+  // (issue #252) needs the snapshot out of the row rather than a wider column.
   assert.equal(Math.ceil(bytes / D1_ROW_LIMIT), 12, "the 100k snapshot spans 12 row-limits");
 });
 
@@ -83,13 +85,12 @@ test("the row limit is the file count, not the branch's bytes, and it is read of
   // The acceptance's "confirm it fits or design the phase-2 sharding" turns on
   // two facts: how many files a row can hold, and whether the refusal names
   // itself. The count is measured against this repo's real migrations, on a
-  // real SQLite engine, by asking the engine at each size — a fixed 1 MiB
-  // number would be this test's opinion, and between them the two engines the
-  // product runs on (SQLite here, D1 in production) answer a different number
-  // for the same column: D1 caps a row at 1 MiB whatever the engine under it
-  // does, so the number below is D1's rule and the real migration is what is
-  // being measured. The refusal wording is pinned separately, below, against
-  // D1's own.
+  // real SQLite engine, by asking the engine at each size. D1 caps a row at
+  // 1 MiB whatever the engine under it does, so 1 MiB is the product rule; a
+  // plain SQLite file has no row length limit of its own (its default is
+  // 1,000,000,000 bytes, measured at SQLITE_MAX_LENGTH), which is why the
+  // ladder below stores every size — and why the pinned number is the
+  // snapshot the product produces, against the limit D1 applies to it.
   const db = createTestD1();
   const insert = db.prepare(
     "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
@@ -100,18 +101,26 @@ test("the row limit is the file count, not the branch's bytes, and it is read of
   for (const files of [1000, 4000, 8800, 10000, 50000, 100000]) {
     const json = snapshotJson(files);
     await insert
-      .bind(ACCOUNT.id, `n${files}`, "/Photos", `/.branches/n${files}`, json, "2026-10-02T00:00:00.000Z", "")
+      .bind(
+        ACCOUNT.id,
+        `n${files}`,
+        "/Photos",
+        `/.branches/n${files}`,
+        json,
+        "2026-10-02T00:00:00.000Z",
+        "",
+      )
       .run();
     stored.push({ files, bytes: Buffer.byteLength(json) });
   }
   assert.equal(stored.length, 6, "every size in the ladder was stored");
   const smallestOver = stored.find((row) => row.bytes > D1_ROW_LIMIT);
-  assert.ok(smallestOver, "the ladder must reach past the limit");
+  assert.ok(smallestOver, "the ladder must reach past D1's limit");
   assert.equal(smallestOver.files, 10000, "10,000 files is the first size over D1's 1 MiB row");
   const largestUnder = [...stored].reverse().find((row) => row.bytes <= D1_ROW_LIMIT);
   assert.equal(largestUnder?.files, 8800, "8,800 files still fits");
-  // The bytes a branch's size does not change: a 10 GB branch of one file is
-  // one entry, and this ladder is the same for a 10 MB folder.
+  // The branch's bytes do not change this: a 10 GB branch of one file is one
+  // entry, so this ladder is the same for a 10 MB folder.
   assert.ok(
     Buffer.byteLength(snapshotJson(1)) < 200,
     "one file's snapshot is one entry, whatever that file weighs",
@@ -125,18 +134,13 @@ test("D1's own refusal for an over-limit row names the column, and the code read
   // with — asserted here so a reworded engine cannot silently turn the one
   // legible failure into the generic one.
   const db = createTestD1();
-  const spy = failingStatement(
-    db,
-    new Error("string or blob is too big: column snapshot"),
-  );
+  const spy = failingStatement(db, new Error("string or blob is too big: column snapshot"));
   const { store } = await driveWithOneFile();
   const result = await createBranch(spy, store, ACCOUNT, { folder: "/Photos", name: "huge" });
-  assert.equal("status" in result && result.status, 500);
-  assert.equal("error" in result && result.error, failureMessage("snapshot-bound"));
-  assert.ok(
-    !("error" in result && result.error.includes("blob")),
-    "the raw engine wording never reaches a person",
-  );
+  const answer = /** @type {{status: number, error: string}} */ (result);
+  assert.equal(answer.status, 500);
+  assert.equal(answer.error, failureMessage("snapshot-bound"));
+  assert.ok(!answer.error.includes("blob"), "the raw engine wording never reaches a person");
 });
 
 test("a branch of a folder under the row limit is still stored whole", async () => {
@@ -162,8 +166,9 @@ test("a branch of a folder under the row limit is still stored whole", async () 
     .prepare("SELECT snapshot FROM branches WHERE account_id = ?1 AND name = ?2")
     .bind(ACCOUNT.id, "big")
     .first();
-  assert.equal(Buffer.byteLength(String(row.snapshot)), Buffer.byteLength(json));
-  assert.equal(Object.keys(JSON.parse(String(row.snapshot))).length, 8800);
+  const snapshot = String(/** @type {{snapshot: string}} */ (row).snapshot);
+  assert.equal(Buffer.byteLength(snapshot), Buffer.byteLength(json));
+  assert.equal(Object.keys(JSON.parse(snapshot)).length, 8800);
 });
 
 test("a refusal that is not the row limit stays the generic failure", async () => {
@@ -174,8 +179,9 @@ test("a refusal that is not the row limit stays the generic failure", async () =
   const spy = failingStatement(db, new Error("D1_ERROR: network connection lost"));
   const { store } = await driveWithOneFile();
   const result = await createBranch(spy, store, ACCOUNT, { folder: "/Photos", name: "work" });
-  assert.equal("status" in result && result.status, 500);
-  assert.equal("error" in result && result.error, failureMessage("unexpected"));
+  const answer = /** @type {{status: number, error: string}} */ (result);
+  assert.equal(answer.status, 500);
+  assert.equal(answer.error, failureMessage("unexpected"));
 });
 
 /**
@@ -189,26 +195,42 @@ test("a refusal that is not the row limit stays the generic failure", async () =
 function failingStatement(db, failure) {
   return /** @type {D1Database} */ (
     /** @type {unknown} */ ({
+      /** @param {string} sql @returns {D1PreparedStatement} */
       prepare(sql) {
         const real = db.prepare(sql);
-        return {
-          bind: (...values) => {
-            if (sql.startsWith("INSERT INTO branches")) {
-              return {
-                run: async () => {
-                  throw failure;
-                },
-                all: async () => {
-                  throw failure;
-                },
-                first: async () => {
-                  throw failure;
-                },
-              };
-            }
-            return real.bind(...values);
-          },
-        };
+        return /** @type {D1PreparedStatement} */ (
+          /** @type {unknown} */ ({
+            /** @param {...unknown} values */
+            bind: (...values) => {
+              if (sql.startsWith("INSERT INTO branches")) {
+                return failingRun(failure);
+              }
+              return real.bind(...values);
+            },
+          })
+        );
+      },
+    })
+  );
+}
+
+/**
+ * One statement whose every call fails the way the database failed: the
+ * refusal a row over D1's limit comes back as is a thrown error from `run`.
+ * @param {Error} failure
+ * @returns {D1PreparedStatement}
+ */
+function failingRun(failure) {
+  return /** @type {D1PreparedStatement} */ (
+    /** @type {unknown} */ ({
+      run: async () => {
+        throw failure;
+      },
+      all: async () => {
+        throw failure;
+      },
+      first: async () => {
+        throw failure;
       },
     })
   );

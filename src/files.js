@@ -998,9 +998,16 @@ export function createS3Store(config) {
       // other refusal is reported as it is.
       const oversize =
         code === "EntityTooLarge" ||
-        (code === "InvalidRequest" && /larger than the maximum|too large/i.test(tagValue(body, "Message")));
+        (code === "InvalidRequest" &&
+          /larger than the maximum|too large/i.test(tagValue(body, "Message")));
       if (oversize) {
-        await multipartCopy(fetchImpl, urlFor, source, to, await sourceSize(fetchImpl, urlFor, from));
+        await multipartCopy(
+          fetchImpl,
+          urlFor,
+          source,
+          to,
+          await sourceSize(fetchImpl, urlFor, from),
+        );
         return;
       }
       if (!response.ok) {
@@ -1114,9 +1121,7 @@ async function multipartCopy(fetchImpl, urlFor, source, to, size) {
   const created = await fetchImpl(`${target}?uploads`, { method: "POST" });
   const createdBody = await created.text();
   if (!created.ok || createdBody.includes("<Error>")) {
-    throw new Error(
-      `storage multipart copy could not start: ${copyFailure(created, createdBody)}`,
-    );
+    throw new Error(`storage multipart copy could not start: ${copyFailure(created, createdBody)}`);
   }
   const uploadId = tagValue(createdBody, "UploadId");
   if (uploadId === "") {

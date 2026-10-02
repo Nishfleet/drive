@@ -163,7 +163,7 @@ export const FAILURE_MESSAGES = Object.freeze({
   // file, and the database refuses a row that big, so the copy was made and
   // then rolled back: nothing is left half-made, and the one thing to do is
   // branch a smaller folder until the snapshot moves out of the row (issue
-  // #256). The size is real, measured on this repo's own migrations.
+  // #252). The size is real, measured on this repo's own migrations.
   "snapshot-bound": Object.freeze({
     what: "That folder has too many files for one branch.",
     next: "Branch a subfolder of it, and tell us the folder you wanted.",
