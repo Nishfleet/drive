@@ -50,13 +50,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseListVersions } from "../src/files.js";
 import worker from "../src/index.js";
-import {
-  BYTES_PER_GB,
-  EVENT_TOKEN_HEADER,
-  listEventDeadLetters,
-  reconcileMeter,
-  runMeterCron,
-} from "../src/meter.js";
+import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
@@ -460,20 +454,18 @@ test("a full day of GB-minutes matches the storage provider's own report within 
 
   // What the storage server sent, and what this route answered. The
   // stand-in's webhook sends `Authorization` and no x-drive-event-token, so
-  // the answers are the refusals and the receipts are where the records went.
+  // the answer is the bearer path. The header's value is the shared token, so
+  // it is reported as the shape it arrived in and never printed: the point is
+  // which header carried the credential, not what the credential is.
   t.diagnostic(
-    `the bucket's own deliveries answered: ${JSON.stringify(receiver.answers.map((a) => ({ status: a.status, authorization: a.headers.authorization ?? null, eventToken: a.headers["x-drive-event-token"] ?? null, attemptId: a.headers["x-amz-request-id"] ?? null })))}`,
+    `the bucket's own deliveries answered: ${JSON.stringify(
+      receiver.answers.map((a) => ({
+        status: a.status,
+        authorization: a.headers.authorization === undefined ? "none" : "Bearer <redacted>",
+        eventToken: a.headers["x-drive-event-token"] === undefined ? "none" : "present",
+      })),
+    )}`,
   );
-  const receipts = await listEventDeadLetters(db);
-  t.diagnostic(
-    `receipts kept: ${JSON.stringify(receipts.map((r) => ({ id: r.id, refused: r.refused, attempt: r.attempt_id, body: String(r.body).length })))}`,
-  );
-  assert.ok(receipts.length >= 3, "every delivery the route refused is kept as a receipt");
-  for (const receipt of receipts) {
-    assert.equal(receipt.event_token, null, "the provider sent no header this route wants");
-  }
-  assert.equal(db.tables.file_versions.size, 0, "a refused delivery bills nothing");
-
   // The provider's own report: this account's prefix, read back from the
   // storage server with the same key the account writes with.
   const listing = await client.send("GET", {
@@ -488,34 +480,25 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     `the provider's own listing: ${JSON.stringify(listed.map((v) => ({ version: v.b2FileId.slice(0, 8), marker: v.hiddenAt === null && v.sizeBytes === 0, size: v.sizeBytes, at: new Date(v.createdAt).toISOString(), hidden: v.hiddenAt === null ? null : new Date(v.hiddenAt).toISOString() })))}`,
   );
 
-  // What a fixed event rule does with what the bucket delivered: the same
-  // bodies, replayed through the same route with the token header it wants.
-  // Nothing is invented here: every receipt's body is the provider's own
-  // delivery, byte for byte.
-  let replayed = 0;
-  for (const receipt of receipts) {
-    const answered = await workerFetch(
-      new Request("https://drive.example/api/storage-events", {
-        method: "POST",
-        headers: {
-          "content-type": receipt.content_type ?? "application/json",
-          [EVENT_TOKEN_HEADER]: EVENT_TOKEN,
-        },
-        body: recordFromDelivery(receipt.body ?? ""),
-      }),
-      { METER_DB: db, METER_EVENT_TOKEN: EVENT_TOKEN },
-    );
-    const answer = await answered.json();
-    assert.equal(
-      answered.status,
-      200,
-      `a replayed delivery must store: ${answered.status} ${JSON.stringify(answer)}`,
-    );
-    replayed += answer.stored;
-  }
-  t.diagnostic(`replayed ${replayed} events from ${receipts.length} receipts into file_versions`);
-  assert.equal(replayed, 4, "the save, the edit, the photo and the delete are four events");
+  // The bucket's own deliveries were accepted, so file_versions already holds
+  // what the provider sent - every record as the storage server emitted it,
+  // with the stock bearer header MinIO can actually send.
+  const versions = db.tables.file_versions.all();
+  t.diagnostic(
+    `file_versions: ${JSON.stringify(versions.map((r) => ({ version: String(r.b2_file_id).slice(0, 8), path: r.path, size: r.size_bytes, created: new Date(r.created_at).toISOString(), hidden: r.hidden_at === null ? null : new Date(r.hidden_at).toISOString() })))}`,
+  );
+  assert.equal(versions.length, 4, "the save, the edit, the photo and its delete are four events");
+  assert.equal(
+    db.tables.event_dead_letters,
+    undefined,
+    "there is no dead-letter table to hold them",
+  );
 
+  // The day: 24 closed UTC hours, the last one the first hour boundary after
+  // the writes above. The hourly trigger is fired once per hour with its own
+  // `scheduledTime`, which is the argument runMeterCron takes in production,
+  // so the watermark walk, the per-hour SQL and the 1-hour minimum all run as
+  // the Cron Trigger runs them.
   // A provider's ObjectCreated event never says that the version before it
   // stopped: the edit's notification carries no hide for the version it
   // replaced, and the delete's marker is a version of its own. So the meter
@@ -527,15 +510,6 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     `the reconciler walked the provider's listing: inserted=${reconciled.inserted} hidden=${reconciled.hidden} marked=${reconciled.marked}`,
   );
   assert.ok(reconciled.hidden >= 2, "the edit and the delete both hide a version");
-
-  // The day: 24 closed UTC hours, the last one the first hour boundary after
-  // the writes above. The hourly trigger is fired once per hour with its own
-  // `scheduledTime`, which is the argument runMeterCron takes in production,
-  // so the watermark walk, the per-hour SQL and the 1-hour minimum all run as
-  // the Cron Trigger runs them.
-  t.diagnostic(
-    `file_versions after the replay: ${JSON.stringify(db.tables.file_versions.all().map((r) => ({ account: r.account_id, version: String(r.b2_file_id).slice(0, 8), path: r.path, size: r.size_bytes, created: new Date(r.created_at).toISOString(), hidden: r.hidden_at === null ? null : new Date(r.hidden_at).toISOString() })))}`,
-  );
   const dayTo = Math.ceil(Date.now() / HOUR_MS) * HOUR_MS;
   const dayFrom = dayTo - 24 * HOUR_MS;
   for (let hour = 1; hour <= 24; hour += 1) {
@@ -594,19 +568,4 @@ function signedListingStore(client) {
       return parseListVersions(response.text);
     },
   };
-}
-
-/**
- * The one event record a delivery carried: the bucket's notification pads it
- * in `Records` (the envelope workers/api/src/event-routes.js reads), and the
- * stand-in sends one record per delivery - the four deliveries below carry one
- * record each, checked here rather than assumed. The record is replayed as the
- * provider sent it, only without the wrapper, because keeping the wrapper is
- * what the intake refuses by name.
- * @param {string} body a receipt's stored body
- */
-function recordFromDelivery(body) {
-  const records = JSON.parse(body).Records;
-  assert.ok(Array.isArray(records) && records.length === 1, "one record per delivery");
-  return JSON.stringify(records[0]);
 }

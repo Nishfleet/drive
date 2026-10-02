@@ -222,45 +222,51 @@ still the stand-in for the proofs that need no versioning
 
 What one run proves, with the real records it ran on (2026-10-02,
 `node --test test/step5-meter-standin.test.mjs`, account
-`acct_642de54482c9bf7880a19909c8d14d62`):
+`acct_35f83f85a74ab6b1650a2c24eab6c3b9`):
 
 - **A real file uploaded, replaced and read back through the stand-in.** A
-  40 MB save (version `f9f29d2f-bbe1-4d8d-a27d-02cbac4c7ab8`), an 8 MB edit
-  over it (version `9a5f8364-cede-45bb-9d15-1d91ed207c6b`, which hides the
-  first), a 6 MB photo in a subfolder (version `b35d728e-c652-4f20-8e7a-9be121996695`)
-  and its delete (delete-marker version `ae9a7729-ecbf-44f8-a202-6b17328ebbe8`),
+  40 MB save (version `7c1cf71e-6d35-4fe3-9765-3e24a93f4d96`), an 8 MB edit
+  over it (version `830568a0-86c2-40d1-b9b7-70d19bf3e5e3`, which hides the
+  first), a 6 MB photo in a subfolder (version `679fc287-706e-403f-8b07-c19541a17d0f`)
+  and its delete (delete-marker version `011d015c-decf-4168-b603-818a4829f127`),
   each call signed with the account's own scoped key from the api Worker's
   `POST /v1/keys`.
 - **The provider's own event rule, pointed at the Worker.** Four webhook
-  deliveries, all refused (401) — and that is the finding, below.
+  deliveries, each accepted (202), each carrying `Authorization: Bearer <the
+  rule's token>` and no `x-drive-event-token`, and each landing as a version
+  row without any replay.
 - **The provider's own report.** `ListObjectVersions` on the account's
   prefix: 6 000 000 bytes hidden at the marker, 8 000 000 live, 40 000 000
   hidden when the edit began.
 - **The day.** `2026-10-01T07:00Z` to `2026-10-02T07:00Z`, 24 closed UTC
   hours, the hourly trigger fired once per hour with its own
   `scheduledTime` (`runMeterCron`, the Cron Trigger's own function):
-  **3.16 GB-minutes metered, 3.16 GB-minutes from the provider's own report,
+  **3.04 GB-minutes metered, 3.04 GB-minutes from the provider's own report,
   drift 0.0000%** (the bar is 1%).
 
-Two things that run only tells, both now the code's shape:
+Two things the run tells, both now the code's shape:
 
-1. **The bucket cannot send the header the intake wants.** Measured against
-   the pinned stand-in on 2026-10-02: MinIO's notify webhook sets
-   `Authorization` to the literal value of `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*`
-   and cannot send a header of its own, so a delivery arrives with no
-   `x-drive-event-token` and `POST /api/storage-events` answers 401 — and the
-   bucket then discards the events after its retries. A refused delivery is
-   therefore kept, bounded and redacted, in `event_dead_letters`
-   (`migrations/drive/0008_event_dead_letters.sql`, purged by the hourly run
-   like `events_seen`): the provider's own attempt id, SHA-256 digests of the
-   two headers rather than their values, and the records that were delivered,
-   so a fixed rule can replay them. The proof replays exactly those bodies
-   through the same route and the four events become four version rows.
+1. **The bucket sends a bearer token, not a header of its own.** Measured
+   against the pinned stand-in on 2026-10-02: MinIO's notify webhook puts
+   `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` in `Authorization` and has no
+   variable to set a header of its own, so a rule configured the vendor's own
+   way arrives with no `x-drive-event-token`. `POST /api/storage-events`
+   therefore accepts the same secret from either header
+   (`bearerToken`, src/meter.js); the endpoint is still closed — a missing or
+   wrong token is still the 401 it always was, and the proof shows it.
 2. **A provider's event never says what it replaced.** The edit's
    `ObjectCreated:Put` carries no hide for the version it replaced, and a
    delete's marker is a version of its own, so the meter learns a hide from
    the provider's own version listing through the nightly reconciler (#59).
    The run above reports `hidden=2 marked=1` before the day is rolled.
+
+Both delivery shapes are read by one mapping: an S3 `Records` envelope, a
+bare list of records, and the single record a bucket bubbles to a
+record-endpoint ARN all go through `notificationRecord` (src/meter.js), which
+takes the provider's own field names (`key`, `size`, `versionId`, `eventTime`,
+`eventName`) and hands `validateEvent` the intake's. A record the mapping does
+not recognise is passed through unchanged, so a malformed record in a batch
+still fails as itself and the good records beside it are stored.
 
 ## How we know it is up (the outage alert)
 

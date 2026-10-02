@@ -83,7 +83,7 @@ function bindForNodeSqlite(sql, bound) {
  */
 /**
  * @typedef {D1Database & {
- *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "event_dead_letters" | "meter_rollup_state", TableView>,
+ *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state", TableView>,
  *   insertVersion(version: {accountId?: string, fileId: string, path?: string, sizeBytes: number, createdAt: number, hiddenAt?: number | null}): void,
  * }} MeteredD1
  */
@@ -185,7 +185,6 @@ export function d1Over(sqlite, { onQuery } = {}) {
         file_versions: table("file_versions", (row) => `${row.account_id}|${row.b2_file_id}`),
         usage_minutes: table("usage_minutes", (row) => `${row.account_id}|${row.hour}`),
         events_seen: table("events_seen", (row) => row.b2_event_id),
-        event_dead_letters: table("event_dead_letters", (row) => row.id),
         meter_rollup_state: table("meter_rollup_state", (row) => row.id),
       },
       // One version row written straight into the real schema, for the shapes an
