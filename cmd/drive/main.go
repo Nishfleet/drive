@@ -17,15 +17,33 @@ Usage:
   drive agents [flags]                  list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
+  drive branch <folder> [flags]         copy a folder into a branch an agent works in
+  drive branches [flags]                list branches and how many files changed
+  drive diff <branch> [flags]           files added, changed or removed in a branch
+  drive approve <branch> [flags]        copy a branch's changes back into the original
+  drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive request <folder>   make a page anyone can drop files onto
+  drive share --list       list this account's links (also on drive request)
+  drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount and delete this device's key and config
   drive version            print the version
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
+
+Search flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --limit  how many results to print (default 50, max 200)
+
+Branch flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --name   branch name (the folder's own name unless given)
 
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
@@ -36,6 +54,11 @@ Mount flags:
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
+
+Link flags (share, request):
+  --api         api Worker base URL (env DRIVE_API_URL)
+  --list        list this account's links instead of minting one
+  --revoke      revoke the link with this token (a full link URL also works)
 
 The device keys are read from the environment, never a flag, so they stay out
 of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
@@ -54,12 +77,28 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "agents":
 		err = runAgents(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
+	case "branch":
+		err = runBranch(os.Args[2:])
+	case "branches":
+		err = runBranches(os.Args[2:])
+	case "diff":
+		err = runDiff(os.Args[2:])
+	case "approve":
+		err = runApprove(os.Args[2:])
+	case "discard":
+		err = runDiscard(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "share":
+		err = runShare(os.Args[2:])
+	case "request":
+		err = runRequest(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
 	case "version", "--version", "-v":

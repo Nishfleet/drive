@@ -6,7 +6,6 @@ package main
 // of a refusal are proven against the same shapes the Worker serves.
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,16 +18,15 @@ import (
 // fakeAPI is a stand-in api Worker: it answers the device flow and the key
 // routes, and records what the CLI sent so a test can assert the wire shape.
 type fakeAPI struct {
-	codes        map[string]DeviceCode // user code -> code, as the Worker holds it
-	approved     map[string]bool
-	keys         map[string]MintedKey // key id -> key
-	mintedKinds  []string
-	mintedNames  []string
-	revokedIDs   []string
-	lastAuthHdr  string
-	lastPath     string
-	rejectMints  bool
-	pollsPerTick int
+	codes       map[string]DeviceCode // user code -> code, as the Worker holds it
+	approved    map[string]bool
+	keys        map[string]MintedKey // key id -> key
+	mintedKinds []string
+	mintedNames []string
+	revokedIDs  []string
+	lastAuthHdr string
+	lastPath    string
+	rejectMints bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -115,10 +113,6 @@ func writeTestJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
-}
-
-func basicHeader(id, secret string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(id+":"+secret))
 }
 
 func TestSignInShowsTheCodeThenPollsUntilApproved(t *testing.T) {

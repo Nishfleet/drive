@@ -73,7 +73,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 
 | Screen | What's on it |
 |---|---|
-| Sign in | Email one-time code, or Google or GitHub. No card asked |
+| Sign in | Email one-time link, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
 | Usage | One "you saved" line, whose copy varies by month type (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
@@ -207,7 +207,7 @@ North star "Reliable" (Nish, 2026-09-30): we hear about an outage before custome
 
 - **B2 delete events.** I confirmed the "file created" event names in Backblaze's API docs on 2026-09-29. I did not confirm the names for hidden and deleted files. The nightly reconciler covers this either way; step 5 checks it.
 - **B2 key limit.** One key per device, agent and branch could mean thousands of keys. Backblaze's key limit was not checked; check it before step 1.
-- **Cloudflare terms for a download proxy.** Serving large files through a Worker has to fit Cloudflare's current terms; check before step 5.
+- **Cloudflare terms for a download proxy.** Checked 2026-09-30, before building the dl Worker (step 5). The answer: streaming reads through a Worker is allowed on the self-serve plan, with two things to hold to. (1) **Response size is not limited by Cloudflare.** The Workers limits page says "Cloudflare does not enforce response body size limits"; the 100 MB figure is the *request* body cap on Free and Pro, so it applies to uploads and not to a download proxy. A CDN cache limit (512 MB Free/Pro, 5 GB Enterprise) applies only if a response is cached, which a per-account download is not. (2) **The old non-HTML clause is gone.** The Self-Serve Subscription Agreement (last updated 2025-09-12, read 2026-09-30) no longer carries the "video or a disproportionate amount of non-HTML content" restriction; it has no "non-HTML" or "disproportionate" language at all, and customer content is covered by 2.5 with acceptable use by 2.7. The one real constraint is CPU time, not bandwidth: streaming a body costs almost no CPU (waiting on the origin does not count), but the Workers Free plan allows 10 ms of CPU per request, so the dl Worker must pass the body through with `response.body`, never buffer or transform it, and its CPU use has to be measured against that ceiling. If it does not fit, the paid Workers plan is $5/month - money, so Nish's call. Cloudflare can change its terms, so re-check before launch.
 - **Mount while read-only.** It is unverified whether rclone keeps waiting uploads safely when its key is swapped for a read-only one. Step 6 proves it.
 - **Missed nights.** If the backup timer misses a night, that night's old versions are lost and the purge skips a folder. The timer's failure must alert (unit failure is already watched on the VPS).
 - **Business tier** (SSO, SOC 2, pooled bill): after v1, not specced here.

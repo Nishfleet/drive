@@ -20,6 +20,7 @@ A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that
 - [ ] Input is validated at the edge (`validatePath`, `safeFileName` in `src/files.js`; `test/files.test.mjs`), and a file leaves as an attachment or as preview bytes a browser cannot read as a page — the preview serves the file's kind, never the upload's claim, with `nosniff` and a sandbox (`src/files.js`).
 - [ ] No secret in code, flags, logs or error text: gitleaks on every PR (`.github/workflows/ci.yml`) and the safety rules `test/messages.test.mjs` enforces on every string.
 - [ ] Money is whole cents out of the one billing function, `monthBillCents` (`src/billing.js`), pinned by `test/billing.test.mjs`.
-- [ ] Tests come first for core logic, and `npm test` is green before the PR; `.github/workflows/ci.yml` runs that same command with the helper-script ban and gitleaks beside it.
+- [ ] Tests come first for core logic, and `npm test` is green before the PR; `.github/workflows/ci.yml` runs that same command with the helper-script ban and gitleaks beside it. `npm test` reaches Biome through `pretest` -> `check`, so `npm run lint` is part of what CI runs; `npm run format` writes the fix.
 - [ ] User-facing failure words are the one table's (`src/messages.js`), and `test/messages.test.mjs` fails on a string that drifts from it.
+- [ ] Customer-facing copy uses our words, never a rival's terms (`test/own-words.test.mjs`).
 - [ ] The PR says what was proven on real records and what was not, with the path, id or timestamp that proves it (`docs/build-spec.md`).

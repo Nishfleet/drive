@@ -1,19 +1,29 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "../src/db.js";
 
 // drive#77 finding 5: db.js had no test at all. These pin the binding rule
 // (every value is bound, never interpolated into SQL) and the two hash/id
 // helpers every later route relies on.
 
+/**
+ * @typedef {{sql: string, params: unknown[]|null}} DbCall
+ * @typedef {{first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}} Bound
+ * @typedef {{calls: DbCall[], prepare: (sql: string) => {bind: (...params: unknown[]) => Bound}}} RecordingDb
+ */
+/** @type {() => RecordingDb} */
 function recordingDb() {
+  /** @type {DbCall[]} */
   const calls = [];
   return {
     calls,
+    /** @param {string} sql */
     prepare(sql) {
+      /** @type {DbCall} */
       const call = { sql, params: null };
       calls.push(call);
       return {
+        /** @param {...unknown} params */
         bind(...params) {
           call.params = params;
           return {
@@ -46,7 +56,7 @@ test("all returns the result rows and binds in order", async () => {
 test("run reports success and binds every value", async () => {
   const db = recordingDb();
   const result = await run(db, "insert into accounts (id) values (?)", "acct_1");
-  assert.equal(result.success, true);
+  assert.equal(/** @type {{success: boolean}} */ (/** @type {unknown} */ (result)).success, true);
   assert.deepEqual(db.calls[0].params, ["acct_1"]);
 });
 
