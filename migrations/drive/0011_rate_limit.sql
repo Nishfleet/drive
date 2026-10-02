@@ -11,4 +11,10 @@
 -- Purely additive, so a rollback of the code leaves the table in place and
 -- the previous Worker version is untouched by it (drive's D1 rule: code
 -- rolls back, data does not).
+--
+-- Rows do not need a cleanup job of their own: the library deletes rows whose
+-- lastRequest is past the longest window it has seen, inside the same increment
+-- that resets a window (createDatabaseStorageWrapper's deleteExpiredRows, read
+-- at this commit), so the table holds one row per live key and not one per
+-- address ever seen.
 create table "rateLimit" ("id" text not null primary key, "key" text not null unique, "count" integer not null, "lastRequest" bigint not null);

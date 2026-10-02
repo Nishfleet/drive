@@ -112,6 +112,17 @@ export function createAuth(options) {
       // magic-link plugin already applies a per-IP rule of 5/60s; this custom
       // rule lowers it to 3/60s). The key Better Auth builds is IP plus path,
       // so the limit is per address by construction.
+      //
+      // Per IP, not per address, because the thing this bounds is mail volume:
+      // one inbox is already bounded by the plugin's own per-address rule, so
+      // the only abuse left is one address sending many links to many inboxes
+      // (or one host spraying). Three per minute is the ceiling because the
+      // page sends one link per press, so a person who mistypes can retry
+      // three times and is then told to wait a minute. A shared address (an
+      // office NAT, a mobile carrier) shares one ceiling, which is a real cost
+      // and is accepted: the failure is a person waiting a minute and pressing
+      // again, and the alternative, keying on something the caller chooses,
+      // is the forgeable header this is here to avoid.
       customRules: {
         "/sign-in/magic-link": { window: 60, max: 3 },
       },
