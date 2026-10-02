@@ -37,7 +37,7 @@ that repeats it, or `not yet measured`). Nothing here is estimated.
 | small-file speed (under 1 MiB) | put 4 KiB 60.6 ms, put 1 MiB 126 ms, get 1 MiB 8.3 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured | #99 |
 | small edit in a big file | append 4 KiB to a 64 MiB file 111 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured | #97 |
 | big-folder rename | move dir, 200 x 64 KiB, 99.0 ms - [docs.spacefs.com/benchmarks](https://docs.spacefs.com/benchmarks/) checked 2026-09-30 | not yet measured | not yet measured | #104 |
-| bandwidth needed | recommends more than 300 Mbps down and 100 Mbps up - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured | not yet measured | none yet |
+| bandwidth needed | recommends more than 300 Mbps down and 100 Mbps up - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured | not yet measured | #99 |
 | setup steps and time to first file | 6-step quickstart, about five minutes - [docs.spacefs.com/start/quickstart](https://docs.spacefs.com/start/quickstart/) checked 2026-09-30 | not yet measured (one `drive init` command ships; its time is unmeasured) | not yet measured | #105 |
 | offline pinning | pin a file or folder and a complete copy stays until unpin - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured (not built) | lose | #115 |
 | version history | every change is a version, kept; `space history` lists every version - [spacefs.com](https://spacefs.com) and [docs.spacefs.com/start/mount](https://docs.spacefs.com/start/mount/) checked 2026-09-30 | not yet measured (30 days planned: 1 day on B2, then one a day) | lose | #9 |
@@ -57,8 +57,4 @@ that repeats it, or `not yet measured`). Nothing here is estimated.
 
 ## Rows with no issue yet
 
-The orchestrator should file one issue per row here, so the row stops being
-unowned:
-
-- bandwidth needed (Space recommends 300 Mbps down and 100 Mbps up; we have no
-  measured floor yet)
+None. Every losing or unmeasured row names its issue.

@@ -337,7 +337,10 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 	h := benchSetup(b)
 	const name = "bench-save.bin"
 	// Start from no object at all, so the clock cannot credit a previous run.
-	if out, err := exec.Command("rclone", "deletefile", RemoteFor(h.cfg)+"/"+name).CombinedOutput(); err != nil {
+	// Keys and endpoint live in this harness's rclone config, not in argv.
+	cmd := exec.Command("rclone", "deletefile", RemoteFor(h.cfg)+"/"+name)
+	cmd.Env = h.env
+	if out, err := cmd.CombinedOutput(); err != nil {
 		b.Logf("delete a leftover %s before the run (nothing there yet): %v\n%s", name, err, out)
 	}
 	local := filepath.Join(h.root, "fixtures", "bench-save.bin")
@@ -416,7 +419,7 @@ func BenchmarkListFolder(b *testing.B) {
 	if err != nil {
 		b.Fatalf("list the folder through the mount: %v", err)
 	}
-	h.report(b, "list-folder", fmt.Sprintf("list-%d-files", h.sizes.listN), time.Since(start), int64(len(entries)))
+	h.report(b, "list-folder", "list-files", time.Since(start), int64(len(entries)))
 	if len(entries) != h.sizes.listN {
 		b.Fatalf("listed %d files, want %d", len(entries), h.sizes.listN)
 	}
@@ -559,4 +562,110 @@ func BenchmarkInstallToMounted(b *testing.B) {
 	}
 	f.Close()
 	h.report(b, "install-to-mounted", "install-to-first-file", time.Since(start), 1)
+}
+
+// BenchmarkCrossMachineSync times a new file, an edit and a delete from the
+// write on this mount until a second mount on the same storage sees it. That
+// is the save-on-A-seen-on-B scenario; two mounts on one host share only the
+// storage backend, which is the same situation as two machines.
+func BenchmarkCrossMachineSync(b *testing.B) {
+	h := benchSetup(b)
+	homeB := filepath.Join(h.root, "home-b")
+	mountB := filepath.Join(homeB, "Drive")
+	if err := os.MkdirAll(mountB, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	if err := WriteFileAtomic(RcloneConfigPath(homeB), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	mount := exec.Command(driveBin(b), "mount", "--home", homeB, "--endpoint", h.cfg.Endpoint,
+		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
+	mount.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+	)
+	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
+	if err := mount.Start(); err != nil {
+		b.Fatalf("mount the second device: %v", err)
+	}
+	defer func() {
+		_ = mount.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() { _, _ = mount.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = mount.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", mountB).Run()
+		_ = exec.Command("fusermount", "-u", mountB).Run()
+	}()
+	if !waitForMount(b, mount, mountB) {
+		b.Skip("this host does not permit a second unprivileged FUSE mount")
+	}
+
+	const name = "bench-sync.txt"
+	pathA := filepath.Join(h.mountDir, name)
+	pathB := filepath.Join(mountB, name)
+
+	start := time.Now()
+	if err := os.WriteFile(pathA, []byte("new\n"), 0o644); err != nil {
+		b.Fatalf("write a new file on A: %v", err)
+	}
+	if !waitPath(pathB, 2*time.Minute, func(err error) bool { return err == nil }) {
+		b.Fatalf("the new file never appeared on B")
+	}
+	h.report(b, "cross-machine-new-file", "sync", time.Since(start), 4)
+
+	start = time.Now()
+	f, err := os.OpenFile(pathA, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		b.Fatalf("open the file on A to edit: %v", err)
+	}
+	if _, err := f.Write([]byte("edit\n")); err != nil {
+		f.Close()
+		b.Fatalf("edit on A: %v", err)
+	}
+	f.Close()
+	if !waitFileEquals(pathB, "new\nedit\n", 2*time.Minute) {
+		b.Fatalf("the edit never appeared on B")
+	}
+	h.report(b, "cross-machine-edit", "sync", time.Since(start), 5)
+
+	start = time.Now()
+	if err := os.Remove(pathA); err != nil {
+		b.Fatalf("delete on A: %v", err)
+	}
+	if !waitPath(pathB, 2*time.Minute, os.IsNotExist) {
+		b.Fatalf("the delete never appeared on B")
+	}
+	h.report(b, "cross-machine-delete", "sync", time.Since(start), 0)
+}
+
+// waitPath polls path until check(err) is true for os.Stat's error, or the
+// timeout runs out. Used so a second mount's view of a create or a delete is
+// timed until it matches, not until the first mount's page cache agreed.
+func waitPath(path string, timeout time.Duration, check func(error) bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := os.Stat(path)
+		if check(err) {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
+}
+
+func waitFileEquals(path, want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		got, err := os.ReadFile(path)
+		if err == nil && string(got) == want {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
 }

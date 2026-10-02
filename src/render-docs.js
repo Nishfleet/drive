@@ -57,10 +57,21 @@ export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 // whose row is not a measured win fails here, at the build, instead of shipping
 // a number nobody has measured.
 const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
+const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
 
-/** The markers that need a file read: today, just the FAQ's own Markdown. */
+/** The two published sections of docs/benchmarks.md, from the Linux heading. */
+function publishedBenchmarks() {
+  const text = readFileSync(BENCHMARKS, "utf8");
+  const start = text.indexOf("## Linux VPS");
+  if (start < 0) {
+    throw new Error("docs/benchmarks.md has no Linux VPS section to publish");
+  }
+  return text.slice(start).trim();
+}
+
+/** The markers that need a file read: the FAQ and the Benchmarks table. */
 function fileMarkers() {
-  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")) };
+  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")), BENCHMARKS: publishedBenchmarks() };
 }
 
 // A marker's value may itself carry markers: the FAQ's answers are Markdown
