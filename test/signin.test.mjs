@@ -647,7 +647,7 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
     database: made.db,
     secret: TEST_SECRET,
     baseURL: TEST_BASE_URL,
-    sendLink: (link) => {
+    sendLink: async (link) => {
       restartedSent.push(link);
     },
   });

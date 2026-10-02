@@ -50,6 +50,8 @@ import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 
+/** @typedef {import("./auth.js").Auth} Auth */
+
 /** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
 /** The one endpoint the page posts to. */
@@ -284,6 +286,10 @@ export async function handleSigninRequest(request, env) {
   if (read.method !== "email") {
     return json(signinClosedBody(), 503);
   }
+  const email = read.email;
+  if (typeof email !== "string") {
+    return json({ error: "Enter an email address we can send the link to." }, 400);
+  }
   try {
     // Hand the send to Better Auth's own handler so its rate limiter runs.
     // The in-process `auth.api` call bypasses the router's onRequest hook, so
@@ -292,7 +298,7 @@ export async function handleSigninRequest(request, env) {
     // path) from this request's headers. The route's own origin check, body
     // parse and closed-door guard have already run above; this only needs the
     // email the start step validated and the headers the limiter reads IP from.
-    const authResponse = await auth.handler(signinLinkRequest(auth, read.email, request));
+    const authResponse = await auth.handler(signinLinkRequest(auth, email, request));
     // Better Auth answers 429 from its rate limiter; translate that into the
     // message table's words rather than passing its body through, and carry the
     // library's own retry-after through as the `retry-after` header the edge
@@ -399,7 +405,7 @@ export async function handleSigninLinkVerify(request, env) {
  * @returns {Request}
  */
 function signinLinkRequest(auth, email, request) {
-  const basePath = /** @type {object} */ (auth.options).basePath || "/api/auth";
+  const basePath = auth.options.basePath;
   const base = /** @type {string} */ (auth.options.baseURL);
   // Forward only what the callee reads, not the caller's whole header set. The
   // library validates the origin from `origin` and resolves the per-IP

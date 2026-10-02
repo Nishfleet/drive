@@ -91,6 +91,10 @@ export function createAuth(options) {
     // permanent: a Host header a stranger chose must not be able to decide
     // where the sign-in link in their own inbox points.
     baseURL: options.baseURL,
+    // The library default, named here so the magic-link forward in src/signin.js
+    // reads the same path the handler mounts. Left implicit, `auth.options` has
+    // no `basePath` for checkJs (drive#200).
+    basePath: "/api/auth",
     // No password and no social providers: the spec's screen asks for one
     // thing (an email link) and the OAuth client ids are Nish's credentials,
     // never values in this repo.
