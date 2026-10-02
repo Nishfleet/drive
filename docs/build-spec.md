@@ -1,5 +1,7 @@
 # SpaceFS clone: build spec
 
+> **Status note (2026-10-02):** this is the historical build plan. The code and the open issues are the source of truth, and where they differ the code wins. Shipped work is listed in `docs-site/changelog.md`.
+
 Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the build plan in `spec.md` into what each part does, the commands and screens, the data model, and the steps in detail. `spec.md` still holds the why: prices, rivals and the pressure test.
 
 **Status: building since 2026-09-29** (Nish: "lets go then"). Issues #2 to #15 in this repo; spending money (storage accounts, Storage Box) still needs Nish.
