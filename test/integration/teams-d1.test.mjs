@@ -25,6 +25,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { accountByEmail } from "../../workers/api/src/index.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { createD1TeamStore } from "../../workers/api/src/teams.js";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
@@ -61,24 +62,15 @@ function invited(answer) {
 }
 
 /**
- * The account resolver the D1 store needs: the real signed-in account whose
- * email is this address, read from Better Auth's own `user` table. This is
- * what a deployment hands the store (src/auth.js owns that table), and it is
- * why the invite binds a person rather than a string.
- * @param {import("node:sqlite").DatabaseSync} sqlite
- * @returns {(email: string) => {id: string, name: string, email: string}|null}
+ * The account resolver the D1 store gets in production: the real signed-in
+ * account whose email is this address, read from Better Auth's own `user`
+ * table by the Worker's own `accountByEmail` (workers/api/src/index.js). Using
+ * the exported resolver rather than a lookalike here is the point: the query
+ * this test exercises is the one the deployment runs.
+ * @param {import("../../test/harness.mjs").TestD1} db
  */
-function resolverOver(sqlite) {
-  return (email) => {
-    const row = sqlite
-      .prepare("SELECT id, name, email FROM user WHERE email = ?1")
-      .get(email.toLowerCase());
-    if (row === undefined) {
-      return null;
-    }
-    const r = /** @type {{id: string, name: string, email: string}} */ (row);
-    return { id: r.id, name: r.name, email: r.email };
-  };
+function resolverFor(db) {
+  return accountByEmail(/** @type {any} */ (db));
 }
 
 test("two real accounts share one team drive, and the removal survives a fresh store", async () => {
@@ -91,8 +83,7 @@ test("two real accounts share one team drive, and the removal survives a fresh s
 
   // The store under test is the D1 one, with the real account resolver over
   // the same database the accounts signed in on.
-  const resolve = resolverOver(sqlite);
-  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolve });
+  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverFor(db) });
 
   const team = await teams.createTeam(owner.account, "Design");
   const stored = rowIn(sqlite, "SELECT * FROM teams WHERE id = ?", team.id);
@@ -125,7 +116,7 @@ test("two real accounts share one team drive, and the removal survives a fresh s
   assert.deepEqual([...teams.scopeForMember(reader).capabilities], ["list", "read"]);
 
   // ---- the deploy-survival claim: a SECOND store over the same database ----
-  const fresh = createD1TeamStore(db, { resolveAccountByEmail: resolve });
+  const fresh = createD1TeamStore(db, { resolveAccountByEmail: resolverFor(db) });
 
   const seenByFresh = await fresh.teamForAccount(member.account, team.id);
   assert.notEqual(seenByFresh, null, "a team on one instance is visible on the next");
@@ -162,10 +153,10 @@ test("two real accounts share one team drive, and the removal survives a fresh s
 
 test("the D1 team store refuses what the memory store refuses", async () => {
   const made = createTestAuth({ migrations: MIGRATIONS });
-  const { db, sqlite } = { db: made.db, sqlite: /** @type {any} */ (made.db).sqlite };
+  const db = made.db;
   const owner = await signIn(made, "owner@example.com");
   const outsider = await signIn(made, "outsider@example.com");
-  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverOver(sqlite) });
+  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverFor(db) });
   const team = await teams.createTeam(owner.account, "Design");
 
   // An account that is not on the team gets nothing, not an empty team.
@@ -203,7 +194,7 @@ test("a role the table does not carry is refused, and a duplicate invite moves t
   const { db, sqlite } = { db: made.db, sqlite: /** @type {any} */ (made.db).sqlite };
   const owner = await signIn(made, "owner@example.com");
   const member = await signIn(made, "member@example.com");
-  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverOver(sqlite) });
+  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverFor(db) });
   const team = await teams.createTeam(owner.account, "Design");
 
   // A role outside the one table throws rather than defaulting to something.
@@ -234,10 +225,10 @@ test("the key store's team keys are revoked by account and team prefix", async (
   // through the same store the routes use, with the D1 team store underneath
   // for the membership.
   const made = createTestAuth({ migrations: MIGRATIONS });
-  const { db, sqlite } = { db: made.db, sqlite: /** @type {any} */ (made.db).sqlite };
+  const db = made.db;
   const owner = await signIn(made, "owner@example.com");
   const member = await signIn(made, "member@example.com");
-  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverOver(sqlite) });
+  const teams = createD1TeamStore(db, { resolveAccountByEmail: resolverFor(db) });
   const keys = createMemoryStore({ now: () => 0, teams });
 
   const team = await teams.createTeam(owner.account, "Design");

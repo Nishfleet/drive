@@ -394,6 +394,39 @@ function keyProviderFor(env) {
  */
 
 /**
+ * The account whose email is this address, read from the sign-in flow's own
+ * `user` table on the customer database (src/auth.js built it;
+ * migrations/drive/0005_better_auth.sql owns it). This is the one resolver a
+ * team invite binds through, so an invite to an address a signed-in account
+ * already has becomes an active membership at once, and one to a new address
+ * stays `invited` until that account signs in. The email is matched
+ * case-insensitively, the same fold the invite row stores, and the columns are
+ * Better Auth's own, so nothing here invents an account table.
+ * @param {D1Database} db
+ * @returns {(email: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+export function accountByEmail(db) {
+  return async (email) => {
+    const row = await db
+      .prepare('SELECT id, name, email FROM "user" WHERE LOWER(email) = LOWER(?1)')
+      .bind(email.trim())
+      .first();
+    if (row === null || typeof row !== "object") {
+      return null;
+    }
+    const r = /** @type {{id?: unknown, name?: unknown, email?: unknown}} */ (row);
+    if (typeof r.id !== "string" || r.id === "" || typeof r.email !== "string") {
+      return null;
+    }
+    return {
+      id: r.id,
+      name: typeof r.name === "string" && r.name !== "" ? r.name : r.email,
+      email: r.email,
+    };
+  };
+}
+
+/**
  * The stand-in key store, until the D1-backed one lands: the same shape
  * createMemoryStore gives the tests, so a route cannot tell the difference.
  * The env is what will choose it, and the parameter is named here so the
@@ -416,8 +449,13 @@ function storeFor(env) {
       // removes a member and the key stops working" is a claim about the next
       // request, which may be a different instance. The store is a field on
       // the same memory store object, so the routes read `store.teams` either
-      // way and the in-memory path (no DRIVE_DB) is the stand-in.
-      teams: env.DRIVE_DB ? createD1TeamStore(env.DRIVE_DB) : undefined,
+      // way and the in-memory path (no DRIVE_DB) is the stand-in. The account
+      // resolver is the sign-in flow's own `user` table (src/auth.js owns it,
+      // and it is on the same DRIVE_DB), so an email invite binds a real
+      // account instead of leaving every invite unbound.
+      teams: env.DRIVE_DB
+        ? createD1TeamStore(env.DRIVE_DB, { resolveAccountByEmail: accountByEmail(env.DRIVE_DB) })
+        : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }
