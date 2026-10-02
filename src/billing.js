@@ -52,13 +52,13 @@
 // cannot print the same money two different ways.
 
 import { failureMessage } from "./messages.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the ceiling's floor and slope, and the free credit are
 // declared there once, so this file's arithmetic and the page's copy cannot
 // disagree. What is added here is operational: the B2 fallback slope, the
 // default cap, and the download allowance.
 import { PRICE } from "./pricing.js";
+import { formatBytes, unauthorizedResponse } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
@@ -110,6 +110,18 @@ export const B2_FALLBACK_CONFIG = Object.freeze({
   perTbUsd: BILLING_CONFIG.b2FallbackPerTbUsd,
 });
 
+/**
+ * A frozen billing config: the metered rate and the ceiling formula. Every
+ * field is `number` rather than the literal in BILLING_CONFIG: a caller that
+ * takes a whole-month alternative (B2_FALLBACK_CONFIG, whose perTbUsd is the
+ * $10 fallback, not the $8 primary) passes a config whose values differ from
+ * the default's literals, and a literal type would refuse exactly the
+ * substitution the fallback exists to make. Still no missing field: the
+ * arithmetic below reads every one of them, so a partial config fails here
+ * rather than as NaN in an invoice.
+ * @typedef {Readonly<Record<keyof typeof BILLING_CONFIG, number>>} BillingConfig
+ */
+
 // The usage read's route (drive issue #53): the one path the api Worker routes
 // to handleUsageRequest. Exported so index.js, the page and the tests cannot
 // each spell it their own way.
@@ -129,6 +141,12 @@ export const SAVED_COPY = Object.freeze({
   uncapped: "You paid {amount} less than a flat plan.",
 });
 
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @param {{min?: number}} [options]
+ * @returns {number}
+ */
 function checked(value, name, { min = 0 } = {}) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
     throw new TypeError(`${name} must be a number of ${min} or more, got ${String(value)}`);
@@ -145,18 +163,18 @@ function checked(value, name, { min = 0 } = {}) {
  * GB-months so far — the same meter over the spec's 43,800-minute month — is
  * `gbMonths()` below, which `drive usage` and the usage page both show, so the
  * divisor lives in one place.
- * @param {number} gbMinutes
+ * @param {unknown} gbMinutes
  */
 export function gbMonths(gbMinutes) {
-  checked(gbMinutes, "gbMinutes");
-  return gbMinutes / MINUTES_PER_MONTH;
+  const minutes = checked(gbMinutes, "gbMinutes");
+  return minutes / MINUTES_PER_MONTH;
 }
 
 /**
  * The metered cost of a month, in dollars: the 2¢/GB rate on the month's
  * GB-months, so the meter, the page and the CLI divide by the same 43,800.
  * @param {number} gbMinutes the `usage_minutes` rollup for the month
- * @param {object} [config]
+ * @param {BillingConfig} [config]
  */
 export function meteredMonthlyBillUsd(gbMinutes, config = BILLING_CONFIG) {
   return gbMonths(gbMinutes) * config.rateUsdPerGbMonth;
@@ -168,11 +186,12 @@ export function meteredMonthlyBillUsd(gbMinutes, config = BILLING_CONFIG) {
  * thing that decides it. With iDrive's $8 a TB the ceiling is a flat $12 up to
  * peak 1.5 TB, then rises $8 for each TB; on the B2 fallback the slope becomes
  * `config.b2FallbackPerTbUsd` (a flat $12 up to 1.2 TB, then $10 a TB).
- * @param {number} peakGb the month's largest stored size, in GB
+ * @param {unknown} peakGb the month's largest stored size, in GB
+ * @param {BillingConfig} [config]
  */
 export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
-  checked(peakGb, "peakGb");
-  const peakTb = peakGb / GB_PER_TB;
+  const size = checked(peakGb, "peakGb");
+  const peakTb = size / GB_PER_TB;
   return Math.max(config.floorUsd, config.perTbUsd * peakTb);
 }
 
@@ -186,7 +205,7 @@ export function monthlyCeilingUsd(peakGb, config = BILLING_CONFIG) {
  * cannot mistake it for the whole bill.
  * @param {number} gbMinutes the month's metered GB-minutes
  * @param {number} peakGb the month's largest stored size
- * @param {object} [config=BILLING_CONFIG]
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG) {
   return monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
@@ -203,13 +222,13 @@ export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG
  * The metered half is that many GB stored for every minute of an average
  * month, over the spec's own 43,800-minute divisor — the conversion every
  * consumer needs, in one place.
- * @param {number} tb the stored size in TB, held the whole month
- * @param {object} [config=BILLING_CONFIG]
+ * @param {unknown} tb the stored size in TB, held the whole month
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  * @returns {{storageUsd: number, creditUsd: number, billUsd: number}}
  */
 export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
-  checked(tb, "tb");
-  const peakGb = tb * GB_PER_TB;
+  const size = checked(tb, "tb");
+  const peakGb = size * GB_PER_TB;
   const bill = monthBillCents({
     gbMinutes: peakGb * MINUTES_PER_MONTH,
     peakGb,
@@ -243,20 +262,25 @@ export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
  * `lines` is the same three amounts as the invoice's own lines — storage,
  * downloads, and the credit shown as a dollar line — so the invoice prints
  * what the arithmetic produced.
- * @param {{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number}} month
- * @param {object} [config=BILLING_CONFIG]
+ * @param {unknown} month
  */
-export function monthBillCents({
-  gbMinutes,
-  peakGb,
-  downloadBytes = 0,
-  averageStoredGb = 0,
-  config = BILLING_CONFIG,
-} = {}) {
-  checked(gbMinutes, "month.gbMinutes");
-  checked(peakGb, "month.peakGb");
-  checked(downloadBytes, "month.downloadBytes");
-  checked(averageStoredGb, "month.averageStoredGb");
+export function monthBillCents(month) {
+  if (typeof month !== "object" || month === null) {
+    throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
+  }
+  const fields =
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
+      month
+    );
+  const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
+  const peakGb = checked(fields.peakGb, "month.peakGb");
+  const downloadBytes =
+    fields.downloadBytes === undefined ? 0 : checked(fields.downloadBytes, "month.downloadBytes");
+  const averageStoredGb =
+    fields.averageStoredGb === undefined
+      ? 0
+      : checked(fields.averageStoredGb, "month.averageStoredGb");
+  const config = fields.config ?? BILLING_CONFIG;
   // The free 3x allowance is the average stored size, so a rollup with
   // download bytes but no stored average is a broken month: defaulting the
   // average to 0 would silently charge every downloaded byte. Both omitted is
@@ -281,8 +305,16 @@ export function monthBillCents({
     totalCents: Math.max(0, storageCents + downloadCents - creditCents),
     lines: Object.freeze([
       Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
-      Object.freeze({ label: "Downloads", cents: downloadCents, usd: formatUsd(downloadCents / 100) }),
-      Object.freeze({ label: "Free credit", cents: -creditCents, usd: signedUsd(-creditCents / 100) }),
+      Object.freeze({
+        label: "Downloads",
+        cents: downloadCents,
+        usd: formatUsd(downloadCents / 100),
+      }),
+      Object.freeze({
+        label: "Free credit",
+        cents: -creditCents,
+        usd: signedUsd(-creditCents / 100),
+      }),
     ]),
   });
 }
@@ -301,7 +333,7 @@ export function monthBillCents({
  * @returns {{usd: number, copy: string}|null}
  * @param {number} gbMinutes
  * @param {number} peakGb
- * @param {object} [config=BILLING_CONFIG]
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
   const metered = meteredMonthlyBillUsd(gbMinutes, config);
@@ -330,26 +362,27 @@ export function savedLine(gbMinutes, peakGb, config = BILLING_CONFIG) {
  * $12 cap can never bite an account whose invoice will be under $12. At the cap
  * the api Worker deletes each write-capable key and mints read-only ones; the
  * CLI restarts the mount. Nothing is deleted.
- * @param {number} gbMinutes metered so far this month
- * @param {number} peakGb the month's peak so far
- * @param {number} capUsd the account's cap in dollars
+ * @param {unknown} gbMinutes metered so far this month
+ * @param {unknown} peakGb the month's peak so far
+ * @param {unknown} capUsd the account's cap in dollars
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
 export function capStatus(gbMinutes, peakGb, capUsd, config = BILLING_CONFIG) {
-  checked(gbMinutes, "gbMinutes");
-  checked(peakGb, "peakGb");
-  checked(capUsd, "capUsd");
-  const counted = monthBillCents({ gbMinutes, peakGb, config }).storageCents / 100;
+  const minutes = checked(gbMinutes, "gbMinutes");
+  const peak = checked(peakGb, "peakGb");
+  const cap = checked(capUsd, "capUsd");
+  const counted = monthBillCents({ gbMinutes: minutes, peakGb: peak, config }).storageCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it. This is
   // what makes the 2026-09-30 decision true (issue #39): min(metered,
   // ceiling) pins at the $12 floor for anything up to 1.5 TB of peak, so an
   // exact-equality check would cut off every account the default cap is meant
   // to protect. Passing the cap is what cuts writes off.
-  const atCap = counted > capUsd;
+  const atCap = counted > cap;
   return Object.freeze({
-    capUsd,
+    capUsd: cap,
     countedUsd: counted,
-    remainingUsd: Math.max(0, capUsd - counted),
+    remainingUsd: Math.max(0, cap - counted),
     // "read_only" once the cap is hit; the drive stays read-only until the cap
     // is raised. `active` is the one state a live mount acts on.
     state: atCap ? "read_only" : "active",
@@ -367,23 +400,27 @@ export function capStatus(gbMinutes, peakGb, capUsd, config = BILLING_CONFIG) {
  * The CLI is Go and cannot import this module, so the line travels in the
  * /api/usage response (see handleUsageRequest) and `drive status` prints it as
  * it arrives.
- * @param {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}} cap a capStatus() result
+ * @param {unknown} cap a capStatus() result
  * @returns {string}
  */
 export function capLine(cap) {
   if (typeof cap !== "object" || cap === null) {
     throw new TypeError(`capLine needs a capStatus result, got ${String(cap)}`);
   }
-  if (cap.state !== "active" && cap.state !== "read_only") {
+  const fields =
+    /** @type {{state?: unknown, capUsd?: unknown, countedUsd?: unknown, remainingUsd?: unknown}} */ (
+      cap
+    );
+  if (fields.state !== "active" && fields.state !== "read_only") {
     throw new TypeError(
-      `capLine needs a cap whose state is "active" or "read_only", got ${String(cap.state)}`,
+      `capLine needs a cap whose state is "active" or "read_only", got ${String(fields.state)}`,
     );
   }
-  checked(cap.capUsd, "cap.capUsd");
-  checked(cap.countedUsd, "cap.countedUsd");
-  checked(cap.remainingUsd, "cap.remainingUsd");
-  if (cap.state === "active") {
-    return `Cap ${formatUsd(cap.capUsd)}: ${formatUsd(cap.countedUsd)} counted this month, ${formatUsd(cap.remainingUsd)} left.`;
+  const capUsd = checked(fields.capUsd, "cap.capUsd");
+  const countedUsd = checked(fields.countedUsd, "cap.countedUsd");
+  const remainingUsd = checked(fields.remainingUsd, "cap.remainingUsd");
+  if (fields.state === "active") {
+    return `Cap ${formatUsd(capUsd)}: ${formatUsd(countedUsd)} counted this month, ${formatUsd(remainingUsd)} left.`;
   }
   // Two sentences: the message table's words first (what happened, and the one
   // thing to do), then the numbers and the promise that matters most at the
@@ -391,7 +428,7 @@ export function capLine(cap) {
   // go up once the cap is raised (build-spec.md, "Keys and safety").
   return (
     failureMessage("cap-reached") +
-    `\nCap ${formatUsd(cap.capUsd)} reached: ${formatUsd(cap.countedUsd)} counted this month. ` +
+    `\nCap ${formatUsd(capUsd)} reached: ${formatUsd(countedUsd)} counted this month. ` +
     "Uploads waiting in the cache stay on this Mac and go up once the cap is raised."
   );
 }
@@ -403,6 +440,7 @@ export function capLine(cap) {
  * dl Worker's count.
  * @param {number} downloadBytes
  * @param {number} averageStoredGb
+ * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING_CONFIG) {
   checked(downloadBytes, "downloadBytes");
@@ -416,6 +454,10 @@ export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING
   return Object.freeze({ freeBytes, billableBytes, usd });
 }
 
+/**
+ * @param {number} usd
+ * @returns {string}
+ */
 function formatUsd(usd) {
   // Two decimals, so $12.80 reads as $12.80 and not $12.8: Nish's 1.6 TB
   // example is $12.80, so the cents always show. A non-finite value is a
@@ -429,6 +471,10 @@ function formatUsd(usd) {
 // A line that takes money off the bill carries the minus in front, the way an
 // invoice prints a credit: "-$1.00", never "$-1.00" (build-spec.md, "Free
 // credit": the free $1 is shown as a dollar line).
+/**
+ * @param {number} usd
+ * @returns {string}
+ */
 function signedUsd(usd) {
   return usd < 0 ? `-${formatUsd(-usd)}` : formatUsd(usd);
 }
@@ -443,28 +489,25 @@ function signedUsd(usd) {
  * gbMonths, storedDaily) and the finished labels for every number, so the
  * static page renders strings instead of repeating the arithmetic. The
  * labels are the same strings `drive usage` prints.
- * @param {{gbMinutes: number, peakGb: number, storedGb: number, storedDaily: {day: string, gb: number}[], downloadBytes: number, averageStoredGb: number, capUsd: number, cardAdded?: boolean}} usage
- * @param {object} [config]
+ * @param {unknown} usage
+ * @param {BillingConfig} [config]
  */
 export function usageSummary(usage, config = BILLING_CONFIG) {
   if (typeof usage !== "object" || usage === null) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
-  const { gbMinutes, peakGb, storedGb, storedDaily, downloadBytes, averageStoredGb, capUsd } =
-    usage;
-  // Every number is validated at the entry point, with the field named, so a
-  // caller with a bad rollup gets one clear error before any math runs.
-  checked(gbMinutes, "usage.gbMinutes");
-  checked(peakGb, "usage.peakGb");
-  checked(storedGb, "usage.storedGb");
-  checked(downloadBytes, "usage.downloadBytes");
-  checked(averageStoredGb, "usage.averageStoredGb");
-  checked(capUsd, "usage.capUsd");
-  const series = storedSeries(storedDaily);
-  // Without a card the cap is the free $1, so writes stop at $1 of usage. A
-  // cap the account chose below $1 stays lower: $1 is the default, not a
-  // floor, and a stricter choice is the safer one to honor.
-  const effectiveCap = usage.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
+  const fields =
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown}} */ (
+      usage
+    );
+  const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
+  const peakGb = checked(fields.peakGb, "usage.peakGb");
+  const storedGb = checked(fields.storedGb, "usage.storedGb");
+  const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
+  const averageStoredGb = checked(fields.averageStoredGb, "usage.averageStoredGb");
+  const capUsd = checked(fields.capUsd, "usage.capUsd");
+  const series = storedSeries(fields.storedDaily);
+  const effectiveCap = fields.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
   const months = gbMonths(gbMinutes);
   // The one bill function (issue #76): storage capped at the ceiling, plus the
@@ -511,6 +554,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
  * 2026-09-40; the parse-and-round-trip rejects a day the meter's rollup could
  * not have produced, including a day a month does not have.
  * @param {unknown} value
+ * @returns {value is string}
  */
 function isDay(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -524,7 +568,7 @@ function isDay(value) {
  * The last-30-days stored-GB series, validated and ordered oldest first. The
  * meter feeds it one row per day; a later day never before an earlier one, so
  * the line chart reads left to right whatever order the rollup returns.
- * @param {{day: string, gb: number}[]} entries
+ * @param {unknown} entries
  */
 function storedSeries(entries) {
   if (!Array.isArray(entries)) {
@@ -536,13 +580,13 @@ function storedSeries(entries) {
         `usage.storedDaily[${index}] must be a {day, gb} day, got ${String(entry)}`,
       );
     }
-    if (!isDay(entry.day)) {
+    const day = /** @type {{day?: unknown, gb?: unknown}} */ (entry);
+    if (!isDay(day.day)) {
       throw new TypeError(
-        `usage.storedDaily[${index}].day must be a real YYYY-MM-DD date, got ${String(entry.day)}`,
+        `usage.storedDaily[${index}].day must be a real YYYY-MM-DD date, got ${String(day.day)}`,
       );
     }
-    checked(entry.gb, `usage.storedDaily[${index}].gb`);
-    return Object.freeze({ day: entry.day, gb: entry.gb });
+    return Object.freeze({ day: day.day, gb: checked(day.gb, `usage.storedDaily[${index}].gb`) });
   });
   rows.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
   return Object.freeze(rows.slice(-USAGE_HISTORY_DAYS));

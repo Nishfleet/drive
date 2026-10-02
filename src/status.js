@@ -9,6 +9,8 @@
 // Plain data and pure functions for the words and math; the one fetch handler
 // at the bottom serves the page's poll and uses only the standard Response,
 // which node --test provides.
+
+import { sessionAccount } from "./auth.js";
 import { failureMessage } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
@@ -96,19 +98,22 @@ export const SYNC_ERROR_NOTIFICATION = Object.freeze({
   body: "Open the drive page to see which file and what to do next.",
 });
 
+/**
+ * @param {unknown} value
+ * @param {string} field the field name the error carries
+ * @returns {number} epoch milliseconds
+ */
 function millis(value, field) {
-  // A number is already epoch milliseconds (Date.now() is the default for
-  // `now`); a string is an ISO timestamp; a Date is its epoch value.
   const time =
     typeof value === "number"
       ? value
       : value instanceof Date
         ? value.getTime()
-        : Date.parse(value);
+        : typeof value === "string"
+          ? Date.parse(value)
+          : Number.NaN;
   if (!Number.isFinite(time)) {
-    throw new TypeError(
-      `status needs ${field} as a date or ISO string, got ${String(value)}`,
-    );
+    throw new TypeError(`status needs ${field} as a date or ISO string, got ${String(value)}`);
   }
   return time;
 }
@@ -117,20 +122,21 @@ function millis(value, field) {
  * The first-run state of a device, for the connection line and the Devices
  * list. `error` is the poll's own failure (set by the page), never the
  * device's: an unreachable service must not read as "waiting on you".
- * @param {{lastSeenAt?: string|Date|null, name?: string|null, error?: string|null}} device
+ * @param {unknown} device
  * @param {number|Date} now
  */
 export function connectionStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
     throw new TypeError(`connectionStatus needs a device object, got ${String(device)}`);
   }
-  if (device.error) {
+  const row = /** @type {{error?: unknown, lastSeenAt?: unknown}} */ (device);
+  if (row.error) {
     return { state: "unreachable", ...CONNECTION_COPY.unreachable };
   }
-  if (!device.lastSeenAt) {
+  if (!row.lastSeenAt) {
     return { state: "waiting", ...CONNECTION_COPY.waiting };
   }
-  const lastSeen = millis(device.lastSeenAt, "lastSeenAt");
+  const lastSeen = millis(row.lastSeenAt, "lastSeenAt");
   const age = millis(now, "now") - lastSeen;
   if (age <= CONNECTED_WINDOW_MS) {
     return { state: "connected", ...CONNECTION_COPY.connected };
@@ -148,10 +154,15 @@ export function syncStatus(device, now = Date.now()) {
   if (typeof device !== "object" || device === null) {
     throw new TypeError(`syncStatus needs a device object, got ${String(device)}`);
   }
-  if (device.syncError) {
+  if (typeof device.syncError === "string" && device.syncError !== "") {
     return { state: "error", label: "Sync error", detail: String(device.syncError) };
   }
-  if (Number.isFinite(device.pendingBytes) && device.pendingBytes > 0) {
+  // `typeof … === "number"` rather than Number.isFinite: the field is
+  // `number|null|undefined` and the question is whether a save is waiting, so
+  // a null or absent count is the same answer as a non-finite one, and this
+  // is the check that narrows the field for the comparison below.
+  const pending = device.pendingBytes;
+  if (typeof pending === "number" && Number.isFinite(pending) && pending > 0) {
     return { state: "syncing", label: "Uploading", detail: null };
   }
   if (!device.lastSyncAt) {
@@ -179,29 +190,35 @@ export const UPLOAD_LABEL = Object.freeze({
  * Upload progress for `drive status` and the page's activity line: how much of
  * the queue has gone up. Zero total means nothing is waiting, which is a
  * complete state ("Up to date"), not an error and not a division by zero.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number}} upload
+ * @param {unknown} upload
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
     throw new TypeError(`uploadProgress needs an upload object, got ${String(upload)}`);
   }
-  const { uploadedBytes, totalBytes } = upload;
-  if (!Number.isFinite(uploadedBytes) || uploadedBytes < 0) {
-    throw new TypeError(`uploadedBytes must be 0 or more, got ${uploadedBytes}`);
+  const fields = /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown}} */ (
+    upload
+  );
+  const uploaded = fields.uploadedBytes;
+  const total = fields.totalBytes;
+  if (typeof uploaded !== "number" || !Number.isFinite(uploaded) || uploaded < 0) {
+    throw new TypeError(`uploadedBytes must be 0 or more, got ${uploaded}`);
   }
-  if (!Number.isFinite(totalBytes) || totalBytes < 0) {
-    throw new TypeError(`totalBytes must be 0 or more, got ${totalBytes}`);
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
+    throw new TypeError(`totalBytes must be 0 or more, got ${total}`);
   }
-  if (totalBytes === 0) {
+  if (total === 0) {
     return { percent: 100, label: UPLOAD_LABEL.upToDate };
   }
-  if (uploadedBytes > totalBytes) {
-    throw new RangeError(
-      `uploadedBytes (${uploadedBytes}) cannot pass totalBytes (${totalBytes})`,
-    );
+  if (uploaded > total) {
+    throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
   }
-  const percent = Math.round((uploadedBytes / totalBytes) * 100);
-  const files = Number.isInteger(upload.files) && upload.files > 0 ? upload.files : null;
+  const percent = Math.round((uploaded / total) * 100);
+  // `files` is optional on the payload, so it is read into a local: the count
+  // is null unless it is a positive integer, and the label below switches on
+  // that null rather than on a missing field.
+  const count = fields.files;
+  const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
   const head =
     files === null
       ? UPLOAD_LABEL.noCount
@@ -209,8 +226,8 @@ export function uploadProgress(upload) {
         ? UPLOAD_LABEL.oneFile
         : UPLOAD_LABEL.manyFiles.replace("{files}", String(files));
   const detail = UPLOAD_LABEL.progress
-    .replace("{uploaded}", formatBytes(uploadedBytes))
-    .replace("{total}", formatBytes(totalBytes))
+    .replace("{uploaded}", formatBytes(uploaded))
+    .replace("{total}", formatBytes(total))
     .replace("{percent}", String(percent));
   return { percent, label: `${head}: ${detail}` };
 }
@@ -222,28 +239,24 @@ const STATUS_HEADERS = Object.freeze({
 
 /**
  * The signed-in account a request carries, or null when the request is signed
- * out. The session that would prove the account — the cookie the
- * device-approval screen mints and the store that validates it — is build step
- * 4 (#5), and with neither built no request can be signed in, so this is null
- * for every caller. It is the one swap point: the endpoint's account gate below
- * does not change when the sign-in flow lands, and a request that cannot prove
- * an account never reads one's device data (issue #45, north star: Safe).
+ * out. The session is a cookie Better Auth signed and the customer database
+ * (DRIVE_DB) holds: `POST /api/signin` mails a single-use link, following it
+ * mints a session, and every account route is scoped to the account that
+ * session names.
  *
- * The parameter is read (not just accepted) so the swap point has exactly one
- * shape to fill in when #5 lands: resolving the account from the request and
- * returning null when it names none.
+ * A cookie the browser chose is not a session: the token is verified against
+ * the database that minted it, so a made-up value, a forgotten one, an expired
+ * one and a revoked one all answer null, and a request that cannot prove an
+ * account never reads one's files (issue #45, north star: Safe).
+ *
+ * `store` is a falsy value rather than an auth instance, so a test can hand
+ * this the closed door and prove the gate denies by default.
  * @param {Request} request
- * @returns {{id: string, name: string}|null}
+ * @param {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null|undefined} [store]
+ * @returns {Promise<{id: string, name: string, email: string}|null>}
  */
-export function signedInAccount(request) {
-  if (request.headers.get("cookie") === null) {
-    // No session presented: signed out, which is the honest answer.
-    return null;
-  }
-  // A cookie is presented but nothing built can validate it against an
-  // account, so it proves nothing and stays signed out rather than trusting
-  // a value the browser chose.
-  return null;
+export async function signedInAccount(request, store) {
+  return sessionAccount(request, store ?? null);
 }
 
 /**
@@ -271,7 +284,6 @@ export function unauthorizedResponse() {
  * signed in, so a signed-in account gets `waiting` with an empty device list —
  * the same shape the real store returns for a signed-in account with no
  * devices yet.
- *
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401
@@ -279,7 +291,7 @@ export function unauthorizedResponse() {
  * shared with the other account routes through unauthorizedResponse() above
  * (drive issue #73).
  * @param {Request} request
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
  */
 export function handleFirstRunStatusRequest(request, account) {
   // The gate comes before the method check, so an anonymous request is told
@@ -293,19 +305,19 @@ export function handleFirstRunStatusRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  return new Response(
-    JSON.stringify({ state: "waiting", devices: [] }),
-    { status: 200, headers: STATUS_HEADERS },
-  );
+  return new Response(JSON.stringify({ state: "waiting", devices: [] }), {
+    status: 200,
+    headers: STATUS_HEADERS,
+  });
 }
 
 /**
  * Bytes as a person reads them: one decimal under 10, none above, so a queue
  * of 1.2 GB and a queue of 12 GB both stay one short line.
- * @param {number} bytes
+ * @param {unknown} bytes
  */
 export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
     throw new TypeError(`formatBytes needs 0 or more bytes, got ${bytes}`);
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -315,6 +327,7 @@ export function formatBytes(bytes) {
     value /= 1000;
     unit += 1;
   }
-  const shown = unit === 0 ? String(value) : value < 10 ? value.toFixed(1) : String(Math.round(value));
+  const shown =
+    unit === 0 ? String(value) : value < 10 ? value.toFixed(1) : String(Math.round(value));
   return `${shown} ${units[unit]}`;
 }

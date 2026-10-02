@@ -6,50 +6,60 @@
 //
 // No Worker runtime: sendEmail takes the binding as an argument, so a fake
 // records what would have gone out and the templates run through node --test.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import {
-  DEFAULT_CAP_USD,
-  EMAIL_KINDS,
-  FROM_NAME,
-  RATE_USD_PER_GB,
-  SAVED_COPY,
-  capWarningTemplate,
-  monthlyReceiptTemplate,
-  paymentFailedTemplate,
-  readOnlyTemplate,
-  renderEmail,
-  savedLine,
-  welcomeTemplate,
-} from "../src/emails.js";
+import { test } from "node:test";
 import {
   handleSendEmailRequest,
   isAuthorizedSend,
   isSameOriginRequest,
   sendEmail,
 } from "../src/email-send.js";
+import {
+  capWarningTemplate,
+  DEFAULT_CAP_USD,
+  EMAIL_KINDS,
+  FROM_NAME,
+  monthlyReceiptTemplate,
+  paymentFailedTemplate,
+  RATE_USD_PER_GB,
+  readOnlyTemplate,
+  renderEmail,
+  SAVED_COPY,
+  savedLine,
+  welcomeTemplate,
+} from "../src/emails.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).
 const MAIL_FROM = "notifications@drive.example";
 
-// A fake send_email binding: records the message, and can be told to fail.
+/**
+ * A fake send_email binding: records the message, and can be told to fail.
+ * @param {Error | {messageId?: unknown} | null} [result]
+ */
 function makeFakeEmail(result = { messageId: "<fake@drive.example>" }) {
+  /** @type {unknown[]} */
   const sent = [];
   return {
     sent,
+    /**
+     * @param {unknown} message
+     * @returns {Promise<{messageId: string}>}
+     */
     async send(message) {
       sent.push(message);
       if (result instanceof Error) {
         throw result;
       }
-      return result;
+      return /** @type {{messageId: string}} */ (result);
     },
   };
 }
 
 // The route's own token, and an env carrying it.
 const TOKEN = "test-send-token";
+/** @param {Record<string, unknown>} [overrides] */
 function makeEnv(overrides = {}) {
   return {
     EMAIL: makeFakeEmail(),
@@ -59,6 +69,10 @@ function makeEnv(overrides = {}) {
   };
 }
 
+/**
+ * @param {unknown} body
+ * @param {Record<string, string>} [headers]
+ */
 function postRequest(body, headers = {}) {
   return new Request("https://drive.example/api/emails/send", {
     method: "POST",
@@ -67,6 +81,10 @@ function postRequest(body, headers = {}) {
   });
 }
 
+/**
+ * @param {unknown} body
+ * @param {Record<string, string>} [extra]
+ */
 function authed(body, extra = {}) {
   return postRequest(body, { authorization: `Bearer ${TOKEN}`, ...extra });
 }
@@ -213,6 +231,7 @@ test("payment failed never blames the person", () => {
 // 5) monthly receipt, with the "you saved" line
 // ---------------------------------------------------------------------------
 
+/** @param {Record<string, unknown>} [overrides] */
 function receiptData(overrides = {}) {
   return {
     billUsd: 12,
@@ -226,6 +245,7 @@ function receiptData(overrides = {}) {
 // The data each kind actually takes. A kind rendered with another kind's data
 // must fail loudly (see the "no usable cap" test), so the loop tests use this
 // rather than one blob for all five.
+/** @param {string} kind */
 function dataFor(kind) {
   switch (kind) {
     case "welcome":
@@ -287,19 +307,30 @@ test("a receipt is built from months that can actually happen", () => {
   // impossible one.
   // 0.6 TB metered at 2c/GB = $12, ceiling $23 (uncapped): bill $12, saved $11.
   const uncapped = monthlyReceiptTemplate({
-    billUsd: 12, meteredUsd: 12, ceilingUsd: 23, capped: false,
+    billUsd: 12,
+    meteredUsd: 12,
+    ceilingUsd: 23,
+    capped: false,
   });
   assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
   // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
   const capped = monthlyReceiptTemplate({
-    billUsd: 23, meteredUsd: 40, ceilingUsd: 23, capped: true,
+    billUsd: 23,
+    meteredUsd: 40,
+    ceilingUsd: 23,
+    capped: true,
   });
   assert.equal(capped.saved, "Our price cap saved you $17.00");
   assert.match(capped.text, /bill for this month is \$23\.00/);
 });
 
 test("savedLine refuses a month with nonsense in it", () => {
-  for (const month of [null, "12", {}, { meteredUsd: -1, billUsd: 0, ceilingUsd: 0, capped: true }]) {
+  for (const month of [
+    null,
+    "12",
+    {},
+    { meteredUsd: -1, billUsd: 0, ceilingUsd: 0, capped: true },
+  ]) {
     assert.throws(() => savedLine(month), TypeError);
   }
 });
@@ -352,10 +383,14 @@ test("the rate constant is the spec's 2 cents per GB", () => {
 test("the Worker routes POST /api/emails/send to the send handler with env", async () => {
   // env, not env.EMAIL: the handler reads the token and the sending address.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
   });
-  const res = await worker.fetch(
+  const res = await workerFetch(
     postRequest(
       { to: "person@example.com", kind: "welcome" },
       { authorization: `Bearer ${TOKEN}` },
@@ -372,13 +407,14 @@ test("the Worker routes POST /api/emails/send to the send handler with env", asy
 test("the Worker refuses the send route without the token, and says so", async () => {
   // The gate that keeps the mounted route from being a mail relay.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
   });
-  const res = await worker.fetch(
-    postRequest({ to: "attacker@example.com", kind: "welcome" }),
-    env,
-  );
+  const res = await workerFetch(postRequest({ to: "attacker@example.com", kind: "welcome" }), env);
   assert.equal(res.status, 403);
   assert.equal(env.EMAIL.sent.length, 0);
 });
@@ -386,14 +422,18 @@ test("the Worker refuses the send route without the token, and says so", async (
 test("the Worker still serves the waitlist and the assets", async () => {
   // The new branch must not have displaced the existing routes.
   const { default: worker } = await import("../src/index.js");
+  /** @type {(request: Request, env?: unknown) => Promise<Response>} */
+  const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
   const env = makeEnv({
     ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
     WAITLIST_DB: null,
   });
-  const asset = await worker.fetch(new Request("https://drive.example/"), env);
+  const asset = await workerFetch(new Request("https://drive.example/"), env);
   assert.equal(asset.status, 200);
   assert.equal(await asset.text(), "asset");
-  const waitlist = await worker.fetch(
+  const waitlist = await workerFetch(
     new Request("https://drive.example/api/waitlist", { method: "GET" }),
     env,
   );
@@ -409,8 +449,16 @@ test("an unknown kind throws rather than sending the wrong message", () => {
   // Includes the inherited Object.prototype names: a plain map lookup would
   // find "constructor" and render nothing.
   for (const kind of [
-    "wlecome", "", null, undefined, "welcome ", "constructor", "toString",
-    "hasOwnProperty", "__proto__", 7,
+    "wlecome",
+    "",
+    null,
+    undefined,
+    "welcome ",
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+    "__proto__",
+    7,
   ]) {
     assert.throws(() => renderEmail(kind, {}), /Unknown email kind/);
   }
@@ -510,7 +558,10 @@ test("sendEmail refuses an empty recipient and an unknown kind", async () => {
     { to: "person@example.com", kind: "welcome" },
   ]) {
     await assert.rejects(sendEmail(email, request), (error) => {
-      assert.ok(error instanceof TypeError || /Unknown email kind/.test(error.message));
+      assert.ok(
+        error instanceof TypeError ||
+          (error instanceof Error && /Unknown email kind/.test(error.message)),
+      );
       return true;
     });
   }
@@ -608,10 +659,7 @@ test("a deployment with no send token sends nothing at all", async () => {
 test("the route refuses a cross-site request even with the token", async () => {
   const env = makeEnv();
   const res = await handleSendEmailRequest(
-    authed(
-      { to: "attacker@example.com", kind: "welcome" },
-      { origin: "https://evil.example" },
-    ),
+    authed({ to: "attacker@example.com", kind: "welcome" }, { origin: "https://evil.example" }),
     env,
   );
   assert.equal(res.status, 403);
@@ -645,10 +693,7 @@ test("the route names the one method it serves", async () => {
 });
 
 test("the route rejects a body that is not JSON", async () => {
-  const res = await handleSendEmailRequest(
-    authed("not json at all"),
-    makeEnv(),
-  );
+  const res = await handleSendEmailRequest(authed("not json at all"), makeEnv());
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /not valid JSON/);
 });
@@ -670,15 +715,12 @@ test("a body the template cannot be built from is a 400, not a 502", async () =>
   // failure: the billing webhook would retry a missing amount forever.
   const env = makeEnv();
   for (const [kind, data] of [
-    ["monthly-receipt", { billUsd: 12 }],            // no meter, ceiling or capped
-    ["cap-warning", {}],                             // no cap
-    ["read-only", {}],                               // no cap
-    ["payment-failed", {}],                          // no amount
+    ["monthly-receipt", { billUsd: 12 }], // no meter, ceiling or capped
+    ["cap-warning", {}], // no cap
+    ["read-only", {}], // no cap
+    ["payment-failed", {}], // no amount
   ]) {
-    const res = await handleSendEmailRequest(
-      authed({ to: "person@example.com", kind, data }),
-      env,
-    );
+    const res = await handleSendEmailRequest(authed({ to: "person@example.com", kind, data }), env);
     assert.equal(res.status, 400, `kind: ${kind}`);
     assert.match((await res.json()).error, new RegExp(`Cannot build the ${kind}`));
   }
@@ -702,10 +744,7 @@ test("a receipt with no saving and no capped flag is a 400, not a $0 receipt", a
 
 test("the route names the five kinds when the kind is wrong", async () => {
   for (const kind of ["nope", 7, null, "", "constructor", "toString"]) {
-    const res = await handleSendEmailRequest(
-      authed({ to: "person@example.com", kind }),
-      makeEnv(),
-    );
+    const res = await handleSendEmailRequest(authed({ to: "person@example.com", kind }), makeEnv());
     assert.equal(res.status, 400, `kind: ${kind}`);
     const { error } = await res.json();
     for (const known of EMAIL_KINDS) {
@@ -716,10 +755,7 @@ test("the route names the five kinds when the kind is wrong", async () => {
 
 test("the route needs a recipient address", async () => {
   for (const to of ["", "   ", 42, null]) {
-    const res = await handleSendEmailRequest(
-      authed({ to, kind: "welcome" }),
-      makeEnv(),
-    );
+    const res = await handleSendEmailRequest(authed({ to, kind: "welcome" }), makeEnv());
     assert.equal(res.status, 400, `to: ${to}`);
     assert.match((await res.json()).error, /email address is required/);
   }
@@ -774,7 +810,9 @@ test("the route sends each of the five kinds through the one lane", async () => 
     );
     assert.equal(res.status, 202, `kind: ${kind}`);
     assert.equal(env.EMAIL.sent.length, 1, `kind: ${kind}`);
-    const message = env.EMAIL.sent[0];
+    const message = /** @type {{from: {email: string}, text: string, html: string}} */ (
+      env.EMAIL.sent[0]
+    );
     assert.equal(message.from.email, MAIL_FROM);
     assert.ok(message.text.includes("-- Drive"), `kind: ${kind} text sign-off`);
     assert.ok(message.html.includes("-- Drive"), `kind: ${kind} html sign-off`);

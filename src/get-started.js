@@ -22,8 +22,8 @@ import {
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
-  UPLOAD_LABEL,
   syncStatus,
+  UPLOAD_LABEL,
   uploadProgress,
 } from "./status.js";
 
@@ -54,14 +54,17 @@ export function pollIntervalMs() {
 /**
  * The connection line for one state: the module's `what` and `next`, in that
  * order, so the live line and the CLI's words are the same words.
- * @param {"waiting"|"connected"|"unreachable"} state
+ * @param {unknown} state
  * @returns {{what: string, next: string}}
  */
 export function connectionLine(state) {
-  const entry = CONNECTION_COPY[state];
+  const entry =
+    typeof state === "string" && Object.hasOwn(CONNECTION_COPY, state)
+      ? CONNECTION_COPY[/** @type {keyof typeof CONNECTION_COPY} */ (state)]
+      : undefined;
   if (!entry) {
     throw new TypeError(
-      `no connection copy for "${state}"; add it to CONNECTION_COPY in src/status.js`,
+      `no connection copy for "${String(state)}"; add it to CONNECTION_COPY in src/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -70,10 +73,13 @@ export function connectionLine(state) {
 /**
  * Every state the line can show, in the module's order, so the page can
  * render all three arms before the first poll answers.
- * @returns {"waiting"|"connected"|"unreachable"[]}
+ * @returns {Array<"waiting"|"connected"|"unreachable">}
  */
 export function connectionStates() {
-  return Object.keys(CONNECTION_COPY);
+  // The keys are the module's own three states; the annotation is the union
+  // the rest of the page switches on, which the page and this list must agree
+  // on or a rendered line would have no arm to show.
+  return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
 /**
@@ -84,9 +90,7 @@ export function connectionStates() {
 export function stepLines() {
   return FIRST_RUN_STEPS.map((step, index) => {
     if (typeof step.title !== "string" || typeof step.body !== "string") {
-      throw new TypeError(
-        `step ${index} needs a title and a body, got ${JSON.stringify(step)}`,
-      );
+      throw new TypeError(`step ${index} needs a title and a body, got ${JSON.stringify(step)}`);
     }
     return { title: step.title, body: step.body };
   });
@@ -94,14 +98,17 @@ export function stepLines() {
 
 /**
  * The empty-state words for one screen, so "nothing here" never stands alone.
- * @param {"devices"|"activity"} screen
+ * @param {unknown} screen
  * @returns {{what: string, next: string}}
  */
 export function emptyState(screen) {
-  const entry = EMPTY_STATES[screen];
+  const entry =
+    typeof screen === "string" && Object.hasOwn(EMPTY_STATES, screen)
+      ? EMPTY_STATES[/** @type {keyof typeof EMPTY_STATES} */ (screen)]
+      : undefined;
   if (!entry) {
     throw new TypeError(
-      `no empty state for "${screen}"; add it to EMPTY_STATES in src/status.js`,
+      `no empty state for "${String(screen)}"; add it to EMPTY_STATES in src/status.js`,
     );
   }
   return { what: entry.what, next: entry.next };
@@ -137,9 +144,20 @@ export function syncErrorNotification() {
 }
 
 /**
+ * A device as the status poll and the page's rows read it: the fields below
+ * name the ones the renderers touch, and the rest of a row is not read here.
+ * @typedef {{id?: string, name?: string, kind?: string, lastSyncAt?: string|Date|null, lastSeenAt?: string|Date|undefined, pendingBytes?: number|null, syncError?: string|null}} DeviceRow
+ */
+
+/**
+ * The whole poll payload, as the page's render() reads it.
+ * @typedef {{state?: string, devices?: DeviceRow[], upload?: {uploadedBytes: number, totalBytes: number, files?: number}|null}} StatusPayload
+ */
+
+/**
  * One device's sync state, from the module's own table and its own window, so
  * the page's cell cannot read "Synced" for a queue that has been quiet.
- * @param {object} device
+ * @param {DeviceRow} device
  * @returns {{state: string, label: string, detail: string|null}}
  */
 export function deviceSyncState(device) {
@@ -150,17 +168,21 @@ export function deviceSyncState(device) {
  * The page's state cell: the label alone, or the label and the detail. The
  * em dash joining them is the page's own punctuation, so it is applied here
  * and never lands in the module's words.
- * @param {{label: string, detail: string|null}} status
+ * @param {unknown} status
  * @returns {string}
  */
 export function stateCellText(status) {
-  if (!status || typeof status.label !== "string") {
+  if (typeof status !== "object" || status === null) {
     throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  if (status.detail === null || status.detail === undefined) {
-    return status.label;
+  const cell = /** @type {{label?: unknown, detail?: unknown}} */ (status);
+  if (typeof cell.label !== "string") {
+    throw new TypeError(`stateCellText needs { label, detail }, got ${JSON.stringify(status)}`);
   }
-  return `${status.label} — ${status.detail}`;
+  if (cell.detail === null || cell.detail === undefined) {
+    return cell.label;
+  }
+  return `${cell.label} — ${cell.detail}`;
 }
 
 // The module's words for a device that has never synced, resolved once, so the
@@ -172,15 +194,24 @@ const NO_SYNC_LABEL = syncStatus({}, 0).label;
  * device row that carries an unreadable date is reported, not thrown: the row
  * is a report, and the page's own poll failure is the `unreachable` state,
  * not a device's.
- * @param {string|number|Date|null} value
- * @param {number} now
+ * @param {string|number|Date|null|undefined} value
+ * @param {unknown} now
  * @returns {number|null}
  */
 export function ageMs(value, now = Date.now()) {
-  if (!Number.isFinite(now)) {
+  if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
   }
-  const time = typeof value === "number" ? value : Date.parse(value);
+  // A Date's own epoch value; Date.parse takes the string form, and an absent
+  // value is as unreadable as a broken one: both report the row as unreadable.
+  const time =
+    typeof value === "number"
+      ? value
+      : value instanceof Date
+        ? value.getTime()
+        : value === null || value === undefined
+          ? Number.NaN
+          : Date.parse(value);
   if (!Number.isFinite(time)) {
     return null;
   }
@@ -213,14 +244,12 @@ export function lastSyncText(device) {
  * on this page is the waiting state — the Mac has not signed in — and the
  * waiting line names the real next step. It is never `unreachable`: the
  * service answered. Any other non-ok status is.
- * @param {number} status
+ * @param {unknown} status
  * @returns {"waiting"|"unreachable"}
  */
 export function connectionStateForStatus(status) {
   if (!Number.isInteger(status)) {
-    throw new TypeError(
-      `connectionStateForStatus needs a status code, got ${String(status)}`,
-    );
+    throw new TypeError(`connectionStateForStatus needs a status code, got ${String(status)}`);
   }
   return status === 401 ? "waiting" : "unreachable";
 }
@@ -229,24 +258,26 @@ export function connectionStateForStatus(status) {
  * Whether a poll payload means the Mac has connected: a device signed in
  * inside the module's window, or the service's own `connected` state. The
  * page stops its timer when this is true.
- * @param {object} payload
+ * @param {unknown} payload
  * @param {number} now
  * @returns {boolean}
  */
 export function isConnected(payload, now = Date.now()) {
   if (typeof payload !== "object" || payload === null) {
-    throw new TypeError(
-      `isConnected needs a payload object, got ${String(payload)}`,
-    );
+    throw new TypeError(`isConnected needs a payload object, got ${String(payload)}`);
   }
-  if (payload.state === "connected") {
+  const body = /** @type {{state?: unknown, devices?: unknown}} */ (payload);
+  if (body.state === "connected") {
     return true;
   }
-  const devices = Array.isArray(payload.devices) ? payload.devices : [];
-  return devices.some((device) => {
-    const age = ageMs(device.lastSeenAt, now);
-    return age !== null && age <= CONNECTED_WINDOW_MS;
-  });
+  const devices = Array.isArray(body.devices) ? body.devices : [];
+  return devices.some(
+    /** @param {DeviceRow} device */
+    (device) => {
+      const age = ageMs(device.lastSeenAt, now);
+      return age !== null && age <= CONNECTED_WINDOW_MS;
+    },
+  );
 }
 
 // ---- The bottom half: the page wiring the builders above. ----
@@ -254,6 +285,10 @@ export function isConnected(payload, now = Date.now()) {
 // Every element the wiring touches, named once. A missing element is a real
 // error: `required()` throws rather than letting the page half-render, because
 // a blank section is the drift this change exists to remove.
+/**
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
 function required(id) {
   const el = document.getElementById(id);
   if (el === null) {
@@ -262,6 +297,12 @@ function required(id) {
   return el;
 }
 
+/**
+ * @param {string} tag
+ * @param {string|null} [className]
+ * @param {string} [text]
+ * @returns {HTMLElement}
+ */
 function element(tag, className, text) {
   const el = document.createElement(tag);
   if (className) {
@@ -289,10 +330,10 @@ function renderSteps() {
 }
 
 function renderEmptyStates() {
-  for (const [id, screen] of [
+  for (const [id, screen] of /** @type {Array<[string, "devices"|"activity"]>} */ ([
     ["devices-empty", "devices"],
     ["activity-empty", "activity"],
-  ]) {
+  ])) {
     const { what, next } = emptyState(screen);
     required(id).replaceChildren(element("p", "what", what), element("p", "next", next));
   }
@@ -319,6 +360,10 @@ function renderConnection() {
   showConnection("waiting");
 }
 
+/**
+ * @param {"waiting"|"connected"|"unreachable"} state
+ * @returns {void}
+ */
 function showConnection(state) {
   const host = required("connection");
   const current = host.querySelector(`.line[data-state="${state}"]`);
@@ -333,6 +378,10 @@ function showConnection(state) {
   }
 }
 
+/**
+ * @param {DeviceRow} device
+ * @returns {HTMLTableRowElement}
+ */
 function deviceRow(device) {
   const sync = deviceSyncState(device);
   const tr = document.createElement("tr");
@@ -352,6 +401,10 @@ function deviceRow(device) {
 // already on the page; the notification is for the tab you are not looking at.
 const notified = new Set();
 
+/**
+ * @param {DeviceRow} device
+ * @returns {void}
+ */
 function notifySyncError(device) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") {
     return;
@@ -369,6 +422,10 @@ function notifySyncError(device) {
 // never before: the permission prompt is not the first thing a new person
 // meets. Declined or dismissed is not a failure — the error already shows on
 // the page, so there is nothing to retry.
+/**
+ * @param {DeviceRow[]} devices
+ * @returns {void}
+ */
 function maybeAskToNotify(devices) {
   if (
     typeof Notification === "undefined" ||
@@ -385,6 +442,10 @@ function maybeAskToNotify(devices) {
   });
 }
 
+/**
+ * @param {StatusPayload} payload
+ * @returns {void}
+ */
 function render(payload) {
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
 
@@ -422,6 +483,7 @@ function render(payload) {
   showConnection("waiting");
 }
 
+/** @type {number|null} the poll interval, or null once the page is connected */
 let timer = null;
 
 async function poll() {
@@ -430,7 +492,7 @@ async function poll() {
     response = await fetch(statusEndpoint(), {
       headers: { accept: "application/json" },
     });
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -444,7 +506,7 @@ async function poll() {
   let payload;
   try {
     payload = await response.json();
-  } catch (error) {
+  } catch (_error) {
     showConnection("unreachable");
     return;
   }
@@ -452,7 +514,15 @@ async function poll() {
     showConnection("unreachable");
     return;
   }
-  render(payload);
+  try {
+    render(payload);
+  } catch {
+    // Every fetch and every body read above is guarded, and so is the render:
+    // this poll runs on a timer and on every tab that comes back, so a payload
+    // this page cannot draw has one home, and it is the unreachable state the
+    // user already knows. A rejection out of here would be an unhandled one.
+    showConnection("unreachable");
+  }
 }
 
 // Copy has to work on a plain http page too, where the async clipboard API is
@@ -481,7 +551,7 @@ function wireCopyButton() {
       }
       note.textContent = "Copied. Paste it into your terminal.";
       button.textContent = "Copied";
-    } catch (error) {
+    } catch (_error) {
       note.textContent = "Could not copy it for you. Select the command and copy it by hand.";
       button.textContent = "Copy";
     }
@@ -499,13 +569,16 @@ function start() {
   renderConnection();
   wireCopyButton();
 
-  poll();
-  timer = window.setInterval(poll, pollIntervalMs());
+  // poll() owns its own failures: every fetch and every body read is guarded
+  // and renders the unreachable state, so it cannot reject. The `void` says
+  // that out loud for the linter (drive issue #92) and keeps it true.
+  void poll();
+  timer = window.setInterval(() => void poll(), pollIntervalMs());
   document.addEventListener("visibilitychange", () => {
     // A tab in the background has the browser's own cadence; check the moment
     // it comes back so the line is never stale on return.
     if (document.visibilityState === "visible" && timer !== null) {
-      poll();
+      void poll();
     }
   });
 }

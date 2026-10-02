@@ -1,30 +1,48 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "../src/db.js";
 
 // drive#77 finding 5: db.js had no test at all. These pin the binding rule
 // (every value is bound, never interpolated into SQL) and the two hash/id
 // helpers every later route relies on.
 
+/**
+ * @typedef {{sql: string, params: unknown[]|null}} DbCall
+ * @typedef {{first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}} Bound
+ * @typedef {{calls: DbCall[], prepare: (sql: string) => {bind: (...params: unknown[]) => Bound}}} RecordingDb
+ */
+/**
+ * A recording stand-in for the D1 binding the helpers take. It speaks only the
+ * subset these helpers call, so it is handed to db.js's `D1Database` through
+ * one documented cast, the same way test/harness.mjs hands its SQLite adapter
+ * over.
+ * @returns {RecordingDb & D1Database}
+ */
 function recordingDb() {
+  /** @type {DbCall[]} */
   const calls = [];
-  return {
-    calls,
-    prepare(sql) {
-      const call = { sql, params: null };
-      calls.push(call);
-      return {
-        bind(...params) {
-          call.params = params;
-          return {
-            first: async () => ({ sql, params }),
-            all: async () => ({ results: [{ sql, params }] }),
-            run: async () => ({ success: true, sql, params }),
-          };
-        },
-      };
-    },
-  };
+  return /** @type {RecordingDb & D1Database} */ (
+    /** @type {unknown} */ ({
+      calls,
+      /** @param {string} sql */
+      prepare(sql) {
+        /** @type {DbCall} */
+        const call = { sql, params: null };
+        calls.push(call);
+        return {
+          /** @param {...unknown} params */
+          bind(...params) {
+            call.params = params;
+            return {
+              first: async () => ({ sql, params }),
+              all: async () => ({ results: [{ sql, params }] }),
+              run: async () => ({ success: true, sql, params }),
+            };
+          },
+        };
+      },
+    })
+  );
 }
 
 test("first binds every value instead of writing it into the SQL", async () => {
@@ -46,7 +64,7 @@ test("all returns the result rows and binds in order", async () => {
 test("run reports success and binds every value", async () => {
   const db = recordingDb();
   const result = await run(db, "insert into accounts (id) values (?)", "acct_1");
-  assert.equal(result.success, true);
+  assert.equal(/** @type {{success: boolean}} */ (/** @type {unknown} */ (result)).success, true);
   assert.deepEqual(db.calls[0].params, ["acct_1"]);
 });
 
