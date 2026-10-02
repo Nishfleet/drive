@@ -1044,6 +1044,110 @@ test("an upload that would pass the link's total cap is refused before any bytes
   assert.deepEqual(names, ["a.txt"]);
 });
 
+test("a streamed upload that would pass the link's total is refused before any bytes are stored", async () => {
+  // No Content-Length: the stream is counted as it arrives, the same second
+  // layer src/waitlist.js uses, so a body that never declared its size still
+  // cannot fill past the owner-set total (issue #208).
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 4 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "hello",
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error, failureMessage("upload-link-full"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("an upload that declares a small size but sends more is refused before any bytes are stored", async () => {
+  // Trusting Content-Length alone would store the real body and count the
+  // declared size, so a stranger could fill the drive while the link total
+  // stayed near empty (issue #208). The stream is counted regardless.
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 8 }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("this is more than eight"));
+      controller.close();
+    },
+  });
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=lie.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": "1" },
+      body,
+      // `duplex` is a Node/undici RequestInit field the Workers RequestInit type
+      // does not carry; a streamed body needs it set or the constructor throws.
+      ...{ duplex: "half" },
+    }),
+    store,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error, failureMessage("upload-link-full"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
+test("a public upload without its rate-limit bindings is refused before any bytes are stored", async () => {
+  const store = createMemoryStore();
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    store,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=a.txt`, {
+      method: "POST",
+      body: "x",
+    }),
+    store,
+    links,
+    () => "active",
+    { now },
+  );
+  assert.equal(upload.status, 503);
+  assert.equal((await upload.json()).error, failureMessage("unexpected"));
+  assert.deepEqual(await store.list("/"), []);
+});
+
 test("a rate-limited upload is refused before any bytes are stored", async () => {
   const store = createMemoryStore();
   const links = createD1LinkStore(createTestD1());

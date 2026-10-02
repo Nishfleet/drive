@@ -1239,9 +1239,11 @@ export async function handleRequestUploadRequest(request, files, links, capState
 
 /**
  * The size we can know without storing: Content-Length against the per-file
- * ceiling and the bytes this link has left, or — when the request does not
- * declare a size — the stream counted up to the same ceiling, the two layers
- * src/waitlist.js already uses. Either miss is a 413 and no write.
+ * ceiling and the bytes this link has left, then the stream counted up to the
+ * same ceiling, the two layers src/waitlist.js already uses. A declared size
+ * over either cap is refused without reading; a request that declares nothing
+ * (or a smaller size than it actually sends) is stopped at the same limit
+ * before any write. Either miss is a 413 and no write.
  * @param {Request} request
  * @param {RequestRecord} record
  * @returns {Promise<{bytes: number, body: BodyInit, error?: undefined}|{error: string, bytes?: undefined, body?: undefined}>}
@@ -1255,14 +1257,13 @@ async function takeUploadBody(request, record) {
   }
   const declared = request.headers.get("content-length");
   if (declared !== null) {
-    const bytes = Number(declared);
-    if (!Number.isFinite(bytes) || bytes < 0 || bytes > REQUEST_FILE_MAX_BYTES) {
+    const length = Number(declared);
+    if (!Number.isFinite(length) || length < 0 || length > REQUEST_FILE_MAX_BYTES) {
       return { error: failureMessage("body-too-large") };
     }
-    if (bytes > remaining) {
+    if (length > remaining) {
       return { error: failureMessage("upload-link-full") };
     }
-    return { bytes, body: /** @type {BodyInit} */ (request.body ?? new Uint8Array(0)) };
   }
   const stream = request.body;
   if (stream === null) {
