@@ -25,9 +25,24 @@ import { all } from "./db.js";
 import { errorResponse, json } from "./http.js";
 
 /**
+ * A nullable column as the export carries it: a time a row does not have yet
+ * (a key never seen, a version not yet hidden) is `null`, never an epoch zero,
+ * so a saved document cannot claim something happened in 1970. Anything that
+ * is neither null nor undefined is passed through the given reader, so a
+ * number stays a number and a date string stays a string.
+ * @template T
+ * @param {unknown} value
+ * @param {(raw: unknown) => T} read
+ * @returns {T|null}
+ */
+function nullable(value, read) {
+  return value === null || value === undefined ? null : read(value);
+}
+
+/**
  * GET /v1/export — the caller's own account data as one JSON document.
  * @param {Request} request
- * @param {{store: {listKeys: (account: {id: string}) => Array<object>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number}} ctx
+ * @param {{store: {listKeys: (account: {id: string}) => Array<{keyId: string, name: string, kind: string, prefix: string, capabilities: string[], createdAt: number, lastSeenAt: number|null, revokedAt: number|null}>}, db?: D1Database|null, account: {id: string, name?: string, email?: string}, now: () => number}} ctx
  */
 export async function exportRoute(request, ctx) {
   if (request.method !== "GET") {
@@ -52,7 +67,6 @@ export async function exportRoute(request, ctx) {
     lastSeenAt: key.lastSeenAt,
     revokedAt: key.revokedAt,
   }));
-
   // The file index and the version history are the customer database's
   // (DRIVE_DB). A deployment with no database bound has no files to name, so
   // the answer carries empty lists rather than failing: an account with no
@@ -70,13 +84,14 @@ export async function exportRoute(request, ctx) {
       account.id,
     );
     for (const row of fileRows) {
+      const file = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
       files.push({
-        path: String(row.path ?? ""),
-        name: String(row.name ?? ""),
-        parent: String(row.parent ?? ""),
-        sizeBytes: Number(row.size_bytes ?? 0),
-        modifiedAt: row.modified_at === null || row.modified_at === undefined ? null : String(row.modified_at),
-        indexedAt: row.indexed_at === null || row.indexed_at === undefined ? null : String(row.indexed_at),
+        path: String(file.path ?? ""),
+        name: String(file.name ?? ""),
+        parent: String(file.parent ?? ""),
+        sizeBytes: Number(file.size_bytes ?? 0),
+        modifiedAt: nullable(file.modified_at, (raw) => String(raw)),
+        indexedAt: nullable(file.indexed_at, (raw) => String(raw)),
       });
     }
     const versionRows = await all(
@@ -88,13 +103,14 @@ export async function exportRoute(request, ctx) {
       account.id,
     );
     for (const row of versionRows) {
+      const version = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (row));
       versions.push({
-        b2FileId: String(row.b2_file_id ?? ""),
-        path: String(row.path ?? ""),
-        sizeBytes: Number(row.size_bytes ?? 0),
-        createdAt: Number(row.created_at ?? 0),
-        hiddenAt: row.hidden_at === null || row.hidden_at === undefined ? null : Number(row.hidden_at),
-        deletedAt: row.deleted_at === null || row.deleted_at === undefined ? null : Number(row.deleted_at),
+        b2FileId: String(version.b2_file_id ?? ""),
+        path: String(version.path ?? ""),
+        sizeBytes: Number(version.size_bytes ?? 0),
+        createdAt: Number(version.created_at ?? 0),
+        hiddenAt: nullable(version.hidden_at, (raw) => Number(raw)),
+        deletedAt: nullable(version.deleted_at, (raw) => Number(raw)),
       });
     }
   }
