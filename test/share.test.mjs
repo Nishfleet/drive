@@ -641,6 +641,7 @@ test("a store failure is logged, and its message is never returned", async () =>
       copy: async () => {
         throw new Error("the share upload path does not copy");
       },
+      listVersions: async () => [],
     };
     const { links } = drive();
     await links.requests.create(

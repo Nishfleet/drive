@@ -585,6 +585,20 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async copy(from, to) {
       seen.push(["copy", from, to]);
     },
+    /** @param {string} path */
+    async listVersions(path) {
+      seen.push(["listVersions", path]);
+      return [
+        {
+          b2FileId: "v1",
+          path: `${path}notes.txt`,
+          sizeBytes: 3,
+          createdAt: 1,
+          hiddenAt: 2,
+          deletedAt: null,
+        },
+      ];
+    },
   };
   const scoped = scopeStore(recorder, { id: "acct-9", name: "Nine" });
   await scoped.list("/");
@@ -597,6 +611,15 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     ["write", "u/acct-9/docs/a b.txt"],
     ["remove", "u/acct-9/.trash/1__%2Fnotes.txt"],
   ]);
+  // Versions go through the scope too: the store is asked under this
+  // account's own prefix, and each version's path comes back a drive path.
+  const versions = await scoped.listVersions("/");
+  assert.deepEqual(
+    versions.map((version) => version.path),
+    ["/notes.txt"],
+    "a version's path is rewritten like any other row",
+  );
+  assert.deepEqual(seen.at(-1), ["listVersions", "u/acct-9/"]);
   // A path that could climb out of the prefix is refused here, not trusted to
   // the caller having validated it first.
   for (const path of ["/../acct-8/x", "/a/../../b", "/.", "relative/path"]) {

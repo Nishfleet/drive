@@ -63,11 +63,12 @@ jobs:
         # The workers.dev address sits behind Cloudflare Access until drive
         # has a domain (cloudflare.config.ts). A stranger must get a redirect
         # to the Access sign-in, never the site. The live health smoke
-        # returns with the domain.
+        # returns with the domain. The redirect must go to our own Access team
+        # host exactly, so a lookalike URL cannot pass (drive #159).
         run: |
           out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
           echo "workers.dev answered: ${out%%\?*}"
           case "$out" in
-            "302 https://"*".cloudflareaccess.com/"*) ;;
+            "302 https://nish345.cloudflareaccess.com/"*) ;;
             *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
           esac
