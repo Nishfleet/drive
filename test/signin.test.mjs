@@ -587,12 +587,20 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   const made = dispatchEnv();
   const env = made.env;
 
-  // The first three sends from one IP land.
+  // The first three sends from one IP land. Each one carries a different
+  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
   for (let i = 0; i < 3; i++) {
     const response = await workerFetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
-        { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
+        {
+          headers: {
+            origin: TEST_BASE_URL,
+            "cf-connecting-ip": "192.0.2.1",
+            "x-forwarded-for": `198.51.100.${i}`,
+          },
+        },
       ),
       env,
     );
@@ -601,11 +609,17 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
   }
 
   // The fourth send from the same IP is refused: the ceiling is hit, and no
-  // link leaves after it.
+  // link leaves after it — even with yet another x-forwarded-for.
   const refused = await workerFetch(
     post(
       { step: "start", method: "email", email: "over@the.ceil.ing" },
-      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
+      {
+        headers: {
+          origin: TEST_BASE_URL,
+          "cf-connecting-ip": "192.0.2.1",
+          "x-forwarded-for": "203.0.113.9",
+        },
+      },
     ),
     env,
   );
