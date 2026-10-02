@@ -76,7 +76,7 @@ function version(sizeBytes, createdAt, hiddenAt = null) {
  * without exec, withSession or dump, which these tests never call - and this
  * is the one place that says so. Every helper below takes the database
  * through this name, so the cast is named once instead of at every call.
- * @typedef {{db: D1Database, sqlite: import("node:sqlite").DatabaseSync}} MeteredDB
+ * @typedef {{db: D1Database, sqlite: import("./d1-sqlite.mjs").TestSqlite}} MeteredDB
  */
 
 /**

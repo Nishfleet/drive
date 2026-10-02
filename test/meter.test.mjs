@@ -36,7 +36,6 @@ import {
   METER_CRON,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
-  monthUsageRollup,
   recordEvent,
   recordUsage,
   rollupHour,
