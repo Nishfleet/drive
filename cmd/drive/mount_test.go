@@ -30,6 +30,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,10 @@ type hillClimbRow struct {
 	// prepare is hyperfine --prepare, empty when the timed command does not mutate.
 	prepare func(h *hillStandin) string
 	cmd     func(h *hillStandin) string
+	// copies > 1 seeds name-0..name-(n-1) and times each with hyperfine
+	// --parameter-list, so a folder rename never has to move the same
+	// directory back (rclone's S3 backend errors Dir.Remove not empty).
+	copies int
 }
 
 func hillClimbRows() []hillClimbRow {
@@ -107,11 +112,10 @@ func hillClimbRows() []hillClimbRow {
 			cmd: func(h *hillStandin) string { return "printf x >> " + h.shell(filepath.Join(h.mountDir, "edit.bin")) },
 		},
 		{
-			scenario: "big-folder-rename", metric: "rename", set: "tune",
-			seed:    func(t *testing.T, h *hillStandin) { h.seedFolder(t, "rename", 200) },
-			prepare: func(h *hillStandin) string { return restoreRenamePrep(h, "rename", "renamed") },
+			scenario: "big-folder-rename", metric: "rename", set: "tune", copies: 10,
+			seed: func(t *testing.T, h *hillStandin) { h.seedFolderCopies(t, "rename", 200, 10) },
 			cmd: func(h *hillStandin) string {
-				return "mv " + h.shell(filepath.Join(h.mountDir, "rename")) + " " + h.shell(filepath.Join(h.mountDir, "renamed"))
+				return "mv " + h.shell(filepath.Join(h.mountDir, "rename-{i}")) + " " + h.shell(filepath.Join(h.mountDir, "renamed-{i}"))
 			},
 		},
 		// Held-out: different sizes, measured on the other network profile.
@@ -148,20 +152,13 @@ func hillClimbRows() []hillClimbRow {
 			cmd: func(h *hillStandin) string { return "printf x >> " + h.shell(filepath.Join(h.mountDir, "hold-edit.bin")) },
 		},
 		{
-			scenario: "big-folder-rename", metric: "rename", set: "hold",
-			seed:    func(t *testing.T, h *hillStandin) { h.seedFolder(t, "hold-rename", 50) },
-			prepare: func(h *hillStandin) string { return restoreRenamePrep(h, "hold-rename", "hold-renamed") },
+			scenario: "big-folder-rename", metric: "rename", set: "hold", copies: 10,
+			seed: func(t *testing.T, h *hillStandin) { h.seedFolderCopies(t, "hold-rename", 50, 10) },
 			cmd: func(h *hillStandin) string {
-				return "mv " + h.shell(filepath.Join(h.mountDir, "hold-rename")) + " " + h.shell(filepath.Join(h.mountDir, "hold-renamed"))
+				return "mv " + h.shell(filepath.Join(h.mountDir, "hold-rename-{i}")) + " " + h.shell(filepath.Join(h.mountDir, "hold-renamed-{i}"))
 			},
 		},
 	}
-}
-
-func restoreRenamePrep(h *hillStandin, src, dst string) string {
-	from := h.shell(filepath.Join(h.mountDir, src))
-	to := h.shell(filepath.Join(h.mountDir, dst))
-	return "if [ -d " + to + " ]; then mv " + to + " " + from + "; fi"
 }
 
 type netemProfile struct {
@@ -268,6 +265,15 @@ func (h *hillStandin) seedFolder(t *testing.T, name string, n int) {
 		}
 	}
 	h.rclone(t, "copy", local, RemoteFor(h.cfg)+"/"+name)
+}
+
+func (h *hillStandin) seedFolderCopies(t *testing.T, name string, nfiles, copies int) {
+	t.Helper()
+	h.seedFolder(t, name+"-0", nfiles)
+	src := RemoteFor(h.cfg) + "/" + name + "-0"
+	for i := 1; i < copies; i++ {
+		h.rclone(t, "copy", src, RemoteFor(h.cfg)+"/"+fmt.Sprintf("%s-%d", name, i))
+	}
 }
 
 func (h *hillStandin) rclone(t *testing.T, args ...string) {
@@ -454,7 +460,7 @@ func TestMountSpeedHillClimb(t *testing.T) {
 			if row.prepare != nil {
 				prepare = row.prepare(h)
 			}
-			stats, err := hyperfine(t, runs, prepare, row.cmd(h))
+			stats, err := hyperfine(t, runs, prepare, row.cmd(h), row.copies)
 			if err != nil {
 				t.Fatalf("%s/%s set=%s on %s flags=%s: %v", row.scenario, row.metric, row.set, profile.name, label, err)
 			}
@@ -555,12 +561,21 @@ func TestMountSpeedHillClimb(t *testing.T) {
 	}
 }
 
-func hyperfine(t *testing.T, runs int, prepare, cmd string) (hyperfineStats, error) {
+func hyperfine(t *testing.T, runs int, prepare, cmd string, copies int) (hyperfineStats, error) {
 	t.Helper()
 	jsonPath := filepath.Join(t.TempDir(), "hyperfine.json")
-	args := []string{"--warmup", "2", "--runs", strconv.Itoa(runs), "--style", "basic", "--export-json", jsonPath}
-	if prepare != "" {
-		args = append(args, "--prepare", prepare)
+	args := []string{"--style", "basic", "--export-json", jsonPath}
+	if copies > 1 {
+		ids := make([]string, copies)
+		for i := range copies {
+			ids[i] = strconv.Itoa(i)
+		}
+		args = append(args, "--warmup", "0", "--runs", "1", "--parameter-list", "i", strings.Join(ids, ","))
+	} else {
+		args = append(args, "--warmup", "2", "--runs", strconv.Itoa(runs))
+		if prepare != "" {
+			args = append(args, "--prepare", prepare)
+		}
 	}
 	args = append(args, "--", cmd)
 	out, err := exec.Command("hyperfine", args...).CombinedOutput()
@@ -580,7 +595,25 @@ func hyperfine(t *testing.T, runs int, prepare, cmd string) (hyperfineStats, err
 	if len(doc.Results) == 0 {
 		return hyperfineStats{}, fmt.Errorf("hyperfine exported no results:\n%s", out)
 	}
-	return doc.Results[0], nil
+	return combineStats(doc.Results), nil
+}
+
+func combineStats(rs []hyperfineStats) hyperfineStats {
+	sum := 0.0
+	min := rs[0].Min
+	for _, r := range rs {
+		sum += r.Mean
+		if r.Min < min {
+			min = r.Min
+		}
+	}
+	mean := sum / float64(len(rs))
+	ss := 0.0
+	for _, r := range rs {
+		d := r.Mean - mean
+		ss += d * d
+	}
+	return hyperfineStats{Mean: mean, Stddev: math.Sqrt(ss / float64(len(rs))), Min: min}
 }
 
 func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
@@ -596,7 +629,11 @@ func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
 	h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
 		"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
 		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")
-	h.serve.Stdout, h.serve.Stderr = os.Stdout, os.Stderr
+	serveLog, err := os.Create(filepath.Join(root, "serve.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.serve.Stdout, h.serve.Stderr = serveLog, serveLog
 	if err := h.serve.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -644,15 +681,23 @@ func (h *hillStandin) remount(t *testing.T, pairs [][]string) {
 		}
 		cmd.Env = append(cmd.Env, env...)
 	}
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	logFile, err := os.Create(filepath.Join(h.root, "mount.out"))
+	if err != nil {
+		h.close()
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		h.close()
 		t.Fatal(err)
 	}
 	h.mount = cmd
 	if !waitForMount(t, h.mount, h.mountDir) {
+		_ = logFile.Close()
+		log, _ := os.ReadFile(filepath.Join(h.root, "mount.out"))
 		h.close()
-		t.Fatal("this host did not mount: the climb needs an unprivileged FUSE mount (unshare -Urmn)")
+		t.Fatalf("this host did not mount: the climb needs an unprivileged FUSE mount (unshare -Urmn)\n%s", log)
 	}
 }
 
