@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
+import { bindNumberedOnSqlite } from "./d1-sqlite.mjs";
 
 /** Every migration that applies to the customer database, in order. */
 export const DRIVE_MIGRATIONS = Object.freeze([
@@ -123,7 +124,7 @@ function runOne(sqlite, sql, params) {
  * @returns {TestD1}
  */
 export function createTestD1(options = {}) {
-  const sqlite = new DatabaseSync(":memory:");
+  const sqlite = bindNumberedOnSqlite(new DatabaseSync(":memory:"));
   for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }

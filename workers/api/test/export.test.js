@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import "urlpattern-polyfill";
-import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
+import { applyMigrations, bindNumberedOnSqlite, d1Over } from "../../../test/d1-sqlite.mjs";
 import { createD1DeviceSigninStore } from "../src/device-signin.js";
 import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
@@ -40,6 +40,7 @@ function fixedClock(startMs = Date.parse("2026-09-30T12:00:00Z")) {
  */
 function exportD1(sqlite) {
   applyMigrations(sqlite);
+  bindNumberedOnSqlite(sqlite);
   const inner = d1Over(sqlite);
   return /** @type {D1Database} */ (
     /** @type {unknown} */ ({

@@ -86,6 +86,38 @@ function bindForNodeSqlite(sql, bound) {
 // the same binding `get`, `all` and `run` do.
 const BOUND_METHODS = ["get", "all", "run", "iterate"];
 
+/**
+ * Raw node:sqlite rejects numbered D1 placeholders (`?1`) with SQLITE_RANGE.
+ * Tests that prepare on the handle itself — not through d1Over — must go
+ * through this wrap, which is the same rewrite bindForNodeSqlite uses.
+ * Mutates `sqlite.prepare` and returns the same handle.
+ * @param {DatabaseSync} sqlite
+ * @returns {DatabaseSync}
+ */
+export function bindNumberedOnSqlite(sqlite) {
+  const originalPrepare = sqlite.prepare.bind(sqlite);
+  sqlite.prepare = (sql) => {
+    const statement = originalPrepare(anonymousPlaceholders(sql));
+    if (!usesNumberedPlaceholders(sql)) {
+      return statement;
+    }
+    return new Proxy(statement, {
+      get(target, property, receiver) {
+        const member = Reflect.get(target, property, receiver);
+        if (typeof member !== "function") {
+          return member;
+        }
+        if (typeof property === "string" && BOUND_METHODS.includes(property)) {
+          /** @param {any[]} values */
+          return (...values) => member.apply(target, expandBoundValues(sql, values));
+        }
+        return member.bind(target);
+      },
+    });
+  };
+  return sqlite;
+}
+
 /** @typedef {Record<string, any>} Row */
 /**
  * The test-side view of the in-memory SQLite database: the rows the tests read
@@ -306,35 +338,11 @@ export function d1Over(sqlite, { onQuery } = {}) {
 function makeMeteredDB(onQuery) {
   const sqlite = new DatabaseSync(":memory:");
   applyMigrations(sqlite);
-  // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
-  // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
-  // expands them, and this wraps the raw handle the tests use directly. The
-  // wrapper expands the bound values the same way bindForNodeSqlite does, so a
-  // reused index (`?1` twice) fills every slot it owns and an out-of-order
-  // index (`?2` before `?1`) still binds by index, not by appearance. The
-  // adapter is built over this same handle just below, and its own prepares
-  // reach the wrapper already anonymized (bindForNodeSqlite), so the guard
-  // returns the real statement and the adapter is never expanded twice.
-  const originalPrepare = sqlite.prepare.bind(sqlite);
-  sqlite.prepare = (sql) => {
-    const statement = originalPrepare(anonymousPlaceholders(sql));
-    if (!usesNumberedPlaceholders(sql)) {
-      return statement;
-    }
-    return new Proxy(statement, {
-      get(target, property, receiver) {
-        const member = Reflect.get(target, property, receiver);
-        if (typeof member !== "function") {
-          return member;
-        }
-        if (typeof property === "string" && BOUND_METHODS.includes(property)) {
-          /** @param {any[]} values */
-          return (...values) => member.apply(target, expandBoundValues(sql, values));
-        }
-        return member.bind(target);
-      },
-    });
-  };
+  // Tests read the real schema with sqlite.prepare("... ?1"). The wrap is the
+  // same rewrite bindForNodeSqlite uses; d1Over then prepares already-anonymized
+  // SQL, so the guard returns the real statement and the adapter is never
+  // expanded twice.
+  bindNumberedOnSqlite(sqlite);
   const db = d1Over(sqlite, { onQuery });
   return { sqlite: /** @type {TestSqlite} */ (/** @type {unknown} */ (sqlite)), db };
 }
