@@ -22,7 +22,11 @@ import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
+  bareRecordFromEvent,
+  DEAD_LETTER_MAX_BODY_BYTES,
+  DEAD_LETTER_TRUNCATION_NOTE,
   EVENT_ACTIONS,
+  EVENT_DEAD_LETTER_ANSWERS,
   EVENT_TOKEN_HEADER,
   EVENTS_PER_BATCH,
   EVENTS_SEEN_RETENTION_MS,
@@ -31,6 +35,7 @@ import {
   HOUR_GB_MINUTES_SQL,
   handleStorageEventRequest,
   hourStart,
+  listEventDeadLetters,
   listMeteredAccounts,
   MAX_CATCHUP_HOURS,
   METER_CRON,
@@ -1116,6 +1121,314 @@ test("the intake refuses what it cannot bill, and says why in one sentence", asy
   assert.equal((await unbound.json()).error, "The meter cannot reach its database right now.");
 });
 
+// --- The refused-delivery receipts (drive issue #60) ---------------------
+
+/**
+ * A delivery the pinned stand-in's own event rule can actually send: MinIO's
+ * notify webhook sets `Authorization` to the literal value it was configured
+ * with and cannot set a header of its own, so it arrives with no
+ * `x-drive-event-token` (measured 2026-10-02).
+ * @param {{authorization?: string|null, attemptId?: string|null, body: string}} options
+ */
+function standinDelivery({ authorization = "Bearer wrong", attemptId, body }) {
+  /** @type {Record<string, string>} */
+  const headers = { "content-type": "application/json" };
+  if (authorization !== null) {
+    headers.authorization = authorization;
+  }
+  if (attemptId !== undefined && attemptId !== null) {
+    headers["x-amz-request-id"] = attemptId;
+  }
+  return new Request("https://drive.example/api/storage-events", {
+    method: "POST",
+    headers,
+    body,
+  });
+}
+
+const STANDIN_ENVELOPE = JSON.stringify({
+  Records: [
+    {
+      eventName: "s3:ObjectCreated:Put",
+      eventTime: "2026-10-02T10:00:00.000Z",
+      s3: {
+        bucket: { name: "drive-standin" },
+        object: { key: "u%2Fabc123%2Fnotes.md", size: GB, versionId: "v1" },
+      },
+    },
+  ],
+});
+
+/** @returns {Promise<number>} */
+const hexWidth = (value) => [...value].length;
+
+test("a delivery the token gate refuses is kept as a receipt, not dropped", async () => {
+  const { db } = makeMeteredDB();
+  const response = await handleStorageEventRequest(
+    standinDelivery({ attemptId: "17A5-REQ", body: STANDIN_ENVELOPE }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 401, "the refusal itself is unchanged");
+  assert.equal(db.tables.event_dead_letters.size, 1);
+  const receipt = db.tables.event_dead_letters.get("17A5-REQ");
+  assert.ok(receipt, "the provider's own attempt id is the receipt's id");
+  assert.equal(receipt.refused, EVENT_DEAD_LETTER_ANSWERS.missing);
+  assert.equal(receipt.event_token, null, "nothing was sent on the header this route wants");
+  assert.equal(
+    hexWidth(receipt.authorization),
+    32,
+    "the header that was sent is kept as a digest, never as its value",
+  );
+  assert.equal(receipt.body, STANDIN_ENVELOPE, "the delivered records are kept to replay");
+  assert.equal(db.tables.file_versions.size, 0, "a refused delivery bills nothing");
+  assert.equal(db.tables.events_seen.size, 0, "and is not counted as seen");
+});
+
+test("the receipt never stores a secret and says which header was wrong", async () => {
+  const { db } = makeMeteredDB();
+  // The two shapes a wrong configuration makes: the route's own header, with
+  // the wrong value, and no header at all (the stand-in's actual behaviour).
+  await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: `${TOKEN}-typo` },
+      body: STANDIN_ENVELOPE,
+    }),
+    db,
+    TOKEN,
+  );
+  await handleStorageEventRequest(standinDelivery({ body: STANDIN_ENVELOPE }), db, TOKEN);
+  const receipts = await listEventDeadLetters(db);
+  assert.equal(receipts.length, 2);
+  const refused = receipts.map((row) => row.refused).sort();
+  assert.deepEqual(refused, [EVENT_DEAD_LETTER_ANSWERS.missing, EVENT_DEAD_LETTER_ANSWERS.wrong]);
+  for (const row of receipts) {
+    const stored = JSON.stringify(row);
+    assert.ok(!stored.includes(TOKEN), "the configured token is never in a receipt");
+    assert.ok(!stored.includes(`${TOKEN}-typo`), "nor is anything a caller presented");
+  }
+});
+
+test("the bucket's retry of one delivery is one receipt, and a new delivery is another", async () => {
+  const { db } = makeMeteredDB();
+  const deliver = () =>
+    handleStorageEventRequest(
+      standinDelivery({ attemptId: "17A5-REQ", body: STANDIN_ENVELOPE }),
+      db,
+      TOKEN,
+    );
+  assert.equal((await deliver()).status, 401);
+  assert.equal((await deliver()).status, 401);
+  assert.equal(db.tables.event_dead_letters.size, 1, "a retried attempt is one row");
+  await handleStorageEventRequest(
+    standinDelivery({ attemptId: "17A5-NEXT", body: STANDIN_ENVELOPE }),
+    db,
+    TOKEN,
+  );
+  assert.equal(db.tables.event_dead_letters.size, 2, "the bucket's next attempt is its own row");
+});
+
+test("a delivery with no attempt id is one receipt however many times it is retried", async () => {
+  const { db } = makeMeteredDB();
+  const deliver = (body = STANDIN_ENVELOPE) =>
+    handleStorageEventRequest(standinDelivery({ attemptId: null, body }), db, TOKEN);
+  await deliver();
+  await deliver();
+  assert.equal(db.tables.event_dead_letters.size, 1);
+  await deliver(JSON.stringify({ Records: [{ eventName: "s3:ObjectRemoved:Delete" }] }));
+  assert.equal(db.tables.event_dead_letters.size, 2, "a different body is a new receipt");
+});
+
+test("a refused body over the cap is kept as a note, never grown without bound", async () => {
+  const { db } = makeMeteredDB();
+  const oversized = JSON.stringify({
+    Records: [
+      {
+        eventName: "s3:ObjectCreated:Put",
+        s3: { object: { key: `u%2Fabc123%2F${"x".repeat(DEAD_LETTER_MAX_BODY_BYTES + 64)}` } },
+      },
+    ],
+  });
+  const response = await handleStorageEventRequest(
+    standinDelivery({ attemptId: "17A5-BIG", body: oversized }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 401);
+  const receipt = db.tables.event_dead_letters.get("17A5-BIG");
+  assert.ok(receipt);
+  assert.equal(receipt.body, null);
+  assert.equal(receipt.note, DEAD_LETTER_TRUNCATION_NOTE.trim());
+});
+
+test("a rejected batch is kept as a receipt with its own reasons, by index", async () => {
+  const { db } = makeMeteredDB();
+  const batch = JSON.stringify([{ eventId: "bad", action: "exploded" }]);
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: batch,
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 400);
+  assert.equal(db.tables.event_dead_letters.size, 1);
+  const [receipt] = await listEventDeadLetters(db);
+  assert.equal(receipt.refused, EVENT_DEAD_LETTER_ANSWERS.rejected);
+  assert.equal(receipt.body, batch);
+  assert.match(receipt.note, /event 0: Unknown storage event action: exploded/);
+  assert.equal(db.tables.file_versions.size, 0);
+});
+
+test("the hourly run purges receipts past their week, and the rollup still reports them", async () => {
+  const { db } = makeMeteredDB();
+  const now = midnight() + 24 * 60 * MINUTE_MS;
+  const old = midnight() - 8 * 24 * 60 * MINUTE_MS;
+  const fresh = midnight() - 6 * 24 * 60 * MINUTE_MS;
+  for (const [attempt, at] of [
+    ["OLD", old],
+    ["FRESH", fresh],
+  ]) {
+    await db
+      .prepare(
+        "INSERT INTO event_dead_letters (id, received_at, refused, body, note) VALUES (?1, ?2, ?3, ?4, ?5)",
+      )
+      .bind(attempt, at, EVENT_DEAD_LETTER_ANSWERS.missing, "{}", "seeded")
+      .run();
+  }
+  const rolled = await runMeterCron(db, now);
+  assert.equal(rolled.receiptsEmptied, 1, "the eight-day-old receipt is gone");
+  assert.equal(db.tables.event_dead_letters.size, 1);
+  assert.ok(db.tables.event_dead_letters.get("FRESH"), "the six-day-old receipt stays");
+});
+
+test("a refused delivery is readable back for the run that fixes the rule", async () => {
+  const { db } = makeMeteredDB();
+  await handleStorageEventRequest(
+    standinDelivery({ attemptId: "17A5-REQ", body: STANDIN_ENVELOPE }),
+    db,
+    TOKEN,
+  );
+  const receipts = await listEventDeadLetters(db);
+  assert.equal(receipts.length, 1);
+  // Every stored sentence is one this endpoint itself answered with, so no
+  // reply is ever assembled from a caller's text.
+  assert.ok(
+    Object.values(EVENT_DEAD_LETTER_ANSWERS).includes(receipts[0].refused),
+    "a receipt only ever holds this endpoint's own sentence",
+  );
+  assert.equal(receipts[0].refused, EVENT_DEAD_LETTER_ANSWERS.missing);
+  await assert.rejects(() => listEventDeadLetters(undefined), /METER_DB/);
+});
+
+test("a bare provider record is billed when the wrapper is missing", async () => {
+  const { db } = makeMeteredDB();
+  // The record the bucket's own notification names, without the `Records`
+  // envelope: the same field names S3 uses, minus the wrapper (the intake's
+  // own envelope shape is what minio sends; measured 2026-10-02 that MinIO
+  // bubbles the record itself to a non-record target).
+  const bare = JSON.stringify({
+    eventName: "s3:ObjectCreated:Put",
+    eventTime: "2026-10-02T10:00:00.000Z",
+    key: "u/abc123/notes.md",
+    size: GB,
+    versionId: "v-bare",
+  });
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: bare,
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 200, "the bare record is stored, not refused");
+  assert.deepEqual(await response.json(), { ok: true, stored: 1, deduped: 0 });
+  const row = db.tables.file_versions.get("abc123|v-bare");
+  assert.ok(row, "the bare record became one version row");
+  assert.equal(row.size_bytes, GB);
+  assert.equal(row.account_id, "abc123");
+  assert.equal(row.created_at, Date.parse("2026-10-02T10:00:00.000Z"));
+  assert.equal(db.tables.event_dead_letters.size, 0, "a stored record is not a receipt");
+});
+
+test("a bare delete record is billed as a hide, and neither shape loses the wrapper's error", async () => {
+  const { db } = makeMeteredDB();
+  const bare = JSON.stringify({
+    eventName: "s3:ObjectRemoved:Delete",
+    eventTime: "2026-10-02T10:30:00.000Z",
+    key: "u/abc123/notes.md",
+    versionId: "v-bare",
+  });
+  const response = await handleStorageEventRequest(
+    new Request("https://drive.example/api/storage-events", {
+      method: "POST",
+      headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+      body: bare,
+    }),
+    db,
+    TOKEN,
+  );
+  assert.equal(response.status, 200);
+  const row = db.tables.file_versions.get("abc123|v-bare");
+  assert.ok(row);
+  assert.equal(row.hidden_at, Date.parse("2026-10-02T10:30:00.000Z"));
+  assert.equal(
+    (
+      await (
+        await handleStorageEventRequest(
+          new Request("https://drive.example/api/storage-events", {
+            method: "POST",
+            headers: { [EVENT_TOKEN_HEADER]: TOKEN },
+            body: "{oops",
+          }),
+          db,
+          TOKEN,
+        )
+      ).json()
+    ).error,
+    "The request body is not valid JSON.",
+  );
+});
+
+test("the bare-record recovery is one mapping, and refuses a body with no event in it", () => {
+  assert.throws(() => bareRecordFromEvent({ hello: "world" }), /not one event record/);
+  assert.throws(() => bareRecordFromEvent(["nope"]), /must be a JSON object/);
+  assert.throws(() => bareRecordFromEvent(null), /must be a JSON object/);
+  const mapped = bareRecordFromEvent({
+    eventName: "s3:ObjectCreated:Post",
+    key: "u/abc123/a.txt",
+    size: GB,
+    versionId: "v9",
+    eventTime: "2026-10-02T10:00:00.000Z",
+    Records: [],
+  });
+  assert.equal(mapped.keyName, "u/abc123/a.txt");
+  assert.equal(mapped.b2FileId, "v9");
+  assert.equal(mapped.sizeBytes, GB);
+  assert.equal(mapped.action, "uploaded");
+  assert.equal(mapped.eventTimestamp, "2026-10-02T10:00:00.000Z");
+  assert.equal("Records" in mapped, false, "the stale envelope is dropped, never billed");
+  const nested = bareRecordFromEvent({
+    eventName: "s3:ObjectRemoved:Delete",
+    s3: { object: { key: "u/abc123/a.txt", versionId: "v9" } },
+    eventTime: "2026-10-02T10:05:00.000Z",
+  });
+  assert.equal(nested.keyName, "u/abc123/a.txt");
+  assert.equal(nested.b2FileId, "v9");
+  assert.equal(nested.action, "deleted");
+  assert.equal(validateEvent(nested).hiddenAt, Date.parse("2026-10-02T10:05:00.000Z"));
+  assert.equal(
+    validateEvent({ ...nested, eventTimestamp: undefined, hiddenAt: undefined }).error,
+    "The event does not say when the version stopped being visible.",
+    "a hide with no time of its own is refused, never booked as a zero-length hide",
+  );
+});
+
 test("the token compare is constant-shape and never a prefix match", async () => {
   assert.equal(await tokensMatch(TOKEN, TOKEN), true);
   assert.equal(await tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
@@ -1295,14 +1608,15 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     `a catch-up must cost hours, not accounts: 25 accounts took ${queries25} round trips, one took ${queries2}`,
   );
   // The budget the trigger is designed to: three round trips per hour
-  // (the hour's read, the hour's batch, the hour's watermark) plus the three
-  // around them - the watermark read, the earliest-version read that floors
-  // a first run, and the dedup purge - whatever the customer count.
+  // (the hour's read, the hour's batch, the hour's watermark) plus the four
+  // around them - the receipt purge, the watermark read, the earliest-version
+  // read that floors a first run, and the dedup purge - whatever the
+  // customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,
-    3 * MAX_CATCHUP_HOURS + 3,
-    "three round trips per hour plus the three around them",
+    3 * MAX_CATCHUP_HOURS + 4,
+    "three round trips per hour plus the four around them",
   );
   assert.equal(rolled.accounts, 25);
   assert.equal(

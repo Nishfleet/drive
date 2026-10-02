@@ -554,6 +554,35 @@ export async function listMeteredAccounts(db) {
 
 // --- Event intake -------------------------------------------------------
 
+const DEAD_LETTER_LIST_SQL = `SELECT id, received_at, refused, attempt_id, authorization, event_token,
+    content_type, body, note
+  FROM event_dead_letters WHERE received_at >= ?1 ORDER BY received_at DESC, id`;
+
+/**
+ * The refused deliveries still on hand, newest first, so the receipts the
+ * intake kept are readable without a schema walk. Read-only and bounded by
+ * the same retention the hourly run purges to, so the answer cannot grow
+ * past a week of refusals.
+ *
+ * A delivery may hold one account's keys, so this is the intake's own view,
+ * not a public one: no route serves it, and the headers in it are digests.
+ * @param {D1Database} db
+ * @param {number|Date|string} [since] the oldest receipt to read; defaults to
+ *   the retention window's floor
+ * @param {number|Date|string} [now]
+ */
+export async function listEventDeadLetters(db, since, now = Date.now()) {
+  if (!db) {
+    throw new Error("meter: METER_DB binding is not configured");
+  }
+  const floor =
+    since === undefined
+      ? toMillis(now, "now") - EVENT_DEAD_LETTER_RETENTION_MS
+      : toMillis(since, "since");
+  const result = await db.prepare(DEAD_LETTER_LIST_SQL).bind(floor).all();
+  return result.results || [];
+}
+
 /**
  * The account id in a key or path under `/u/<id>/`. That prefix is what
  * docs/build-spec.md "Keys and safety" mints every key into, so the path is
@@ -604,6 +633,153 @@ class EventBodyTooLargeError extends Error {
   constructor() {
     super("event body too large");
     this.name = "EventBodyTooLargeError";
+  }
+}
+
+/** Thrown when a body is not JSON and is not one bare event record either. */
+class EventBodyNotJsonError extends Error {
+  /** @param {string} text the body as it arrived, kept so the refusal can keep it */
+  constructor(text) {
+    super("the body is neither a JSON envelope nor one event record");
+    this.name = "EventBodyNotJsonError";
+    this.text = text;
+  }
+}
+
+/**
+ * The fields a bare event record is recognised by. Holding one of these is
+ * what separates a record the meter can bill from any stray bytes: every
+ * mapping below reads a sizing or version field, and a body holding none of
+ * them cannot become a version row at all.
+ */
+const BARE_RECORD_MARKERS = Object.freeze(["eventName", "b2FileId", "path", "keyName"]);
+
+/**
+ * One event record that arrived without the `Records` envelope every
+ * provider pads its notification in (see workers/api/src/event-routes.js).
+ *
+ * A bucket's notification is configured with a target and a prefix, so a
+ * deployment whose ARN points at a record endpoint delivers the record
+ * itself: the payload is the same object, only the wrapper is missing. The
+ * words are read here rather than trusted — the fields are the ones the
+ * intake already understands (`keyName`, `sizeBytes`, `createdAt`,
+ * `versionId`, `eventName`) — and a body holding none of the markers is
+ * refused so that malformed JSON stays a 400.
+ *
+ * `keyName` is the key the provider reported, which the record carries in
+ * `key`, `keyName` or its own `s3.object.key`; `path` is only set from a real
+ * path, because the bubble has no file path and a version row's path is then
+ * the key that named the account (validateEvent reads the folder from
+ * whichever field names one).
+ * @param {unknown} body
+ * @returns {Record<string, unknown>}
+ */
+export function bareRecordFromEvent(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new TypeError("one event record must be a JSON object");
+  }
+  const input = /** @type {Record<string, unknown>} */ (body);
+  if (BARE_RECORD_MARKERS.every((marker) => input[marker] === undefined)) {
+    throw new TypeError("this body is not one event record");
+  }
+  const record = { ...input };
+  delete record.Records;
+  const nested = /** @type {{s3?: {object?: {key?: unknown, versionId?: unknown}}}} */ (input).s3;
+  const object = typeof nested === "object" && nested !== null ? nested.object : undefined;
+  // The key, under whichever of the three names the provider uses. A real
+  // `path` wins: it is the file's own path, and the key is the fallback.
+  const key = input.keyName ?? input.key ?? (object ? object.key : undefined);
+  if (typeof input.keyName !== "string" && typeof key === "string" && key !== "") {
+    record.keyName = key;
+  }
+  // The version the provider created, which is what the dedup and the row key
+  // on. The event's own `versionId` is the one S3 puts on a record's
+  // `s3.object`, so it is read from there too before falling back to a
+  // top-level `versionId` on the record itself.
+  const version = input.b2FileId ?? input.versionId ?? object?.versionId;
+  if (typeof input.b2FileId !== "string" && typeof version === "string" && version !== "") {
+    record.b2FileId = version;
+  }
+  // A size the event names, under whichever of the two names it uses. A
+  // string is left as it is: the intake already takes a decimal string.
+  if (input.sizeBytes === undefined && input.size !== undefined) {
+    record.sizeBytes = input.size;
+  }
+  // The instant the provider saw the change, when the event carries it
+  // separately from the record's own time.
+  if (input.eventTimestamp === undefined && typeof input.eventTime === "string") {
+    record.eventTimestamp = input.eventTime;
+  }
+  // A create's creation time. An S3 notification records when the write
+  // happened and nothing else: `eventTime` IS the version's creation instant
+  // for an ObjectCreated record, so it seeds `createdAt`, which validateEvent
+  // needs for a create (it refuses a create with no creation time rather than
+  // bill from the arrival instant). The CREATE event table the intake wraps
+  // carries the same field for the same reason.
+  if (typeof input.createdAt !== "string" && typeof input.createdAt !== "number") {
+    if (record.action !== "deleted" && typeof input.eventTime === "string") {
+      record.createdAt = input.eventTime;
+    }
+  }
+  // The event name is what says whether this is a write or a delete, so it
+  // becomes the action the intake bills on. A name outside the table is left
+  // alone and refused by validateEvent with the action in the answer.
+  if (typeof input.action !== "string" && typeof input.eventName === "string") {
+    const named = input.eventName.toLowerCase();
+    if (named.includes("objectremoved")) {
+      record.action = "deleted";
+    } else if (named.includes("objectcreated")) {
+      record.action = "uploaded";
+    }
+  }
+  return record;
+}
+
+/**
+ * A request body read as one of the three shapes the intake takes, and a
+ * refusal for a body that is none of them.
+ *
+ * The provider's own notification is the shape this route is built for. A
+ * bucket's notification is configured with a target and a prefix, so a
+ * deployment whose ARN points at a record endpoint delivers the record
+ * ITSELF: the payload is the same object, only the `Records` wrapper is
+ * missing (measured 2026-10-02 against the pinned stand-in). The wrapper is
+ * recognised, never silently unwrapped: a body that still carries `Records`
+ * is refused by name in validateEvent below, so a caller keeping the wrapper
+ * keeps the error that names it.
+ *
+ * A bare record is passed through `bareRecordFromEvent` so the provider's
+ * field names become the intake's on one path, and a body that is not a
+ * record at all stays a 400 rather than becoming a guess.
+ * @param {string} text
+ * @returns {unknown}
+ */
+function parseEventBody(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new EventBodyNotJsonError(text);
+  }
+  // The batch the intake has always taken, and the wrapper every provider pads
+  // its notification in.
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return parsed;
+  }
+  const envelope = /** @type {Record<string, unknown>} */ (parsed);
+  if (envelope.Records !== undefined) {
+    return envelope;
+  }
+  try {
+    return bareRecordFromEvent(envelope);
+  } catch {
+    // A body holding none of the record's markers is not a record, and the
+    // refusal names the same thing a non-JSON body is refused for: this route
+    // bills event records, and anything else is a configuration to fix.
+    throw new EventBodyNotJsonError(text);
   }
 }
 
@@ -914,6 +1090,208 @@ export async function recordEvents(db, events, now = Date.now()) {
 // storage.
 export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 
+// --- The event dead letter --------------------------------------------
+//
+// The token check above is what keeps an open endpoint from writing billing
+// rows, and it is also the one gate the storage server cannot get past on its
+// own: MinIO's `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*` sends the literal string it
+// is given as the whole Authorization header, so it cannot send `Bearer
+// <token>` and this route's `Bearer` scheme; and MinIO cannot send
+// `x-drive-event-token` at all (its notify webhook sets only `Authorization`).
+// Measured 2026-10-02 against the pinned stand-in: with
+// `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_DRIVE` set, every delivery arrived with
+// `authorization: <the value>` and no `x-drive-event-token`, and the bucket's
+// own retries then discarded the events after the first 401
+// (docs/build-spec.md, build step 5).
+//
+// So a delivery the token gate refuses is stored (bounded, redacted) instead
+// of dropped, and never billed: the event rule's configuration is a
+// deployment's to fix, the events it delivered are the provider's own account
+// of what happened, and this row is the receipt that lets a later run replay
+// them rather than losing a day's writes because a header was spelled wrong.
+// A wrong token from anyone else on the internet lands here too, which is why
+// the record is bounded and why nothing in it is ever billed.
+
+/**
+ * The words this endpoint is allowed to quote back to the storage server.
+ * Every phrase is the literal response this module gives on the same path,
+ * so a record's `refused` column is copied from an answer the caller already
+ * has and is never assembled from a stranger's text. A body's own error
+ * words are NOT here: a bucket retrying on what the 400 said would be
+ * quoting a caller, and the retry is the same either way.
+ */
+export const EVENT_DEAD_LETTER_ANSWERS = Object.freeze({
+  missing: "The event could not be accepted from this caller.",
+  wrong: "The event could not be accepted from this caller.",
+  malformed: "The event could not be read.",
+  tooLarge: "That event was too large to accept.",
+  rejected: "The event could not be accepted.",
+  unconfigured: "The meter cannot reach its database right now.",
+  undelivered: "The event could not be stored.",
+});
+
+// How much of a refused body is kept. A provider batch is a delivery unit of
+// up to 1000 records, so a day's writes can arrive in one request and the cap
+// is sized to hold a real batch rather than to be generous with a stranger's
+// payload: 16 KiB is about 40 ordinary event records, and past it the record
+// says so in its note instead of growing without bound.
+export const DEAD_LETTER_MAX_BODY_BYTES = 16 * 1024;
+
+export const DEAD_LETTER_TRUNCATION_NOTE = " (body truncated at the intake's cap)";
+
+// The delivery attempt id's own cap. MinIO sends `X-Amz-Request-Id` on a
+// webhook delivery (measured 2026-10-02); a caller's much longer header is
+// truncated rather than refused, because an unreadable id costs a log line
+// and refusing the receipt costs the events.
+export const DEAD_LETTER_MAX_ATTEMPT_ID = 128;
+
+export const DEAD_LETTER_PURGE_SQL = "DELETE FROM event_dead_letters WHERE received_at < ?1";
+
+export const DEAD_LETTER_INSERT_SQL = `INSERT INTO event_dead_letters
+  (id, received_at, refused, attempt_id, authorization, event_token, content_type, body, note)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`;
+
+/**
+ * One refused delivery's own id: the provider's attempt id when it sent one,
+ * so two receipts of the same delivery are the same row while the bucket is
+ * still retrying. A caller with no such header gets an id derived from the
+ * refusal, which makes an identical retry one row and a different body a new
+ * one. Never a random value: a receipt that a retry duplicates is a receipt
+ * that grows the table with every retry of a broken event rule.
+ * @param {string|null} attemptId
+ * @param {ReturnType<typeof deadLetterRecord>} record
+ */
+async function deadLetterId(attemptId, record) {
+  if (attemptId !== null && attemptId !== "") {
+    return attemptId.slice(0, DEAD_LETTER_MAX_ATTEMPT_ID);
+  }
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(
+      [record.refused, record.authorization, record.event_token, record.note, record.body].join(
+        "\u0000",
+      ),
+    ),
+  );
+  return [...new Uint8Array(digest)]
+    .slice(0, 16)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * One refused delivery as it is stored. Everything here is copied or
+ * redacted, never interpreted: the headers are the evidence of what the
+ * caller sent, the body is what it delivered, and the note is this module's
+ * own words about the record's own limits - no text from the caller is
+ * assembled into a sentence.
+ * @param {string} refused one of EVENT_DEAD_LETTER_ANSWERS' values
+ * @param {{authorization?: string|null, eventToken?: string|null, contentType?: string|null, body?: string|null, note?: string}} parts
+ */
+function deadLetterRecord(refused, parts = {}) {
+  return {
+    refused,
+    authorization: parts.authorization ?? null,
+    event_token: parts.eventToken ?? null,
+    content_type: parts.contentType ?? null,
+    body: parts.body ?? null,
+    note: parts.note ?? null,
+  };
+}
+
+/**
+ * The header a delivery presented, as evidence rather than as a secret.
+ *
+ * The stored value is a SHA-256 digest of the whole header, never the header:
+ * the token this route demands is the one secret on the path, so keeping
+ * what was presented would put a caller's near-miss (one character of a real
+ * token) and, worse, the server's own shared token into a database row any
+ * operator can read. The digest says two deliveries presented the same thing
+ * and nothing more, which is exactly the question a fix asks.
+ * @param {string|null} value a header value, or null when it was not sent
+ * @returns {Promise<string|null>}
+ */
+async function headerDigest(value) {
+  if (value === null) {
+    return null;
+  }
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 32);
+}
+
+/**
+ * Stores one refused delivery. Best-effort by design and never silent: the
+ * caller has already got a refusal, and losing the receipt would lose the
+ * events, so a failure here is logged by name and the caller still gets the
+ * refusal it was owed. Nothing from the caller is echoed into the log line.
+ *
+ * Never called with a body this endpoint went on to bill: the receipt exists
+ * for deliveries that produced no version row at all.
+ * @param {D1Database} db
+ * @param {string} refused
+ * @param {Request} request
+ * @param {number} receivedAt
+ * @param {{body?: string|null, note?: string}} [parts]
+ * @returns {Promise<{stored: boolean, id: string|null}>}
+ */
+export async function recordDeadLetter(db, refused, request, receivedAt, parts = {}) {
+  const headers = request.headers;
+  const record = deadLetterRecord(refused, {
+    authorization: await headerDigest(headers.get("authorization")),
+    eventToken: await headerDigest(headers.get(EVENT_TOKEN_HEADER)),
+    contentType: headers.get("content-type"),
+    body: parts.body ?? null,
+    note: parts.note ?? null,
+  });
+  const attemptId = headers.get("x-amz-request-id");
+  const id = await deadLetterId(attemptId, record);
+  try {
+    await db
+      .prepare(DEAD_LETTER_INSERT_SQL)
+      .bind(
+        id,
+        receivedAt,
+        refused,
+        attemptId === null || attemptId === ""
+          ? null
+          : attemptId.slice(0, DEAD_LETTER_MAX_ATTEMPT_ID),
+        record.authorization,
+        record.event_token,
+        record.content_type,
+        record.body,
+        record.note,
+      )
+      .run();
+    return { stored: true, id };
+  } catch (error) {
+    console.error("meter: could not record a refused storage event delivery", error);
+    return { stored: false, id: null };
+  }
+}
+
+/**
+ * The body of a refused delivery, cut at the intake's own cap. A body the
+ * reader could not read is kept as null: the caller's stream was not a body
+ * this endpoint can store.
+ * @param {Request} request
+ * @returns {Promise<{body: string|null, note: string|null}>}
+ */
+async function refusedBody(request) {
+  try {
+    const bytes = await readLimitedBody(request, DEAD_LETTER_MAX_BODY_BYTES);
+    return { body: new TextDecoder().decode(bytes), note: null };
+  } catch (error) {
+    if (error instanceof EventBodyTooLargeError) {
+      return { body: null, note: DEAD_LETTER_TRUNCATION_NOTE.trim() };
+    }
+    console.error("meter: could not read a refused event body", error);
+    return { body: null, note: "the body could not be read" };
+  }
+}
+
 /**
  * Compares a presented token with the configured one without leaking the
  * secret through timing. Both sides are hashed with SHA-256 first, so the
@@ -960,6 +1338,12 @@ export async function tokensMatch(presented, configured) {
  * Handles POST /api/storage-events: one event or a provider batch, stored
  * through the dedup. Always returns a Response; never echoes a stored path,
  * an id or an error stack back to the caller.
+ *
+ * A delivery the token gate refuses, or one whose body could not be read, is
+ * recorded in `event_dead_letters` before the refusal is returned (see the
+ * section above): the header the provider's event rule can actually send is
+ * not the one this route wants, so a refused delivery is a configuration to
+ * fix and a batch of real events to replay, not a gap in the meter.
  * @param {Request} request
  * @param {D1Database|undefined} db
  * @param {string|undefined} eventToken the configured secret
@@ -974,33 +1358,67 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   if (!db) {
     // The binding is missing on this deployment: an operator problem, so it
     // goes to the log by name and the caller gets words without the binding
-    // name, like the waitlist's missing-binding path.
+    // name, like the waitlist's missing-binding path. There is nowhere to
+    // keep a receipt without the binding, so the log line is the whole of it.
     console.error("meter: METER_DB binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
   // The token is checked before the body is read, and a missing secret fails
   // closed: an unconfigured binding must never leave an endpoint that writes
-  // billing rows open to whoever finds the path.
+  // billing rows open to whoever finds the path. A deployment with no secret
+  // has no configured event rule either, so a delivery here is a probe or a
+  // stale rule and there is no batch to keep.
   if (typeof eventToken !== "string" || eventToken === "") {
     console.error("meter: METER_EVENT_TOKEN binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
-  if (!(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken))) {
+  const presented = request.headers.get(EVENT_TOKEN_HEADER);
+  if (!(await tokensMatch(presented, eventToken))) {
     // One sentence, no echo of what was presented: a wrong token is a caller
     // with a stale or misconfigured event rule, and its text is not a hint.
+    // The receipt records which of the two shapes arrived, because that is
+    // the whole diagnosis: a header that is not there is a rule pointed at
+    // the wrong header, and one that is there but does not match is a rule
+    // holding the wrong token.
+    await recordDeadLetter(
+      db,
+      presented === null ? EVENT_DEAD_LETTER_ANSWERS.missing : EVENT_DEAD_LETTER_ANSWERS.wrong,
+      request,
+      toMillis(Date.now(), "now"),
+      await refusedBody(request),
+    );
     return json({ error: "The event could not be accepted from this caller." }, 401);
   }
   let parsed;
   try {
     const bytes = await readLimitedBody(request, MAX_EVENT_BODY_BYTES);
-    try {
-      parsed = JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-      return json({ error: "The request body is not valid JSON." }, 400);
-    }
+    parsed = parseEventBody(new TextDecoder().decode(bytes));
   } catch (error) {
     if (error instanceof EventBodyTooLargeError) {
+      await recordDeadLetter(
+        db,
+        EVENT_DEAD_LETTER_ANSWERS.tooLarge,
+        request,
+        toMillis(Date.now(), "now"),
+        { body: null, note: DEAD_LETTER_TRUNCATION_NOTE.trim() },
+      );
       return json({ error: "That event was too large to accept." }, 413);
+    }
+    if (error instanceof EventBodyNotJsonError) {
+      // A body the token gate let through and that is not JSON is kept as a
+      // receipt with this endpoint's own sentence: it is the provider's rule
+      // pointed at a path that answers in event shapes, and the bytes are what
+      // a replay after the fix needs.
+      await recordDeadLetter(
+        db,
+        EVENT_DEAD_LETTER_ANSWERS.malformed,
+        request,
+        toMillis(Date.now(), "now"),
+        {
+          body: error.text,
+        },
+      );
+      return json({ error: "The request body is not valid JSON." }, 400);
     }
     console.error("meter: could not read the event body", error);
     return json({ error: "The event could not be read." }, 400);
@@ -1042,6 +1460,23 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   }
   const deduped = events.length - stored;
   if (rejected.length > 0) {
+    // Every event in the batch was refused by name, so there is a version
+    // row for none of them: this is the same delivery the token gate would
+    // have kept, one layer further in, and the receipt is what lets it be
+    // replayed after the shape is fixed.
+    await recordDeadLetter(
+      db,
+      EVENT_DEAD_LETTER_ANSWERS.rejected,
+      request,
+      toMillis(Date.now(), "now"),
+      {
+        body: JSON.stringify(rawEvents),
+        note: rejected
+          .map((entry) => `event ${entry.index}: ${entry.error}`)
+          .join("; ")
+          .slice(0, 1000),
+      },
+    );
     return json(
       {
         ok: false,
@@ -1148,6 +1583,13 @@ export const MAX_CATCHUP_HOURS = 12;
 // the earliest times and therefore recomputes the same row.
 export const EVENTS_SEEN_RETENTION_MS = 7 * 24 * HOUR_MS;
 
+// How long a receipt is kept. The same week as the dedup rows: a receipt older
+// than the events it would replay is no longer useful, and the table would
+// otherwise grow with every misconfigured delivery forever. Named for the dead
+// letter rather than reusing the dedup constant, because the two retentions
+// answer different questions and only happen to agree today.
+export const EVENT_DEAD_LETTER_RETENTION_MS = 7 * 24 * HOUR_MS;
+
 const ROLLED_THROUGH_READ_SQL = "SELECT rolled_through FROM meter_rollup_state WHERE id = 1";
 const ROLLED_THROUGH_WRITE_SQL = `INSERT INTO meter_rollup_state (id, rolled_through)
   VALUES (1, ?1)
@@ -1203,6 +1645,17 @@ export async function runMeterCron(db, now = Date.now()) {
   // created at :59 must wait for the next trigger, which bills it with the
   // 1-hour minimum in the hour it was created.
   const lastClosed = hourStart(at) - HOUR_MS;
+  // A receipt for a delivery the intake refused is as disposable as the dedup
+  // rows: past the week, a delivery the bucket has long stopped retrying is
+  // no longer replayable, and the table would otherwise grow with every
+  // misconfigured delivery forever. Deleted by the same run, oldest first,
+  // and a failure here is the run's failure - a purge that silently did
+  // nothing is a table without a bound.
+  const purged = await db
+    .prepare(DEAD_LETTER_PURGE_SQL)
+    .bind(at - EVENT_DEAD_LETTER_RETENTION_MS)
+    .run();
+  const receiptsEmptied = Number(purged?.meta?.changes ?? 0);
   const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
   const rolledThrough = stampMillis(mark?.rolled_through);
   let from;
@@ -1251,7 +1704,7 @@ export async function runMeterCron(db, now = Date.now()) {
     .prepare(PURGE_EVENTS_SEEN_SQL)
     .bind(at - EVENTS_SEEN_RETENTION_MS)
     .run();
-  return { from, through, hours, accounts, gbMinutes };
+  return { from, through, hours, accounts, gbMinutes, receiptsEmptied };
 }
 
 // --- The nightly reconciler (drive issue #59) ------------------------
@@ -1271,7 +1724,8 @@ const RECONCILE_ROWS_SQL = `SELECT b2_file_id, path, size_bytes, created_at, hid
  * compares with a `file_versions` row. A provider's own listing is what
  * `listVersions` on the FileStore (src/files.js) answers; the reconciler never
  * knows which provider it is fixing, so the real provider's field names are
- * the adapter's problem (drive issue #60).
+ * the storage adapter's to spell (src/files.js createS3Store.listVersions),
+ * not this module's.
  * @typedef {{b2FileId: string, path: string, sizeBytes: number,
  *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} ProviderVersion
  */
