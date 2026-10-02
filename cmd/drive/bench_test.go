@@ -122,25 +122,25 @@ func benchTeardown() {
 // setup brings up the shared harness once per run and skips (never fails) on a
 // host with no FUSE or no rclone, so the benchmarks are runnable anywhere the
 // product mounts.
-func benchSetup(b *testing.B) *benchStandin {
+func benchSetup(tb testing.TB) *benchStandin {
 	if _, err := exec.LookPath("rclone"); err != nil {
-		b.Skip("rclone is not installed")
+		tb.Skip("rclone is not installed")
 	}
 	benchOnce.Do(func() {
-		benchH = benchStart(b)
+		benchH = benchStart(tb)
 	})
 	if benchH == nil {
-		b.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
+		tb.Skip("this host does not permit an unprivileged FUSE mount; run the benchmarks in a user namespace: unshare -Urm go test ./cmd/drive -run '^$' -bench Bench")
 	}
 	return benchH
 }
 
-func benchStart(b *testing.B) *benchStandin {
+func benchStart(tb testing.TB) *benchStandin {
 	h := &benchStandin{cfg: benchStorage(), sizes: benchScale()}
 	h.real = !strings.HasPrefix(h.cfg.Endpoint, "http://127.0.0.1:")
 	root, err := os.MkdirTemp("", "drive-bench-*")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	h.root = root
 	h.home = filepath.Join(root, "home")
@@ -148,31 +148,31 @@ func benchStart(b *testing.B) *benchStandin {
 	h.dataDir = filepath.Join(root, "data", "bucket")
 	for _, d := range []string{h.dataDir, h.mountDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			b.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 
 	if !h.real {
-		port := freePort(b)
+		port := freePort(tb)
 		h.cfg.Endpoint = "http://127.0.0.1:" + port
 		h.serve = exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
 			"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
 			"--addr", "127.0.0.1:"+port, "--log-level", "INFO")
 		h.serve.Stdout, h.serve.Stderr = os.Stdout, os.Stderr
 		if err := h.serve.Start(); err != nil {
-			b.Fatal(err)
+			tb.Fatal(err)
 		}
-		waitForPort(b, port)
+		waitForPort(tb, port)
 	}
 	// The config is written after the stand-in port is known, so direct rclone
 	// calls (seed, objectSize, --bwlimit) hit the same endpoint as the mount.
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	h.env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
 
-	h.mount = exec.Command(driveBin(b), "mount",
+	h.mount = exec.Command(driveBin(tb), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
 		"--prefix", h.cfg.Prefix, "--foreground")
 	// Keys reach the child through the environment, never argv (see config.go).
@@ -184,9 +184,9 @@ func benchStart(b *testing.B) *benchStandin {
 	h.mount.Stdout, h.mount.Stderr = os.Stdout, os.Stderr
 	if err := h.mount.Start(); err != nil {
 		h.close()
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	if !waitForMount(b, h.mount, h.mountDir) {
+	if !waitForMount(tb, h.mount, h.mountDir) {
 		h.close()
 		return nil
 	}
@@ -690,6 +690,100 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 	h.report(b, "cross-machine-delete", "sync", time.Since(start), 0)
 }
 
+// BenchmarkFileOpen times os.Open of a small file through the mount: the
+// scoreboard's "file open time" row, against the same stand-in the ratchet
+// uses so a slower open fails CI before it is published.
+func BenchmarkFileOpen(b *testing.B) {
+	h := benchSetup(b)
+	const name = "bench-open.bin"
+	if err := h.seed(name, 4096); err != nil {
+		b.Fatal(err)
+	}
+	start := time.Now()
+	f, err := os.Open(filepath.Join(h.mountDir, name))
+	if err != nil {
+		b.Fatalf("open a 4 KiB file through the mount: %v", err)
+	}
+	f.Close()
+	h.report(b, "file-open", "open", time.Since(start), 4096)
+}
+
+// BenchmarkBigFolderRename times renaming a folder through the mount. Space
+// publishes a 200-file move; quick scale uses the harness's listN.
+func BenchmarkBigFolderRename(b *testing.B) {
+	h := benchSetup(b)
+	const src = "bench-rename-src"
+	if err := h.seedFolder(src, h.sizes.listN); err != nil {
+		b.Fatal(err)
+	}
+	// The mount caches a folder for --dir-cache-time (5s); the rename must
+	// see the seed, so the wait is setup, not the measured rename.
+	time.Sleep(6 * time.Second)
+	start := time.Now()
+	if err := os.Rename(filepath.Join(h.mountDir, src), filepath.Join(h.mountDir, "bench-rename-dst")); err != nil {
+		b.Fatalf("rename the folder through the mount: %v", err)
+	}
+	h.report(b, "big-folder-rename", "rename", time.Since(start), int64(h.sizes.listN))
+}
+
+// BenchmarkMountReady times a new mount from process start until the mount
+// point is live. benchSetup brings up the stand-in server the second mount
+// talks to; the clock starts after that, so this number is only the new mount.
+func BenchmarkMountReady(b *testing.B) {
+	h := benchSetup(b)
+	home := filepath.Join(h.root, "home-ready")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	start := time.Now()
+	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
+		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
+	mount.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+	)
+	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
+	if err := mount.Start(); err != nil {
+		b.Fatalf("start the mount: %v", err)
+	}
+	defer func() {
+		_ = mount.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() { _, _ = mount.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = mount.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", mountDir).Run()
+		_ = exec.Command("fusermount", "-u", mountDir).Run()
+	}()
+	if !waitForMount(b, mount, mountDir) {
+		b.Skip("this host does not permit a second unprivileged FUSE mount")
+	}
+	h.report(b, "mount-ready", "ready", time.Since(start), 0)
+}
+
+// BenchmarkCLIColdStart times `drive version` in a new process: the CLI's
+// cold start. It does not mount; a zero-value harness is enough for the
+// published line to name stand-in vs real the same way every other row does.
+func BenchmarkCLIColdStart(b *testing.B) {
+	bin := driveBin(b)
+	h := &benchStandin{}
+	start := time.Now()
+	cmd := exec.Command(bin, "version")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		b.Fatalf("drive version: %v\n%s", err, out)
+	}
+	h.report(b, "cli-cold-start", "version", time.Since(start), 0)
+}
+
 // waitPath polls path until check(err) is true for os.Stat's error, or the
 // timeout runs out. Used so a second mount's view of a create or a delete is
 // timed until it matches, not until the first mount's page cache agreed.
@@ -718,7 +812,7 @@ func waitFileEquals(path, want string, timeout time.Duration) bool {
 }
 
 // The issue #227 table is stand-in harness proof, not h.report published rows.
-func BenchmarkCLIColdStart(b *testing.B) {
+func BenchmarkPrefetchCLIColdStart(b *testing.B) {
 	bin := driveBin(b)
 	if out, err := exec.Command(bin, "version").CombinedOutput(); err != nil {
 		b.Fatalf("warmup: %v\n%s", err, out)
@@ -734,9 +828,9 @@ func BenchmarkCLIColdStart(b *testing.B) {
 	b.Logf("prefetch-bench metric=cli-cold-start value=%.6f unit=s n=%d", time.Since(start).Seconds()/float64(max(b.N, 1)), b.N)
 }
 
-func BenchmarkMountReady(b *testing.B) {
+func BenchmarkPrefetchMountReady(b *testing.B) {
 	h := benchSetup(b)
-	home := filepath.Join(h.root, "home-ready")
+	home := filepath.Join(h.root, "home-ready-prefetch")
 	mountDir := filepath.Join(home, "Drive")
 	if err := os.MkdirAll(mountDir, 0o755); err != nil {
 		b.Fatal(err)
