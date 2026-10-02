@@ -66,7 +66,10 @@ const MOUNT_FLAGS = [
   "16M",
 ];
 
-const VIDEO_GB = Number(process.env.DRIVE_STANDIN_VIDEO_GB ?? 2);
+// 5 GB is the default because that is the size the home page's video row
+// names; a run that measured a different size has its own heading asserted
+// against the record below, so the default and the page cannot drift apart.
+const VIDEO_GB = Number(process.env.DRIVE_STANDIN_VIDEO_GB ?? 5);
 if (!Number.isFinite(VIDEO_GB) || VIDEO_GB < 1) {
   throw new Error(
     `DRIVE_STANDIN_VIDEO_GB=${process.env.DRIVE_STANDIN_VIDEO_GB} is not 1 GB or more`,
@@ -740,6 +743,7 @@ function recordedDemos() {
 
 test("the home page's demo section renders the recorded numbers and the date", () => {
   const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const text = readFileSync(DEMOS_DOC, "utf8");
   const demos = recordedDemos();
   // The section exists, is labelled for screen readers, and names the three
   // jobs the issue asked for.
@@ -760,6 +764,18 @@ test("the home page's demo section renders the recorded numbers and the date", (
       `the page must show the recorded figure "${seconds} s" from the ${name} run`,
     );
   }
+  // The size in the video row's name is a number like every other: the heading
+  // has to name the size the recorded run actually produced, not a size someone
+  // typed. The record's video row states it ("5.0 GB H.264 opened ..."), so a
+  // page claiming 5 GB over a 2 GB run fails here instead of shipping a
+  // headline no run backs.
+  const videoRow = text.match(/^\| `video-first-frame` \|.*?([\d.]+) GB H\.264.*?\|/m);
+  assert.ok(videoRow, "the record states the size of the video it measured");
+  const recordedGb = Math.round(Number(videoRow[1]));
+  assert.ok(
+    page.includes(`A ${recordedGb} GB video`),
+    `the video row is named after the recorded run's size: "A ${recordedGb} GB video"`,
+  );
   // The date and the command that produced each figure are the proof the issue
   // asks the section to carry.
   assert.match(page, /Measured 202\d-\d\d-\d\d/, "the section carries the run date");
