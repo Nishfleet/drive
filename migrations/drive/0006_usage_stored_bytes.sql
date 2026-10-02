@@ -1,0 +1,18 @@
+-- drive issue #163: the peak's own bytes. The monthly bill's ceiling is
+-- max($12, $8 x peak TB) (docs/build-spec.md "Bill ceiling"), so the meter has
+-- to record how many bytes the account had stored, not only for how long:
+-- usage_minutes carried each hour's GB-minutes but nothing that says how big
+-- the drive was, so the ceiling had no source of truth to read.
+--
+-- Additive only, like every migration before it (0002-0005): one new column on
+-- an existing table, no table rebuilt, no column dropped or renamed, and no
+-- NOT NULL without a default. D1 has no down-migrations, so the rollback is
+-- rolling the code back: the rollup writes this column and nothing else reads
+-- the old columns differently, and the version of the code a rollback returns
+-- to keeps answering the GB-minutes the column never touched.
+--
+-- 0 is what a row from before this column existed reads as, and "no mark" is a
+-- state the rollup leaves too (a row the old code wrote before the deploy):
+-- byte counts are always 0 or more, so 0 cannot be mistaken for a real mark
+-- and a month's peak is the MAX over the hour rows that do carry one.
+ALTER TABLE usage_minutes ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0;

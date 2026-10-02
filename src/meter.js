@@ -57,6 +57,11 @@
 //     rollup into money with the same 43,800-minute divisor and the same
 //     decimal GB, so the meter and the invoice cannot disagree about a unit.
 
+//   - The hour's stored bytes land in usage_minutes.stored_bytes
+//     (migrations/drive/0006_usage_stored_bytes.sql): the month's PEAK is the
+//     largest of those marks (drive issue #163), which is what the bill's
+//     ceiling max($12, $8 x peak TB) is worked out from.
+//
 // Every timestamp here is epoch MILLISECONDS, matching
 // migrations/drive/0005_meter.sql. Strings are accepted anywhere a number is
 // (Date.parse), so a webhook holding an ISO timestamp needs no conversion, and
@@ -336,6 +341,27 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // by the hour end: a closed hour is already over, so the rollup instant needs
 // no third parameter here (the JS reference takes `now` and ignores it for the
 // same reason).
+//
+// The second number one closed hour answers with, and the one the monthly bill
+// cannot do without (drive issue #163): the account's stored bytes at the
+// hour's end. The ceiling is max($12, $8 x peak TB) - a peak, so the meter has
+// to record how BIG the drive was and not only for how long, which
+// usage_minutes.gb_minutes_live never could. Same units as
+// file_versions.size_bytes, summed the same way: integers inside the SUM,
+// scaled once at the end.
+//
+// Its window is the same pair of instants as the minutes statement's, and that
+// is what makes the two agree: a version hidden exactly at ?2 has no minutes
+// in this hour (the `>=` above) and is not in its peak either, so a hidden
+// version's bytes leave the peak on the same hour its minutes do.
+export const HOUR_STORED_BYTES_SQL = `SELECT account_id,
+    SUM(size_bytes) AS stored_bytes,
+    COUNT(*) AS versions
+  FROM file_versions
+  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at > ?1)
+  GROUP BY account_id
+  ORDER BY account_id`;
+
 export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
     CAST(SUM(
       (
@@ -382,6 +408,11 @@ const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
  * integer per row and SQLite sums them exactly, and gbMinutesInHour is the JS
  * reference a differential test pins it against - so there is one rule, not
  * two, and no float drift between them.
+ *
+ * HOUR_STORED_BYTES_SQL is this statement's other half - the same window and
+ * the same GROUP BY, bytes instead of minutes - and rollupHour reads both, so
+ * an hour costs two reads whatever the account count and the two can be
+ * checked against each other rather than trusted to agree.
  * @param {D1Database} db
  * @param {number} hourStartMs epoch ms of the hour start
  * @param {number} nowMs epoch ms, the rollup instant
@@ -396,10 +427,34 @@ export async function rollupHour(db, hourStartMs, nowMs) {
     // next trigger, when the rollup can see the whole of it.
     throw new RangeError(`hour ${hour} is not closed yet`);
   }
-  const result = await db.prepare(HOUR_GB_MINUTES_SQL).bind(hour, hourEnd).all();
+  // Two reads, one per number the hour answers, so neither has to scan the
+  // versions twice and the batch still writes both on every upsert: a
+  // re-rolled hour therefore recomputes both from the stored versions and
+  // never adds to either.
+  const [minutes, stored] = await Promise.all([
+    db.prepare(HOUR_GB_MINUTES_SQL).bind(hour, hourEnd).all(),
+    db.prepare(HOUR_STORED_BYTES_SQL).bind(hour, hourEnd).all(),
+  ]);
+  const result = minutes;
   const statements = [];
   let gbMinutes = 0;
   let versions = 0;
+  // One map, so the two statements' GROUP BY outputs are paired by account by
+  // name, whatever order either returns them in. An account the bytes read has
+  // and the minutes read does not gets no row: an hour with nothing live in it
+  // writes nothing, which is what keeps a month's peak a peak of the sizes the
+  // drive really was rather than of the hours it happened to be read in.
+  const storedByAccount = new Map();
+  for (const row of stored.results || []) {
+    if (typeof row.account_id !== "string" || row.account_id === "") {
+      throw new TypeError("file_versions has a row with no account_id");
+    }
+    const bytes = Number(row.stored_bytes);
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new TypeError(`stored_bytes must be 0 or more whole bytes, got ${row.stored_bytes}`);
+    }
+    storedByAccount.set(row.account_id, bytes);
+  }
   for (const row of result.results || []) {
     // Not a skipped row and not a silent filter: a version with no account
     // cannot be billed to anyone, and quietly rolling past it would leave
@@ -412,7 +467,17 @@ export async function rollupHour(db, hourStartMs, nowMs) {
     if (!Number.isFinite(total) || total < 0) {
       throw new TypeError(`gbMinutes must be 0 or more, got ${total}`);
     }
-    statements.push(usageStatement(db, row.account_id, hour, total, at));
+    // An hour can bill a version's minimum without holding a byte of it: the
+    // 1-hour top-up rides in the hour the version was hidden, and a version
+    // hidden exactly on this hour's start held nothing here - which is the
+    // half-open window working, not a missing mark. So the two reads are
+    // expected to disagree exactly there, and the bill for that hour is the
+    // 0-byte mark it gets: it is true of the drive's size at that instant,
+    // and the month's peak is a MAX over the marks that is not disturbed by
+    // one hour's zero. An account billing minutes with NO mark at all is the
+    // case that cannot happen, and is refused rather than defaulted to zero.
+    const storedBytes = storedByAccount.get(row.account_id);
+    statements.push(usageStatement(db, row.account_id, hour, total, storedBytes ?? 0, at));
     gbMinutes += total;
     versions += Number(row.versions ?? 0);
   }
@@ -432,13 +497,131 @@ export async function rollupHour(db, hourStartMs, nowMs) {
  * @param {string} accountId
  * @param {number|Date|string} hour
  * @param {number} gbMinutes
+ * @param {number} storedBytes the account's stored bytes at the hour's end, the
+ *   mark monthUsageRollup reads the month's peak from (drive issue #163)
  * @param {number|Date|string} now
  */
-export async function recordUsage(db, accountId, hour, gbMinutes, now) {
+export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, now) {
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
   }
-  await usageStatement(db, accountId, hour, gbMinutes, now).run();
+  await usageStatement(db, accountId, hour, gbMinutes, storedBytes, now).run();
+}
+
+// The two reads the month's bill is worked out from, one round trip each.
+//
+// A month's window is written by SQLite's own calendar, not by arithmetic done
+// here: `strftime('%s', ? / 1000, 'unixepoch', 'start of month')` is the first
+// instant of the month the instant falls in, and 'start of month' again with
+// '+1 month' is the first instant of the month after it. That is the standard
+// library doing what SQLite is good at, and it means the two bounds can never
+// disagree with each other or with a month the writer produced. Times are
+// UTC on purpose, like hourStart, so a month never moves with a local clock or
+// a daylight-saving change.
+//
+// The window is half-open: an hour whose `hour` is exactly the first instant
+// of the month belongs to THAT month. An hour is keyed by the instant it
+// starts (src/meter.js's hourStart), so the hour that starts 00:00:00 on the
+// 1st is the new month's first row and the one that ends a second earlier is
+// the old month's last - a file spanning that instant is split across the two
+// months and neither month carries both hours (drive issue #163).
+export const MONTH_GB_MINUTES_SQL = `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+    AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`;
+
+export const MONTH_PEAK_BYTES_SQL = `SELECT COALESCE(MAX(stored_bytes), 0) AS peak_bytes
+  FROM usage_minutes
+  WHERE account_id = ?1
+    AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
+    AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`;
+
+/**
+ * The start of the UTC calendar month an instant falls in, epoch milliseconds.
+ * UTC, like hourStart, so a month's window never moves with a local clock.
+ * @param {number|Date|string} at
+ */
+export function monthStart(at) {
+  const millis = toMillis(at, "at");
+  const instant = new Date(millis);
+  return Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), 1);
+}
+
+/**
+ * The month's own numbers, read from the rollup the meter's own trigger wrote:
+ * the GB-minutes it bills the metered half with, and the largest stored_bytes
+ * mark in the month, which is the peak the ceiling is worked out from (drive
+ * issue #163).
+ *
+ * Both are whole-database reads, not arithmetic done here: MAX over the hour
+ * rows IS the peak, so no second peak exists anywhere else in the codebase to
+ * drift from this one. `gbMinutes` is decimal GB-minutes, as the rollup writes
+ * them, and `peakGb` is the meter's own byte count reduced by its BYTES_PER_GB
+ * (the same divisor src/billing.js prices in), so the hour rows and the bill's
+ * divisor are the same units.
+ *
+ * An account with no rows in the month reads as an empty month, not a missing
+ * one: 0 GB-minutes, a 0-byte peak, and a $0 bill (the free $1 credit floors
+ * it at zero in src/billing.js). A month whose rows were written before the
+ * stored_bytes column existed reads a peak of 0, which is the honest answer
+ * from data that recorded only minutes.
+ * @param {D1Database} db
+ * @param {unknown} accountId
+ * @param {number|Date|string} month any instant in the month, e.g.
+ *   "2026-09-01T00:00:00.000Z"; the two instant forms SQLite's strftime takes
+ *   are both accepted
+ * @param {number|Date|string} [now] the instant the month is asked for as of;
+ *   a month in the future is refused rather than billed as an empty one
+ * @returns {Promise<{month: string, gbMinutes: number, peakBytes: number, peakGb: number}>}
+ */
+export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`monthUsageRollup needs an account id, got ${String(accountId)}`);
+  }
+  const { label, at } = monthWindow(month, now);
+  const [minutes, peak] = await Promise.all([
+    db.prepare(MONTH_GB_MINUTES_SQL).bind(accountId, at).first(),
+    db.prepare(MONTH_PEAK_BYTES_SQL).bind(accountId, at).first(),
+  ]);
+  const gbMinutes = Number(minutes?.gb_minutes ?? 0);
+  if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
+    throw new TypeError(`the month's gb_minutes must be 0 or more, got ${minutes?.gb_minutes}`);
+  }
+  const peakBytes = Number(peak?.peak_bytes ?? 0);
+  if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
+    throw new TypeError(
+      `the month's peak_bytes must be 0 or more whole bytes, got ${peak?.peak_bytes}`,
+    );
+  }
+  return { month: label, gbMinutes, peakBytes, peakGb: peakBytes / BYTES_PER_GB };
+}
+
+/**
+ * The instant a month is read at, and the month's own label, checked before
+ * any read runs: a month that has not started yet is refused rather than read
+ * as an empty one, and a month the rollup could not have produced (an
+ * unparseable or non-finite instant) is refused by name rather than asked of
+ * SQLite as a number.
+ * @param {unknown} month
+ * @param {number|Date|string} now
+ * @returns {{label: string, at: number}}
+ */
+function monthWindow(month, now) {
+  const at = toMillis(month, "month");
+  const instant = new Date(at);
+  const label = instant.toISOString().slice(0, 7);
+  // The start of the month the instant is in, in UTC: the first of the month,
+  // so 2026-13 and 2026-00 - which Date.UTC rolls into the next and the
+  // previous year - cannot name a month that has not started.
+  const first = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), 1);
+  if (at > toMillis(now, "now")) {
+    throw new RangeError(`month ${label} has not started at the rollup instant ${toMillis(now, "now")}`);
+  }
+  if (Number.isNaN(first)) {
+    throw new TypeError(`month ${String(month)} is not a real calendar month`);
+  }
+  return { label, at };
 }
 
 /**
@@ -446,21 +629,28 @@ export async function recordUsage(db, accountId, hour, gbMinutes, now) {
  * @param {string} accountId
  * @param {number|Date|string} hour
  * @param {number} gbMinutes
+ * @param {number} storedBytes the account's stored bytes at the hour's end,
+ *   the mark the month's peak (drive issue #163) is read from
  * @param {number|Date|string} now
  */
-function usageStatement(db, accountId, hour, gbMinutes, now) {
+function usageStatement(db, accountId, hour, gbMinutes, storedBytes, now) {
   if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
     throw new TypeError(`gbMinutes must be 0 or more, got ${gbMinutes}`);
   }
+  if (!Number.isSafeInteger(storedBytes) || storedBytes < 0) {
+    throw new TypeError(`storedBytes must be 0 or more whole bytes, got ${storedBytes}`);
+  }
   return db
     .prepare(
-      `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, rolled_up_at)
-       VALUES (?1, ?2, ?3, 0, ?4)
+      `INSERT INTO usage_minutes
+         (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+       VALUES (?1, ?2, ?3, ?4, 0, ?5)
        ON CONFLICT(account_id, hour) DO UPDATE SET
          gb_minutes_live = excluded.gb_minutes_live,
+         stored_bytes = excluded.stored_bytes,
          rolled_up_at = excluded.rolled_up_at`,
     )
-    .bind(accountId, hourStart(hour), gbMinutes, toMillis(now, "now"));
+    .bind(accountId, hourStart(hour), gbMinutes, storedBytes, toMillis(now, "now"));
 }
 
 /**
