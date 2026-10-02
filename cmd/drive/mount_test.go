@@ -437,6 +437,7 @@ func TestMountSpeedHillClimb(t *testing.T) {
 		if err := reexecInNetNamespace(); err != nil {
 			t.Fatalf("cannot run the climb in its own user/mount/network namespace: %v", err)
 		}
+		return
 	}
 	// A fresh network namespace has loopback down. The stand-in and the mount
 	// both bind 127.0.0.1, and netem is attached to lo, so bring it up first.
@@ -795,9 +796,5 @@ func reexecInNetNamespace() error {
 	cmd.Env = append(os.Environ(), "DRIVE_BENCH_NS=1")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Stdin = strings.NewReader("")
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	os.Exit(0)
-	return nil
+	return cmd.Run()
 }

@@ -53,6 +53,12 @@ const (
 	// Two streams is what main shipped (issue #227); rclone's own default is 4.
 	vfsReadChunkStreamsValue = "2"
 	vfsTransfersValue        = "4" // rclone's own default, named so a round has a value to climb
+	// Issue #224 hill-climb (2026-10-02, commit 28ccf6c): one candidate per
+	// flag, hyperfine --warmup 2 --runs 10, fast and home-broadband netem.
+	// Repeat: DRIVE_HILL=1 go test ./cmd/drive -run TestMountSpeedHillClimb -v
+	// Every candidate was reverted (target did not beat noise on both the
+	// tuning set and the held-out set, or another row got worse). These
+	// values are the ones that climb kept.
 )
 
 // Default paths, overridable for tests.
