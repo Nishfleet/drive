@@ -291,7 +291,10 @@ export default {
       return handleRequestInfoRequest(request, linksFor(env), capStateFor);
     }
     if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
-      return handleRequestUploadRequest(request, storeFor(env), linksFor(env), capStateFor);
+      return handleRequestUploadRequest(request, storeFor(env), linksFor(env), capStateFor, {
+        ipLimiter: env.REQUEST_UPLOAD_RATE_LIMITER,
+        linkLimiter: env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
+      });
     }
     if (url.pathname === SEND_EMAIL_PATH) {
       // The whole env, not just the binding: the route reads the token and

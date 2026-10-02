@@ -25,6 +25,7 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
   "drive/0006_share_links.sql",
+  "drive/0007_upload_request_caps.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */

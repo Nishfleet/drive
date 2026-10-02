@@ -25,6 +25,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore, handleFilesRequest, scopeStore } from "../../src/files.js";
+import { failureMessage } from "../../src/messages.js";
 import {
   createD1LinkStore,
   DAY_MS,
@@ -35,6 +36,7 @@ import {
   handleShareFileRequest,
   handleShareRequest,
   REQUEST_ENDPOINT,
+  REQUEST_FILE_MAX_BYTES,
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "../../src/share.js";
@@ -48,6 +50,23 @@ const REQUEST_TOKEN = "BBBBBBBBBBBBBBBBBBBBBB";
 const FILES_ENDPOINT = "/api/files";
 /** @param {string} path */
 const api = (path) => `https://drive.test${path}`;
+
+/** A rate-limit binding that always lets the caller through. */
+function allowLimits(nowValue) {
+  return {
+    now: nowValue,
+    ipLimiter: {
+      async limit() {
+        return { success: true };
+      },
+    },
+    linkLimiter: {
+      async limit() {
+        return { success: true };
+      },
+    },
+  };
+}
 
 /**
  * The row as it really sits in the customer's tables, read with plain
@@ -303,11 +322,15 @@ test("an upload request minted on one store opens on a fresh one and takes a fil
     d.files,
     d.fresh(),
     () => "active",
-    { now: now + 2_000 },
+    allowLimits(now + 2_000),
   );
   assert.equal(uploaded.status, 201);
   const listed = await scopeStore(d.files, account).list("/inbox");
   assert.deepEqual(listed.map((entry) => entry.name).sort(), ["dropped.txt", "welcome.txt"]);
+  const counted = rowIn(d.db.sqlite, "upload_requests", REQUEST_TOKEN);
+  assert.equal(counted.upload_count, 1);
+  assert.equal(counted.upload_bytes, "dropped through a request page\n".length);
+  assert.equal(counted.max_bytes, 1_000_000_000);
 });
 
 test("a revoked upload request is refused by a fresh store", async () => {
@@ -364,7 +387,7 @@ test("a revoked upload request is refused by a fresh store", async () => {
     d.files,
     d.fresh(),
     () => "active",
-    { now: now + 2_000 },
+    allowLimits(now + 2_000),
   );
   assert.equal(uploaded.status, 404);
   const listed = await scopeStore(d.files, account).list("/inbox");
@@ -372,4 +395,42 @@ test("a revoked upload request is refused by a fresh store", async () => {
     listed.map((entry) => entry.name),
     ["welcome.txt"],
   );
+});
+
+test("a size-capped upload is refused by a fresh store and writes no row bytes", async () => {
+  // The new columns (issue #208) are on the real schema: a file over the
+  // per-file ceiling is 413 on a store built after the mint, and the counters
+  // stay at zero because nothing was stored.
+  const d = drive();
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/" }),
+    }),
+    d.files,
+    d.fresh(),
+    account,
+    { now, token: REQUEST_TOKEN },
+  );
+  const uploaded = await handleRequestUploadRequest(
+    new Request(api(`${REQUEST_ENDPOINT}/upload?k=${REQUEST_TOKEN}&name=huge.bin`), {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(REQUEST_FILE_MAX_BYTES + 1),
+      },
+      body: "x",
+    }),
+    d.files,
+    d.fresh(),
+    () => "active",
+    allowLimits(now + 1_000),
+  );
+  assert.equal(uploaded.status, 413);
+  assert.equal((await uploaded.json()).error, failureMessage("body-too-large"));
+  const stored = rowIn(d.db.sqlite, "upload_requests", REQUEST_TOKEN);
+  assert.equal(stored.upload_count, 0);
+  assert.equal(stored.upload_bytes, 0);
+  assert.equal(await scopeStore(d.files, account).read("/huge.bin"), null);
 });

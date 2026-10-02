@@ -104,6 +104,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This drive has reached its spending cap, so it is not taking uploads right now.",
     next: "Tell the person who shared this page and try again later.",
   }),
+  // A public upload request has taken as many bytes as its own total allows
+  // (drive issue #208). The stranger cannot raise the cap; the owner can.
+  "upload-link-full": Object.freeze({
+    what: "This link has taken all the files it can.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.

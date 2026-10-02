@@ -170,6 +170,8 @@ function anonymous(request) {
       // before the gate can answer — the same binding the deploy always sets
       // (src/health.js lists it required).
       DRIVE_DB: createTestD1(),
+      REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
+      REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
     },
     ctx,
   );
@@ -390,6 +392,8 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     // limit's own behaviour is this test's (below, not here).
     SIGNIN_RATE_LIMITER: makeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
   };
   /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
@@ -512,6 +516,8 @@ test("sign-out revokes the session the cookie names", async () => {
     // same reason the sign-in walk above carries them.
     SIGNIN_RATE_LIMITER: makeLimiter(),
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await workerFetch(
