@@ -51,7 +51,10 @@ const FILES_ENDPOINT = "/api/files";
 /** @param {string} path */
 const api = (path) => `https://drive.test${path}`;
 
-/** A rate-limit binding that always lets the caller through. */
+/**
+ * A rate-limit binding that always lets the caller through.
+ * @param {number} nowValue
+ */
 function allowLimits(nowValue) {
   return {
     now: nowValue,

@@ -1236,7 +1236,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
   }
   const sized = await takeUploadBody(request, record);
-  if (sized.error) {
+  if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
   }
   const path = joinPath(record.folder, name);
