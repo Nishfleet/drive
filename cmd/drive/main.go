@@ -129,6 +129,8 @@ func main() {
 		err = runLogout(os.Args[2:])
 	case "export":
 		err = runExport(os.Args[2:])
+	case "update":
+		err = runUpdate(os.Args[2:])
 	case "prefetch":
 		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":

@@ -8,6 +8,13 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-03
+
+- `drive update` and `drive version`: an update replaces the installed CLI
+  with the latest released version by the same `go install` command a person
+  installs with, and `drive version` prints the version the binary was built
+  and installed at, so an update is visible.
+
 ## 2026-10-02
 
 - The Benchmarks page: every speed scenario the suite measures, next to the
