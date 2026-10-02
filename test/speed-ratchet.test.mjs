@@ -40,6 +40,7 @@ const SCOREBOARD = {
   "setup steps and time to first file": ["mount-ready", "cli-cold-start"],
 };
 
+/** @param {{stddev:number}} row */
 function ratchetBand(row) {
   return row.stddev < 0.002 ? 0.002 : row.stddev;
 }
