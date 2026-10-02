@@ -32,7 +32,7 @@ import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
-import { createTestAuth, signIn } from "./harness.mjs";
+import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -164,6 +164,12 @@ function anonymous(request) {
     request,
     {
       ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+      // The link store reads DRIVE_DB (src/share.js). The anonymous walk below
+      // probes the public link routes with a token-shaped value and expects the
+      // honest 404, so the binding is present rather than the store throwing
+      // before the gate can answer — the same binding the deploy always sets
+      // (src/health.js lists it required).
+      DRIVE_DB: createTestD1(),
     },
     ctx,
   );
