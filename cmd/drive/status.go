@@ -49,8 +49,8 @@ func runStatus(args []string) error {
 		return errFlagParse
 	}
 	home := common.home
-	mountDir := DefaultMountDir(home)
-	on, err := Mounted(CurrentGOOS(), home)
+	goos := CurrentGOOS()
+	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
 	}
@@ -59,14 +59,38 @@ func runStatus(args []string) error {
 		state = "mounted"
 	}
 	fmt.Printf("drive: %s\n", state)
-	fmt.Printf("mount dir: %s\n", mountDir)
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	loginItem := LoginItemPath(CurrentGOOS(), home)
-	exists := "absent"
-	if _, err := os.Stat(loginItem); err == nil {
-		exists = "present"
+	mountDir := DefaultMountDir(home)
+	if goos == "windows" {
+		letter, err := windowsMountLetter()
+		if err != nil {
+			return err
+		}
+		mountDir = letter
+		fmt.Printf("drive letter: %s\n", letter)
+	} else {
+		fmt.Printf("mount dir: %s\n", mountDir)
 	}
-	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
+	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
+	if goos == "windows" {
+		// The login item on Windows is the Task Scheduler task, so status
+		// names the task rather than a file that does not exist.
+		present, err := LoginItemPresent(goos, home)
+		switch {
+		case err != nil:
+			fmt.Printf("login task: %s (unreadable: %v)\n", WindowsTaskName, err)
+		case present:
+			fmt.Printf("login task: %s (present)\n", WindowsTaskName)
+		default:
+			fmt.Printf("login task: %s (absent)\n", WindowsTaskName)
+		}
+	} else {
+		loginItem := LoginItemPath(goos, home)
+		exists := "absent"
+		if _, err := os.Stat(loginItem); err == nil {
+			exists = "present"
+		}
+		fmt.Printf("login item: %s (%s)\n", loginItem, exists)
+	}
 	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
 		fmt.Printf("entries: (unreadable: %v)\n", err)
 	} else if n > 0 {
