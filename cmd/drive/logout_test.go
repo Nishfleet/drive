@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +38,7 @@ func configWithLoginItem(t *testing.T) string {
 func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 	home := configOnlyHome(t)
 
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -51,7 +55,7 @@ func TestLogoutDeletesTheKeyAndConfig(t *testing.T) {
 func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 	home := configWithLoginItem(t)
 
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{
@@ -68,10 +72,10 @@ func TestLogoutAlsoDeletesTheLoginItemWhenPresent(t *testing.T) {
 
 func TestLogoutIsSafeToRunTwice(t *testing.T) {
 	home := configOnlyHome(t)
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatalf("second logout: %v", err)
 	}
 }
@@ -80,7 +84,7 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	home := configOnlyHome(t)
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 
-	err := Logout("linux", home, false)
+	err := Logout("linux", home, false, nil)
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
@@ -94,7 +98,7 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 		t.Errorf("the refusal must not delete the queued file: %v", statErr)
 	}
 
-	if err := Logout("linux", home, true); err != nil {
+	if err := Logout("linux", home, true, nil); err != nil {
 		t.Fatalf("--force: %v", err)
 	}
 	if _, statErr := os.Stat(DefaultCacheDir(home)); !os.IsNotExist(statErr) {
@@ -211,7 +215,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	// Now run `drive logout` against the same home. The mount is a foreground
 	// rclone process with no login item; Unmount will no-op and stopMount
 	// will fusermount it down.
-	if err := Logout("linux", home, false); err != nil {
+	if err := Logout("linux", home, false, nil); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
 
@@ -223,4 +227,128 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		t.Fatal("config still present after logout")
 	}
 	t.Logf("logout stopped the mount and deleted %s", RcloneConfigPath(home))
+}
+
+// fakeTokenRevoker records whether RevokeDeviceToken was called, and what
+// error it returned. It is the test's stand-in for the api Worker's DELETE
+// /v1/device/token route.
+type fakeTokenRevoker struct {
+	err    error
+	called bool
+}
+
+func (f *fakeTokenRevoker) RevokeDeviceToken() error {
+	f.called = true
+	return f.err
+}
+
+// orderedRevoker wraps a fakeTokenRevoker and asserts the credentials file is
+// still on disk when the revoke is invoked, proving the server-side revoke
+// happens before the local credentials are removed.
+type orderedRevoker struct {
+	fake *fakeTokenRevoker
+	home string
+	t    *testing.T
+}
+
+func (o *orderedRevoker) RevokeDeviceToken() error {
+	o.t.Helper()
+	if _, err := os.Stat(CredentialsPath(o.home)); err != nil {
+		o.t.Errorf("credentials file must still exist when the revoker runs: %v", err)
+	}
+	return o.fake.RevokeDeviceToken()
+}
+
+// TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes proves the
+// three behaviours issue #176 asks for: (1) logout calls the api Worker to
+// revoke the device token before it deletes the local credentials file, (2) a
+// token that is already dead (401) is a note, not a failure, and (3) a real
+// failure leaves the local files intact so the person can retry.
+func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
+	writeCreds := func(t *testing.T, home string) {
+		creds := Credentials{APIBase: "https://api.test", DeviceToken: "test-token"}
+		data, _ := json.MarshalIndent(creds, "", "  ")
+		if err := WriteFileAtomic(CredentialsPath(home), append(data, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Success: revoke runs while the credentials file is still present,
+	// then the files are removed.
+	home := configOnlyHome(t)
+	writeCreds(t, home)
+	revoker := &fakeTokenRevoker{}
+	revoker.called = false
+	ordered := &orderedRevoker{fake: revoker, home: home, t: t}
+	if err := Logout("linux", home, false, ordered); err != nil {
+		t.Fatalf("logout with successful revoke: %v", err)
+	}
+	if !revoker.called {
+		t.Fatal("revoke was not called")
+	}
+	for _, gone := range []string{
+		RcloneConfigPath(home),
+		DefaultConfigDir(home),
+		DefaultCacheDir(home),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout with successful revoke", gone)
+		}
+	}
+
+	// 2. A 401 (already dead) is a note, not a failure: build a real client
+	// against a tiny server so the client's own 401 handling is exercised.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/device/token" {
+			http.Error(w, "not the revoke route", http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			http.Error(w, "bad bearer: "+got, http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	home2 := configOnlyHome(t)
+	creds := Credentials{APIBase: server.URL, DeviceToken: "test-token"}
+	data, _ := json.MarshalIndent(creds, "", "  ")
+	if err := WriteFileAtomic(CredentialsPath(home2), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	if err := Logout("linux", home2, false, client); err != nil {
+		t.Fatalf("logout with 401 must not fail: %v", err)
+	}
+	for _, gone := range []string{
+		RcloneConfigPath(home2),
+		DefaultConfigDir(home2),
+		DefaultCacheDir(home2),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after logout with 401", gone)
+		}
+	}
+
+	// 3. A real error (not 401) stops logout and leaves the local files,
+	// so the person can retry.
+	home3 := configOnlyHome(t)
+	writeCreds(t, home3)
+	revoker3 := &fakeTokenRevoker{err: fmt.Errorf("500 Internal Server Error")}
+	if err := Logout("linux", home3, false, revoker3); err == nil {
+		t.Fatal("logout with 500 must fail")
+	} else if !strings.Contains(err.Error(), "revoke the device token") {
+		t.Fatalf("want the revoke error wrapped, got %v", err)
+	}
+	for _, present := range []string{
+		RcloneConfigPath(home3),
+		DefaultConfigDir(home3),
+	} {
+		if _, err := os.Stat(present); err != nil {
+			t.Errorf("%s was deleted but logout failed: %v", present, err)
+		}
+	}
 }
