@@ -746,7 +746,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
 
 test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
   // 0003 as shipped (and as production drive-data has it) keys the table on
-  // (account_id, name, state). 0010 copies the rows into a table keyed by id.
+  // (account_id, name, state). 0011 copies the rows into a table keyed by id.
   // Apply that upgrade against a real old-schema row, then prove two approved
   // rows of one name are legal and the copied row is still there.
   const sqlite = new DatabaseSync(":memory:");
@@ -945,6 +945,7 @@ test("a discard of a row whose prefix is not under .branches never deletes the o
     )
     .run(ACCOUNT.id, "evil", "/Photos", "/Photos", "2026-01-01T00:00:00Z");
   const result = await discardBranch(db, scoped, ACCOUNT, "evil");
+  assert.ok(!("error" in result));
   assert.equal(result.state, "discarded");
   const evil = await getBranch(db, ACCOUNT, "evil");
   assert.ok(evil);

@@ -1,4 +1,4 @@
-// 0010 rebuilds `branches` so the primary key is the row's own id (drive#165).
+// 0011 rebuilds `branches` so the primary key is the row's own id (drive#165).
 // Production drive-data already applied 0003 with PRIMARY KEY (account_id, name,
 // state), so editing 0003 in place cannot change a live database. This file
 // applies the real migration files in order against node:sqlite and asserts
@@ -13,7 +13,7 @@ import { createTestD1 } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 
-test("0010 lets a name be approved twice after the shipped 0003 schema", async () => {
+test("0011 lets a name be approved twice after the shipped 0003 schema", async () => {
   const db = createTestD1();
   const raw = createMemoryStore();
   const scoped = scopeStore(raw, ACCOUNT);
@@ -22,12 +22,14 @@ test("0010 lets a name be approved twice after the shipped 0003 schema", async (
   const first = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(first.state, "open");
   const approved = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in approved));
   assert.equal(approved.state, "approved");
 
   const second = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(second.state, "open");
   await scoped.write("/.branches/work/a.txt", new Blob(["b"]).stream(), "text/plain");
   const approvedAgain = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in approvedAgain));
   assert.equal(
     approvedAgain.state,
     "approved",

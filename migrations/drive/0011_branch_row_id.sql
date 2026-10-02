@@ -12,7 +12,8 @@
 -- and apply is not dropped.
 --
 -- 0004 added changed_by_key_id; this file runs after it, so the copy includes
--- that column. Numbered 0010 because main already shipped 0007_device_codes.
+-- that column. Numbered 0011 because main already shipped 0010_accounts_devices
+-- (the cap key store), so the branch upgrade takes the next free number.
 
 CREATE TABLE branches_by_id (
   id INTEGER PRIMARY KEY,
