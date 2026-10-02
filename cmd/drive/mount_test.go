@@ -432,6 +432,9 @@ func TestMountSpeedHillClimb(t *testing.T) {
 			t.Fatalf("cannot run the climb in its own user/mount/network namespace: %v", err)
 		}
 	}
+	// A fresh network namespace has loopback down. The stand-in and the mount
+	// both bind 127.0.0.1, and netem is attached to lo, so bring it up first.
+	bringUpLoopback(t)
 
 	runs := hillRuns(t)
 	allRows := hillClimbRows()
@@ -597,6 +600,7 @@ func startStandin(t *testing.T, rows []hillClimbRow, set string) *hillStandin {
 	if err := h.serve.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(h.close)
 	waitForPort(t, port)
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
@@ -701,6 +705,30 @@ func setNetem(t *testing.T, p netemProfile) {
 	if out, err := exec.Command(tcBin, args...).CombinedOutput(); err != nil {
 		t.Fatalf("apply %s: %v\n%s", p.name, err, out)
 	}
+}
+
+func bringUpLoopback(t *testing.T) {
+	t.Helper()
+	ipBin := lookIp()
+	if ipBin == "" {
+		t.Fatal("ip is not installed: a net namespace needs it to bring loopback up")
+	}
+	if out, err := exec.Command(ipBin, "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("ip link set lo up: %v\n%s", err, out)
+	}
+}
+
+func lookIp() string {
+	if p, err := exec.LookPath("ip"); err == nil {
+		return p
+	}
+	for _, dir := range []string{"/sbin", "/usr/sbin", "/usr/local/sbin"} {
+		p := filepath.Join(dir, "ip")
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 func reexecInNetNamespace() error {
