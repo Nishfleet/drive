@@ -204,6 +204,64 @@ What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitna
 
 The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01), so SSE-B2 is set on the real bucket with the vendor in #173, where the rest of that bucket's configuration lands too.
 
+## Build step 5: the meter against a stock S3 stand-in (2026-10-02)
+
+Build step 5's done-when is one number from each of two sources that share
+nothing: a full day's GB-minutes from `usage_minutes`, and the storage
+provider's own report of the same account's bytes. `test/step5-meter-standin.test.mjs`
+runs it end to end against the same pinned stand-in build step 1 uses (the
+last MinIO release), in CI's `verify` job and on a developer's machine, with
+the endpoint, region, bucket and credentials read from `DRIVE_STANDIN_*` so
+iDrive e2 is the same build with different values. It replaces the
+`rclone serve s3` on a local folder this issue's text names, because rclone's
+S3 server has no versioning and no event rules at all: it cannot produce a
+hidden version, a delete marker or a notification, so the issue's own second
+bullet is unanswerable without a server that has them. rclone serve s3 is
+still the stand-in for the proofs that need no versioning
+(`test/standin-search.test.mjs`, `test/two-mount-sync.test.mjs`).
+
+What one run proves, with the real records it ran on (2026-10-02,
+`node --test test/step5-meter-standin.test.mjs`, account
+`acct_642de54482c9bf7880a19909c8d14d62`):
+
+- **A real file uploaded, replaced and read back through the stand-in.** A
+  40 MB save (version `f9f29d2f-bbe1-4d8d-a27d-02cbac4c7ab8`), an 8 MB edit
+  over it (version `9a5f8364-cede-45bb-9d15-1d91ed207c6b`, which hides the
+  first), a 6 MB photo in a subfolder (version `b35d728e-c652-4f20-8e7a-9be121996695`)
+  and its delete (delete-marker version `ae9a7729-ecbf-44f8-a202-6b17328ebbe8`),
+  each call signed with the account's own scoped key from the api Worker's
+  `POST /v1/keys`.
+- **The provider's own event rule, pointed at the Worker.** Four webhook
+  deliveries, all refused (401) — and that is the finding, below.
+- **The provider's own report.** `ListObjectVersions` on the account's
+  prefix: 6 000 000 bytes hidden at the marker, 8 000 000 live, 40 000 000
+  hidden when the edit began.
+- **The day.** `2026-10-01T07:00Z` to `2026-10-02T07:00Z`, 24 closed UTC
+  hours, the hourly trigger fired once per hour with its own
+  `scheduledTime` (`runMeterCron`, the Cron Trigger's own function):
+  **3.16 GB-minutes metered, 3.16 GB-minutes from the provider's own report,
+  drift 0.0000%** (the bar is 1%).
+
+Two things that run only tells, both now the code's shape:
+
+1. **The bucket cannot send the header the intake wants.** Measured against
+   the pinned stand-in on 2026-10-02: MinIO's notify webhook sets
+   `Authorization` to the literal value of `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*`
+   and cannot send a header of its own, so a delivery arrives with no
+   `x-drive-event-token` and `POST /api/storage-events` answers 401 — and the
+   bucket then discards the events after its retries. A refused delivery is
+   therefore kept, bounded and redacted, in `event_dead_letters`
+   (`migrations/drive/0008_event_dead_letters.sql`, purged by the hourly run
+   like `events_seen`): the provider's own attempt id, SHA-256 digests of the
+   two headers rather than their values, and the records that were delivered,
+   so a fixed rule can replay them. The proof replays exactly those bodies
+   through the same route and the four events become four version rows.
+2. **A provider's event never says what it replaced.** The edit's
+   `ObjectCreated:Put` carries no hide for the version it replaced, and a
+   delete's marker is a version of its own, so the meter learns a hide from
+   the provider's own version listing through the nightly reconciler (#59).
+   The run above reports `hidden=2 marked=1` before the day is rolled.
+
 ## How we know it is up (the outage alert)
 
 North star "Reliable" (Nish, 2026-09-30): we hear about an outage before customers do. The outside monitor is issue #36: one free, stock external uptime monitor (UptimeRobot or Better Stack free tier, no card) checking the URLs below every few minutes, alerting Nish by phone push or email. The site origin is pinned in `src/seo.js` (`SITE.origin`, `https://drive-pricing.nishant345.workers.dev` today) and `test/seo.test.mjs` holds it there, so this table names the source rather than a second copy.

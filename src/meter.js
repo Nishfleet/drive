@@ -7,7 +7,12 @@
 // which are plain data too: `scopeStore` applies the account prefix to the
 // listing and refuses a version from outside it, and `accountPrefix` builds
 // the storage key the event intake stores, so a row this reconciler inserts
-// and a row an event inserted are one shape (drive issue #59).
+// and a row an event inserted are one shape (drive issue #59). The key
+// decoder comes from the api Worker's one Records reader
+// (workers/api/src/event-routes.js), because an S3 notification's key and the
+// api Worker's own event route are the same bytes and must be read the same
+// way.
+import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
 import { accountPrefix, scopeStore } from "./files.js";
 //
 // Three jobs, in the order the issue lists them:
@@ -690,7 +695,12 @@ export function bareRecordFromEvent(body) {
   // `path` wins: it is the file's own path, and the key is the fallback.
   const key = input.keyName ?? input.key ?? (object ? object.key : undefined);
   if (typeof input.keyName !== "string" && typeof key === "string" && key !== "") {
-    record.keyName = key;
+    // The key as the provider sent it, decoded by the one reader both Workers
+    // share (workers/api/src/event-routes.js): an S3 notification
+    // form-encodes the key, so `u%2Facct%2Fnotes.md` is the account folder
+    // `u/acct/` and not a key naming no account. Without this the record is
+    // refused for naming no account, which is what the account check is about.
+    record.keyName = decodeNotificationKey(key);
   }
   // The version the provider created, which is what the dedup and the row key
   // on. The event's own `versionId` is the one S3 puts on a record's
@@ -700,10 +710,14 @@ export function bareRecordFromEvent(body) {
   if (typeof input.b2FileId !== "string" && typeof version === "string" && version !== "") {
     record.b2FileId = version;
   }
-  // A size the event names, under whichever of the two names it uses. A
-  // string is left as it is: the intake already takes a decimal string.
+  // A size the event names, under whichever of the two names it uses, at the
+  // top level or where S3 puts it (`s3.object.size`). A string is left as it
+  // is: the intake already takes a decimal string.
   if (input.sizeBytes === undefined && input.size !== undefined) {
     record.sizeBytes = input.size;
+  }
+  if (record.sizeBytes === undefined && object && object.size !== undefined) {
+    record.sizeBytes = object.size;
   }
   // The instant the provider saw the change, when the event carries it
   // separately from the record's own time.
