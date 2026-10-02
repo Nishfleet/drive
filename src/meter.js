@@ -464,6 +464,60 @@ function usageStatement(db, accountId, hour, gbMinutes, now) {
 }
 
 /**
+ * Add the bytes one download served to the account's current UTC hour, for the
+ * dl Worker (drive issue #58, build step 5). This is the second writer of
+ * `usage_minutes` and the mirror image of the rollup above: the rollup owns
+ * `gb_minutes_live` and leaves `download_bytes` alone, this adds to
+ * `download_bytes` and leaves `gb_minutes_live` and `rolled_up_at` alone, so
+ * the two can run in either order on the same hour and neither zeroes the
+ * other's column.
+ *
+ * Adding is right, not replacing: an hour is many downloads, and Cloudflare
+ * hands the dl Worker one request at a time with no batch to replace from. A
+ * replayed request would double-count its own bytes, which is the safe
+ * direction to be wrong in (we bill for a transfer the customer made twice,
+ * not for a transfer they did not make).
+ *
+ * The row is created on the first download of an hour even before the rollup
+ * has ever seen the account: `gb_minutes_live` is 0 for an hour the rollup
+ * has not written, and the rollup's own upsert sets the real total when it
+ * gets there (its `ON CONFLICT` clause replaces `gb_minutes_live` and leaves
+ * `download_bytes` exactly as this left it).
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} bytes whole bytes served, 0 or more
+ * @param {number|Date|string} now the instant of the download; the hour is
+ *   this value's UTC hour
+ * @returns {Promise<{accountId: string, hour: number, bytes: number, total: number}>}
+ *   what was added and the hour's new total
+ */
+export async function recordDownloadBytes(db, accountId, bytes, now) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`recordDownloadBytes needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(bytes) || bytes < 0) {
+    throw new TypeError(`download bytes must be a whole number of bytes, got ${String(bytes)}`);
+  }
+  const hour = hourStart(now);
+  const at = toMillis(now, "now");
+  await db
+    .prepare(
+      `INSERT INTO usage_minutes (account_id, hour, gb_minutes_live, download_bytes, rolled_up_at)
+       VALUES (?1, ?2, 0, ?3, ?4)
+       ON CONFLICT(account_id, hour) DO UPDATE SET
+         download_bytes = download_bytes + excluded.download_bytes`,
+    )
+    .bind(accountId, hour, bytes, at)
+    .run();
+  const row = await db
+    .prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
+    .bind(accountId, hour)
+    .first();
+  const total = Number(row?.download_bytes ?? 0);
+  return { accountId, hour, bytes, total };
+}
+
+/**
  * Every account that has a stored version. Not on the rollup's path any more
  * - the rollup groups its own per-hour read by account - so this is a
  * read-only helper the nightly reconciler (#59) and operator tooling can use
