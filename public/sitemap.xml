@@ -40,6 +40,11 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/docs/benchmarks</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://drive-pricing.nishant345.workers.dev/docs/security</loc>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>

@@ -46,7 +46,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
-    "drive/0007_branch_row_id.sql",
+    "drive/0010_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -321,6 +321,42 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   const snapshot = JSON.parse(/** @type {string} */ (row.snapshot));
   assert.deepEqual(Object.keys(snapshot).sort(), ["a.txt", "sub/b.txt"]);
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
+});
+
+test("the folder walk hands each copy the size its listing reported", async () => {
+  // A file over S3's 5 GiB single-copy ceiling can only be copied the multipart
+  // way, and the only place its size is free is the listing the branch walk is
+  // already reading (drive#157): one extra request per file to learn it again
+  // is what a 100,000-file branch must not do. The size here is reported by the
+  // listing (no 6 GB of bytes exist in this test), which is where a real one
+  // gets it.
+  const { scoped, db } = await driven();
+  await scoped.write("/Photos/archive.iso", new Blob(["iso"]).stream(), "application/octet-stream");
+  const sixGb = 6 * 1024 ** 3;
+  /** @type {Array<{from: string, to: string, size: number|undefined}>} */
+  const copies = [];
+  const listing = scoped.list.bind(scoped);
+  /** @type {import("../src/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async list(path) {
+      const entries = await listing(path);
+      return entries.map((entry) =>
+        entry.name === "archive.iso" ? { ...entry, size: sixGb } : entry,
+      );
+    },
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return scoped.copy(from, to, size);
+    },
+  };
+  const branch = await createBranch(db, store, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(branch.files, 3);
+  assert.deepEqual(copies, [
+    { from: "/Photos/a.txt", to: `/${BRANCHES_FOLDER}/work/a.txt`, size: 1 },
+    { from: "/Photos/archive.iso", to: `/${BRANCHES_FOLDER}/work/archive.iso`, size: sixGb },
+    { from: "/Photos/sub/b.txt", to: `/${BRANCHES_FOLDER}/work/sub/b.txt`, size: 2 },
+  ]);
 });
 
 test("a branch never shows up as a folder in the drive root", async () => {
@@ -710,7 +746,7 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
 
 test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
   // 0003 as shipped (and as production drive-data has it) keys the table on
-  // (account_id, name, state). 0007 copies the rows into a table keyed by id.
+  // (account_id, name, state). 0010 copies the rows into a table keyed by id.
   // Apply that upgrade against a real old-schema row, then prove two approved
   // rows of one name are legal and the copied row is still there.
   const sqlite = new DatabaseSync(":memory:");
@@ -726,7 +762,7 @@ test("the branches table keys each branch by its own id, so a name can be closed
     )
     .run();
   apply("drive/0004_agent_undo.sql");
-  apply("drive/0007_branch_row_id.sql");
+  apply("drive/0010_branch_row_id.sql");
   const columns = /** @type {{name: string, pk: number}[]} */ (
     /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
   );

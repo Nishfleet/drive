@@ -25,7 +25,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
   "drive/0006_share_links.sql",
-  "drive/0007_branch_row_id.sql",
+  "drive/0009_upload_request_caps.sql",
+  "drive/0008_teams.sql",
+  "drive/0010_branch_row_id.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
@@ -34,7 +36,6 @@ const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 export const TEST_BASE_URL = "https://drive.test";
 
 /** @typedef {import("node:sqlite").SQLInputValue} SQLInputValue */
-/** @typedef {import("node:sqlite").StatementResultingChanges} StatementResultingChanges */
 
 /**
  * The bind values D1 accepts and node:sqlite does not, turned into what
@@ -85,26 +86,23 @@ export function sqlitePlaceholders(sql) {
 function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = params.map(sqliteValue);
-  if (/^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b/i.test(sql) || /\breturning\b/i.test(sql)) {
-    const results = statement.all(...bound);
-    // Node's StatementSync types put change counts on `run()`, not `all()`.
-    const ran = /** @type {StatementResultingChanges} */ (/** @type {unknown} */ (statement));
-    return {
-      results,
-      success: true,
-      meta: {
-        changes: Number(ran.changes ?? 0),
-        last_row_id: Number(ran.lastInsertRowid ?? 0),
-      },
-    };
-  }
-  const info = statement.run(...bound);
+  const results = statement.all(...bound);
   return {
-    results: [],
+    results,
     success: true,
     meta: {
-      changes: Number(info.changes),
-      last_row_id: Number(info.lastInsertRowid ?? 0),
+      // The change count comes from SQLite's own `changes()`, which is true the
+      // moment the statement ran. node:sqlite exposes no `changes` property on a
+      // prepared statement, so reading one off it would answer 0 for every
+      // write: a test that asserts a revoke or a sweep landed would be told it
+      // did not, and a caller that trusts `meta.changes` for a conditional
+      // update would see no winner at all (drive#174). The two rows are read
+      // once and cast, because node:sqlite's types allow `get()` to answer
+      // undefined where a `SELECT` of one row always answers an object.
+      changes: Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT changes() AS n").get()).n),
+      last_row_id: Number(
+        /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get()).n,
+      ),
     },
   };
 }

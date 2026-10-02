@@ -28,16 +28,37 @@ type StorageConfig struct {
 	DownloadURL string
 }
 
-// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
-// vfsChunkStreamSize are the stock rclone VFS flags this product mounts with.
-// They are the same on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs
-// is the one place that turns them into an argument vector.
+// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue,
+// vfsDirCacheTimeValue, vfsChunkStreamSize, vfsReadAheadValue,
+// vfsReadChunkSizeValue, vfsReadChunkStreamsValue and vfsTransfersValue
+// are the stock rclone VFS flags this product mounts with. They are the same
+// on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs is the one place
+// that turns them into an argument vector.
+//
+// The four that decide durability and freshness stay pinned: cache mode,
+// write-back, cache max size, and dir-cache-time. Issue #224's hill-climb
+// may move only the speed knobs (chunk size, chunk streams, buffer size,
+// read-ahead, transfers). TestVFSArgsPinsTheSafetyFlags fails if a round
+// trades away a pinned value. Write-back must still land inside the 5s
+// window docs/build-spec.md names, and nothing may be cached past
+// vfsCacheMaxValue.
 const (
-	vfsCacheModeValue    = "full"
-	vfsWriteBackValue    = "5s"
-	vfsCacheMaxValue     = "20G"
-	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
-	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
+	vfsCacheModeValue     = "full"
+	vfsWriteBackValue     = "5s"
+	vfsCacheMaxValue      = "20G"
+	vfsDirCacheTimeValue  = "5s"   // see VFSArgs: S3 sends no change notifications
+	vfsChunkStreamSize    = "32M"  // --buffer-size: in-memory buffer per transfer
+	vfsReadAheadValue     = "128k" // first-chunk size: small files stay one VFS read; a video is not pulled in
+	vfsReadChunkSizeValue = "128M" // rclone's own default, named so a round has a value to climb
+	// Two streams is what main shipped (issue #227); rclone's own default is 4.
+	vfsReadChunkStreamsValue = "2"
+	vfsTransfersValue        = "4" // rclone's own default, named so a round has a value to climb
+	// Issue #224 hill-climb (2026-10-02, commit 28ccf6c): one candidate per
+	// flag, hyperfine --warmup 2 --runs 10, fast and home-broadband netem.
+	// Repeat: DRIVE_HILL=1 go test ./cmd/drive -run TestMountSpeedHillClimb -v
+	// Every candidate was reverted (target did not beat noise on both the
+	// tuning set and the held-out set, or another row got worse). These
+	// values are the ones that climb kept.
 )
 
 // Default paths, overridable for tests.
@@ -53,12 +74,24 @@ func LaunchdPlistPath(home string) string {
 func SystemdUnitPath(home string) string {
 	return filepath.Join(home, ".config", "systemd", "user", SystemdUnitName)
 }
+func PrefetchLaunchdPlistPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", PrefetchLaunchdLabel+".plist")
+}
+func PrefetchSystemdUnitPath(home string) string {
+	return filepath.Join(home, ".config", "systemd", "user", PrefetchSystemdUnitName)
+}
 
 const (
 	// LaunchdLabel is the launchd login-item label on macOS.
 	LaunchdLabel = "com.nishfleet.drive"
+	// PrefetchLaunchdLabel is the second login item that warms the next folder
+	// after a listing (issue #227). The mount item stays rclone: a login item
+	// has no DRIVE_S3_* environment, and the keys live in rclone.conf.
+	PrefetchLaunchdLabel = "com.nishfleet.drive.prefetch"
 	// SystemdUnitName is the systemd user unit on Linux (step 3).
 	SystemdUnitName = "drive-mount.service"
+	// PrefetchSystemdUnitName is the sidecar that runs `drive prefetch`.
+	PrefetchSystemdUnitName = "drive-prefetch.service"
 	// RcloneRemoteName is the remote name this product owns in the rclone config.
 	RcloneRemoteName = "drive"
 )

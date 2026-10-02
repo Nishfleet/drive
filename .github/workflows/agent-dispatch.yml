@@ -15,8 +15,11 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  # Hourly, not 6-hourly: a restart that kills every builder at once sends
+  # no event, and the sweep is what requeues those claims (fleet-ops#9063;
+  # idle 01:37-05:20Z on 2026-10-02).
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 * * * *'
 jobs:
   dispatch:
     uses: Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main # same ref runner group 3 enforces for agent.yml; a SHA pin here drifts from agent.yml@main and strands jobs (0509#5231)

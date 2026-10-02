@@ -8,6 +8,12 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-02
+
+- The Benchmarks page: every speed scenario the suite measures, next to the
+  published rival figure for the same case, with losses labelled losses. Linux
+  and Mac numbers that have not been run yet say so; nothing here is estimated.
+
 ## 2026-09-30
 
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.

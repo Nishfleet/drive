@@ -38,6 +38,8 @@ agents.
   we can answer with a measured number
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
   version 1 does not do
+- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks) —
+  measured speed, including where we lose
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security) — who
   can see your files
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —

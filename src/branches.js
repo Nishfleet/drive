@@ -237,6 +237,11 @@ async function fileFingerprint(store, path) {
  * returning the snapshot of the original: the files' `{size, etag, modified}`
  * at the moment the branch was taken. This is what `drive branch` does and
  * what `approve` diffs against.
+ *
+ * The size comes from the listing that found the file, and is handed to the
+ * copy: over S3's 5 GiB single-copy limit a copy has to be a multipart copy,
+ * and a folder walk that already holds each file's size must not pay a second
+ * request per file to learn it again (drive#157).
  * @param {FileStore} store a scoped store
  * @param {string} source
  * @param {string} dest
@@ -265,7 +270,7 @@ async function copyFolder(store, source, dest) {
       if (rel === null) {
         continue;
       }
-      await store.copy(entry.path, `${dest}/${rel}`);
+      await store.copy(entry.path, `${dest}/${rel}`, entry.size);
       snapshot[rel] = fingerprint(entry);
     }
   }
@@ -507,7 +512,15 @@ export async function createBranch(db, store, account, request, now = () => Date
     // open (a concurrent create that won, or one this process did not see).
     // Re-read to tell that race (409) from a real database failure (500); the
     // INSERT is the only write that can report either.
+    //
+    // A row over the database's own row limit also lands here (drive#157) when
+    // the engine refuses the INSERT itself: D1 answers with the column's name,
+    // never silently. The same phrase is matched on the snapshot save below.
+    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch claim failed for ${account.id}/${name}: ${errorText(error)}`);
+    if (oversize) {
+      return { error: failureMessage("snapshot-bound"), status: 500 };
+    }
     const raced = await getBranch(db, account, name);
     if (raced && raced.state === "open") {
       return { error: failureMessage("branch-exists"), status: 409 };
@@ -571,6 +584,17 @@ export async function createBranch(db, store, account, request, now = () => Date
       return { error: failureMessage("branch-not-open"), status: 409 };
     }
   } catch (error) {
+    // The copy is on disk but the snapshot did not land, so the branch would
+    // be a claimed empty row. Clean the copy up, then report the failure rather
+    // than returning 201 for a half-made branch.
+    //
+    // A row over the database's own row limit lands here with the column's name
+    // in the error, never silently (drive#157): D1's row limit is 1 MiB and a
+    // 100,000-file branch snapshots to ~11 MiB, measured against these
+    // migrations (test/branches-snapshot.test.mjs is the pinned number, and
+    // `snapshot-bound` in src/messages.js is what the person is told, and the
+    // phase-2 design is issue #252).
+    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch snapshot save failed for ${account.id}/${name}: ${errorText(error)}`);
     try {
       await removePrefixFiles(store, branchPrefix);
@@ -580,7 +604,7 @@ export async function createBranch(db, store, account, request, now = () => Date
       );
     }
     await abandonClaim();
-    return { error: failureMessage("unexpected"), status: 500 };
+    return { error: failureMessage(oversize ? "snapshot-bound" : "unexpected"), status: 500 };
   }
   return {
     name,
@@ -671,6 +695,11 @@ export async function approveBranch(db, store, account, name) {
   const applied = { added: [], changed: [], removed: [] };
   let appliedAny = false;
   let failure = null;
+  // No size is handed to these copies (the diff lists names, not bytes), and
+  // that is safe: a file over S3's 5 GiB single-copy limit is refused as too
+  // big and the store copies it the multipart way instead (drive#157). One
+  // extra HEAD for that one file is cheaper than listing every branch file
+  // again to carry a size this path does not have.
   try {
     for (const rel of diff.added) {
       const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);

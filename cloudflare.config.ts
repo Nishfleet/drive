@@ -133,6 +133,26 @@ export default defineConfig({
         namespace: "1003",
         simple: { limit: 100, period: 60 },
       }),
+      // drive issue #208: bound POST /api/request/upload at the edge, beside
+      // the spending cap the route already applies (src/share.js). A stranger
+      // holding a link can otherwise stream files with no size or rate bound
+      // and run the owner up to their cap. Per IP it is the sign-in figure
+      // (10 a minute): far above a person dropping a handful of files, far
+      // below a script filling a folder. Per link is the same number, so one
+      // token cannot be walked from many IPs faster than one connection
+      // already can. Both configs are one minute, the waitlist's period.
+      // Each binding needs its own namespace: Cloudflare wants a positive
+      // integer string, and a namespace another binding already uses fails
+      // the deploy. These are distinct from the waitlist's 1001 and the
+      // sign-in pair's 1002/1003.
+      REQUEST_UPLOAD_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1004",
+        simple: { limit: 10, period: 60 },
+      }),
+      REQUEST_UPLOAD_LINK_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1005",
+        simple: { limit: 10, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and

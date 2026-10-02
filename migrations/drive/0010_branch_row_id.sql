@@ -12,7 +12,7 @@
 -- and apply is not dropped.
 --
 -- 0004 added changed_by_key_id; this file runs after it, so the copy includes
--- that column.
+-- that column. Numbered 0010 because main already shipped 0007_device_codes.
 
 CREATE TABLE branches_by_id (
   id INTEGER PRIMARY KEY,

@@ -527,10 +527,13 @@ export function restorableUntil(deletedAt) {
  * @property {(path: string) => Promise<FileRead>} read
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
- * @property {(from: string, to: string) => Promise<void>} copy A copy the
- *   storage itself makes, no bytes through this Worker: `drive branch`
- *   (build step 7) is a folder copy, and a copy that streamed every byte
- *   through us would make a 10 GB branch a 10 GB download and upload.
+ * @property {(from: string, to: string, size?: number) => Promise<void>} copy
+ *   A copy the storage itself makes, no bytes through this Worker: `drive
+ *   branch` (build step 7) is a folder copy, and a copy that streamed every
+ *   byte through us would make a 10 GB branch a 10 GB download and upload.
+ *   `size` is the source's byte length when the caller already knows it (the
+ *   listing it is copying from carries it), so a store can pick the copy S3
+ *   needs for that many bytes without asking for the size again.
  * @property {(path: string, options?: {includeHidden?: boolean}) => Promise<StorageVersion[]>} listVersions
  *   Every version of every file under one drive path, the provider's side of
  *   the meter's ledger (drive issue #59). `list` returns the live tree; this
@@ -685,9 +688,9 @@ export function scopeStore(store, account) {
     async remove(path) {
       return store.remove(toKey(path));
     },
-    async copy(from, to) {
+    async copy(from, to, size) {
       const [source, dest] = toKeys(from, to);
-      return store.copy(source, dest);
+      return store.copy(source, dest, size);
     },
     async listVersions(path) {
       // The versions come back under this account's own keys, so each one's
@@ -956,30 +959,66 @@ export function createS3Store(config) {
         throw new Error(`storage delete failed with ${response.status}`);
       }
     },
-    async copy(from, to) {
+    /**
+     * The copy `drive branch` makes (build step 7). A file at or under S3's
+     * single-copy ceiling is one CopyObject; a larger file is a multipart copy,
+     * because CopyObject copies at most 5 GiB per call and a bigger source is
+     * the refusal S3 answers instead of the copy. `size` is the byte length
+     * the caller's listing already carried, so the copy S3 needs for those
+     * bytes is chosen without a second request per file.
+     * @param {string} from
+     * @param {string} to
+     * @param {number} [size]
+     */
+    async copy(from, to, size) {
+      const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
+      if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
+        await multipartCopy(fetchImpl, urlFor, source, to, size);
+        return;
+      }
       // S3's CopyObject can answer 200 with an <Error> body for a refused copy
       // (a multi-part copy that is still running is the other 200), so the
       // answer is read and checked rather than trusted on its status alone:
       // `drive branch` must never report success for a copy S3 refused.
       // Proven against `rclone serve s3`, 2026-10-01.
-      const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
       const response = await fetchImpl(urlFor(to), {
         method: "PUT",
         headers: { "x-amz-copy-source": source },
       });
       const body = await response.text();
+      const code = tagValue(body, "Code");
+      if (response.ok && code === "" && body.includes("<CopyObjectResult")) {
+        return;
+      }
+      // A refusal that is the size limit is the one worth a second try: the
+      // caller did not know the size (no listing carried it), so it asked S3
+      // for a copy S3 will not make in one call. AWS answers that with
+      // `InvalidRequest` naming the limit and B2 with `EntityTooLarge`; both
+      // mean the multipart copy below is the copy that was asked for. Every
+      // other refusal is reported as it is.
+      const oversize =
+        code === "EntityTooLarge" ||
+        (code === "InvalidRequest" &&
+          /larger than the maximum|too large/i.test(tagValue(body, "Message")));
+      if (oversize) {
+        await multipartCopy(
+          fetchImpl,
+          urlFor,
+          source,
+          to,
+          await sourceSize(fetchImpl, urlFor, from),
+        );
+        return;
+      }
       if (!response.ok) {
         throw new Error(`storage copy failed with ${response.status}`);
       }
-      if (body.includes("<Error>")) {
-        const code = (body.match(/<Code>([^<]*)<\/Code>/) || [])[1] || "unknown";
+      if (code !== "") {
         throw new Error(`storage copy was refused: ${code}`);
       }
-      if (!body.includes("<CopyObjectResult")) {
-        throw new Error(
-          "storage copy did not answer with a CopyObjectResult; the copy may still be running",
-        );
-      }
+      throw new Error(
+        "storage copy did not answer with a CopyObjectResult; the copy may still be running",
+      );
     },
     /**
      * Every version of every file under one drive path, from S3's own
@@ -1032,6 +1071,171 @@ export function createS3Store(config) {
       }
     },
   };
+}
+
+/**
+ * S3's single-copy ceiling. CopyObject copies at most 5 GiB per call (Amazon
+ * S3, "Copying objects"; iDrive e2 and B2 publish the same limit), so a bigger
+ * source is only copyable the multipart way: CreateMultipartUpload, one
+ * UploadPartCopy per byte range, then CompleteMultipartUpload. In GiB, because
+ * 5 GiB is the number S3 documents and every implementation measures against.
+ */
+const SINGLE_COPY_LIMIT = 5 * 1024 ** 3;
+/** The byte range one UploadPartCopy copies. S3's floor for a copy part is
+ * 5 MiB; 16 MiB puts a 10 GB branch file at 640 requests and a 6 GB one at 384,
+ * which is a request count a stand-in and a real provider both answer quickly.
+ */
+const COPY_PART_SIZE = 16 * 1024 ** 2;
+/** S3's cap on the parts in one multipart upload. A range narrower than
+ * COPY_PART_SIZE for an object this large is only needed past 160 GiB, so the
+ * cap is checked rather than assumed.
+ */
+const COPY_MAX_PARTS = 10000;
+
+/**
+ * One S3 multipart copy: CreateMultipartUpload, an UploadPartCopy for every
+ * byte range of the source, then CompleteMultipartUpload with the ETag each
+ * part answered. No bytes pass through here either — every call is the storage
+ * copying inside itself, which is the whole point of a branch copy (build step
+ * 7): a 10 GB branch must not be 10 GB through the Worker.
+ *
+ * Every answer is read, not trusted on its status: S3 answers 200 with an
+ * `<Error>` body for a refused part and 200 with nothing at all for a part it
+ * accepted but did not copy, and a copy reported as done without the object
+ * behind it is the one failure a branch must never report as success.
+ *
+ * A failure after the upload started aborts it (`DELETE ?uploadId=`), because
+ * parts of an unfinished multipart upload are still billed by every S3-shaped
+ * provider, and a branch that failed must not leave a bill behind it.
+ *
+ * @param {typeof fetch} fetchImpl
+ * @param {(path: string) => string} urlFor
+ * @param {string} source the `x-amz-copy-source` header value, `/<bucket>/<key>`
+ * @param {string} to the destination storage key
+ * @param {number} size the source's byte length, from the listing or a HEAD
+ * @returns {Promise<void>}
+ */
+async function multipartCopy(fetchImpl, urlFor, source, to, size) {
+  const partSize = Math.max(COPY_PART_SIZE, Math.ceil(size / COPY_MAX_PARTS));
+  const target = urlFor(to);
+  const created = await fetchImpl(`${target}?uploads`, { method: "POST" });
+  const createdBody = await created.text();
+  if (!created.ok || createdBody.includes("<Error>")) {
+    throw new Error(`storage multipart copy could not start: ${copyFailure(created, createdBody)}`);
+  }
+  const uploadId = tagValue(createdBody, "UploadId");
+  if (uploadId === "") {
+    throw new Error("storage multipart copy started without an upload id");
+  }
+  const upload = `uploadId=${encodeURIComponent(uploadId)}`;
+  try {
+    /** @type {string[]} one <Part> per range, in order, for the completion */
+    const parts = [];
+    for (let start = 0, number = 1; start < size; start += partSize, number += 1) {
+      const end = Math.min(start + partSize, size) - 1;
+      const copied = await fetchImpl(`${target}?partNumber=${number}&${upload}`, {
+        method: "PUT",
+        headers: {
+          "x-amz-copy-source": source,
+          "x-amz-copy-source-range": `bytes=${start}-${end}`,
+        },
+      });
+      const copiedBody = await copied.text();
+      if (!copied.ok || copiedBody.includes("<Error>")) {
+        throw new Error(
+          `storage multipart copy part ${number} failed: ${copyFailure(copied, copiedBody)}`,
+        );
+      }
+      // The ETag is S3's, XML-escaped in the part's answer and read back into
+      // the completion as it was answered, so the entity the server sent is the
+      // entity the server gets. A part with no ETag cannot be named in the
+      // completion, and a completion without it cannot be finished: naming
+      // that beats completing an upload of nothing.
+      const etag = tagValue(copiedBody, "ETag");
+      if (etag === "" || !copiedBody.includes("<CopyPartResult")) {
+        throw new Error(
+          `storage multipart copy part ${number} came back without a CopyPartResult ETag; the copy cannot be completed`,
+        );
+      }
+      parts.push(`<Part><PartNumber>${number}</PartNumber><ETag>${etag}</ETag></Part>`);
+    }
+    const completed = await fetchImpl(`${target}?${upload}`, {
+      method: "POST",
+      headers: { "content-type": "application/xml" },
+      body: `<CompleteMultipartUpload>${parts.join("")}</CompleteMultipartUpload>`,
+    });
+    const completedBody = await completed.text();
+    if (!completed.ok || completedBody.includes("<Error>")) {
+      throw new Error(
+        `storage multipart copy could not be completed: ${copyFailure(completed, completedBody)}`,
+      );
+    }
+    if (!completedBody.includes("<CompleteMultipartUploadResult")) {
+      throw new Error(
+        "storage multipart copy did not answer with a CompleteMultipartUploadResult; the object may not be whole",
+      );
+    }
+  } catch (error) {
+    // The parts uploaded so far are still stored and billed until the upload is
+    // aborted, so the abort is part of failing the copy. A failed abort is
+    // logged and the copy's own error is what the caller is told — the copy
+    // failed either way, and the upload id is in the line so it can be aborted
+    // by hand.
+    const aborted = await fetchImpl(`${target}?${upload}`, { method: "DELETE" }).catch(
+      (abortError) => {
+        console.error?.(
+          `storage multipart copy abort failed for ${to} (${upload}): ${abortError instanceof Error ? abortError.message : String(abortError)}`,
+        );
+        return null;
+      },
+    );
+    if (aborted !== null && !aborted.ok) {
+      console.error?.(
+        `storage multipart copy abort for ${to} (${upload}) answered ${aborted.status}; the uploaded parts are still billed`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * The one place a copy-shaped S3 answer becomes a sentence: a status that is
+ * not 2xx, an `<Error>` body, or neither a result nor an error (the copy that
+ * has not happened yet). `null` is the only answer that means the call did what
+ * it was asked.
+ * @param {Response} response
+ * @param {string} body
+ * @returns {string|null}
+ */
+function copyFailure(response, body) {
+  const code = tagValue(body, "Code");
+  if (!response.ok) {
+    return `the storage answered ${response.status}${code === "" ? "" : ` with ${code}`}`;
+  }
+  if (code !== "") {
+    return `the storage refused the copy: ${code}`;
+  }
+  return "the storage answered neither a result nor an error";
+}
+
+/**
+ * A source object's byte length, from the one call S3 answers it with. A size
+ * that cannot be read is a named failure, not a zero: a multipart copy with no
+ * ranges would upload no parts and report a copy that never moved a byte.
+ * @param {typeof fetch} fetchImpl
+ * @param {(path: string) => string} urlFor
+ * @param {string} from
+ * @returns {Promise<number>}
+ */
+async function sourceSize(fetchImpl, urlFor, from) {
+  const response = await fetchImpl(urlFor(from), { method: "HEAD" });
+  const length = Number(response.headers.get("content-length") || 0);
+  if (!response.ok || !(length > 0)) {
+    throw new Error(
+      `storage copy could not read the size of ${from} (HEAD answered ${response.status}), so the copy over the single-copy limit cannot be made`,
+    );
+  }
+  return length;
 }
 
 /**

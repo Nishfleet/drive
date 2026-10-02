@@ -9,11 +9,19 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - Secrets live in the VPS credential store, never in this repo.
 - The Mac is read-only for agents. Mac-only proofs (step 2) run on a GitHub macOS runner or are marked for Nish.
 
+## Known Worker secrets
+
+Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
+
+- `METER_EVENT_TOKEN`
+
 ## Before you open a PR
 
 Each line is a gate, not prose: the test or file after the dash is what enforces it. `test/pr-gate.test.mjs` fails when a line below names a file that is gone, and proves each gate against the same modules the Worker runs.
 
 A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`).
+
+A PR that adds a `bindings.secret()` lists the secret's name in its body under 'Secrets to set' and stays draft until it is set on drive-pricing (`test/worker-secrets.test.mjs`).
 
 - [ ] The route is in the `src/index.js` table, behind the account gate (`signedInAccount`, `src/status.js`) or on the public list there, with the anonymous-401 proof in `test/status.test.mjs`.
 - [ ] Every read and write stays in the account its store was built for — `src/files.js` pins `u/${account}` into every storage key — and `test/pr-gate.test.mjs` proves, through the request path, that one account's requests can neither read nor list another account's bytes.

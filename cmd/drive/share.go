@@ -64,6 +64,7 @@ type RequestLink struct {
 	URL          string `json:"url"`
 	StateLabel   string `json:"stateLabel"`
 	ExpiresLabel string `json:"expiresLabel"`
+	UploadsLabel string `json:"uploadsLabel"`
 }
 
 // linkFlags are the flag shapes `drive share` and `drive request` share: one
@@ -221,7 +222,9 @@ func printShareLine(link ShareLink) {
 }
 
 func printRequestLine(link RequestLink) {
-	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.URL)
+	// No header row: `drive request --list` is one line per link, six
+	// tab-separated fields, so a later header has to name them in this order.
+	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.UploadsLabel, link.URL)
 }
 
 // tokenFromArg accepts what a person actually has in hand: the token, or the
