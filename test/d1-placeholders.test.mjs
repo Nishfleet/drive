@@ -83,9 +83,12 @@ for (const [label, makeAdapter] of adapters) {
       .first();
     // A rewrite that only strips the digits puts the account in `snapshot` and
     // the snapshot in `name`, so this row is the whole gate.
-    assert.equal(row?.snapshot, SNAPSHOT, "the ?3 value landed in the snapshot column");
-    assert.equal(row?.account_id, "acct-1", "the ?1 value landed in account_id");
-    assert.equal(row?.name, "work", "the ?2 value landed in name");
+    if (row === null) {
+      assert.fail("the adapter wrote no matching row");
+    }
+    assert.equal(row.snapshot, SNAPSHOT, "the ?3 value landed in the snapshot column");
+    assert.equal(row.account_id, "acct-1", "the ?1 value landed in account_id");
+    assert.equal(row.name, "work", "the ?2 value landed in name");
   });
 
   test(`the ${label} adapter binds a reused number to the same row twice`, async () => {
@@ -104,7 +107,10 @@ for (const [label, makeAdapter] of adapters) {
       .prepare("SELECT snapshot FROM branches WHERE account_id = ?2 AND name = ?3")
       .bind("unused", "acct-1", "work")
       .first();
-    assert.equal(row?.snapshot, "kept");
+    if (row === null) {
+      assert.fail("the adapter wrote no matching row");
+    }
+    assert.equal(row.snapshot, "kept");
   });
 }
 
@@ -128,12 +134,20 @@ test("the harness adapter and the meter adapter agree on the same statement", as
         .first();
     }),
   );
-  assert.equal(rows[0]?.snapshot, SNAPSHOT, "the harness wrote the snapshot");
-  assert.equal(rows[1]?.snapshot, SNAPSHOT, "the meter wrote the same snapshot");
-  assert.equal(rows[0]?.account_id, "acct-1", "the harness bound ?1 to account_id");
-  assert.equal(rows[0]?.name, "work", "the harness bound ?2 to name");
-  assert.equal(rows[1]?.account_id, "acct-1", "the meter bound ?1 to account_id");
-  assert.equal(rows[1]?.name, "work", "the meter bound ?2 to name");
+  const harnessRow = rows[0];
+  const meterRow = rows[1];
+  if (harnessRow === null) {
+    assert.fail("the harness wrote no matching row");
+  }
+  if (meterRow === null) {
+    assert.fail("the meter wrote no matching row");
+  }
+  assert.equal(harnessRow.snapshot, SNAPSHOT, "the harness wrote the snapshot");
+  assert.equal(meterRow.snapshot, SNAPSHOT, "the meter wrote the same snapshot");
+  assert.equal(harnessRow.account_id, "acct-1", "the harness bound ?1 to account_id");
+  assert.equal(harnessRow.name, "work", "the harness bound ?2 to name");
+  assert.equal(meterRow.account_id, "acct-1", "the meter bound ?1 to account_id");
+  assert.equal(meterRow.name, "work", "the meter bound ?2 to name");
 });
 
 test("the drive migrations the harness applies are the schema its tests read", () => {
