@@ -18,9 +18,9 @@ import (
 //   2. when the fill runs — a kept-offline folder always, everything else only
 //      on an idle machine (TestShouldFillRules);
 //   3. that the fill never pushes the cache past the user's cap and never
-//      slows a foreground open (TestBackgroundFillNeverExceedsTheCap and
-//      TestOpenTimeColdAndWarm in e2e_test.go, which prove both on a real
-//      mount).
+//      slows a foreground open (TestBackgroundFillFillsThroughTheCappedCache,
+//      TestBackgroundFillDoesNotSlowAForegroundOpen and TestOpenTimeColdAndWarm
+//      in e2e_test.go, which prove them on a real mount).
 
 // The mount must carry every flag the background fill is made of, as adjacent
 // flag/value pairs, on both platforms. A flag that is present but has its
@@ -232,7 +232,7 @@ func TestParseSizeSuffix(t *testing.T) {
 // countedBackend is a fillBackend whose cache the test controls, so the cap
 // rule is proved without needing the cap to be reached over a real mount
 // first. The real path is covered end to end in e2e_test.go
-// (TestBackgroundFillNeverExceedsTheCap), and this one is what makes the
+// (TestBackgroundFillFillsThroughTheCappedCache), and this one is what makes the
 // "the fill stops at the cap" branch a failing test rather than a comment.
 type countedBackend struct {
 	used      int64

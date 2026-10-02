@@ -166,7 +166,11 @@ func fillPass(ctx context.Context, c fillBackend, offline bool, load1, load5 flo
 	if err != nil {
 		return res, fmt.Errorf("fill: read cache stats: %w", err)
 	}
-	res.BytesBefore = before.DiskCache.BytesUsed
+	beforeBytes, err := liveCacheBytes(before.DiskCache.Path, before.DiskCache.BytesUsed)
+	if err != nil {
+		return res, fmt.Errorf("fill: %w", err)
+	}
+	res.BytesBefore = beforeBytes
 	res.CapBytes = before.Opt.CacheMaxSize
 
 	// A cache already at or over the cap is rclone's to reclaim, on its own
@@ -201,7 +205,11 @@ func fillPass(ctx context.Context, c fillBackend, offline bool, load1, load5 flo
 	if err != nil {
 		return res, fmt.Errorf("fill: read cache stats after fill: %w", err)
 	}
-	res.BytesAfter = after.DiskCache.BytesUsed
+	afterBytes, err := liveCacheBytes(after.DiskCache.Path, after.DiskCache.BytesUsed)
+	if err != nil {
+		return res, fmt.Errorf("fill: %w", err)
+	}
+	res.BytesAfter = afterBytes
 	// The cap is rclone's own --vfs-cache-max-size, read live from the mount.
 	// rclone evicts over the cap on its cache poll; a fill that is still over
 	// it the moment it stops is over it by one file's worth at most and rclone
@@ -213,6 +221,46 @@ func fillPass(ctx context.Context, c fillBackend, offline bool, load1, load5 flo
 			FormatBytes(res.BytesAfter), FormatBytes(res.CapBytes))
 	}
 	return res, nil
+}
+
+// liveCacheBytes is the current size of rclone's own VFS cache directory, the
+// bytes --vfs-cache-max-size caps. vfs/stats' diskCache.bytesUsed is only
+// refreshed on rclone's cache poll, so immediately after a fill it still reads
+// 0 while the bytes are already on disk; the walk of the path rclone itself
+// reports is what makes the loop's cap guard read the cache it is actually
+// filling. A missing directory is an empty cache, not an error; any other walk
+// error is returned rather than read as zero. path is empty on a backend that
+// reports no disk cache (the counted stand-in in the unit tests), where
+// rclone's own reported figure is all there is.
+func liveCacheBytes(path string, reported int64) (int64, error) {
+	if path == "" {
+		return reported, nil
+	}
+	var total int64
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("measure the VFS cache at %s: %w", path, err)
+	}
+	return total, nil
 }
 
 // readLoadAverages returns the host's one- and five-minute load averages, the

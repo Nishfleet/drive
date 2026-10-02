@@ -33,8 +33,8 @@ import (
 // The cap is not a fill rule and is not repeated here: --vfs-cache-max-size
 // (vfsCacheMaxValue) is already on the mount, and rclone checks it on every
 // cache poll, so background fill cannot push the cache past the user's cap.
-// TestBackgroundFillNeverExceedsTheCap proves that on a real mount rather
-// than asserting it.
+// TestBackgroundFillFillsThroughTheCappedCache proves that on a real mount
+// rather than asserting it.
 
 // fillTarget is how many bytes the fill loop tries to get ahead of a
 // foreground read. It is deliberately several times the per-chunk read: a
@@ -43,7 +43,8 @@ import (
 // issue names.
 //
 // 512M measured against the step-2 stand-in (e2e_test.go
-// TestBackgroundFillNeverExceedsTheCap and TestOpenTimeColdAndWarm, 2026-10-02):
+// TestBackgroundFillFillsThroughTheCappedCache and TestOpenTimeColdAndWarm,
+// 2026-10-02):
 // 16M leaves a 500 MB video's second half unfilled after the first 200 MB of
 // playback, 1G pulls twice the bytes the issue asks for into the cache for a
 // 1 MB document. 512M fills a 500 MB video whole and costs a 1 MB document
@@ -71,7 +72,8 @@ const fillChunkSizeLimit = "1G"
 // yesterday evening is one they open again this morning.
 //
 // The cap still holds over any age: --vfs-cache-max-size evicts before
-// --vfs-cache-max-age does, on the same poll (TestBackgroundFillNeverExceedsTheCap).
+// --vfs-cache-max-age does, on the same poll
+// (TestBackgroundFillFillsThroughTheCappedCache).
 const fillMaxAge = "24h"
 
 // fillIdleCheck is the interval the background loop asks rclone's remote
