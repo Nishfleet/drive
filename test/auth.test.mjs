@@ -65,10 +65,11 @@ test("the migration file is what Better Auth's own planner generates", async () 
   );
   const generated = await plan.compileMigrations();
   // The shipped migration is split across two files: 0005 holds the four
-  // core tables and 0006 holds the rateLimit table, because a deployed D1
-  // has already applied 0005 and cannot re-run it. Concatenate them so the
-  // comparison is against the full set the planner emits.
-  const shipped = ["0005_better_auth.sql", "0006_rate_limit.sql"]
+  // core tables and 0007 holds the rateLimit table, because a deployed D1
+  // has already applied 0005 and 0006 (share links, #213) and cannot re-run
+  // them. Concatenate them so the comparison is against the full set the
+  // planner emits.
+  const shipped = ["0005_better_auth.sql", "0007_rate_limit.sql"]
     .map((name) => readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"))
     .join("\n");
   assert.ok(plan.toBeCreated.length > 0, "the planner must have tables to create");

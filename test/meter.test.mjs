@@ -34,8 +34,10 @@ import {
   listMeteredAccounts,
   MAX_CATCHUP_HOURS,
   METER_CRON,
+  METER_RECONCILE_SCHEDULE,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  reconcileMeter,
   recordEvent,
   recordUsage,
   rollupHour,
@@ -1404,21 +1406,222 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
   }
 });
 
+// --- The nightly reconciler (drive issue #59) --------------------------
+
+// A provider's own version listing, in the shape `reconcileMeter` reads. The
+// paths are storage keys (`u/<id>/...`), exactly what the storage provider
+// answers, so the store is scoped and the keys rebuilt the same way in the
+// test as in production. The real provider's field mapping is #60's to
+// confirm; this fake is the listing the reconciler is defined against.
+/**
+ * @param {Record<string, import("../src/files.js").StorageVersion[]>} versionsByPrefix
+ * @returns {import("../src/files.js").FileStore}
+ */
+function providerStore(versionsByPrefix) {
+  return {
+    async listVersions(prefix) {
+      return versionsByPrefix[prefix] ?? [];
+    },
+    // The reconciler never touches the live tree, so reaching any of these is
+    // a bug the fake names rather than a silent empty answer.
+    async list() {
+      throw new Error("the reconciler never lists a folder");
+    },
+    async read() {
+      throw new Error("the reconciler never reads a file");
+    },
+    async write() {
+      throw new Error("the reconciler never writes a file");
+    },
+    async remove() {
+      throw new Error("the reconciler never removes a file");
+    },
+    async copy() {
+      throw new Error("the reconciler never copies a file");
+    },
+  };
+}
+
+const versionAt = (overrides = {}) => ({
+  b2FileId: "file-1",
+  path: "u/acc1/notes.md",
+  sizeBytes: GB,
+  createdAt: at("2026-09-30T00:30:00.000Z"),
+  hiddenAt: null,
+  deletedAt: null,
+  ...overrides,
+});
+
+test("a dropped hide event is found, and the hour it over-billed is corrected", async () => {
+  const { db } = makeMeteredDB();
+  // The event stream stored the create and never the hide, so the version
+  // bills as if it were still live.
+  await storeCreate(db, "acc1", {
+    eventId: "evt-create",
+    b2FileId: "file-1",
+    path: "/u/acc1/notes.md",
+    createdAt: at("2026-09-30T00:30:00.000Z"),
+  });
+  await runMeterCron(db, at("2026-09-30T02:05:00.000Z"));
+  const beforeLive = db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live;
+  const beforeNext = db.tables.usage_minutes.get(
+    `acc1|${midnight() + 60 * MINUTE_MS}`,
+  ).gb_minutes_live;
+  assert.equal(beforeLive, 30, "the create's own half hour");
+  assert.equal(beforeNext, 60, "and the whole hour after, billed as if still live");
+
+  // The provider knows the truth: the version was hidden at 00:50.
+  const store = providerStore({
+    "u/acc1/": [versionAt({ hiddenAt: at("2026-09-30T00:50:00.000Z") })],
+  });
+  const repaired = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.equal(repaired.inserted, 0);
+  assert.equal(repaired.hidden, 1, "the hide the event stream dropped");
+  assert.equal(repaired.marked, 0);
+  assert.equal(
+    repaired.earliestAffectedHour,
+    midnight(),
+    "the stop falls in the first hour, so that is where the re-roll starts",
+  );
+  assert.equal(
+    db.tables.file_versions.get("acc1|file-1").hidden_at,
+    at("2026-09-30T00:50:00.000Z"),
+    "the dropped hide is written onto the row",
+  );
+
+  // The next hourly roll re-rolls from the corrected hour: the version was
+  // live 00:30-00:50 (20 whole minutes, under the 1-hour minimum, so topped to
+  // 60 in its own hour) and never live in the hour after.
+  await runMeterCron(db, at("2026-09-30T03:05:00.000Z"));
+  const afterLive = db.tables.usage_minutes.get(`acc1|${midnight()}`).gb_minutes_live;
+  const afterNext = db.tables.usage_minutes.get(`acc1|${midnight() + 60 * MINUTE_MS}`);
+  assert.equal(afterLive, 60, "20 minutes topped up to the 1-hour minimum");
+  assert.equal(afterNext, undefined, "the over-billed live hour is gone");
+  assert.ok(
+    afterLive < beforeLive + beforeNext,
+    `before ${beforeLive}+${beforeNext}, after ${afterLive}`,
+  );
+});
+
+test("a run over an account with no drift changes nothing and reports zero", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "acc1", { eventId: "evt-create", b2FileId: "file-1" });
+  const store = providerStore({ "u/acc1/": [versionAt()] });
+  const result = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.deepEqual(result, {
+    accounts: 1,
+    versions: 1,
+    inserted: 0,
+    hidden: 0,
+    marked: 0,
+    earliestAffectedHour: null,
+  });
+  assert.equal(db.tables.usage_minutes.size, 0, "nothing rolled, nothing rewritten");
+  assert.equal(db.tables.meter_rollup_state.size, 0, "and the watermark is untouched");
+});
+
+test("a version with no row is inserted and a version the provider lost is marked", async () => {
+  const { db } = makeMeteredDB();
+  // acc1 has a row the provider no longer lists, and the provider lists a
+  // version acc1's event stream never stored.
+  await storeCreate(db, "acc1", { eventId: "evt-old", b2FileId: "gone-1" });
+  const store = providerStore({
+    "u/acc1/": [versionAt({ b2FileId: "new-1", path: "u/acc1/new.md", createdAt: midnight() })],
+  });
+  const result = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.equal(result.inserted, 1, "the provider's version the events missed");
+  assert.equal(result.marked, 1, "the row the provider no longer has");
+  const inserted = db.tables.file_versions.get("acc1|new-1");
+  assert.equal(inserted.path, "u/acc1/new.md", "stored as the storage key the provider lists");
+  assert.equal(inserted.created_at, midnight());
+  assert.equal(
+    db.tables.file_versions.get("acc1|gone-1").deleted_at,
+    at("2026-09-30T03:00:00.000Z"),
+  );
+});
+
+test("two accounts reconciled twice in a row are idempotent", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "acc1", { eventId: "e1", b2FileId: "f1", path: "/u/acc1/a.md" });
+  await storeCreate(db, "acc2", {
+    eventId: "e2",
+    b2FileId: "f2",
+    path: "/u/acc2/b.md",
+    createdAt: at("2026-09-30T00:30:00.000Z"),
+  });
+  // The second account's hide never arrived; the first has no drift. A single
+  // run repairs the one and leaves the other alone.
+  const store = providerStore({
+    "u/acc1/": [versionAt({ b2FileId: "f1", path: "u/acc1/a.md", createdAt: midnight() })],
+    "u/acc2/": [
+      versionAt({
+        b2FileId: "f2",
+        path: "u/acc2/b.md",
+        createdAt: at("2026-09-30T00:30:00.000Z"),
+        hiddenAt: at("2026-09-30T01:10:00.000Z"),
+      }),
+    ],
+  });
+  const first = await reconcileMeter(db, store, at("2026-09-30T03:00:00.000Z"));
+  assert.equal(first.accounts, 2);
+  assert.equal(first.hidden, 1);
+  const second = await reconcileMeter(db, store, at("2026-09-30T04:00:00.000Z"));
+  assert.deepEqual(second, {
+    accounts: 2,
+    versions: 2,
+    inserted: 0,
+    hidden: 0,
+    marked: 0,
+    earliestAffectedHour: null,
+  });
+  // The re-roll the first run set up is idempotent too: rolling twice writes
+  // the same numbers.
+  await runMeterCron(db, at("2026-09-30T04:05:00.000Z"));
+  const once = [...db.tables.usage_minutes.values()].map(
+    (row) => `${row.account_id}|${row.hour}|${row.gb_minutes_live}`,
+  );
+  await runMeterCron(db, at("2026-09-30T04:06:00.000Z"));
+  const twice = [...db.tables.usage_minutes.values()].map(
+    (row) => `${row.account_id}|${row.hour}|${row.gb_minutes_live}`,
+  );
+  assert.deepEqual(twice, once, "a re-roll rewrites the same totals, never adds");
+});
+
+test("the reconciler fails loudly without a database or a version listing", async () => {
+  const { db } = makeMeteredDB();
+  await assert.rejects(() => reconcileMeter(undefined, providerStore({})), /METER_DB/);
+  await assert.rejects(() => reconcileMeter(db, undefined), /list versions/);
+  await assert.rejects(
+    () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
+    /list versions/,
+  );
+});
+
 // --- The wiring the repo can see -----------------------------------------
 
 test("the cron trigger the config declares is the one the meter exports", () => {
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
   assert.equal(METER_CRON, "5 * * * *");
+  assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
-  // The config takes both schedules from the modules that own them, so a
+  assert.notEqual(
+    METER_RECONCILE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    "the two nightly walks do not share a trip",
+  );
+  assert.notEqual(METER_RECONCILE_SCHEDULE, METER_CRON, "the reconciler is not the hourly rollup");
+  // The config takes the schedules from the modules that own them, so a
   // changed schedule cannot drift from the trigger that runs it: src/index.js
-  // tells the two trips apart by the cron string the platform hands it.
-  assert.match(config, /import \{ METER_CRON \} from "\.\/src\/meter\.js";/);
+  // tells the three trips apart by the cron string the platform hands it.
+  assert.match(
+    config,
+    /import \{ METER_CRON, METER_RECONCILE_SCHEDULE \} from "\.\/src\/meter\.js";/,
+  );
   assert.match(config, /import \{ REINDEX_SCHEDULE \} from "\.\/src\/search\.js";/);
   assert.match(
     config,
-    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/,
+    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: METER_RECONCILE_SCHEDULE \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/,
   );
 });
 

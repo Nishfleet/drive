@@ -1,5 +1,6 @@
 -- Better Auth's rate-limit counters, on the customer database (drive issue
--- #200). Pointing `rateLimit.storage` at "database" in src/auth.js makes
+-- #200). Numbered 0007 because 0006 is already share links (#213) on
+-- origin/main. Pointing `rateLimit.storage` at "database" in src/auth.js makes
 -- every Worker instance read and write this one table, so a per-IP ceiling
 -- is shared across isolates instead of reset when a caller lands on a fresh
 -- one. The statements below are exactly what Better Auth's own
