@@ -242,6 +242,9 @@ func TestTokenFromArgAcceptsALinkOrAToken(t *testing.T) {
 		{"https://drive.test/s/" + shareToken + "/?x=1", shareToken},
 		{"https://drive.test/upload.html?k=" + shareToken, shareToken},
 		{"https://drive.test/upload.html?k=" + shareToken + "&utm_source=mail", shareToken},
+		// A URL fragment is not part of the token either.
+		{"https://drive.test/s/" + shareToken + "#top", shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken + "#frag", shareToken},
 	} {
 		got, err := tokenFromArg(tc.in)
 		if err != nil {
@@ -262,7 +265,10 @@ func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
 		// part of the token, and this paste reached RevokeShare/RevokeRequest.
 		"https://drive.test/s/AAAAA/?x=1",
 		"https://drive.test/s/AAAA/?x=1",
+		// A "k=" inside a path segment is not the query parameter.
+		"https://drive.test/disk=" + shareToken,
 		"https://drive.test/k=evil",
+		"../etc/passwd",
 		"../" + shareToken,
 	} {
 		got, err := tokenFromArg(in)

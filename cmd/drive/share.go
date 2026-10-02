@@ -240,23 +240,31 @@ func printRequestLine(link RequestLink) {
 var tokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 
 // tokenFromArg accepts what a person actually has in hand: the token, or the
-// link it came in, because the link is what they copied.
+// link it came in, because the link is what they copied. A token is exactly 22
+// base64url characters, so whatever follows it is surrounding junk to drop: a
+// trailing slash, a query string, a fragment, or tracking parameters. The
+// "k=" of the upload page is read only where a query puts it — at the start of
+// the paste, or right after ? or & — so the "k=" of some path segment is never
+// taken as the parameter. The result must be the Worker's shape or the CLI
+// refuses it, so a mangled paste never becomes a revoke call.
 func tokenFromArg(arg string) (string, error) {
 	trimmed := strings.TrimSpace(arg)
 	var token string
 	if i := strings.Index(trimmed, "/s/"); i >= 0 {
 		// The share-link form: a /s/<token> path segment.
 		token = trimmed[i+len("/s/"):]
-	} else if i := strings.Index(trimmed, "k="); i >= 0 {
+	} else if i := strings.Index(trimmed, "k="); i == 0 || (i > 0 && (trimmed[i-1] == '?' || trimmed[i-1] == '&')) {
 		// The upload-page form: ?k=<token>, possibly among other params.
+		// A bare "k=" (a clipboard that dropped the URL in front of it)
+		// counts too.
 		token = trimmed[i+len("k="):]
 	} else {
 		token = trimmed
 	}
 	// A token is exactly 22 base64url chars; anything after it — a trailing
-	// slash, a query string, or tracking params (?k=<token>&utm_...) — is
-	// surrounding junk to drop, not the token.
-	if i := strings.IndexAny(token, "?&"); i >= 0 {
+	// slash, a query string, a fragment, or tracking params (?k=<token>&utm_
+	// ...) — is surrounding junk to drop, not the token.
+	if i := strings.IndexAny(token, "#?&"); i >= 0 {
 		token = token[:i]
 	}
 	token = strings.TrimRight(token, "/")
