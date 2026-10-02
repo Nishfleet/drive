@@ -19,7 +19,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 ## Set up and check fast
 
 - Run `npm ci` in a new checkout, and again after you merge `origin/main`. The packages are all in the root `package.json` (`workers/*` has none), so a stale `node_modules` fails with `Cannot find package 'validator'` or `'hono'`. This is not a bug in your change.
-- After `npm ci`, run `./node_modules/.bin/promptfoo --version`. That is the local binary. Do not call `npx` or `npm exec` for it (drive#257).
+- Promptfoo is pinned in `devDependencies`. After `npm ci`, the version check is `./node_modules/.bin/promptfoo --version`. Do not call `npx` or `npm exec` for it (drive#257).
 - `npm test` is the full gate: types, lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
 - `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
