@@ -25,6 +25,7 @@ Usage:
   drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
+  drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     the mount, the upload queue, and this month's cost
   drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
@@ -106,6 +107,8 @@ func main() {
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
+	case "uninstall":
+		err = runUninstall(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
 	case "cap":

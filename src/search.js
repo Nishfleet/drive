@@ -286,6 +286,9 @@ export function deleteStatement(db, account, path) {
  * @param {FileStore} store
  * @param {{id: string}} account
  * @param {{now?: () => number, batchSize?: number}} [options]
+ * @returns {Promise<{indexed: number, folders: number, tookMs: number}>} the
+ * counts of the walk, never an `error` key: a failure is a thrown Error, so a
+ * result that read `.error` was reading a key the happy path never writes.
  */
 export async function reconcileIndex(db, store, account, options = {}) {
   const { now = () => Date.now(), batchSize = STATEMENTS_PER_BATCH } = options;

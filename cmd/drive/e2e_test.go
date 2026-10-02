@@ -26,12 +26,18 @@ import (
 //  2. a file written through the mount survives a stop/start with the same
 //     checksum.
 //
-// It needs FUSE. Where the host does not permit an unprivileged FUSE mount the
-// test skips with a message naming the user-namespace fallback, so a CI runner
-// without /dev/fuse does not fail every unrelated PR; an rclone that exits
-// before the mount appears is still a real failure. Run it inside
-// `unshare -Urm` on a host where an unprivileged mount is refused. Set
-// DRIVE_STANDIN_SIZE_MB to change the big file's size (default 64).
+// It is the same test on both platforms (issue #116). `drive mount` resolves
+// `rclone nfsmount` on macOS, which mounts through the system NFS server and
+// needs no macFUSE, and `rclone mount` on Linux; the mount-detection and
+// unmount helpers read whichever platform's tools the host has, so one proof
+// runs on GitHub's Mac runners and this one.
+//
+// It needs a mount. Where the host does not give one the test skips with a
+// message naming this host's own constraint: an unprivileged FUSE mount on
+// Linux (run it inside `unshare -Urm`) or passwordless sudo for the NFS mount
+// on macOS. An rclone that exits before the mount appears is still a real
+// failure. Set DRIVE_STANDIN_SIZE_MB to change the big file's size (default
+// 64).
 func TestStandinMountProof(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -119,6 +125,7 @@ func TestStandinMountProof(t *testing.T) {
 	// Proof 1: first bytes before the whole file is down.
 	cmd := mount()
 	firstStart := time.Now()
+	t.Logf("mounting through rclone %s on %s", BuildMountPlan(CurrentGOOS(), home, "rclone", cfg).Subcommand, CurrentGOOS())
 	f, err := os.Open(filepath.Join(mountDir, "movie.mp4"))
 	if err != nil {
 		t.Fatalf("open movie through the mount: %v", err)
@@ -246,10 +253,11 @@ func waitForPort(t testing.TB, port string) {
 	t.Fatalf("stand-in never listened on %s", port)
 }
 
-// waitForMount waits for the mount to appear. A plain directory that never
-// becomes a mount point while rclone is still running means the host refuses
-// the FUSE mount (a CI runner without /dev/fuse): that is a skip, reported by
-// the caller. An rclone that has already exited is a real failure.
+// waitForMount waits for the mount to appear, on whichever platform the test
+// is running. A plain directory that never becomes a mount point while rclone
+// is still running means the host refuses the mount: FUSE without /dev/fuse on
+// Linux, or the privileged NFS mount on macOS. That is a skip, reported by the
+// caller. An rclone that has already exited is a real failure.
 func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -257,8 +265,7 @@ func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 			t.Fatalf("rclone exited before mounting %s: %v (see its log above)", dir, err)
 		}
-		out, err := exec.Command("findmnt", "-n", "-M", dir).Output()
-		if err == nil && strings.TrimSpace(string(out)) != "" {
+		if mountIsLive(dir) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -266,13 +273,33 @@ func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	return false
 }
 
+// mountIsLive reports whether the kernel has dir mounted, through the one
+// implementation the product already has: MountedDir(). Linux asks findmnt and
+// macOS reads the BSD `mount` listing, and macOS has no findmnt at all, so a
+// single tool would leave the Mac proof waiting for a command that does not
+// exist. This is the same call `drive mount` makes to decide it is up, so the
+// proof and the product cannot drift on what "mounted" means.
+func mountIsLive(dir string) bool {
+	on, err := MountedDir(CurrentGOOS(), dir)
+	if err != nil {
+		return false
+	}
+	return on
+}
+
 // startStandinMount starts `drive mount --foreground` for home against cfg and
 // waits until the kernel reports the mount, so a test reads through a real
 // mount rather than a directory that never became one. The keys reach the child
 // through the environment, never argv: a command line is world-readable in
-// `ps` for the life of the process. A host that refuses an unprivileged FUSE
-// mount skips the calling test, naming the user-namespace fallback; an rclone
-// that exits before mounting is still a real failure.
+// `ps` for the life of the process. A host that refuses the mount skips the
+// calling test naming why (an unprivileged FUSE mount on Linux, the
+// passwordless sudo macOS's NFS mount needs on a Mac); an rclone that exits
+// before mounting is still a real failure.
+//
+// The mount is the same code path on both platforms: BuildMountPlan picks
+// `nfsmount` on darwin (the issue: "run on macOS using rclone nfsmount, no
+// macFUSE") and `mount` on Linux, so the proof on a Mac exercises the plan a
+// Mac user's login item runs.
 func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (*exec.Cmd, func()) {
 	t.Helper()
 	cmd := exec.Command(driveBin(t), "mount",
@@ -289,18 +316,31 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
-		t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
-			"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run Standin", mountDir)
+		t.Skipf("this host will not bring up the mount on %s (%s): the proof needs "+
+			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
+			"NFS mount", mountDir, mountSkipReason())
 	}
 	return cmd, stop
 }
 
-// stopStandinProcess stops a foreground mount the way the test namespace allows: signal
-// the CLI, wait for it, then clear a stale mount point. The CLI's own Unmount
-// (systemd on Linux) is not available in the test namespace.
+// mountSkipReason is the one-line reason this host's mount did not come up, so
+// a skip message names the host's own constraint instead of the other
+// platform's.
+func mountSkipReason() string {
+	if CurrentGOOS() == "darwin" {
+		return "macOS runs the mount through the built-in NFS server (passwordless " +
+			"sudo), which this host does not give"
+	}
+	return "the host does not permit an unprivileged FUSE mount (run it inside a " +
+		"user namespace: unshare -Urm go test ./cmd/drive -run Standin)"
+}
+
+// stopStandinProcess stops a foreground mount the way the test namespace allows:
+// signal the CLI, wait for it, then clear a stale mount point. The CLI's own
+// Unmount (systemd on Linux) is not available in the test namespace.
 func stopStandinProcess(cmd *exec.Cmd, mountDir string) {
 	// The signal fails when the child is already gone, which is not an error:
-	// the fusermount below still clears the mount point.
+	// the unmount below still clears the mount point.
 	_ = cmd.Process.Signal(os.Interrupt)
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
@@ -310,8 +350,39 @@ func stopStandinProcess(cmd *exec.Cmd, mountDir string) {
 		_ = cmd.Process.Kill()
 		<-done
 	}
-	exec.Command("fusermount3", "-u", mountDir).Run()
-	exec.Command("fusermount", "-u", mountDir).Run()
+	if err := unmountForCleanup(mountDir); err != nil {
+		// A mount that is already gone is the normal case: rclone unmounts on
+		// the forwarded signal, and fusermount then answers "Invalid argument"
+		// for a mount point that is not one. So a failed unmount is reported
+		// only when the kernel still says the mount is there.
+		if on, _ := MountedDir(CurrentGOOS(), mountDir); on {
+			fmt.Fprintf(os.Stderr, "drive: unmount %s after the proof: %v\n", mountDir, err)
+		}
+	}
+}
+
+// unmountForCleanup clears a mount the CLI left behind, with the tool the
+// platform has: macOS mounts through the built-in NFS server and unmounts with
+// umount, Linux mounts through FUSE and unmounts with fusermount. It is
+// best-effort cleanup at the end of a test, so it does not fail the test it is
+// cleaning up after; a mount already gone is not an error to it.
+func unmountForCleanup(mountDir string) error {
+	if CurrentGOOS() == "darwin" {
+		if out, err := exec.Command("umount", mountDir).CombinedOutput(); err != nil {
+			return fmt.Errorf("umount %s: %v: %s", mountDir, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	// fusermount3 ships with current FUSE; fusermount is the older name. Each is
+	// a literal binary and the only argument is the mount dir.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err != nil {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir; exec.Command takes an argument vector, not a shell.
+		if out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput(); err != nil {
+			return fmt.Errorf("fusermount3/fusermount %s: %v: %s", mountDir, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 // standinOn starts a loopback `rclone serve s3` on root/data (the stock stand-in

@@ -1381,7 +1381,6 @@ export function nextContinuationToken(xml) {
   if (typeof xml !== "string") {
     throw new TypeError("nextContinuationToken needs the XML body");
   }
-  void xml;
   const token = tagValue(xml, "NextContinuationToken");
   return token === "" ? null : token;
 }
