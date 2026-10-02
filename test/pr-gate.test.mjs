@@ -130,6 +130,7 @@ const ROUTES = [
   { method: "GET", path: STATUS_ENDPOINT, source: "status.js", usedAs: "STATUS_ENDPOINT" },
   { method: "ALL", path: FILES_ENDPOINT, source: "files.js", usedAs: "FILES_ENDPOINT" },
   { method: "GET", path: USAGE_ENDPOINT, source: "billing.js", usedAs: "USAGE_ENDPOINT" },
+  { method: "POST", path: "/api/cap", source: "cap.js", usedAs: "CAP_ENDPOINT" },
   { method: "POST", path: "/api/emails/send", source: "email-send.js", usedAs: "SEND_EMAIL_PATH" },
 ];
 

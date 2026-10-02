@@ -46,7 +46,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
-    "drive/0010_branch_row_id.sql",
+    "drive/0011_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -762,7 +762,7 @@ test("the branches table keys each branch by its own id, so a name can be closed
     )
     .run();
   apply("drive/0004_agent_undo.sql");
-  apply("drive/0010_branch_row_id.sql");
+  apply("drive/0011_branch_row_id.sql");
   const columns = /** @type {{name: string, pk: number}[]} */ (
     /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
   );

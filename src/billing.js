@@ -660,7 +660,7 @@ const USAGE_HEADERS = Object.freeze({
  * like the other endpoints — after the gate, so an anonymous request is told
  * only that it is not signed in, never which methods exist.
  * @param {Request} request
- * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number}|null} account the signed-in account, or null when signed out
  */
 export function handleUsageRequest(request, account) {
   // The gate is first, before the method: an anonymous request learns nothing
@@ -674,6 +674,10 @@ export function handleUsageRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
+  const capUsd =
+    typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
+      ? account.capUsd
+      : BILLING_CONFIG.defaultCapUsd;
   const empty = usageSummary({
     gbMinutes: 0,
     peakGb: 0,
@@ -681,7 +685,7 @@ export function handleUsageRequest(request, account) {
     storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
+    capUsd,
     // The cardless $1 is a provisioned account's state until it adds a card
     // (issue #2). Before accounts exist the honest cap is the sign-up default.
     cardAdded: true,
