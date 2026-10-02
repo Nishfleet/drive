@@ -45,6 +45,11 @@ function anonymousPlaceholders(sql) {
   return sql.replace(/\?(\d+)/g, "?");
 }
 
+/** @param {string} sql */
+function usesNumberedPlaceholders(sql) {
+  return /\?\d/.test(sql);
+}
+
 /**
  * One value per placeholder appearance, in appearance order, for the rewritten
  * SQL: the n-th appearance of `?N` gets bound[N - 1]. An index the statement
@@ -56,7 +61,7 @@ function anonymousPlaceholders(sql) {
  * @returns {any[]}
  */
 function expandBoundValues(sql, bound) {
-  if (!/\?\d/.test(sql)) {
+  if (!usesNumberedPlaceholders(sql)) {
     return bound;
   }
   /** @type {any[]} */
@@ -76,6 +81,11 @@ function bindForNodeSqlite(sql, bound) {
   return { sql: anonymousPlaceholders(sql), bound: expandBoundValues(sql, bound) };
 }
 
+// The StatementSync methods that take bound values. The raw handle's wrapper
+// expands a numbered statement's values for exactly these, so `iterate` gets
+// the same binding `get`, `all` and `run` do.
+const BOUND_METHODS = ["get", "all", "run", "iterate"];
+
 /** @typedef {Record<string, any>} Row */
 /**
  * The test-side view of the in-memory SQLite database: the rows the tests read
@@ -86,6 +96,7 @@ function bindForNodeSqlite(sql, bound) {
  *     get(...params: any[]): any,
  *     all(...params: any[]): any[],
  *     run(...params: any[]): {changes: number | bigint, lastInsertRowid: number | bigint},
+ *     iterate(...params: any[]): IterableIterator<any>,
  *   },
  * }} TestSqlite
  */
@@ -300,11 +311,14 @@ function makeMeteredDB(onQuery) {
   // expands them, and this wraps the raw handle the tests use directly. The
   // wrapper expands the bound values the same way bindForNodeSqlite does, so a
   // reused index (`?1` twice) fills every slot it owns and an out-of-order
-  // index (`?2` before `?1`) still binds by index, not by appearance.
+  // index (`?2` before `?1`) still binds by index, not by appearance. The
+  // adapter is built over this same handle just below, and its own prepares
+  // reach the wrapper already anonymized (bindForNodeSqlite), so the guard
+  // returns the real statement and the adapter is never expanded twice.
   const originalPrepare = sqlite.prepare.bind(sqlite);
   sqlite.prepare = (sql) => {
     const statement = originalPrepare(anonymousPlaceholders(sql));
-    if (!/\?\d/.test(sql)) {
+    if (!usesNumberedPlaceholders(sql)) {
       return statement;
     }
     return new Proxy(statement, {
@@ -313,7 +327,7 @@ function makeMeteredDB(onQuery) {
         if (typeof member !== "function") {
           return member;
         }
-        if (property === "run" || property === "all" || property === "get") {
+        if (typeof property === "string" && BOUND_METHODS.includes(property)) {
           /** @param {any[]} values */
           return (...values) => member.apply(target, expandBoundValues(sql, values));
         }

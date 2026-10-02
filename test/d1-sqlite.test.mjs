@@ -6,10 +6,10 @@
 //
 // The raw handle used to rewrite `?1` to `?` in appearance order, so `?1` twice
 // became two placeholders carrying one bound value and the second read NULL.
-// That failure is silent: the matched rows just fall away and the sum comes
-// back 0 (drive#163's month window summed every month to 0; drive#231 files
-// it). These tests read the same shapes back through the raw handle and the
-// adapter, so the two paths cannot drift again.
+// That failure is silent: the matched rows just fall away, so a SUM over them is
+// NULL and a caller that coalesces it reads 0 (drive#163's month window summed
+// every month to 0; drive#231 files it). These tests read the same shapes back
+// through the raw handle and the adapter, so the two paths cannot drift again.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -34,8 +34,8 @@ test("a numbered index reused in one statement fills every slot it owns", async 
   // ?1 is used twice, and the second slot adds 1500 to the same bound value -
   // the way drive#163's month window turns one instant into a month's start and
   // its end. The bound value 1500 leaves only the 2000 hour inside [1500, 3000),
-  // so a raw handle that binds the second slot NULL answers no rows and a sum
-  // of 0.
+  // so a raw handle that binds the second slot NULL matches no row: a bare SUM
+  // answers NULL, and drive#163's COALESCE-wrapped SUM read that as 0.
   const sql =
     "SELECT SUM(gb_minutes_live) AS gb_minutes FROM usage_minutes WHERE hour >= ?1 AND hour < (?1 + 1500)";
   const raw = sqlite.prepare(sql).get(1500);
@@ -70,4 +70,20 @@ test("a write through the raw handle expands a reused index too", () => {
   const atHour = sqlite.prepare("SELECT download_bytes FROM usage_minutes WHERE hour = ?1");
   assert.equal(atHour.get(2000).download_bytes, 1500);
   assert.equal(atHour.get(1000).download_bytes, 0);
+});
+
+test("a statement with no numbered placeholder keeps the caller's values", () => {
+  const { sqlite } = seeded();
+  // Anonymous `?` is node:sqlite's own path and must stay untouched: the
+  // wrapper only intervenes when the SQL uses numbered placeholders.
+  const sql = "SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ? AND hour = ?";
+  assert.equal(sqlite.prepare(sql).get("acct-231", 2000).gb_minutes_live, 9);
+});
+
+test("iterate() takes the same expansion as the other reads", () => {
+  const { sqlite } = seeded();
+  const sql =
+    "SELECT hour FROM usage_minutes WHERE hour >= ?1 AND hour < (?1 + 1500) ORDER BY hour";
+  const hours = [...sqlite.prepare(sql).iterate(1500)].map((row) => row.hour);
+  assert.deepEqual(hours, [2000]);
 });
