@@ -20,7 +20,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
@@ -30,7 +29,6 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
-import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
@@ -73,41 +71,11 @@ const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // ------------------------------------------------------------------ the walk
 
-// The one route table the walk knows. A route that is public by design (the
-// waitlist, the token-gated send lane, and the health probe) is listed here,
-// and that listing is the only way to be exempt: anything src/index.js routes
-// that is not below fails the walk, so a new route cannot ship unclassified.
-const PUBLIC_ROUTES = [
-  // Sign-ups, before accounts exist.
-  "/api/waitlist",
-  "/api/waitlist/",
-  // The sign-in screen (build step 9, #10) is the one route a caller reaches
-  // with no session: it is what mints the session every other account route
-  // demands. A closed door until the account store lands, never a 401 that
-  // would be indistinguishable from "your session expired".
-  SIGNIN_ENDPOINT,
-  `${SIGNIN_ENDPOINT}/`,
-  // The link a sign-in email carries (drive#181). It mints the session, so it
-  // is the other half of the same exception: a person with no session is
-  // exactly who follows it, and a 401 here would lock out the only door in.
-  SIGNIN_LINK_PATH,
-  `${SIGNIN_LINK_PATH}/`,
-  // The meter and the billing webhook only; closed with no token set (#73's
-  // walk added no account here because this lane's gate is a deployment
-  // secret, not a session).
-  "/api/emails/send",
-  // drive issue #6: the meter's event intake. Its gate is the deployment
-  // secret METER_EVENT_TOKEN (src/meter.js checks it before the body is
-  // read), like the send lane above - no drive account exists on a provider
-  // webhook, so a 401 would be indistinguishable from a misconfigured
-  // provider, and the route reads no account data on a refusal.
-  "/api/storage-events",
-  "/api/storage-events/",
-
-  // The outside outage monitor polls it from outside with no session, and it
-  // answers ok/failing with no account data at all (src/health.js, #96).
-  HEALTH_PATH,
-];
+// The public half of the route table is not repeated here. src/index.js
+// exports its own PUBLIC_ROUTES — the one list the gate itself reads — and
+// both walks below classify against that export, so a route cannot be
+// declared public in one file and undeclared in the other: there is one list
+// and it is the gate's.
 
 // Every account route, with the paths the walk asks. These are built from the
 // modules' own exported endpoints, so a renamed endpoint moves the probe with
@@ -180,7 +148,9 @@ test("every route src/index.js registers is either public or behind the gate", a
   // the walk, so it cannot ship unclassified. The `registered` list is the
   // same table the deny-by-default probe below walks.
   const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
-  const app = createApp({ ASSETS: { fetch: async () => new Response("asset", { status: 200 }) } });
+  // The app closes over no env and no request, so the walk builds it bare and
+  // reads the registry the Worker really serves.
+  const app = createApp();
   const registered = app.routes.filter((r) => r.method !== "ALL").map((r) => r.path);
   // The literal route paths Hono registered, plus the endpoint constants the
   // Worker imports. A route the Worker mounts from a constant still appears in
@@ -227,15 +197,12 @@ test("every route src/index.js registers is either public or behind the gate", a
   }
   for (const base of [FILES_ENDPOINT, USAGE_ENDPOINT, STATUS_ENDPOINT, HEALTH_PATH]) {
     assert.ok(
-      registered.some((r) => r === base || r.startsWith(base + "/")),
+      registered.some((r) => r === base || r.startsWith(`${base}/`)),
       `${base} is account-gated but not routed`,
     );
   }
   for (const name of constants) {
-    assert.ok(
-      typeof name === "string",
-      `src/index.js must classify ${name}`,
-    );
+    assert.ok(typeof name === "string", `src/index.js must classify ${name}`);
   }
   // Both halves had to be non-empty for the loops above to mean anything, and
   // the account routes have to be the ones the Worker actually serves.
@@ -310,7 +277,7 @@ test("deny by default, walked from Hono's own route table: every registered non-
   // every remaining one directly, so a route that shipped without being
   // added to the hand list still has to answer 401 before a handler runs.
   const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
-  const app = createApp({ ASSETS: { fetch: async () => new Response("asset", { status: 200 }) } });
+  const app = createApp();
   for (const { method, path } of app.routes.filter((r) => r.method !== "ALL")) {
     // A public route declared as a prefix (the share-link wildcard) exempts
     // every path beneath it; the exact entries exempt just themselves.
@@ -322,12 +289,8 @@ test("deny by default, walked from Hono's own route table: every registered non-
     }
     // The files wildcard route stands for every subroute under /api/files,
     // so probe it with the one concrete path the hand-written loop uses.
-    const probePath = path.endsWith("/*")
-      ? `${path.slice(0, -1)}upload?path=%2F&name=a.txt`
-      : path;
-    const response = await anonymous(
-      new Request(`https://drive.test${probePath}`, { method }),
-    );
+    const probePath = path.endsWith("/*") ? `${path.slice(0, -1)}upload?path=%2F&name=a.txt` : path;
+    const response = await anonymous(new Request(`https://drive.test${probePath}`, { method }));
     assert.equal(
       response.status,
       401,

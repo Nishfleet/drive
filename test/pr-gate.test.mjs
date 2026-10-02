@@ -143,14 +143,14 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   assert.match(index, /secureHeaders/, "secure headers come from the library");
   assert.match(index, /createApp/, "createApp exports the app builder");
   const { createApp } = await import("../src/index.js");
-  const app = createApp({ ASSETS: { fetch: () => new Response("asset") } });
+  const app = createApp();
   const registered = app.routes
     .filter((r) => r.method !== "ALL")
     .map((r) => `${r.method} ${r.path}`);
   for (const route of ROUTES) {
     assert.ok(
       route.method === "ALL"
-        ? registered.some((r) => r.endsWith(" " + route.path))
+        ? registered.some((r) => r.endsWith(` ${route.path}`))
         : registered.some((r) => r === `${route.method} ${route.path}`),
       `${route.method} ${route.path} must be in the route table`,
     );

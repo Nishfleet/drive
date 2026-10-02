@@ -1,9 +1,9 @@
 import { Hono } from "hono";
+import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
-import { trimTrailingSlash } from "hono/trailing-slash";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
-import { csrf } from "hono/csrf";
+import { trimTrailingSlash } from "hono/trailing-slash";
 
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
@@ -45,12 +45,41 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
-import { handleFirstRunStatusRequest, signedInAccount, STATUS_ENDPOINT, unauthorizedResponse } from "./status.js";
+import {
+  handleFirstRunStatusRequest,
+  STATUS_ENDPOINT,
+  signedInAccount,
+  unauthorizedResponse,
+} from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
+
+/**
+ * The per-request value Hono's context carries. `account` is resolved once by
+ * the gate middleware below and read from the context by every handler, so a
+ * handler cannot disagree with the gate about who is calling. It is the same
+ * shape src/status.js `signedInAccount` returns and every handler's own
+ * `account` parameter takes, so the gate's answer needs no narrowing where it
+ * is handed on.
+ * @typedef {{account: {id: string, name: string, email: string}|null}} DriveVariables
+ */
+
+/**
+ * The app's own type: the Worker's generated `Env` as Hono's bindings (so
+ * `c.env` is `Env`, not `unknown`) and the context value above as its
+ * variables (so `c.get("account")` is typed rather than a key the library has
+ * never heard of). Typed once here and reused by every handler's annotation,
+ * the same way workers/api/src/index.js types its dispatcher.
+ * @typedef {import("hono").Hono<{Bindings: Env, Variables: DriveVariables}>} DriveApp
+ */
+
+/**
+ * The Hono context every route handler and middleware on this app receives.
+ * @typedef {import("hono").Context<{Bindings: Env, Variables: DriveVariables}>} DriveContext
+ */
 
 // Public routes: reachable without a signed-in account. Every other /api/
 // route is account-gated by default (deny-by-default). The listing is the
@@ -85,6 +114,7 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${REQUEST_ENDPOINT}/upload`,
 ]);
 
+/** @param {string} pathname */
 function isPublic(pathname) {
   const clean = pathname.replace(/\/+$/, "") || "/";
   return PUBLIC_ROUTES.some((p) => {
@@ -200,8 +230,8 @@ function capStateFor(_accountId) {
 // lanes keep their tokens. The browser-facing write lane under /api/files
 // additionally takes Hono's built-in csrf() middleware below.
 //
-// @type {import("hono").MiddlewareHandler}
-async function accountGate(c, next) {
+// @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
+async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
   if (isPublic(c.req.path)) return next();
   const account = await signedInAccount(c.req.raw, authFor(c.env));
   if (!account) return unauthorizedResponse();
@@ -224,12 +254,16 @@ const browserCsrf = csrf({
   origin: (origin, c) => origin === new URL(c.req.url).origin,
   secFetchSite: (site) => site === "same-origin",
 });
-/** @type {import("hono").MiddlewareHandler} */
+/**
+ * Hono's csrf(), run only when a browser evidence header is present.
+ * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
+ */
 const csrfWhenBrowser = (c, next) =>
   c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
     ? next()
     : browserCsrf(c, next);
 
+/** @param {DriveContext} c */
 const filesHandler = (c) => {
   const account = c.get("account");
   return handleFilesRequest(
@@ -242,9 +276,16 @@ const filesHandler = (c) => {
 /**
  * Create the Hono app. All route logic lives here so the Worker export is a
  * thin shim and the app — including its route table — can be walked in tests.
- * @param {Env} env
+ *
+ * It takes no env and closes over no request: every handler reads its
+ * bindings from Hono's own `c.env`, which the platform's `fetch(request, env)`
+ * fills in. So one app is a pure route table that any env can be run against
+ * — which is what lets the account-gate walk in test/account-gate.test.mjs
+ * build it and read the real registry without a deployment behind it.
+ * @returns {DriveApp}
  */
-export function createApp(env) {
+export function createApp() {
+  /** @type {DriveApp} */
   const app = new Hono({ strict: false });
 
   // Trailing slashes handled by the library (redirects to canonical), so no
@@ -267,10 +308,7 @@ export function createApp(env) {
   // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
   // (curl, the Go CLI) is not a browser, so it passes this check and the
   // account gate is what holds it.
-  app.use(
-    `${FILES_ENDPOINT}/*`,
-    csrfWhenBrowser,
-  );
+  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
 
   // ---------------------------------------------------------- account routes
   // Each method is registered on its own (rather than with app.all) so Hono's
@@ -284,9 +322,18 @@ export function createApp(env) {
   // The write half of the same module keeps the index current by wrapping the
   // store, so an upload, delete or restore is in the index before the next
   // search. The rebuild is not a web route: it runs from the scheduled handler.
-  app.get(SEARCH_ENDPOINT, (c) =>
-    handleSearchRequest(c.req.raw, c.env.DRIVE_DB, c.get("account")),
-  );
+  // Hono matches only registered paths, so deeper paths (e.g. /api/search/index)
+  // would hit the notFound handler and lose the asset fallback the old
+  // switch gave them. A wildcard route keeps the safety review intact
+  // (no reindex starts from a web request) while forwarding anything that
+  // is not the exact search endpoint to the asset worker unchanged.
+  app.get(`${SEARCH_ENDPOINT}/*`, (c) => {
+    const p = c.req.path;
+    if (p !== SEARCH_ENDPOINT && p !== `${SEARCH_ENDPOINT}/`) {
+      return c.env.ASSETS.fetch(c.req.raw);
+    }
+    return handleSearchRequest(c.req.raw, c.env.DRIVE_DB, c.get("account"));
+  });
 
   // The files lane (issue #73). Signed-in callers read and write only their
   // own prefix; anonymous callers never reach here (the gate answered 401).
@@ -298,6 +345,7 @@ export function createApp(env) {
   // Branches (build step 7, drive#8): the folder copy, the diff, approve and
   // discard. The store is handed in unscoped (the handler scopes it) and
   // without withIndex, so a branch's own copies never land in the search index.
+  /** @param {DriveContext} c */
   const branchesHandler = (c) =>
     handleBranchesRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
   app.get(BRANCHES_ENDPOINT, branchesHandler);
@@ -308,6 +356,7 @@ export function createApp(env) {
   // Agent undo (build step 11, issue #13): the one-click rewind of an agent's
   // work, on the branch copy src/branches.js already keeps. Same store handling
   // as the branches route above.
+  /** @param {DriveContext} c */
   const rewindHandler = (c) =>
     handleRewindRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
   app.get(REWIND_ENDPOINT, rewindHandler);
@@ -374,6 +423,13 @@ export function createApp(env) {
   app.use("*", methodNotAllowed({ app }));
   app.notFound((c) => {
     if (c.req.path.startsWith("/api/")) {
+      // The old hand-written switch fell through to assets for paths it
+      // didn't match (e.g. /api/search/index, which is not the exact
+      // search endpoint). Preserve that fallback so unknown API paths
+      // that are subpaths of a registered prefix still serve the page.
+      if (c.req.path.startsWith(`${SEARCH_ENDPOINT}/`)) {
+        return c.env.ASSETS.fetch(c.req.raw);
+      }
       return c.json({ error: "Not found." }, 404);
     }
     return c.env.ASSETS.fetch(c.req.raw);
@@ -397,7 +453,7 @@ export function createApp(env) {
  */
 export default {
   async fetch(request, env) {
-    return createApp(env).fetch(request, env);
+    return createApp().fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string
