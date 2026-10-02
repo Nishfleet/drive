@@ -692,6 +692,59 @@ async function proof(t, workDir) {
   assert.ok(measurements.length > 0, "at least one demo must have been measured");
 }
 
+/**
+ * The record the page renders from, one row per measurement. A row without a
+ * parseable figure fails here, at the read, because a half-written row would
+ * otherwise leave the page's number to a guess.
+ * @returns {Record<string, {ms: number, seconds: string}>}
+ */
+function recordedDemos() {
+  const text = readFileSync(DEMOS_DOC, "utf8");
+  const rows = {};
+  for (const [, name, figure] of text.matchAll(/^\| `(\S+)` \|.*?\|\s*([\d.]+) s \|$/gm)) {
+    rows[name] = { ms: Number(figure) * 1000, seconds: figure };
+  }
+  assert.ok(Object.keys(rows).length > 0, `docs/demos.md carries no measurement rows`);
+  return rows;
+}
+
+test("the home page's demo section renders the recorded numbers and the date", () => {
+  const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const demos = recordedDemos();
+  // The section exists, is labelled for screen readers, and names the three
+  // jobs the issue asked for.
+  assert.match(page, /aria-labelledby="demos-heading"/, "the home page has a demos section");
+  for (const name of ["An agent reads and edits your files", "A 5 GB video opens and scrubs", "A Blender scene opens and saves back"]) {
+    assert.ok(page.includes(name), `the demos section names "${name}"`);
+  }
+  // Every figure on the page is a figure a recorded run produced, in the units
+  // that run printed. This is the gate: a page number with no matching row is
+  // a number nobody measured.
+  for (const [name, { seconds }] of Object.entries(demos)) {
+    assert.ok(
+      page.includes(`${seconds} s`),
+      `the page must show the recorded figure "${seconds} s" from the ${name} run`,
+    );
+  }
+  // The date and the command that produced each figure are the proof the issue
+  // asks the section to carry.
+  assert.match(page, /Measured 202\d-\d\d-\d\d/, "the section carries the run date");
+  assert.match(page, /claude --print/, "the agent card shows the command that ran");
+  assert.match(page, /ffmpeg -i Drive\/media\/cut\.mp4 -frames:v 1 first\.png/, "the video card shows the open command");
+  assert.match(page, /-ss \d+ -i Drive\/media\/cut\.mp4/, "the video card shows the scrub command");
+  assert.match(page, /blender --background Drive\/models\/part\.blend/, "the 3D card shows the command that ran");
+  // The stand-in caveat is on the page: no stand-in number is allowed to read
+  // as a real-storage number.
+  assert.match(
+    page,
+    /storage stand-in/,
+    "the section says the numbers came from the storage stand-in",
+  );
+  // No rival words on the new section: the scan test covers the whole tree,
+  // and this one names the failure on the page itself.
+  assert.doesNotMatch(page, /SpaceFS|Space AI/i, "the demos section uses our words");
+});
+
 test("the three home-page demos run on a drive folder and record their numbers", async (t) => {
   const workDir = process.env.DRIVE_STANDIN_WORKDIR ?? (await mkdtemp(path.join("/tmp", "drive-demos-")));
   try {
