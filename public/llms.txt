@@ -52,7 +52,7 @@ Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishan
 holds all nine in one file.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
-- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, versions, restore, and how the bill is counted.
+- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the ceiling and four worked sizes.
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
