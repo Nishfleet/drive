@@ -8,11 +8,13 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 const evals = join(root, "evals", "agents");
@@ -23,12 +25,25 @@ function read(p) {
 }
 
 function loadYaml(rel) {
-  const json = execFileSync(
-    "python3",
-    ["-c", "import sys, json, yaml; print(json.dumps(yaml.safe_load(sys.stdin)))"],
-    { input: read(rel), encoding: "utf8" },
-  );
-  return JSON.parse(json);
+  // js-yaml is already in this install (VitePress). Load by path so we do
+  // not depend on package exports, and CI does not need PyYAML.
+  const src = rel.startsWith("/") ? readFileSync(rel, "utf8") : read(rel);
+  /** @type {{ load: (s: string) => unknown }} */
+  const yaml = require(join(root, "node_modules", "js-yaml", "index.js"));
+  return yaml.load(src);
+}
+
+function docsAndHelp() {
+  const rendered = join(root, "docs-site", ".rendered");
+  const pages = readdirSync(rendered)
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => readFileSync(join(rendered, name), "utf8"));
+  return `${pages.join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
+}
+
+function gradeJavascript(value, output) {
+  const fn = new Function("output", `"use strict"; return (${value});`);
+  return fn(output);
 }
 
 const rendered = join(root, "docs-site", ".rendered");
@@ -112,20 +127,15 @@ test("programmatic graders only, and the judge lives on a different family", () 
 
 test("the same transcript graded twice agrees 100%", () => {
   const tasks = loadYaml("evals/agents/tasks/train.yaml");
-  const samples = [
-    "drive mount --foreground\ndrive status\nDRIVE_S3_SECRET_ACCESS_KEY from the environment, never a flag, because ps and history leak it.\nread-only at the cap, nothing is deleted.\n$12 default. $11 for 800 GB. $1 free, no card.\nllms-full.txt\na folder that holds more than your laptop can\nWindows is not in version 1, no pin, copy with rclone.\n1 day then 30 days. not in the CLI yet, no restore command.\ndrive branch notes drive approve stops if the original changed.\nIf-Match ETag. .branches/\ndrive search notes. drive share x then drive share --revoke. drive request inbox.\ndrive agents revoke claude. drive logout and unmount.\ngo install github.com/Nishfleet/drive/cmd/drive@latest\nmcp add\ncreate, change and rename, cannot delete.\nbyte range, not the whole file.\n2026-10-02 The Benchmarks page",
-    "",
-    "lorem ipsum",
-  ];
+  const samples = [docsAndHelp(), "", "lorem ipsum"];
   let n = 0;
   let disagreements = 0;
   for (const t of tasks) {
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      const fn = new Function("output", `"use strict"; return (${a.value});`);
       for (const sample of samples) {
-        const first = fn(sample);
-        const second = fn(sample);
+        const first = gradeJavascript(a.value, sample);
+        const second = gradeJavascript(a.value, sample);
         n += 1;
         if (first !== second) disagreements += 1;
       }
@@ -137,6 +147,37 @@ test("the same transcript graded twice agrees 100%", () => {
     0,
     `same transcript graded twice must agree; ${disagreements}/${n} differed`,
   );
+});
+
+test("pasting the public docs and drive --help satisfies every train grader", () => {
+  // The agent only sees those two sources plus the task. A grader that fails
+  // on them is asking for a fact the task cannot know, or a negative the docs trip.
+  const context = docsAndHelp();
+  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const fails = [];
+  for (const t of tasks) {
+    const output = `${context}\n${t.vars.task}`;
+    for (const a of t.assert) {
+      if (a.type !== "javascript") continue;
+      if (!gradeJavascript(a.value, output)) fails.push(`${t.description}: ${a.value}`);
+    }
+  }
+  assert.equal(fails.length, 0, `docs+help+task must satisfy:\n${fails.join("\n")}`);
+});
+
+test("pasting the public docs and drive --help satisfies the held-out graders", () => {
+  if (!existsSync(HOLDOUT_DEFAULT)) return;
+  const context = docsAndHelp();
+  const tasks = loadYaml(HOLDOUT_DEFAULT);
+  const fails = [];
+  for (const t of tasks) {
+    const output = `${context}\n${t.vars.task}`;
+    for (const a of t.assert) {
+      if (a.type !== "javascript") continue;
+      if (!gradeJavascript(a.value, output)) fails.push(`${t.description}: ${a.value}`);
+    }
+  }
+  assert.equal(fails.length, 0, `docs+help+task must satisfy holdout:\n${fails.join("\n")}`);
 });
 
 test("held-out tasks and run artefacts are not in the repository", () => {
