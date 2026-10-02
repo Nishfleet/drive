@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createBranch, handleBranchesRequest } from "../src/branches.js";
+import { createBranch } from "../src/branches.js";
 import { createMemoryStore, scopeStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
@@ -34,9 +34,9 @@ import {
   REWIND_ENDPOINT,
   REWIND_WINDOW_DAYS,
   rewindBranch,
+  rewindBranchRow,
   rewindPreview,
 } from "../src/rewind.js";
-import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -92,14 +92,30 @@ function makeD1() {
     changed_db: false,
     changes: 0,
   });
+  /** D1 binds numbered placeholders (`?1`, `?3`) by number; node:sqlite takes
+   * values in the order the `?` appear, so `?N` is rewritten to `?` and the
+   * values are reordered to text order by the number each `?` carried.
+   * @param {string} sql
+   * @param {unknown[]} params
+   * @returns {{prepared: string, values: unknown[]}}
+   */
+  const numberedBind = (sql, params) => {
+    /** @type {unknown[]} */
+    const ordered = [];
+    const prepared = sql.replace(/\?\d+/g, (token) => {
+      ordered.push(params[Number(token.slice(1)) - 1]);
+      return "?";
+    });
+    return { prepared, values: ordered };
+  };
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
    * @returns {{results: Record<string, unknown>[], changes: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
-    const prepared = sqlitePlaceholders(sql);
+    const { prepared, values: numberedValues } = numberedBind(sql, params);
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (numberedValues);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
@@ -145,10 +161,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes },
           });
         },
         /**
@@ -156,10 +173,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes },
           });
         },
       })
@@ -269,14 +287,8 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // handler applies the scope. That is the same call the Worker makes, so a
   // test cannot pass where the Worker would fail.
   const { raw, db } = await agentBranch();
-  const branches = await handleBranchesRequest(
-    new Request(`https://drive.test/api/branches`, { method: "GET" }),
-    db,
-    raw,
-    ACCOUNT,
-    () => AT,
-  );
-  const [row] = (await branches.json()).branches;
+  const row = await rewindBranchRow(db, scopeStore(raw, ACCOUNT), ACCOUNT, "fix");
+  assert.ok(row);
   const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT);
   // The list is the branch's own live diff, so the screen's promise is what a
   // rewind actually does — one file changed, one removed, and the file the
@@ -455,16 +467,5 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
  * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
  */
 async function rewindBranchRowFor(db, raw, name) {
-  const branches = await handleBranchesRequest(
-    new Request(`https://drive.test/api/branches`, { method: "GET" }),
-    db,
-    raw,
-    ACCOUNT,
-    () => AT,
-  );
-  // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
-  // read through one bound local carrying the list's own shape.
-  /** @type {{branches: Array<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}>}} */
-  const body = await branches.json();
-  return body.branches.find((row) => row.name === name) ?? null;
+  return rewindBranchRow(db, scopeStore(raw, ACCOUNT), ACCOUNT, name);
 }

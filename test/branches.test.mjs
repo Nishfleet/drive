@@ -24,7 +24,6 @@ import {
   sameFile,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
-import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -61,14 +60,33 @@ function makeD1() {
     changed_db: false,
     changes: 0,
   });
+  /** D1 binds numbered placeholders (`?1`, `?3`) by number; node:sqlite takes
+   * values in the order the `?` appear. Rewriting `?N` to `?` alone would
+   * silently bind the numbers in text order, so a D1 UPDATE whose third
+   * placeholder appears first would write the wrong column. Reordering to
+   * text order by the number each `?` carries is what makes the two agree.
+   * @param {string} sql
+   * @param {unknown[]} params
+   * @returns {{prepared: string, values: unknown[]}}
+   */
+  const numberedBind = (sql, params) => {
+    /** @type {unknown[]} */
+    const values = [];
+    const rewritten = sql.replace(/\?\d+/g, (token) => {
+      const index = Number(token.slice(1)) - 1;
+      values.push(params[index]);
+      return "?";
+    });
+    return { prepared: rewritten, values };
+  };
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
    * @returns {{results: Record<string, unknown>[], changes: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
-    const prepared = sqlitePlaceholders(sql);
+    const { prepared, values: numberedValues } = numberedBind(sql, params);
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (numberedValues);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
@@ -114,10 +132,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes },
           });
         },
         /**
@@ -125,10 +144,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes },
           });
         },
       })
@@ -387,7 +407,8 @@ test("diffBranch names added, changed and removed files, and the original's drif
   );
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
-  const branch = (await getBranch(db, ACCOUNT, "work"));
+  const branch = await getBranch(db, ACCOUNT, "work");
+  assert.ok(branch);
   const diff = await diffBranch(scoped, branch);
   assert.deepEqual(diff.added, ["new.txt"]);
   assert.deepEqual(diff.changed, ["sub/b.txt"]);
@@ -589,6 +610,7 @@ test("a name branched, approved, and branched again: the new branch is open and 
   assert.equal(second.error, undefined);
   assert.equal(second.state, "open");
   const branch = await getBranch(db, ACCOUNT, "work");
+  assert.ok(branch);
   assert.equal(branch.state, "open");
   assert.equal(branch.name, "work");
 
@@ -602,8 +624,13 @@ test("a name branched, approved, and branched again: the new branch is open and 
   assert.deepEqual(diff.sourceChanged, []);
 
   // Edit the new branch and approve it — the files go back cleanly.
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in result));
   assert.equal(result.state, "approved");
   assert.equal(await readText(scoped, "/Photos/a.txt"), "agent edit");
 });
@@ -618,10 +645,16 @@ test("a name branched, discarded, and branched again: the new branch is open and
   assert.equal(second.error, undefined);
   assert.equal(second.state, "open");
   const branch = await getBranch(db, ACCOUNT, "work");
+  assert.ok(branch);
   assert.equal(branch.state, "open");
 
-  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["agent edit"]).stream(), "text/plain");
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
   const result = await discardBranch(db, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in result));
   assert.equal(result.state, "discarded");
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
 });
@@ -672,27 +705,35 @@ test("the branches table keys each branch by its own id, so a name can be closed
   // collides on the primary key, and a second approve 500s. Apply the shipped
   // migrations and prove the shape rather than inferring it.
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of ["0001_waitlist.sql", "0002_file_index.sql", "0003_branches.sql"]) {
+  for (const name of [
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0003_branches.sql",
+  ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const columns = sqlite.prepare("PRAGMA table_info(branches)").all();
+  const columns = /** @type {{name: string, pk: number}[]} */ (
+    /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
+  );
   const pk = columns.filter((c) => c.pk > 0).map((c) => c.name);
   assert.deepEqual(pk, ["id"], "the key is the row's own id, not the name and state");
   // Two 'approved' rows for one name are legal now.
   const insert = sqlite.prepare(
     "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
-      "VALUES (?1,?2,'/Photos','/.branches/x','{}','approved',?3)",
+      "VALUES (?,?,'/Photos','/.branches/x','{}','approved',?)",
   );
   insert.run("acct-1", "work", "2026-01-01T00:00:00Z");
   insert.run("acct-1", "work", "2026-01-02T00:00:00Z");
   const approved = sqlite
-    .prepare("SELECT COUNT(*) AS n FROM branches WHERE account_id='acct-1' AND name='work' AND state='approved'")
+    .prepare(
+      "SELECT COUNT(*) AS n FROM branches WHERE account_id='acct-1' AND name='work' AND state='approved'",
+    )
     .get();
-  assert.equal(approved.n, 2);
+  assert.equal(/** @type {{n: number}} */ (/** @type {unknown} */ (approved)).n, 2);
   // The partial unique index still refuses a second open branch of one name.
   const open = sqlite.prepare(
     "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
-      "VALUES (?1,?2,'/Photos','/.branches/x','{}','open',?3)",
+      "VALUES (?,?,'/Photos','/.branches/x','{}','open',?)",
   );
   open.run("acct-1", "work", "2026-01-03T00:00:00Z");
   assert.throws(
@@ -713,6 +754,7 @@ test("approving a name whose branch was discarded is a 409, never a delete of th
   await discardBranch(db, scoped, ACCOUNT, "work");
 
   const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  assert.ok("error" in result);
   assert.equal(result.status, 409);
   // The original is intact, byte for byte.
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
@@ -726,34 +768,41 @@ test("a create whose claim is closed mid-copy reports 409 and leaves no stray co
   // the create must not answer 200 for a branch that is no longer open. It
   // clears the copy it just made and answers 409.
   const { scoped, db: real } = await driven();
-  const racing = {
-    prepare(sql) {
-      return {
-        bind(...params) {
-          return {
-            async first() {
-              if (sql.includes("state = 'open'")) return null; // pre-check: name free
-              return null;
-            },
-            async run() {
-              if (sql.startsWith("INSERT INTO branches")) {
+  const racing = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      prepare(/** @type {string} */ sql) {
+        return {
+          /**
+           * @param {...unknown} _params
+           */
+          bind(..._params) {
+            return {
+              async first() {
+                if (sql.includes("state = 'open'")) return null; // pre-check: name free
+                return null;
+              },
+              async run() {
+                if (sql.startsWith("INSERT INTO branches")) {
+                  return { success: true, meta: { changes: 1 } };
+                }
+                if (sql.startsWith("UPDATE branches SET snapshot")) {
+                  // The claim was closed underneath this create.
+                  return { success: true, meta: { changes: 0 } };
+                }
+                if (sql.startsWith("UPDATE branches SET state")) {
+                  return { success: true, meta: { changes: 0 } };
+                }
                 return { success: true, meta: { changes: 1 } };
-              }
-              if (sql.startsWith("UPDATE branches SET snapshot")) {
-                // The claim was closed underneath this create.
-                return { success: true, meta: { changes: 0 } };
-              }
-              if (sql.startsWith("UPDATE branches SET state")) {
-                return { success: true, meta: { changes: 0 } };
-              }
-              return { success: true, meta: { changes: 1 } };
-            },
-            async all() { return { results: [] }; },
-          };
-        },
-      };
-    },
-  };
+              },
+              async all() {
+                return { results: [] };
+              },
+            };
+          },
+        };
+      },
+    })
+  );
   const result = await createBranch(racing, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(result.status, 409, "a claim closed mid-copy is a 409, not a 200");
   // The copy this create made is gone; nothing is left for a later branch to
@@ -763,7 +812,9 @@ test("a create whose claim is closed mid-copy reports 409 and leaves no stray co
   // diff is empty, so the aborted copy left no residue behind.
   const after = await createBranch(real, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(after.state, "open");
-  const diff = await diffBranch(scoped, await getBranch(real, ACCOUNT, "work"));
+  const workBranch = await getBranch(real, ACCOUNT, "work");
+  assert.ok(workBranch);
+  const diff = await diffBranch(scoped, workBranch);
   assert.deepEqual(diff, { added: [], changed: [], removed: [], sourceChanged: [] });
 });
 
@@ -775,18 +826,20 @@ test("the prefix clear refuses anything that is not a folder under .branches", a
   // touch. The original is untouched by every refused prefix.
   const { scoped } = await driven();
   const refused = [
-    "/Photos",                 // the source folder
-    "/",                       // the drive root
-    "",                        // empty
-    BRANCHES_ROOT,             // the branches folder itself
-    "/.branches",              // without the trailing slash
-    "/.branchesOther/work",    // a sibling that merely shares the prefix
+    "/Photos", // the source folder
+    "/", // the drive root
+    "", // empty
+    BRANCHES_ROOT, // the branches folder itself
+    "/.branches", // without the trailing slash
+    "/.branchesOther/work", // a sibling that merely shares the prefix
     null,
     undefined,
   ];
-  for (const prefix of refused) {
+  /** @type {unknown[]} */
+  const refusedPaths = refused;
+  for (const prefix of refusedPaths) {
     await assert.rejects(
-      () => removePrefixFiles(scoped, prefix),
+      () => removePrefixFiles(scoped, /** @type {string} */ (prefix)),
       /not a branch folder/,
       `${JSON.stringify(prefix)} must be refused`,
     );
@@ -813,8 +866,11 @@ test("a discard of a row whose prefix is not under .branches is a 500, never a d
     )
     .run(ACCOUNT.id, "evil", "/Photos", "/Photos", "2026-01-01T00:00:00Z");
   const result = await discardBranch(db, scoped, ACCOUNT, "evil");
+  assert.ok("error" in result);
   assert.equal(result.status, 500);
-  assert.equal((await getBranch(db, ACCOUNT, "evil")).state, "open");
+  const evil = await getBranch(db, ACCOUNT, "evil");
+  assert.ok(evil);
+  assert.equal(evil.state, "open");
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
   assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
 });
@@ -828,43 +884,50 @@ test("a create that loses the open-name race is refused before it touches the pr
   // winner's open row, so the answer is the same 409 a plain second create gets.
   const { scoped, db: real } = await driven();
   const winner = await createBranch(real, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.ok(!("error" in winner));
   assert.equal(winner.state, "open");
   const winnerBranch = await getBranch(real, ACCOUNT, "work");
+  assert.ok(winnerBranch);
 
-  const raced = {
-    prepare(sql) {
-      return {
-        bind(...params) {
-          return {
-            async first() {
-              // The pre-check sees no open branch; the post-failure re-read
-              // finds the winner's row.
-              if (sql.includes("state = 'open'")) {
-                return null;
-              }
-              return {
-                name: "work",
-                source_prefix: "/Photos",
-                branch_prefix: "/.branches/work",
-                snapshot: "{}",
-                state: "open",
-                created_at: "2026-01-01T00:00:00Z",
-              };
-            },
-            async run() {
-              if (sql.startsWith("INSERT INTO branches")) {
-                throw new Error("UNIQUE constraint failed: branches.account_id, branches.name");
-              }
-              return { success: true, meta: { changes: 1 } };
-            },
-            async all() {
-              return { results: [] };
-            },
-          };
-        },
-      };
-    },
-  };
+  const raced = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      prepare(/** @type {string} */ sql) {
+        return {
+          /**
+           * @param {...unknown} _params
+           */
+          bind(..._params) {
+            return {
+              async first() {
+                // The pre-check sees no open branch; the post-failure re-read
+                // finds the winner's row.
+                if (sql.includes("state = 'open'")) {
+                  return null;
+                }
+                return {
+                  name: "work",
+                  source_prefix: "/Photos",
+                  branch_prefix: "/.branches/work",
+                  snapshot: "{}",
+                  state: "open",
+                  created_at: "2026-01-01T00:00:00Z",
+                };
+              },
+              async run() {
+                if (sql.startsWith("INSERT INTO branches")) {
+                  throw new Error("UNIQUE constraint failed: branches.account_id, branches.name");
+                }
+                return { success: true, meta: { changes: 1 } };
+              },
+              async all() {
+                return { results: [] };
+              },
+            };
+          },
+        };
+      },
+    })
+  );
 
   const lost = await createBranch(raced, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   assert.equal(lost.status, 409, "a lost claim is the same 409 as a second create");
@@ -873,6 +936,7 @@ test("a create that loses the open-name race is refused before it touches the pr
   // never reached the prefix clear or the copy.
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), "a");
   const after = await getBranch(real, ACCOUNT, "work");
+  assert.ok(after);
   assert.equal(after.state, "open");
   assert.deepEqual(after.snapshot, winnerBranch.snapshot);
   assert.deepEqual((await diffBranch(scoped, after)).removed, []);
