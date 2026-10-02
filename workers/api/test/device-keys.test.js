@@ -66,18 +66,21 @@ const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 // `api.getSession`. `add` mints a session token; a token this object never
 // minted has no session, which is the closed door.
 function makeAccounts() {
+  /** @type {Map<string, {id: string, name: string, email: string}>} */
   const byToken = new Map();
   let next = 0;
   return {
     byToken,
+    /** @param {{id: string, name: string, email: string}} account @returns {string} */
     add(account) {
       const token = `sess_${++next}`;
       byToken.set(token, account);
       return token;
     },
     api: {
+      /** @param {{headers: Headers}} options */
       async getSession({ headers }) {
-        const cookie = headers?.get?.("cookie") ?? "";
+        const cookie = headers.get("cookie") ?? "";
         const found = cookie
           .split(";")
           .map((part) => part.trim())
@@ -192,7 +195,7 @@ function basic(accessKeyId, secret) {
 
 test("the poll is pending before approval, and the token works after it", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
 
   const pending = await dispatch(
     new Request("https://api.test/v1/device/token", {
@@ -204,7 +207,7 @@ test("the poll is pending before approval, and the token works after it", async 
   );
   assert.deepEqual(await pending.json(), { status: "pending" });
 
-  store.approveDeviceCode(code.userCode);
+  await store.approveDeviceCode(code.userCode);
   const resolved = await dispatch(
     new Request("https://api.test/v1/device/token", {
       method: "POST",
@@ -543,7 +546,7 @@ test("DELETE /v1/device/token without a token cannot revoke it (the route stays 
 
 test("a poll denied by the per-IP edge limit is a 429, before the store is read", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
   const ip = makeRateLimiter({ success: false });
   const ctx = { env: limits(ip), db: null, store, account: null, now: () => 0 };
   const response = await dispatch(
@@ -564,7 +567,7 @@ test("an approve denied by the global edge limit is a 429 and the code stays una
   const store = createMemoryStore({ now: () => 0 });
   const accounts = makeAccounts();
   const sessionToken = accounts.add({ id: "acct_lim", name: "Lim", email: "lim@example.com" });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
   const global = makeRateLimiter({ success: false });
   const ctx = {
     env: limits(makeRateLimiter(), global),
@@ -594,7 +597,7 @@ test("an approve denied by the global edge limit is a 429 and the code stays una
 
 test("the device limits key the per-IP bucket on cf-connecting-ip and the global on one shared bucket", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
   const ip = makeRateLimiter();
   const global = makeRateLimiter();
   const ctx = { env: limits(ip, global), db: null, store, account: null, now: () => 0 };
@@ -615,7 +618,7 @@ test("with no device limiters the approve and poll routes fail closed, not open"
   const store = createMemoryStore({ now: () => 0 });
   const accounts = makeAccounts();
   const sessionToken = accounts.add({ id: "acct_bare", name: "Bare", email: "b@example.com" });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
   // No DEVICE_RATE_LIMITER / DEVICE_GLOBAL_RATE_LIMITER on env: a deployment
   // that has not declared them does not run the flow. The account store is
   // present, so the gated approve reaches its handler and hits the closed door
@@ -650,7 +653,7 @@ test("with no device limiters the approve and poll routes fail closed, not open"
 
 test("a device limiter that throws fails closed with the table's words, never the error text", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "Nish's MacBook" });
+  const code = await store.requestDeviceCode({ name: "Nish's MacBook" });
   const ctx = {
     env: {
       DEVICE_RATE_LIMITER: {
@@ -684,7 +687,7 @@ test("a device limiter that throws fails closed with the table's words, never th
 // pending code is untouched.
 test("an anonymous approve is 401 and changes nothing (drive#136 b)", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "laptop" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
   const accounts = makeAccounts();
 
   const anonymous = await dispatch(
@@ -712,7 +715,7 @@ test("the approve route answers 429 past its limit, and fails closed with none (
   const store = createMemoryStore({ now: () => 0 });
   const accounts = makeAccounts();
   const sessionToken = accounts.add({ id: "acct_lim", name: "Lim", email: "lim@example.com" });
-  const code = store.requestDeviceCode({ name: "laptop" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
   const request = () =>
     new Request("https://api.test/v1/device/approve", {
       method: "POST",
@@ -754,7 +757,7 @@ test("an expired code cannot be approved (drive#136 d)", async () => {
   const store = createMemoryStore({ now: () => nowMs });
   const accounts = makeAccounts();
   const sessionToken = accounts.add({ id: "acct_exp", name: "Exp", email: "exp@example.com" });
-  const code = store.requestDeviceCode({ name: "laptop" });
+  const code = await store.requestDeviceCode({ name: "laptop" });
   nowMs += (DEVICE_CODE_TTL_SECONDS + 1) * 1000;
 
   const expired = await dispatch(
@@ -783,8 +786,8 @@ test("an approval from another site is 403 and a same-origin one is approved", a
   const store = createMemoryStore({ now: () => 0 });
   const accounts = makeAccounts();
   const sessionToken = accounts.add({ id: "acct_csrf", name: "Csrf", email: "c@example.com" });
-  const code = store.requestDeviceCode({ name: "laptop" });
-  const post = (origin) =>
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  const post = (/** @type {string|null} */ origin) =>
     dispatch(
       new Request("https://api.test/v1/device/approve", {
         method: "POST",

@@ -93,9 +93,13 @@ function runOne(sqlite, sql, params) {
       // prepared statement, so reading one off it would answer 0 for every
       // write: a test that asserts a revoke or a sweep landed would be told it
       // did not, and a caller that trusts `meta.changes` for a conditional
-      // update would see no winner at all (drive#174).
-      changes: Number(sqlite.prepare("SELECT changes() AS n").get().n),
-      last_row_id: Number(sqlite.prepare("SELECT last_insert_rowid() AS n").get().n),
+      // update would see no winner at all (drive#174). The two rows are read
+      // once and cast, because node:sqlite's types allow `get()` to answer
+      // undefined where a `SELECT` of one row always answers an object.
+      changes: Number(/** @type {{n: number}} */ (sqlite.prepare("SELECT changes() AS n").get()).n),
+      last_row_id: Number(
+        /** @type {{n: number}} */ (sqlite.prepare("SELECT last_insert_rowid() AS n").get()).n,
+      ),
     },
   };
 }

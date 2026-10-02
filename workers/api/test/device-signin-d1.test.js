@@ -24,11 +24,13 @@ const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 // `signedInAccount` asks it for the session the cookie names, so a stand-in
 // here speaks `api.getSession`. One token is signed in; every other value the
 // browser could have invented has no session.
+/** @param {string} token */
 function accountsFor(token) {
   return {
     api: {
+      /** @param {{headers: Headers}} options */
       async getSession({ headers }) {
-        const cookie = headers?.get?.("cookie") ?? "";
+        const cookie = headers.get("cookie") ?? "";
         const found = cookie
           .split(";")
           .map((part) => part.trim())
@@ -51,16 +53,24 @@ function accountsFor(token) {
 // `options.onRead` fires on every `first()`, which is how a test crosses the
 // TTL between a read and the write that follows it; `options.failOn` names a
 // statement prefix that throws, which is how a half-written pair is tested.
+/**
+ * @typedef {{onRead?: () => void, failOn?: string}} FakeD1Options
+ * @typedef {{codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1Snapshot
+ * @typedef {D1Database & {codes: Map<string, any>, byUserCode: Map<string, any>, tokens: Map<string, any>}} FakeD1
+ */
+/** @param {FakeD1Options} [options] @returns {FakeD1} */
 function makeFakeD1(options = {}) {
   /** @type {Map<string, any>} */ const codes = new Map();
   /** @type {Map<string, any>} */ const byUserCode = new Map();
   /** @type {Map<string, any>} */ const tokens = new Map();
 
+  /** @returns {FakeD1Snapshot} */
   const snapshot = () => ({
     codes: new Map([...codes].map(([k, v]) => [k, { ...v }])),
     byUserCode: new Map(byUserCode),
     tokens: new Map(tokens),
   });
+  /** @param {FakeD1Snapshot} snap */
   const restore = (snap) => {
     codes.clear();
     byUserCode.clear();
@@ -76,8 +86,13 @@ function makeFakeD1(options = {}) {
     }
   };
 
-  /** One statement, the way D1 runs it: mutate, or throw and change nothing. */
-  function runStatement(s, params) {
+  /** One statement, the way D1 runs it: mutate, or throw and change nothing.
+   * @param {string} s
+   * @param {unknown[]} args
+   */
+  function runStatement(s, args) {
+    /** @type {any[]} */
+    const params = args;
     if (options.failOn !== undefined && s.startsWith(options.failOn)) {
       // One failure, then the database behaves again: the test proves the
       // retry after the rollback succeeds.
@@ -180,9 +195,11 @@ function makeFakeD1(options = {}) {
     throw new Error(`fake D1: unexpected run() SQL: ${s}`);
   }
 
+  /** @param {string} sql */
   function prepare(sql) {
     const s = sql.replace(/\s+/g, " ").trim();
     return {
+      /** @param {...unknown} params */
       bind(...params) {
         return {
           sql: s,
@@ -190,13 +207,13 @@ function makeFakeD1(options = {}) {
           async first() {
             options.onRead?.();
             if (s.includes("FROM device_codes WHERE user_code")) {
-              return byUserCode.get(params[0]) ?? null;
+              return byUserCode.get(/** @type {string} */ (params[0])) ?? null;
             }
             if (s.includes("FROM device_codes WHERE device_code_hash")) {
-              return codes.get(params[0]) ?? null;
+              return codes.get(/** @type {string} */ (params[0])) ?? null;
             }
             if (s.includes("FROM device_tokens WHERE token_hash")) {
-              const row = tokens.get(params[0]);
+              const row = tokens.get(/** @type {string} */ (params[0]));
               if (row === undefined) {
                 return null;
               }
@@ -205,7 +222,10 @@ function makeFakeD1(options = {}) {
               if (s.includes("revoked_at IS NULL") && row.revoked_at !== null) {
                 return null;
               }
-              if (s.includes("expires_at >") && row.expires_at <= params[1]) {
+              if (
+                s.includes("expires_at >") &&
+                row.expires_at <= /** @type {number} */ (params[1])
+              ) {
                 return null;
               }
               return row;
@@ -220,28 +240,30 @@ function makeFakeD1(options = {}) {
     };
   }
 
-  return {
-    prepare,
-    /**
-     * @param {Array<{sql: string, params: unknown[]}>} statements
-     */
-    async batch(statements) {
-      const snap = snapshot();
-      const results = [];
-      try {
-        for (const statement of statements) {
-          results.push(runStatement(statement.sql, statement.params));
+  return /** @type {FakeD1} */ (
+    /** @type {unknown} */ ({
+      prepare,
+      /**
+       * @param {Array<{sql: string, params: unknown[]}>} statements
+       */
+      async batch(statements) {
+        const snap = snapshot();
+        const results = [];
+        try {
+          for (const statement of statements) {
+            results.push(runStatement(statement.sql, statement.params));
+          }
+        } catch (error) {
+          restore(snap);
+          throw error;
         }
-      } catch (error) {
-        restore(snap);
-        throw error;
-      }
-      return results;
-    },
-    codes,
-    byUserCode,
-    tokens,
-  };
+        return results;
+      },
+      codes,
+      byUserCode,
+      tokens,
+    })
+  );
 }
 
 const ACCOUNT = { id: "acct_1", name: "Nish", email: "nish@example.com" };
@@ -324,12 +346,19 @@ test("an unknown code is refused and a bad user code attaches nothing", async ()
 
 // Walks the whole flow over D1 and hands back the token a fresh instance can
 // resolve, which is the point: nothing below depends on module state.
+/**
+ * @param {FakeD1} db
+ * @param {() => number} now
+ */
 async function mintOverD1(db, now) {
   const store = createD1DeviceSigninStore(db, { now });
   const code = await store.requestDeviceCode({ name: "laptop" });
   await store.approveDeviceCode(code.userCode, ACCOUNT);
   const polled = await createD1DeviceSigninStore(db, { now }).pollDeviceCode(code.deviceCode);
   assert.equal(polled.status, "approved");
+  if (polled.status !== "approved") {
+    throw new Error("expected an approved poll");
+  }
   return polled.deviceToken;
 }
 
@@ -358,8 +387,10 @@ test("a revoke over D1 is one write that reports the first, and the token stops 
   const db = makeFakeD1();
   const deviceToken = await mintOverD1(db, () => nowMs);
 
-  const first = await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken(
-    deviceToken,
+  const first = /** @type {{revoked: true, expiresAt: number, revokedAt: number}} */ (
+    /** @type {unknown} */ (
+      await createD1DeviceSigninStore(db, { now: () => nowMs }).revokeDeviceToken(deviceToken)
+    )
   );
   assert.equal(first.revoked, true);
   assert.equal(first.revokedAt, 0, "revoked at the clock the caller gave");
@@ -411,14 +442,15 @@ test("the D1 sweep drops the expired and the revoked token rows and leaves the l
 // renamed in the migration, or a table the migration never creates, fails here.
 test("the migration creates every table and column the store's SQL names", () => {
   const ddl = readFileSync(
-    new URL("../../../migrations/drive/0005_device_codes.sql", import.meta.url),
+    new URL("../../../migrations/drive/0007_device_codes.sql", import.meta.url),
     "utf8",
   );
+  /** @param {string} table */
   const columnsOf = (table) => {
     const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\((.*?)\\n\\);`, "s").exec(
       ddl,
     )?.[1];
-    assert.notEqual(body, undefined, `the migration never creates ${table}`);
+    assert.ok(body, `the migration never creates ${table}`);
     // The CHECK list on `status` holds commas of its own, so each line is read
     // from its start rather than split on them.
     return body
@@ -520,10 +552,10 @@ test("a second person cannot approve a code that already names an account", asyn
 // the two stores must answer the same question the same way.
 test("the in-memory store refuses an already approved code too", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const code = store.requestDeviceCode({ name: "laptop" });
-  store.approveDeviceCode(code.userCode, ACCOUNT);
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  await store.approveDeviceCode(code.userCode, ACCOUNT);
   assert.deepEqual(
-    store.approveDeviceCode(code.userCode, { id: "acct_2", name: "Someone else", email: "" }),
+    await store.approveDeviceCode(code.userCode, { id: "acct_2", name: "Someone else", email: "" }),
     { error: "approved-code" },
   );
 });
@@ -531,11 +563,11 @@ test("the in-memory store refuses an already approved code too", async () => {
 // The migrations are data, and data is not rolled back, so the D1 rule is that
 // a migration PR proves its new READ and its new WRITE path against the real
 // schema rather than a stand-in that agrees with itself. This walks the real
-// file in `migrations/drive/0005_device_codes.sql` over a real SQLite engine
+// file in `migrations/drive/0007_device_codes.sql` over a real SQLite engine
 // (test/harness.mjs, the same D1-shaped adapter the site's own tests use), so
 // the SQL the Worker prepares runs against the DDL the deploy applies.
 test("the store's read and write paths run against the real migration", async () => {
-  const db = createTestD1({ migrations: ["drive/0005_device_codes.sql"] });
+  const db = createTestD1({ migrations: ["drive/0007_device_codes.sql"] });
   const sqlite = db.sqlite;
 
   // A code one instance starts, another instance approves and consumes: nothing
@@ -550,6 +582,9 @@ test("the store's read and write paths run against the real migration", async ()
   });
   const minted = await second.pollDeviceCode(code.deviceCode);
   assert.equal(minted.status, "approved");
+  if (minted.status !== "approved") {
+    throw new Error("expected an approved poll");
+  }
   assert.equal(minted.account.id, ACCOUNT.id);
 
   // The rows are real: the token is on disk as a digest with the window the
@@ -563,11 +598,10 @@ test("the store's read and write paths run against the real migration", async ()
 
   // The write path for the window: a revoke lands on the row and the read path
   // refuses the token from then on, and the sweep drops the spent code row.
-  assert.equal(
-    (await second.revokeDeviceToken(minted.deviceToken)).revoked,
-    true,
-    "the token can be revoked",
+  const revoked = /** @type {{revoked: true, expiresAt: number, revokedAt: number}} */ (
+    /** @type {unknown} */ (await second.revokeDeviceToken(minted.deviceToken))
   );
+  assert.equal(revoked.revoked, true, "the token can be revoked");
   assert.equal(await second.accountForDeviceToken(minted.deviceToken), null);
   assert.equal(await second.sweepDeviceTokens(), 1, "the revoked token row went");
 });
@@ -668,7 +702,9 @@ test("a code request sweeps the rows already past their TTL", async () => {
 test("the public device routes are rate limited before they reach the database", async () => {
   const db = makeFakeD1();
   const signin = createD1DeviceSigninStore(db, { now: () => 0 });
+  /** @param {boolean} success */
   const limiter = (success) => ({ limit: async () => ({ success }) });
+  /** @param {Record<string, unknown>} env */
   const ctxWith = (env) => ({
     env,
     db,
@@ -755,6 +791,7 @@ test("the approve route leaves an unknown or expired code unapproved over D1", a
     account: null,
     now: () => nowMs,
   };
+  /** @param {string} userCode */
   const approve = (userCode) =>
     dispatch(
       new Request("https://api.test/v1/device/approve", {
@@ -793,6 +830,7 @@ test("a code started by the route is approvable from a fresh instance (drive#136
     signin: createD1DeviceSigninStore(db, { now: () => 0 }),
   });
   const accounts = accountsFor("sess_ok");
+  /** @param {import("../src/device-signin.js").DeviceSigninStore} signin */
   const ctxFor = (signin) => ({
     env: {
       DEVICE_RATE_LIMITER: { limit: async () => ({ success: true }) },

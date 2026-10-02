@@ -101,8 +101,9 @@ export function createMemoryStore(options = {}) {
      * person types on the approval page. The CLI's `deviceCode` is a secret;
      * the `userCode` is the thing shown to the person.
      * @param {{name?: string}} [request]
+     * @returns {Promise<import("./device-signin.js").DeviceCodeResult>}
      */
-    requestDeviceCode(request = {}) {
+    async requestDeviceCode(request = {}) {
       return signin.requestDeviceCode(request);
     },
 
@@ -111,9 +112,10 @@ export function createMemoryStore(options = {}) {
      * account and mark the code ready. Approving twice is a no-op once the
      * account is attached.
      * @param {string} userCode
-     * @param {{id: string, name?: string, email?: string}} account
+     * @param {{id: string, name?: string, email?: string}} [account]
+     * @returns {Promise<import("./device-signin.js").ApproveResult>}
      */
-    approveDeviceCode(userCode, account) {
+    async approveDeviceCode(userCode, account) {
       return signin.approveDeviceCode(userCode, account);
     },
 
@@ -125,8 +127,7 @@ export function createMemoryStore(options = {}) {
      * backup, say) answers `expired` rather than a token that names no
      * account: there is nothing for that token to be.
      * @param {string} deviceCode
-     * @returns {Promise<{status: "unknown"|"expired"|"pending"}
-     *   |{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}>}
+     * @returns {Promise<import("./device-signin.js").PollResult>}
      */
     pollDeviceCode(deviceCode) {
       return signin.pollDeviceCode(deviceCode);
@@ -159,6 +160,7 @@ export function createMemoryStore(options = {}) {
      * never held answers `not-found` rather than claiming a revoke that
      * changed nothing — that difference is what a caller can promise a person.
      * @param {string} token
+     * @returns {Promise<import("./device-signin.js").RevokeResult>}
      */
     revokeDeviceToken(token) {
       return signin.revokeDeviceToken(token);
@@ -173,9 +175,9 @@ export function createMemoryStore(options = {}) {
      * run it on a timer.
      * @param {number} [at] epoch seconds to judge the rows at; injected so a
      *   test can sweep a row it cannot otherwise wait for.
-     * @returns {number|Promise<number>} how many rows went
+     * @returns {Promise<number>} how many rows went
      */
-    sweepDeviceTokens(at) {
+    async sweepDeviceTokens(at) {
       return signin.sweepDeviceTokens(at);
     },
 

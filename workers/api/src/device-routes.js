@@ -39,6 +39,16 @@ import { bearerToken, errorResponse, json } from "./http.js";
  * the key routes take. */
 /** @typedef {ReturnType<typeof import("./keystore.js").createMemoryStore>} KeyStore */
 
+/**
+ * The per-request context these handlers read. `store` and `url` are set by the
+ * dispatcher for every path here; `env` carries the edge-limit bindings; and
+ * `account` is set by the account gate on the approve route, the only account
+ * route in this module. Declared structurally rather than as the dispatcher's
+ * full `Ctx` so a handler names exactly what it uses, the same shape the key
+ * routes use.
+ * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string}|null}} DeviceCtx
+ */
+
 // The two edge-limit bindings the device flow answers behind (drive issue #147,
 // raised in the code review that read the sign-in's send vector: "Covers
 // /api/signin and device approve/poll"). The stock rate-limit binding keyed on
@@ -191,7 +201,7 @@ async function readUserCode(request) {
  * POST /v1/device/code — start a device sign-in. Public: the CLI has no
  * credential yet, which is the point of the flow.
  * @param {Request} request
- * @param {import("./index.js").RouteCtx} ctx
+ * @param {DeviceCtx} ctx
  */
 export async function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -255,7 +265,7 @@ async function readRequestedName(request) {
  * POST /v1/device/token — the CLI's poll. `pending` until the page approves;
  * then the device token, shown once.
  * @param {Request} request
- * @param {import("./index.js").RouteCtx} ctx
+ * @param {DeviceCtx} ctx
  */
 export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
@@ -299,7 +309,7 @@ export async function pollDeviceTokenRoute(request, ctx) {
  * GET /v1/device/approve — the page the CLI sends the person to. An account
  * route (routes.js), so only a signed-in person reaches it.
  * @param {Request} _request
- * @param {import("./index.js").RouteCtx} ctx
+ * @param {DeviceCtx} ctx
  */
 export function approvePageRoute(_request, ctx) {
   return approvePage({ userCode: ctx.url.searchParams.get("user_code") ?? "" });
@@ -310,7 +320,7 @@ export function approvePageRoute(_request, ctx) {
  * route (routes.js), so the dispatcher has already answered 401 to an
  * anonymous request and `ctx.account` is the signed-in account.
  * @param {Request} request
- * @param {import("./index.js").RouteCtx} ctx
+ * @param {DeviceCtx} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
   // State-changing and cookie-authenticated, so a form another site made on
@@ -364,7 +374,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
  * token, so the store row must exist; revoking it marks it dead for every
  * future bearer lookup.
  * @param {Request} request
- * @param {import("./index.js").RouteCtx} ctx
+ * @param {DeviceCtx} ctx
  */
 export async function revokeDeviceTokenRoute(request, ctx) {
   if (request.method !== "DELETE") {

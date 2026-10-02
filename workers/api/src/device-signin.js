@@ -28,17 +28,48 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 /**
  * Any device sign-in store: the shape the routes read. The in-memory
  * implementation is a stand-in; the D1 one is the real store. Every caller
- * awaits, so sync or async implementations both fit.
+ * awaits, and both implementations are async (the D1 statements are), so the
+ * interface below is Promise-only: a stand-in cannot accidentally be read as a
+ * plain value, and a caller cannot forget the await and get `undefined`.
+ *
+ * `approveDeviceCode`'s account is optional because the in-memory store's own
+ * older call shape can name one from the device (a deployment with no account
+ * store still walks the flow); the D1 store never takes that path, because the
+ * approve route is an account route and its account is always the sign-in
+ * flow's.
  * @typedef {object} DeviceSigninStore
  * @property {Map<string, {id: string, name: string, email: string|null}>} [accounts]
  *        only the in-memory store holds one, for a test that models a
  *        lost account row
- * @property {(request?: {name?: string}) => {deviceCode: string, userCode: string, expiresIn: number, interval: number}|Promise<{deviceCode: string, userCode: string, expiresIn: number, interval: number}>} requestDeviceCode
- * @property {(userCode: string, account: {id: string, name?: string, email?: string}) => {accountId?: string, name?: string, error?: string}|Promise<{accountId?: string, name?: string, error?: string}>} approveDeviceCode
- * @property {(deviceCode: string) => Promise<{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}>} pollDeviceCode
+ * @property {(request?: {name?: string}) => Promise<DeviceCodeResult>} requestDeviceCode
+ * @property {(userCode: string, account?: {id: string, name?: string, email?: string}) => Promise<ApproveResult>} approveDeviceCode
+ * @property {(deviceCode: string) => Promise<PollResult>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
- * @property {(token: string) => Promise<{revoked: true, expiresAt: number, revokedAt: number}|{error: "not-found"}>} revokeDeviceToken
- * @property {(at?: number) => number|Promise<number>} sweepDeviceTokens
+ * @property {(token: string) => Promise<RevokeResult>} revokeDeviceToken
+ * @property {(at?: number) => Promise<number>} sweepDeviceTokens
+ */
+
+/**
+ * A freshly started device code: the CLI's secret and the short code a person
+ * types on the approval page.
+ * @typedef {{deviceCode: string, userCode: string, expiresIn: number, interval: number}} DeviceCodeResult
+ */
+
+/**
+ * An approval's answer: the account it attached, or a named refusal.
+ * @typedef {{accountId?: string, name?: string, error?: string}} ApproveResult
+ */
+
+/**
+ * A poll's answer: `pending` until the page approves, then the device token
+ * (shown once) and the account it names.
+ * @typedef {{status: "unknown"|"expired"|"pending"}|{status: "approved", deviceToken: string, account: {id: string, name: string, email: string|null}}} PollResult
+ */
+
+/**
+ * A revoke's answer: what the row says, or a named refusal for a token the
+ * store never held.
+ * @typedef {{revoked: true, expiresAt: number, revokedAt: number}|{error: "not-found"}} RevokeResult
  */
 
 // How long a device code is good for, and how often the CLI may poll
@@ -163,8 +194,9 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * Start a device sign-in: a code the CLI polls with, and a short code the
      * person types on the approval page.
      * @param {{name?: string}} [request]
+     * @returns {Promise<DeviceCodeResult>}
      */
-    requestDeviceCode(request = {}) {
+    async requestDeviceCode(request = {}) {
       const deviceCode = newId("dev");
       const userCode = newUserCode(randomBytes);
       const createdAt = nowSeconds(now());
@@ -196,8 +228,9 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * always the sign-in flow's.
      * @param {string} userCode
      * @param {{id: string, name?: string, email?: string}} [account]
+     * @returns {Promise<ApproveResult>}
      */
-    approveDeviceCode(userCode, account) {
+    async approveDeviceCode(userCode, account) {
       const deviceCode = byUserCode.get(userCode);
       const code = deviceCode === undefined ? undefined : byDeviceCode.get(deviceCode);
       if (code === undefined) {
@@ -241,6 +274,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * backup, say) answers `expired` rather than a token that names no
      * account: there is nothing for that token to be.
      * @param {string} deviceCode
+     * @returns {Promise<PollResult>}
      */
     async pollDeviceCode(deviceCode) {
       const code = byDeviceCode.get(deviceCode);
@@ -312,6 +346,7 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * never held answers `not-found` rather than claiming a revoke that
      * changed nothing — that difference is what a caller can promise a person.
      * @param {string} token
+     * @returns {Promise<RevokeResult>}
      */
     async revokeDeviceToken(token) {
       if (typeof token !== "string" || token === "") {
@@ -331,9 +366,9 @@ export function createMemoryDeviceSigninStore(options = {}) {
      * The token rows that can no longer authenticate. See the closure above;
      * exposed so a test (or a timer) can run it without minting.
      * @param {number} [at]
-     * @returns {number} how many rows went
+     * @returns {Promise<number>} how many rows went
      */
-    sweepDeviceTokens(at) {
+    async sweepDeviceTokens(at) {
       return sweepTokens(at);
     },
   };
@@ -371,6 +406,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
   return {
     /**
      * @param {{name?: string}} [request]
+     * @returns {Promise<DeviceCodeResult>}
      */
     async requestDeviceCode(request = {}) {
       const deviceCode = newId("dev");
@@ -411,9 +447,17 @@ export function createD1DeviceSigninStore(db, options = {}) {
 
     /**
      * @param {string} userCode
-     * @param {{id: string, name?: string, email?: string}} account
+     * @param {{id: string, name?: string, email?: string}} [account]
+     * @returns {Promise<ApproveResult>}
      */
     async approveDeviceCode(userCode, account) {
+      // The approve route is an account route, so a real call always carries
+      // the signed-in account. The in-memory stand-in can name one from the
+      // device, but this store cannot: with no account there is nobody to
+      // attach, so it refuses without reading or writing the row.
+      if (account === undefined) {
+        return { error: "unknown-code" };
+      }
       const row = asCode(
         await first(
           db,
@@ -486,6 +530,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
      * backup, say) answers `expired` rather than a token that names no
      * account: there is nothing for that token to be.
      * @param {string} deviceCode
+     * @returns {Promise<PollResult>}
      */
     async pollDeviceCode(deviceCode) {
       const hash = await sha256Hex(deviceCode);
@@ -606,6 +651,7 @@ export function createD1DeviceSigninStore(db, options = {}) {
      * this one's). A token the store never held answers `not-found` rather
      * than claiming a revoke that changed nothing.
      * @param {string} token
+     * @returns {Promise<RevokeResult>}
      */
     async revokeDeviceToken(token) {
       if (typeof token !== "string" || token === "") {
