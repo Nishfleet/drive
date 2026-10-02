@@ -10,6 +10,10 @@ dist/
 .dev.vars
 .wrangler/
 .cloudflare/
+# Lighthouse CI's run artefacts (drive#225): the reports are the run's output,
+# and `git status` and a release should not carry them. The budgets live in
+# lighthouserc.json, which is committed.
+.lighthouseci/
 
 # Go CLI
 /drive
