@@ -1,6 +1,6 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
-import { METER_CRON } from "./src/meter.js";
+import { METER_CRON, METER_RECONCILE_SCHEDULE } from "./src/meter.js";
 import { REINDEX_SCHEDULE } from "./src/search.js";
 
 // drive issue #11: the pricing and landing page, served as Worker static
@@ -30,17 +30,20 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*"],
       notFoundHandling: "404-page",
     },
-    // Two Cron Triggers: the meter's hourly rollup (drive issue #6) and the
-    // file index's nightly reconciler (drive issue #18). `scheduled` in
-    // src/index.js tells the two apart by the cron string the platform hands
-    // it, so neither trigger spends the other's work. The reindex schedule is
-    // the only way a rebuild starts, so no web request can spend the walk
-    // (the safety review: reindex is not a public route); 03:00 UTC is the
-    // spec's quiet hour, before the meter's first hourly run. Both schedules
-    // are the constants the modules that own them export, so a changed
-    // schedule cannot drift from the trigger that runs it.
+    // Three Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // meter's nightly reconciler (drive issue #59), and the file index's
+    // nightly reconciler (drive issue #18). `scheduled` in src/index.js tells
+    // them apart by the cron string the platform hands it, so no trigger
+    // spends another's work. The reindex schedule is the only way a rebuild
+    // starts, so no web request can spend the walk (the safety review: reindex
+    // is not a public route); 03:00 UTC is the spec's quiet hour, before the
+    // meter's first hourly run. The meter's reconciler runs at 04:00 UTC, an
+    // hour later, so the two nightly walks do not share a trip. All three
+    // schedules are the constants the modules that own them export, so a
+    // changed schedule cannot drift from the trigger that runs it.
     triggers: [
       triggers.scheduled({ schedule: METER_CRON }),
+      triggers.scheduled({ schedule: METER_RECONCILE_SCHEDULE }),
       triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
     ],
     env: {
