@@ -34,7 +34,9 @@ export const KEY_KINDS = ["device", "agent", "s3", "branch"];
  * @type {Readonly<Record<KeyKind, ReadonlyArray<Capability>>>}
  */
 export const CAPABILITIES_BY_KIND = Object.freeze({
-  device: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write", "delete"])),
+  device: Object.freeze(
+    /** @type {ReadonlyArray<Capability>} */ (["list", "read", "write", "delete"]),
+  ),
   agent: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
   s3: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
   branch: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),

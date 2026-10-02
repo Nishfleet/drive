@@ -1,56 +1,42 @@
-// Tests for the per-agent caps and the one-click rewind (drive issue #13,
-// build step 11: "agent undo and per-agent spending caps").
+// Tests for the one-click rewind (drive issue #13, build step 11's undo half).
 //
-// The issue's own acceptance, in the order the tests below walk it:
+// The per-agent spending cap and daily-request cap this file used to cover
+// were deleted by drive #169: they shipped with no caller outside these tests,
+// so no agent key was ever stopped, and there is no live request path that
+// spends money for an agent key to hook a cap into yet (the meter is still an
+// open PR, and the api Worker's storage route is a read-only stand-in). They
+// come back with the meter, on the real path — tracked in drive #171.
 //
-//   1. A per-agent monthly spending cap: "the agent's key stops writing when
-//      the cap is hit, and the user gets a warning before that." The cap state
-//      is pure data and the swap is the account cap's own `capSwapPlan`, so
-//      the test drives the whole walk — an agent under its cap keeps writing,
-//      an agent over it is read-only, and a raised cap puts the write
-//      capability back — with no storage and no Worker.
-//   2. A daily request cap per agent (Nish, 2026-09-30, from the
-//      pressure-test thread): "an agent key that passes its daily request count
-//      stops until the next day", which is a UTC-day reset the test pins at
-//      one instant and then steps a day forward.
-//   3. "Changed by <agent or person>" and the rewind that reads the same value
+// The rewind's own acceptance, in the order the tests below walk it:
+//
+//   1. "Changed by <agent or person>" and the rewind that reads the same value
 //      (issue #13's third comment): the attribution column on the branch row
 //      is read by both, and there is no second store.
-//   4. The rewind itself: what the agent changed is listed before anything is
+//   2. The rewind itself: what the agent changed is listed before anything is
 //      touched, one click discards it, the original folder is left exactly as
 //      it was, and a branch past the 30-day window cannot be rewound at all —
 //      enforced on the server, not by hiding a button.
 //
-// The caps are pure functions over injected numbers, so they run with no
-// database. The rewind needs a real one: the branches table is exercised
-// against a real SQLite engine via node:sqlite with the shipped migrations
-// applied, which is the same adapter test/branches.test.mjs uses, and storage
-// is the in-memory FileStore whose `copy` stands in for S3's CopyObject.
-import { test } from "node:test";
+// The rewind needs a real database: the branches table is exercised against a
+// real SQLite engine via node:sqlite with the shipped migrations applied,
+// which is the same adapter test/branches.test.mjs uses, and storage is the
+// in-memory FileStore whose `copy` stands in for S3's CopyObject.
+
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import {
-  DEFAULT_AGENT_CAPS,
-  agentCapPlan,
-  agentCapStatus,
-  agentCaps,
-  dayKey,
-  monthKey,
-} from "../src/agentcaps.js";
-import { createBranch } from "../src/branches.js";
-import { capStatus } from "../src/billing.js";
-import { READ_ONLY_CAPABILITIES } from "../src/cap.js";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+import { createBranch, handleBranchesRequest } from "../src/branches.js";
+import { createMemoryStore, scopeStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
+  handleRewindRequest,
   REWIND_ENDPOINT,
   REWIND_WINDOW_DAYS,
-  handleRewindRequest,
   rewindBranch,
-  rewindBranchRow,
   rewindPreview,
 } from "../src/rewind.js";
-import { createMemoryStore, scopeStore } from "../src/files.js";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -59,207 +45,201 @@ const OTHER = { id: "acct-2", name: "Someone else" };
 // the day it runs. Midday UTC, comfortably clear of either midnight.
 const AT = Date.parse("2026-09-30T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MINUTES_PER_MONTH = 43800;
-/** A whole month of a given size, so a test says "2 TB this month" and means
- * the metered spend and the peak are the same number. */
-const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
-
-/** An agent key row in the shape src/cap.js reads, so an agent cap that bites
- * produces the identical key swap an account cap produces. */
-const agentKey = (overrides = {}) => ({
-  keyId: "k-agent",
-  kind: "agent",
-  prefix: "u/acct-1/",
-  capabilities: ["list", "read", "write"],
-  ...overrides,
-});
-
-/** One agent's month and today's count, as `agentCapStatus` takes them. */
-const agent = (gb, overrides = {}) => ({
-  usage: { gbMinutes: fullMonthGbMinutes(gb), peakGb: gb },
-  caps: {},
-  requestsToday: 0,
-  day: dayKey(AT),
-  ...overrides,
-});
-
-// -------------------------------------------------------------- the caps
-
-test("a fresh agent key is capped by default, and the default is the account's", () => {
-  // The default comes from the migration and from agentCaps() alike, and it is
-  // the account's own $12 default cap rather than a second number a customer
-  // would have to learn (issue #39's number, read from src/billing.js).
-  const defaults = agentCaps();
-  assert.equal(defaults.monthlyCapUsd, 12);
-  assert.equal(defaults.monthlyCapUsd, DEFAULT_AGENT_CAPS.monthlyCapUsd);
-  assert.equal(defaults.dailyRequests, 1000);
-  // A row that has not been written yet reads as the defaults, so a key minted
-  // this second is already capped rather than uncapped until a first sweep.
-  assert.deepEqual(agentCaps({}), defaults);
-  assert.deepEqual(agentCaps(undefined), defaults);
-});
-
-test("the monthly cap counts min(metered, ceiling) through the account cap's own function", () => {
-  // The same bytes, the same cap, the same answer: the agent cap must not be
-  // able to say a different number from the account cap for identical usage.
-  const counted = capStatus(fullMonthGbMinutes(2000), 2000, 12);
-  const status = agentCapStatus(agent(2000), AT);
-  assert.equal(status.monthly.countedUsd, counted.countedUsd);
-  assert.equal(status.monthly.capUsd, counted.capUsd);
-  assert.equal(status.state, "read_only");
-  // 2 TB bills $16 against a $12 cap, so the agent is over; 1.2 TB pins at the
-  // $12 ceiling floor and is exactly at the cap, which is not over it.
-  assert.equal(status.monthly.countedUsd, 16);
-  assert.equal(agentCapStatus(agent(1200), AT).state, "active");
-});
-
-test("an agent over its monthly cap goes read-only, and a raised cap puts writing back", () => {
-  // The whole acceptance walk from the issue: "the agent's key stops writing
-  // when the cap is hit", then it writes again. The plan is the account cap's
-  // own capSwapPlan, so the swap a capped agent gets is the swap a capped
-  // account gets — the same read-only pair, and the same record of what was
-  // taken so a raise gives back exactly that and no more.
-  const over = agentCapStatus(agent(2000), AT);
-  assert.equal(over.state, "read_only");
-  const plan = agentCapPlan([agentKey()], over);
-  assert.equal(plan.swaps.length, 1);
-  assert.deepEqual(plan.swaps[0].capabilities, [...READ_ONLY_CAPABILITIES]);
-  assert.deepEqual(plan.swaps[0].cappedFrom, ["list", "read", "write"]);
-  assert.equal(plan.mount.restart, true);
-  assert.equal(plan.mount.reason, "cap-reached");
-
-  // A second run at the cap is a no-op, exactly like the account cap's, so a
-  // request-path check cannot churn the key.
-  const after = [agentKey({ capabilities: [...READ_ONLY_CAPABILITIES], cappedFrom: ["list", "read", "write"] })];
-  assert.deepEqual(agentCapPlan(after, over).swaps, []);
-
-  // The raise: the same key, back to the scope the cap recorded, not to the
-  // kind's full table (a hand-edited record cannot widen an agent key).
-  const raised = agentCapStatus(agent(200), AT);
-  assert.equal(raised.state, "active");
-  const restore = agentCapPlan(after, raised);
-  assert.equal(restore.swaps.length, 1);
-  assert.deepEqual(restore.swaps[0].capabilities, ["list", "read", "write"]);
-  assert.equal(restore.swaps[0].cappedFrom, null);
-});
-
-test("the daily request cap stops the key until the next day, and counts a stale day as nothing", () => {
-  const limited = { ...agent(10), caps: { daily_requests: 5 } };
-  assert.equal(agentCapStatus(limited, AT).state, "active");
-  assert.equal(agentCapStatus({ ...limited, requestsToday: 5 }, AT).state, "active");
-  // Over the count: the key stops. This is Nish's own wording — "passes its
-  // daily request count stops until the next day".
-  const stopped = agentCapStatus({ ...limited, requestsToday: 6 }, AT);
-  assert.equal(stopped.state, "read_only");
-  assert.equal(stopped.daily.remaining, 0);
-  assert.equal(stopped.daily.limit, 5);
-  // The message the user sees is one of the table's own sentences, with the
-  // numbers already in `daily` for the page to render.
-  assert.ok(stopped.daily.day === "2026-09-30");
-
-  // The reset is the day key, not a timer: a row from yesterday reads as a
-  // fresh day, so the agent writes again in the morning with nothing running.
-  const yesterday = dayKey(AT - DAY_MS);
-  const afterReset = agentCapStatus(
-    { ...limited, requestsToday: 6, day: yesterday },
-    AT,
-  );
-  assert.equal(afterReset.state, "active");
-  assert.equal(afterReset.daily.used, 0);
-  // And tomorrow, the count is live again from zero — and tomorrow is the
-  // next UTC day, which is what the reset keys on.
-  const tomorrow = agentCapStatus({ ...limited, requestsToday: 0 }, AT + DAY_MS);
-  assert.equal(tomorrow.state, "active");
-  assert.equal(tomorrow.daily.day, "2026-10-01");
-  // The row the Worker reads tomorrow carries yesterday's day key, so the
-  // reset needs no cron and no timer: the comparison above is the whole rule.
-  assert.equal(agentCapStatus({ ...limited, requestsToday: 6, day: dayKey(AT) }, AT + DAY_MS).state, "active");
-});
-
-test("the day key is a UTC day, so a cap means one number from any machine", () => {
-  // 23:30 UTC on the 30th is the 31st in Sydney and still the 30th in
-  // Los Angeles. The counter is UTC and nothing else, so a cap cannot move
-  // with the machine that is being capped.
-  assert.equal(dayKey(Date.parse("2026-09-30T23:30:00.000Z")), "2026-09-30");
-  assert.equal(dayKey(Date.parse("2026-10-01T00:30:00.000Z")), "2026-10-01");
-  assert.equal(monthKey(Date.parse("2026-09-30T23:30:00.000Z")), "2026-09");
-  // A clock that cannot be read is a caller error, not a day that silently
-  // becomes "today".
-  assert.throws(() => dayKey("nope"), TypeError);
-  assert.throws(() => agentCapStatus(agent(10), "nope"), TypeError);
-});
-
-test("the daily cap's warning comes before the cap, from the same state", () => {
-  // "the user gets a warning before that" (the issue's own words): a state is
-  // either active or read_only and there is no third case to render, but the
-  // page can warn from `remaining` while writes still work, which is what the
-  // numbers on the state are for.
-  const limited = { ...agent(10), caps: { daily_requests: 5 } };
-  const near = agentCapStatus({ ...limited, requestsToday: 4 }, AT);
-  assert.equal(near.state, "active");
-  assert.equal(near.daily.remaining, 1);
-  assert.ok(near.daily.used < near.daily.limit);
-  // A negative or nonsense count is a data error the drive refuses rather than
-  // a cap that silently means something else.
-  assert.throws(() => agentCaps({ daily_requests: -1 }), TypeError);
-});
 
 // ------------------------------------------------------------ the rewind
 
-// The D1 shape over a real SQLite database with the shipped migrations, the
-// same adapter test/branches.test.mjs uses, so the rewind runs against the SQL
-// the Worker runs — including the attribution column and the agent_caps table
-// migration 0004 added.
+// `rewindBranch` and `discardBranch` answer a union of the worked object and a
+// failure carrying a status; the helper below reads the status only from an
+// arm that has one, so each assertion states its own expectation.
+const failedStatus = (/** @type {unknown} */ result) => {
+  assert.equal(
+    typeof result === "object" && result !== null && "status" in result,
+    true,
+    `expected a failure, got ${JSON.stringify(result)}`,
+  );
+  return /** @type {{status: number}} */ (result).status;
+};
+
+/**
+ * D1's types are the runtime's `declare abstract class` — its `raw` carries two
+ * generic overloads no JS object can express — so the adapter is typed here in
+ * full, every method named and JSDoc'd, and handed to the interface the modules
+ * import through one documented cast. Nothing inside hides an error: each
+ * method below checks on its own, and a method the modules call that is missing
+ * would fail at run time, not silently pass.
+ * @typedef {D1Database & {sqlite: DatabaseSync}} SqliteD1
+ * @returns {SqliteD1}
+ */
 function makeD1() {
   const sqlite = new DatabaseSync(":memory:");
   for (const name of [
-    "0001_waitlist.sql",
-    "0002_file_index.sql",
-    "0003_branches.sql",
-    "0004_agent_undo.sql",
+    "waitlist/0001_waitlist.sql",
+    "drive/0002_file_index.sql",
+    "drive/0003_branches.sql",
+    "drive/0004_agent_undo.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
-  const runOne = (sql, params) => {
+  /** The D1 meta a run answers with: every required field of the runtime's
+   * D1Meta, so a `D1Result` check is not fought.
+   * @returns {D1Meta & Record<string, unknown>} */
+  const meta = () => ({
+    duration: 0,
+    size_after: 0,
+    rows_read: 0,
+    rows_written: 0,
+    last_row_id: 0,
+    changed_db: false,
+    changes: 0,
+  });
+  /**
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {{results: Record<string, unknown>[], changes: number}}
+   */
+  const runOne = (sql, params = []) => {
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
-      return { results: sqlite.prepare(sql).all(...params) };
-    }
-    const info = sqlite.prepare(sql).run(...params);
-    return { success: true, meta: { changes: info.changes } };
-  };
-  return {
-    sqlite,
-    prepare(sql) {
       return {
-        bind(...params) {
-          return {
-            sql,
-            params,
-            async all() {
-              return runOne(sql, params);
-            },
-            async first() {
-              const row = sqlite.prepare(sql).get(...params);
-              return row === undefined ? null : row;
-            },
-            async run() {
-              return runOne(sql, params);
-            },
-          };
-        },
+        results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
+        changes: 0,
       };
-    },
-    async batch(statements) {
-      for (const statement of statements) {
-        runOne(statement.sql, statement.params);
-      }
-      return [];
-    },
+    }
+    const info = sqlite.prepare(prepared).run(...values);
+    return { results: [], changes: Number(info.changes) };
   };
+  /** The SQL and parameters each prepared statement carries, so batch() can
+   * run the statements the caller built and not re-derive them.
+   * @type {WeakMap<object, {sql: string, params: unknown[]}>} */
+  const bound = new WeakMap();
+  /**
+   * One prepared statement, the way D1 hands it back: bind() returns a
+   * statement carrying its own parameters, so the rest of the chain
+   * (all/first/run) runs the bound SQL.
+   * @param {string} sql
+   * @param {unknown[]} [params]
+   * @returns {D1PreparedStatement}
+   */
+  const statementFor = (sql, params = []) => {
+    const statement = /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        sql,
+        params,
+        /** @param {...unknown} values */
+        bind(...values) {
+          return statementFor(sql, values);
+        },
+        /**
+         * @template T
+         * @param {string} [colName]
+         * @returns {Promise<T|null>}
+         */
+        async first(colName) {
+          void colName;
+          const row = runOne(sql, params).results[0];
+          return row === undefined ? null : /** @type {T} */ (row);
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async all() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+        /**
+         * @template T
+         * @returns {Promise<D1Result<T>>}
+         */
+        async run() {
+          return /** @type {D1Result<T>} */ ({
+            results: /** @type {T[]} */ (runOne(sql, params).results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          });
+        },
+      })
+    );
+    bound.set(statement, { sql, params });
+    return statement;
+  };
+  return /** @type {SqliteD1} */ (
+    /** @type {unknown} */ ({
+      sqlite,
+      /** @param {string} sql */
+      prepare(sql) {
+        return statementFor(sql, []);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      async batch(statements) {
+        /** @type {Array<{results: Record<string, unknown>[], changes: number}>} */
+        const results = [];
+        sqlite.exec("BEGIN");
+        try {
+          for (const statement of statements) {
+            const state = bound.get(statement);
+            if (!state) {
+              throw new Error("a statement was batch-ran that this adapter did not prepare");
+            }
+            results.push(runOne(state.sql, state.params));
+          }
+        } finally {
+          sqlite.exec("COMMIT");
+        }
+        return /** @type {D1Result<T>[]} */ (
+          results.map((result) => ({
+            results: /** @type {T[]} */ (result.results),
+            success: /** @type {true} */ (true),
+            meta: meta(),
+          }))
+        );
+      },
+      /**
+       * D1's exec runs a multi-statement string; the tests never call it, but
+       * the adapter speaks the interface rather than being cast silent.
+       * @param {string} query
+       */
+      async exec(query) {
+        sqlite.exec(query);
+        return { count: 0, duration: 0 };
+      },
+      /**
+       * D1's session API is not part of what the modules under test use; a
+       * call would be a real bug, so it throws rather than standing in silently.
+       * @param {string} [constraintOrBookmark]
+       */
+      withSession(constraintOrBookmark) {
+        throw new Error(`a test adapter has no D1 session: ${String(constraintOrBookmark)}`);
+      },
+      async dump() {
+        throw new Error("a test adapter has no dump");
+      },
+    })
+  );
 }
 
+/**
+ * The bytes a scoped store holds at `path`, as text. A read that answers null
+ * is a real miss, so it throws rather than resolving an empty string the
+ * assertions below could not tell from a genuinely empty file.
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
 const text = (store, path) =>
-  store.read(path).then((found) => new Response(found.body).text());
+  store
+    .read(path)
+    .then((found) =>
+      found ? new Response(found.body).text() : Promise.reject(new Error(`no file at ${path}`)),
+    );
 
 /** A drive with a folder an agent branched and then changed. */
 async function agentBranch({ changedBy = "k-claude" } = {}) {
@@ -271,7 +251,13 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   await scoped.write("/Photos/a.txt", new Blob(["original a"]).stream(), "text/plain");
   await scoped.write("/Photos/keep.txt", new Blob(["untouched"]).stream(), "text/plain");
   const db = makeD1();
-  const created = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "fix", changedBy }, () => AT);
+  const created = await createBranch(
+    db,
+    scoped,
+    ACCOUNT,
+    { folder: "/Photos", name: "fix", changedBy },
+    () => AT,
+  );
   // The agent edits one file and deletes another, inside the branch copy.
   await scoped.write("/.branches/fix/a.txt", new Blob(["agent rewrote a"]).stream(), "text/plain");
   await scoped.remove("/.branches/fix/keep.txt");
@@ -283,12 +269,14 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // handler applies the scope. That is the same call the Worker makes, so a
   // test cannot pass where the Worker would fail.
   const { raw, db } = await agentBranch();
-  // The row comes from the read the rewind route itself uses (rewindBranchRow
-  // -> listBranches), not from the /api/branches JSON: that response strips the
-  // snapshot, while the rewind needs it, so the two are different shapes by
-  // design. Reading through the production path is what keeps this test honest
-  // about what the screen is handed.
-  const row = await rewindBranchRow(db, raw, ACCOUNT, "fix");
+  const branches = await handleBranchesRequest(
+    new Request(`https://drive.test/api/branches`, { method: "GET" }),
+    db,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  const [row] = (await branches.json()).branches;
   const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT);
   // The list is the branch's own live diff, so the screen's promise is what a
   // rewind actually does — one file changed, one removed, and the file the
@@ -321,7 +309,9 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const result = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(result.error, undefined);
+  // `rewindBranch` answers a union; `"error" in result` is its discriminator
+  // and the success arm above carries state/rewound/changedBy, not error.
+  assert.ok(!("error" in result));
   assert.equal(result.state, "discarded");
   assert.equal(result.rewound, 2);
   assert.equal(result.changedBy, "k-claude");
@@ -334,8 +324,8 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   // And a second click is refused rather than re-removing nothing: the branch
   // is closed, and "already closed" is its own message.
   const again = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
-  assert.equal(again.status, 409);
-  assert.equal(again.error, failureMessage("branch-not-open"));
+  assert.equal(failedStatus(again), 409);
+  assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
 });
 
 test("the 30-day window is the server's, not a hidden button", async () => {
@@ -344,7 +334,10 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // still inside; day 31 is not.
   const { raw, db } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
-  const row = (await rewindBranchRowFor(db, raw, "fix"));
+  const row = await rewindBranchRowFor(db, raw, "fix");
+  // The branch above was just created, so the list that reads it back has it;
+  // `assert.ok` narrows the null the lookup honestly returns.
+  assert.ok(row);
 
   const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS);
   assert.equal(inside.canRewind, true);
@@ -360,8 +353,11 @@ test("the 30-day window is the server's, not a hidden button", async () => {
 
   // And the POST is refused with the message table's own sentence.
   const refused = await rewindBranch(db, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
-  assert.equal(refused.status, 409);
-  assert.equal(refused.error, failureMessage("rewind-window-closed"));
+  assert.equal(failedStatus(refused), 409);
+  assert.equal(
+    /** @type {{error: string}} */ (refused).error,
+    failureMessage("rewind-window-closed"),
+  );
   // Nothing was removed: the refusal happens before the discard.
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
   assert.ok("rewind-window-closed" in FAILURE_MESSAGES);
@@ -375,8 +371,8 @@ test("one account can never read or rewind another account's branch", async () =
   const otherRaw = createMemoryStore();
   assert.equal(await rewindBranchRowFor(db, raw, "nope"), null);
   const other = await rewindBranch(db, scopeStore(otherRaw, OTHER), OTHER, "fix", AT);
-  assert.equal(other.status, 404);
-  assert.equal(other.error, failureMessage("branch-not-found"));
+  assert.equal(failedStatus(other), 404);
+  assert.equal(/** @type {{error: string}} */ (other).error, failureMessage("branch-not-found"));
   // The list an account sees is its own: account B sees no branches at all.
   const listed = await handleRewindRequest(
     new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
@@ -393,8 +389,15 @@ test("one account can never read or rewind another account's branch", async () =
 
 test("the rewind route lists, previews, rewinds and refuses the rest", async () => {
   const { raw, db } = await agentBranch();
+  /** @param {string} path @param {RequestInit} [init] */
   const call = (path, init) =>
-    handleRewindRequest(new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init), db, raw, ACCOUNT, () => AT);
+    handleRewindRequest(
+      new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init),
+      db,
+      raw,
+      ACCOUNT,
+      () => AT,
+    );
 
   // The list is built from the same previews the detail returns.
   const list = await call("", { method: "GET" });
@@ -442,8 +445,26 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
   assert.equal(await text(scopeStore(raw, ACCOUNT), "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
-// The one branch row a test needs by name, through the same read the rewind
-// route performs, so a test cannot reach a row the screen would not show.
+// The one branch row a test needs by name, through the same list the screen
+// reads, so a test cannot reach a row the screen would not show. `listBranches`
+// answers each row with the branch plus the two diff counts the screen shows.
+/**
+ * @param {D1Database} db
+ * @param {import("../src/files.js").FileStore} raw
+ * @param {string} name
+ * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
+ */
 async function rewindBranchRowFor(db, raw, name) {
-  return rewindBranchRow(db, raw, ACCOUNT, name);
+  const branches = await handleBranchesRequest(
+    new Request(`https://drive.test/api/branches`, { method: "GET" }),
+    db,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  // `Response.json()` is typed as `Promise<any>` by the DOM lib, so the row is
+  // read through one bound local carrying the list's own shape.
+  /** @type {{branches: Array<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}>}} */
+  const body = await branches.json();
+  return body.branches.find((row) => row.name === name) ?? null;
 }

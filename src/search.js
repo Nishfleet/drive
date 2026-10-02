@@ -21,8 +21,17 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
-import { TRASH_PATH, drivePathFromKey, validatePath } from "./files.js";
+import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
+
+/** One account's file store, the shape src/files.js exports and every helper
+ * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
+/** @typedef {import("./files.js").FileStore} FileStore */
+/** One row of the file index, as it is written to D1. */
+/**
+ * @typedef {{account_id: string, path: string, name: string, parent: string,
+ *   size_bytes: number, modified_at: string|null, indexed_at: string}} FileRow
+ */
 
 /** The listing the CLI and the agent tool read. */
 export const SEARCH_ENDPOINT = "/api/search";
@@ -55,7 +64,9 @@ const STATEMENTS_PER_BATCH = 64;
 
 /** A LIKE pattern for one word. User text may hold % and _; escaping them
  * with a backslash and naming ESCAPE '\' matches those characters literally,
- * not as wildcards. */
+ * not as wildcards.
+ * @param {string} word
+ * @returns {string} */
 function escapeLike(word) {
   return word.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
@@ -78,6 +89,7 @@ export function parseQuery(input) {
   if (query.length > MAX_QUERY_LENGTH) {
     return { error: "That search is too long. Use fewer words." };
   }
+  /** @type {string[]} */
   const words = [];
   for (const raw of query.split(/\s+/)) {
     const word = raw.slice(0, MAX_WORD_LENGTH).toLowerCase();
@@ -107,10 +119,9 @@ export function searchSql(words, { accountId, limit }) {
     throw new Error("searchSql needs at least one word");
   }
   const joined = escapeLike(words.join(" "));
+  /** @type {Array<string|number>} */
   const params = [accountId, ...words.map((word) => `%${escapeLike(word)}%`)];
-  const clauses = words
-    .map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`)
-    .join(" AND ");
+  const clauses = words.map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`).join(" AND ");
   const exact = params.length + 1;
   const prefix = exact + 1;
   params.push(joined, `${joined}%`, limit + 1);
@@ -140,7 +151,7 @@ export async function searchDrive(db, account, query, options = {}) {
     return { error: "The drive index is not configured on this deployment.", status: 503 };
   }
   const parsed = parseQuery(query);
-  if (parsed.error) {
+  if ("error" in parsed) {
     return { error: parsed.error, status: 400 };
   }
   const want = Math.min(
@@ -149,7 +160,10 @@ export async function searchDrive(db, account, query, options = {}) {
   );
   const { sql, params } = searchSql(parsed.words, { accountId: account.id, limit: want });
   const started = now();
-  const result = await db.prepare(sql).bind(...params).all();
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
+    .all();
   const tookMs = now() - started;
   const rows = result?.results ?? [];
   const truncated = rows.length > want;
@@ -169,7 +183,8 @@ export async function searchDrive(db, account, query, options = {}) {
 
 // ---------------------------------------------------------------- the feeds
 
-/** The name, parent and trash state of a validated drive path. */
+/** The name, parent and trash state of a validated drive path.
+ * @param {string} path */
 function locate(path) {
   const cut = path.lastIndexOf("/");
   return {
@@ -179,14 +194,23 @@ function locate(path) {
   };
 }
 
+/**
+ * @param {{id: string}} account
+ * @param {string} path
+ * @param {{size?: number, modified?: number|null, modifiedAt?: string}} entry
+ * @param {number} at
+ * @returns {FileRow}
+ */
 function fileRow(account, path, entry, at) {
   const { name, parent } = locate(path);
   const size =
-    entry && Number.isFinite(entry.size) && entry.size >= 0 ? Math.floor(entry.size) : 0;
+    typeof entry.size === "number" && Number.isFinite(entry.size) && entry.size >= 0
+      ? Math.floor(entry.size)
+      : 0;
   const modified =
-    entry && entry.modified
+    typeof entry.modified === "number"
       ? new Date(entry.modified).toISOString()
-      : entry && typeof entry.modifiedAt === "string"
+      : typeof entry.modifiedAt === "string"
         ? entry.modifiedAt
         : null;
   return {
@@ -200,28 +224,27 @@ function fileRow(account, path, entry, at) {
   };
 }
 
-const UPSERT_COLUMNS =
-  "(account_id, path, name, parent, size_bytes, modified_at, indexed_at)";
+const UPSERT_COLUMNS = "(account_id, path, name, parent, size_bytes, modified_at, indexed_at)";
 const UPSERT_UPDATE =
   "name = excluded.name, parent = excluded.parent, " +
   "size_bytes = excluded.size_bytes, modified_at = excluded.modified_at, " +
   "indexed_at = excluded.indexed_at";
 // Seven placeholders a row, reused row by row inside one statement.
-const ROW_PLACEHOLDERS =
-  "(" + Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ") + ")";
+const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
 /** The prepared statements that write a chunk of rows. Exported so the test
- * can run them through the D1 shape, and the caller cannot build SQL. */
+ * can run them through the D1 shape, and the caller cannot build SQL.
+ * @param {D1Database} db
+ * @param {FileRow[]} rows
+ * @returns {D1PreparedStatement[]} */
 export function upsertStatements(db, rows) {
+  /** @type {D1PreparedStatement[]} */
   const statements = [];
   for (let start = 0; start < rows.length; start += ROWS_PER_STATEMENT) {
     const chunk = rows.slice(start, start + ROWS_PER_STATEMENT);
     const values = chunk
       .map((_, rowIndex) =>
-        ROW_PLACEHOLDERS.replace(
-          /\?(\d+)/g,
-          (_, n) => `?${rowIndex * 7 + Number(n)}`,
-        ),
+        ROW_PLACEHOLDERS.replace(/\?(\d+)/g, (_, n) => `?${rowIndex * 7 + Number(n)}`),
       )
       .join(", ");
     const params = chunk.flatMap((row) => [
@@ -245,7 +268,10 @@ export function upsertStatements(db, rows) {
   return statements;
 }
 
-/** The one prepared statement that drops one row. */
+/** The one prepared statement that drops one row.
+ * @param {D1Database} db
+ * @param {{id: string}} account
+ * @param {string} path */
 export function deleteStatement(db, account, path) {
   return db
     .prepare("DELETE FROM file_index WHERE account_id = ?1 AND path = ?2")
@@ -258,7 +284,7 @@ export function deleteStatement(db, account, path) {
  * second run is a no-op and a row an event feed missed is gone by morning.
  * @param {D1Database} db
  * @param {FileStore} store
- * @param {{id: string, name: string}} account
+ * @param {{id: string}} account
  * @param {{now?: () => number, batchSize?: number}} [options]
  */
 export async function reconcileIndex(db, store, account, options = {}) {
@@ -273,6 +299,9 @@ export async function reconcileIndex(db, store, account, options = {}) {
   const seen = new Set();
   while (queue.length > 0) {
     const folder = queue.shift();
+    if (folder === undefined) {
+      continue;
+    }
     if (seen.has(folder)) {
       continue;
     }
@@ -295,9 +324,7 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  await db.batch([
-    db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id),
-  ]);
+  await db.batch([db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(account.id)]);
   for (let start = 0; start < rows.length; start += batchSize * ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * ROWS_PER_STATEMENT);
     await db.batch(upsertStatements(db, slice));
@@ -325,7 +352,7 @@ export async function reconcileIndex(db, store, account, options = {}) {
  * does when it walks an account's scoped store.
  * @param {FileStore} store
  * @param {D1Database} db
- * @param {{id: string, name: string}} account
+ * @param {{id: string}} account
  * @param {() => number} [now]
  */
 export function withIndex(store, db, account, now = () => Date.now()) {
@@ -336,6 +363,9 @@ export function withIndex(store, db, account, now = () => Date.now()) {
   const remove = store.remove.bind(store);
   return {
     ...store,
+    /** @param {string} key
+     * @param {BodyInit} body
+     * @param {string} contentType */
     async write(key, body, contentType) {
       await write(key, body, contentType);
       const path = drivePathFromKey(key, account);
@@ -344,6 +374,7 @@ export function withIndex(store, db, account, now = () => Date.now()) {
       }
       await db.batch(upsertStatements(db, [fileRow(account, path, {}, now())]));
     },
+    /** @param {string} key */
     async remove(key) {
       await remove(key);
       await db.batch([deleteStatement(db, account, drivePathFromKey(key, account))]);
@@ -371,7 +402,8 @@ export async function indexAccounts(db) {
     .prepare("SELECT DISTINCT account_id FROM file_index WHERE account_id <> ?1")
     .bind("")
     .all();
-  return (result?.results ?? []).map((row) => ({ id: row.account_id }));
+  const rows = /** @type {Array<{account_id: string}>} */ (result?.results ?? []);
+  return rows.map((row) => ({ id: row.account_id }));
 }
 
 // ---------------------------------------------------------------- the route
@@ -381,6 +413,12 @@ const JSON_HEADERS = Object.freeze({
   "cache-control": "no-store",
 });
 
+/**
+ * @param {unknown} body
+ * @param {number} [status]
+ * @param {Record<string, string>} [headers]
+ * @returns {Response}
+ */
 function json(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -388,6 +426,11 @@ function json(body, status = 200, headers = {}) {
   });
 }
 
+/**
+ * @param {string} message
+ * @param {number} status
+ * @returns {Response}
+ */
 function plain(message, status) {
   return new Response(message, {
     status,

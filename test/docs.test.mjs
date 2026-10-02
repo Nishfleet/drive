@@ -3,54 +3,49 @@
 // section of the site, so the gate is the same one the shipped pricing page
 // uses: the tests build their expectations from src/billing.js and fail CI
 // when a page drifts from it.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { test } from "node:test";
 import {
   BILLING_CONFIG,
+  GB_PER_TB,
+  MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
   monthlyCeilingUsd,
-  GB_PER_TB,
-  MINUTES_PER_MONTH,
 } from "../src/billing.js";
-import { DOC_PAGES, applyMarkers, renderDocs } from "../src/render-docs.js";
-import { INSTALL_COMMAND } from "../src/status.js";
+import { FAQ, faqMarkdown, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
+import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { SITE } from "../src/seo.js";
-import {
-  FAQ,
-  RIVAL_1TB_LINE,
-  faqMarkdown,
-  scoreboardVerdict,
-} from "../src/docs.js";
+import { INSTALL_COMMAND } from "../src/status.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
 // rests on a measured win, and once to prove the render refuses an
 // answer whose row has lost its measurement.
-const scoreboard = readFileSync(
-  new URL("../docs/scoreboard.md", import.meta.url),
-  "utf8",
-);
+const scoreboard = readFileSync(new URL("../docs/scoreboard.md", import.meta.url), "utf8");
 
 // The built site, which `npm test` produces before the suite runs
 // (package.json: test = typecheck + docs:build + node --test). These tests
 // read what would ship, not the authored Markdown, so a page that renders but
 // ships a wrong number fails here.
 const siteDir = new URL("../public/docs/", import.meta.url);
+/** @param {string} name */
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
 // The price numbers, worked out the way the invoice works them out: a month
 // that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
 // the same gb. Nothing in these tests types a dollar figure.
+/** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
   return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
 }
 
-const dollars = (amount) =>
-  Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
+/** @param {number} amount */
+const dollars = (amount) => (Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`);
 
 test("every docs page exists, is registered, and ships as HTML and .md", () => {
   for (const page of DOC_PAGES) {
@@ -135,8 +130,7 @@ test("every worked example on the pricing page is the invoice's own arithmetic",
   // And the metered column is genuinely larger than the bill at the sizes the
   // ceiling exists for, so the page cannot quietly drop the ceiling.
   assert.ok(
-    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) >
-      billFor(2).totalCents / 100,
+    meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
     "2 TB metered must be more than 2 TB billed, or the ceiling is not being applied",
   );
 });
@@ -146,16 +140,8 @@ test("the docs never promise what the money module does not compute", () => {
     const md = shipped(page.file);
     // The spec's bans (docs/build-spec.md "Never do"): no unlimited, no
     // credit units, no per-minute price.
-    assert.doesNotMatch(
-      md,
-      /unlimited/i,
-      `${page.file} must not claim unlimited storage`,
-    );
-    assert.doesNotMatch(
-      md,
-      /\bcredits?\b/i,
-      `${page.file} must not sell the free $1 as credits`,
-    );
+    assert.doesNotMatch(md, /unlimited/i, `${page.file} must not claim unlimited storage`);
+    assert.doesNotMatch(md, /\bcredits?\b/i, `${page.file} must not sell the free $1 as credits`);
     assert.doesNotMatch(
       md,
       /\$\s?[\d.,]+\s*(\/|per\s)min/i,
@@ -227,11 +213,7 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
 
 test("the changelog opens today and every entry is a real line", () => {
   const page = shipped("changelog.md");
-  assert.match(
-    page,
-    /## \d{4}-\d{2}-\d{2}/,
-    "the changelog must open with a date heading",
-  );
+  assert.match(page, /## \d{4}-\d{2}-\d{2}/, "the changelog must open with a date heading");
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.perTbUsd)),
     "the changelog must state the ceiling it recorded",
@@ -261,13 +243,12 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
   // lands. faqMarkdown() must refuse, naming the answer and the row,
   // so the answer leaves the page at the next build rather than
   // staying up unmeasured.
+  /** @param {string} metric @param {string} verdict */
   const flip = (metric, verdict) =>
     scoreboard
       .split("\n")
       .map((line) =>
-        line.startsWith(`| ${metric} |`)
-          ? line.replace("| win |", `| ${verdict} |`)
-          : line,
+        line.startsWith(`| ${metric} |`) ? line.replace("| win |", `| ${verdict} |`) : line,
       )
       .join("\n");
   assert.throws(
@@ -276,10 +257,7 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
     "the cost answer must come out when its row is not yet measured",
   );
   assert.throws(
-    () =>
-      faqMarkdown(
-        flip("agent features: no-delete keys", "not yet measured"),
-      ),
+    () => faqMarkdown(flip("agent features: no-delete keys", "not yet measured")),
     /no-delete keys/,
     "the agents answer must come out when one of its rows is not yet measured",
   );
@@ -294,10 +272,7 @@ test("the shipped FAQ is exactly the answers the data publishes", () => {
     "the FAQ page must carry every answer src/docs.js publishes, and no hand-added ones",
   );
   for (const entry of FAQ) {
-    assert.ok(
-      faq.includes(`## ${entry.question}`),
-      `the FAQ must answer "${entry.question}"`,
-    );
+    assert.ok(faq.includes(`## ${entry.question}`), `the FAQ must answer "${entry.question}"`);
   }
 });
 
@@ -307,17 +282,13 @@ test("the FAQ's rival line keeps the orchestrator's phrasing, from the scoreboar
   // phrasing is fixed, and both figures must still be the ones the
   // scoreboard's price-at-1-TB row records for Space, so the line
   // cannot drift from the row it came from.
-  assert.ok(
-    faq.includes(RIVAL_1TB_LINE),
-    "the FAQ must carry the rival line built in src/docs.js",
-  );
+  assert.ok(faq.includes(RIVAL_1TB_LINE), "the FAQ must carry the rival line built in src/docs.js");
   assert.ok(
     faq.includes("Space charges $20 a month, or $15 paid yearly, for 1 TB."),
     "the rival line must keep the orchestrator's exact phrasing",
   );
-  const row = scoreboard
-    .split("\n")
-    .find((line) => line.startsWith("| price at 1 TB |"));
+  const row = scoreboard.split("\n").find((line) => line.startsWith("| price at 1 TB |"));
+  assert.ok(row);
   const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);
   for (const figure of ["20", "15"]) {
     assert.ok(
@@ -347,32 +318,18 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   for (const page of DOC_PAGES) {
     // The docs home is the heading, and every page is a link with its
     // description, so an agent can pick a page without fetching them all.
-    assert.ok(
-      llms.includes(`${SITE.origin}${page.url}.md`),
-      `llms.txt must link ${page.url}.md`,
-    );
-    assert.ok(
-      llms.includes(page.file.slice(0, -3)),
-      `llms.txt must name the ${page.title} page`,
-    );
-    assert.ok(
-      full.includes(`# ${page.title}`),
-      `llms-full.txt must hold the ${page.title} page`,
-    );
+    assert.ok(llms.includes(`${SITE.origin}${page.url}.md`), `llms.txt must link ${page.url}.md`);
+    assert.ok(llms.includes(page.file.slice(0, -3)), `llms.txt must name the ${page.title} page`);
+    assert.ok(full.includes(`# ${page.title}`), `llms-full.txt must hold the ${page.title} page`);
   }
 });
 
 test("the sitemap lists the docs pages on the canonical origin, in order", () => {
-  const sitemap = readFileSync(
-    new URL("../public/sitemap.xml", import.meta.url),
-    "utf8",
-  );
+  const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
   assert.deepEqual(
     locations,
-    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) =>
-      `${SITE.origin}${path}`,
-    ),
+    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) => `${SITE.origin}${path}`),
     "the sitemap must list the home page and every docs page, in order",
   );
   // A docs URL in the sitemap that nothing serves is the drift the issue names:
@@ -397,17 +354,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // against the subcommand switch in cmd/drive/main.go, and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
-  const mainGo = readFileSync(
-    new URL("../cmd/drive/main.go", import.meta.url),
-    "utf8",
-  );
-  const switchBody = mainGo.slice(
-    mainGo.indexOf("switch os.Args[1]"),
-    mainGo.indexOf("default:"),
-  );
-  const subcommands = new Set(
-    [...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]),
-  );
+  const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
+  const switchBody = mainGo.slice(mainGo.indexOf("switch os.Args[1]"), mainGo.indexOf("default:"));
+  const subcommands = new Set([...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]));
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
@@ -476,10 +425,7 @@ test("the docs config and the site's own config agree on the origin", () => {
     home.includes("/docs/llms-full.txt"),
     "the docs home must link the llms-full.txt that the build writes",
   );
-  const rootLlms = readFileSync(
-    new URL("../public/llms.txt", import.meta.url),
-    "utf8",
-  );
+  const rootLlms = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
   assert.ok(
     rootLlms.includes(`${SITE.origin}/docs/llms-full.txt`),
     "the site llms.txt must link the llms-full.txt that the build writes",
@@ -502,16 +448,9 @@ test("the README describes the drive and points at the docs", () => {
     "the README must not still be the template stub",
   );
   assert.match(readme, /^# Drive$/m, "the README must name the product");
-  assert.match(
-    readme,
-    /2¢ per GB a month/,
-    "the README must state the rate",
-  );
+  assert.match(readme, /2¢ per GB a month/, "the README must state the rate");
   for (const page of DOC_PAGES) {
-    assert.ok(
-      readme.includes(`${SITE.origin}${page.url}`),
-      `the README must point at ${page.url}`,
-    );
+    assert.ok(readme.includes(`${SITE.origin}${page.url}`), `the README must point at ${page.url}`);
   }
 });
 
