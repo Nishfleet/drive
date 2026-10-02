@@ -3,7 +3,11 @@ import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
 import { dispatch } from "../src/index.js";
-import { createMemoryStore, DEVICE_CODE_TTL_SECONDS, DEVICE_TOKEN_TTL_SECONDS } from "../src/keystore.js";
+import {
+  createMemoryStore,
+  DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
+} from "../src/keystore.js";
 
 // A clock the test owns, so a device token can be pushed past its TTL without
 // sleeping; the store reads `now` from the context it is given.
@@ -721,7 +725,10 @@ test("the approve route answers 429 past its limit, and fails closed with none (
 
   const denied = await dispatch(
     request(),
-    baseCtx(store, null, { accounts, env: { DEVICE_RATE_LIMITER: makeRateLimiter({ success: false }) } }),
+    baseCtx(store, null, {
+      accounts,
+      env: { DEVICE_RATE_LIMITER: makeRateLimiter({ success: false }) },
+    }),
   );
   assert.equal(denied.status, 429);
   assert.equal(denied.headers.get("retry-after"), "60");
