@@ -27,12 +27,11 @@ import { test } from "node:test";
 import {
   BILLING_CONFIG,
   GB_PER_TB,
-  meteredMonthlyBillUsd,
   MINUTES_PER_MONTH,
+  meteredMonthlyBillUsd,
   monthBillCents,
 } from "../src/billing.js";
 import {
-  BYTES_PER_GB,
   gbMinutesInHour,
   MINUTE_MS,
   monthStart,
@@ -72,14 +71,36 @@ function version(sizeBytes, createdAt, hiddenAt = null) {
 }
 
 /**
+ * The adapter, as the meter's own functions take it. test/d1-sqlite.mjs hands
+ * back a D1-shaped object - a real node:sqlite database behind the interface,
+ * without exec, withSession or dump, which these tests never call - and this
+ * is the one place that says so. Every helper below takes the database
+ * through this name, so the cast is named once instead of at every call.
+ * @typedef {{db: D1Database, sqlite: import("node:sqlite").DatabaseSync}} MeteredDB
+ */
+
+/**
+ * One metered database: the D1-shaped adapter the meter's functions take, and
+ * the raw node:sqlite handle behind it for the reads a test makes directly.
+ * @returns {MeteredDB}
+ */
+function metered() {
+  const raw = makeMeteredDB();
+  return {
+    db: /** @type {D1Database} */ (/** @type {unknown} */ (raw.db)),
+    sqlite: raw.sqlite,
+  };
+}
+
+/**
  * Stores the account's versions the way the storage provider reports them -
  * a create event each, through the meter's own intake, so the file_versions
  * row is the one the provider's event would have written.
- * @param {ReturnType<typeof makeMeteredDB>} metered
+ * @param {MeteredDB} meteredDb
  * @param {{sizeBytes: number, createdAt: number, hiddenAt?: number|null}[]} versions
  */
-async function storeVersions(metered, versions) {
-  const { db } = metered;
+async function storeVersions(meteredDb, versions) {
+  const { db } = meteredDb;
   for (const [index, row] of versions.entries()) {
     const shaped = toVersion(row);
     const event = validateEvent({
@@ -100,11 +121,11 @@ async function storeVersions(metered, versions) {
  * One window of hourly rollups for the stored versions, exactly as the hourly
  * trigger does it: every closed hour rolled on its own. Returns the last
  * rollup's report.
- * @param {ReturnType<typeof makeMeteredDB>} metered
+ * @param {MeteredDB} meteredDb
  * @param {{from: number, hours: number}} window
  */
-async function rollTheMonth(metered, { from, hours }) {
-  const { db } = metered;
+async function rollTheMonth(meteredDb, { from, hours }) {
+  const { db } = meteredDb;
   let last;
   for (let index = 0; index < hours; index += 1) {
     const hour = from + index * 60 * MINUTE_MS;
@@ -117,18 +138,17 @@ async function rollTheMonth(metered, { from, hours }) {
  * One month of an account storing `sizeBytes` from the month's first instant,
  * rolled through the real schema and read back the way the invoice reads it.
  * @param {number} sizeBytes
- * @param {string} [month] YYYY-MM, the month held
+ * @param {string} [monthLabel] YYYY-MM, the month held
  */
 async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
   const from = monthInstant(monthLabel);
-  const metered = makeMeteredDB();
-  await storeVersions(metered, [version(sizeBytes, from)]);
-  await rollTheMonth(metered, { from, hours: monthHours(monthLabel) });
+  const meteredDb = metered();
+  await storeVersions(meteredDb, [version(sizeBytes, from)]);
+  await rollTheMonth(meteredDb, { from, hours: monthHours(monthLabel) });
   return {
-    metered,
     from,
     rollup: await monthUsageRollup(
-      metered.db,
+      meteredDb.db,
       ACCOUNT,
       monthInstant(monthLabel),
       monthEnd(monthLabel),
@@ -139,6 +159,7 @@ async function storedAllMonth(sizeBytes, monthLabel = "2026-09") {
 // How many whole hours the calendar month really has: the meter rolls whole
 // closed hours, so the number of hour rows a month's bill is read from is the
 // month's own length, never 43,800/60.
+/** @param {string} month @returns {number} */
 function monthHours(month) {
   const [year, monthOfYear] = month.split("-").map(Number);
   return (Date.UTC(year, monthOfYear, 1) - Date.UTC(year, monthOfYear - 1, 1)) / (60 * MINUTE_MS);
@@ -190,8 +211,7 @@ const meteredCents = (gbMinutes) =>
  * re-derived, so this test's own expected figures cannot drift from the code.
  * @param {number} gbMinutes
  */
-const meteredFromTheModule = (gbMinutes) =>
-  Math.round(meteredMonthlyBillUsd(gbMinutes) * 100);
+const meteredFromTheModule = (gbMinutes) => Math.round(meteredMonthlyBillUsd(gbMinutes) * 100);
 
 // --- The spec's five sizes, held all month --------------------------------
 
@@ -221,7 +241,9 @@ test("the spec's sizes held all month bill the ceiling, before the $1 credit", a
     // At these sizes the ceiling IS the smaller number, which is the whole
     // point of the cap.
     const metered = meteredCents(month.rollup.gbMinutes);
-    const ceiling = Math.round(Math.max(BILLING_CONFIG.floorUsd, BILLING_CONFIG.perTbUsd * (gb / 1000)) * 100);
+    const ceiling = Math.round(
+      Math.max(BILLING_CONFIG.floorUsd, BILLING_CONFIG.perTbUsd * (gb / 1000)) * 100,
+    );
     assert.ok(metered > ceiling, `${gb} GB: metered ${metered}c is over the ${ceiling}c ceiling`);
     assert.equal(bill.storageCents, ceiling, `${gb} GB: the cap is what is billed`);
     assert.equal(bill.downloadCents, 0, "no downloads in these months");
@@ -246,9 +268,14 @@ test("the $1 free credit comes off the total, and a light month owes nothing", a
     `40 GB metered at ${metered}c is under the $12 plateau`,
   );
   assert.equal(lightBill.storageCents, metered, "a light month pays the meter, not the cap");
-  assert.equal(lightBill.totalCents, 0, "the $1 credit covers it: the bill is $0.00, never negative");
+  assert.equal(
+    lightBill.totalCents,
+    0,
+    "the $1 credit covers it: the bill is $0.00, never negative",
+  );
   assert.equal(light.rollup.peakBytes, 40 * GB);
-  assert.equal(lightBill.lines.at(-1).cents, -100, "the credit is a dollar line on the invoice");
+  const creditLine = lightBill.lines[lightBill.lines.length - 1];
+  assert.equal(creditLine.cents, -100, "the credit is a dollar line on the invoice");
 });
 
 test("43,800 minutes is the divisor the metered half bills by", async () => {
@@ -307,7 +334,7 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // month's peak is the size that month really held, and each month's
   // GB-minutes are its own hours - the two months together cost what the file
   // really cost, with no hour counted twice and none missed.
-  const metered = makeMeteredDB();
+  const meteredDb = metered();
   const created = at("2026-09-30T12:00:00.000Z");
   const sepFrom = monthStart("2026-09-01T00:00:00.000Z");
   const sepHours = monthHours("2026-09");
@@ -315,12 +342,22 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // One file, stored once through the intake, then every closed hour of both
   // months rolled - the hour that starts 00:00 on the 1st included, which is
   // where the two months part company.
-  await storeVersions(metered, [version(2 * TB, created, null)]);
-  await rollTheMonth(metered, { from: sepFrom, hours: sepHours });
+  await storeVersions(meteredDb, [version(2 * TB, created, null)]);
+  await rollTheMonth(meteredDb, { from: sepFrom, hours: sepHours });
   const octFrom = monthInstant("2026-10");
-  await rollTheMonth(metered, { from: octFrom, hours: octHours });
-  const september = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-09"), monthEnd("2026-09"));
-  const october = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-10"), monthEnd("2026-10"));
+  await rollTheMonth(meteredDb, { from: octFrom, hours: octHours });
+  const september = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
+  const october = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-10"),
+    monthEnd("2026-10"),
+  );
 
   // September: the file is stored from 12:00 to 24:00, twelve hours, so
   // September bills 2 TB x 720 minutes = 1,440,000 GB-minutes - and its peak
@@ -347,7 +384,6 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   const septemberBill = billThroughTheMeter({ rollup: september });
   assert.equal(septemberBill.storageCents, 66, "the part-month pays the meter, not the cap");
   assert.equal(septemberBill.totalCents, 0, "66 cents is under the free $1 credit: $0.00");
-
 
   // October: the same file, held for the whole of the month this time (the
   // 1st is a full 31-day month), so its peak is the same 2 TB and its
@@ -381,13 +417,14 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // 00:00 on the 1st was rolled, and October's total is only a whole month's
   // if that hour is inside October's window - a `<=` on the upper bound would
   // drop it and October would bill 23 hours fewer.
-  const boundaryHour = sqlite(metered)
-    .prepare("SELECT account_id, gb_minutes_live FROM usage_minutes WHERE hour = ?1")
-    .get(octFrom);
-  assert.ok(boundaryHour, "the 00:00 hour on the 1st is rolled");
-  assert.equal(boundaryHour.account_id, ACCOUNT);
+  const boundaryHour = /** @type {Record<string, unknown>} */ (
+    sqlite(meteredDb)
+      .prepare("SELECT account_id, gb_minutes_live FROM usage_minutes WHERE hour = ?1")
+      .get(octFrom) ?? {}
+  );
+  assert.equal(boundaryHour.account_id, ACCOUNT, "the 00:00 hour on the 1st is rolled");
   assert.equal(
-    boundaryHour.gb_minutes_live,
+    numberField(boundaryHour, "gb_minutes_live"),
     2 * GB_PER_TB * 60,
     "and it bills its own hour: 2 TB for 60 minutes",
   );
@@ -397,23 +434,52 @@ test("an hour that starts a month belongs to that month, not the one before", as
   // The boundary, pinned as its own case so a `<=` in either SQL cannot pass
   // the test above by accident: an hour at exactly 00:00:00 on 1 October is
   // October's, and one an hour earlier is September's.
-  const metered = makeMeteredDB();
-  await storeVersions(metered, [version(GB, at("2026-09-30T23:30:00.000Z"), null)]);
-  await rollTheMonth(metered, {
+  const meteredDb = metered();
+  await storeVersions(meteredDb, [version(GB, at("2026-09-30T23:30:00.000Z"), null)]);
+  await rollTheMonth(meteredDb, {
     from: monthInstant("2026-09"),
     hours: monthHours("2026-09"),
   });
-  const september = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-09"), monthEnd("2026-09"));
+  const september = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
   assert.equal(september.gbMinutes, 30, "the half hour before midnight is September's");
-  const october = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-10"), monthEnd("2026-10"));
+  const october = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-10"),
+    monthEnd("2026-10"),
+  );
   assert.equal(october.gbMinutes, 0, "October holds nothing yet");
   assert.equal(october.peakBytes, 0, "and its peak is nothing");
 });
 
-/** The raw node:sqlite handle behind the D1 adapter, for a read the adapter
- * does not expose. @param {ReturnType<typeof makeMeteredDB>} metered */
-function sqlite(metered) {
-  return metered.sqlite;
+/**
+ * The raw node:sqlite handle behind the D1 adapter, for a read the adapter
+ * does not expose. A row is read as a record of unknown values: every figure
+ * a test asserts on is read out of SQL and compared, never trusted.
+ * @param {MeteredDB} meteredDb
+ */
+function sqlite(meteredDb) {
+  return meteredDb.sqlite;
+}
+
+/**
+ * One row of a query, as the fields it was selected for. node:sqlite's rows
+ * are records of unknown, so a test reads what it asked for and compares it.
+ * @param {Record<string, unknown>} row
+ * @param {string} field
+ * @returns {number}
+ */
+function numberField(row, field) {
+  const value = Number(row[field]);
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`row.${field} is not a number: ${String(row[field])}`);
+  }
+  return value;
 }
 
 // --- The peak, and the function that reads it -----------------------------
@@ -423,12 +489,17 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
   // 12:00 on the 15th, so the month's peak is 500 GB and its meter covers
   // both sizes for the time each was held. The reader returns the MAX over the
   // hour rows - there is no second peak worked out anywhere.
-  const metered = makeMeteredDB();
+  const meteredDb = metered();
   const from = monthStart("2026-09-01T00:00:00.000Z");
   const mid = at("2026-09-15T12:00:00.000Z");
-  await storeVersions(metered, [version(100 * GB, from), version(400 * GB, mid)]);
-  await rollTheMonth(metered, { from, hours: monthHours("2026-09") });
-  const rollup = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-09"), monthEnd("2026-09"));
+  await storeVersions(meteredDb, [version(100 * GB, from), version(400 * GB, mid)]);
+  await rollTheMonth(meteredDb, { from, hours: monthHours("2026-09") });
+  const rollup = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
   assert.equal(rollup.peakBytes, 500 * GB, "the peak is the biggest the drive ever was");
   assert.equal(rollup.peakGb, 500, "and the same number in decimal GB, by the meter's own divisor");
   // The GB-minutes are the sum over the hours: 100 GB for the whole month, +
@@ -438,8 +509,16 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
   let reference = 0;
   for (let index = 0; index < monthHours("2026-09"); index += 1) {
     const hour = from + index * 60 * MINUTE_MS;
-    reference += gbMinutesInHour([toVersion({ size_bytes: 100 * GB, created_at: from })], hour, hour + 60 * MINUTE_MS);
-    reference += gbMinutesInHour([toVersion({ size_bytes: 400 * GB, created_at: mid })], hour, hour + 60 * MINUTE_MS);
+    reference += gbMinutesInHour(
+      [toVersion({ size_bytes: 100 * GB, created_at: from })],
+      hour,
+      hour + 60 * MINUTE_MS,
+    );
+    reference += gbMinutesInHour(
+      [toVersion({ size_bytes: 400 * GB, created_at: mid })],
+      hour,
+      hour + 60 * MINUTE_MS,
+    );
   }
   assert.equal(rollup.gbMinutes, reference, "the month's minutes are the JS reference's sum");
 
@@ -460,8 +539,13 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
 test("a month with no hours is an empty month, not a missing one", async () => {
   // An account that stored nothing in September: the reads COALESCE to 0, and
   // the bill is $0 - the free credit floors it at zero, never below.
-  const metered = makeMeteredDB();
-  const empty = await monthUsageRollup(metered.db, "nobody", monthInstant("2026-09"), monthEnd("2026-09"));
+  const meteredDb = metered();
+  const empty = await monthUsageRollup(
+    meteredDb.db,
+    "nobody",
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
   assert.equal(empty.gbMinutes, 0);
   assert.equal(empty.peakBytes, 0);
   assert.equal(empty.month, "2026-09", "the month a read answers for is the month's own label");
@@ -469,11 +553,15 @@ test("a month with no hours is an empty month, not a missing one", async () => {
 });
 
 test("a month the calendar does not have, or has not reached, is refused by name", async () => {
-  const { db } = makeMeteredDB();
+  const { db } = metered();
   // A month is an instant in it, so a string that is not a timestamp is
   // refused by toMillis rather than asked of SQLite as a number.
   for (const bad of ["September", "", "2026-13", "not a month", null, {}]) {
-    await assert.rejects(() => monthUsageRollup(db, ACCOUNT, bad), TypeError);
+    await assert.rejects(
+      () => monthUsageRollup(db, ACCOUNT, /** @type {number|string} */ (bad)),
+      TypeError,
+      `${String(bad)} is not a month`,
+    );
   }
   // October has not happened at the instant September is read, so asking for
   // it would bill an empty month instead of waiting for the meter to roll it.
@@ -489,22 +577,39 @@ test("the trigger rolls a whole month of hours and every one records the size", 
   // MAX_CATCHUP_HOURS at a time, so a month takes a few runs, and every hour
   // they roll carries the stored bytes. The month read off the back of them
   // is the same month the loop above rolls by hand.
-  const metered = makeMeteredDB();
+  const meteredDb = metered();
   const from = monthInstant("2026-09");
-  await storeVersions(metered, [version(800 * GB, from)]);
+  await storeVersions(meteredDb, [version(800 * GB, from)]);
   const lastHour = from + (monthHours("2026-09") - 1) * 60 * MINUTE_MS;
   let report;
-  for (let hour = from + 60 * MINUTE_MS; hour <= lastHour + 60 * MINUTE_MS; hour += 60 * MINUTE_MS) {
-    report = await runMeterCron(metered.db, hour);
+  for (
+    let hour = from + 60 * MINUTE_MS;
+    hour <= lastHour + 60 * MINUTE_MS;
+    hour += 60 * MINUTE_MS
+  ) {
+    report = await runMeterCron(meteredDb.db, hour);
   }
-  const rows = sqlite(metered).prepare(
-    "SELECT COUNT(*) AS n, MIN(stored_bytes) AS lo, MAX(stored_bytes) AS hi FROM usage_minutes",
-  ).get();
-  assert.equal(rows.n, monthHours("2026-09"), "every hour of the month has its row");
-  assert.equal(rows.lo, 800 * GB, "and every one says the drive held 800 GB");
-  assert.equal(rows.hi, 800 * GB);
-  assert.ok(report.hours >= 1);
-  const month = await monthUsageRollup(metered.db, ACCOUNT, monthInstant("2026-09"), monthEnd("2026-09"));
+  const rows = /** @type {Record<string, unknown>} */ (
+    sqlite(meteredDb)
+      .prepare(
+        "SELECT COUNT(*) AS n, MIN(stored_bytes) AS lo, MAX(stored_bytes) AS hi FROM usage_minutes",
+      )
+      .get()
+  );
+  assert.equal(
+    numberField(rows, "n"),
+    monthHours("2026-09"),
+    "every hour of the month has its row",
+  );
+  assert.equal(numberField(rows, "lo"), 800 * GB, "and every one says the drive held 800 GB");
+  assert.equal(numberField(rows, "hi"), 800 * GB, "and none of them says anything else");
+  assert.ok(report !== undefined && report.hours >= 1, "the trigger reported the hours it rolled");
+  const month = await monthUsageRollup(
+    meteredDb.db,
+    ACCOUNT,
+    monthInstant("2026-09"),
+    monthEnd("2026-09"),
+  );
   assert.equal(month.peakBytes, 800 * GB);
   assert.equal(month.gbMinutes, 800 * MONTH_MINUTES);
   const bill = billThroughTheMeter({ rollup: month });

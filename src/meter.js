@@ -608,7 +608,9 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
  * @returns {{label: string, at: number}}
  */
 function monthWindow(month, now) {
-  const at = toMillis(month, "month");
+  // toMillis takes the three shapes a timestamp can be and throws on
+  // anything else, which is what refuses a month that is not an instant.
+  const at = toMillis(/** @type {number|Date|string} */ (month), "month");
   const instant = new Date(at);
   const label = instant.toISOString().slice(0, 7);
   // The start of the month the instant is in, in UTC: the first of the month,
@@ -616,7 +618,9 @@ function monthWindow(month, now) {
   // previous year - cannot name a month that has not started.
   const first = Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), 1);
   if (at > toMillis(now, "now")) {
-    throw new RangeError(`month ${label} has not started at the rollup instant ${toMillis(now, "now")}`);
+    throw new RangeError(
+      `month ${label} has not started at the rollup instant ${toMillis(now, "now")}`,
+    );
   }
   if (Number.isNaN(first)) {
     throw new TypeError(`month ${String(month)} is not a real calendar month`);

@@ -36,6 +36,7 @@ import {
   METER_CRON,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
+  monthUsageRollup,
   recordEvent,
   recordUsage,
   rollupHour,
@@ -724,22 +725,34 @@ test("a create and hide in the same instant cost one hour, not zero", () => {
 
 // --- The rollup ----------------------------------------------------------
 
+// One hour's usage row, written through the meter's own recordUsage: the
+// stored-bytes mark is the month's peak's only source (drive issue #163), so
+// this is where a test pins that the mark is written, rewritten and validated.
+/**
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {number} gbMinutes
+ * @param {number} storedBytes
+ * @param {number} now
+ */
+const recordTheHour = (db, gbMinutes, storedBytes, now) =>
+  recordUsage(db, "abc123", midnight(), gbMinutes, storedBytes, now);
+
 test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves download bytes alone", async () => {
   const { db, sqlite } = makeMeteredDB();
-  await recordUsage(db, "abc123", midnight(), 42.5, 7 * GB, midnight() + 60 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 60 * MINUTE_MS);
   const row = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(row.gb_minutes_live, 42.5);
   assert.equal(row.stored_bytes, 7 * GB, "the hour records how big the drive was");
   assert.equal(row.download_bytes, 0);
   assert.equal(row.hour, midnight());
   assert.equal(row.rolled_up_at, midnight() + 60 * MINUTE_MS);
-  await recordUsage(db, "abc123", midnight(), 42.5, 7 * GB, midnight() + 90 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 90 * MINUTE_MS);
   assert.equal(db.tables.usage_minutes.size, 1);
   assert.equal(db.tables.usage_minutes.get(`abc123|${midnight()}`).gb_minutes_live, 42.5);
   sqlite
     .prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2 AND hour = ?3")
     .run(1234, "abc123", midnight());
-  await recordUsage(db, "abc123", midnight(), 42.5, 7 * GB, midnight() + 120 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 120 * MINUTE_MS);
   assert.equal(
     sqlite
       .prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
@@ -749,7 +762,7 @@ test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves dow
   );
   // A re-rolled hour replaces its stored bytes, so a re-roll recomputes the
   // peak from the versions and never adds to it (drive issue #163).
-  await recordUsage(db, "abc123", midnight(), 42.5, 9 * GB, midnight() + 150 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 9 * GB, midnight() + 150 * MINUTE_MS);
   assert.equal(
     db.tables.usage_minutes.get(`abc123|${midnight()}`).stored_bytes,
     9 * GB,
@@ -759,14 +772,14 @@ test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves dow
     db.tables.usage_minutes.get(`abc123|${midnight()}`).rolled_up_at,
     midnight() + 150 * MINUTE_MS,
   );
-  await assert.rejects(() => recordUsage(db, "abc123", midnight(), -1, GB, midnight()), TypeError);
+  await assert.rejects(() => recordTheHour(db, -1, GB, midnight()), TypeError);
   await assert.rejects(
-    () => recordUsage(db, "abc123", midnight(), 1, -1, midnight()),
+    () => recordTheHour(db, 1, -1, midnight()),
     TypeError,
     "a negative byte count is refused, not stored as 0",
   );
   await assert.rejects(
-    () => recordUsage(db, "abc123", midnight(), 1, 1.5, midnight()),
+    () => recordTheHour(db, 1, 1.5, midnight()),
     TypeError,
     "a fractional byte count is refused: bytes are whole",
   );
@@ -1395,7 +1408,7 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
       `hour offset ${offset}: SQL ${rolled.gbMinutes} vs the JS reference ${expected}`,
     );
     assert.equal(
-      db.tables.usage_minutes.get("acct0|" + hour).gb_minutes_live,
+      db.tables.usage_minutes.get(`acct0|${hour}`).gb_minutes_live,
       expected,
       "and the stored row holds the same number",
     );
