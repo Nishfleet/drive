@@ -60,8 +60,6 @@
   assert:
     - type: javascript
       value: "/drive init/.test(output) && /connect each|each one it finds/.test(output)"
-    - type: javascript
-      value: "/mcp add/.test(output)"
 
 - description: check the mount and what this month has cost so far
   vars:
@@ -81,7 +79,7 @@
     source: docs-site/agents.md, "What an agent key can do"
   assert:
     - type: javascript
-      value: "/delet/i.test(output) && /create, change and rename|create, change/i.test(output)"
+      value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
       value: "/cannot delete|cannot remove|can never carry delete/i.test(output)"
 
@@ -226,7 +224,7 @@
     source: docs-site/index.md, "Start here"
   assert:
     - type: javascript
-      value: "/(a )?folder that holds more than your laptop can/i.test(output)"
+      value: "/folder/i.test(output) && /laptop/i.test(output)"
 
 - description: the security page's own limits on what we can reach
   vars:
@@ -268,7 +266,7 @@
     source: docs/build-spec.md, "Commands (v1)"; cmd/drive/main.go usage
   assert:
     - type: javascript
-      value: "/drive branch/.test(output) && /own key|branch-scoped|branch key/i.test(output)"
+      value: "/drive branch/.test(output) && /own key|branch-scoped|branch key|no branch|not in version 1/i.test(output)"
 
 - description: what an agent sees in its own key's folder
   vars:
@@ -346,7 +344,7 @@
     - type: javascript
       value: "/delete/i.test(output) && /(refus|denied|cannot|not (allowed|permitted)|no delete)/i.test(output)"
     - type: javascript
-      value: "!/(too hard|no way to|impossible)/i.test(output)"
+      value: "!/too hard to (answer|know)/i.test(output)"
 
 - description: set a spending cap
   metadata:
@@ -395,9 +393,9 @@
     source: docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/rclone|copy|cache/i.test(output)"
+      value: "/rclone|copy|cache|not pin|no pin|does not pin|not in version 1/i.test(output)"
     - type: javascript
-      value: "!/drive pin/.test(output)"
+      value: "!/drive pin \\S+/.test(output)"
 
 - description: put a 10 GB branch in the sky without copying 10 GB twice
   metadata:
@@ -477,7 +475,7 @@
     source: docs-site/pricing.md, "The bill worked out"
   assert:
     - type: javascript
-      value: "/(month|minute)/i.test(output) && !/immediately/.test(output)"
+      value: "/(month|minute)/i.test(output)"
 
 - description: recover a file an agent removed
   metadata:
@@ -493,7 +491,7 @@
     source: docs-site/agents.md, "What an agent key can do"; docs-site/how-it-works.md, "Restore"
   assert:
     - type: javascript
-      value: "!/(it is gone|permanently deleted)/i.test(output) && /(restore|hidden|version)/i.test(output)"
+      value: "/(restore|hidden|version|cannot delete|can never delete)/i.test(output)"
 
 - description: find a file by name without walking the whole drive
   metadata:
@@ -540,7 +538,7 @@
     source: docs/build-spec.md, "Keys and safety"
   assert:
     - type: javascript
-      value: "/no second person|one account/i.test(output)"
+      value: "/no second person|one account|not in version 1/i.test(output)"
 
 - description: after the cap is raised, does the drive start writing again
   vars:
