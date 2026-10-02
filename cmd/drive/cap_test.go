@@ -113,6 +113,50 @@ func TestRunCapRestartResolvesTheSecretBeforeItRestartsTheMount(t *testing.T) {
 	}
 }
 
+// The success half: the secret the restart resolves reaches the mount. The
+// environment is ReadSecretKey's first source (issue #75), so a run with the
+// secret exported must write that secret into the rclone config the mount
+// reads. A fake rclone stands in for the binary; the restart stops at the
+// systemctl request a unit test cannot satisfy, after the config is written,
+// so the file is the proof the resolved value reached the mount.
+func TestRunCapRestartWritesTheResolvedSecretIntoTheMountConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		answer := CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."}
+		reason := "the write key became read-only"
+		answer.Mount.Restart, answer.Mount.Reason = true, &reason
+		_ = json.NewEncoder(w).Encode(answer)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{
+		APIBase:     srv.URL,
+		DeviceToken: "dtok_test",
+		AccountID:   "acct-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "cap-restart-secret"
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
+	t.Setenv("DRIVE_DOWNLOAD_URL", "")
+
+	// The error, if any, is the systemctl request this test environment cannot
+	// satisfy. The config file, not the error, is the proof.
+	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "$20"})
+
+	got, err := os.ReadFile(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote the mount config: %v", err)
+	}
+	if !strings.Contains(string(got), "secret_access_key = "+secret) {
+		t.Errorf("mount config does not carry the resolved secret:\n%s", got)
+	}
+}
+
 func TestRestartMountLeavesTheVFSCache(t *testing.T) {
 	home := t.TempDir()
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
