@@ -87,6 +87,16 @@ h2 {
   background: var(--paper-raised);
 }
 
+/* The status line's box is reserved from the first paint (drive#225). The
+   status itself only arrives with a read's outcome — a month that has not
+   been read must not paint as a priced month of zeros — so the slot it sits in
+   holds the space from the start, and the status fills space the page already
+   has instead of pushing the page down under the reader. The slot never
+   changes size, so hiding the status on a good read moves nothing either. */
+.status-slot {
+  min-height: calc(2 * 1.4em + 4px + 32px + 2px);
+}
+
 .status .what {
   margin: 0;
   font-weight: 600;
@@ -247,9 +257,14 @@ h2 {
     <section aria-labelledby="month-heading">
       <h2 id="month-heading" tabindex="-1">This month</h2>
       <p class="saved" id="saved" hidden></p>
-      <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
-        <p class="what"></p>
-        <p class="next"></p>
+      <!-- The reserved slot (drive#225): the status is hidden until a read
+           lands, and this holds the box it will land in, so nothing below it
+           moves when it does. -->
+      <div class="status-slot" id="status-slot">
+        <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
+          <p class="what"></p>
+          <p class="next"></p>
+        </div>
       </div>
     </section>
 
