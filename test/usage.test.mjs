@@ -478,7 +478,11 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.dataset\.state = "unreachable";/);
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
-  assert.match(page, /if \(document\.hidden\) \{\n {4}return;/);
+  // The page's poll short-circuits when its tab is backgrounded, returning on
+  // the hidden line; the four-space indent is not the contract, the early
+  // return is. Reflowing must not break the gate (drive#183), so match the
+  // shape with tolerant whitespace instead of pinning four spaces.
+  assert.match(page, /if \(document\.hidden\) \{\s*return;$/m);
 });
 
 test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
