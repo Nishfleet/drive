@@ -478,7 +478,9 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
       // Reaching the cap never adds a capability the key did not have.
       for (const swap of atCap.swaps) {
         assert.deepEqual(
-          [...swap.capabilities].filter((name) => !READ_ONLY_CAPABILITIES.includes(name)),
+          [...swap.capabilities].filter(
+            (name) => !(/** @type {readonly string[]} */ (READ_ONLY_CAPABILITIES).includes(name)),
+          ),
           [],
           `${kind} ${JSON.stringify(capabilities)} gained write at the cap`,
         );
@@ -801,8 +803,13 @@ test("the usage response carries the cap line, and the Worker routes it", async 
 });
 
 test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () => {
+  /** @type {{id: string, cents: number}[]} */
   const stored = [];
   const capStore = {
+    /**
+     * @param {{id: string}} account
+     * @param {number} cents
+     */
     async setCapCents(account, cents) {
       stored.push({ id: account.id, cents });
     },

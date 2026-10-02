@@ -188,7 +188,7 @@ export function createD1DeviceStore(db, options = {}) {
    * own storage API is what verifies it, so the pair never has to exist
    * outside this Worker.
    */
-  async function mintCredential(scope) {
+  async function mintCredential(/** @type {KeyScope} */ scope) {
     if (inner !== undefined) {
       const minted = await inner.mint(scope);
       return {

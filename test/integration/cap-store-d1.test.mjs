@@ -23,9 +23,9 @@ import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 /**
- * @param {import("node:sqlite").DatabaseSync} sqlite
+ * @param {import("../d1-sqlite.mjs").TestSqlite} sqlite
  * @param {string} sql
- * @param {...unknown} params
+ * @param {...import("node:sqlite").SQLInputValue} params
  */
 function rowIn(sqlite, sql, ...params) {
   const row = sqlite.prepare(sql).get(...params);

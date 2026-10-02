@@ -67,7 +67,7 @@ const SEND_EMAIL_PATH = "/api/emails/send";
  * shape src/status.js `signedInAccount` returns and every handler's own
  * `account` parameter takes, so the gate's answer needs no narrowing where it
  * is handed on.
- * @typedef {{account: {id: string, name: string, email: string}|null}} DriveVariables
+ * @typedef {{account: {id: string, name: string, email: string|null}|null}} DriveVariables
  */
 
 /**
@@ -236,6 +236,7 @@ function capStateFor(_accountId) {
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
   if (isPublic(c.req.path)) return next();
+  /** @type {DriveVariables["account"]} */
   let account = await signedInAccount(c.req.raw, authFor(c.env));
   // The CLI holds a device token, not a browser cookie (drive#64 `drive cap`
   // and `drive status`). The same D1 lookup the api Worker uses, so one
@@ -380,7 +381,9 @@ export function createApp() {
   // The usage page's and the CLI's read of the month's money (issues #7, #53).
   app.get(USAGE_ENDPOINT, async (c) => {
     const account = c.get("account");
+    /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
+    if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
     }

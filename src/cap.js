@@ -57,7 +57,12 @@ export const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 
 // What a capped key keeps: the same prefix, list and read. A capped account
 // still reads every file it paid for; it just cannot change them.
-export const READ_ONLY_CAPABILITIES = Object.freeze(["list", "read"]);
+export const READ_ONLY_CAPABILITIES = Object.freeze(
+  /** @type {ReadonlyArray<import("../workers/api/src/keyprovider.js").Capability>} */ ([
+    "list",
+    "read",
+  ]),
+);
 
 // The full capability set each kind of key gets, from build-spec.md "Keys and
 // safety": a device key may delete, and an agent, s3 or branch key may not.
@@ -447,7 +452,7 @@ export const CAP_ENDPOINT = "/api/cap";
  * is the 400 body and nothing else.
  *
  * @param {Request} request
- * @param {{id: string, name?: string, email?: string, capUsd?: number}|null} account
+ * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
  * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function}|null} capStore
  */
 export async function handleCapRequest(request, account, capStore) {
