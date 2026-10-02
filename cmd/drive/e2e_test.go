@@ -273,21 +273,18 @@ func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	return false
 }
 
-// mountIsLive reports whether the kernel has dir mounted. Each platform is
-// asked through its own tool: findmnt on Linux, the BSD `mount` listing on
-// macOS. Both are what the CLI's own Mounted() reads, and macOS has no
-// findmnt at all, so a single tool would leave the Mac proof waiting for a
-// command that does not exist.
+// mountIsLive reports whether the kernel has dir mounted, through the one
+// implementation the product already has: MountedDir(). Linux asks findmnt and
+// macOS reads the BSD `mount` listing, and macOS has no findmnt at all, so a
+// single tool would leave the Mac proof waiting for a command that does not
+// exist. This is the same call `drive mount` makes to decide it is up, so the
+// proof and the product cannot drift on what "mounted" means.
 func mountIsLive(dir string) bool {
-	if CurrentGOOS() == "darwin" {
-		out, err := exec.Command("mount").Output()
-		if err != nil {
-			return false
-		}
-		return bsdMountHasMountPoint(string(out), dir)
+	on, err := MountedDir(CurrentGOOS(), dir)
+	if err != nil {
+		return false
 	}
-	out, err := exec.Command("findmnt", "-n", "-M", dir).Output()
-	return err == nil && strings.TrimSpace(string(out)) != ""
+	return on
 }
 
 // startStandinMount starts `drive mount --foreground` for home against cfg and
@@ -321,7 +318,7 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 		stop()
 		t.Skipf("this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
-		"NFS mount", mountDir, mountSkipReason())
+			"NFS mount", mountDir, mountSkipReason())
 	}
 	return cmd, stop
 }
@@ -353,19 +350,39 @@ func stopStandinProcess(cmd *exec.Cmd, mountDir string) {
 		_ = cmd.Process.Kill()
 		<-done
 	}
-	unmountForCleanup(mountDir)
+	if err := unmountForCleanup(mountDir); err != nil {
+		// A mount that is already gone is the normal case: rclone unmounts on
+		// the forwarded signal, and fusermount then answers "Invalid argument"
+		// for a mount point that is not one. So a failed unmount is reported
+		// only when the kernel still says the mount is there.
+		if on, _ := MountedDir(CurrentGOOS(), mountDir); on {
+			fmt.Fprintf(os.Stderr, "drive: unmount %s after the proof: %v\n", mountDir, err)
+		}
+	}
 }
 
 // unmountForCleanup clears a mount the CLI left behind, with the tool the
-// platform has. macOS mounts through the built-in NFS server, so it unmounts
-// with umount; Linux mounts through FUSE, so fusermount. Neither is left out
-// on the other platform's host: this repo's suites run on Linux CI and on
-// GitHub's macOS runners, and a leftover mount point fails the next test's
-// assertion that a fresh mount appears.
-func unmountForCleanup(mountDir string) {
-	exec.Command("umount", mountDir).Run()
-	exec.Command("fusermount3", "-u", mountDir).Run()
-	exec.Command("fusermount", "-u", mountDir).Run()
+// platform has: macOS mounts through the built-in NFS server and unmounts with
+// umount, Linux mounts through FUSE and unmounts with fusermount. It is
+// best-effort cleanup at the end of a test, so it does not fail the test it is
+// cleaning up after; a mount already gone is not an error to it.
+func unmountForCleanup(mountDir string) error {
+	if CurrentGOOS() == "darwin" {
+		if out, err := exec.Command("umount", mountDir).CombinedOutput(); err != nil {
+			return fmt.Errorf("umount %s: %v: %s", mountDir, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	// fusermount3 ships with current FUSE; fusermount is the older name. Each is
+	// a literal binary and the only argument is the mount dir.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount3"; the only argument is the mount dir; exec.Command takes an argument vector, not a shell.
+	if _, err := exec.Command("fusermount3", "-u", mountDir).CombinedOutput(); err != nil {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "fusermount"; the only argument is the mount dir; exec.Command takes an argument vector, not a shell.
+		if out, err := exec.Command("fusermount", "-u", mountDir).CombinedOutput(); err != nil {
+			return fmt.Errorf("fusermount3/fusermount %s: %v: %s", mountDir, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 // standinOn starts a loopback `rclone serve s3` on root/data (the stock stand-in

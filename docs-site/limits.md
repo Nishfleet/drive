@@ -18,9 +18,9 @@ would rather you read it here than find out in week three.
   install is on the way.
 - **macOS is read-only for us.** The Mac mount is stock `rclone nfsmount`, which
   uses the system's own NFS server, so there is no macFUSE to install. The mount
-  proof runs on macOS and on GitHub's Mac runners, but we cannot measure a
-  person's real Mac, so what we have measured end to end is Linux. We publish
-  the oldest Mac version the runners proved only once a run is green.
+  proof runs on a Mac, but we cannot measure a person's real Mac, so what we
+  have measured end to end is Linux. We name the oldest Mac version only after
+  a green Mac run (#116 owns both).
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
 - **No branch or approve commands.** Agents work in the live folder, so a
