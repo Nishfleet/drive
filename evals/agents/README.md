@@ -107,5 +107,5 @@ docs and the CLI correctly, which is the first half of the question.
 
 `docs/scoreboard.md` carries one row, "agents finish real tasks from the docs",
 whose us-cell is a live run of this suite. `test/scoreboard.test.mjs` owns the
-row list. The numbers, the command that repeats them and the run id go in the
-us-cell when a live run has them.
+row list. The numbers, the command that repeats them and the run id live in
+the us-cell.
