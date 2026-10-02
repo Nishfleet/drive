@@ -1,3 +1,10 @@
+import { Hono } from "hono";
+import { csrf } from "hono/csrf";
+import { HTTPException } from "hono/http-exception";
+import { methodNotAllowed } from "hono/method-not-allowed";
+import { secureHeaders } from "hono/secure-headers";
+import { trimTrailingSlash } from "hono/trailing-slash";
+
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
@@ -10,6 +17,7 @@ import {
   scopeStore,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
+import { failureMessage } from "./messages.js";
 import {
   handleStorageEventRequest,
   METER_CRON,
@@ -37,12 +45,83 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
-import { handleFirstRunStatusRequest, STATUS_ENDPOINT, signedInAccount } from "./status.js";
+import {
+  handleFirstRunStatusRequest,
+  STATUS_ENDPOINT,
+  signedInAccount,
+  unauthorizedResponse,
+} from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
 const SEND_EMAIL_PATH = "/api/emails/send";
+
+/**
+ * The per-request value Hono's context carries. `account` is resolved once by
+ * the gate middleware below and read from the context by every handler, so a
+ * handler cannot disagree with the gate about who is calling. It is the same
+ * shape src/status.js `signedInAccount` returns and every handler's own
+ * `account` parameter takes, so the gate's answer needs no narrowing where it
+ * is handed on.
+ * @typedef {{account: {id: string, name: string, email: string}|null}} DriveVariables
+ */
+
+/**
+ * The app's own type: the Worker's generated `Env` as Hono's bindings (so
+ * `c.env` is `Env`, not `unknown`) and the context value above as its
+ * variables (so `c.get("account")` is typed rather than a key the library has
+ * never heard of). Typed once here and reused by every handler's annotation,
+ * the same way workers/api/src/index.js types its dispatcher.
+ * @typedef {import("hono").Hono<{Bindings: Env, Variables: DriveVariables}>} DriveApp
+ */
+
+/**
+ * The Hono context every route handler and middleware on this app receives.
+ * @typedef {import("hono").Context<{Bindings: Env, Variables: DriveVariables}>} DriveContext
+ */
+
+// Public routes: reachable without a signed-in account. Every other /api/
+// route is account-gated by default (deny-by-default). The listing is the
+// only way to be exempt, so a new route cannot ship unclassified: the walk in
+// test/account-gate.test.mjs reads Hono's own route table and fails on any
+// route that is neither here nor accounted for by an endpoint the tests know.
+//
+//   - /api/waitlist: sign-ups, before accounts exist.
+//   - /api/storage-events: the storage provider's event rule posts here with
+//     its own shared token in a header (src/meter.js handleStorageEventRequest),
+//     not a session. The token is the gate.
+//   - /api/emails/send: the meter's cap emails and the billing webhook; closed
+//     with no EMAIL_SEND_TOKEN set (src/email-send.js), so its gate is a
+//     deployment secret rather than a session.
+//   - /api/health: the outside outage monitor polls it with no session and it
+//     answers ok/failing with no account data at all (src/health.js).
+//   - /api/signin and /api/signin/verify: the sign-in flow itself. Signing in
+//     is the only way to get a session, so it must be reachable without one.
+//   - /s/<token>: a share link, where the token in the path is the whole proof
+//     and one that expires or is revoked answers 404 (src/share.js).
+//   - /api/request/info and /api/request/upload: the logged-out side of an
+//     upload request, where the token in the query is the whole proof.
+export const PUBLIC_ROUTES = Object.freeze([
+  "/api/waitlist",
+  "/api/storage-events",
+  SEND_EMAIL_PATH,
+  HEALTH_PATH,
+  SIGNIN_ENDPOINT,
+  SIGNIN_LINK_PATH,
+  `${SHARE_LINK_PREFIX}/*`,
+  `${REQUEST_ENDPOINT}/info`,
+  `${REQUEST_ENDPOINT}/upload`,
+]);
+
+/** @param {string} pathname */
+function isPublic(pathname) {
+  const clean = pathname.replace(/\/+$/, "") || "/";
+  return PUBLIC_ROUTES.some((p) => {
+    const route = p.endsWith("/*") ? p.slice(0, -2) : p;
+    return clean === route || clean.startsWith(`${route}/`);
+  });
+}
 
 // One store per Worker isolate, holding every account's files under its own
 // prefix. With no storage configured the in-memory store holds what the page
@@ -137,177 +216,247 @@ function capStateFor(_accountId) {
   return empty.cap.state;
 }
 
+// Account-gated middleware resolves the caller once, from the request's own
+// credentials and nothing else (src/status.js signedInAccount over
+// src/auth.js authFor), and puts that account on Hono's context. Every handler
+// below reads it from the context, so a handler cannot disagree with the gate
+// about who is calling. An anonymous request is answered 401 here, before the
+// store is built or any handler runs — the deny-by-default rule the walk in
+// test/account-gate.test.mjs checks route by route.
+//
+// It is registered on "/api/*" alone and its own isPublic() check skips the
+// public routes declared above, so the two public POST routes keep the repo's
+// own same-origin rule (src/waitlist.js, src/email-send.js) and the token
+// lanes keep their tokens. The browser-facing write lane under /api/files
+// additionally takes Hono's built-in csrf() middleware below.
+//
+// @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
+async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
+  if (isPublic(c.req.path)) return next();
+  const account = await signedInAccount(c.req.raw, authFor(c.env));
+  if (!account) return unauthorizedResponse();
+  c.set("account", account);
+  await next();
+}
+
+// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
+// before a custom origin/secFetchSite handler is consulted (its undefined
+// short-circuit returns false), which would refuse curl and the Go CLI — the
+// callers the repo's same-origin rule deliberately lets through, because a
+// caller that sends no browser header is not a browser and the account gate
+// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
+// src/files.js for the three state-changing routes). So the built-in
+// middleware runs only when a browser evidence header is present; a
+// non-browser request falls straight through to the handler, whose own
+// same-origin check answers with the product's sentence rather than a bare
+// "Forbidden". The browser case is still Hono's middleware deciding.
+const browserCsrf = csrf({
+  origin: (origin, c) => origin === new URL(c.req.url).origin,
+  secFetchSite: (site) => site === "same-origin",
+});
+/**
+ * Hono's csrf(), run only when a browser evidence header is present.
+ * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
+ */
+const csrfWhenBrowser = (c, next) =>
+  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
+    ? next()
+    : browserCsrf(c, next);
+
+/** @param {DriveContext} c */
+const filesHandler = (c) => {
+  const account = c.get("account");
+  return handleFilesRequest(
+    c.req.raw,
+    account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
+    account,
+  );
+};
+
+/**
+ * Create the Hono app. All route logic lives here so the Worker export is a
+ * thin shim and the app — including its route table — can be walked in tests.
+ *
+ * It takes no env and closes over no request: every handler reads its
+ * bindings from Hono's own `c.env`, which the platform's `fetch(request, env)`
+ * fills in. So one app is a pure route table that any env can be run against
+ * — which is what lets the account-gate walk in test/account-gate.test.mjs
+ * build it and read the real registry without a deployment behind it.
+ * @returns {DriveApp}
+ */
+export function createApp() {
+  /** @type {DriveApp} */
+  const app = new Hono({ strict: false });
+
+  // Trailing slashes handled by the library (redirects to canonical), so no
+  // hand-written `pathname === X || pathname === X + "/"` pair remains.
+  app.use(trimTrailingSlash());
+
+  // Secure headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+  // Strict-Transport-Security, and the rest Hono ships) on every response.
+  app.use("*", secureHeaders());
+
+  // Deny-by-default account gate on /api/*. Public routes are declared in
+  // PUBLIC_ROUTES above.
+  app.use("/api/*", accountGate);
+
+  // Same-origin / CSRF protection on the browser-facing write lane, with
+  // Hono's built-in csrf() middleware. It is registered on the account-gated
+  // files lane so an anonymous request is its 401, not a 403: the gate is the
+  // outer rule. It covers exactly the requests a cross-site page can forge —
+  // a form-encoded or multipart POST to the account routes — and reads no
+  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
+  // (curl, the Go CLI) is not a browser, so it passes this check and the
+  // account gate is what holds it.
+  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
+
+  // ---------------------------------------------------------- account routes
+  // Each method is registered on its own (rather than with app.all) so Hono's
+  // methodNotAllowed middleware answers a wrong method with 405 and an Allow
+  // header; the gate above already answered an anonymous caller 401.
+
+  // The first-run page's live flip (issue #32, #45).
+  app.get(STATUS_ENDPOINT, (c) => handleFirstRunStatusRequest(c.req.raw, c.get("account")));
+
+  // Search reads only the D1 file index (issue #18), behind the account gate.
+  // The write half of the same module keeps the index current by wrapping the
+  // store, so an upload, delete or restore is in the index before the next
+  // search. The rebuild is not a web route: it runs from the scheduled handler.
+  // Hono matches only registered paths, so deeper paths (e.g. /api/search/index)
+  // would hit the notFound handler and lose the asset fallback the old
+  // switch gave them. A wildcard route keeps the safety review intact
+  // (no reindex starts from a web request) while forwarding anything that
+  // is not the exact search endpoint to the asset worker unchanged.
+  app.get(`${SEARCH_ENDPOINT}/*`, (c) => {
+    const p = c.req.path;
+    if (p !== SEARCH_ENDPOINT && p !== `${SEARCH_ENDPOINT}/`) {
+      return c.env.ASSETS.fetch(c.req.raw);
+    }
+    return handleSearchRequest(c.req.raw, c.env.DRIVE_DB, c.get("account"));
+  });
+
+  // The files lane (issue #73). Signed-in callers read and write only their
+  // own prefix; anonymous callers never reach here (the gate answered 401).
+  app.get(FILES_ENDPOINT, filesHandler);
+  app.post(FILES_ENDPOINT, filesHandler);
+  app.get(`${FILES_ENDPOINT}/*`, filesHandler);
+  app.post(`${FILES_ENDPOINT}/*`, filesHandler);
+
+  // Branches (build step 7, drive#8): the folder copy, the diff, approve and
+  // discard. The store is handed in unscoped (the handler scopes it) and
+  // without withIndex, so a branch's own copies never land in the search index.
+  /** @param {DriveContext} c */
+  const branchesHandler = (c) =>
+    handleBranchesRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+  app.get(BRANCHES_ENDPOINT, branchesHandler);
+  app.post(BRANCHES_ENDPOINT, branchesHandler);
+  app.get(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
+  app.post(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
+
+  // Agent undo (build step 11, issue #13): the one-click rewind of an agent's
+  // work, on the branch copy src/branches.js already keeps. Same store handling
+  // as the branches route above.
+  /** @param {DriveContext} c */
+  const rewindHandler = (c) =>
+    handleRewindRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+  app.get(REWIND_ENDPOINT, rewindHandler);
+  app.post(REWIND_ENDPOINT, rewindHandler);
+  app.get(`${REWIND_ENDPOINT}/*`, rewindHandler);
+  app.post(`${REWIND_ENDPOINT}/*`, rewindHandler);
+
+  // The usage page's and the CLI's read of the month's money (issues #7, #53).
+  app.get(USAGE_ENDPOINT, (c) => handleUsageRequest(c.req.raw, c.get("account")));
+
+  // Share links and upload requests (issue #19). The share/request roots are
+  // the owner's side and stand behind the gate; the token-carrying child
+  // routes are public and registered below.
+  app.get(SHARE_ENDPOINT, (c) =>
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
+  app.post(SHARE_ENDPOINT, (c) =>
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
+  app.get(REQUEST_ENDPOINT, (c) =>
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
+  app.post(REQUEST_ENDPOINT, (c) =>
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
+
+  // ----------------------------------------------------------- public routes
+  // Sign-ups (GET is a 405 from methodNotAllowed; POST is the route).
+  app.post("/api/waitlist", (c) =>
+    handleWaitlistRequest(c.req.raw, c.env.WAITLIST_DB, c.env.WAITLIST_RATE_LIMITER),
+  );
+
+  // The meter's event intake (issue #6), behind the provider's shared token.
+  app.post("/api/storage-events", (c) =>
+    handleStorageEventRequest(c.req.raw, c.env.METER_DB, c.env.METER_EVENT_TOKEN),
+  );
+
+  // The sign-in screen's two steps (build step 9, issue #10; Better Auth over
+  // D1, #181). The handler enforces the edge limits (issue #147) before it
+  // reads the body.
+  app.post(SIGNIN_ENDPOINT, (c) => handleSigninRequest(c.req.raw, c.env));
+  // The link a sign-in email carries (drive#181): GET only.
+  app.get(SIGNIN_LINK_PATH, (c) => handleSigninLinkVerify(c.req.raw, c.env));
+
+  // The logged-out side of a share/request token (issue #19). The token in
+  // the path or query is the whole proof; an expired or revoked one is 404.
+  app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
+    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+  );
+  app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
+  );
+  app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
+    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
+      ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
+      linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
+    }),
+  );
+
+  // The send lane: closed with no EMAIL_SEND_TOKEN set (src/email-send.js).
+  app.post(SEND_EMAIL_PATH, (c) => handleSendEmailRequest(c.req.raw, c.env));
+
+  // The health endpoint the outside monitor polls (issues #96, #36).
+  app.get(HEALTH_PATH, (c) => handleHealthRequest(c.req.raw, c.env));
+
+  // ------------------------- method handling, 404, 405 and errors: the library
+  app.use("*", methodNotAllowed({ app }));
+  app.notFound((c) => {
+    if (c.req.path.startsWith("/api/")) {
+      // The old hand-written switch fell through to assets for paths it
+      // didn't match (e.g. /api/search/index, which is not the exact
+      // search endpoint). Preserve that fallback so unknown API paths
+      // that are subpaths of a registered prefix still serve the page.
+      if (c.req.path.startsWith(`${SEARCH_ENDPOINT}/`)) {
+        return c.env.ASSETS.fetch(c.req.raw);
+      }
+      return c.json({ error: "Not found." }, 404);
+    }
+    return c.env.ASSETS.fetch(c.req.raw);
+  });
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse();
+    console.error("[pricing] request failed:", err.message, err.stack, err);
+    return c.json({ error: failureMessage("unexpected") }, 500);
+  });
+
+  return app;
+}
+
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
 // cloudflare.config.ts). Anything that does reach it and is not an API falls
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
-//
-// The send-email route is mounted behind its deployment's token and the
-// same-origin rule (src/email-send.js), which together keep it from mailing
-// an arbitrary person from our domain: with EMAIL_SEND_TOKEN unset the route
-// answers 403, so the deployment is closed until the token is set, and the
-// first producers are the meter's cap emails and the billing webhook
-// (build step 6, drive#7).
 /**
  * @type {ExportedHandler<Env>}
  */
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === "/api/waitlist" || url.pathname === "/api/waitlist/") {
-      return handleWaitlistRequest(request, env.WAITLIST_DB, env.WAITLIST_RATE_LIMITER);
-    }
-    // The meter's event intake (issue #6). The storage provider's event rule
-    // lands here with the shared token in a header; the dedup in
-    // src/meter.js makes the provider's own retries safe, so no rate limiter
-    // is bound to this path.
-    if (url.pathname === "/api/storage-events" || url.pathname === "/api/storage-events/") {
-      return handleStorageEventRequest(request, env.METER_DB, env.METER_EVENT_TOKEN);
-    }
-    // The first-run page's live flip (issue #32). runWorkerFirst sends every
-    // /api/* here; the branch just has to come before the asset fallthrough.
-    // The handler is closed until the sign-in flow resolves an account
-    // (issue #45), so an anonymous poll gets 401 and no device data. The path
-    // is the module's own constant, so the route and the page cannot drift.
-    if (url.pathname === STATUS_ENDPOINT || url.pathname === `${STATUS_ENDPOINT}/`) {
-      return handleFirstRunStatusRequest(request, await signedInAccount(request, authFor(env)));
-    }
-    // Search reads only the D1 file index (issue #18), behind the same account
-    // gate every drive read that names files goes through (`signedInAccount`,
-    // issues #45 and #73): an anonymous caller gets 401 and no names, and a
-    // signed-in one reads only their own rows. The write half of the same
-    // module keeps the index current by wrapping the store, so an upload, a
-    // delete or a restore is in the index before the next search, and the
-    // search itself never lists the bucket. The rebuild is not a web route:
-    // it runs from the scheduled handler below. The index is customer data, so
-    // it reads DRIVE_DB, never the waitlist's database (issue #170).
-    if (url.pathname === SEARCH_ENDPOINT || url.pathname === `${SEARCH_ENDPOINT}/`) {
-      return handleSearchRequest(
-        request,
-        env.DRIVE_DB,
-        await signedInAccount(request, authFor(env)),
-      );
-    }
-    // The files handler is behind the same account gate as the page's poll
-    // (issue #73): it answers 401 with no data for a request that cannot prove
-    // an account, and scopes every read and write to that account's prefix.
-    if (
-      url.pathname === FILES_ENDPOINT ||
-      url.pathname === `${FILES_ENDPOINT}/` ||
-      url.pathname.startsWith(`${FILES_ENDPOINT}/`)
-    ) {
-      // The gate is asked before the store is built. A request that cannot
-      // prove an account is answered by the handler's own 401 with no store
-      // in the call at all, so a misconfigured deployment fails for its own
-      // signed-in callers and tells a stranger nothing about itself. The
-      // index wrapper sits outside the scope the handler applies, so it sees
-      // the account's own storage keys and writes only that account's rows.
-      const account = await signedInAccount(request, authFor(env));
-      return handleFilesRequest(
-        request,
-        account ? withIndex(storeFor(env), env.DRIVE_DB, account) : null,
-        account,
-      );
-    }
-    // Branches (build step 7, drive#8): the folder copy, the diff, approve and
-    // discard. The same account gate as every other route that names files,
-    // and the store is handed in unscoped (the handler scopes it) and without
-    // withIndex, so a branch's own copies never land in the search index.
-    if (url.pathname === BRANCHES_ENDPOINT || url.pathname.startsWith(`${BRANCHES_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, authFor(env));
-      return handleBranchesRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
-    }
-    // Agent undo (build step 11, issue #13): the one-click rewind of an
-    // agent's work, on the branch copy src/branches.js already keeps. Same
-    // account gate and the same store handling as the branches route above —
-    // unscoped in, scoped by the handler — so a rewind can only ever name one
-    // of the signed-in account's own branches. A rewind is a discard, so it
-    // reads and writes the one branches table and the one file store; there is
-    // no second copy of the agent's work anywhere.
-    if (url.pathname === REWIND_ENDPOINT || url.pathname.startsWith(`${REWIND_ENDPOINT}/`)) {
-      const account = await signedInAccount(request, authFor(env));
-      return handleRewindRequest(request, env.DRIVE_DB, account ? storeFor(env) : null, account);
-    }
-    // The usage page's and the CLI's read of the month's money (issues #7 and
-    // #53, build step 6). Same rule: the branch comes before the asset
-    // fallthrough, and the account gate is what keeps one account's numbers
-    // from being shown to another (issue #73).
-    if (url.pathname === USAGE_ENDPOINT || url.pathname === `${USAGE_ENDPOINT}/`) {
-      return handleUsageRequest(request, await signedInAccount(request, authFor(env)));
-    }
-    // The sign-in screen's two steps (build step 9, issue #10; Better Auth
-    // over D1, #181). The start step mails a single-use link; the sign-out
-    // step revokes the session. The link itself is the next branch below.
-    // Registered here, ahead of the asset fallthrough, because /api/signin
-    // must reach the Worker. The handler enforces the two edge limits (issue
-    // #147, env.SIGNIN_RATE_LIMITER / env.SIGNIN_GLOBAL_RATE_LIMITER) before
-    // it reads the body, so a start that mails a real email is bounded at the
-    // edge and a refused request costs no parse and no send.
-    if (url.pathname === SIGNIN_ENDPOINT || url.pathname === `${SIGNIN_ENDPOINT}/`) {
-      return handleSigninRequest(request, env);
-    }
-    // The link a sign-in email carries (drive#181): GET only, the token is
-    // the whole proof. The route verifies it against Better Auth, sets the
-    // session cookie the account routes are gated on, and sends a signed-in
-    // person to their files. No session is required to reach it — signing
-    // in is the only way to get one, so it must be reachable without one —
-    // and the closed-door check inside handleSigninLinkVerify keeps a
-    // deployment with no auth bound from minting sessions it cannot stand
-    // behind.
-    if (url.pathname === SIGNIN_LINK_PATH || url.pathname === `${SIGNIN_LINK_PATH}/`) {
-      return handleSigninLinkVerify(request, env);
-    }
-    // Share links and upload requests (issue #19). The share/request roots
-    // are the owner's side and stand behind the same gate as /api/files
-    // (issue #73): a caller that cannot prove an account gets 401 with no
-    // link, no file and no list. /s/<token>, the request info and the upload
-    // route are the logged-out side and carry the token in the path or the
-    // query instead of a session, so they do not ask the gate for an account
-    // — the token is the whole proof, and one that expires or is revoked
-    // answers 404 (src/share.js).
-    if (url.pathname === SHARE_ENDPOINT || url.pathname === `${SHARE_ENDPOINT}/`) {
-      return handleShareRequest(
-        request,
-        storeFor(env),
-        linksFor(env),
-        await signedInAccount(request, authFor(env)),
-      );
-    }
-    if (url.pathname.startsWith(`${SHARE_LINK_PREFIX}/`)) {
-      return handleShareFileRequest(request, storeFor(env), linksFor(env));
-    }
-    if (url.pathname === REQUEST_ENDPOINT || url.pathname === `${REQUEST_ENDPOINT}/`) {
-      return handleRequestRequest(
-        request,
-        storeFor(env),
-        linksFor(env),
-        await signedInAccount(request, authFor(env)),
-      );
-    }
-    // The two public request routes are matched after the owner's /api/request
-    // root so the exact root is never mistaken for its own child.
-    if (url.pathname === `${REQUEST_ENDPOINT}/info`) {
-      return handleRequestInfoRequest(request, linksFor(env), capStateFor);
-    }
-    if (url.pathname === `${REQUEST_ENDPOINT}/upload`) {
-      return handleRequestUploadRequest(request, storeFor(env), linksFor(env), capStateFor);
-    }
-    if (url.pathname === SEND_EMAIL_PATH) {
-      // The whole env, not just the binding: the route reads the token and
-      // the sending address too (src/email-send.js handleSendEmailRequest).
-      return handleSendEmailRequest(request, env);
-    }
-    // The health endpoint the outside monitor polls (issue #96, #36). It
-    // comes before the asset fallthrough and takes the whole env because the
-    // check reads the dependencies off the bindings: a trivially-read D1 on
-    // each database and a fetch of the asset layer. The whole env is the
-    // honest argument — a check that only saw the bindings it was told about
-    // would be a check that could not fail.
-    if (url.pathname === HEALTH_PATH || url.pathname === `${HEALTH_PATH}/`) {
-      return handleHealthRequest(request, env);
-    }
-    return env.ASSETS.fetch(request);
+    return createApp().fetch(request, env);
   },
 
   // Three Cron Triggers share this one handler, and the platform's cron string

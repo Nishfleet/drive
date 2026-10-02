@@ -8,6 +8,8 @@ import { createD1DeviceSigninStore } from "./device-signin.js";
 import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
+import { createS3KeyProvider } from "./s3-keys.js";
+import { createD1TeamStore } from "./teams.js";
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -70,6 +72,39 @@ function methodSetKey(methods) {
     .filter((method) => method !== "HEAD")
     .sort()
     .join(",");
+}
+
+/**
+ * The registered path a concrete request path matches, or null when it matches
+ * none. Hono reports a param route's 405 with the concrete path
+ * (`/v1/keys/k1` for the registered `/v1/keys/:keyId`) and `routePath` is the
+ * wildcard middleware's own `/*` there, so the 405's Allow lookup needs the
+ * registered spelling back. Matching is by segment count with `:params`
+ * matching any one segment, which is the shape the registry itself uses; a
+ * path Hono matched always resolves, and a path it did not match is already a
+ * 404 that never reaches the 405 callback.
+ * @param {ReadonlyMap<string, unknown>} registered
+ * @param {string} pathname
+ * @returns {string|null}
+ */
+function registeredPathFor(registered, pathname) {
+  if (registered.has(pathname)) {
+    return pathname;
+  }
+  const segments = pathname.split("/");
+  for (const path of registered.keys()) {
+    const pattern = path.split("/");
+    if (pattern.length !== segments.length) {
+      continue;
+    }
+    const matches = pattern.every(
+      (part, index) => part.startsWith(":") || part === segments[index],
+    );
+    if (matches) {
+      return path;
+    }
+  }
+  return null;
 }
 
 /**
@@ -181,26 +216,43 @@ export function createApp(table = routes) {
   }
 
   /**
-   * The methods an anonymous caller may be told about, keyed by the path's
-   * method set (`methodSetKey`): the 405 below names only these to a caller
-   * with no account. Two paths that share a method set keep the intersection,
-   * the smaller disclosure.
+   * The methods an anonymous caller may be told about, keyed by the path the
+   * 405 came from: the 405 below names only the matched path's own public
+   * methods to a caller with no account, and nothing of any other path.
+   *
+   * The key is the path plus the method set Hono reported for it, because
+   * Hono's `methodNotAllowed` hands back every method the matched path
+   * registers and says nothing about which path matched; the pair identifies
+   * it. Two paths that share a method set keep separate answers, because
+   * keying on the method set alone made one path's gated route empty an
+   * unrelated public path's 405: `/v1/export` (a gated single-GET route,
+   * drive#34) intersected with the public `/v1/health`, and an anonymous
+   * `POST /v1/health` then answered a 405 that named no method at all.
    * @type {Map<string, Set<string>>}
    */
   const anonymousAllow = new Map();
 
   for (const [path, pathRoutes] of byPath) {
     const key = methodSetKey(pathRoutes.map((route) => route.method));
-    const publics = new Set(
-      pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
-    );
-    const prior = anonymousAllow.get(key);
-    anonymousAllow.set(
-      key,
-      prior === undefined ? publics : new Set([...prior].filter((m) => publics.has(m))),
-    );
-
     const allAccount = pathRoutes.every((route) => route.auth !== "public");
+    // Only a path that actually serves something to an anonymous caller
+    // contributes. An all-account path is gated as a whole below, so an
+    // anonymous request to it is the gate's own 401 and its methods are never
+    // named — and folding its (empty) public set in here would subtract
+    // exactly those methods from every other path that shares the method set,
+    // so an unrelated public route would lose its Allow header the moment a
+    // new account-only path shares a method with it.
+    if (!allAccount) {
+      const publics = new Set(
+        pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
+      );
+      const prior = anonymousAllow.get(`${path} ${key}`);
+      anonymousAllow.set(
+        `${path} ${key}`,
+        prior === undefined ? publics : new Set([...prior].filter((m) => publics.has(m))),
+      );
+    }
+
     if (allAccount) {
       // Every method on this path needs an account, so the whole path is
       // gated and an anonymous request is 401 without naming the methods.
@@ -234,11 +286,19 @@ export function createApp(table = routes) {
         /** @type {import("hono").Context<{Bindings: Ctx, Variables: ApiVariables}>} */ c,
         /** @type {string[]} */ methods,
       ) => {
+        // The registered path, not the concrete one: Hono reports a param
+        // route's 405 with the path the request actually carried
+        // (`/v1/keys/k1`), while the map is keyed by the registry's spelling
+        // (`/v1/keys/:keyId`). A path that matches no registered one is one
+        // Hono did not route at all, which is a 404, so the null case is the
+        // closed default: no method is disclosed.
+        const registered = registeredPathFor(byPath, c.req.path);
+        const key = registered === null ? null : `${registered} ${methodSetKey(methods)}`;
         const allow = methods.filter(
           (method) =>
             method !== "HEAD" &&
             (c.get("account") != null ||
-              (anonymousAllow.get(methodSetKey(methods)) ?? new Set()).has(method)),
+              (key === null ? undefined : anonymousAllow.get(key))?.has(method) === true),
         );
         return errorResponse(405, "That method is not allowed here.", {
           allow: allow.join(", "),
@@ -315,12 +375,105 @@ let keyStore;
 let keyStoreDb;
 
 /**
+ * The storage configuration a deployment carries, or null when it carries
+ * none. All five values or none: a half-configured deployment would mint keys
+ * the storage endpoint has never heard of, which reads at the user as "your
+ * new key does not work". A half-configured deployment is therefore refused
+ * at the MINT, not at every route: the error comes back as a provider whose
+ * `mint` throws, so the one operation that needs the storage credential is
+ * the one that fails and every other route keeps answering. (Rotating the
+ * master credential needs the isolate to restart, the same way the stand-in
+ * store does; a redeploy restarts it.)
+ *
+ * The half-configured stub matches the KeyProvider shape (`mint`, `revoke`,
+ * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
+ * method. The real S3 provider's `revoke` is still the vendor key API (#173).
+ * @param {{[key: string]: unknown}} env
+ * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ */
+function keyProviderFor(env) {
+  const names = [
+    "STORAGE_ENDPOINT",
+    "STORAGE_REGION",
+    "STORAGE_BUCKET",
+    "STORAGE_MASTER_ACCESS_KEY_ID",
+    "STORAGE_MASTER_SECRET_ACCESS_KEY",
+  ];
+  const values = names
+    .map((name) => env[name])
+    .filter((value) => typeof value === "string" && value.length > 0);
+  if (values.length === 0) {
+    return null;
+  }
+  if (values.length < names.length) {
+    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
+    const problem = new Error(
+      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
+    );
+    return {
+      mint() {
+        throw problem;
+      },
+      revoke() {
+        throw problem;
+      },
+      swapToReadOnly() {
+        throw problem;
+      },
+    };
+  }
+  return createS3KeyProvider({
+    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
+    region: /** @type {string} */ (env.STORAGE_REGION),
+    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
+    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
+    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
+    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
+      ? { roleArn: env.STORAGE_ROLE_ARN }
+      : {}),
+  });
+}
+
+/**
  * The Worker's own env as this entry reads it: the D1 binding named DRIVE_DB
  * (cloudflare.config.ts), plus whatever else the runtime bound (the generated
  * `Env` covers the pricing Worker's bindings, not this Worker's, so the pair is
  * declared here). The sign-in keys are read from it too, by authFor.
  * @typedef {{ASSETS: any, DRIVE_DB: D1Database, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL: import("@cloudflare/workers-types").SendEmail, WAITLIST_DB: D1Database, WAITLIST_RATE_LIMITER: import("@cloudflare/workers-types").RateLimit, [key: string]: unknown}} ApiEnv
  */
+
+/**
+ * The account whose email is this address, read from the sign-in flow's own
+ * `user` table on the customer database (src/auth.js built it;
+ * migrations/drive/0005_better_auth.sql owns it). This is the one resolver a
+ * team invite binds through, so an invite to an address a signed-in account
+ * already has becomes an active membership at once, and one to a new address
+ * stays `invited` until that account signs in. The email is matched
+ * case-insensitively, the same fold the invite row stores, and the columns are
+ * Better Auth's own, so nothing here invents an account table.
+ * @param {D1Database} db
+ * @returns {(email: string) => Promise<{id: string, name: string, email: string}|null>}
+ */
+export function accountByEmail(db) {
+  return async (email) => {
+    const row = await db
+      .prepare('SELECT id, name, email FROM "user" WHERE LOWER(email) = LOWER(?1)')
+      .bind(email.trim())
+      .first();
+    if (row === null || typeof row !== "object") {
+      return null;
+    }
+    const r = /** @type {{id?: unknown, name?: unknown, email?: unknown}} */ (row);
+    if (typeof r.id !== "string" || r.id === "" || typeof r.email !== "string") {
+      return null;
+    }
+    return {
+      id: r.id,
+      name: typeof r.name === "string" && r.name !== "" ? r.name : r.email,
+      email: r.email,
+    };
+  };
+}
 
 /**
  * The stand-in key store, until the D1-backed one lands: the same shape
@@ -335,9 +488,23 @@ function storeFor(env) {
     // The device sign-in half is D1-backed whenever the deployment binds a
     // database, so a code started on one instance is visible on the next and
     // survives a restart (drive#136 finding 1); without one it stays the
-    // in-memory stand-in. The key half is still the stand-in until drive#2.
+    // in-memory stand-in. The storage key half is the S3 provider when the
+    // five STORAGE_* values are set, otherwise the stand-in credential.
     keyStore = createMemoryStore({
       signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
+      keyProvider: keyProviderFor(env) ?? undefined,
+      // Teams are D1-backed for the same reason (drive#20): a team and its
+      // members must survive the isolate that created them, because "the owner
+      // removes a member and the key stops working" is a claim about the next
+      // request, which may be a different instance. The store is a field on
+      // the same memory store object, so the routes read `store.teams` either
+      // way and the in-memory path (no DRIVE_DB) is the stand-in. The account
+      // resolver is the sign-in flow's own `user` table (src/auth.js owns it,
+      // and it is on the same DRIVE_DB), so an email invite binds a real
+      // account instead of leaving every invite unbound.
+      teams: env.DRIVE_DB
+        ? createD1TeamStore(env.DRIVE_DB, { resolveAccountByEmail: accountByEmail(env.DRIVE_DB) })
+        : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }

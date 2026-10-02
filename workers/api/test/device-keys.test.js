@@ -276,7 +276,7 @@ test("an anonymous /v1/keys is 401, and a made-up token stays 401", async () => 
 
 test("each connected tool gets its own key: two mints are two different keys", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const { account, deviceToken } = await signIn(store, "Nish's MacBook");
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
 
   const claude = await dispatch(
     new Request("https://api.test/v1/keys", {
@@ -315,7 +315,7 @@ test("each connected tool gets its own key: two mints are two different keys", a
     baseCtx(store, null),
   );
   assert.equal(revoked.status, 204);
-  store.putObject(account.id, `${codexKey.prefix}notes.txt`, new Uint8Array([1]));
+  store.putObject(`${codexKey.prefix}notes.txt`, new Uint8Array([1]));
   const still = await dispatch(
     new Request(`https://api.test/v1/storage/list?path=${codexKey.prefix}`, {
       headers: basic(codexKey.accessKeyId, codexKey.secret),
@@ -334,7 +334,7 @@ test("each connected tool gets its own key: two mints are two different keys", a
 
 test("a revoked agent key is refused by the storage API (the #5 bullet)", async () => {
   const store = createMemoryStore({ now: () => 0 });
-  const { account, deviceToken } = await signIn(store, "Nish's MacBook");
+  const { deviceToken } = await signIn(store, "Nish's MacBook");
   const minted = await dispatch(
     new Request("https://api.test/v1/keys", {
       method: "POST",
@@ -344,7 +344,7 @@ test("a revoked agent key is refused by the storage API (the #5 bullet)", async 
     baseCtx(store, null),
   );
   const key = await minted.json();
-  store.putObject(account.id, `${key.prefix}a.txt`, new Uint8Array([1]));
+  store.putObject(`${key.prefix}a.txt`, new Uint8Array([1]));
 
   const before = await dispatch(
     new Request(`https://api.test/v1/storage/list?path=${key.prefix}`, {
@@ -401,7 +401,7 @@ test("reading another user's prefix fails with a 403, not an empty listing", asy
   ).json();
 
   assert.notEqual(firstKey.prefix, secondKey.prefix);
-  store.putObject(second.account.id, `${secondKey.prefix}secret.txt`, new Uint8Array([2]));
+  store.putObject(`${secondKey.prefix}secret.txt`, new Uint8Array([2]));
 
   // The first account's key, pointed at the second account's folder.
   const cross = await dispatch(
