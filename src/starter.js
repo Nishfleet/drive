@@ -26,8 +26,12 @@ import { agentCannotDeleteSentence } from "./docs.js";
 import { validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
-/** The page, served from public/starter.html by the asset layer. */
-export const STARTER_PATH = "/starter";
+// The page itself is public/starter.html, served by the asset layer's HTML
+// handling (/starter serves /starter.html, the same way /get-started serves
+// get-started.html), so this module exports no page path — the test that
+// reads the shipped page (test/starter.test.mjs) is what pins the page's own
+// links, not a constant the module could drift from.
+
 /** The one endpoint the page posts to. */
 export const STARTER_ENDPOINT = "/api/starter";
 
@@ -110,9 +114,7 @@ export function starterFiles() {
   for (const file of STARTER_FILE_LIST) {
     const checked = validatePath(file.path);
     if (checked.error) {
-      throw new Error(
-        `the starter's ${file.path} is not a drive path: ${checked.error}`,
-      );
+      throw new Error(`the starter's ${file.path} is not a drive path: ${checked.error}`);
     }
     if (!checked.path.startsWith(`${STARTER_FOLDER}/`)) {
       throw new Error(
@@ -164,18 +166,19 @@ export const STARTER_COPY = Object.freeze({
 });
 
 /**
- * The one body the endpoint accepts. Anything else is refused, so a stray key
- * in a request cannot be read as a different action and a GET's own read is
- * never a write.
+ * The starter's one body the endpoint accepts. Anything else is refused, so a
+ * stray key in a request cannot be read as a different action and a GET's own
+ * read is never a write. The refusal words are the one table's
+ * (src/messages.js), the same way every account route refuses bad input.
  * @param {unknown} body
  * @returns {{action: string}|{error: string}}
  */
 export function readStarterRequest(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { error: "Send a JSON object." };
+    return { error: failureMessage("json-object-needed") };
   }
   if (body.action !== STARTER_ACTION) {
-    return { error: `Send action: ${STARTER_ACTION}.` };
+    return { error: failureMessage("starter-create-action") };
   }
   return { action: STARTER_ACTION };
 }
@@ -190,7 +193,10 @@ export function readStarterRequest(body) {
  * the paths below are drive paths and the account prefix is applied by the
  * scope, not by this function. Every write goes through `store.write`, which
  * is the one paved writer in this repo — there is no second way to put a file
- * in a drive.
+ * in a drive. One store failure stops the run at the file it stopped on, and
+ * nothing here writes a success over it: the caller answers the failure words,
+ * and a retry self-heals, because every file already written is found by the
+ * read check and kept.
  *
  * @param {import("./files.js").FileStore} store
  * @returns {Promise<{created: string[], kept: string[]}>}
@@ -229,18 +235,6 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...JSON_HEADERS },
-  });
-}
-
-/**
- * @param {string} message
- * @param {number} status
- * @returns {Response}
- */
-function plain(message, status) {
-  return new Response(message, {
-    status,
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
 }
 
@@ -286,14 +280,14 @@ export async function handleStarterRequest(request, store, account) {
   }
 
   if (request.method !== "POST") {
-    return plain("Method not allowed. POST to create it.", 405);
+    return json({ error: failureMessage("starter-method") }, 405);
   }
 
   let body;
   try {
     body = await request.json();
   } catch {
-    return json({ error: "The request body is not valid JSON." }, 400);
+    return json({ error: failureMessage("json-object-needed") }, 400);
   }
   const read = readStarterRequest(body);
   if (read.error) {
@@ -303,15 +297,16 @@ export async function handleStarterRequest(request, store, account) {
   let result;
   try {
     result = await createStarter(store);
-  } catch (cause) {
-    // A store that failed is not a starter that was half created and is not a
-    // success: the route says the write failed and names nothing it cannot
-    // stand behind.
+  } catch {
+    // A store failure is not a success and is not half reported: the route
+    // answers the table's failure words and puts nothing of the cause in the
+    // reply — a message never carries raw error text (the safety rules in
+    // src/messages.js), and a store's own exception text can name infra the
+    // customer never needs to see. A retry self-heals what was written.
     return json(
       {
         error: STARTER_COPY.failed.what,
         next: STARTER_COPY.failed.next,
-        detail: cause instanceof Error ? cause.message : String(cause),
       },
       500,
     );

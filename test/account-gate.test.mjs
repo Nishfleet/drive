@@ -30,7 +30,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
-import { handleStarterRequest, STARTER_ENDPOINT } from "../src/starter.js";
+import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 

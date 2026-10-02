@@ -14,32 +14,22 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import worker from "../src/index.js";
+import { createMemoryStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { AGENT_TOOLS } from "../src/keys.js";
 import {
+  createStarter,
+  handleStarterRequest,
+  readStarterRequest,
   STARTER_ACTION,
+  STARTER_COPY,
   STARTER_ENDPOINT,
   STARTER_FILE_LIST,
   STARTER_FOLDER,
-  STARTER_COPY,
-  createStarter,
-  handleStarterRequest,
   starterFiles,
-  readStarterRequest,
 } from "../src/starter.js";
-import { createTestD1, createTestAuth, signIn } from "./harness.mjs";
 
 const page = readFileSync(new URL("../public/starter.html", import.meta.url), "utf8");
-const pageJs = readFileSync(new URL("../public/starter.html", import.meta.url), "utf8");
 const account = Object.freeze({ id: "acct-s", name: "Starter account" });
-
-/** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */
-const workerFetch =
-  /** @type {unknown} */ (worker.fetch);
-
-const ctx = { waitUntil() {}, passThroughOnException() {} };
-const now = Date.parse("2026-09-30T12:00:00.000Z");
 
 // ------------------------------------------------------------------ template
 
@@ -53,73 +43,83 @@ test("starterFiles validates every file sits inside the starter folder", () => {
   }
 });
 
-test("the starter writes four files and only missing ones on re-run", async () => {
-  const db = createTestD1();
-  /** @type {Array<string[]>} */
-  const seen = [];
-  /** @type {Record<string, {body: string, contentType: string}>} */
-  const store = {};
-  const storeObj = {
-    /** @param {string} path */
-    async list(path) {
-      seen.push(["list", path]);
-      const prefix = `u/${account.id}${path}`;
-      const names = Object.keys(store)
-        .filter((k) => k.startsWith(prefix) && k !== prefix.slice(0, -1))
-        .map((k) => k.slice(prefix.length).split("/")[0]);
-      return [...new Set(names)].map((name) => {
-        const p = path.endsWith("/") ? path + name : `${path}/${name}`;
-        return { name, path: p, kind: "text" };
-      });
-    },
-    /** @param {string} path */
-    async read(path) {
-      seen.push(["read", path]);
-      const key = `u/${account.id}${path}`;
-      const entry = store[key];
-      return entry ? entry.body : null;
-    },
-    /** @param {string} path @param {BodyInit} body @param {string} _contentType */
-    async write(path, body) {
-      seen.push(["write", path]);
-      const chunks = [];
-      for await (const chunk of body) {
-        chunks.push(Buffer.from(chunk));
-      }
-      store[`u/${account.id}${path}`] = { body: Buffer.concat(chunks).toString(), contentType: "text/markdown; charset=utf-8" };
-    },
-    /** @param {string} path */
-    async remove(path) {
-      seen.push(["remove", path]);
-      delete store[`u/${account.id}${path}`];
-    },
-    /** @param {string} _from @param {string} _to @returns {Promise<void>} */
-    async copy(_from, _to) {},
-    /** @param {string} path */
-    async listVersions(path) {
-      seen.push(["listVersions", path]);
-      return [];
-    },
-  };
+test("the starter writes four files and only missing ones on re-run, in the account's own prefix", async () => {
+  const { scopeStore } = await import("../src/files.js");
+  /**
+   * The real in-memory store (src/files.js createMemoryStore) under the real
+   * scope, so the account prefix is scopeStore's work and not a prefix this
+   * test writes by hand: the assertion below is on the real storage keys one
+   * account's files land under, and a second account sees none of them.
+   * @type {Record<string, string>}
+   */
+  const backing = createMemoryStore();
+  const store = scopeStore(backing, account);
 
-  const { createStarter: cs } = await import("../src/starter.js");
-  const first = await cs(storeObj);
-  assert.equal(first.created.length, STARTER_FILE_LIST.length, "all four files written the first time");
+  const first = await createStarter(store);
+  assert.equal(
+    first.created.length,
+    STARTER_FILE_LIST.length,
+    "all four files written the first time",
+  );
   assert.equal(first.kept.length, 0);
+  // Every write went through the scoped store, so the bytes are under this
+  // account's own prefix and the drive paths are the ones the caller asked for.
+  // The daily note sits one folder down, so it is read from there.
+  const rows = (await backing.list(`u/${account.id}${STARTER_FOLDER}/`)).map((row) => row.path);
+  const nested = (await backing.list(`u/${account.id}${STARTER_FOLDER}/Templates/`)).map(
+    (row) => row.path,
+  );
+  for (const file of STARTER_FILE_LIST) {
+    const key = `u/${account.id}${file.path}`;
+    assert.ok(
+      [...rows, ...nested].includes(key),
+      `${file.path} is stored under ${account.id}'s own prefix`,
+    );
+  }
+  // Another account's drive cannot see a byte of it.
+  const other = scopeStore(backing, { id: "acct-other", name: "Other" });
+  assert.deepEqual(await other.list(STARTER_FOLDER), [], "another account sees no starter files");
 
-  const second = await cs(storeObj);
-  assert.equal(second.created.length, 0, "nothing new on re-run");
-  assert.equal(second.kept.length, STARTER_FILE_LIST.length, "all files kept");
+  // A second run fills in only what is missing: one person deleting a file and
+  // running again gets that file back and keeps every byte of the others.
+  await store.remove(STARTER_FILE_LIST[1].path);
+  const second = await createStarter(store);
+  assert.deepEqual(
+    second.created,
+    [STARTER_FILE_LIST[1].path],
+    "only the missing file is written back",
+  );
+  assert.deepEqual(
+    second.kept,
+    STARTER_FILE_LIST.filter((file) => file !== STARTER_FILE_LIST[1]).map((file) => file.path),
+    "the files already there are kept",
+  );
+
+  // And a run with nothing missing writes nothing at all.
+  const third = await createStarter(store);
+  assert.deepEqual(third.created, [], "nothing new on re-run");
+  assert.equal(third.kept.length, STARTER_FILE_LIST.length, "all files kept");
+});
+
+test("createStarter refuses a store it cannot write through", async () => {
+  await assert.rejects(
+    createStarter(/** @type {never} */ (null)),
+    /createStarter needs a scoped store/,
+  );
 });
 
 // ------------------------------------------------------------------- request
 
 test("readStarterRequest accepts only the create action", () => {
   assert.deepEqual(readStarterRequest({ action: "create" }), { action: "create" });
-  assert.deepEqual(readStarterRequest({ action: "delete" }), { error: 'Send action: create.' });
-  assert.deepEqual(readStarterRequest({}), { error: 'Send action: create.' });
-  assert.deepEqual(readStarterRequest(null), { error: "Send a JSON object." });
-  assert.deepEqual(readStarterRequest("create"), { error: "Send a JSON object." });
+  assert.deepEqual(readStarterRequest({ action: "delete" }), {
+    error: failureMessage("starter-create-action"),
+  });
+  assert.deepEqual(readStarterRequest({}), { error: failureMessage("starter-create-action") });
+  // Both refusals are the one table's words (src/messages.js), never a second
+  // copy written here.
+  assert.deepEqual(readStarterRequest(null), { error: failureMessage("json-object-needed") });
+  assert.deepEqual(readStarterRequest("create"), { error: failureMessage("json-object-needed") });
 });
 
 test("the starter endpoint is registered and classified", async () => {
@@ -132,25 +132,50 @@ test("the starter endpoint is registered and classified", async () => {
 // ------------------------------------------------------------------ handler
 
 test("the handler answers 401 without an account", async () => {
-  const response = await handleStarterRequest(new Request(`https://drive.test${STARTER_ENDPOINT}`), null, null);
+  const response = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`),
+    null,
+    null,
+  );
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: failureMessage("unauthorized") });
 });
 
 test("the handler answers 503 without a store", async () => {
-  const response = await handleStarterRequest(new Request(`https://drive.test${STARTER_ENDPOINT}`), null, account);
+  const response = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`),
+    null,
+    account,
+  );
   assert.equal(response.status, 503);
 });
 
 test("GET describes the template and writes nothing", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore({ read: () => null, write: async () => {}, remove: async () => {}, list: async () => [], listVersions: async () => {}, copy: async () => {} }, account);
-  const response = await handleStarterRequest(new Request(`https://drive.test${STARTER_ENDPOINT}`), store, account);
+  const store = scopeStore(
+    {
+      read: () => null,
+      write: async () => {},
+      remove: async () => {},
+      list: async () => [],
+      listVersions: async () => {},
+      copy: async () => {},
+    },
+    account,
+  );
+  const response = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`),
+    store,
+    account,
+  );
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.deepEqual(payload.folder, STARTER_FOLDER);
-  assert.deepEqual(payload.files, STARTER_FILE_LIST.map((f) => f.path));
+  assert.deepEqual(
+    payload.files,
+    STARTER_FILE_LIST.map((f) => f.path),
+  );
   assert.deepEqual(payload.copy, STARTER_COPY);
 });
 
@@ -158,14 +183,25 @@ test("POST with action=create fills missing files only", async () => {
   const { scopeStore } = await import("../src/files.js");
   /** @type {Record<string, string>} */
   const written = {};
-  const store = scopeStore({
-    async read(path) { return written[path] ?? null; },
-    async write(path, _body) { written[path] = "written"; },
-    async remove() {},
-    async list() { return []; },
-    async listVersions() { return []; },
-    async copy() {},
-  }, account);
+  const store = scopeStore(
+    {
+      async read(path) {
+        return written[path] ?? null;
+      },
+      async write(path, _body) {
+        written[path] = "written";
+      },
+      async remove() {},
+      async list() {
+        return [];
+      },
+      async listVersions() {
+        return [];
+      },
+      async copy() {},
+    },
+    account,
+  );
   const post = (body) =>
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -188,7 +224,17 @@ test("POST with action=create fills missing files only", async () => {
 
 test("POST with the wrong action refuses", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore({ read: () => null, write: async () => {}, remove: async () => {}, list: async () => [], listVersions: async () => {}, copy: async () => {} }, account);
+  const store = scopeStore(
+    {
+      read: () => null,
+      write: async () => {},
+      remove: async () => {},
+      list: async () => [],
+      listVersions: async () => {},
+      copy: async () => {},
+    },
+    account,
+  );
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -203,7 +249,17 @@ test("POST with the wrong action refuses", async () => {
 
 test("POST with invalid JSON refuses", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore({ read: () => null, write: async () => {}, remove: async () => {}, list: async () => [], listVersions: async () => {}, copy: async () => {} }, account);
+  const store = scopeStore(
+    {
+      read: () => null,
+      write: async () => {},
+      remove: async () => {},
+      list: async () => [],
+      listVersions: async () => {},
+      copy: async () => {},
+    },
+    account,
+  );
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, {
       method: "POST",
@@ -218,7 +274,17 @@ test("POST with invalid JSON refuses", async () => {
 
 test("the handler refuses unknown methods", async () => {
   const { scopeStore } = await import("../src/files.js");
-  const store = scopeStore({ read: () => null, write: async () => {}, remove: async () => {}, list: async () => [], listVersions: async () => {}, copy: async () => {} }, account);
+  const store = scopeStore(
+    {
+      read: () => null,
+      write: async () => {},
+      remove: async () => {},
+      list: async () => [],
+      listVersions: async () => {},
+      copy: async () => {},
+    },
+    account,
+  );
   const response = await handleStarterRequest(
     new Request(`https://drive.test${STARTER_ENDPOINT}`, { method: "PATCH" }),
     store,
@@ -234,16 +300,167 @@ test("the shipped page carries the starter endpoint, the file list and the copy"
   assert.ok(page.includes("Notes"), "page names the Notes folder");
   assert.ok(page.includes(STARTER_COPY.title), "page carries the title copy");
   assert.ok(page.includes(STARTER_COPY.lede), "page carries the lede copy");
+  // Every word the page SHIPS appears in it verbatim, so a module edit the
+  // page does not follow fails here rather than drifting live. The
+  // created/refilled/nothingCreated/failed pairs are left out on purpose:
+  // the page reads those from the create response (payload.what/next) and
+  // from the message table's own fallback, so it ships no second copy — the
+  // handler test above is what pins what the endpoint answers with them. Both
+  // sides have whitespace collapsed first, because the page wraps its prose
+  // across source lines and the words, not the line breaks, are the copy.
+  const flat = page.replace(/\s+/g, " ");
+  const atRuntime = new Set(["created", "refilled", "nothingCreated", "failed"]);
+  for (const [key, value] of Object.entries(STARTER_COPY)) {
+    if (atRuntime.has(key)) continue;
+    for (const word of typeof value === "string"
+      ? [value]
+      : Object.values(/** @type {Record<string, string>} */ (value))) {
+      assert.ok(
+        flat.includes(/** @type {string} */ (word)),
+        `the page carries STARTER_COPY.${key}: ${word}`,
+      );
+    }
+  }
+});
+
+test("the endpoint answers a create with the copy the page shows, and no second copy of it", async () => {
+  const { scopeStore } = await import("../src/files.js");
+  /** @type {Record<string, string>} */
+  const written = {};
+  const store = scopeStore(
+    {
+      async read(path) {
+        return written[path] ?? null;
+      },
+      async write(path) {
+        written[path] = "written";
+      },
+      async remove() {},
+      async list() {
+        return [];
+      },
+      async listVersions() {
+        return [];
+      },
+      async copy() {},
+    },
+    account,
+  );
+  const create = () =>
+    handleStarterRequest(
+      new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: STARTER_ACTION }),
+      }),
+      store,
+      account,
+    );
+
+  const fresh = await (await create()).json();
+  assert.equal(fresh.what, STARTER_COPY.created.what);
+  assert.equal(fresh.next, STARTER_COPY.created.next);
+  const again = await (await create()).json();
+  assert.equal(again.what, STARTER_COPY.nothingCreated.what);
+  assert.equal(again.next, STARTER_COPY.nothingCreated.next);
+
+  // A store that fails answers the table's fallback pair and puts nothing of
+  // the cause in the reply: a message never carries raw error text.
+  const broken = scopeStore(
+    {
+      async read() {
+        throw new Error("the storage backend at internal-host-3 refused the key");
+      },
+      async write() {},
+      async remove() {},
+      async list() {
+        return [];
+      },
+      async listVersions() {
+        return [];
+      },
+      async copy() {},
+    },
+    account,
+  );
+  const failed = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: STARTER_ACTION }),
+    }),
+    broken,
+    account,
+  );
+  assert.equal(failed.status, 500);
+  const failedBody = await failed.json();
+  assert.equal(failedBody.error, STARTER_COPY.failed.what);
+  assert.equal(failedBody.next, STARTER_COPY.failed.next);
+  assert.doesNotMatch(JSON.stringify(failedBody), /internal-host-3/);
+});
+
+test("the handler's refusals are the message table's, never a second copy", async () => {
+  const { scopeStore } = await import("../src/files.js");
+  const store = scopeStore(
+    {
+      read: async () => null,
+      write: async () => {},
+      remove: async () => {},
+      list: async () => [],
+      listVersions: async () => [],
+      copy: async () => {},
+    },
+    account,
+  );
+  const post = (/** @type {string} */ body) =>
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  const wrongAction = await handleStarterRequest(
+    post(JSON.stringify({ action: "delete" })),
+    store,
+    account,
+  );
+  assert.equal(wrongAction.status, 400);
+  assert.deepEqual(await wrongAction.json(), { error: failureMessage("starter-create-action") });
+
+  const notJson = await handleStarterRequest(post("not json"), store, account);
+  assert.equal(notJson.status, 400);
+  assert.deepEqual(await notJson.json(), { error: failureMessage("json-object-needed") });
+
+  // A wrong method is a JSON refusal from the table too, with an Allow header
+  // from Hono's own methodNotAllowed middleware in the real Worker.
+  const wrongMethod = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, { method: "PATCH" }),
+    store,
+    account,
+  );
+  assert.equal(wrongMethod.status, 405);
+  assert.deepEqual(await wrongMethod.json(), { error: failureMessage("starter-method") });
 });
 
 test("the page's offline messages are the table's, not a second copy", () => {
   assert.ok(page.includes(FAILURE_MESSAGES.offline.what), "offline message matches the table");
-  assert.ok(page.includes(FAILURE_MESSAGES.unexpected.what), "unexpected message matches the table");
+  assert.ok(
+    page.includes(FAILURE_MESSAGES.unexpected.what),
+    "unexpected message matches the table",
+  );
 });
-
 
 test("the page is indexable and in the sitemap", () => {
   assert.ok(!page.includes('name="robots" content="noindex"'), "the starter page is indexable");
+  // The sitemap's row for the starter carries the same indexability the page
+  // declares, not just a <loc>: a page that ships indexable and sits in the
+  // sitemap with no priority row is half declared.
+  const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
+  const row = sitemap.match(
+    /<loc>([^<]*starter[^<]*)<\/loc>\s*<changefreq>[^<]*<\/changefreq>\s*<priority>([^<]*)<\/priority>/,
+  );
+  assert.ok(row, "the starter's sitemap row carries a changefreq and a priority");
+  assert.match(row[1], /\/starter\.html$/, "the sitemap names the starter's own page");
+  assert.match(row[2], /^0?\.\d$|^1(\.0)?$/, "the priority is a sitemap priority value");
 });
 
 test("the page has a canonical Open Graph and JSON-LD card", () => {
@@ -259,7 +476,10 @@ test("the page has a canonical Open Graph and JSON-LD card", () => {
   assert.ok(page.includes('name="twitter:title"'), "the page has twitter:title");
   assert.ok(page.includes('name="twitter:description"'), "the page has twitter:description");
   assert.ok(page.includes('name="twitter:image"'), "the page has twitter:image");
-  assert.ok(page.includes('"@type": "SoftwareApplication"'), "the page has JSON-LD SoftwareApplication");
+  assert.ok(
+    page.includes('"@type": "SoftwareApplication"'),
+    "the page has JSON-LD SoftwareApplication",
+  );
 });
 
 test("the page's JSON-LD price mirrors the pricing page's ceiling", () => {
@@ -268,7 +488,11 @@ test("the page's JSON-LD price mirrors the pricing page's ceiling", () => {
   const pricingMatch = pricingPage.match(/"price":\s*"([^"]+)"/);
   assert.ok(starterMatch, "starter has a price in JSON-LD");
   assert.ok(pricingMatch, "pricing page has a price in JSON-LD");
-  assert.equal(starterMatch[1], pricingMatch[1], "starter price is the pricing page's ceiling price");
+  assert.equal(
+    starterMatch[1],
+    pricingMatch[1],
+    "starter price is the pricing page's ceiling price",
+  );
 });
 
 test("the page links the shared stylesheet and keeps its own <style>", () => {

@@ -271,10 +271,10 @@ button:disabled {
         <p class="next">Create it only if you want it. Your drive is the same either way.</p>
       </div>
       <h2 id="what-heading">What it writes</h2>
+      <p>Four files, all inside one Notes folder. Delete any you do not want.</p>
       <p>
-        Four files, all inside one <code>Notes</code> folder. Delete any you do
-        not want, and the starter runs again later and only fills in what is
-        missing, so it never overwrites the notes you already have.
+        The starter runs again later and only fills in what is missing, so it
+        never overwrites the notes you already have.
       </p>
       <ul class="files" id="starter-files">
         <!-- Filled by starter.js from the endpoint's own list, so the page
@@ -284,6 +284,11 @@ button:disabled {
 
     <section aria-labelledby="how-heading">
       <h2 id="how-heading">How it works</h2>
+      <p>
+        A ready-made notes folder: a vault your notes app can open, a starter
+        inbox and daily note, and one note your agent reads when it works with
+        you.
+      </p>
       <p>
         The starter writes into your own drive, through the same path every other
         write takes, so it syncs to every machine you sign in on. There is no
@@ -336,6 +341,9 @@ const STARTER_ENDPOINT = "/api/starter";
 // reads this page and fails CI when either string drifts from the table.
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
+// The one next step when the browser never reached the service, so the live
+// region reads as a what/next pair rather than the same sentence twice.
+const TRY_AGAIN = "Press the button again in a moment.";
 
 const filesList = document.getElementById("starter-files");
 const gate = document.getElementById("starter-gate");
@@ -389,6 +397,10 @@ button.addEventListener("click", async () => {
       note.textContent = "";
       return;
     }
+    // What happened is the endpoint's own refusal when it sent one; the one
+    // thing to do next is the endpoint's when it sent one, and the page's own
+    // sentence when it did not — the table's retry advice, never a second copy
+    // of a message the module owns.
     setStatus(
       "error",
       typeof payload.error === "string" && payload.error.length > 0
@@ -396,13 +408,13 @@ button.addEventListener("click", async () => {
         : UNEXPECTED_MESSAGE,
       typeof payload.next === "string" && payload.next.length > 0
         ? payload.next
-        : UNEXPECTED_MESSAGE,
+        : TRY_AGAIN,
     );
   } catch (error) {
     // The raw error goes to the console; the live region only ever shows a
     // message built from the table.
     console.error("starter: create failed", error);
-    setStatus("error", UNEXPECTED_MESSAGE, UNEXPECTED_MESSAGE);
+    setStatus("error", UNEXPECTED_MESSAGE, TRY_AGAIN);
   } finally {
     button.disabled = false;
     note.textContent = "";
