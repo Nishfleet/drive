@@ -32,9 +32,10 @@ body {
   height: 630px;
 }
 
-/* The shared stylesheet resets no margin, and a <p> at 150px would carry a
-   150px margin of its own, so the card zeroes the ones it sets here. This is
-   a rule, not a custom property, so the card still owns no palette token. */
+/* The shared stylesheet resets the body margin but no child's, and a <p> at
+   150px would carry a 150px margin of its own and push the last line past the
+   630px canvas, so the card zeroes its own paragraph margins. This is a rule,
+   not a custom property, so the card still owns no palette token. */
 p {
   margin: 0;
 }
