@@ -482,7 +482,7 @@ test("a read that fails says so and leaves the numbers alone", () => {
   // the hidden line; the four-space indent is not the contract, the early
   // return is. Reflowing must not break the gate (drive#183), so match the
   // shape with tolerant whitespace instead of pinning four spaces.
-  assert.match(page, /if \(document\.hidden\) \{\s*return;$/m);
+  assert.match(page, /if \(document\.hidden\) \{\s*return\s*;/);
 });
 
 test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
