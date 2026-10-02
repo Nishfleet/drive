@@ -46,6 +46,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0007_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -708,37 +709,47 @@ test("the route rejects a third segment and answers 405 for GET on approve/disca
 });
 
 test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
-  // The row's own id is what makes two closes of one name possible: with
-  // (account_id, name, state) as the key the second 'approved' row of a name
-  // collides on the primary key, and a second approve 500s. Apply the shipped
-  // migrations and prove the shape rather than inferring it.
+  // 0003 as shipped (and as production drive-data has it) keys the table on
+  // (account_id, name, state). 0007 copies the rows into a table keyed by id.
+  // Apply that upgrade against a real old-schema row, then prove two approved
+  // rows of one name are legal and the copied row is still there.
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of [
-    "waitlist/0001_waitlist.sql",
-    "drive/0002_file_index.sql",
-    "drive/0003_branches.sql",
-  ]) {
+  const apply = (/** @type {string} */ name) => {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
-  }
+  };
+  apply("drive/0002_file_index.sql");
+  apply("drive/0003_branches.sql");
+  sqlite
+    .prepare(
+      "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+        "VALUES ('acct-1','work','/Photos','/.branches/work','{}','approved','2026-01-01T00:00:00Z')",
+    )
+    .run();
+  apply("drive/0004_agent_undo.sql");
+  apply("drive/0007_branch_row_id.sql");
   const columns = /** @type {{name: string, pk: number}[]} */ (
     /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
   );
   const pk = columns.filter((c) => c.pk > 0).map((c) => c.name);
   assert.deepEqual(pk, ["id"], "the key is the row's own id, not the name and state");
-  // Two 'approved' rows for one name are legal now.
-  const insert = sqlite.prepare(
-    "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
-      "VALUES (?,?,'/Photos','/.branches/x','{}','approved',?)",
-  );
-  insert.run("acct-1", "work", "2026-01-01T00:00:00Z");
-  insert.run("acct-1", "work", "2026-01-02T00:00:00Z");
+  const kept = sqlite
+    .prepare("SELECT name, state, source_prefix FROM branches WHERE account_id='acct-1'")
+    .get();
+  assert.equal(kept?.name, "work");
+  assert.equal(kept?.state, "approved");
+  assert.equal(kept?.source_prefix, "/Photos");
+  sqlite
+    .prepare(
+      "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+        "VALUES ('acct-1','work','/Photos','/.branches/work','{}','approved','2026-01-02T00:00:00Z')",
+    )
+    .run();
   const approved = sqlite
     .prepare(
       "SELECT COUNT(*) AS n FROM branches WHERE account_id='acct-1' AND name='work' AND state='approved'",
     )
     .get();
   assert.equal(/** @type {{n: number}} */ (/** @type {unknown} */ (approved)).n, 2);
-  // The partial unique index still refuses a second open branch of one name.
   const open = sqlite.prepare(
     "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
       "VALUES (?,?,'/Photos','/.branches/x','{}','open',?)",

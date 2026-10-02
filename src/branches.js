@@ -822,8 +822,8 @@ export async function discardBranch(db, store, account, name) {
  */
 async function saveSnapshot(db, id, snapshot) {
   return db
-    .prepare("UPDATE branches SET snapshot = ?2 WHERE id = ?1 AND state = 'open'")
-    .bind(id, JSON.stringify(snapshot))
+    .prepare("UPDATE branches SET snapshot = ?1 WHERE id = ?2 AND state = 'open'")
+    .bind(JSON.stringify(snapshot), id)
     .run();
 }
 

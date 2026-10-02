@@ -25,6 +25,7 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
   "drive/0006_share_links.sql",
+  "drive/0007_branch_row_id.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
@@ -84,17 +85,26 @@ export function sqlitePlaceholders(sql) {
 function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sqlitePlaceholders(sql));
   const bound = params.map(sqliteValue);
-  const results = statement.all(...bound);
-  // Node's StatementSync types put change counts on `run()`, not `all()`. The
-  // adapter speaks D1's one-method `all()` for both reads and `returning`
-  // writes, so the counts are read through the result type `run()` documents.
-  const ran = /** @type {StatementResultingChanges} */ (/** @type {unknown} */ (statement));
+  if (/^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b/i.test(sql) || /\breturning\b/i.test(sql)) {
+    const results = statement.all(...bound);
+    // Node's StatementSync types put change counts on `run()`, not `all()`.
+    const ran = /** @type {StatementResultingChanges} */ (/** @type {unknown} */ (statement));
+    return {
+      results,
+      success: true,
+      meta: {
+        changes: Number(ran.changes ?? 0),
+        last_row_id: Number(ran.lastInsertRowid ?? 0),
+      },
+    };
+  }
+  const info = statement.run(...bound);
   return {
-    results,
+    results: [],
     success: true,
     meta: {
-      changes: Number(ran.changes ?? 0),
-      last_row_id: Number(ran.lastInsertRowid ?? 0),
+      changes: Number(info.changes),
+      last_row_id: Number(info.lastInsertRowid ?? 0),
     },
   };
 }
