@@ -328,6 +328,7 @@ func mountForeground(p MountPlan) error {
 		}
 	}()
 	runErr := cmd.Wait()
+	cancel()
 	signal.Stop(stop)
 	close(quit)
 	<-joined
@@ -350,7 +351,7 @@ func waitMounted(goos, home string) error {
 		if on {
 			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("the mount did not come up within %s; check the login item and %s",
 		mountWait, mountLogHint(goos, home))

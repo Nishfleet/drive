@@ -9,14 +9,11 @@ import (
 	"time"
 )
 
-// NOTE_OPEN is the kevent vnode flag for a file or directory open (macOS 10.9+).
-// syscall's darwin table names NOTE_LINK at 0x10; NOTE_OPEN is 0x80.
-const noteOpen uint32 = 0x80
-
 type kqueueWatcher struct {
-	kq   int
-	root string
-	fds  map[string]int
+	kq    int
+	root  string
+	fds   map[string]int
+	files map[string]*os.File
 }
 
 func newDirWatcher(root string) (dirWatcher, error) {
@@ -24,7 +21,7 @@ func newDirWatcher(root string) (dirWatcher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kqueue: %w", err)
 	}
-	w := &kqueueWatcher{kq: kq, root: root, fds: map[string]int{}}
+	w := &kqueueWatcher{kq: kq, root: root, fds: map[string]int{}, files: map[string]*os.File{}}
 	if err := w.Add(root); err != nil {
 		_ = w.Close()
 		return nil, err
@@ -42,20 +39,20 @@ func (w *kqueueWatcher) Add(path string) error {
 		Ident:  uint64(fd),
 		Filter: syscall.EVFILT_VNODE,
 		Flags:  syscall.EV_ADD | syscall.EV_CLEAR,
-		Fflags: syscall.NOTE_WRITE | noteOpen,
+		Fflags: syscall.NOTE_WRITE,
 	}
 	if _, err := syscall.Kevent(w.kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("kevent add %s: %w", path, err)
 	}
 	w.fds[path] = fd
-	// Keep the fd open for the life of the watch; Close on watcher Close.
+	w.files[path] = f
 	return nil
 }
 
 func (w *kqueueWatcher) Close() error {
-	for _, fd := range w.fds {
-		_ = syscall.Close(fd)
+	for _, f := range w.files {
+		_ = f.Close()
 	}
 	return syscall.Close(w.kq)
 }
@@ -81,9 +78,6 @@ func (w *kqueueWatcher) Next() (watchEvent, error) {
 	dir := true
 	if st, err := os.Stat(path); err == nil {
 		dir = st.IsDir()
-	}
-	if ev.Fflags&noteOpen != 0 {
-		return watchEvent{Path: path, Dir: dir, Open: true}, nil
 	}
 	if ev.Fflags&syscall.NOTE_WRITE != 0 && dir {
 		entries, err := os.ReadDir(path)

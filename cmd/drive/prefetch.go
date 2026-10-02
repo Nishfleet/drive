@@ -6,33 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"html"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 )
-
-// Prefetch caps (issue #227). N entries and M bytes per listed folder; the
-// first-chunk size matches --vfs-read-ahead. The bandwidth share is 1 MiB/s so
-// prefetch never takes the pipe from a user's own read; --bwlimit is not set
-// on the mount because that flag would slow the user too.
-const (
-	prefetchMaxEntries = 32
-	prefetchMaxBytes   = 8 << 20
-	prefetchChunk      = 128 << 10
-	prefetchSmallFile  = 1 << 20
-	prefetchShareBPS   = 1 << 20
-)
-
-type prefetchTarget struct {
-	Path string
-	Dir  bool
-	Size int64
-}
 
 type watchEvent struct {
 	Path      string
@@ -101,7 +81,9 @@ func prefetchLaunchdPlist(driveBin, home string) string {
 	}
 	b.WriteString("\t</array>\n")
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
-	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
+	b.WriteString("\t<key>KeepAlive</key>\n\t<dict>\n")
+	b.WriteString("\t\t<key>Crashed</key>\n\t\t<true/>\n")
+	b.WriteString("\t</dict>\n")
 	b.WriteString("\t<key>ProcessType</key>\n\t<string>Background</string>\n")
 	b.WriteString("\t<key>Nice</key>\n\t<integer>19</integer>\n")
 	b.WriteString("</dict>\n</plist>\n")
@@ -159,73 +141,6 @@ func runPrefetch(args []string) error {
 	return runPrefetchLoop(context.Background(), DefaultMountDir(common.home))
 }
 
-// planPrefetch picks child directories to list and small files to warm, dirs
-// first, under the N/M caps. It is the only policy: the watcher just calls it.
-func planPrefetch(parent string, entries []os.DirEntry, maxN int, maxBytes, chunk, smallMax int64) []prefetchTarget {
-	var (
-		dirs, files []prefetchTarget
-		bytes       int64
-	)
-	for _, e := range entries {
-		if e.Name() == "." || e.Name() == ".." {
-			continue
-		}
-		p := filepath.Join(parent, e.Name())
-		if e.IsDir() {
-			dirs = append(dirs, prefetchTarget{Path: p, Dir: true})
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if !info.Mode().IsRegular() || info.Size() > smallMax {
-			continue
-		}
-		add := chunk
-		if info.Size() < add {
-			add = info.Size()
-		}
-		if bytes+add > maxBytes {
-			continue
-		}
-		bytes += add
-		files = append(files, prefetchTarget{Path: p, Size: info.Size()})
-	}
-	out := make([]prefetchTarget, 0, maxN)
-	for _, t := range dirs {
-		if len(out) >= maxN {
-			return out
-		}
-		out = append(out, t)
-	}
-	for _, t := range files {
-		if len(out) >= maxN {
-			return out
-		}
-		out = append(out, t)
-	}
-	return out
-}
-
-func shouldSkipPrefetch(metered, userBusy bool) bool { return metered || userBusy }
-
-func parseNMMetered(out string) bool {
-	s := strings.TrimSpace(out)
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		s = s[i+1:]
-	}
-	return s == "yes" || s == "guess-yes"
-}
-
-func connectionMetered() bool {
-	out, err := exec.Command("nmcli", "-t", "-f", "GENERAL.METERED", "g").CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return parseNMMetered(string(out))
-}
-
 func runPrefetchLoop(ctx context.Context, root string) error {
 	deadline := time.Now().Add(mountWait)
 	for {
@@ -250,6 +165,11 @@ func runPrefetchLoop(ctx context.Context, root string) error {
 		_ = w.Close()
 	}()
 	for {
+		if _, err := os.Stat(root); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+		}
 		ev, err := w.Next()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, fs.ErrClosed) || errors.Is(err, os.ErrClosed) {
@@ -314,28 +234,4 @@ func prefetchOnce(dir string) error {
 		throttlePrefetch(n, started)
 	}
 	return nil
-}
-
-func readFirstChunk(path string, n int64) (int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	buf := make([]byte, n)
-	got, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return got, err
-	}
-	return got, nil
-}
-
-func throttlePrefetch(bytes int, started time.Time) {
-	if bytes <= 0 || prefetchShareBPS <= 0 {
-		return
-	}
-	want := time.Duration(bytes) * time.Second / time.Duration(prefetchShareBPS)
-	if elapsed := time.Since(started); elapsed < want {
-		time.Sleep(want - elapsed)
-	}
 }

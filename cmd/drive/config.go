@@ -39,7 +39,7 @@ const (
 	vfsCacheMaxValue     = "20G"
 	vfsDirCacheTimeValue = "5s"   // see VFSArgs: S3 sends no change notifications
 	vfsChunkStreamSize   = "32M"  // streaming read-ahead for big files
-	vfsReadAheadValue    = "128k" // extra disk read-ahead with cache-mode full (issue #227)
+	vfsReadAheadValue    = "128k" // first-chunk size: small files stay one VFS read; a video is not pulled in
 )
 
 // Default paths, overridable for tests.

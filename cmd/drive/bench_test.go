@@ -830,6 +830,10 @@ func BenchmarkPrefetchBrowse(b *testing.B) {
 }
 
 func BenchmarkReadDuringPrefetch(b *testing.B) {
+	// This bench is the user-read vs prefetchOnce overlap with the same
+	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
+	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
+	// contend with the mount's own FUSE traffic.
 	h := benchSetup(b)
 	local := filepath.Join(h.root, "fixtures", "busy")
 	if err := os.MkdirAll(local, 0o755); err != nil {

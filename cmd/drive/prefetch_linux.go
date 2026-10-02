@@ -59,9 +59,13 @@ func (w *inotifyWatcher) Next() (watchEvent, error) {
 			continue
 		}
 		raw := (*syscall.InotifyEvent)(unsafe.Pointer(&buf[0]))
+		nameLen := int(raw.Len)
+		if nameLen < 0 || syscall.SizeofInotifyEvent+nameLen > n {
+			continue
+		}
 		name := ""
-		if raw.Len > 0 {
-			nameBytes := buf[syscall.SizeofInotifyEvent:n]
+		if nameLen > 0 {
+			nameBytes := buf[syscall.SizeofInotifyEvent : syscall.SizeofInotifyEvent+nameLen]
 			if z := indexNull(nameBytes); z >= 0 {
 				name = string(nameBytes[:z])
 			} else {
