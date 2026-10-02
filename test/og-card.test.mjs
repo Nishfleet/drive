@@ -61,9 +61,14 @@ test("the card carries no superseded figure", () => {
 });
 
 test("the card canvas is 1200x630, and so is the committed raster", () => {
-  // Anchored to the canvas rule, not any rule in the file: a stray 1200px
-  // elsewhere must not satisfy the shape the og:image tags declare.
-  assert.match(card, /html,\s*\n\s*body\s*\{\s*\n\s*width:\s*1200px;\s*\n\s*height:\s*630px;/);
+  // The canvas rule's own values, not the file's formatting: the block that
+  // sets the canvas is matched by selector, and its body is read for both
+  // numbers, so a reformat does not fail the suite while a stray 1200px in
+  // another rule still cannot satisfy the shape the og:image tags declare.
+  const canvas = card.match(/html,\s*body\s*\{([^}]*)\}/);
+  assert.ok(canvas, "the card must size its canvas on the html, body rule");
+  assert.match(canvas[1], /width:\s*1200px;/, "the canvas must be 1200px wide");
+  assert.match(canvas[1], /height:\s*630px;/, "the canvas must be 630px tall");
   // The PNG header: the 8-byte signature, then IHDR's width and height. The
   // pixels' declared size is the one gate a test can put on a raster, and it
   // has to agree with the og:image:width/height the page declares.
