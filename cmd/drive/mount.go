@@ -409,8 +409,16 @@ func launchctlArgv(action, target, itemPath string) []string {
 	return nil
 }
 
-// Unmount stops the mount and the login item. Running it twice is not an
-// error: an absent login item means the drive is already stopped.
+// RestartMount stops the mount and starts it again so rclone picks up a
+// swapped storage key (src/cap.js `mount.restart`). The VFS cache is the
+// uploads still waiting: nothing in this function deletes it, so a file
+// queued before the cap was reached is still there when writes resume.
+func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {
+	if err := Unmount(goos, home); err != nil {
+		return err
+	}
+	return Mount(goos, home, rcloneBin, c, false, false)
+}
 func Unmount(goos, home string) error {
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {

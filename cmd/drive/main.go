@@ -26,6 +26,7 @@ Usage:
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
@@ -96,6 +97,8 @@ func main() {
 		err = runUnmount(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "cap":
+		err = runCap(os.Args[2:])
 	case "share":
 		err = runShare(os.Args[2:])
 	case "request":

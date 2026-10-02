@@ -459,7 +459,7 @@ test("an account route is not on the public allow-list", () => {
   // The point of an explicit list: the account routes stay off it, so a
   // future deny-by-default test reading this list cannot accidentally treat
   // one of them as public.
-  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage"]) {
+  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage", "/api/cap"]) {
     assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
   }
 });

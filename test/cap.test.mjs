@@ -28,6 +28,7 @@ import {
   applyCapSwap,
   capSwapPlan,
   enforceCap,
+  handleCapRequest,
   isWriteCapable,
   parseCapUsd,
   READ_ONLY_CAPABILITIES,
@@ -797,4 +798,55 @@ test("the usage response carries the cap line, and the Worker routes it", async 
     { id: "1", name: "Your drive" },
   );
   assert.equal(posted.status, 405);
+});
+
+test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () => {
+  const stored = [];
+  const capStore = {
+    async setCapCents(account, cents) {
+      stored.push({ id: account.id, cents });
+    },
+    async listCapKeys() {
+      return [];
+    },
+    keyProviderFor() {
+      return recordingProvider();
+    },
+    async setAccountState() {},
+  };
+  const ok = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "$20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com" },
+    capStore,
+  );
+  assert.equal(ok.status, 200);
+  const body = await ok.json();
+  assert.equal(body.cap.capUsd, 20);
+  assert.equal(typeof body.capLine, "string");
+  assert.equal(stored[0].cents, 2000);
+
+  const bad = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "abc" }),
+    }),
+    { id: "acct-1", name: "You" },
+    capStore,
+  );
+  assert.equal(bad.status, 400);
+  const err = await bad.json();
+  assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
+  assert.match(err.error, /Run: drive cap 20/);
+
+  const anon = await handleCapRequest(
+    new Request("https://drive.test/api/cap", { method: "POST" }),
+    null,
+    capStore,
+  );
+  assert.equal(anon.status, 401);
 });

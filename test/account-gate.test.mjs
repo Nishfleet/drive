@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
+import { CAP_ENDPOINT } from "../src/cap.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
@@ -90,6 +91,9 @@ const ACCOUNT_ROUTES = [
   `${FILES_ENDPOINT}/restore`,
   `${USAGE_ENDPOINT}`,
   `${USAGE_ENDPOINT}/`,
+  // drive issue #64: the spending cap write. Same gate as the usage read.
+  `${CAP_ENDPOINT}`,
+  `${CAP_ENDPOINT}/`,
   `${STATUS_ENDPOINT}`,
   `${STATUS_ENDPOINT}/`,
   `${SHARE_ENDPOINT}`,
@@ -212,6 +216,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         registered.some((path) => path.endsWith("/*") && route.startsWith(path.slice(0, -1))) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
+        route.startsWith(CAP_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||

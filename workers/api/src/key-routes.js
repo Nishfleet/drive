@@ -21,14 +21,15 @@ import { authorizePath } from "./keystore.js";
  * @param {Request} request
  * @param {{store: KeyStore, account: {id: string, name: string}}} ctx
  */
-export function listKeysRoute(request, ctx) {
+export async function listKeysRoute(request, ctx) {
   if (request.method !== "GET") {
     return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
   }
   // `listKeys` already returns the public shape (publicDevice, one map in the
   // store); mapping here too would read `device.id` off a shape that no longer
-  // has it and answer `keyId: undefined` for every key.
-  return json({ keys: ctx.store.listKeys(ctx.account) });
+  // has it and answer `keyId: undefined` for every key. The D1 store answers
+  // a Promise, the in-memory one a list; Promise.resolve is both.
+  return json({ keys: await Promise.resolve(ctx.store.listKeys(ctx.account)) });
 }
 
 /**
@@ -69,11 +70,11 @@ export async function mintKeyRoute(request, ctx) {
  * @param {Request} request
  * @param {{store: KeyStore, account: {id: string, name: string}, params: Record<string, string>}} ctx
  */
-export function revokeKeyRoute(request, ctx) {
+export async function revokeKeyRoute(request, ctx) {
   if (request.method !== "DELETE") {
     return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
   }
-  const result = ctx.store.revokeKey(ctx.account, ctx.params.keyId);
+  const result = await Promise.resolve(ctx.store.revokeKey(ctx.account, ctx.params.keyId));
   if ("error" in result) {
     return errorResponse(404, "No such key on this account.");
   }

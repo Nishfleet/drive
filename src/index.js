@@ -8,6 +8,7 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -52,6 +53,9 @@ import {
   unauthorizedResponse,
 } from "./status.js";
 import { handleWaitlistRequest } from "./waitlist.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
+import { bearerToken } from "../workers/api/src/http.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
 // (src/email-send.js). One route, so one place knows the provider.
@@ -233,7 +237,17 @@ function capStateFor(_accountId) {
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
   if (isPublic(c.req.path)) return next();
-  const account = await signedInAccount(c.req.raw, authFor(c.env));
+  let account = await signedInAccount(c.req.raw, authFor(c.env));
+  // The CLI holds a device token, not a browser cookie (drive#64 `drive cap`
+  // and `drive status`). The same D1 lookup the api Worker uses, so one
+  // token is one account on both Workers. No header means no lookup: an
+  // anonymous browser request stays the cookie 401 the tests pin.
+  if (!account) {
+    const token = bearerToken(c.req.raw);
+    if (token !== null && c.env.DRIVE_DB) {
+      account = await createD1DeviceSigninStore(c.env.DRIVE_DB).accountForDeviceToken(token);
+    }
+  }
   if (!account) return unauthorizedResponse();
   c.set("account", account);
   await next();
@@ -365,7 +379,23 @@ export function createApp() {
   app.post(`${REWIND_ENDPOINT}/*`, rewindHandler);
 
   // The usage page's and the CLI's read of the month's money (issues #7, #53).
-  app.get(USAGE_ENDPOINT, (c) => handleUsageRequest(c.req.raw, c.get("account")));
+  app.get(USAGE_ENDPOINT, async (c) => {
+    const account = c.get("account");
+    let capUsd = BILLING_CONFIG.defaultCapUsd;
+    if (c.env.DRIVE_DB) {
+      capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
+    }
+    return handleUsageRequest(c.req.raw, { ...account, capUsd });
+  });
+
+  // `drive cap <dollars>` and the usage page's cap write (drive#64). The
+  // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
+  app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
+  app.post(CAP_ENDPOINT, async (c) => {
+    const db = c.env.DRIVE_DB;
+    const store = db ? createD1DeviceStore(db) : null;
+    return handleCapRequest(c.req.raw, c.get("account"), store);
+  });
 
   // Share links and upload requests (issue #19). The share/request roots are
   // the owner's side and stand behind the gate; the token-carrying child
