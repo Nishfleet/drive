@@ -14,7 +14,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { BYTES_PER_GB } from "../src/meter.js";
-import { sqlitePlaceholders, withSqlitePlaceholders } from "./harness.mjs";
+import { sqlitePlaceholders } from "./harness.mjs";
 
 // The drive database's migration files, in the numeric order the deploy
 // applies them in.
@@ -34,26 +34,54 @@ export function applyMigrations(sqlite) {
 // StatementSync.run(...values) only binds anonymous `?` and throws
 // SQLITE_RANGE ("column index out of range") on `?1` (measured node v24.5.0).
 // The SQL rewrite is the one every test adapter shares, `sqlitePlaceholders`
-// (test/harness.mjs); what this adds is the bound list. A numbered placeholder
-// can be reused (`?2` twice in the rollup), and each anonymous `?` is its own
-// parameter, so the bound values are expanded along with the SQL in appearance
-// order rather than taken as given. Production SQL stays numbered for D1.
+// (test/harness.mjs). Production SQL stays numbered for D1. A numbered
+// placeholder can also be reused (`?1` twice), and D1 still takes one value
+// for it, bound by index. The rewritten SQL has one `?` per appearance, so the
+// values are expanded to one entry per appearance - the value at that index -
+// before node:sqlite binds them. expandBoundValues does that for both bind
+// paths (the D1 adapter's bindForNodeSqlite and the raw handle in
+// makeMeteredDB), so a reused or out-of-order index cannot bind one way in the
+// adapter and another on the handle the tests read rows back from.
+/** @param {string} sql */
+function usesNumberedPlaceholders(sql) {
+  return /\?\d/.test(sql);
+}
+
+/**
+ * One value per placeholder appearance, in appearance order, for the rewritten
+ * SQL: the n-th appearance of `?N` gets bound[N - 1]. An index the statement
+ * uses twice appears twice, so its one value fills both slots instead of the
+ * second slot reading NULL (drive #231). A statement with no numbered
+ * placeholder keeps the caller's values unchanged.
+ * @param {string} sql
+ * @param {any[]} bound
+ * @returns {any[]}
+ */
+function expandBoundValues(sql, bound) {
+  if (!usesNumberedPlaceholders(sql)) {
+    return bound;
+  }
+  /** @type {any[]} */
+  const positional = [];
+  for (const [, digits] of sql.matchAll(/\?(\d+)/g)) {
+    positional.push(bound[Number(digits) - 1]);
+  }
+  return positional;
+}
+
 /**
  * @param {string} sql
  * @param {any[]} bound
  * @returns {{sql: string, bound: any[]}}
  */
 function bindForNodeSqlite(sql, bound) {
-  if (!/\?\d/.test(sql)) {
-    return { sql, bound };
-  }
-  /** @type {any[]} */
-  const positional = [];
-  for (const match of sql.matchAll(/\?(\d+)/g)) {
-    positional.push(bound[Number(match[1]) - 1]);
-  }
-  return { sql: sqlitePlaceholders(sql), bound: positional };
+  return { sql: sqlitePlaceholders(sql), bound: expandBoundValues(sql, bound) };
 }
+
+// The StatementSync methods that take bound values. The raw handle's wrapper
+// expands a numbered statement's values for exactly these, so `iterate` gets
+// the same binding `get`, `all` and `run` do.
+const BOUND_METHODS = ["get", "all", "run", "iterate"];
 
 /** @typedef {Record<string, any>} Row */
 /**
@@ -65,6 +93,7 @@ function bindForNodeSqlite(sql, bound) {
  *     get(...params: any[]): any,
  *     all(...params: any[]): any[],
  *     run(...params: any[]): {changes: number | bigint, lastInsertRowid: number | bigint},
+ *     iterate(...params: any[]): IterableIterator<any>,
  *   },
  * }} TestSqlite
  */
@@ -272,8 +301,39 @@ export function d1Over(sqlite, { onQuery } = {}) {
 
 /** @param {() => void} [onQuery] */
 function makeMeteredDB(onQuery) {
-  const sqlite = withSqlitePlaceholders(new DatabaseSync(":memory:"));
+  const sqlite = new DatabaseSync(":memory:");
   applyMigrations(sqlite);
+  // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
+  // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
+  // expands them, and this wraps the raw handle the tests use directly. The
+  // SQL rewrite is sqlitePlaceholders (test/harness.mjs), the same one the
+  // sign-in harness uses (drive#220). The wrapper expands the bound values the
+  // same way bindForNodeSqlite does, so a reused index (`?1` twice) fills
+  // every slot it owns and an out-of-order index (`?2` before `?1`) still
+  // binds by index, not by appearance. The adapter is built over this same
+  // handle just below, and its own prepares reach the wrapper already
+  // anonymized (bindForNodeSqlite), so the guard returns the real statement
+  // and the adapter is never expanded twice.
+  const originalPrepare = sqlite.prepare.bind(sqlite);
+  sqlite.prepare = (sql) => {
+    const statement = originalPrepare(sqlitePlaceholders(sql));
+    if (!usesNumberedPlaceholders(sql)) {
+      return statement;
+    }
+    return new Proxy(statement, {
+      get(target, property, receiver) {
+        const member = Reflect.get(target, property, receiver);
+        if (typeof member !== "function") {
+          return member;
+        }
+        if (typeof property === "string" && BOUND_METHODS.includes(property)) {
+          /** @param {any[]} values */
+          return (...values) => member.apply(target, expandBoundValues(sql, values));
+        }
+        return member.bind(target);
+      },
+    });
+  };
   const db = d1Over(sqlite, { onQuery });
   return { sqlite: /** @type {TestSqlite} */ (/** @type {unknown} */ (sqlite)), db };
 }
