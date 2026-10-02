@@ -222,6 +222,8 @@ func printShareLine(link ShareLink) {
 }
 
 func printRequestLine(link RequestLink) {
+	// No header row: `drive request --list` is one line per link, six
+	// tab-separated fields, so a later header has to name them in this order.
 	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, link.ExpiresLabel, link.Folder, link.UploadsLabel, link.URL)
 }
 

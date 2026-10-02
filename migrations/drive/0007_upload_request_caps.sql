@@ -12,11 +12,12 @@
 -- 1 GB (src/share.js REQUEST_TOTAL_MAX_BYTES), so one link cannot fill the
 -- drive while the owner sleeps.
 --
--- Rollback is a DROP COLUMN, but D1 has no down-migrations, so this file is
--- one-way. Three ALTER statements: D1 does not document multi-statement
--- atomicity; each statement is independently additive with a DEFAULT, so a
--- retry after a partial apply is a duplicate-column error the operator can
--- see rather than a broken table.
+-- apply this file before shipping the Worker version that names the new
+-- columns: the INSERT in src/share.js lists them, so the new code cannot run
+-- against the pre-migration schema. The previous Worker version still runs
+-- after this file (the defaults fill the columns it does not name). Phase 1
+-- of expand/contract: add nullable-or-default columns, then the code switch,
+-- in this one PR; no DROP.
 
 ALTER TABLE upload_requests ADD COLUMN upload_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE upload_requests ADD COLUMN upload_bytes INTEGER NOT NULL DEFAULT 0;
