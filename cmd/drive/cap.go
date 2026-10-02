@@ -66,7 +66,15 @@ func runCap(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := LoadStorageConfig("", "", "", "", "")
+	// The same secret sources `drive mount` uses, in the same order and never a
+	// fourth: the environment, then the config file this CLI wrote 0600. No flag
+	// and no prompt, because a restart runs unattended behind a cap swap and a
+	// secret in argv is readable in ps for the life of the process (issue #75).
+	secretKey, err := ReadSecretKey(RcloneConfigPath(home), false, os.Stdin)
+	if err != nil {
+		return fmt.Errorf("restart the mount: %w", err)
+	}
+	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey)
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}
