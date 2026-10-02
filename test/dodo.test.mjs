@@ -210,6 +210,47 @@ test("an October hour does not count September's GB-minutes", async () => {
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
 });
 
+test("a push that spans the month boundary bills each month on its own", async () => {
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const september = Date.parse("2026-09-30T23:00:00.000Z");
+  const october = Date.parse("2026-10-01T00:00:00.000Z");
+  // September's hour has a real bill; if the October event ever measures
+  // itself against September's pushed total, it undercharges by that much.
+  await recordUsage(db, ACCOUNT, september, 2000 * 60 * 24, 2000 * BYTES_PER_GB, october);
+  await recordUsage(db, ACCOUNT, october, 2000 * 43800, 2000 * BYTES_PER_GB, october + HOUR_MS);
+  const septemberBill = monthBillCents({
+    gbMinutes: 2000 * 60 * 24,
+    peakBytes: 2000 * BYTES_PER_GB,
+  });
+  const octoberBill = monthBillCents({
+    gbMinutes: 2000 * 43800,
+    peakBytes: 2000 * BYTES_PER_GB,
+  });
+  assert.ok(septemberBill.totalCents > 0, "September needs a bill to subtract by mistake");
+  assert.ok(octoberBill.totalCents > septemberBill.totalCents, "October must exceed September");
+  const recorder = recordingFetch();
+  // One call covers the rerolled September hour and the new October hour:
+  // the two-hour shape runMeterCron returns across midnight on the 1st.
+  await pushBillingHours(db, [september, october], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: october + HOUR_MS,
+  });
+  const units = new Map(
+    recorder.calls[0].payload.events.map((event) => [
+      event.event_id,
+      Number(event.metadata.amount_units),
+    ]),
+  );
+  assert.equal(units.get(billingEventId(ACCOUNT, september)), septemberBill.totalCents);
+  assert.equal(
+    units.get(billingEventId(ACCOUNT, october)),
+    octoberBill.totalCents,
+    "October bills against October alone, never September's pushed total",
+  );
+});
+
 test("a bill that falls after a reroll sends 0, never a negative unit", async () => {
   const { db } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);

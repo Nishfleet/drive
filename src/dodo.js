@@ -90,12 +90,25 @@ export async function pushBillingHours(db, hours, options = {}) {
   }
 
   const already = await loadedPushes(db, uniqueHours);
+  // The high-water mark is per account AND per month: a catch-up that spans
+  // a month boundary must not subtract the old month's pushed total from the
+  // new month's bill (a normal hourly run crosses midnight on the 1st, and a
+  // backlog catches up 12 hours at a time). Re-seed from the month's own rows
+  // whenever the month changes, so each month's delta is measured against
+  // that month alone. `uniqueHours` is sorted, so the month only moves forward.
   /** @type {Map<string, number>} */
-  const running = await monthPushedTotals(db, uniqueHours[0]);
+  let running = new Map();
+  /** @type {number|null} */
+  let runningMonth = null;
   /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, event: Record<string, unknown>}>} */
   const pending = [];
 
   for (const hour of uniqueHours) {
+    const month = monthStart(hour);
+    if (month !== runningMonth) {
+      running = await monthPushedTotals(db, hour);
+      runningMonth = month;
+    }
     const customers = await customersForHour(db, hour);
     for (const { accountId, customerId } of customers) {
       if (already.has(`${accountId}|${hour}`)) {
