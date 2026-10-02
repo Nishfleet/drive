@@ -170,6 +170,16 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Signing in is not open yet.",
     next: "Join the waitlist, and your first email will carry a sign-in link.",
   }),
+  // The branch's snapshot is larger than one database row holds (drive#157).
+  // A branch of a folder with tens of thousands of files needs a snapshot per
+  // file, and the database refuses a row that big, so the copy was made and
+  // then rolled back: nothing is left half-made, and the one thing to do is
+  // branch a smaller folder until the snapshot moves out of the row (issue
+  // #252). The size is real, measured on this repo's own migrations.
+  "snapshot-bound": Object.freeze({
+    what: "That folder has too many files for one branch.",
+    next: "Branch a subfolder of it, and tell us the folder you wanted.",
+  }),
   // Anything with no more specific entry: still says what happened and the one
   // thing to do, never the raw error. This is the page's client-side fallback
   // and the worker's last resort.
