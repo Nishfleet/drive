@@ -28,16 +28,51 @@ type StorageConfig struct {
 	DownloadURL string
 }
 
-// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue and
-// vfsChunkStreamSize are the stock rclone VFS flags this product mounts with.
+// vfsCacheModeValue, vfsWriteBackValue, vfsCacheMaxValue,
+// vfsDirCacheTimeValue, vfsBufferSizeValue, vfsReadChunkSizeValue,
+// vfsReadChunkSizeLimitValue, vfsReadChunkStreamsValue, vfsReadAheadValue and
+// vfsTransfersValue are the stock rclone VFS flags this product mounts with.
 // They are the same on Mac (nfsmount) and Linux (mount), and mount.go VFSArgs
 // is the one place that turns them into an argument vector.
+//
+// Only the performance knobs live here. The three that decide whether data is
+// safe are pinned, not tuned: vfsCacheModeValue, vfsWriteBackValue,
+// vfsCacheMaxValue and vfsDirCacheTimeValue carry the durability and
+// freshness guarantees documented in docs/build-spec.md (issue #62 measured
+// the directory cache). The speed hill-climb (issue #224) moves only the rest,
+// and mount_test.go's TestVFSArgsPinsTheSafetyFlags is the gate that keeps it
+// that way: a round that trades away write-back, the cache ceiling or the
+// directory cache fails there instead of on a customer's drive.
 const (
 	vfsCacheModeValue    = "full"
 	vfsWriteBackValue    = "5s"
 	vfsCacheMaxValue     = "20G"
-	vfsDirCacheTimeValue = "5s"  // see VFSArgs: S3 sends no change notifications
-	vfsChunkStreamSize   = "32M" // streaming read-ahead for big files
+	vfsDirCacheTimeValue = "5s" // see VFSArgs: S3 sends no change notifications
+	// vfsBufferSizeValue is rclone's in-memory buffer per read chunk stream.
+	// 32M was measured as the better of the two candidates in the issue #224
+	// hill-climb; the runner-up and the margin are in
+	// docs/research/mount-speed-tuning.md.
+	vfsBufferSizeValue = "32M"
+	// vfsReadChunkSizeValue is how much of a big file one read pulls down.
+	// With cache-mode full and no downloads this bounds the first-read burst; it
+	// must stay at or below vfsReadChunkSizeLimitValue (rclone's own check) and
+	// below vfsCacheMaxValue, or the chunk could be cached past the ceiling.
+	vfsReadChunkSizeValue = "32M"
+	// vfsReadChunkSizeLimitValue is rclone's ceiling on a single read chunk.
+	vfsReadChunkSizeLimitValue = "1024M"
+	// vfsReadChunkStreamsValue is how many chunks are read at once. Two is
+	// stock rclone's own default and the issue #224 hill-climb kept it.
+	vfsReadChunkStreamsValue = "2"
+	// vfsReadAheadValue streams a file ahead of the read position, which is what
+	// makes a 5 GB video play instead of stutter. It is bounded by the cache
+	// ceiling: read-ahead is cached, and nothing may be cached past
+	// vfsCacheMaxValue.
+	vfsReadAheadValue = "128M"
+	// vfsTransfersValue is how many storage operations run at once. Eight is
+	// what a mount benefits from: reads, writes and directory refreshes share
+	// the pool, and the issue #224 hill-climb measured 8 as the better of the
+	// two candidates against 4.
+	vfsTransfersValue = "8"
 )
 
 // Default paths, overridable for tests.

@@ -39,6 +39,15 @@ type MountPlan struct {
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
 // for rclone's mount and nfsmount commands describe each one.
+//
+// The tunable values (read-ahead, chunk size, chunk-size limit, chunk streams,
+// buffer size, transfers) may be overridden by a DRIVE_BENCH_<FLAG> environment
+// variable holding a byte-size (e.g. DRIVE_BENCH_VFS_READ_AHEAD=0). That is the
+// speed hill-climb's (issue #224) only handle on the value: the product mounts
+// with the constants above, the climb measures a candidate by setting the one
+// variable for the round, and a person's real mount never sets it. The four
+// safety values are NOT overridable, and TestVFSArgsPinsTheSafetyFlags fails if
+// anything changes them.
 func VFSArgs() []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
@@ -50,9 +59,30 @@ func VFSArgs() []string {
 		// against a local S3 stand-in (issue #62, PR #61): about 5 s with the
 		// flag, still absent after 60 s without.
 		"--dir-cache-time", vfsDirCacheTimeValue,
-		"--vfs-read-chunk-streams", "2",
-		"--buffer-size", vfsChunkStreamSize,
+		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
+		"--vfs-read-chunk-size-limit", tunedVFSValue("VFS_READ_CHUNK_SIZE_LIMIT", vfsReadChunkSizeLimitValue),
+		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
+		// Read-ahead streams a big file past the read position, which is what
+		// makes a 5 GB video play instead of stutter (issue #224). rclone's own
+		// docs note it is cached, so it is bounded by --vfs-cache-max-size.
+		"--vfs-read-ahead", tunedVFSValue("VFS_READ_AHEAD", vfsReadAheadValue),
+		"--buffer-size", tunedVFSValue("BUFFER_SIZE", vfsBufferSizeValue),
+		"--transfers", tunedVFSValue("TRANSFERS", vfsTransfersValue),
 	}
+}
+
+// tunedVFSValue returns the shipped value for a tunable flag unless the hill
+// climb has set its DRIVE_BENCH_<flag> variable, in which case the override is
+// used. A set-but-empty variable is an error, not an empty flag value, so a
+// malformed round cannot mount with a value rclone would reject at start.
+func tunedVFSValue(envSuffix, shipped string) string {
+	if v, ok := os.LookupEnv("DRIVE_BENCH_" + envSuffix); ok {
+		if strings.TrimSpace(v) == "" {
+			return shipped
+		}
+		return v
+	}
+	return shipped
 }
 
 // RemoteFor joins the bucket and optional key prefix into an rclone remote
@@ -73,15 +103,15 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		sub = "nfsmount"
 	}
 	return MountPlan{
-		GOOS:       goos,
-		RcloneBin:  rcloneBin,
-		Subcommand: sub,
-		Remote:     RemoteFor(c),
-		MountDir:   DefaultMountDir(home),
-		ConfigPath: RcloneConfigPath(home),
-		CacheDir:   DefaultCacheDir(home),
-		LogPath:    filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:    VFSArgs(),
+		GOOS:        goos,
+		RcloneBin:   rcloneBin,
+		Subcommand:  sub,
+		Remote:      RemoteFor(c),
+		MountDir:    DefaultMountDir(home),
+		ConfigPath:  RcloneConfigPath(home),
+		CacheDir:    DefaultCacheDir(home),
+		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
+		VFSArgs:     VFSArgs(),
 		DownloadURL: c.DownloadURL,
 	}
 }
