@@ -5,6 +5,7 @@ import { authFor } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
 import { signedInAccount } from "../../../src/status.js";
 import { createD1DeviceSigninStore } from "./device-signin.js";
+import { createD1DeviceStore } from "./devices.js";
 import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { routes } from "./routes.js";
@@ -504,6 +505,12 @@ function storeFor(env) {
       // account instead of leaving every invite unbound.
       teams: env.DRIVE_DB
         ? createD1TeamStore(env.DRIVE_DB, { resolveAccountByEmail: accountByEmail(env.DRIVE_DB) })
+        : undefined,
+      // Keys persist for the same reason (drive#64): cap enforcement reads
+      // the account's device rows and writes the swapped key id back, and
+      // that request may be a different isolate than the one that minted.
+      deviceStore: env.DRIVE_DB
+        ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
         : undefined,
     });
     keyStoreDb = env.DRIVE_DB;

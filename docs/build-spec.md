@@ -1,5 +1,7 @@
 # SpaceFS clone: build spec
 
+> **Status note (2026-10-02):** this is the historical build plan. The code and the open issues are the source of truth, and where they differ the code wins. Shipped work is listed in `docs-site/changelog.md`.
+
 Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the build plan in `spec.md` into what each part does, the commands and screens, the data model, and the steps in detail. `spec.md` still holds the why: prices, rivals and the pressure test.
 
 **Status: building since 2026-09-29** (Nish: "lets go then"). Issues #2 to #15 in this repo; spending money (storage accounts, Storage Box) still needs Nish.
@@ -65,7 +67,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive approve <branch>` | Copy the branch's changes back. Stops and lists files if the original changed since branching |
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
-| `drive logout` | Unmount, delete this device's key and local config |
+| `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
 
 ## Screens (v1)
 
@@ -95,6 +97,10 @@ Pricing page: the headline is the rate, "2¢ per GB, billed by the minute", with
 | Kiro | Entry in `~/.kiro/settings/mcp.json` |
 
 Agents that run on a server rather than the laptop get an S3 key instead (`drive agents connect s3`): an endpoint, key id and secret, limited in the same way.
+
+The storage secret is never read from a command line, where it would sit in the shell history and in `ps` for every user on the machine. `drive mount` reads it from the drive config file (`~/.config/drive/rclone.conf`, mode 0600), from `DRIVE_S3_SECRET_ACCESS_KEY`, or from stdin with `--secret-key-stdin`. The `--secret-key` flag is refused with an error naming these three ways.
+
+When a revoke fails, `drive logout` records the access key id of the key it could not turn off (never the secret) and every later `logout` keeps reporting that a key is live until that exact key is revoked. So signing in again with a new key, then logging out and revoking the new key, still reports the older key — the exit code is non-zero while any recorded key is still live, never a clean sign-out.
 
 Each tool also gets a short skill note: where the drive is, that deletes can be undone, and to use `drive branch` before large edits. Exact command syntax is checked against each tool's current docs in build step 4.
 

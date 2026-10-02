@@ -28,6 +28,7 @@ import {
   applyCapSwap,
   capSwapPlan,
   enforceCap,
+  handleCapRequest,
   isWriteCapable,
   parseCapUsd,
   READ_ONLY_CAPABILITIES,
@@ -477,7 +478,9 @@ test("every kind and every starting scope comes back from a cap exactly as it wa
       // Reaching the cap never adds a capability the key did not have.
       for (const swap of atCap.swaps) {
         assert.deepEqual(
-          [...swap.capabilities].filter((name) => !READ_ONLY_CAPABILITIES.includes(name)),
+          [...swap.capabilities].filter(
+            (name) => !(/** @type {readonly string[]} */ (READ_ONLY_CAPABILITIES).includes(name)),
+          ),
           [],
           `${kind} ${JSON.stringify(capabilities)} gained write at the cap`,
         );
@@ -797,4 +800,72 @@ test("the usage response carries the cap line, and the Worker routes it", async 
     { id: "1", name: "Your drive" },
   );
   assert.equal(posted.status, 405);
+});
+
+test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () => {
+  /** @type {{id: string, cents: number}[]} */
+  const stored = [];
+  const capStore = {
+    /**
+     * @param {{id: string}} account
+     * @param {number} cents
+     */
+    async setCapCents(account, cents) {
+      stored.push({ id: account.id, cents });
+    },
+    async listCapKeys() {
+      return [];
+    },
+    keyProviderFor() {
+      return recordingProvider();
+    },
+    async setAccountState() {},
+  };
+  const ok = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "$20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com" },
+    capStore,
+  );
+  assert.equal(ok.status, 200);
+  const body = await ok.json();
+  assert.equal(body.cap.capUsd, 20);
+  assert.equal(typeof body.capLine, "string");
+  assert.equal(stored[0].cents, 2000);
+
+  const bad = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "abc" }),
+    }),
+    { id: "acct-1", name: "You" },
+    capStore,
+  );
+  assert.equal(bad.status, 400);
+  const err = await bad.json();
+  assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
+  assert.match(err.error, /Run: drive cap 20/);
+
+  const mangled = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    }),
+    { id: "acct-1", name: "You" },
+    capStore,
+  );
+  assert.equal(mangled.status, 400);
+  assert.deepEqual(await mangled.json(), { error: tableMessage("json-object-needed") });
+
+  const anon = await handleCapRequest(
+    new Request("https://drive.test/api/cap", { method: "POST" }),
+    null,
+    capStore,
+  );
+  assert.equal(anon.status, 401);
 });

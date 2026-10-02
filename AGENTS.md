@@ -9,6 +9,20 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - Secrets live in the VPS credential store, never in this repo.
 - The Mac is read-only for agents. Mac-only proofs (step 2) run on a GitHub macOS runner or are marked for Nish.
 
+## Find your way
+
+- The spec says what to build and why. The code and its tests say what is built. When they differ, the code wins, and the finished work is listed in `docs-site/changelog.md` and `docs/scoreboard.md`. `docs/build-spec.md` is 300 lines, so search it for the step you need instead of reading it whole.
+- An issue can name a path that has moved. Check `README.md` ("The repository") before you search. The static pages are in `public/`, but `get-started.html` sits at the repo root and Vite builds it to `/get-started.html`.
+- The site Worker is `src/index.js` (the route table). The api Worker is `workers/api/src/index.js`. The download Worker is `workers/dl/src/index.js`. The CLI is `cmd/drive/`. Each has its tests beside it: `test/` for the site Worker, `workers/*/test/`, and `cmd/drive/*_test.go`.
+- The D1 bindings are `WAITLIST_DB` and `DRIVE_DB` in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
+
+## Set up and check fast
+
+- Run `npm ci` in a new checkout, and again after you merge `origin/main`. The packages are all in the root `package.json` (`workers/*` has none), so a stale `node_modules` fails with `Cannot find package 'validator'` or `'hono'`. This is not a bug in your change.
+- `npm test` is the full gate: types, lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
+- `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
+- To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
+
 ## Known Worker secrets
 
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
