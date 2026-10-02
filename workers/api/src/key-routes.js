@@ -81,6 +81,39 @@ export function revokeKeyRoute(request, ctx) {
 }
 
 /**
+ * POST /api/keys/revoke — revoke the key that presents itself. A storage key is
+ * the whole credential (Basic auth, the pair an S3 client presents), so the key
+ * that can list and write can also turn itself off: that is what `drive logout`
+ * calls when the person signs out, and it needs no second credential. The
+ * question this route answers is always "is this key off?", never "whose is
+ * it?", so it never tells a caller whose key it holds. Answers 204 like
+ * DELETE /v1/keys/:keyId; every other answer is a named refusal.
+ * @param {Request} request
+ * @param {{store: KeyStore}} ctx
+ */
+export async function revokePresentedKeyRoute(request, ctx) {
+  if (request.method !== "POST") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  const creds = basicCredentials(request);
+  if (creds === null) {
+    return errorResponse(401, "Provide the storage key to revoke as HTTP Basic credentials.");
+  }
+  // authenticate refuses a revoked key and a wrong secret alike, so the only
+  // thing this handler can revoke is the key it was handed. The account is
+  // read off the device the key belongs to, not off the request.
+  const device = await ctx.store.authenticate(creds.accessKeyId, creds.secret);
+  if (device === null) {
+    return errorResponse(401, "This key was revoked or is not valid.");
+  }
+  const result = ctx.store.revokeKey({ id: device.accountId }, device.id);
+  if ("error" in result) {
+    return errorResponse(404, "No such key on this account.");
+  }
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+}
+
+/**
  * The credentials a storage request presents, or null. Basic auth, the shape
  * an S3 client already uses: the access key id as the user and the secret as
  * the password.
