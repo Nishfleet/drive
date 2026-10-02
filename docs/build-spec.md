@@ -129,6 +129,8 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 | `usage_minutes` | account_id, hour, gb_minutes_live, download_bytes | Rolled up hourly |
 | `billing_pushes` | account_id, hour, dodo_event_id, amount_units, pushed_at | Stops double-charging if a push retries |
 | `branches` | id, account_id, name, source_prefix, branch_prefix, created_at, snapshot (JSON path to size and modified time), state (`open` / `approved` / `discarded`) | The snapshot finds clashes at approve time |
+| `teams` | id, owner_account_id, name, created_at | One shared drive; its prefix is `t/<id>/` (issue #20) |
+| `team_members` | id, team_id, account_id, email, role (`read_only` / `read_write`), state (`invited` / `active` / `removed`), invited_at, joined_at, revoked_at | `account_id` is empty until an email invite binds to a signed-in account; a removed row is kept, not deleted |
 | `events_seen` | b2_event_id, received_at | Drops duplicate B2 events |
 
 ## How the money is worked out
@@ -146,6 +148,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - A device key is limited to `/u/<id>/`, with capabilities `listFiles, readFiles, writeFiles, deleteFiles` (people can really delete; the file stays hidden 1 day in B2 because the drive uses rclone's default hide-not-delete, then sits in Hetzner's old-versions folder for 30 days).
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
+- A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
@@ -164,7 +167,7 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
 | Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
-| Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
+| Teams: pooled storage, whole-drive sharing, member access | One team drive shared by several accounts, a role per member, removal that kills the key | Match | Issue 20: `t/<teamId>/` keys, `TEAM_ROLE_CAPABILITIES` (`workers/api/src/keyprovider.js`), `workers/api/src/teams.js` |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
 | $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (Space charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
 
@@ -176,7 +179,7 @@ Every step is one issue, built by a queue worker and checked by a different mode
 
 | # | Step | What gets built | Done when |
 |---|---|---|---|
-| 1 | Storage and keys | First, on iDrive e2's free 1 TB, check three things: keys limited to one folder, save and delete notifications, and average-not-peak monthly billing. If all pass, iDrive is primary and everything below uses its S3 API; if any fails, use B2. Then: B2 bucket with versioning, SSE-B2, 1-day lifecycle rule for hidden versions, event rule to the api Worker. Key minting in the api Worker. | An agent key's delete leaves a hidden version, `drive restore` brings it back, and the agent key can't read another user's folder. |
+| 1 | Storage and keys | First, on iDrive e2's free 1 TB, check three things: keys limited to one folder, save and delete notifications, and average-not-peak monthly billing. If all pass, iDrive is primary and everything below uses its S3 API; if any fails, use B2. Then: B2 bucket with versioning, SSE-B2, 1-day lifecycle rule for hidden versions, event rule to the api Worker. Key minting in the api Worker. The two answers a stock S3 stand-in can give, the one that needs a real month, and why the vendor's own answers come with #173, are in the section below. | An agent key's delete leaves a hidden version, `drive restore` brings it back, and the agent key can't read another user's folder. |
 | 2 | Drive on one Mac | CLI writes the rclone config and a launchd login item; `rclone nfsmount` with the cache flags. | A 5 GB video starts playing before it has downloaded, and a file saved then followed by a reboot comes back intact. |
 | 3 | Linux and two machines | systemd user unit for `rclone mount`. | A save on the Mac shows up on the Linux box, and a save on Linux shows up on the Mac. |
 | 4 | `drive init` and agents | Device sign-in, agent detection, MCP registration for all five tools, skill notes. | On a clean Mac, one `drive init` and then a fresh Claude Code session lists and edits a file in the drive, and the same works in Codex. |
@@ -189,6 +192,20 @@ Every step is one issue, built by a queue worker and checked by a different mode
 | 10 | Swift File Provider app (later) | Native Finder drive to replace `rclone nfsmount` on Mac. | It passes steps 2 to 4 unchanged. |
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
+
+## Build step 1: the storage answers (the stand-in, 2026-10-01)
+
+Step 1 asks three questions of the storage provider before anything is built on it. Two of them are answered here against a stock S3-compatible stand-in, so the build is not blocked on a vendor account (Nish's direction, 2026-09-29: "do not wait for iDrive and never ask for its keys"); the third needs a real month and moves to #173 with the vendor's own answers, which #173 also reads off iDrive e2 as a configuration change.
+
+| Question | Answer on the stand-in | Where it was measured |
+|---|---|---|
+| Can a key be limited to one folder (prefix)? | **Yes.** The api Worker mints a key with an STS `AssumeRole` session policy whose only object resource is `arn:aws:s3:::<bucket>/u/<account-id>/*`. A key for one account is refused (`403 AccessDenied`) listing, reading and writing another account's folder, and an agent key is refused a delete. | `test/step1-storage.test.mjs`, "an agent key cannot list, read or write another account's folder" and "a delete leaves a hidden version…" |
+| Are there event notifications for a file saved, hidden and deleted? | **Yes.** Bucket notifications fire `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`; a delete on the versioned bucket arrives as `s3:ObjectRemoved:DeleteMarkerCreated` — the hidden event — and the file stays as a non-current version. | `test/step1-storage.test.mjs`, "a saved file produces an event that reaches the api Worker" |
+| Is a month billed on average or peak storage? | **Not answerable without a month on the real provider.** It needs a billing period, not a stand-in. | moves to #173 |
+
+What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitnami package, started by the test setup — the same `test/step1-storage.test.mjs` runs in CI's `verify` job (`npm test`) and on a developer's machine, and the setup is the only thing that decides which. MinIO's own downloads and Docker Hub images were withdrawn and its repository is archived, so the pinned last release is the stock server that has all three of versioning, lifecycle rules and bucket notifications. iDrive e2 replaces it by setting `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET` and the master credential (`STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), with no code change.
+
+The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01), so SSE-B2 is set on the real bucket with the vendor in #173, where the rest of that bucket's configuration lands too.
 
 ## How we know it is up (the outage alert)
 

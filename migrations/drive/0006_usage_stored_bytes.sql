@@ -1,0 +1,33 @@
+-- drive issue #163: the peak's own bytes. The monthly bill's ceiling is
+-- max($12, $8 x peak TB) (docs/build-spec.md "Bill ceiling"), so the meter has
+-- to record how many bytes the account had stored, not only for how long:
+-- usage_minutes carried each hour's GB-minutes but nothing that says how big
+-- the drive was, so the ceiling had no source of truth to read.
+--
+-- Additive only, like every migration before it (0002-0005): one new column on
+-- an existing table, no table rebuilt, no column dropped or renamed, and no
+-- NOT NULL without a default. D1 has no down-migrations, so the rollback is
+-- rolling the code back: the rollup writes this column and nothing else reads
+-- the old columns differently, and the version of the code a rollback returns
+-- to keeps answering the GB-minutes the column never touched.
+--
+-- The default is what makes the apply-before-deploy window safe, and it is 0
+-- rather than NULL on purpose: NOT NULL DEFAULT 0 is the additive shape this
+-- schema has used since 0002 (see the file's own header), and a row written
+-- between this migration landing and the code that writes the column reads 0.
+--
+-- A 0 mark is honest for that window and cannot be told apart from an hour
+-- that really was empty. That is acceptable because the window is bounded by
+-- the deploy (issue #187 applies both databases' migrations before the Worker
+-- ships) and because a month's peak is a MAX: one marked 0 hour cannot raise
+-- it, and the hours either side of it carry the real sizes. The reconciler
+-- (#59) re-rolls those hours from the stored versions the first time it runs
+-- after the deploy, which is when the real marks land.
+--
+-- What the column deliberately does NOT do is claim a peak for a month the
+-- meter never measured: that is the reader's rule, not the column's, and
+-- monthUsageRollup (src/meter.js) states it. There is no backfill phase in
+-- this PR: the reconciler (#59) re-rolls the pre-deploy hours from the stored
+-- versions, and until it runs the reader refuses a month whose hours are all
+-- unmarked rather than billing $0 for storage nobody measured.
+ALTER TABLE usage_minutes ADD COLUMN stored_bytes INTEGER NOT NULL DEFAULT 0;

@@ -749,21 +749,34 @@ test("a create and hide in the same instant cost one hour, not zero", () => {
 
 // --- The rollup ----------------------------------------------------------
 
-test("a rollup writes the hour's GB-minutes and leaves download bytes alone", async () => {
+// One hour's usage row, written through the meter's own recordUsage: the
+// stored-bytes mark is the month's peak's only source (drive issue #163), so
+// this is where a test pins that the mark is written, rewritten and validated.
+/**
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
+ * @param {number} gbMinutes
+ * @param {number} storedBytes
+ * @param {number} now
+ */
+const recordTheHour = (db, gbMinutes, storedBytes, now) =>
+  recordUsage(db, "abc123", midnight(), gbMinutes, storedBytes, now);
+
+test("a rollup writes the hour's GB-minutes and its stored bytes, and leaves download bytes alone", async () => {
   const { db, sqlite } = makeMeteredDB();
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 60 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 60 * MINUTE_MS);
   const row = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(row.gb_minutes_live, 42.5);
+  assert.equal(row.stored_bytes, 7 * GB, "the hour records how big the drive was");
   assert.equal(row.download_bytes, 0);
   assert.equal(row.hour, midnight());
   assert.equal(row.rolled_up_at, midnight() + 60 * MINUTE_MS);
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 90 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 90 * MINUTE_MS);
   assert.equal(db.tables.usage_minutes.size, 1);
   assert.equal(db.tables.usage_minutes.get(`abc123|${midnight()}`).gb_minutes_live, 42.5);
   sqlite
     .prepare("UPDATE usage_minutes SET download_bytes = ?1 WHERE account_id = ?2 AND hour = ?3")
     .run(1234, "abc123", midnight());
-  await recordUsage(db, "abc123", midnight(), 42.5, midnight() + 120 * MINUTE_MS);
+  await recordTheHour(db, 42.5, 7 * GB, midnight() + 120 * MINUTE_MS);
   assert.equal(
     sqlite
       .prepare("SELECT download_bytes FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
@@ -771,11 +784,29 @@ test("a rollup writes the hour's GB-minutes and leaves download bytes alone", as
     1234,
     "the meter must never zero another writer's column",
   );
+  // A re-rolled hour replaces its stored bytes, so a re-roll recomputes the
+  // peak from the versions and never adds to it (drive issue #163).
+  await recordTheHour(db, 42.5, 9 * GB, midnight() + 150 * MINUTE_MS);
+  assert.equal(
+    db.tables.usage_minutes.get(`abc123|${midnight()}`).stored_bytes,
+    9 * GB,
+    "the hour's stored bytes are rewritten, never added to",
+  );
   assert.equal(
     db.tables.usage_minutes.get(`abc123|${midnight()}`).rolled_up_at,
-    midnight() + 120 * MINUTE_MS,
+    midnight() + 150 * MINUTE_MS,
   );
-  await assert.rejects(() => recordUsage(db, "abc123", midnight(), -1, midnight()), TypeError);
+  await assert.rejects(() => recordTheHour(db, -1, GB, midnight()), TypeError);
+  await assert.rejects(
+    () => recordTheHour(db, 1, -1, midnight()),
+    TypeError,
+    "a negative byte count is refused, not stored as 0",
+  );
+  await assert.rejects(
+    () => recordTheHour(db, 1, 1.5, midnight()),
+    TypeError,
+    "a fractional byte count is refused: bytes are whole",
+  );
 });
 
 test("one account's hour is summed from its own versions, and only that account's", async () => {
@@ -1294,10 +1325,12 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
     queries2,
     `a catch-up must cost hours, not accounts: 25 accounts took ${queries25} round trips, one took ${queries2}`,
   );
-  // The budget the trigger is designed to: three round trips per hour
-  // (the hour's read, the hour's batch, the hour's watermark) plus the three
-  // around them - the watermark read, the earliest-version read that floors
-  // a first run, and the dedup purge - whatever the customer count.
+  // The budget the trigger is designed to: three round trips per hour (the
+  // hour's read - ONE statement for both the GB-minutes and the peak's
+  // stored bytes, so they are one snapshot - the hour's batch, the hour's
+  // watermark) plus the three around them: the watermark read, the
+  // earliest-version read that floors a first run, and the dedup purge,
+  // whatever the customer count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,

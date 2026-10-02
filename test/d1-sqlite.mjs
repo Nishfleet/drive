@@ -29,6 +29,34 @@ export function applyMigrations(sqlite) {
   }
 }
 
+// D1 numbered placeholders (`?1`) are bound by index; node:sqlite's
+// StatementSync.run(...values) only binds anonymous `?` and throws
+// SQLITE_RANGE ("column index out of range") on `?1` (measured node v24.5.0).
+// A numbered placeholder can also be reused (`?1` twice); expanding in
+// appearance order keeps that meaning. Production SQL stays numbered for D1.
+/** @param {string} sql */
+function anonymousPlaceholders(sql) {
+  return sql.replace(/\?(\d+)/g, "?");
+}
+
+/**
+ * @param {string} sql
+ * @param {any[]} bound
+ * @returns {{sql: string, bound: any[]}}
+ */
+function bindForNodeSqlite(sql, bound) {
+  if (!/\?\d/.test(sql)) {
+    return { sql, bound };
+  }
+  /** @type {any[]} */
+  const positional = [];
+  const rewritten = sql.replace(/\?(\d+)/g, (_match, digits) => {
+    positional.push(bound[Number(digits) - 1]);
+    return "?";
+  });
+  return { sql: rewritten, bound: positional };
+}
+
 /** @typedef {Record<string, any>} Row */
 /**
  * The test-side view of the in-memory SQLite database: the rows the tests read
@@ -89,15 +117,16 @@ export function d1Over(sqlite, { onQuery } = {}) {
    * @param {any[]} bound
    */
   function run(sql, bound) {
-    const statement = sqlite.prepare(sql);
+    const translated = bindForNodeSqlite(sql, bound);
+    const statement = sqlite.prepare(translated.sql);
     if (READ.test(sql)) {
       return {
-        results: statement.all(...bound),
+        results: statement.all(...translated.bound),
         success: true,
         meta: { rows_written: 0, changes: 0, last_row_id: 0 },
       };
     }
-    const info = statement.run(...bound);
+    const info = statement.run(...translated.bound);
     const changes = Number(info.changes);
     return {
       results: [],
@@ -166,8 +195,10 @@ export function d1Over(sqlite, { onQuery } = {}) {
       insertVersion({ accountId = "acct0", fileId, path, sizeBytes, createdAt, hiddenAt = null }) {
         sqlite
           .prepare(
-            `INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
+            anonymousPlaceholders(
+              `INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+            ),
           )
           .run(
             accountId,
@@ -245,6 +276,11 @@ export function d1Over(sqlite, { onQuery } = {}) {
 function makeMeteredDB(onQuery) {
   const sqlite = new DatabaseSync(":memory:");
   applyMigrations(sqlite);
+  // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
+  // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
+  // expands them, and this wraps the raw handle the tests use directly.
+  const originalPrepare = sqlite.prepare.bind(sqlite);
+  sqlite.prepare = (sql) => originalPrepare(anonymousPlaceholders(sql));
   const db = d1Over(sqlite, { onQuery });
   return { sqlite: /** @type {TestSqlite} */ (/** @type {unknown} */ (sqlite)), db };
 }

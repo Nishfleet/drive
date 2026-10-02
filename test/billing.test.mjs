@@ -32,6 +32,7 @@ import {
   monthlyCeilingUsd,
   monthlyStorageBillUsd,
   savedLine,
+  storedGb,
   usageSummary,
 } from "../src/billing.js";
 import worker from "../src/index.js";
@@ -450,6 +451,29 @@ test("every line is integer cents, whatever the meter recorded", () => {
       downloadBytes: 0,
       averageStoredGb: 0,
     }).totalCents,
+  );
+});
+
+test("a peak is whole bytes and nothing else, whichever door it comes through", () => {
+  // The meter writes whole bytes (usageStatement), the reader returns whole
+  // bytes (monthUsageRollup), and storedGb is the third door into the same
+  // number: a fractional byte count is a broken caller, not a size to bill,
+  // so it is refused here rather than divided into a fractional GB.
+  assert.equal(storedGb(800e9), 800);
+  assert.equal(storedGb(0), 0);
+  for (const bad of [1.5, Number.NaN, -1, "800", null, undefined]) {
+    assert.throws(() => storedGb(bad), TypeError);
+  }
+  // monthBillCents takes the peak as bytes (the meter's own unit) or as GB,
+  // never both, and the bytes spelling reaches the same ceiling the GB one
+  // says: a fractional byte count is refused on this path too.
+  const byBytes = monthBillCents({ gbMinutes: 0, peakBytes: 800e9 });
+  const byGb = monthBillCents({ gbMinutes: 0, peakGb: 800 });
+  assert.equal(byBytes.storageCents, byGb.storageCents);
+  assert.throws(() => monthBillCents({ gbMinutes: 0, peakBytes: 1.5 }), TypeError);
+  assert.throws(
+    () => monthBillCents({ gbMinutes: 0, peakBytes: 800e9, peakGb: 800 }),
+    /never both/,
   );
 });
 

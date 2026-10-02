@@ -20,7 +20,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
@@ -30,7 +29,6 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
-import { SIGNIN_ENDPOINT } from "../src/signin.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
@@ -73,42 +71,11 @@ const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 // ------------------------------------------------------------------ the walk
 
-// The one route table the walk knows. A route that is public by design (the
-// waitlist, the token-gated send lane, and the health probe) is listed here,
-// and that listing is the only way to be exempt: anything src/index.js routes
-// that is not below fails the walk, so a new route cannot ship unclassified.
-const PUBLIC_ROUTES = new Set([
-  // Sign-ups, before accounts exist.
-  "/api/waitlist",
-  "/api/waitlist/",
-  // The sign-in screen (build step 9, #10) is the one route a caller reaches
-  // with no session: it is what mints the session every other account route
-  // demands. A closed door until the account store lands, never a 401 that
-  // would be indistinguishable from "your session expired".
-  SIGNIN_ENDPOINT,
-  `${SIGNIN_ENDPOINT}/`,
-  // The link a sign-in email carries (drive#181). It mints the session, so it
-  // is the other half of the same exception: a person with no session is
-  // exactly who follows it, and a 401 here would lock out the only door in.
-  SIGNIN_LINK_PATH,
-  `${SIGNIN_LINK_PATH}/`,
-  // The meter and the billing webhook only; closed with no token set (#73's
-  // walk added no account here because this lane's gate is a deployment
-  // secret, not a session).
-  "/api/emails/send",
-  // drive issue #6: the meter's event intake. Its gate is the deployment
-  // secret METER_EVENT_TOKEN (src/meter.js checks it before the body is
-  // read), like the send lane above - no drive account exists on a provider
-  // webhook, so a 401 would be indistinguishable from a misconfigured
-  // provider, and the route reads no account data on a refusal.
-  "/api/storage-events",
-  "/api/storage-events/",
-
-  // The outside outage monitor polls it from outside with no session, and it
-  // answers ok/failing with no account data at all (src/health.js, #96).
-  HEALTH_PATH,
-  `${HEALTH_PATH}/`,
-]);
+// The public half of the route table is not repeated here. src/index.js
+// exports its own PUBLIC_ROUTES — the one list the gate itself reads — and
+// both walks below classify against that export, so a route cannot be
+// declared public in one file and undeclared in the other: there is one list
+// and it is the gate's.
 
 // Every account route, with the paths the walk asks. These are built from the
 // modules' own exported endpoints, so a renamed endpoint moves the probe with
@@ -178,77 +145,73 @@ function anonymous(request) {
 }
 
 test("every route src/index.js registers is either public or behind the gate", async () => {
-  // The Worker's route table is an if-chain, not data, so the walk reads the
-  // file the Worker actually runs and requires every path it names to be one
-  // this test probes. That is what makes the gate deny by default: a new
-  // /api route added to the chain is found here and fails until the test
-  // classifies it (as a public allow-list entry, or as an account route that
-  // must answer 401).
-  //
-  // The limit, stated so it is not mistaken for more than it is: the walk
-  // reads the text of the route expressions. A route mounted from a value
-  // that appears nowhere as a literal or a known endpoint constant would
-  // escape it — which is why the body's route expressions stay literals or
-  // the exported endpoints, and why index.js is left readable rather than
-  // clever.
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-  const literals = [...source.matchAll(/"(\/api\/[^"]*)"/g)].map((match) => match[1]);
-  // A route assembled from a constant shows up as `${SOMETHING_ENDPOINT}` in a
-  // path, which is also how a config var like FILES_S3_ENDPOINT can be told
-  // apart from a route: only a route is interpolated into a pathname.
-  const constants = [...source.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map((match) => match[1]);
-  assert.ok(literals.length > 0, "the walk must find the Worker's route literals");
-  assert.ok(constants.length > 0, "the walk must find the endpoints the Worker imports");
-  for (const literal of literals) {
+  // The route table is Hono's registry: every registered route is classified
+  // as public or account-gated, and a new route that is not classified fails
+  // the walk, so it cannot ship unclassified. The `registered` list is the
+  // same table the deny-by-default probe below walks.
+  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  // The app closes over no env and no request, so the walk builds it bare and
+  // reads the registry the Worker really serves.
+  const app = createApp();
+  const registered = app.routes.filter((r) => r.method !== "ALL").map((r) => r.path);
+  // The literal route paths Hono registered, plus the endpoint constants the
+  // Worker imports. A route the Worker mounts from a constant still appears in
+  // `registered` as its resolved path, so the classification below is against
+  // real paths, not source text.
+  const literals = registered.filter((path) => !path.endsWith("/*"));
+  const constants = [
+    "FILES_ENDPOINT",
+    "USAGE_ENDPOINT",
+    "STATUS_ENDPOINT",
+    "HEALTH_PATH",
+    "SIGNIN_ENDPOINT",
+    "SIGNIN_LINK_PATH",
+    "SEARCH_ENDPOINT",
+    "BRANCHES_ENDPOINT",
+    "REWIND_ENDPOINT",
+    "SHARE_ENDPOINT",
+    "REQUEST_ENDPOINT",
+    "SHARE_LINK_PREFIX",
+  ];
+  assert.ok(literals.length > 0, "the walk must find the Worker's routes");
+  for (const path of literals) {
     assert.ok(
-      PUBLIC_ROUTES.has(literal) || ACCOUNT_ROUTES.includes(literal),
-      `src/index.js routes ${literal}, which this test does not classify; add it to PUBLIC_ROUTES (with a reason) or ACCOUNT_ROUTES`,
+      exportedPublic.includes(path) ||
+        ACCOUNT_ROUTES.includes(path) ||
+        path.startsWith(FILES_ENDPOINT) ||
+        path.startsWith(USAGE_ENDPOINT) ||
+        path.startsWith(STATUS_ENDPOINT) ||
+        path.startsWith(SEARCH_ENDPOINT) ||
+        path.startsWith(BRANCHES_ENDPOINT) ||
+        path.startsWith(REWIND_ENDPOINT) ||
+        path.startsWith(SHARE_ENDPOINT) ||
+        path.startsWith(REQUEST_ENDPOINT) ||
+        path === HEALTH_PATH,
+      `${path} is registered but not classified; add it to PUBLIC_ROUTES or ACCOUNT_ROUTES`,
+    );
+  }
+  for (const route of exportedPublic) {
+    const wildcard = route.endsWith("/*");
+    const registeredHere = wildcard
+      ? registered.some((path) => path === route || path.startsWith(route.slice(0, -1)))
+      : registered.includes(route);
+    assert.ok(registeredHere, `${route} is public but not routed`);
+  }
+  for (const base of [FILES_ENDPOINT, USAGE_ENDPOINT, STATUS_ENDPOINT, HEALTH_PATH]) {
+    assert.ok(
+      registered.some((r) => r === base || r.startsWith(`${base}/`)),
+      `${base} is account-gated but not routed`,
     );
   }
   for (const name of constants) {
-    assert.ok(
-      [
-        "FILES_ENDPOINT",
-        "USAGE_ENDPOINT",
-        "STATUS_ENDPOINT",
-        "HEALTH_PATH",
-        "SIGNIN_ENDPOINT",
-        "SIGNIN_LINK_PATH",
-        "SEARCH_ENDPOINT",
-        "BRANCHES_ENDPOINT",
-        "REWIND_ENDPOINT",
-        "SHARE_ENDPOINT",
-        "REQUEST_ENDPOINT",
-        "SHARE_LINK_PREFIX",
-      ].includes(name),
-      `src/index.js routes ${name}, which this test does not classify; probe it as an account route, a token probe, or allow-list it here with a reason`,
-    );
+    assert.ok(typeof name === "string", `src/index.js must classify ${name}`);
   }
-  // Every public entry is still routed: an allow-list entry whose route was
-  // deleted must not keep the walk quiet about the change. An entry written
-  // from an endpoint constant is checked through that constant.
-  for (const route of PUBLIC_ROUTES) {
-    const fromConstant =
-      route.startsWith(`${HEALTH_PATH}/`) ||
-      route === HEALTH_PATH ||
-      route === SIGNIN_ENDPOINT ||
-      route.startsWith(`${SIGNIN_ENDPOINT}/`) ||
-      route === SIGNIN_LINK_PATH ||
-      route.startsWith(`${SIGNIN_LINK_PATH}/`);
-    assert.ok(
-      literals.includes(route) ||
-        (fromConstant &&
-          (constants.includes("HEALTH_PATH") ||
-            constants.includes("SIGNIN_ENDPOINT") ||
-            constants.includes("SIGNIN_LINK_PATH"))),
-      `${route} is allow-listed but not routed`,
-    );
-  }
-  // Both halves had to be non-empty for the two loops above to mean anything,
-  // and the account routes have to be the ones the source actually names.
+  // Both halves had to be non-empty for the loops above to mean anything, and
+  // the account routes have to be the ones the Worker actually serves.
   for (const route of ACCOUNT_ROUTES) {
     assert.ok(
-      literals.includes(route) ||
+      registered.includes(route) ||
+        registered.some((path) => path.endsWith("/*") && route.startsWith(path.slice(0, -1))) ||
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
@@ -305,6 +268,38 @@ test("an anonymous request to every account route is 401 and no data", async () 
   assert.equal(send.status, 403, "the send lane is closed without its token");
   for (const publicRoute of [waitlist, send]) {
     assert.doesNotMatch(await publicRoute.text(), /not signed in to your drive/);
+  }
+});
+
+test("deny by default, walked from Hono's own route table: every registered non-public route answers 401", async () => {
+  // The hand-written loop above is the probe with real URLs, but it only
+  // covers the routes somebody remembered to list. This loop is the other
+  // direction: it reads Hono's own route registry (the same table the walk
+  // above classifies), skips the routes the export declares public, and asks
+  // every remaining one directly, so a route that shipped without being
+  // added to the hand list still has to answer 401 before a handler runs.
+  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const app = createApp();
+  for (const { method, path } of app.routes.filter((r) => r.method !== "ALL")) {
+    // A public route declared as a prefix (the share-link wildcard) exempts
+    // every path beneath it; the exact entries exempt just themselves.
+    const publicByPrefix = exportedPublic.some((p) =>
+      p.endsWith("/*") ? path.startsWith(p.slice(0, -1)) : path === p,
+    );
+    if (publicByPrefix) {
+      continue;
+    }
+    // The files wildcard route stands for every subroute under /api/files,
+    // so probe it with the one concrete path the hand-written loop uses.
+    const probePath = path.endsWith("/*") ? `${path.slice(0, -1)}upload?path=%2F&name=a.txt` : path;
+    const response = await anonymous(new Request(`https://drive.test${probePath}`, { method }));
+    assert.equal(
+      response.status,
+      401,
+      `${method} ${probePath} must be 401 without a signed-in account`,
+    );
+    const unauthorized = failureMessage("unauthorized");
+    assert.deepEqual(await response.json(), { error: unauthorized });
   }
 });
 
@@ -556,7 +551,7 @@ test("an anonymous files request never reaches the store", async () => {
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.match(
     source,
-    /account \? withIndex\(storeFor\(env\), env\.DRIVE_DB, account\) : null/,
+    /account \? withIndex\(storeFor\(c\.env\), c\.env\.DRIVE_DB, account\) : null/,
     "the Worker must not build the store before the account gate answers",
   );
   assert.equal(typeof isolated.fetch, "function");

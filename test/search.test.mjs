@@ -644,6 +644,9 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
   const db = makeD1();
   const assets = { fetch: () => new Response("asset", { status: 200 }) };
   const env = { DRIVE_DB: db, ASSETS: assets };
+  // Anonymous requests are stopped by the account gate before any
+  // handler runs — the old switch fell through to assets, but the
+  // gate is the outer rule and this path is not public.
   for (const method of ["GET", "POST", "DELETE"]) {
     const response = await workerFetch(
       new Request("https://drive.test/api/search/index", { method }),
@@ -651,9 +654,9 @@ test("no web request can start a reindex: /api/search/index is not a route", asy
       ctx,
     );
     assert.equal(
-      await response.text(),
-      "asset",
-      `${method} /api/search/index never reaches a search handler`,
+      response.status,
+      401,
+      `${method} /api/search/index is gated, never reaches a search handler`,
     );
   }
   // The only way a reindex starts is the scheduled trigger. The index knows
