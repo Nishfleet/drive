@@ -490,8 +490,18 @@ test("a team key is never delete-capable, whatever its kind label says", async (
 
   const readerDevice = await t.store.authenticate(reader.accessKeyId, reader.secret);
   const writerDevice = await t.store.authenticate(writer.accessKeyId, writer.secret);
-  assert.equal(canDelete(readerDevice), false, "a read-only team key may not delete");
-  assert.equal(canDelete(writerDevice), false, "a read-write team key may not delete either");
+  assert.notEqual(readerDevice, null, "the read-only team key authenticates");
+  assert.notEqual(writerDevice, null, "the read-write team key authenticates");
+  assert.equal(
+    canDelete(/** @type {{kind: string, capabilities: string[]}} */ (readerDevice)),
+    false,
+    "a read-only team key may not delete",
+  );
+  assert.equal(
+    canDelete(/** @type {{kind: string, capabilities: string[]}} */ (writerDevice)),
+    false,
+    "a read-write team key may not delete either",
+  );
   // The bare kind label alone would have said `true` (device keys delete); the
   // row's own capabilities are what the check reads.
   assert.equal(canDelete({ kind: "device" }), true, "a real device key still deletes");
