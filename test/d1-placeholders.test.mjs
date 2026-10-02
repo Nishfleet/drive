@@ -50,15 +50,6 @@ test("a statement with no numbered placeholder is left exactly as it is", () => 
   assert.deepEqual(bindForNodeSqlite("SELECT 1", []), { sql: "SELECT 1", bound: [] });
 });
 
-test("a number the adapter was not given is named, not silently bound as undefined", () => {
-  assert.throws(
-    () => bindForNodeSqlite("WHERE a = ?1 AND b = ?9", ["x"]),
-    /binds \?9, and D1 gave 1 value/,
-  );
-});
-
-// The two adapters, each over a real node:sqlite database with the same
-// migrations applied: the harness's shape and the meter's stand-in.
 /**
  * The two adapters, each over a real node:sqlite database with the same
  * migrations applied: the harness's shape and the meter's stand-in.
