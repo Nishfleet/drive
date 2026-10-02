@@ -1,7 +1,9 @@
-// promptfoo is a pinned local binary so workers do not `npm exec` a cold
-// download (drive issue #257). Two copies of `npm exec promptfoo@0.123.1
-// --version` filled a runner's 3 GiB MemoryHigh. The pin and the lockfile
-// are the whole guarantee.
+// promptfoo lives in its own npm project, `evals/agents/` (drive issue #257).
+// Two cold `npm exec promptfoo@0.123.1 --version` runs filled a runner's 3 GiB
+// MemoryHigh. Putting promptfoo in the root package.json is no fix: its tree is
+// about 3.6 GB on disk (45 optional provider SDKs) and a warm `npm ci` of it
+// peaked at 4.0 GB, so every worker's setup step would stall instead. The
+// isolated project, its lockfile and its `.npmrc` are the whole guarantee.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -10,81 +12,56 @@ import { test } from "node:test";
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-// Any of these in a script or AGENTS.md is the drive#257 stall: npm fetches
-// promptfoo into a temp tree. The local binary is ./node_modules/.bin/promptfoo.
+// Any of these makes npm fetch promptfoo into a temp tree on every run.
 const COLD_DOWNLOAD =
   /\b(?:npx(?:\s+-{1,2}y(?:es)?)?|npm\s+(?:exec|x)|pnpm\s+dlx)\b[\s\S]{0,80}promptfoo/;
-const VERSION_PIN = /promptfoo@/;
 
-test("promptfoo is an exact pin in package.json and the lockfile", () => {
-  const pkg = JSON.parse(read("package.json"));
-  const lock = JSON.parse(read("package-lock.json"));
+test("promptfoo is an exact pin in evals/agents, with a lockfile that matches", () => {
+  const pkg = JSON.parse(read("evals/agents/package.json"));
+  const lock = JSON.parse(read("evals/agents/package-lock.json"));
 
   const declared = pkg.devDependencies?.promptfoo;
+  assert.match(declared ?? "", /^\d+\.\d+\.\d+$/, "promptfoo is pinned at an exact version");
+  assert.equal(lock.packages?.["node_modules/promptfoo"]?.version, declared);
   assert.equal(
-    typeof declared,
-    "string",
-    "package.json declares promptfoo so a version check uses node_modules, not a cold npm exec",
-  );
-  assert.ok(
-    /^\d+\.\d+\.\d+$/.test(declared),
-    `package.json pins promptfoo at an exact version, not a range: "${declared}"`,
-  );
-  assert.equal(
-    pkg.dependencies?.promptfoo,
-    undefined,
-    "promptfoo is a devDependency: production install must not pull the eval tool",
-  );
-  assert.equal(
-    pkg.optionalDependencies?.promptfoo,
-    undefined,
-    "promptfoo is not optional: npm ci must install the local binary",
-  );
-  assert.equal(
-    pkg.peerDependencies?.promptfoo,
-    undefined,
-    "promptfoo is not a peer: the pin lives in devDependencies",
-  );
-  assert.match(
-    pkg.engines?.node ?? "",
-    /^>=24\b/,
-    "promptfoo 0.123.1 needs Node >=22.22; this repo already pins >=24",
-  );
-
-  const resolved = lock.packages?.["node_modules/promptfoo"];
-  assert.equal(
-    resolved?.version,
-    declared,
-    `package-lock.json must resolve node_modules/promptfoo to ${declared} so npm ci installs the pin`,
-  );
-  assert.equal(
-    resolved?.bin?.promptfoo,
+    lock.packages?.["node_modules/promptfoo"]?.bin?.promptfoo,
     "dist/src/entrypoint.js",
-    "the lockfile records the local binary npm ci puts on node_modules/.bin",
+    "npm ci puts the local binary on node_modules/.bin",
   );
 });
 
-test("no script cold-downloads promptfoo through npm exec", () => {
-  const pkg = JSON.parse(read("package.json"));
-  for (const [name, command] of Object.entries(pkg.scripts ?? {})) {
+test("the eval project skips promptfoo's optional SDKs but keeps the libsql binary", () => {
+  assert.match(read("evals/agents/.npmrc"), /^omit=optional$/m);
+  const pkg = JSON.parse(read("evals/agents/package.json"));
+  const libsql = pkg.devDependencies?.["@libsql/linux-x64-gnu"];
+  assert.ok(
+    libsql,
+    "promptfoo opens a libsql database; its Linux binary is an optional dep of libsql",
+  );
+  assert.equal(
+    JSON.parse(read("evals/agents/package-lock.json")).packages?.[
+      "node_modules/@libsql/linux-x64-gnu"
+    ]?.version,
+    libsql,
+  );
+});
+
+test("the root package does not carry promptfoo, and no script cold-downloads it", () => {
+  const root = JSON.parse(read("package.json"));
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    assert.equal(root[field]?.promptfoo, undefined, `root ${field} must not hold promptfoo`);
+  }
+  for (const [name, command] of Object.entries(root.scripts ?? {})) {
     assert.ok(
       !COLD_DOWNLOAD.test(command),
-      `${name}: "${command}" downloads promptfoo on every run; call ./node_modules/.bin/promptfoo after npm ci`,
-    );
-    assert.ok(
-      !VERSION_PIN.test(command),
-      `${name}: "${command}" pins promptfoo with @version, which makes npm fetch a new tree`,
+      `${name}: "${command}" downloads promptfoo on every run; use evals/agents/node_modules/.bin/promptfoo`,
     );
   }
 });
 
-test("AGENTS.md tells workers to use the local binary", () => {
+test("AGENTS.md gives workers the cheap promptfoo version check", () => {
   const agents = read("AGENTS.md");
-  assert.match(
-    agents,
-    /\.\/node_modules\/\.bin\/promptfoo --version/,
-    "workers read AGENTS.md first: the local binary is the version check",
-  );
-  assert.doesNotMatch(agents, COLD_DOWNLOAD, "AGENTS.md must not teach the cold-download command");
-  assert.doesNotMatch(agents, VERSION_PIN, "AGENTS.md must not teach a promptfoo@version fetch");
+  assert.match(agents, /npm ci --prefix evals\/agents/);
+  assert.match(agents, /evals\/agents\/node_modules\/\.bin\/promptfoo --version/);
+  assert.doesNotMatch(agents, COLD_DOWNLOAD);
 });
