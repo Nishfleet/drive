@@ -355,27 +355,38 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   // issue #104): a version that stopped at the instant a same-size version
   // began books no minimum of its own. The list is the same version set the
   // SQL reads the table for, so the reference and the statement agree.
-  // otherIndex !== index is the SQL's s.b2_file_id <> v.b2_file_id for a
-  // well-formed list, where each row appears once: a different entry is a
-  // different row, and rows are keyed by the account and b2_file_id pair.
-  // The retirement instant, hoisted so the size and instant reads are the
-  // same row for both sides of the comparison.
+  //
+  // What "successor" means here is deliberately the same approximation on
+  // both sides: same account, same size, same millisecond, a different row.
+  // A folder move is a copy-then-delete, so that is exactly its shape, and
+  // the bound is stated rather than hidden - an unrelated same-size version
+  // created in the same millisecond as another's hide also waives, so the
+  // waived shortfall is at most 60 minutes x the size per collision. Event
+  // timestamps are whole milliseconds, so an exact collision needs two
+  // versions of exactly equal size handed over in the same millisecond.
+  //
+  // `versionIndex` is captured once per entry, so a different entry (the SQL's
+  // s.b2_file_id <> v.b2_file_id) is identified by position rather than by
+  // reference identity: a duplicated list entry cannot waive its own
+  // minimum, and the set build is one seek per candidate, not one seek per
+  // pair.
+  const entries = versions.map((version, versionIndex) => ({
+    version,
+    versionIndex,
+    // Both sides are numbers by the time they get here: toVersion turns a
+    // stored row into ms, and a call-built version carries ms (drive
+    // issue #104).
+    stoppedAt: version.hiddenAt == null ? null : toMillis(version.hiddenAt, "hiddenAt"),
+  }));
   const continued = new Set(
-    versions
-      .map((version) => ({
-        version,
-        // Both sides are numbers by the time they get here: toVersion turns a
-        // stored row into ms, and a call-built version carries ms (drive
-        // issue #104).
-        stoppedAt: version.hiddenAt == null ? null : toMillis(version.hiddenAt, "hiddenAt"),
-      }))
+    entries
       .filter((entry) => entry.stoppedAt !== null)
       .filter((entry) =>
-        versions.some(
-          (other, otherIndex) =>
-            otherIndex !== versions.indexOf(entry.version) &&
-            Number(other.sizeBytes) === Number(entry.version.sizeBytes) &&
-            toMillis(other.createdAt, "createdAt") === entry.stoppedAt,
+        entries.some(
+          (other) =>
+            other.versionIndex !== entry.versionIndex &&
+            Number(other.version.sizeBytes) === Number(entry.version.sizeBytes) &&
+            toMillis(other.version.createdAt, "createdAt") === entry.stoppedAt,
         ),
       )
       .map((entry) => entry.version),
@@ -416,6 +427,15 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // gbMinutesInHour applies within its list (and a version is never its own
 // successor: the b2_file_id pair is the row's primary key). The probe is one
 // seek on file_versions_account_created_at_idx per young hidden version.
+//
+// The key is an approximation, and it is the same one on both sides: same
+// account, same size, same millisecond, a different row. A move is exactly
+// that shape; so is any unrelated same-size version created in the same
+// millisecond as another's hide, which waives that shortfall too. The bound
+// is one minute's worth of size per collision (at most 60 minutes x size),
+// event timestamps are whole milliseconds, and the differential test pins an
+// unrelated collision so the two sides waive it identically rather than
+// disagree about it.
 //
 // The second number one closed hour answers with, and the one the monthly bill
 // cannot do without (drive issue #163): how BIG the account's drive was during
