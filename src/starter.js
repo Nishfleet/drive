@@ -220,7 +220,13 @@ export async function createStarter(store) {
       kept.push(file.path);
       continue;
     }
-    await store.write(file.path, new Blob([file.body]).stream(), file.contentType);
+    // The Blob is the body, not a stream of it. Every template file is a few
+    // hundred bytes that are already in memory, and handing the store the
+    // Blob lets it send a content-length; a ReadableStream has none, and S3
+    // answers a PUT without one with 411 Length Required. Proven against
+    // `rclone serve s3` on 2026-10-03 by test/starter.test.mjs, which reads
+    // the four files back off the real disk.
+    await store.write(file.path, new Blob([file.body]), file.contentType);
     created.push(file.path);
   }
   return { created, kept };

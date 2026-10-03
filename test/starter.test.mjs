@@ -12,8 +12,14 @@
 //    instead test the endpoint live (test/account-gate.test.mjs).
 
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { createMemoryStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
@@ -53,11 +59,10 @@ function emptyStore(written = {}) {
           };
     },
     async write(path, body) {
-      const chunks = [];
-      for await (const chunk of /** @type {ReadableStream<Uint8Array>} */ (body)) {
-        chunks.push(Buffer.from(chunk));
-      }
-      written[path] = Buffer.concat(chunks).toString("utf8");
+      // The body is whatever the caller handed over — a Blob from the module,
+      // a stream from a request — so the store reads it rather than assuming a
+      // shape, exactly as the real in-memory store does (src/files.js).
+      written[path] = await new Response(body).text();
     },
     async remove() {},
     async copy() {},
@@ -298,6 +303,210 @@ test("the handler refuses unknown methods", async () => {
   );
   assert.equal(response.status, 405);
 });
+
+// ------------------------------------------------------------ the real drive
+// A green fake proves the handler answers; it does not prove the starter puts
+// files on a drive. This one does: a stock `rclone serve s3` over a real
+// directory, the real S3 store from src/files.js (createS3Store, the one the
+// Worker builds for a deployment), and the bytes read back off the disk at the
+// end. A host without rclone skips it and names the gap, the same way
+// test/home-demos.test.mjs does.
+
+/** The rclone binary the stand-in runs, overridable the way the demos' is. */
+const RCLONE = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
+
+/** @param {string} command @returns {boolean} */
+function runs(command) {
+  // A binary that is not there sets `error` and no status, so the status alone
+  // would report a missing tool as one that ran and refused.
+  const probe = spawnSync(command, ["version"], { stdio: "ignore" });
+  return probe.error === undefined && probe.status === 0;
+}
+
+/** @returns {Promise<number>} a free port on 127.0.0.1 */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+test("the starter writes real files into a real S3 drive, read off the disk", async (t) => {
+  if (!runs(RCLONE)) {
+    t.skip(`this host cannot run ${RCLONE}, so no real-storage proof ran here`);
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "drive-starter-"));
+  /** @type {import("node:child_process").ChildProcess | null} */
+  let server = null;
+  const cleanup = async () => {
+    if (server?.exitCode === null || server?.exitCode === undefined) {
+      server?.kill("SIGTERM");
+    }
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  };
+  t.after(cleanup);
+
+  const bucket = "bucket";
+  await mkdir(path.join(dir, bucket), { recursive: true });
+  const port = await freePort();
+  server = spawn(RCLONE, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  server.stderr?.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    if (server.exitCode !== null) {
+      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
+    }
+    try {
+      await runBash(`exec 3<>/dev/tcp/127.0.0.1/${port}`);
+      break;
+    } catch {
+      if (Date.now() > deadline) {
+        server.kill("SIGTERM");
+        throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
+      }
+      await sleep(300);
+    }
+  }
+
+  // The real S3 store over the real server, scoped the way src/index.js's
+  // starterHandler scopes it: the account prefix is scopeStore's work.
+  const { createS3Store, scopeStore } = await import("../src/files.js");
+  const store = scopeStore(
+    createS3Store({ endpoint: `http://127.0.0.1:${port}`, bucket }),
+    account,
+  );
+
+  // The GET describes and writes nothing: the real listing is still empty after
+  // it, which is the "off by default" rule proven on a real drive rather than
+  // asserted over a fake.
+  const describe = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`),
+    store,
+    account,
+  );
+  assert.equal(describe.status, 200);
+  assert.deepEqual(await store.list(STARTER_FOLDER), [], "a GET writes nothing");
+
+  const created = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: STARTER_ACTION }),
+    }),
+    store,
+    account,
+  );
+  assert.equal(created.status, 200);
+  assert.equal((await created.json()).created.length, STARTER_FILE_LIST.length);
+
+  // The real files, on the real disk, at the keys the real scoped store wrote:
+  // one Notes folder, four Markdown files, and nothing else in the drive.
+  const onDisk = (await listDir(path.join(dir, bucket, `u/${account.id}`))).sort();
+  assert.deepEqual(
+    onDisk,
+    STARTER_FILE_LIST.map((file) => file.path.slice(1)).sort(),
+    "the starter writes the four files and nothing else onto the real disk",
+  );
+  for (const file of STARTER_FILE_LIST) {
+    const bytes = await readFile(path.join(dir, bucket, `u/${account.id}`, file.path), "utf8");
+    assert.equal(bytes, file.body, `${file.path} is the template's own bytes on disk`);
+  }
+
+  // A second create is a no-op on the real drive: the bytes on disk are the
+  // same ones, and the answer says nothing was missing.
+  const again = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: STARTER_ACTION }),
+    }),
+    store,
+    account,
+  );
+  const againBody = await again.json();
+  assert.deepEqual(againBody.created, [], "the second create writes nothing");
+  assert.equal(againBody.kept.length, STARTER_FILE_LIST.length);
+  for (const file of STARTER_FILE_LIST) {
+    const bytes = await readFile(path.join(dir, bucket, `u/${account.id}`, file.path), "utf8");
+    assert.equal(bytes, file.body, `${file.path} is untouched by the second create`);
+  }
+
+  // And the real drive reads back through the real store what the real POST
+  // wrote: one account's own files, and none of another account's.
+  // The listing is one level, the way a drive's folder view is: the three
+  // files at the top of Notes and the Templates folder the fourth sits in, so
+  // the expectation names the one folder the starter nests under.
+  const nested = `${STARTER_FOLDER}/Templates/`;
+  const rows = (await store.list(STARTER_FOLDER)).map((row) => row.path);
+  assert.deepEqual(
+    rows.sort(),
+    [
+      ...STARTER_FILE_LIST.filter((file) => !file.path.startsWith(nested)).map((f) => f.path),
+      `${STARTER_FOLDER}/Templates`,
+    ].sort(),
+    "the real store lists the starter's own files and the folder the fourth sits in",
+  );
+  const nestedRows = (await store.list(`${STARTER_FOLDER}/Templates`)).map((row) => row.path);
+  assert.deepEqual(
+    nestedRows,
+    [`${STARTER_FOLDER}/Templates/Daily note.md`],
+    "the nested daily note is a file the real store reads back",
+  );
+  const other = scopeStore(createS3Store({ endpoint: `http://127.0.0.1:${port}`, bucket }), {
+    id: "acct-other",
+  });
+  assert.deepEqual(await other.list(STARTER_FOLDER), [], "another account sees no bytes");
+  assert.deepEqual(
+    await other.list("/"),
+    [],
+    "another account's drive root holds no starter folder",
+  );
+});
+
+/**
+ * One shell command, the way test/home-demos.test.mjs runs its probes. Kept
+ * here because the port probe is the only shell call this file makes.
+ * @param {string} command
+ * @returns {Promise<void>}
+ */
+function runBash(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["-c", command], { stdio: ["ignore", "ignore", "ignore"] });
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+}
+
+/**
+ * Every regular file under one directory, recursively, as paths relative to it.
+ * @param {string} dir
+ * @returns {Promise<string[]>}
+ */
+async function listDir(dir) {
+  /** @type {string[]} */
+  const found = [];
+  /** @param {string} current */
+  const walk = async (current) => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else found.push(path.relative(dir, full));
+    }
+  };
+  await walk(dir);
+  return found;
+}
 
 // --------------------------------------------------------------- shipped page
 
