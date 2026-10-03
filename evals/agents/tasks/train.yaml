@@ -273,7 +273,7 @@
     task: >
       An agent works in a branch. What does its key let it reach, and can it
       delete anything?
-    source: docs/build-spec.md, "Keys and safety"
+    source: docs/build-spec.md, "Keys and safety"; docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/cannot delete|cannot remove/i.test(output) && /branch/i.test(output)"
@@ -306,7 +306,7 @@
       server-side copy, the agent's work is only visible when the branch is
       read again, and approve stops dead if the original moved — so the answer
       has to know that stop, not just the command.
-    source: docs/build-spec.md, "Commands (v1)", steps 7 and "Keys and safety"
+    source: docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/drive branch/.test(output) && /drive approve/.test(output)"
@@ -408,10 +408,26 @@
       A branch is a server-side copy, not a metadata trick, so its cost is a
       real copy of every byte — and the number to give is the measured one, not
       the one in the docs' promise.
-    source: docs-site/agents.md, "Branch keys"
+    source: docs-site/agents.md, "Branch keys"; docs-site/benchmarks.md
   assert:
     - type: javascript
       value: "/(copy|copies)/i.test(output)"
+
+- description: a changed original when I approve a branch
+  metadata:
+    hard: true
+  vars:
+    task: >
+      An agent worked in its branch, but meanwhile I edited two of the same
+      files in the live folder. If I run drive approve now, what happens to
+      my edits?
+    why_hard: >
+      The answer is a stop with a list, not a merge — so an answer that does
+      not name the stop reads as if it would overwrite the person's own edits.
+    source: docs-site/agents.md, "Branch keys"
+  assert:
+    - type: javascript
+      value: "/approve/.test(output) && /conflict/i.test(output) && /stops|lists|stop/i.test(output)"
 
 - description: a branch key cannot reach my other files
   metadata:

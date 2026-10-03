@@ -260,19 +260,17 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
     /slower than the alternatives/i,
     "the limits page must say where we lose to rivals",
   );
-  // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
+  // Command the CLI does not have (cmd/drive/main.go's switch) must be on the
   // page as "not in the CLI", never shown as working. A test cannot read the Go
   // switch, so this pins the one that the docs otherwise lean on. `branch` used
   // to be on this list: cmd/drive/main.go now ships branch, branches, diff,
   // approve and discard, and the agents page documents them (issue #306), so
   // the gap line was removed and the page must not claim the gap anymore.
-  for (const missing of ["restore"]) {
-    assert.match(
-      page,
-      new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
-      `the limits page must say there is no ${missing} command yet`,
-    );
-  }
+  assert.match(
+    page,
+    /No `restore` command yet/,
+    "the limits page must say there is no restore command yet",
+  );
   assert.doesNotMatch(
     page,
     /No branch or approve commands/,
