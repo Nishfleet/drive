@@ -683,6 +683,9 @@ export async function createBranch(db, snapshots, store, account, request, now =
   // for the activity list, and every read of this row is scoped by account_id
   // in the query itself, never by the value of this column.
   const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
+  if (!snapshots) {
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
   // Claim the name before touching the store. The partial unique index on
   // (account_id, name) where state = 'open' then makes this the one create
   // that may copy into the prefix: two creates of a name in the same moment
@@ -946,6 +949,9 @@ export async function approveBranch(db, snapshots, store, account, name) {
     // programmer/data fault (the sweep missed a row), not storage-down
     // (the namespace is bound) and not branch-not-found (the row exists).
     // No closer key exists, and a new user-facing sentence is out of scope.
+    console.error?.(
+      `approve refused empty snapshot pointer for ${account.id}/${name} (row ${branch.id})`,
+    );
     return { error: failureMessage("unexpected"), status: 500 };
   }
   const diff = await diffBranch(store, branch);
@@ -1227,11 +1233,12 @@ async function removeBranchFiles(store, branch) {
  *   * the column is NOT cleared. The JSON stays in `branches.snapshot` for
  *     rows this sweep moved — those were written when the old code still
  *     filled the column, so a rollback of drive#329's code still reads them.
- *     That is not true of a branch created after this ships: `createBranch`
- *     no longer writes the column, so it stays `DEFAULT '{}'`. Rolling the
- *     code back would then read an empty snapshot and an approve would copy
- *     the whole branch over the original. Rollback of this code is not safe
- *     for those new rows. Dropping the column is the later phase.
+ *     A branch created after this ships has a pointer (`saveSnapshot` writes
+ *     `snapshot_key`) and `DEFAULT '{}'` in the leftover column. Rolling the
+ *     reader back still prefers the pointer, so those completed rows keep
+ *     their snapshot. The leftover that would read empty is only a claimed
+ *     row whose snapshot save never landed, which `abandonClaim` already
+ *     closes. Dropping the column is the later phase.
  *
  * Why this is safe to run before the drop: a row this moves could only ever
  * have been written with the old 1 MiB row limit in force, so its JSON is

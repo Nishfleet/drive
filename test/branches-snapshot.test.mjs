@@ -488,6 +488,26 @@ test("a namespace that cannot be written is storage-down, and the copy is cleane
   );
 });
 
+test("createBranch without a snapshot store is storage-down before it claims", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  const result = await createBranch(
+    db,
+    /** @type {import("../src/branches.js").SnapshotStore} */ (/** @type {unknown} */ (null)),
+    store,
+    ACCOUNT,
+    { folder: "/Photos", name: "gone" },
+  );
+  assert.equal(/** @type {{status: number}} */ (result).status, 500);
+  assert.equal(/** @type {{error: string}} */ (result).error, failureMessage("storage-down"));
+  const leftover = await db
+    .prepare("SELECT name FROM branches WHERE account_id = ?1 AND name = ?2")
+    .bind(ACCOUNT.id, "gone")
+    .first();
+  assert.equal(leftover, null, "no claim row is written");
+});
+
 /**
  * The same database, with the INSERT of a branch failing the way the argument
  * says — a row the engine refuses is a thrown error from `run`, and the code

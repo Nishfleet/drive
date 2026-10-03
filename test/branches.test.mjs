@@ -30,6 +30,7 @@ import {
   snapshotKey,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import { REQUIRED_BINDINGS } from "../src/health.js";
 import worker from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
@@ -322,8 +323,8 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   // key and the value's byte length, and the value itself is the JSON read
   // straight out of the namespace. The `INSERT` names no snapshot column
   // (drive issue #329), so what lands in it is the schema's own
-  // `DEFAULT '{}'` — a well-formed empty value for the previous version of the
-  // code to read on rollback, and a column the next phase can drop.
+  // `DEFAULT '{}'` (migrations/drive/0003_branches.sql). A completed create
+  // also writes a pointer, so a rollback of the reader still prefers KV.
   const row = db.sqlite
     .prepare(
       "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches WHERE account_id = ? AND name = ?",
@@ -942,6 +943,10 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
   // drive#329: the snapshot has one source, so a missing namespace is the same
   // "a dependency the drive cannot serve without" answer a missing database is,
   // not an empty branch list and not a branch written into the leftover column.
+  assert.ok(
+    REQUIRED_BINDINGS.includes("BRANCH_SNAPSHOTS"),
+    "BRANCH_SNAPSHOTS is already on src/health.js REQUIRED_BINDINGS",
+  );
   const unbound = await handleBranchesRequest(
     request("GET", BRANCHES_ENDPOINT),
     db,
