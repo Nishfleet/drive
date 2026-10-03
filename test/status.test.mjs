@@ -280,7 +280,7 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
     account,
   );
   assert.equal(signedIn.status, 200);
-  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [] });
+  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [], upload: null });
 
   // The account is a required argument: a call that forgets it is the 401, not
   // an open endpoint, so a future route cannot accidentally serve anonymous.
@@ -325,6 +325,36 @@ test("a request can only prove an account through a session Better Auth minted",
     null,
     "a session belongs to the database that minted it",
   );
+});
+
+test("the status payload carries the raw queue, the shape the page renders", async () => {
+  // Drive issue #308, the first surface. `upload` is the raw queue, not a
+  // finished line, because this endpoint feeds the first-run page's renderer,
+  // which calls uploadLine() on it (drive issue #100). Today the Worker has no
+  // device store, so no device has signed in and nothing is waiting: null is
+  // that answer rather than an invented zero-byte queue, and the field is in
+  // the payload rather than missing, so the renderer draws it the moment a
+  // queue exists. A queue handed in passes through in exactly the shape
+  // uploadProgress() accepts, and round-trips to the line the page shows.
+  const signedIn = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    { id: "1", name: "Your drive" },
+  );
+  const body = await signedIn.json();
+  assert.deepEqual(Object.keys(body), ["state", "devices", "upload"]);
+  assert.equal(body.upload, null);
+
+  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const carrying = await handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    { id: "1", name: "Your drive" },
+    queue,
+  ).json();
+  assert.deepEqual(carrying.upload, queue);
+  assert.equal(uploadLine(carrying.upload), uploadProgress(queue).label);
+  // The page's renderer reads the field under that one name.
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(source, /payload\.upload/);
 });
 
 test("the status endpoint names the one method it serves", () => {

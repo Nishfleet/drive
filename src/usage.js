@@ -51,6 +51,14 @@ export const USAGE_LABELS = Object.freeze({
     what: "No storage history yet.",
     next: "It fills in from the drive's first day on the meter.",
   }),
+  // The upload-progress line's section (drive issue #308). The line itself is
+  // not a word here: /api/usage carries it finished, assembled by
+  // uploadProgress() from UPLOAD_LABEL in src/status.js — the one table
+  // `drive status` and the first-run page also read — so the page renders
+  // another module's sentence and holds no second copy of it. What this page
+  // owns is the heading above the line and the reason the line moves at all.
+  uploads: "Uploads",
+  uploadsHint: "Saves upload a few seconds after you close the file.",
   // A read that could not reach the Worker. The page keeps the numbers it had
   // and says the service was unreachable, rather than printing zeros over them.
   unreachable: Object.freeze({
