@@ -13,6 +13,11 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+// The eval's CLI help text is cmd/drive/main.go's `usage` const, so the gate
+// asks the same function `npm run docs:render` writes the snapshot with. A
+// second copy of that pattern is how the gate went green on a file the render
+// had stopped producing.
+import { cliUsageText } from "../src/render-docs.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -230,11 +235,9 @@ test("the prompt reads only the docs, the help text and the task", () => {
 });
 
 test("drive --help snapshot still matches the shipped CLI", () => {
-  const src = read("cmd/drive/main.go");
-  const m = src.match(/const usage = `([\s\S]*?)`\nconst version/);
-  assert.ok(m, "usage string in main.go");
+  const m = cliUsageText().trim();
   const snapshot = read("evals/agents/context/drive-help.txt").trim();
-  assert.equal(snapshot, m[1].trim(), "help text drift would break the context");
+  assert.equal(snapshot, m, "help text drift would break the context");
 });
 
 test("package.json wires the one command and the stock tool", () => {

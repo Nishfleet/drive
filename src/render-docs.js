@@ -72,9 +72,13 @@ export const HELP_SNAPSHOT = fileURLToPath(
 );
 
 /** The `usage` const's text, or an error that names the file nothing matched. */
-function cliUsageText() {
+export function cliUsageText() {
   const src = readFileSync(MAIN_GO, "utf8");
-  const match = src.match(/const usage = `([\s\S]*?)`\nconst version/);
+  // A Go raw string cannot hold a backtick, so the text between the
+  // const's opening backtick and the first closing one is the whole usage
+  // block. Anchor on the statement, not on what follows it: main now declares
+  // `var version` after the block, which a const-only anchor missed.
+  const match = src.match(/^const usage = `([^`]*)`/m);
   if (!match) {
     throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
   }

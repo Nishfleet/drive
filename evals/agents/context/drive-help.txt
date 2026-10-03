@@ -22,7 +22,12 @@ Usage:
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
+  drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Update flags:
+  --check   say whether a newer release exists, install nothing
+  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
