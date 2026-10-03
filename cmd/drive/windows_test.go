@@ -346,7 +346,11 @@ func TestWindowsMountProof(t *testing.T) {
 		t.Skip("mount proof skipped in -short mode")
 	}
 	if _, err := exec.LookPath("rclone"); err != nil {
-		t.Skip("rclone is not installed")
+		// The windows-latest job installs rclone in the step before this proof
+		// runs, so a missing rclone here means that install broke. Skipping
+		// would leave the job green with no drive-letter mount in it, so this
+		// is a failure, not a skip.
+		t.Fatalf("rclone is not on PATH, so the windows-latest job's rclone install step broke: %v", err)
 	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "data"), 0o755); err != nil {
