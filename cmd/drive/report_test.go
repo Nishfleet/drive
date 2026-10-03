@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -193,7 +194,9 @@ func TestRunQueueReportLoopIsDormantWithoutCredentials(t *testing.T) {
 
 // TestRunQueueReportLoopNamesAWorkerRefusal is the failure path: the Worker
 // refuses the report (429 inside the interval, say), and the loop says so on
-// the error channel with a named cause instead of going quiet.
+// the error channel with a named cause instead of going quiet. After the
+// delight pass (drive#117) a person reads the table's words and the Worker's
+// own sentence, and the raw 429 stays in the error chain for DRIVE_DEBUG.
 func TestRunQueueReportLoopNamesAWorkerRefusal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -222,11 +225,18 @@ func TestRunQueueReportLoopNamesAWorkerRefusal(t *testing.T) {
 		if !open {
 			t.Fatal("the channel closed instead of reporting the refusal")
 		}
-		if !strings.Contains(err.Error(), "429") {
-			t.Errorf("error = %v, want the Worker's 429 status named", err)
-		}
 		if !strings.Contains(err.Error(), "queue report") {
 			t.Errorf("error = %v, want the queue-report label", err)
+		}
+		if !strings.Contains(err.Error(), "The drive's api refused the request.") {
+			t.Errorf("error = %v, want the table's refused words", err)
+		}
+		if !strings.Contains(err.Error(), "Report again in 7 seconds.") {
+			t.Errorf("error = %v, want the Worker's own sentence", err)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Status, "429") {
+			t.Errorf("the refusal's 429 is not in the error chain: %v", err)
 		}
 	}
 }
