@@ -30,7 +30,11 @@ type MountPlan struct {
 	ConfigPath string
 	CacheDir   string
 	LogPath    string
-	VFSArgs    []string
+	// Bwlimit is the rclone rate the mount starts with, "" for no limit
+	// (drive issue #100). PausedRate(home) fills it, so a mount started again
+	// after `drive pause` comes back already paused.
+	Bwlimit string
+	VFSArgs []string
 	// Device is this machine's name in a conflict copy's filename
 	// (issue #30). DRIVE_DEVICE when the operator sets it, else the
 	// hostname, sanitized so it is a filename everywhere the mount
@@ -128,7 +132,9 @@ func RemoteFor(c StorageConfig) string {
 }
 
 // BuildMountPlan resolves the mount command for goos. It is the single place
-// that knows nfsmount is the macOS command and mount is the Linux one.
+// that knows nfsmount is the macOS command and mount is the Linux one, and
+// the single place the paused state is translated into rclone's command line
+// (drive issue #100).
 func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	sub := "mount"
 	if goos == "darwin" {
@@ -148,6 +154,12 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		RCAddr:      RCAddr(),
 		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
+		// A pause that is in force when the mount is (re)started keeps being in
+		// force (drive issue #100): rclone's bandwidth limit lives in its own
+		// process, so without this line a restart would start sending bytes at
+		// full speed and the marker file would say Paused over bytes that are
+		// already leaving.
+		Bwlimit: PausedRate(home),
 	}
 }
 
@@ -259,6 +271,17 @@ func (p MountPlan) Args() []string {
 	// a local stand-in.
 	if p.DownloadURL != "" {
 		args = append(args, "--s3-download-url", p.DownloadURL)
+	}
+	// The paused rate goes on rclone's own command line, so a mount that is
+	// started again after a `drive pause` comes back already paused. Measured
+	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
+	// the mount with the same rate `core/bwlimit rate="1KiB:off"` sets, and
+	// RCLONE_BWLIMIT is not needed because the flag is already in the vector.
+	// The remote control that `drive pause` and `drive resume` use is the same
+	// loopback address this vector binds (`--rc-addr`, p.RCAddr), so those
+	// commands talk to this mount and no second listener is added.
+	if p.Bwlimit != "" {
+		args = append(args, "--bwlimit", p.Bwlimit)
 	}
 	return args
 }
@@ -736,18 +759,30 @@ func Mounted(goos, home string) (bool, error) {
 // on the same host) asks the same platform question. One switch, so a caller
 // cannot drift from what `drive mount` waits on.
 func MountedDir(goos, mountDir string) (bool, error) {
+	// A FUSE mount whose backing store has gone away can block findmnt the
+	// same way it blocks ReadDir (countEntries already bounds that). `drive
+	// status` and `drive pause` both ask Mounted, so a wedged mount must
+	// become a named timeout rather than a hung terminal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	switch goos {
 	case "darwin":
-		out, err := exec.Command("mount").Output()
+		out, err := exec.CommandContext(ctx, "mount").Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("mount: timed out")
+			}
 			return false, fmt.Errorf("mount: %w", err)
 		}
 		return bsdMountHasMountPoint(string(out), mountDir), nil
 	case "windows":
 		return windowsVolumeMounted(mountDir), nil
 	default:
-		out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
+		out, err := exec.CommandContext(ctx, "findmnt", "-n", "-M", mountDir).Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("findmnt %s: timed out", mountDir)
+			}
 			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 				return false, nil
 			}

@@ -28,6 +28,8 @@ Usage:
   drive unmount [flags]    stop the mount and the login item
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     the mount, the upload queue, and this month's cost
+  drive pause [flags]      stop the bytes leaving the device; survives a restart
+  drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
@@ -128,6 +130,10 @@ func main() {
 		err = runUninstall(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "pause":
+		err = runPause(os.Args[2:])
+	case "resume":
+		err = runResume(os.Args[2:])
 	case "cap":
 		err = runCap(os.Args[2:])
 	case "share":

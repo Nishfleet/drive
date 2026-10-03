@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The rest of `drive status`: the lines that say what the drive is doing, not
@@ -115,6 +116,17 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
+	if lines, reason := rcProgressLines(home, on); lines != "" {
+		fmt.Print(lines)
+	} else if reason != "" {
+		fmt.Println(reason)
+	}
+	// Whether the bytes are leaving at all, in the one word the pages use
+	// (src/status.js UPLOAD_LABEL.paused). The answer is rclone's own: the rate
+	// in force, asked over the remote control the mount already binds, with
+	// the marker file beside it so a drive that is paused but not mounted
+	// still says Paused rather than nothing.
+	fmt.Println(transfersLine(home, on))
 	creds, err := LoadCredentials(home)
 	if err != nil {
 		return err
@@ -127,6 +139,163 @@ func runStatus(args []string) error {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
+}
+
+// rcProgressLines renders the per-file progress `drive status` shows (drive
+// issue #100): each file waiting or in flight, its size, its percent and its
+// time left, then the total left. Every number is read from rclone's own rc
+// answers: vfs/queue for what is waiting and how big it is, core/stats for the
+// file in flight (percentage and eta) and the bytes already up. Measured on
+// this host 2026-10-03 with rclone v1.75.1 against a `rclone serve s3`
+// stand-in: a 10 MiB file read back
+// `"name": "shape.bin", "size": 10485760, "uploading": false` from vfs/queue
+// while it waited.
+//
+// The lines are printed only when the mount answers. A mount that is not
+// running is a state the lines above already say, so no second way to report
+// that is invented here; an rc answer this file cannot parse is a named
+// failure rather than a blank line.
+func rcProgressLines(home string, on bool) (string, string) {
+	if !on {
+		return "", ""
+	}
+	c, err := mountRCClient()
+	if err != nil {
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	queue, err := c.ReadQueue(ctx)
+	if err != nil {
+		// A mount that is up but whose remote control has not finished
+		// starting answers nothing; that is the same "unknown" a parse
+		// failure is, and both name their cause rather than printing an
+		// empty queue nobody can tell from a real one.
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	stats, err := c.ReadStats(ctx)
+	if err != nil {
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	return formatRCProgress(queue.Queue, stats), ""
+}
+
+// formatRCProgress is the per-file block `drive status` prints: each queued
+// file's name, size, percent and time left, then the bytes still to send.
+// It is a pure join of rclone's two answers so a unit test can pin the
+// columns without a live mount.
+func formatRCProgress(items []QueueItem, stats Stats) string {
+	inFlight := map[string]Transfer{}
+	for _, t := range stats.Transferring {
+		inFlight[t.Name] = t
+	}
+	var b strings.Builder
+	var left int64
+	for _, item := range items {
+		left += item.Size
+		progress := "waiting"
+		if t, ok := inFlight[item.Name]; ok {
+			left -= t.Bytes
+			progress = fmt.Sprintf("%d%%, %s left", t.Percentage, etaLabel(t.Eta))
+		} else if item.Uploading {
+			progress = sendingLabel
+		}
+		fmt.Fprintf(&b, "  %s  %s  %s\n",
+			uploadFileName(item.Name), fileSizeLabel(item.Size), progress)
+	}
+	fmt.Fprintf(&b, "bytes left: %s\n", fileSizeLabel(left))
+	return b.String()
+}
+
+// sendingLabel is the word for the one file rclone says it is sending but has
+// no percentage for yet.
+const sendingLabel = "sending"
+
+// etaLabel renders rclone's own eta (seconds until the file finishes, null
+// when rclone cannot know) as a person reads it. An unknown eta is "unknown",
+// never a zero that would read as "now".
+func etaLabel(eta *float64) string {
+	if eta == nil {
+		return "unknown"
+	}
+	seconds := int64(*eta)
+	if seconds < 0 {
+		seconds = 0
+	}
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("%dm %02ds", seconds/60, seconds%60)
+	default:
+		return fmt.Sprintf("%dh %02dm", seconds/3600, (seconds%3600)/60)
+	}
+}
+
+// uploadFileName renders the queue entry's name for one column. rclone's
+// vfs/queue gives the path with the remote stripped, so it is already the name
+// the person saved; a newline in it would break the column, so the name is
+// withheld rather than printed across two lines.
+func uploadFileName(name string) string {
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "(name withheld)"
+		}
+	}
+	return name
+}
+
+// fileSizeLabel renders one size for the per-file column, in the KiB the
+// storage side works in.
+func fileSizeLabel(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// transfersLine is the transfers line: whether the bytes are leaving at all.
+// The answer is rclone's own rate when the mount is up (asked over the remote
+// control the mount already binds) and the marker file otherwise, so a drive
+// that is paused but not mounted still says Paused rather than nothing.
+func transfersLine(home string, on bool) string {
+	if !on {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return transfersNotMounted
+	}
+	c, err := mountRCClient()
+	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return "transfers: unknown (" + err.Error() + ")"
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	limit, err := c.BwLimit(ctx)
+	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return "transfers: unknown (" + err.Error() + ")"
+	}
+	if rateIsPaused(limit.Rate) {
+		return "transfers: " + pausedLabel
+	}
+	if limit.Rate == resumeRate {
+		return transfersRunning
+	}
+	// A rate rclone did not set to off is not a full-speed upload. Name it
+	// rather than guessing a number out of it.
+	return "transfers: limited to " + limit.Rate
 }
 
 // VFSMeta is the part of rclone's VFS cache metadata this file reads. rclone

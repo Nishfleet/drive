@@ -597,11 +597,18 @@ type queueEntry struct {
 // and it is rclone's answer to the question, not a second index
 // this product keeps.
 func (c *rcClient) queue(ctx context.Context) ([]queueEntry, error) {
+	params := map[string]string{}
+	if c.fs != "" {
+		params["fs"] = c.fs
+	}
 	var reply struct {
 		Queue []queueEntry `json:"queue"`
 	}
-	if err := c.call(ctx, "vfs/queue", map[string]string{"fs": c.fs}, &reply); err != nil {
+	if err := c.call(ctx, "vfs/queue", params, &reply); err != nil {
 		return nil, err
+	}
+	if reply.Queue == nil {
+		return []queueEntry{}, nil
 	}
 	return reply.Queue, nil
 }
