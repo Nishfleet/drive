@@ -201,14 +201,27 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   );
   // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
   // page as "not in the CLI", never shown as working. A test cannot read the Go
-  // switch, so this pins the two that the docs otherwise lean on.
-  for (const missing of ["restore", "branch"]) {
+  // switch, so this pins the one that the docs otherwise lean on. `branch` used
+  // to be on this list: cmd/drive/main.go now ships branch, branches, diff,
+  // approve and discard, and the agents page documents them (issue #306), so
+  // the gap line was removed and the page must not claim the gap anymore.
+  for (const missing of ["restore"]) {
     assert.match(
       page,
       new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
       `the limits page must say there is no ${missing} command yet`,
     );
   }
+  assert.doesNotMatch(
+    page,
+    /No branch or approve commands/,
+    "branch and approve ship today, so the limits page must not call them a gap",
+  );
+  assert.match(
+    page,
+    /`?drive (branch|approve)`?/,
+    "the limits page must speak of branch and approve as commands that exist",
+  );
 });
 
 test("the changelog opens today and every entry is a real line", () => {

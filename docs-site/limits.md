@@ -56,6 +56,10 @@ would rather you read it here than find out in week three.
   each TB after, so a full drive cannot surprise you.
 - **Agents cannot delete.** An agent key cannot remove a file; only a person
   can, and a person's delete is restorable.
+- **A branch is a real copy.** `drive branch` copies every byte of the folder,
+  so a branch counts against your storage until you `discard` it or `approve`
+  it, and `approve` stops with a list of conflicting files instead of a
+  silent overwrite.
 
 ## Honest notes on the numbers
 
