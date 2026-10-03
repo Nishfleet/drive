@@ -603,7 +603,7 @@ func startLinuxMountDetached(p MountPlan) error {
 	cmd := exec.Command(rclonePath, p.Args()...)
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("rclone mount: %w", err)
 	}
