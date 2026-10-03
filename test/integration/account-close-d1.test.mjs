@@ -43,7 +43,9 @@ test("closing writes closed_at on the real accounts row, and a fresh store reads
 
   const reader = createD1DeviceStore(db, { now: clock.now });
   const seen = await reader.getCloseState(account.id);
-  assert.notEqual(seen, null);
+  if (seen === null) {
+    throw new Error("the store answered from memory: the row is not in D1");
+  }
   assert.equal(seen.state, "closed");
   assert.equal(seen.closedAt, START_MS / 1000);
   assert.equal(seen.email, "schema@example.com");

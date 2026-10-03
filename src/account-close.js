@@ -12,7 +12,7 @@ import { accountPrefix } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
-/** @typedef {ReturnType<import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
+/** @typedef {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
 
 export const CLOSE_ENDPOINT = "/api/account/close";
