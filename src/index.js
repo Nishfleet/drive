@@ -589,7 +589,7 @@ export default {
    *   in the runtime's fetch
    * @param {typeof fetch} [fetchImpl] the Dodo push's fetch, injectable for
    *   the same reason: a test records the ingest request instead of reaching
-   *   test.dodopayments.com. Production takes the platform's fetch.
+   *   DODO_TEST_INGEST_URL (src/dodo.js). Production takes the platform's fetch.
    * @returns {Promise<void>}
    */
   async scheduled(event, env, context, store = storeFor(env), fetchImpl = globalThis.fetch) {

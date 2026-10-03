@@ -66,12 +66,12 @@
 //   - The email binding. Only the token-gated internal send route uses it
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
-//   - The Dodo push's key (DODO_PAYMENTS_API_KEY). It is a secret, so the
-//     argument above holds, and it adds a second reason of its own: the
-//     billing push runs on a cron, and no probe can roll a metered hour to
-//     feed it. A missing key makes pushBillingHours skip the ingest
-//     (src/dodo.js), so what the key protects is a billing push that did
-//     not happen, not a route that fails closed by name.
+//   - `DODO_PAYMENTS_API_KEY`, the Dodo push's key (drive issue #51). It is a
+//     secret, so the argument above holds, and it adds a second reason of its
+//     own: the billing push runs on a cron, and no probe can roll a metered
+//     hour to feed it. A missing key makes pushBillingHours skip the ingest
+//     (src/dodo.js), so what the key protects is a billing push that did not
+//     happen, not a route that fails closed by name.
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read

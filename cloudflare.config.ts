@@ -101,31 +101,30 @@ export default defineConfig({
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the
       // runtime knows to inject it; a missing secret produces a warning at
-      // dev/deploy, and the handler fails closed with 503 until it is set. Set
-      // it once, the same way the email token is set (it persists across
-      // deploys):
-      //   cf workers secrets update METER_EVENT_TOKEN --type secret_text \
-      //     --text <token> --worker drive-pricing
+      // dev/deploy, and the handler fails closed with 503 until it is set.
+      // Set it once, the same way the email token is set (it persists across
+      // deploys) -- see the note below both secret bindings for the two ways
+      // to do that without the value ever sitting in argv.
       // (--type is required: cf refuses the update without it. #189: the
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       //
-      // The value never goes in argv, where /proc/<pid>/cmdline and `ps`
-      // read it for the life of the call; the same rule the repo already
-      // states for the storage secret (docs/build-spec.md). Pipe it in
-      // instead, or hand deploy a 0600 file it names only by path:
-      //   echo dodo_... | cf workers secrets update METER_EVENT_TOKEN --type secret_text
-      //   cf deploy --prebuilt --secrets-file /root/... (a 0600 NAME=value file)
+      // Both secrets below are set the same way, and the value never goes in
+      // argv, where /proc/<pid>/cmdline and `ps` read it for the life of the
+      // call -- the same rule docs/build-spec.md already states for the
+      // storage secret. Preferred: a 0600 NAME=value file, named to deploy
+      // only by path, which keeps it out of argv and out of shell history:
+      //   cf deploy --prebuilt --secrets-file /root/drive-secrets.env
+      // Or pipe it in, which keeps it out of argv but puts it in the shell
+      // history (use a placeholder you then overwrite, not the key):
+      //   echo <paste-key-here> | cf workers secrets update <NAME> --type secret_text
       METER_EVENT_TOKEN: bindings.secret(),
       // The Dodo billing push (drive issue #51) reads
-      // DODO_PAYMENTS_API_KEY from a Worker secret, the same
-      // way METER_EVENT_TOKEN above does. A missing secret makes
+      // `DODO_PAYMENTS_API_KEY` from a Worker secret, the same
+      // way `METER_EVENT_TOKEN` above does. A missing secret makes
       // pushBillingHours skip the ingest rather than failing the
       // meter's rollup (src/dodo.js), so a deploy that has not
-      // set it still rolls hours. Set it once, the same way the
-      // other secrets are set (it persists across deploys):
-      //   echo dodo_... | cf workers secrets update DODO_PAYMENTS_API_KEY --type secret_text
-      //   cf deploy --prebuilt --secrets-file /root/... (a 0600 NAME=value file)
+      // set it still rolls hours.
       DODO_PAYMENTS_API_KEY: bindings.secret(),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
