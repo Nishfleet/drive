@@ -7,9 +7,11 @@
 // never the raw meter — and the event's metadata carries the invoice's three
 // dollar lines, including "Free credit −$1.00".
 //
-// Live mode is not reachable from this module: the host is the test server
-// Dodo's own docs name, and there is no option that points anywhere else.
-// Switching to live is Nish's call. No card is taken here.
+// The Dodo host is configurable via DODO_BASE_URL (env, read in src/index.js),
+// defaulting to the test server. Switching to live is Nish's call, and the
+// bearer key only leaves for a https dodopayments.com host — see
+// resolveIngestUrl() (drive issue #323, owner comment 2026-10-03T06:35Z). No
+// card is taken here.
 //
 // Catch-up hours omit `timestamp`. Dodo's ingest docs (test.dodopayments.com
 // /events/ingest, "Time Validation"): a timestamp older than 1 hour is
@@ -36,7 +38,12 @@
 import { monthBillCents } from "./billing.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
-export const DODO_TEST_INGEST_URL = "https://test.dodopayments.com/events/ingest";
+// The test-mode host and ingest path are split so the host can be overridden
+// by DODO_BASE_URL while the path stays fixed. The default stays the test
+// server; switching to live is a single env var that Nish sets.
+export const DODO_TEST_BASE_URL = "https://test.dodopayments.com";
+export const DODO_INGEST_PATH = "/events/ingest";
+export const DODO_TEST_INGEST_URL = `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`;
 export const DODO_EVENT_NAME = "drive.usage";
 
 const INGEST_BATCH = 1000;
@@ -148,6 +155,35 @@ export async function billingPushGap(db, options = {}) {
 }
 
 /**
+ * Resolve the ingest URL from an optional base URL override. When
+ * `baseUrl` is absent or empty, the test-mode host is used. A provided
+ * base URL must be https and end in dodopayments.com — the bearer API
+ * key travels to whatever host this names, so an https scheme and Dodo's
+ * own host pin prevent a misconfigured env var from leaking the key over
+ * plaintext HTTP or to an unrelated server. A trailing slash is stripped
+ * so the path always joins cleanly to /events/ingest.
+ * @param {string|undefined} baseUrl
+ * @returns {string}
+ */
+export function resolveIngestUrl(baseUrl) {
+  if (baseUrl === undefined || baseUrl === "") {
+    return DODO_TEST_INGEST_URL;
+  }
+  if (typeof baseUrl !== "string") {
+    throw new TypeError(`DODO_BASE_URL must be a string, got ${String(baseUrl)}`);
+  }
+  const host = baseUrl.replace(/\/+$/, "");
+  const matched = host.match(/^https:\/\/(.+)$/);
+  if (!matched) {
+    throw new TypeError(`DODO_BASE_URL must use https, got ${host}`);
+  }
+  if (!matched[1].endsWith("dodopayments.com")) {
+    throw new TypeError(`DODO_BASE_URL must be a dodopayments.com host, got ${matched[1]}`);
+  }
+  return `${host}${DODO_INGEST_PATH}`;
+}
+
+/**
  * Dodo's idempotency key for one account-hour. The same hour always mints
  * the same id, so a retried push is ignored on Dodo's side as well as in
  * billing_pushes. Dodo's ingest docs: "Event Id acts as an idempotency key.
@@ -170,6 +206,7 @@ export function billingEventId(accountId, hour) {
 /**
  * @typedef {{
  *   apiKey?: string,
+ *   baseUrl?: string,
  *   fetch?: typeof fetch,
  *   now?: number|Date|string,
  * }} PushOptions
@@ -195,6 +232,7 @@ export async function pushBillingHours(db, hours, options = {}) {
   if (apiKey.length === 0) {
     return { pushed: 0 };
   }
+  const ingestUrl = resolveIngestUrl(options.baseUrl);
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new TypeError("pushBillingHours needs fetch");
@@ -279,6 +317,7 @@ export async function pushBillingHours(db, hours, options = {}) {
     const batch = pending.slice(offset, offset + INGEST_BATCH);
     await ingestEvents(
       fetchImpl,
+      ingestUrl,
       apiKey,
       batch.map((item) => item.event),
     );
@@ -439,11 +478,12 @@ async function customersForHour(db, hour) {
 
 /**
  * @param {typeof fetch} fetchImpl
+ * @param {string} ingestUrl
  * @param {string} apiKey
  * @param {Array<Record<string, unknown>>} events
  */
-async function ingestEvents(fetchImpl, apiKey, events) {
-  const response = await fetchImpl(DODO_TEST_INGEST_URL, {
+async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
+  const response = await fetchImpl(ingestUrl, {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
