@@ -518,6 +518,16 @@ var errStageTooLarge = errors.New("the save grew past the staging cap while it w
 // bytes as read through the mount, which is what this device saved, so
 // the comparison with the object's hash is a comparison of the same
 // bytes.
+//
+// The hash is md5 because that is the hash the other side of the
+// comparison already has: operations/hashsum with hashType md5 reads the
+// content hash rclone records for the object, which on S3 is the ETag. A
+// stronger algorithm would answer a different question and the two halves
+// would never compare equal. It is an identity check between two copies of
+// the same bytes, not a signature, so MD5's collision weakness is not the
+// property being relied on — the copy written to storage is verified by
+// reading the written object back and comparing its hash (claim), and an
+// attacker who could stage bytes here can already write to the drive.
 func copyFileWithHash(src, dst, stagingRoot string) (string, string, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -528,6 +538,11 @@ func copyFileWithHash(src, dst, stagingRoot string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// MD5 is the content hash rclone records for the object (S3's ETag), so
+	// it is the only hash both halves of the comparison can answer; this is
+	// an identity check between two copies of the same bytes, not a
+	// signature (see copyFileWithHash).
+	// nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-md5
 	h := md5.New()
 	copied, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(in, conflictStageMax+1))
 	if err != nil {
