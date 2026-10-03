@@ -14,8 +14,15 @@ the live site.
   with the latest released version by the same `go install` command a person
   installs with, and `drive version` prints the version the binary was built
   and installed at, so an update is visible.
-
-## 2026-10-02
+- Windows gets the same `drive mount` the Mac and Linux have had: `rclone
+  mount` with WinFsp as the driver, mounted at the first free drive letter from
+  D: up, started at login by a stock Task Scheduler task (no helper scripts),
+  with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
+  branch. A missing WinFsp is an error that points at reinstalling Drive.
+- `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
+  detach the letter, and find a stale mount by reading the letters the running
+  rclone processes hold, so a letter rclone is still holding is never reported
+  as stopped.
 
 - The Benchmarks page: every speed scenario the suite measures, next to the
   published rival figure for the same case, with losses labelled losses. Linux
