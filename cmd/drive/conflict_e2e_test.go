@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	}
 	root := t.TempDir()
 	cfg, standin := standinOn(t, root, "u/conflict")
-	restart := standinRestart{serve: standin, root: root, cfg: cfg}
+	restart := &standinRestart{serve: standin, root: root, cfg: cfg}
 	// The device on which the conflict guard reads its own upload queue. The
 	// mount uses the same remote control for the fill, the guard and status.
 	t.Setenv(deviceEnvName, "mac")
@@ -243,7 +244,7 @@ type standinRestart struct {
 }
 
 // stop takes the storage away.
-func (r standinRestart) stop() error {
+func (r *standinRestart) stop() error {
 	if err := r.serve.Process.Kill(); err != nil {
 		return fmt.Errorf("take the storage away: %w", err)
 	}
@@ -255,8 +256,19 @@ func (r standinRestart) stop() error {
 }
 
 // start brings the same storage back, on the same endpoint.
-func (r standinRestart) start(t *testing.T) error {
-	port := strings.TrimPrefix(r.cfg.Endpoint, "http://127.0.0.1:")
+func (r *standinRestart) start(t *testing.T) error {
+	// The endpoint's own host and port are parsed rather than trimmed off
+	// a prefix, because a trimmed string that is not an address produces
+	// an rclone that never listens and a test that waits for a port that
+	// was never the port being served.
+	u, err := url.Parse(r.cfg.Endpoint)
+	if err != nil {
+		return fmt.Errorf("parse the stand-in endpoint %s: %w", r.cfg.Endpoint, err)
+	}
+	port := u.Port()
+	if port == "" {
+		return fmt.Errorf("the stand-in endpoint %s carries no port", r.cfg.Endpoint)
+	}
 	serve := exec.Command("rclone", "serve", "s3", filepath.Join(r.root, "data"),
 		"--auth-key", r.cfg.AccessKey+","+r.cfg.SecretKey,
 		"--addr", "127.0.0.1:"+port, "--log-level", "ERROR")

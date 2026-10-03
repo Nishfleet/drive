@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,12 +112,22 @@ func TestConflictDeviceFromName(t *testing.T) {
 // the queue, the objects and the copies are plain maps, so a test says exactly
 // which state each pass sees.
 type fakeConflictBackend struct {
-	pending  []queueEntry       // what vfs/queue reports
-	objects  map[string]string  // remote path -> md5
-	exports  map[string]string  // staging path -> the md5 it was staged with
-	copied   []string           // the remote paths written as conflict copies
+	pending   []queueEntry      // what vfs/queue reports
+	objects   map[string]string // remote path -> md5
+	exports   map[string]string // staging path -> the md5 it was staged with
+	copied    []string          // the remote paths written as conflict copies
 	refreshed int
-	failWith error
+	failWith  error
+	// clobber makes one copy land at a name that holds another mount's
+	// save, which is the race two mounts answering to the same device
+	// name can produce: both find the name free in the same instant.
+	clobber bool
+	// clobbered is set once the one clobber has happened, so a retry
+	// under the next number carries this device's own bytes.
+	clobbered bool
+	// alwaysClobber clobbers every name, which is the case where the
+	// guard must give up rather than claim another writer's save.
+	alwaysClobber bool
 }
 
 func newFakeBackend() *fakeConflictBackend {
@@ -143,15 +156,49 @@ func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string
 	return f.objects[name], nil
 }
 
-func (f *fakeConflictBackend) copyLocalToRemote(_ context.Context, _, srcRemote, dstRemote string) error {
+// copyLocalToRemote models rclone's operations/copyfile: the object that
+// lands at dstRemote is the md5 of the staged file, which is real bytes on
+// disk, because the guard copied this device's save out of the mount while
+// its upload was queued. A test that wants to say the staged bytes are
+// something else sets exports, which is how a foreign or corrupt copy is
+// modelled; clobber is how another mount's save at the same name is modelled.
+func (f *fakeConflictBackend) copyLocalToRemote(_ context.Context, stagingRoot, srcRemote, dstRemote string) error {
 	if f.failWith != nil {
 		return f.failWith
 	}
+	if f.clobber && (f.alwaysClobber || !f.clobbered) {
+		f.clobbered = true
+		f.objects[dstRemote] = "another-mounts-save"
+		f.copied = append(f.copied, dstRemote)
+		return nil
+	}
 	if hash, ok := f.exports[srcRemote]; ok {
 		f.objects[dstRemote] = hash
+		f.copied = append(f.copied, dstRemote)
+		return nil
 	}
+	sum, err := hashFile(filepath.Join(stagingRoot, filepath.FromSlash(srcRemote)))
+	if err != nil {
+		return fmt.Errorf("read the staged copy of %s: %w", srcRemote, err)
+	}
+	f.objects[dstRemote] = sum
 	f.copied = append(f.copied, dstRemote)
 	return nil
+}
+
+// hashFile is the md5 of a real file, so a stand-in copy of real staged
+// bytes carries the hash those bytes have.
+func hashFile(p string) (string, error) {
+	src, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	sum := md5.New()
+	if _, err := io.Copy(sum, src); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
@@ -229,6 +276,107 @@ func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 	// The path stays recorded on the result, so a log says what happened.
 	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want || res.Claimed[0].LosingPath != "report.txt" {
 		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+// TestConflictGuardNamesASkipOnce proves a save the rule leaves alone is
+// named on the pass that first sees it and not again while it stays in the
+// queue: a skip line every half second for the life of an upload is not a
+// thing a person can read.
+func TestConflictGuardNamesASkipOnce(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(mountDir, "movie.mov")
+	if err := os.WriteFile(big, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: conflictStageMax + 1}}
+	first, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if len(first.Skipped) != 1 || first.Skipped[0].Remote != "movie.mov" {
+		t.Fatalf("Skipped = %+v, want movie.mov", first.Skipped)
+	}
+	second, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(second.Skipped) != 0 {
+		t.Errorf("named the same skip again: %+v", second.Skipped)
+	}
+	if len(f.copied) != 0 {
+		t.Errorf("wrote %v for a save it had skipped", f.copied)
+	}
+	// The queue has released the path, so the entry goes with it: the map
+	// does not grow on a mount that never stops.
+	f.pending = nil
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if len(g.seen) != 0 {
+		t.Errorf("still watches %v", g.seen)
+	}
+}
+
+// TestConflictGuardRetriesANameAnotherMountTook proves the conflict copy is
+// this device's own save, not whoever wrote the name last: two mounts
+// answering to the same device name can look at the same free name in the
+// same instant, so the copy is read back and a name holding another writer's
+// bytes is retried under the next number.
+func TestConflictGuardRetriesANameAnotherMountTook(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	f.clobber = true
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = "the-other-machines-save"
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the other device landed: %v", err)
+	}
+	want := "report (conflict, mac 2).txt"
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want {
+		t.Fatalf("Claimed = %+v, want %s", res.Claimed, want)
+	}
+	if got := f.objects[want]; got != md5Hex("this-machines-save\n") {
+		t.Errorf("%s holds %q, want this device's own bytes", want, got)
+	}
+	// The name the other mount took is not this device's claim.
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+}
+
+// TestConflictGuardGivesUpWhenEveryNameIsTaken proves a mount that races with
+// every name says so, rather than claiming a second device's save under this
+// device's name.
+func TestConflictGuardGivesUpWhenEveryNameIsTaken(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "this-machines-save\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	f.clobber = true
+	f.alwaysClobber = true
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = "the-other-machines-save"
+	_, err := g.pass(context.Background(), f)
+	if err == nil {
+		t.Fatal("claimed a conflict name that holds another writer's bytes")
+	}
+	if !strings.Contains(err.Error(), "another writer") {
+		t.Errorf("the error did not name the race: %v", err)
 	}
 }
 
@@ -325,7 +473,7 @@ func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 			t.Fatalf("pass %d claimed a conflict while the object was unchanged", i)
 		}
 	}
-// Once the budget is spent, the path is no longer watched; it is not a
+	// Once the budget is spent, the path is no longer watched; it is not a
 	// conflict and it must not grow the map on a mount that never stops.
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass: %v", err)
@@ -359,8 +507,11 @@ func TestConflictGuardSkipsASaveTooLargeToStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0] != "movie.mov" {
-		t.Errorf("Skipped = %v, want [movie.mov]", res.Skipped)
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
+		t.Errorf("Skipped = %+v, want the save that was left alone", res.Skipped)
+	}
+	if len(res.Skipped) == 1 && res.Skipped[0].Reason == "" {
+		t.Error("a skip with no reason is a lost save nobody was told about")
 	}
 	// A skipped save is not a watched save: the guard never claims it.
 	f.pending = nil
@@ -379,13 +530,23 @@ func TestConflictGuardSkipsASaveTooLargeToStage(t *testing.T) {
 func TestConflictGuardReportsAFailingPass(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "a save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 7}}
-	f.failWith = errConflictTestQueue
-	_, err := g.pass(context.Background(), f)
-	if err == nil {
-		t.Fatal("a failing pass reported no error")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
 	}
-	if !strings.Contains(err.Error(), "read the upload queue") {
+	if len(g.seen) != 1 {
+		t.Fatalf("the staged save is not watched: %v", g.seen)
+	}
+	// A failing queue read is an error, and it must not lose the save this
+	// device already staged: the next good pass still decides it, so a
+	// pass that cannot read its queue cannot silently strand one.
+	f.failWith = errConflictTestQueue
+	if _, err := g.pass(context.Background(), f); err == nil {
+		t.Fatal("a failing pass reported no error")
+	} else if !strings.Contains(err.Error(), "read the upload queue") {
 		t.Errorf("the error did not name what failed: %v", err)
+	}
+	if len(g.seen) != 1 {
+		t.Errorf("a failed queue read lost the staged save: %v", g.seen)
 	}
 }
 
@@ -446,6 +607,46 @@ func TestCopyFileWithHashStagesTheBytes(t *testing.T) {
 	}
 	if hash != md5Hex("staged bytes\n") {
 		t.Errorf("hash = %q, want the md5 of the staged bytes", hash)
+	}
+}
+
+// TestCopyFileWithHashRefusesASaveThatGrewPastTheCap proves a save that
+// grows past the cap between the size check and the copy is a named skip
+// rather than a staged copy of truncated bytes with a hash of its own: a
+// conflict copy made of those would be a corrupt version of the save it
+// exists to keep.
+func TestCopyFileWithHashRefusesASaveThatGrewPastTheCap(t *testing.T) {
+	root := t.TempDir()
+	mount := filepath.Join(root, "Drive")
+	staging := ConflictStagingDir(root)
+	if err := os.MkdirAll(mount, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(mount, "movie.mov")
+	out, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A sparse file of cap+1 bytes reads back as cap+1 zero bytes, which
+	// is exactly what a save that grew past the cap is at the copy.
+	if err := out.Truncate(conflictStageMax + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	staged, hash, err := copyFileWithHash(src, filepath.Join(staging, "movie.mov"), staging)
+	if !errors.Is(err, errStageTooLarge) {
+		t.Fatalf("copyFileWithHash over the cap = (%q, %q, %v), want the named skip", staged, hash, err)
+	}
+	if staged != "" || hash != "" {
+		t.Errorf("staged (%q, %q) for a save that is over the cap", staged, hash)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "movie.mov")); !os.IsNotExist(err) {
+		t.Errorf("the truncated copy is still in the staging dir: %v", err)
 	}
 }
 

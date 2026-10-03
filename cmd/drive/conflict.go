@@ -53,30 +53,38 @@ const conflictMarker = "conflict"
 // runs of them collapse to one, and leading and trailing separators go. The
 // result is capped, because a filename is.
 //
-// It is deterministic and it does not conceal anything: "John's Mac" is
-// "John-s-Mac", so the device is still the one that lost the save.
+// The mapping is one-way, and that is the honest word for it: nothing here
+// claims two device names cannot become the same filename, so a name is a
+// device's own words for itself and never a unique key. "John's Mac" is
+// "John-s-Mac" and "johns-mac" would be the same, so a person whose two
+// devices sanitize alike is told to rename one, exactly as a duplicate
+// hostname is a problem on any network.
 func SanitizeDevice(name string) string {
 	var b strings.Builder
+	b.Grow(len(name))
+	lastDash := false
 	for _, r := range strings.TrimSpace(name) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
 			r == '.', r == '-', r == '_':
 			b.WriteRune(r)
+			// Only a written separator starts a run, so the next one is
+			// dropped instead of written: one pass collapses them all.
+			lastDash = r == '-'
 		default:
 			// Whitespace is the one separator that reads well in a
 			// filename, so it becomes a dash rather than being dropped:
 			// "Mac Studio" is "Mac-Studio". Everything else — '/', ':',
 			// '*', '?', quotes, emoji — is replaced rather than dropped
-			// too, so two device names cannot collapse into one.
+			// too, so nothing is silently thrown away.
+			if lastDash || b.Len() == 0 {
+				continue
+			}
 			b.WriteRune('-')
+			lastDash = true
 		}
 	}
-	out := b.String()
-	// Collapse runs of dashes and trim them, so "mac---" is "mac".
-	for strings.Contains(out, "--") {
-		out = strings.ReplaceAll(out, "--", "-")
-	}
-	out = strings.Trim(out, "-._")
+	out := strings.Trim(b.String(), "-._")
 	if len(out) > maxDeviceNameLen {
 		out = out[:maxDeviceNameLen]
 	}

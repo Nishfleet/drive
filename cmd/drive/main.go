@@ -252,6 +252,16 @@ func runMount(args []string) error {
 		_ = os.Setenv(deviceEnvName, device)
 	}
 	if strings.TrimSpace(rcAddr) != "" {
+		// A remote-control address that is not loopback is refused here
+		// rather than silently replaced by the shipped one: rclone's
+		// remote control is unauthenticated by design, so a value that
+		// would bind it off this machine is a named failure at the
+		// operator's own command. The background login item still
+		// falls back, because it is not a command and cannot answer.
+		if !IsLoopbackAddr(rcAddr) {
+			return fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
+				"is unauthenticated, so it binds %s only", rcAddr, RCAddr())
+		}
 		_ = os.Setenv(rcAddrEnvName, rcAddr)
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun, driveLetter)

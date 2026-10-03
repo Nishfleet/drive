@@ -439,7 +439,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// own command rather than a conflict file with an unreadable name.
 	if p.Device == "" {
 		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
-		"this mount can carry in a conflict filename")
+			"this mount can carry in a conflict filename")
 	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
