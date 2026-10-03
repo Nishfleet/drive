@@ -443,6 +443,7 @@ test("the cron reports the skipped push in the log, and does not throw over it",
     sizeBytes: BYTES_PER_GB,
     createdAt: midnight(),
   });
+  /** @type {unknown[][]} */
   const logged = [];
   const originalError = console.error;
   console.error = (...args) => logged.push(args);
@@ -487,18 +488,27 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     sizeBytes: BYTES_PER_GB,
     createdAt: midnight(),
   });
-  const failingDetectorDb = {
-    prepare(sql) {
-      if (String(sql).includes("FROM billing_pushes b")) {
-        throw new Error("D1 is unavailable");
-      }
-      return db.prepare(sql);
-    },
-    batch(...statements) {
-      return db.batch(...statements);
-    },
-  };
+  const failingDetectorDb = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      /** @param {string} sql */
+      prepare(sql) {
+        if (String(sql).includes("FROM billing_pushes b")) {
+          throw new Error("D1 is unavailable");
+        }
+        return db.prepare(sql);
+      },
+      /**
+       * @template T
+       * @param {D1PreparedStatement[]} statements
+       * @returns {Promise<D1Result<T>[]>}
+       */
+      batch(statements) {
+        return db.batch(statements);
+      },
+    })
+  );
   const recorder = recordingFetch();
+  /** @type {unknown[][]} */
   const logged = [];
   const originalError = console.error;
   const originalLog = console.log;
