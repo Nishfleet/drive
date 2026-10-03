@@ -201,14 +201,18 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   );
   // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
   // page as "not in the CLI", never shown as working. A test cannot read the Go
-  // switch, so this pins the two that the docs otherwise lean on.
-  for (const missing of ["restore", "branch"]) {
-    assert.match(
-      page,
-      new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
-      `the limits page must say there is no ${missing} command yet`,
-    );
-  }
+  // switch, so this pins the one the docs otherwise lean on, and proves the
+  // branch family that did ship is not still listed as missing.
+  assert.match(
+    page,
+    /No `restore` command yet/,
+    "the limits page must say there is no restore command yet",
+  );
+  assert.doesNotMatch(
+    page,
+    /No branch or approve commands/,
+    "the branch commands ship in the CLI, so the limits page must not say they do not",
+  );
 });
 
 test("the changelog opens today and every entry is a real line", () => {

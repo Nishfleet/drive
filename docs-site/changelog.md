@@ -32,6 +32,12 @@ the live site.
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported
   as stopped.
+- `drive offline <path>` and `drive online`: keep a file or folder on this
+  computer before you lose the network, see what is kept with
+  `drive offline --list`, and let the disk go again with `drive online`. The
+  offline list is on `drive status`.
+- `drive pause` and `drive resume`: hold new saves on this computer and send
+  nothing, and the hold survives a restart.
 - Windows installs from an MSI built with the stock WiX toolchain: it puts
   `drive.exe` and rclone on PATH, brings WinFsp in through WinFsp's own
   package dependency (never a vendored copy), registers the logon task, and

@@ -58,6 +58,11 @@ export DRIVE_S3_ACCESS_KEY_ID=...
 export DRIVE_S3_SECRET_ACCESS_KEY=...
 ```
 
+The first three say where your folder is and are not secrets. The last two,
+`DRIVE_S3_ACCESS_KEY_ID` and `DRIVE_S3_SECRET_ACCESS_KEY`, are the key pair:
+the secret one is never a flag, and `drive mount --secret-key-stdin` reads it
+from stdin when a script needs it.
+
 ## 3. Mount
 
 ```sh

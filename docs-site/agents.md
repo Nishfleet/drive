@@ -23,6 +23,29 @@ drive agents connect claude
 drive agents revoke claude
 ```
 
+## A branch an agent works in
+
+Give an agent a copy of a folder so its work sits somewhere you can look at it
+before it touches your files:
+
+```sh
+drive branch <folder>     # copy the folder into a branch
+drive branches           # list the branches and how many files changed
+drive diff <branch>       # the files added, changed or removed in it
+drive approve <branch>    # copy the branch's changes back into the folder
+drive discard <branch>    # throw the branch away; the folder is untouched
+```
+
+The branch lives under `.branches/<name>/` inside your own account folder. Its
+key is scoped to that one path and is a branch key, so it can list, read and
+write there and it cannot remove anything — the same rule every agent key
+follows. Your other files are outside its reach, and only you can approve the
+copy back.
+
+Stop a tool with `drive agents revoke <tool>`, using the tool's own name
+(`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
+connected, because each one is connected on its own.
+
 ## What an agent key can do
 
 An agent tool gets its own key, and the key is deliberately weaker than the key
