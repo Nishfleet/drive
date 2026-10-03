@@ -66,14 +66,23 @@
     -->
     <Property Id="LOGIN_TASK_NAME" Value="drive-mount" />
     <!--
-      Register the login task at install: `schtasks /Create /F /SC ONLOGON` runs
-      the same `drive.exe mount` command `drive mount` would, so the stock Task
-      Scheduler tool (the one cmd/drive/windows.go already calls) is the only
-      thing that writes it. SetProperty builds the command line, so
-      [System64Folder] and [#drive.exe] are formatted at run time rather than
-      baked in at build time.
+      The login task. Both actions are the stock schtasks.exe the CLI itself
+      uses (cmd/drive/windows.go), run as a deferred elevated custom action:
+      the task is a per-machine object, so it needs the system's own privilege
+      and not the installing user's. WixQuietExec64 is the Util extension's
+      own quiet-exec custom action, so no installer code of ours runs at
+      install time and the tool's own output is in the log.
+
+      /RU and /IT matter. A deferred action runs as LocalSystem, and a logon
+      task with no /RU runs as the account that created it, so without them
+      the drive would mount as SYSTEM with SYSTEM's home and no person's
+      keys. /RU is the person who ran the installer and /IT runs the task only
+      in that person's interactive session, which is what `drive mount` does
+      when a person runs it themselves (drive#153's schtasks /Create /SC
+      ONLOGON).
     -->
-    <SetProperty Id="CreateLoginTask" Value="&quot;[System64Folder]schtasks.exe&quot; /Create /F /SC ONLOGON /TN drive-mount /TR &quot;&quot;[#drive.exe]&quot; mount&quot;" Sequence="execute" Before="CreateLoginTask" />
+    <SetProperty Id="DRIVE_LOGON_USER" Value="[LogonUser]" Sequence="execute" Before="CreateLoginTask" />
+    <SetProperty Id="CreateLoginTask" Value="&quot;[System64Folder]schtasks.exe&quot; /Create /F /SC ONLOGON /TN drive-mount /RU &quot;[DRIVE_LOGON_USER]&quot; /IT /TR &quot;&quot;[#drive.exe]&quot; mount&quot;" Sequence="execute" Before="CreateLoginTask" />
     <SetProperty Id="DeleteLoginTask" Value="&quot;[System64Folder]schtasks.exe&quot; /Delete /F /TN drive-mount" Sequence="execute" Before="DeleteLoginTask" />
     <CustomAction Id="CreateLoginTask" DllEntry="WixQuietExec64" Execute="deferred" Return="check" Impersonate="no" BinaryRef="Wix4UtilCA_X64" />
     <CustomAction Id="DeleteLoginTask" DllEntry="WixQuietExec64" Execute="deferred" Return="check" Impersonate="no" BinaryRef="Wix4UtilCA_X64" />

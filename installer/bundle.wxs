@@ -34,6 +34,17 @@
     UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567891"
     Compressed="yes">
 
+    <!-- WiX's own standard bootstrapper application (the Bal extension). A
+         bundle needs one; /quiet skips it, which is the route winget and a
+         scripted install take, and it is what a person sees if they double
+         click drive-setup.exe. -->
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+        Theme="hyperlinkLicense"
+        LicenseUrl="https://github.com/Nishfleet/drive/blob/main/docs-site/faq.md" />
+    </BootstrapperApplication>
+
     <Chain>
       <!--
         WinFsp: the driver that turns an rclone mount into a Windows drive
@@ -42,7 +53,29 @@
 
         Compressed="no" keeps WinFsp's MSI as a payload that the bundle
         downloads at install time rather than embedding a second vendor's
-        binary in ours: this repository carries the URL, not the file.
+        binary in ours: this repository carries the URL, not the file. The
+        price of that is a payload Burn fetches from the internet, so its
+        integrity has to be pinned somewhere.
+
+        Two pins, neither of them this element. (1) Burn validates the
+        Authenticode signature of a downloaded payload and refuses one that
+        does not validate, so SuppressSignatureValidation is left off on
+        purpose: WinFsp ships a signed MSI and Burn checks the signature.
+        (2) installer/windows-msi.yml checks the downloaded file against the
+        digest committed beside it (WINFSP_MSI_SHA256) before the bundle is
+        built. WiX v4's MsiPackage has no Hash or HashAlgorithm attribute
+        (the compiler rejects both), so the digest cannot live here; that is
+        why it is in the job and in test/installer.test.mjs instead.
+
+        Permanent="no": WinFsp is a normal package of the chain, so
+        uninstalling the bundle uninstalls it. (A WinFsp that was already on
+        the machine before the bundle ran is detected, not installed, and Burn
+        leaves a detected package alone on uninstall.)
+
+        There is one WinFsp MSI per release, and it carries the x86, x64 and
+        arm64 drivers (its own cab holds winfsp-x86.dll, winfsp-x64.dll and
+        winfsp-a64.dll), so one payload serves an x64 install. That is the
+        same MSI cmd/drive/windows.go's driver check was written against.
       -->
       <MsiPackage
         Id="WinFsp"

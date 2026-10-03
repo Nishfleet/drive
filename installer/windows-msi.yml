@@ -51,8 +51,14 @@ jobs:
       RCLONE_VERSION: "v1.75.0"
       # WinFsp's own release, pinned to a tag. The MSI is downloaded from
       # WinFsp's own GitHub release at build time and never vendored.
+      # WINFSP_MSI_SHA256 is the digest of that exact asset, checked after the
+      # download: WiX v4's MsiPackage has no Hash attribute (the compiler
+      # rejects it), so this is where the payload's integrity is pinned, and
+      # Burn's own Authenticode check on the downloaded MSI is the second pin.
+      # A WinFsp upgrade is a visible diff of both values.
       WINFSP_VERSION: "2.1.25156"
       WINFSP_MSI_URL: "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
+      WINFSP_MSI_SHA256: "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
       INSTALL_DIR: 'C:\Program Files\Drive'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,12 +81,14 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
 
       # The Util extension is what the Environment (PATH) element and the
-      # WixQuietExec64 custom action live in. wix extension add puts it in the
-      # extension cache that `wix build` reads, which is how -ext finds it.
-      - name: Restore the WiX Util extension
+      # WixQuietExec64 custom action live in; Bal is the standard bootstrapper
+      # application a bundle needs. wix extension add puts both in the
+      # extension cache that `wix build` reads, which is how -ext finds them.
+      - name: Restore the WiX extensions
         shell: pwsh
         run: |
           wix extension add -g WixToolset.Util.wixext/4.0.1
+          wix extension add -g WixToolset.Bal.wixext/4.0.1
           wix extension list
 
       - name: Build drive.exe for Windows
@@ -95,13 +103,17 @@ jobs:
           $exe = Join-Path "rclone\rclone-${{ env.RCLONE_VERSION }}-windows-amd64" "rclone.exe"
           if (-not (Test-Path $exe)) { throw "rclone.exe was not in the vendor's zip" }
           Copy-Item $exe installer\rclone.exe
-          & $exe.FullName version
+          & $exe version
 
-      - name: Download WinFsp's own MSI
+      - name: Download WinFsp's own MSI, and check its digest
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "${{ env.WINFSP_MSI_URL }}" -OutFile installer\winfsp.msi
-          if (-not (Test-Path installer\winfsp.msi)) { throw "WinFsp's MSI did not download" }
+          $got = (Get-FileHash -Path installer\winfsp.msi -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne "${{ env.WINFSP_MSI_SHA256 }}") {
+            throw "WinFsp's MSI digest is $got, not the pinned one"
+          }
+          Write-Host "winfsp.msi sha256: $got"
 
       - name: Build the Drive MSI
         shell: pwsh
@@ -115,7 +127,8 @@ jobs:
       - name: Build the Drive Setup bundle (Drive + WinFsp)
         shell: pwsh
         run: |
-          wix build installer\bundle.wxs -o installer\drive-setup.exe -arch x64
+          wix build installer\bundle.wxs -o installer\drive-setup.exe -arch x64 `
+            -ext WixToolset.Bal.wixext
           if (-not (Test-Path installer\drive-setup.exe)) { throw "the bundle did not build" }
           Write-Host "drive-setup.exe: $((Get-Item installer\drive-setup.exe).Length) bytes"
 
@@ -236,11 +249,63 @@ jobs:
           if ($fail) { exit 1 }
           Write-Host "uninstall clean: no install dir, no task, no PATH entry"
 
-      - name: Prove WinFsp survived Drive's uninstall
+      - name: Prove WinFsp is its own package, and survived Drive's uninstall
         shell: pwsh
         run: |
+          # On the MSI route WinFsp was installed by its own msiexec run, so
+          # removing Drive must leave it alone. (On the bundle route below the
+          # chain owns WinFsp, and its Permanent="no" takes WinFsp too.)
           $dll = Join-Path ${env:ProgramFiles(x86)} "WinFsp\bin\winfsp-x64.dll"
           if (-not (Test-Path $dll)) {
             throw "WinFsp went with Drive, but WinFsp is its own package"
           }
           Write-Host "WinFsp is still installed: $dll"
+
+      # ---------- the bundle route, which is the one winget runs
+
+      - name: Install through the bundle (the route winget install takes)
+        shell: pwsh
+        run: |
+          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList `/quiet`, `/norestart`
+          if ($p.ExitCode -ne 0) { throw "drive-setup.exe exited $($p.ExitCode)" }
+
+      - name: Prove the bundle installed Drive and its WinFsp payload
+        shell: pwsh
+        run: |
+          $dll = Join-Path ${env:ProgramFiles(x86)} "WinFsp\bin\winfsp-x64.dll"
+          if (-not (Test-Path $dll)) {
+            throw "the bundle did not install the WinFsp payload it downloads"
+          }
+          if (-not (Test-Path "${{ env.INSTALL_DIR }}\drive.exe")) {
+            throw "the bundle did not install drive.exe"
+          }
+          $drive = (Get-Command drive.exe -ErrorAction SilentlyContinue).Source
+          if (-not $drive) { throw "the bundle did not put drive.exe on PATH" }
+          $task = Get-ScheduledTask -TaskName "drive-mount" -ErrorAction SilentlyContinue
+          if (-not $task) { throw "the bundle did not register the login task" }
+          Write-Host "bundle installed: drive.exe $drive, WinFsp $dll, task drive-mount"
+
+      - name: Uninstall through the bundle
+        shell: pwsh
+        run: |
+          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList `/uninstall`, `/quiet`, `/norestart`
+          if ($p.ExitCode -ne 0) { throw "the bundle uninstall exited $($p.ExitCode)" }
+
+      - name: Prove the bundle uninstall is clean, WinFsp included
+        shell: pwsh
+        run: |
+          $fail = $false
+          if (Test-Path "${{ env.INSTALL_DIR }}") {
+            Write-Host "left behind: ${{ env.INSTALL_DIR }}"; $fail = $true
+          }
+          $task = Get-ScheduledTask -TaskName "drive-mount" -ErrorAction SilentlyContinue
+          if ($task) { Write-Host "left behind: the drive-mount task"; $fail = $true }
+          $dll = Join-Path ${env:ProgramFiles(x86)} "WinFsp\bin\winfsp-x64.dll"
+          # WinFsp is Permanent="no" in the chain, so the bundle takes the
+          # driver it installed back out with it. A machine that already had
+          # WinFsp is the case Burn detects rather than installs.
+          if (Test-Path $dll) {
+            Write-Host "left behind: WinFsp, which the chain owns"; $fail = $true
+          }
+          if ($fail) { exit 1 }
+          Write-Host "bundle uninstall clean: no install dir, no task, no WinFsp"

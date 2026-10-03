@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -97,6 +97,19 @@ test("the MSI registers the login task from drive#153 and removes it on uninstal
     /BinaryRef="Wix4UtilCA_X64"/,
     "and it comes from the Util extension's 64-bit binary",
   );
+  // A logon task with no /RU runs as the account that created it, and the
+  // deferred action creates it as LocalSystem: without these the drive would
+  // mount as SYSTEM with SYSTEM's home and no person's keys.
+  asserts(
+    "installer/drive.wxs",
+    /\/RU &quot;\[DRIVE_LOGON_USER\]&quot; \/IT/,
+    "the task runs as the person who installed, in their own session",
+  );
+  asserts(
+    "installer/drive.wxs",
+    /<SetProperty Id="DRIVE_LOGON_USER" Value="\[LogonUser\]"/,
+    "and that person is the MSI's own LogonUser, captured before the deferred action runs",
+  );
   // Install only when installing, remove only when removing or upgrading: a
   // repair must not wipe the task, and an install must not delete one.
   asserts(
@@ -108,6 +121,28 @@ test("the MSI registers the login task from drive#153 and removes it on uninstal
     "installer/drive.wxs",
     /Action="DeleteLoginTask"[^>]*Condition="\(REMOVE~=&quot;ALL&quot;\) OR \(Upgrade=1\)"/,
     "and removed on a full uninstall or an upgrade",
+  );
+});
+
+test("the bundle carries a bootstrapper application and its own licence link", () => {
+  asserts(
+    "installer/bundle.wxs",
+    /<BootstrapperApplication>/,
+    "a bundle needs a bootstrapper application; /quiet skips it",
+  );
+  asserts(
+    "installer/bundle.wxs",
+    /Theme="hyperlinkLicense"/,
+    "and it is WiX's own standard one, from the Bal extension",
+  );
+  // The bundle is a logon installer a person may double click, so its licence
+  // link must be a real page on our own site, not a vendor's or a rival's.
+  const licence = BUNDLE.match(/LicenseUrl="([^"]+)"/)?.[1];
+  assert.ok(licence, "the bundle must carry a licence URL");
+  assert.match(
+    licence,
+    /^https:\/\/github\.com\/Nishfleet\/drive\//,
+    `the licence link must be one of our own pages, got ${licence}`,
   );
 });
 
@@ -151,6 +186,22 @@ test("the bundle brings WinFsp from WinFsp's own release, never a vendored copy"
       `WINFSP_MSI_URL:\\s*"?https://github\\.com/winfsp/winfsp/releases/download/[^"]+/winfsp-${bundleVersion}\\.msi`,
     ),
     "and from that same release URL",
+  );
+  // A downloaded payload needs an integrity pin. WiX v4's MsiPackage has no
+  // Hash attribute (the compiler rejects it), so Burn's own Authenticode check
+  // is one half and the committed digest is the other; a digest that was
+  // silently dropped would leave only the signature, so it is asserted.
+  assert.doesNotMatch(
+    BUNDLE,
+    /SuppressSignatureValidation="yes"/,
+    "Burn must keep validating the downloaded WinFsp MSI's Authenticode signature",
+  );
+  const digest = WORKFLOW.match(/WINFSP_MSI_SHA256:\s*"?([0-9a-f]{64})"?/)?.[1];
+  assert.ok(digest, "the CI job must pin the digest of the WinFsp MSI it downloads");
+  asserts(
+    "installer/windows-msi.yml",
+    /Get-FileHash -Path installer\\winfsp\.msi -Algorithm SHA256/,
+    "and check the download against it",
   );
 });
 
@@ -199,6 +250,37 @@ test("the winget manifest makes WinFsp a package dependency", () => {
   );
 });
 
+test("the job proves both routes: the MSI with msiexec /qn, and the bundle winget runs", () => {
+  // `msiexec /qn` on the MSI is the issue's own finish line, silent install.
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList `\/i`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
+    "the Drive MSI is installed silently with msiexec /qn",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList `\/x`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
+    "and uninstalled the same silent way",
+  );
+  // The bundle is what `winget install` and a direct download both run
+  // (the winget manifest's InstallerType is burn), so building it and proving
+  // nothing about it would leave the shipped route untested.
+  asserts(
+    "installer/windows-msi.yml",
+    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/quiet`/,
+    "the bundle is installed",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/uninstall`, `\/quiet`/,
+    "and uninstalled the way a person removes it",
+  );
+  assert.ok(
+    WORKFLOW.indexOf("the route winget install takes") > 0,
+    "the bundle route must be labelled as the winget route, so the two are not confused",
+  );
+});
+
 test("the Windows job is written to run on windows-latest and calls the tools directly", () => {
   asserts("installer/windows-msi.yml", /runs-on: windows-latest/, "runs on a Windows runner");
   for (const tool of [
@@ -243,31 +325,38 @@ test("the Windows job is written to run on windows-latest and calls the tools di
   }
 });
 
-test("the Windows job is not in .github/, and says why", () => {
+test("the Windows job is not in .github/, and is byte-identical when it lands there", () => {
   // The agent worker App has no Workflows write, so a push that touches
   // .github/workflows/ is rejected by GitHub. The job therefore sits beside
   // its sources, and the reason is in the file's own header, so whoever moves
   // it does not have to read the history to find out why it moved.
   const workflowDir = new URL("../.github/workflows/", import.meta.url);
-  const shipped = readdirSync(workflowDir);
-  assert.ok(
-    !shipped.includes("windows-msi.yml"),
-    "the job must not sit in .github/workflows/: the worker App cannot push there",
-  );
-  assert.match(
+  const shippedPath = new URL("windows-msi.yml", workflowDir);
+  if (!existsSync(shippedPath)) {
+    // Not landed yet: the job is still dormant, and the file says why.
+    assert.match(
+      WORKFLOW,
+      /refusing to allow a GitHub App to create or/,
+      "the file must carry the exact rejection it works around",
+    );
+    assert.match(
+      WORKFLOW,
+      /without `workflows` permission/,
+      "and the reason GitHub gives: the App has no Workflows write",
+    );
+    asserts(
+      "installer/windows-msi.yml",
+      /\.github\/workflows\/windows-msi\.yml/,
+      "and name where it has to land",
+    );
+    return;
+  }
+  // Landed: the copy that runs must be the copy that was reviewed, so the two
+  // are compared byte for byte rather than left to drift.
+  assert.equal(
+    readFileSync(shippedPath, "utf8"),
     WORKFLOW,
-    /refusing to allow a GitHub App to create or/,
-    "the file must carry the exact rejection it works around",
-  );
-  assert.match(
-    WORKFLOW,
-    /without `workflows` permission/,
-    "and the reason GitHub gives: the App has no Workflows write",
-  );
-  asserts(
-    "installer/windows-msi.yml",
-    /\.github\/workflows\/windows-msi\.yml/,
-    "and name where it has to land",
+    ".github/workflows/windows-msi.yml has drifted from installer/windows-msi.yml",
   );
 });
 
