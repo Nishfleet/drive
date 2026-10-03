@@ -67,6 +67,12 @@ the live site.
 - The share card is now rendered from a committed source page, and its price is
   gated against the one price config, so a re-priced product moves the card
   with the page instead of leaving a stale picture behind.
+- A key one of your tools holds now stops working after an hour of not being
+  used, and the api Worker restarts that hour quietly on every request the tool
+  makes. Revoking a tool stops the renewal at once. A key that leaks is
+  therefore a key that is worth nothing to whoever holds it once you stop
+  working, and one hour is the longest a copied tool entry is useful without
+  you. Your own device sign-in is unchanged.
 
 ## 2026-09-30
 

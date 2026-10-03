@@ -13,6 +13,7 @@ import {
   approveBranch,
   BRANCHES_ENDPOINT,
   BRANCHES_ROOT,
+  backfillBranchSnapshots,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -21,9 +22,13 @@ import {
   listBranches,
   readSnapshot,
   relativePath,
+  SNAPSHOT_BACKFILL_ROWS,
+  SNAPSHOT_BACKFILL_SCHEDULE,
   sameFile,
+  snapshotKey,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
+import worker from "../src/index.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -561,6 +566,222 @@ test("a branch of another account is not found, ever", async () => {
   assert.equal(failedStatus(await approveBranch(db, snapshots, other, OTHER, "work")), 404);
   assert.equal(failedStatus(await discardBranch(db, snapshots, other, OTHER, "work")), 404);
   assert.deepEqual(await listBranches(db, snapshots, other, OTHER), []);
+});
+
+// ------------------------------------------------- the snapshot backfill
+
+/**
+ * A `branches` row as migration 0012 left the ones before it: the JSON in
+ * `branches.snapshot`, `snapshot_key` at its '' default, `snapshot_bytes` at 0.
+ * Written with plain SQL because that is exactly the row the migration
+ * produced before any Worker code ran, which is the row the backfill exists
+ * for. Node's sqlite is the engine the shipped migrations built.
+ * @param {SqliteD1} db
+ * @param {{account: string, name: string, state: string, snapshot: Record<string, unknown>}} row
+ */
+function insertLegacyBranch(db, row) {
+  db.sqlite
+    .prepare(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+        "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+    )
+    .run(
+      row.account,
+      row.name,
+      "/Photos",
+      `/.branches/${row.name}`,
+      JSON.stringify(row.snapshot),
+      row.state,
+      "2026-10-01T00:00:00.000Z",
+    );
+}
+
+/**
+ * One branch row's own snapshot state, read with plain sqlite so the assertion
+ * is about what the migration and the sweep actually stored.
+ * @param {SqliteD1} db
+ * @param {string} account
+ * @param {string} name
+ * @param {string} state
+ */
+function readLegacyRow(db, account, name, state) {
+  return /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
+    db.sqlite
+      .prepare(
+        "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+          "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+      )
+      .get(account, name, state)
+  );
+}
+
+test("the backfill moves an open pre-namespace row into the namespace", async () => {
+  const { db, kv } = await driven();
+  const legacy = {
+    "a.txt": { size: 1, etag: "e1", modified: 1 },
+    "sub/b.txt": { size: 2, etag: "e2", modified: 2 },
+  };
+  insertLegacyBranch(db, { account: ACCOUNT.id, name: "old", state: "open", snapshot: legacy });
+  insertLegacyBranch(db, {
+    account: ACCOUNT.id,
+    name: "done",
+    state: "approved",
+    snapshot: legacy,
+  });
+  insertLegacyBranch(db, {
+    account: ACCOUNT.id,
+    name: "gone",
+    state: "discarded",
+    snapshot: legacy,
+  });
+  const snapshots = createKvSnapshotStore(kv);
+
+  // Before the sweep the open row's snapshot comes from the column alone, the
+  // read `readSnapshot` has always done for a row with no pointer.
+  const before = readLegacyRow(db, ACCOUNT.id, "old", "open");
+  assert.equal(before.snapshot_key, "");
+  assert.deepEqual(
+    await readSnapshot(snapshots, before.snapshot_key, before.snapshot),
+    legacy,
+    "the column is the only source before the sweep",
+  );
+
+  const report = await backfillBranchSnapshots(db, snapshots);
+  assert.equal(report.moved, 1, "one open row moved");
+  assert.equal(report.files, 2, "the report counts the entries it moved");
+  assert.equal(report.bytes, Buffer.byteLength(JSON.stringify(legacy)));
+  assert.deepEqual(report.branches, [
+    {
+      account: ACCOUNT.id,
+      name: "old",
+      key: snapshotKey(ACCOUNT, "old"),
+      bytes: Buffer.byteLength(JSON.stringify(legacy)),
+    },
+  ]);
+
+  // The row now carries the key a new branch of that name would and the
+  // value's own length, and the reader resolves the same map through it.
+  const after = readLegacyRow(db, ACCOUNT.id, "old", "open");
+  assert.equal(after.snapshot_key, snapshotKey(ACCOUNT, "old"));
+  assert.equal(after.snapshot_bytes, Buffer.byteLength(JSON.stringify(legacy)));
+  assert.equal(kv.values.get(after.snapshot_key), JSON.stringify(legacy));
+  assert.deepEqual(
+    await readSnapshot(snapshots, after.snapshot_key, after.snapshot),
+    legacy,
+    "the pointer resolves the same snapshot the column did",
+  );
+  assert.equal(
+    after.snapshot,
+    JSON.stringify(legacy),
+    "the column is left in place: the drop is the later phase, not this one",
+  );
+
+  // No closed branch was touched, and no closed branch got a namespace value:
+  // a closed branch is history, and its snapshot is the count on its row.
+  for (const [name, state] of [
+    ["done", "approved"],
+    ["gone", "discarded"],
+  ]) {
+    const closed = readLegacyRow(db, ACCOUNT.id, name, state);
+    assert.equal(closed.snapshot_key, "", `${state} keeps its empty pointer`);
+    assert.equal(closed.snapshot_bytes, 0, `${state} keeps its zero byte length`);
+    assert.equal(kv.values.has(snapshotKey(ACCOUNT, name)), false, `${state} has no KV value`);
+  }
+
+  // Idempotent: the sweep matches `snapshot_key = ''`, so a second run finds
+  // nothing and moves nothing.
+  assert.deepEqual(await backfillBranchSnapshots(db, snapshots), {
+    moved: 0,
+    files: 0,
+    bytes: 0,
+    branches: [],
+  });
+});
+
+test("the backfill moves a bounded nightly batch and leaves the rest for the next run", async () => {
+  const { db, kv } = await driven();
+  for (const name of ["a", "b", "c"]) {
+    insertLegacyBranch(db, {
+      account: ACCOUNT.id,
+      name,
+      state: "open",
+      snapshot: { "x.txt": { size: 1, etag: name, modified: 1 } },
+    });
+  }
+  const snapshots = createKvSnapshotStore(kv);
+  const first = await backfillBranchSnapshots(db, snapshots, 2);
+  assert.equal(first.moved, 2);
+  assert.deepEqual(
+    first.branches.map((branch) => branch.name),
+    ["a", "b"],
+    "the sweep reads account then name, so a partial run is the same rows next night",
+  );
+  const second = await backfillBranchSnapshots(db, snapshots, 2);
+  assert.equal(second.moved, 1);
+  assert.deepEqual(
+    second.branches.map((branch) => branch.name),
+    ["c"],
+  );
+  assert.equal(SNAPSHOT_BACKFILL_ROWS, 24, "the default batch is the free-plan ceiling / 2");
+  assert.equal(SNAPSHOT_BACKFILL_ROWS * 2 + 1, 49, "one row costs two subrequests beside the read");
+  assert.ok(
+    SNAPSHOT_BACKFILL_ROWS * 2 + 1 <= 50,
+    "the sweep stays inside the free plan's 50-subrequest invocation",
+  );
+  assert.equal((await backfillBranchSnapshots(db, snapshots)).moved, 0);
+});
+
+test("a backfill with no namespace is an error, not an empty report", async () => {
+  const { db } = await driven();
+  await assert.rejects(
+    () => backfillBranchSnapshots(db, /** @type {never} */ (null)),
+    /branch snapshot store/,
+  );
+  await assert.rejects(
+    () => backfillBranchSnapshots(db, /** @type {never} */ ({})),
+    /snapshot store/,
+  );
+});
+
+test("the backfill's own cron trip moves the rows, and a missing namespace fails it", async () => {
+  const { db, kv } = await driven();
+  insertLegacyBranch(db, {
+    account: ACCOUNT.id,
+    name: "old",
+    state: "open",
+    snapshot: { "a.txt": { size: 1, etag: "e", modified: 1 } },
+  });
+  const scheduled =
+    /** @type {(event: unknown, env: unknown, ctx: unknown) => Promise<unknown>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  const context = { waitUntil() {} };
+  assert.equal(
+    await scheduled(
+      { cron: SNAPSHOT_BACKFILL_SCHEDULE, scheduledTime: "2026-10-04T05:00:00.000Z" },
+      { DRIVE_DB: db, BRANCH_SNAPSHOTS: kv },
+      context,
+    ),
+    undefined,
+  );
+  assert.equal(
+    readLegacyRow(db, ACCOUNT.id, "old", "open").snapshot_key,
+    snapshotKey(ACCOUNT, "old"),
+    "the trigger the config declares is the one that moves the row",
+  );
+  assert.equal(SNAPSHOT_BACKFILL_SCHEDULE, "0 5 * * *", "the sweep's own quiet hour");
+
+  // A deployment whose namespace is not bound cannot move a row, and that must
+  // fail the trigger rather than read as a sweep that found nothing to do.
+  await assert.rejects(
+    () =>
+      scheduled(
+        { cron: SNAPSHOT_BACKFILL_SCHEDULE, scheduledTime: "2026-10-04T05:00:00.000Z" },
+        { DRIVE_DB: db },
+        context,
+      ),
+    /BRANCH_SNAPSHOTS/,
+  );
 });
 
 // ----------------------------------------------------------------- the route

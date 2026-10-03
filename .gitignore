@@ -36,3 +36,6 @@ dist/
 # public/docs, which is the Worker's static asset directory.
 docs-site/.rendered/
 public/docs/
+
+# Inspect eval logs (evals/agents) stay out of the repository.
+logs/

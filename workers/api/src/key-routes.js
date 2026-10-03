@@ -46,7 +46,14 @@ export async function mintKeyRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  const kind = typeof read.body.kind === "string" ? read.body.kind : "agent";
+  // A kind off the wire is not trusted to be one of the four: the store
+  // refuses an unknown kind by name (keyprovider.js `keyTtlSeconds`), which is
+  // the refusal the 400 below carries. The cast only says to the checker that
+  // the string has been read; it does not make it valid.
+  const kind =
+    typeof read.body.kind === "string"
+      ? /** @type {import("./keyprovider.js").KeyKind} */ (read.body.kind)
+      : "agent";
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : undefined;
   let minted;
@@ -79,6 +86,42 @@ export async function revokeKeyRoute(request, ctx) {
     return errorResponse(404, "No such key on this account.");
   }
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+}
+
+/**
+ * POST /v1/keys/:keyId/renew — restart the hour on one of the account's own
+ * keys (drive issue #106).
+ *
+ * This is the renewal a caller makes on purpose, and the gate is what makes it
+ * safe: the route is behind the account gate, so the credential presented is
+ * the signed-in device's token, never the storage key. A leaked agent key
+ * therefore cannot renew itself — it holds no device token — which is the whole
+ * reason the short-lived credential is worth anything. Revoking the agent stops
+ * renewal at once, because the store refuses a revoked row before it moves any
+ * window.
+ *
+ * The answer is the public key row, never a secret: renewing does not change
+ * the credential, only the server-side window, so the tool's own MCP entry
+ * keeps working untouched and there is nothing new to hand out.
+ * @param {Request} request
+ * @param {{store: KeyStore, account: {id: string, name: string}, params: Record<string, string>}} ctx
+ */
+export async function renewKeyRoute(request, ctx) {
+  if (request.method !== "POST") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
+  }
+  const result = await Promise.resolve(ctx.store.renewKey(ctx.account, ctx.params.keyId));
+  if ("error" in result) {
+    // A revoked key and another account's key are both refusals, said in the
+    // words the revoke route already uses: an id this account does not hold is
+    // "no such key", and a revoked one is named, because that is the
+    // difference the caller can act on.
+    if (result.error === "revoked") {
+      return errorResponse(409, "That key is revoked, so its hour cannot be restarted.");
+    }
+    return errorResponse(404, "No such key on this account.");
+  }
+  return json(result.device);
 }
 
 /**
