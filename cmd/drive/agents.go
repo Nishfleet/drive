@@ -36,18 +36,43 @@ func (m ToolMinter) RevokeKey(keyID string) error {
 	return m.Client.RevokeKey(keyID)
 }
 
-// runInit is the `drive init` command.
+// runInit is the `drive init` command: the whole first-run setup, in one
+// command (drive#105). It registers the same storage flags `drive mount` takes
+// plus its own --api, so one command takes a machine from nothing to a mounted
+// drive with the agent tools connected.
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
-	home := fs.String("home", os.Getenv("HOME"), "home directory")
+	m := addStorageFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
 	if fs.NArg() > 0 {
 		return usageFailure(usage, fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
-	return initAgents(Env{Home: *home}.withDefaults(), *api)
+	return initDevice(fs, m, *api)
+}
+
+// initDevice is the body `drive init` runs: check rclone, write the login item
+// that starts the mount at login, mount, then connect every installed agent
+// tool. The order is the reason the command exists — rclone is the one
+// dependency the machine needs before anything else works, so it is checked
+// first and its fix is said in the same breath (drive#105).
+//
+// `drive uninstall` is the other half of the start-at-login promise: it
+// removes the login item this writes, on both platforms.
+func initDevice(fs *flag.FlagSet, m *mountFlags, apiBase string) error {
+	rclone, c, err := m.resolve(fs)
+	if err != nil {
+		return err
+	}
+	if err := CheckRclone(CurrentGOOS(), rclone); err != nil {
+		return err
+	}
+	if err := Mount(CurrentGOOS(), m.common.home, rclone, c, false, false, m.driveLetter); err != nil {
+		return err
+	}
+	return initAgents(Env{Home: m.common.home}.withDefaults(), apiBase)
 }
 
 // signedInEnv signs this device in, once, and returns the environment with a

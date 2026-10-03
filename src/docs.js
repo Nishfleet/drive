@@ -126,13 +126,14 @@ function keyRow(kind, owner) {
 /** @param {boolean|undefined} value */
 const yesNo = (value) => (value ? "yes" : "no");
 
-/** The two keys a person meets, as a Markdown table. */
+/** The keys a person meets, as a Markdown table. */
 export const KEY_TABLE = Object.freeze(
   [
     "| Key | Belongs to | Can read | Can write | Can delete |",
     "| --- | --- | --- | --- | --- |",
     keyRow("device", "your machine"),
     keyRow("agent", "one agent tool"),
+    keyRow("branch", "an agent in a branch"),
   ].join("\n"),
 );
 

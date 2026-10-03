@@ -514,15 +514,21 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		if err := bootstrapLaunchd(itemPath); err != nil {
 			return failDetail("login-item", err)
 		}
-	} else {
-		for _, action := range mountSystemctlActions() {
-			args := []string{"--user", action}
-			if action != "daemon-reload" {
-				args = append(args, SystemdUnitName)
-			}
-			if err := exec.Command("systemctl", args...).Run(); err != nil {
-				return failDetail("login-item", fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err))
-			}
+<<<<<<< HEAD
+	} else if err := startLinuxLoginItem(); err != nil {
+		// A clean container and a first-run sandbox often have no systemd user
+		// bus (drive#105): systemctl is missing, or it cannot reach the user
+		// manager. Only that falls back to a detached rclone, because there is
+		// no systemd to start the unit at login. A systemd host whose unit
+		// fails to start (a bad unit, a full disk) is a named error, not a
+		// fallback: a detached rclone there plus the unit still enabled would
+		// mount a second rclone at the next login.
+		if !systemdUserSessionAbsent(err) {
+			return failDetail("login-item", err)
+		}
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, itemPath)
+		if err := startLinuxMountDetached(p); err != nil {
+			return failDetail("mount-failed", err)
 		}
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
@@ -532,9 +538,76 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
-		return failDetail("unexpected", fmt.Errorf("start prefetch: %w", err))
+		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
 	printMountedLine(p.MountDir)
+	return nil
+}
+
+// startLinuxLoginItem enables and restarts the systemd user unit this command
+// just wrote. A missing user bus is a named error so the caller can start the
+// mount in the background instead of reporting success with nothing mounted.
+func startLinuxLoginItem() error {
+	for _, action := range mountSystemctlActions() {
+		args := []string{"--user", action}
+		if action != "daemon-reload" {
+			args = append(args, SystemdUnitName)
+		}
+		if err := exec.Command("systemctl", args...).Run(); err != nil {
+			return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+		}
+	}
+	return nil
+}
+
+// systemdUserSessionAbsent reports whether a startLinuxLoginItem error means
+// there is no systemd user manager to start the login item with: systemctl is
+// not installed, or it cannot reach the user bus. Every other systemctl
+// failure (a unit that will not start, a full disk, a permission) is a real
+// error the caller must see, not a reason to leave a detached mount behind.
+func systemdUserSessionAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, absent := range []string{
+		"executable file not found", // systemctl is not installed
+		"Failed to connect to bus", // no user bus, no D-Bus session
+		"not been booted with systemd", // no systemd user manager
+		"XDG_RUNTIME_DIR not set", // no user session to attach to
+	} {
+		if strings.Contains(msg, absent) {
+			return true
+		}
+	}
+	return false
+}
+
+// startLinuxMountDetached starts rclone in its own session so `drive init` can
+// finish and exit while the mount stays up. rclone's own --log-file is already
+// on the plan; stdout and stderr go there too so a container without journald
+// still has the log.
+func startLinuxMountDetached(p MountPlan) error {
+	rclonePath, err := exec.LookPath(p.RcloneBin)
+	if err != nil {
+		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p.LogPath), 0o755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	log, err := os.OpenFile(p.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open mount log %s: %w", p.LogPath, err)
+	}
+	defer log.Close()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(rclonePath, p.Args()...)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone mount: %w", err)
+	}
 	return nil
 }
 
@@ -774,7 +847,7 @@ func Unmount(goos, home string) error {
 		return unmountWindows(home)
 	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
@@ -787,6 +860,13 @@ func Unmount(goos, home string) error {
 		return bootoutLaunchd(itemPath)
 	}
 	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
+		if stopErr := stopMount(goos, home); stopErr != nil {
+			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr))
+		}
+		// The mount is down but the login item could not be disabled, and only
+		// uninstall and logout delete its file afterwards: a bare `drive
+		// unmount` would otherwise report success while the unit starts again
+		// at the next login. The error names the disable that failed.
 		return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err))
 	}
 	return nil
