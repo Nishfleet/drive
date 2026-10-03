@@ -8,7 +8,8 @@ written here only by a run that produced it; nothing is estimated.
 
 - **Storage:** local rclone serve s3 stand-in
 - **Date:** 2026-10-02
-- **Commit:** 28b87680d03baaaf4887ae6c76953c756af3f908
+- **Commit:** ccc574ea33db5a3d63196e6c12361c09e9655594
+- **Run on:** branch commit 28b87680d03baaaf4887ae6c76953c756af3f908, which the squash merge replaced with the commit above
 
 | Demo | What was measured | Figure |
 |---|---|---|
