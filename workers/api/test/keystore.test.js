@@ -130,7 +130,13 @@ test("an agent key never gets delete, and a branch key stays in its branch folde
 test("an unknown key kind is refused before any key is made", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  await assert.rejects(() => store.mintKey(account, { kind: "root" }), /Unknown key kind/);
+  await assert.rejects(
+    () =>
+      store.mintKey(account, {
+        kind: /** @type {import("../src/keyprovider.js").KeyKind} */ ("root"),
+      }),
+    /Unknown key kind/,
+  );
   assert.equal((await store.listKeys(account)).length, 0);
 });
 
@@ -407,7 +413,10 @@ test("a person's own device key is not renewed and not expired", async () => {
 
 test("the renewal rule: a live row's hour restarts, a revoked row's does not, a device row's stays null", () => {
   const at = 1_000_000;
-  const agent = {
+  // The row the store holds, written out rather than minted, so the rule can
+  // be handed a row in any state a migration or a race can leave it in. The
+  // cast is the one place a literal stands in for a stored row.
+  const agent = /** @type {import("../src/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",
@@ -420,7 +429,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
     lastSeenAt: null,
     revokedAt: null,
     expiresAt: at - 1,
-  };
+  });
   assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS);
   assert.equal(renewKeyWindow({ ...agent, revokedAt: at - 30 }, at).expiresAt, at - 1);
   // A row written before drive#106 (or by a store that never set one) holds no
@@ -442,7 +451,7 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
 
 test("the renewal rule never shortens a window the row already carries", () => {
   const at = 1_000_000;
-  const agent = {
+  const agent = /** @type {import("../src/keystore.js").Device} */ ({
     id: "key_agent",
     accountId: "a",
     name: "claude",
@@ -458,7 +467,7 @@ test("the renewal rule never shortens a window the row already carries", () => {
     // two requests can read the same row and renew in either order, and the
     // one that lands second must not pull the hour back to the earlier value.
     expiresAt: at + AGENT_KEY_TTL_SECONDS * 2,
-  };
+  });
   assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS * 2);
   // The powers are still untouched: a renewal is about time.
   assert.deepEqual(renewKeyWindow(agent, at).capabilities, agent.capabilities);

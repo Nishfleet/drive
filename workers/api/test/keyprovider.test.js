@@ -160,7 +160,13 @@ test("an unknown kind is refused a lifetime rather than handed an immortal crede
     () => keyTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root")),
     /lifetime/i,
   );
-  assert.throws(() => mintTtlSeconds("root", 900), /lifetime/i);
+  assert.throws(
+    () => mintTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root"), 900),
+    /lifetime/i,
+  );
+  // The renewal rule is handed the kind's ceiling rather than the kind, so it
+  // has no kind to refuse: refusing the unknown kind is `keyTtlSeconds`'s job
+  // and it is already pinned above.
 });
 
 test("the kind's hour is the ceiling: a shorter provider session wins, a longer one cannot", () => {

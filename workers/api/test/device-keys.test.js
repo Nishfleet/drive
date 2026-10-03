@@ -908,14 +908,18 @@ test("a revoked agent cannot renew: the hour is not restarted after the revoke",
     baseCtx(store, null),
   );
   assert.equal(after.status, 401);
-  const listed = await (
-    await dispatch(
-      new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
-      baseCtx(store, null),
-    )
-  ).json();
+  const listed = /** @type {{keys: Array<{keyId: string, expiresAt: number|null}>}} */ (
+    await (
+      await dispatch(
+        new Request("https://api.test/v1/keys", { headers: bearer(deviceToken) }),
+        baseCtx(store, null),
+      )
+    ).json()
+  );
+  const found = listed.keys.find((key) => key.keyId === minted.keyId);
+  assert.ok(found, "the minted key is listed");
   assert.equal(
-    listed.keys.find((key) => key.keyId === minted.keyId).expiresAt,
+    found.expiresAt,
     minted.expiresAt,
     "the refused requests left the expiry exactly as the mint wrote it",
   );
@@ -1026,17 +1030,17 @@ test("a revoked key cannot be renewed, and a leaked storage key cannot renew its
     baseCtx(store, null),
   );
   assert.equal(renewRevoked.status, 409, "a revoked key is refused, not renewed");
-  const listed = await (
-    await dispatch(
-      new Request("https://api.test/v1/keys", { headers: bearer(first.deviceToken) }),
-      baseCtx(store, null),
-    )
-  ).json();
-  assert.equal(
-    listed.keys.find((key) => key.keyId === minted.keyId).expiresAt,
-    minted.expiresAt,
-    "the refused renew moved no window",
+  const listed = /** @type {{keys: Array<{keyId: string, expiresAt: number|null}>}} */ (
+    await (
+      await dispatch(
+        new Request("https://api.test/v1/keys", { headers: bearer(first.deviceToken) }),
+        baseCtx(store, null),
+      )
+    ).json()
   );
+  const foundRevoked = listed.keys.find((key) => key.keyId === minted.keyId);
+  assert.ok(foundRevoked, "the revoked key is still listed");
+  assert.equal(foundRevoked.expiresAt, minted.expiresAt, "the refused renew moved no window");
 
   // Another account's key is not this account's to renew.
   const cross = await dispatch(

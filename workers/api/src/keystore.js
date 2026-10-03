@@ -111,7 +111,7 @@ export function createMemoryStore(options = {}) {
    * second way to mint one cannot drift.
    * @param {{id: string}} account
    * @param {import("./keyprovider.js").KeyScope} scope
-   * @param {string} kind the kind the capabilities came from, for the row
+   * @param {import("./keyprovider.js").KeyKind} kind the kind the capabilities came from, for the row
    * @param {string} name
    */
   async function mintScopedKey(account, scope, kind, name) {
@@ -147,7 +147,7 @@ export function createMemoryStore(options = {}) {
       id: keyId,
       accountId: account.id,
       name,
-      kind: /** @type {any} */ (kind),
+      kind,
       accessKeyId: credential.accessKeyId,
       secretHash: await sha256Hex(credential.secret),
       prefix: scope.prefix,
@@ -275,7 +275,7 @@ export function createMemoryStore(options = {}) {
      * table (keyprovider.js), so an agent key can never carry `delete`. An
      * explicit `scope` overrides the kind's default (used for team keys).
      * @param {{id: string}} account
-     * @param {{kind?: string, name?: string, scope?: import("./keyprovider.js").KeyScope}} [request]
+     * @param {{kind?: import("./keyprovider.js").KeyKind, name?: string, scope?: import("./keyprovider.js").KeyScope}} [request]
      */
     async mintKey(account, request = {}) {
       const kind = request.kind ?? "agent";
@@ -285,8 +285,8 @@ export function createMemoryStore(options = {}) {
       const scope =
         request.scope ??
         (kind === "branch"
-          ? scopeFor(/** @type {any} */ (kind), account.id, { name: request.name })
-          : scopeFor(/** @type {any} */ (kind), account.id));
+          ? scopeFor(kind, account.id, { name: request.name })
+          : scopeFor(kind, account.id));
       return mintScopedKey(account, scope, kind, request.name ?? kind);
     },
 
@@ -344,9 +344,9 @@ export function createMemoryStore(options = {}) {
      * powers on the row are not something a renew can touch.
      * @param {{id: string}} account
      * @param {string} keyId
-     * @returns {{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}}
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
      */
-    renewKey(account, keyId) {
+    async renewKey(account, keyId) {
       if (deviceStore?.renewKey) {
         return deviceStore.renewKey(account, keyId);
       }

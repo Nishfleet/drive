@@ -46,7 +46,14 @@ export async function mintKeyRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  const kind = typeof read.body.kind === "string" ? read.body.kind : "agent";
+  // A kind off the wire is not trusted to be one of the four: the store
+  // refuses an unknown kind by name (keyprovider.js `keyTtlSeconds`), which is
+  // the refusal the 400 below carries. The cast only says to the checker that
+  // the string has been read; it does not make it valid.
+  const kind =
+    typeof read.body.kind === "string"
+      ? /** @type {import("./keyprovider.js").KeyKind} */ (read.body.kind)
+      : "agent";
   const name =
     typeof read.body.name === "string" && read.body.name.length > 0 ? read.body.name : undefined;
   let minted;

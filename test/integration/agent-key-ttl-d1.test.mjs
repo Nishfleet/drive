@@ -47,7 +47,7 @@ function rowIn(sqlite, sql, ...params) {
  * memory store for the routes, with its device rows in D1 (index.js
  * `storeFor`). A second instance is built the same way, over the same db, so
  * "the next request hits another isolate" is what the tests below exercise.
- * @param {import("../d1-sqlite.mjs").TestD1} db
+ * @param {import("../d1-sqlite.mjs").MeteredD1} db
  * @param {{now: () => number}} clock
  */
 function storeOver(db, clock) {
@@ -276,8 +276,10 @@ test("the cap swap keeps the hour the key already had, and takes no powers back 
   const second = storeOver(db, clock);
   clock.advance(AGENT_KEY_TTL_SECONDS / 2);
   assert.ok(await second.authenticate(minted.accessKeyId, minted.secret));
-  const renewed = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at;
-  assert.ok(renewed > minted.expiresAt, "the request moved the window out");
+  const renewed = /** @type {number} */ (
+    rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at
+  );
+  assert.ok(renewed > /** @type {number} */ (minted.expiresAt), "the request moved the window out");
 
   // The cap swaps it to read-only on the same row and the same id, so the
   // key a person sees listed is the one that was there before. The write that
@@ -290,8 +292,15 @@ test("the cap swap keeps the hour the key already had, and takes no powers back 
   const after = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.deepEqual(JSON.parse(String(after.capabilities)), ["list", "read"]);
   assert.deepEqual(JSON.parse(String(after.capped_from)), ["list", "read", "write"]);
-  assert.equal(after.expires_at, swapped.expiresAt, "the row holds the window the swap wrote");
-  assert.ok(after.expires_at >= renewed, "and it is not shorter than the one it replaced");
+  assert.equal(
+    /** @type {number} */ (after.expires_at),
+    swapped.expiresAt,
+    "the row holds the window the swap wrote",
+  );
+  assert.ok(
+    /** @type {number} */ (after.expires_at) >= renewed,
+    "and it is not shorter than the one it replaced",
+  );
   assert.equal(swapped.expiresAt, clock.now() / 1000 + AGENT_KEY_TTL_SECONDS);
 
   assert.ok(
@@ -346,14 +355,16 @@ test("a request that read the row first cannot pull a restarted hour back, in th
 
   // The slow request, holding what the row said when it read it: the mint's
   // own expiry, computed before anything renewed the row.
-  const stale = /** @type {{id: string, expiresAt: number}} */ (minted);
+  const stale = { id: minted.keyId, expiresAt: /** @type {number} */ (minted.expiresAt) };
   assert.equal(stale.expiresAt, clock.now() / 1000 + AGENT_KEY_TTL_SECONDS);
 
   // A later request restarts the hour and the row moves an hour further out.
   clock.advance(600);
   const restarted = await store.renewKey(account, minted.keyId);
   assert.ok(!("error" in restarted), "the key is renewed");
-  const ahead = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at;
+  const ahead = /** @type {number} */ (
+    rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at
+  );
   assert.ok(ahead > stale.expiresAt, "the restart moved the row out");
 
   // The slow request now writes the value it read. Before this test the rule
@@ -377,16 +388,17 @@ test("a provider session shorter than the hour is the lifetime every renewal mea
   const store = createMemoryStore({
     now: clock.now,
     keyProvider: {
-      mint: async (scope) => ({
+      mint /** @param {import("../../workers/api/src/keyprovider.js").KeyScope} scope */: async (
+        scope,
+      ) => ({
         accessKeyId: `ak_${scope.prefix}`,
         secret: "sk_provider",
-        sessionToken: null,
+        sessionToken: "sess_provider",
         expiresIn: 900,
       }),
-      revoke: async () => {},
-      swapToReadOnly: async () => {
-        throw new Error("not used here");
-      },
+      // The store's own option type names `mint` alone: the D1 store swaps a
+      // key through its own `keyProviderFor`, so this stand-in is asked for
+      // nothing else.
     },
     deviceStore: createD1DeviceStore(db, { now: clock.now }),
   });

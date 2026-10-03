@@ -132,7 +132,7 @@ function digestsEqual(left, right) {
  * that is decided. `tests/integration/agent-key-ttl-d1.test.mjs` runs this
  * exact statement with a stale value to prove it.
  *
- * @param {import("@cloudflare/workers-types").D1Database} db
+ * @param {D1Database} db
  * @param {{id: string}} device
  * @param {number|null} expiresAt the window this call computed, or null for a
  *   kind that never expires (its row keeps the null it has)
@@ -156,6 +156,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
   );
 }
 
+/**
+ * @param {D1Database} db
+ * @param {{now?: () => number, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ */
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
