@@ -16,8 +16,10 @@ import { monthBillCents } from "../src/billing.js";
 import {
   billingEventId,
   DODO_EVENT_NAME,
+  DODO_INGEST_PATH,
   DODO_TEST_INGEST_URL,
   pushBillingHours,
+  resolveIngestUrl,
 } from "../src/dodo.js";
 import workerModule from "../src/index.js";
 import {
@@ -130,12 +132,52 @@ test("the ingest URL is Dodo test mode, never live", () => {
   assert.equal(DODO_TEST_INGEST_URL, "https://test.dodopayments.com/events/ingest");
   assert.equal(DODO_TEST_INGEST_URL.includes("live.dodopayments.com"), false);
   assert.equal(DODO_EVENT_NAME, "drive.usage");
+  // The source itself must never carry the live host — only env can set it
+  // (drive issue #323, owner comment 2026-10-03T06:35Z).
   const src = readFileSync(new URL("../src/dodo.js", import.meta.url), "utf8");
   assert.equal(
     src.includes("live.dodopayments.com"),
     false,
     "the module must not name the live host",
   );
+});
+
+test("resolveIngestUrl defaults to test mode when no base is given", () => {
+  assert.equal(resolveIngestUrl(undefined), DODO_TEST_INGEST_URL);
+  assert.equal(resolveIngestUrl(""), DODO_TEST_INGEST_URL);
+});
+
+test("resolveIngestUrl accepts a Dodo host and strips a trailing slash", () => {
+  assert.equal(resolveIngestUrl("https://test.dodopayments.com"), DODO_TEST_INGEST_URL);
+  assert.equal(
+    resolveIngestUrl("https://test.dodopayments.com/"),
+    DODO_TEST_INGEST_URL,
+    "trailing slash must not produce a double slash in the path",
+  );
+  assert.equal(
+    resolveIngestUrl("https://live.dodopayments.com"),
+    `https://live.dodopayments.com${DODO_INGEST_PATH}`,
+  );
+});
+
+test("resolveIngestUrl refuses a key to a non-https or non-Dodo host", () => {
+  assert.throws(() => resolveIngestUrl("http://test.dodopayments.com"), /must use https/);
+  assert.throws(() => resolveIngestUrl("https://evil.example.com"), /dodopayments\.com/);
+  // @ts-expect-error a number is the wrong type on purpose: the guard is under test
+  assert.throws(() => resolveIngestUrl(123), /must be a string/);
+});
+
+test("a baseUrl option pushes to the configured host, not the hard-coded one", async () => {
+  const day = await storedHours(10, 1);
+  const recorder = recordingFetch();
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    baseUrl: "https://live.dodopayments.com",
+    now: day.from + HOUR_MS,
+  });
+  assert.equal(recorder.calls[0].url, `https://live.dodopayments.com${DODO_INGEST_PATH}`);
+  assert.equal(recorder.calls.length, 1);
 });
 
 test("the event id is the account and hour, so a retry is the same id", () => {
