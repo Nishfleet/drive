@@ -466,6 +466,70 @@ test("the cron reports the skipped push in the log, and does not throw over it",
   );
 });
 
+test("a broken gap report is caught, so it never fails the rollup it reports on", async () => {
+  // The push above may throw on purpose - Cloudflare retries the rollup so an
+  // unpushed hour gets another try. The detector must not: a report that fails
+  // the work it is reporting on is worse than no report, because a transient
+  // D1 read error would then retry a rollup that already billed everyone
+  // correctly.
+  //
+  // So the whole scheduled() path runs, through the real wiring, over a db
+  // that answers every statement except the detector's: the gap query is the
+  // one that names billing_pushes inside a NOT EXISTS, which is what makes it
+  // the detector's rather than the push's. The push still succeeds, the cron
+  // still resolves, and the failure is logged instead of thrown.
+  const { db, sqlite } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  db.insertVersion({
+    accountId: ACCOUNT,
+    fileId: "file-1",
+    path: `/u/${ACCOUNT}/notes.md`,
+    sizeBytes: BYTES_PER_GB,
+    createdAt: midnight(),
+  });
+  const failingDetectorDb = {
+    prepare(sql) {
+      if (String(sql).includes("FROM billing_pushes b")) {
+        throw new Error("D1 is unavailable");
+      }
+      return db.prepare(sql);
+    },
+    batch(...statements) {
+      return db.batch(...statements);
+    },
+  };
+  const recorder = recordingFetch();
+  const logged = [];
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = (...args) => logged.push(args);
+  console.log = () => {};
+  try {
+    await worker.scheduled(
+      { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+      {
+        METER_DB: failingDetectorDb,
+        DODO_PAYMENTS_API_KEY: KEY,
+        DODO_FETCH: recorder.fetch,
+      },
+    );
+  } finally {
+    console.error = originalError;
+    console.log = originalLog;
+  }
+  assert.equal(recorder.calls.length, 1, "the push itself still ran and reached Dodo");
+  assert.equal(
+    sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
+    1,
+    "and its row is stored: the report did not undo the work",
+  );
+  const line = logged.find((args) => String(args[0]).includes("the gap report failed"));
+  assert.ok(line, `a broken report must be logged, got ${JSON.stringify(logged)}`);
+  const text = line.map(String).join(" ");
+  assert.ok(text.includes("D1 is unavailable"), "naming why the report is silent");
+  assert.equal(text.includes(KEY), false, "and never the key value");
+});
+
 // --- the detector for a push that was skipped (drive issue #334) ---------
 //
 // A missing or mis-set DODO_PAYMENTS_API_KEY makes pushBillingHours return
@@ -515,29 +579,31 @@ test("an hour that was pushed leaves the gap, and one customer is not a gap", as
 });
 
 test("the gap reads only the hours a person would bill for, not all of history", async () => {
-  const day = await storedHours(10, 48);
-  const recorder = recordingFetch();
-  // Forty-eight hours metered, only the first day ever pushed: the shape a
-  // deployment whose key was unset for a day actually leaves behind.
-  for (let h = 0; h < 24; h++) {
-    await pushBillingHours(day.db, [day.from + h * HOUR_MS], {
-      apiKey: KEY,
-      fetch: recorder.fetch,
-      now: day.from + (h + 1) * HOUR_MS,
-    });
-  }
-  const gap = await unpushedBillingHours(day.db, { now: day.from + 48 * HOUR_MS });
-  assert.equal(gap.length, 24, "the unpushed second day is the gap");
-  assert.equal(gap[0], day.from + 24 * HOUR_MS);
-  // The read is bounded: it must not walk the whole history on every probe,
-  // so a deployment with months of pushes still answers in one indexed read.
-  assert.equal(BILLING_PUSH_GAP_HOURS, 48, "the window is a named, tested constant");
+  // Seventy-two metered hours and none of them pushed, which is what a
+  // deployment whose key was never set leaves behind. Only the last
+  // BILLING_PUSH_GAP_HOURS of them are the gap: the older ones were metered
+  // too, so an unbounded read of this same table would return all 72 and this
+  // one returns 48. The count is the proof, because the data is identical in
+  // both cases except for the window.
+  const day = await storedHours(10, 72);
+  const gap = await unpushedBillingHours(day.db, { now: day.from + 72 * HOUR_MS });
+  assert.equal(
+    gap.length,
+    BILLING_PUSH_GAP_HOURS,
+    "the gap is the window, not every metered hour the database still holds",
+  );
+  assert.equal(gap[0], day.from + 24 * HOUR_MS, "the oldest hour inside the window");
+  assert.equal(gap.at(-1), day.from + 71 * HOUR_MS, "and the last closed hour");
+  assert.equal(
+    gap.includes(day.from),
+    false,
+    "an unpushed hour older than the window is left out, so the read stays bounded",
+  );
 });
 
 test("billingPushGap names the gap and the key, and never the value", async () => {
   const day = await storedHours(10, 2);
   const gap = await billingPushGap(day.db, { apiKey: "", now: day.from + 2 * HOUR_MS });
-  assert.equal(gap.pushed, 0);
   assert.equal(gap.hours, 2, "two metered hours reached nobody");
   assert.equal(gap.since, day.from);
   // The report is what reaches a log and a health body, so it names the
@@ -559,7 +625,6 @@ test("a report on a key that works names no gap", async () => {
   });
   const gap = await billingPushGap(day.db, { apiKey: KEY, now: day.from + 2 * HOUR_MS });
   assert.deepEqual(gap, {
-    pushed: 0,
     hours: 0,
     since: null,
     missingKey: false,

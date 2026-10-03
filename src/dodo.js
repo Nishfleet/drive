@@ -97,7 +97,7 @@ export async function unpushedBillingHours(db, options = {}) {
        INNER JOIN accounts a ON a.id = u.account_id
        WHERE u.hour >= ?1 AND u.hour <= ?2
          AND a.dodo_customer_id IS NOT NULL
-         AND a.dodo_customer_id != ''
+         AND a.dodo_customer_id <> ''
          AND NOT EXISTS (
            SELECT 1 FROM billing_pushes b
            WHERE b.hour = u.hour AND b.account_id = u.account_id
@@ -123,33 +123,28 @@ export async function unpushedBillingHours(db, options = {}) {
 /**
  * What a person reads when they ask "is the billing push actually working".
  *
- * The report is deliberately small and value-free: it counts the hours that
- * rolled and reached nobody, names the oldest of them, and says whether the
- * key is the reason. It never carries the key, and it never carries an account
- * id, so it is safe to log and safe to put in the public health body, which
- * answers with no account data at all (src/health.js).
+ * Value-free by design: a count of hours that rolled and reached nobody, the
+ * oldest of them, and whether the key is missing. No key, no account id, so
+ * the report is safe to log. The caller joins it with the run's own push
+ * result, because only the caller knows that.
  *
- * `missingKey` is the difference between the two causes the issue names — a
- * key never set, and a key set on the wrong Worker. The first is visible here
- * because the binding is empty; the second is not, and is the reason the
- * hour count is the report's centre: a key that is present but wrong still
+ * `missingKey` is the difference between the two causes this issues names: a
+ * key never set, and a key set on the wrong Worker. The first shows here
+ * because the binding is empty. The second does not, which is why the hour
+ * count is the centre of the report: a key that is present but wrong still
  * leaves hours unpushed, and only the count says so.
  *
  * @param {D1Database} db
  * @param {{apiKey?: string, now?: number|Date|string, hours?: number}} [options]
- * @returns {Promise<{pushed: number, hours: number, since: number|null, missingKey: boolean}>}
+ * @returns {Promise<{hours: number, since: number|null, missingKey: boolean}>}
  */
 export async function billingPushGap(db, options = {}) {
   const apiKey = typeof options.apiKey === "string" ? options.apiKey : "";
   const missingKey = apiKey.length === 0;
   const gap = await unpushedBillingHours(db, options);
   return {
-    // `pushed` is not a count of past pushes; it is the mirror of what
-    // pushBillingHours returns for this run, so a caller that reads both
-    // numbers in one place sees the skip (0) beside the reason for it.
-    pushed: 0,
     hours: gap.length,
-    since: gap.length > 0 ? (gap[0] ?? null) : null,
+    since: gap.length > 0 ? gap[0] : null,
     missingKey,
   };
 }
