@@ -669,6 +669,57 @@ func TestConflictGuardReportsAFailingPass(t *testing.T) {
 
 var errConflictTestQueue = &conflictTestError{"queue"}
 
+// TestConflictGuardNamesASaveItCanNoLongerRestage proves that when a save
+// grows past the staging cap between two passes, the guard does not claim
+// the older staged bytes: a conflict copy of a version nobody uploaded is
+// not the save it exists to keep. The path is dropped from the watch and
+// named, and no conflict name is written for it.
+func TestConflictGuardNamesASaveItCanNoLongerRestage(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	path := filepath.Join(mountDir, "movie.mov")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("a small save\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "movie.mov", Size: 13}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	// This device grows the save past the cap before its write-back fires.
+	if err := os.Truncate(path, conflictStageMax+1); err != nil {
+		t.Fatal(err)
+	}
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the save grew: %v", err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Remote != "movie.mov" {
+		t.Fatalf("Skipped = %+v, want the save left alone", res.Skipped)
+	}
+	if len(res.Skipped) == 1 && res.Skipped[0].Reason == "" {
+		t.Error("the skip has no reason, so a person cannot act on it")
+	}
+	// The other device's save lands on top, but this device has nothing
+	// correct to keep, so it writes no conflict copy.
+	f.pending = nil
+	f.objects["movie.mov"] = md5Hex("another device's save\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the other device's save landed: %v", err)
+	}
+	if len(f.copied) != 0 {
+		t.Errorf("copied %v for a save it could not restage", f.copied)
+	}
+	if len(g.seen) != 0 {
+		t.Errorf("still watches %v", g.seen)
+	}
+	t.Logf("skip: %+v", res.Skipped)
+}
+
 type conflictTestError struct{ what string }
 
 func (e *conflictTestError) Error() string { return e.what }

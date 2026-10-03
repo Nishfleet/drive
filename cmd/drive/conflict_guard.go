@@ -249,13 +249,20 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 				if err != nil {
 					return res, err
 				}
-				// A re-stage that names a skip (gone, over the cap) leaves the
-				// bytes already staged in place: it is safer to protect the
-				// older bytes than to fail the pass and protect none.
 				if reason == "" {
 					info := g.mountStat(name)
 					save.staged, save.hash = staged, hash
 					save.stagedMtime, save.stagedSize = info.modTime, info.size
+				} else {
+					// The save can no longer be staged (it grew past
+					// the cap, or it stopped being a regular file), so
+					// the bytes already staged are no longer the bytes
+					// the upload will carry. Claiming them would write a
+					// conflict copy of a version nobody saved, so the
+					// save is named as one the rule leaves alone.
+					save.reason = reason
+					save.staged = ""
+					g.releaseStaged(staged)
 				}
 			}
 			// A skip is named once: the same line every 500ms for the life of
@@ -709,16 +716,30 @@ func (c *rcClient) copyLocalToRemote(ctx context.Context, stagingRoot, srcRemote
 // as long as the mount does. It is started by mountForeground and
 // stopped with the mount; it is not a second daemon and not a script.
 // One guard keeps its state across passes, so a save in its upload
-// window is watched from queue to landing; every error is reported on
-// the returned channel with a named cause, so one bad pass neither
-// takes the mount down nor passes unnoticed.
+// window is watched from queue to landing. Every pass reports what it
+// did: a conflict copy it wrote, a save the rule left alone and the
+// reason, or a real failure. The channel is buffered so a busy loop never
+// blocks on a reader, and the same message is reported at most once per
+// conflictReportEvery.
 func RunConflictLoop(ctx context.Context, device, mountDir, stagingRoot string, c conflictBackend) <-chan error {
-	errs := make(chan error, 1)
+	msgs := make(chan error, 64)
 	go func() {
-		defer close(errs)
+		defer close(msgs)
 		guard := newConflictGuard(device, mountDir, stagingRoot)
 		ticker := time.NewTicker(conflictInterval)
 		defer ticker.Stop()
+		lastReport := make(map[string]time.Time)
+		report := func(format string, args ...any) {
+			line := fmt.Sprintf(format, args...)
+			if time.Since(lastReport[line]) < conflictReportEvery {
+				return
+			}
+			lastReport[line] = time.Now()
+			select {
+			case msgs <- fmt.Errorf("%s", line):
+			default:
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -726,15 +747,24 @@ func RunConflictLoop(ctx context.Context, device, mountDir, stagingRoot string, 
 			case <-ticker.C:
 			}
 			passCtx, cancel := context.WithTimeout(ctx, conflictContextTimeout)
-			_, err := guard.pass(passCtx, c)
+			res, err := guard.pass(passCtx, c)
 			cancel()
 			if err != nil {
-				select {
-				case errs <- err:
-				default:
-				}
+				report("%v", err)
+			}
+			// A conflict copy written means another device's save landed on
+			// top of this one: the earlier save survives under its own name.
+			for _, claim := range res.Claimed {
+				report("kept the save that landed first: %s (the other device saved %s)",
+					claim.Remote, claim.LosingPath)
+			}
+			// A skip is a save this device could not protect. It is named so
+			// a person can read the reason and act, because a silent skip is
+			// a lost save nobody heard about.
+			for _, skip := range res.Skipped {
+				report("could not protect %s: %s", skip.Remote, skip.Reason)
 			}
 		}
 	}()
-	return errs
+	return msgs
 }
