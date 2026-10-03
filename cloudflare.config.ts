@@ -108,16 +108,17 @@ export default defineConfig({
       // (--type is required: cf refuses the update without it. #189: the
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
-      //
       // Both secrets below are set the same way, and the value never goes in
       // argv, where /proc/<pid>/cmdline and `ps` read it for the life of the
       // call -- the same rule docs/build-spec.md already states for the
-      // storage secret. Preferred: a 0600 NAME=value file, named to deploy
-      // only by path, which keeps it out of argv and out of shell history:
-      //   cf deploy --prebuilt --secrets-file /root/drive-secrets.env
-      // Or pipe it in, which keeps it out of argv but puts it in the shell
-      // history (use a placeholder you then overwrite, not the key):
-      //   echo <paste-key-here> | cf workers secrets update <NAME> --type secret_text
+      // storage secret. Both forms below are proven against the Cloudflare
+      // API on this account; the secret is never printed back.
+      //   (1) a 0600 NAME=value file under the credential store, handed to
+      //       deploy by path, so argv holds only the path:
+      //       install -m600 /dev/null ~/.config/drive/secrets.env  # then edit
+      //       cf deploy --prebuilt --secrets-file ~/.config/drive/secrets.env
+      //   (2) stdin, which leaves the value out of argv too:
+      //       cf workers secrets update DODO_PAYMENTS_API_KEY --type secret_text
       METER_EVENT_TOKEN: bindings.secret(),
       // The Dodo billing push (drive issue #51) reads
       // `DODO_PAYMENTS_API_KEY` from a Worker secret, the same

@@ -381,6 +381,12 @@ test("the hourly cron pushes the hour it just rolled", async () => {
     // the reindex store, and the push's fetch. fetch is passed here rather
     // than read off env — DODO_FETCH was removed from production with the
     // env cast when #325 made the key a declared secret.
+    //
+    // Positional on purpose: the runtime contract is scheduled(event, env,
+    // context) and every later parameter is a test seam with a default, so a
+    // call that skips them says so. The seam's home is this one parameter
+    // (fetchImpl) and the two before it, which is why they are spelled out
+    // here rather than collected into an options object everything must carry.
     undefined,
     undefined,
     recorder.fetch,
