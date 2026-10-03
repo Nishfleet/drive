@@ -74,3 +74,5 @@ jobs:
       # the same checksum, against a local `rclone serve s3` stand-in.
       - name: Stand-in mount proof
         run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
+      - name: Two-device conflict proof
+        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s
