@@ -390,7 +390,12 @@ func unmountForCleanup(mountDir string) error {
 // this host runs the same mount the product runs against the real account with
 // no code change. Credentials are constants: the server is loopback only and
 // the config file is written under this test's TempDir.
-func standinOn(t *testing.T, root, prefix string) StorageConfig {
+// standinOn starts the stand-in and hands back both the config that reaches
+// it and the server process itself, so a test that needs storage to go away
+// and come back (issue #30's offline arm) can stop and restart the one
+// server it is talking to rather than killing whatever rclone happens to be
+// serving on this host.
+func standinOn(t *testing.T, root, prefix string) (StorageConfig, *exec.Cmd) {
 	t.Helper()
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -414,7 +419,7 @@ func standinOn(t *testing.T, root, prefix string) StorageConfig {
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
 	cfg.Bucket = "bucket"
 	cfg.Prefix = prefix
-	return cfg
+	return cfg, serve
 }
 
 // seedStandin writes one fixture of size bytes into the stand-in's storage
@@ -525,7 +530,7 @@ func TestOpenTimeColdAndWarm(t *testing.T) {
 		t.Skip("open-time measurement skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/open")
+	cfg, _ := standinOn(t, root, "u/open")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	sizes := openSizes()
@@ -585,7 +590,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Skip("stand-in proof skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/fillcap")
+	cfg, _ := standinOn(t, root, "u/fillcap")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	const name = "fill.bin"
@@ -656,7 +661,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 		t.Skip("stand-in proof skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/fillslow")
+	cfg, _ := standinOn(t, root, "u/fillslow")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	const fillName, openName = "fill.bin", "open.bin"

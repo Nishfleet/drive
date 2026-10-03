@@ -67,7 +67,7 @@ func initDevice(fs *flag.FlagSet, m *mountFlags, apiBase string) error {
 	if err := CheckRclone(CurrentGOOS(), rclone); err != nil {
 		return err
 	}
-	if err := Mount(CurrentGOOS(), m.common.home, rclone, c, false, false); err != nil {
+	if err := Mount(CurrentGOOS(), m.common.home, rclone, c, false, false, m.driveLetter); err != nil {
 		return err
 	}
 	return initAgents(Env{Home: m.common.home}.withDefaults(), apiBase)

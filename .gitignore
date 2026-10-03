@@ -10,6 +10,16 @@ dist/
 .dev.vars
 .wrangler/
 .cloudflare/
+
+# The Windows installer (drive#154): the built drive.exe, the vendor's
+# rclone.exe, WinFsp's MSI and the MSI and bundle built from installer/*.wxs
+# are all build artifacts of installer/windows-msi.yml, never committed. The
+# sources beside them are.
+/installer/drive.exe
+/installer/rclone.exe
+/installer/winfsp.msi
+/installer/drive.msi
+/installer/drive-setup.exe
 # Lighthouse CI's run artefacts (drive#225): the reports are the run's output,
 # and `git status` and a release should not carry them. The budgets live in
 # lighthouserc.json, which is committed.

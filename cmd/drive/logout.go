@@ -157,7 +157,7 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// with the key already dead on the server. The error is still returned, so
 	// nothing is hidden — it just no longer buys a leftover.
 	var removed error
-	for _, path := range []string{LoginItemPath(goos, home), DefaultConfigDir(home)} {
+	for _, path := range append(LoginItemFiles(goos, home), DefaultConfigDir(home)) {
 		if err := removeIfPresent(path); err != nil {
 			removed = errors.Join(removed, err)
 		}
@@ -291,6 +291,9 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 // attached, and "the mount stopped" is this command's promise, not a hope.
 // fusermount is the stock FUSE unmount on Linux; macOS unmounts with umount.
 func stopMount(goos, home string) error {
+	if goos == "windows" {
+		return stopWindowsMount(home)
+	}
 	on, err := Mounted(goos, home)
 	if err != nil {
 		return err

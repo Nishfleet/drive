@@ -120,6 +120,44 @@ func TestCheckRcloneReportsABinaryThatWillNotAnswer(t *testing.T) {
 	}
 }
 
+// TestInitRefusesAnOldRcloneBeforeItMounts is the drive#105 first-run path:
+// `drive init` must fail on Ubuntu 24.04's rclone before it writes a login
+// item or starts a mount, and the error must name the command that fixes it.
+func TestInitRefusesAnOldRcloneBeforeItMounts(t *testing.T) {
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
+	bin := writeFakeRclone(t, "rclone v1.60.1\n- os/version: ubuntu 24.04\n")
+	err := runInit([]string{
+		"--rclone", bin,
+		"--home", t.TempDir(),
+		"--endpoint", "http://127.0.0.1:1",
+		"--bucket", "b",
+		"--prefix", "u/1",
+	})
+	if err == nil {
+		t.Fatal("drive init accepted rclone 1.60.1; it must refuse before mounting")
+	}
+	msg := err.Error()
+	for _, want := range []string{"1.60.1", "too old", MinRcloneVersion, "rclone.org/downloads"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("drive init refusal must name %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestInitRefusesDriveLetterOffWindows(t *testing.T) {
+	if CurrentGOOS() == "windows" {
+		t.Skip("the refusal is for Mac and Linux")
+	}
+	err := runInit([]string{"--drive-letter", "Z:"})
+	if err == nil {
+		t.Fatal("drive init with --drive-letter off Windows must be refused")
+	}
+	if !strings.Contains(err.Error(), "Windows") {
+		t.Errorf("the refusal must say the flag is Windows-only: %v", err)
+	}
+}
+
 func TestRcloneInstallHint(t *testing.T) {
 	// A missing rclone gets every package manager, because there is nothing to
 	// compare and the package manager's version is the best first answer.

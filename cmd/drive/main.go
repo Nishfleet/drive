@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,12 @@ Usage:
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
+  drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Update flags:
+  --check   say whether a newer release exists, install nothing
+  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
@@ -54,9 +60,14 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --drive-letter  Windows: the drive letter to mount (first free letter from D:)
   --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --rc-addr     loopback address the mount's remote control binds (env
+                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+  --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
+                default the hostname)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
@@ -85,7 +96,13 @@ Logout flags:
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
 `
-const version = "0.1.0"
+
+// version is the fallback when the toolchain records no module version
+// in this binary (a checkout build: go build, go run, go test). A binary
+// installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
+// carries that tag in its build information, and `drive version`
+// prints that instead (cmd/drive/update.go versionText).
+var version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -128,10 +145,12 @@ func main() {
 		err = runLogout(os.Args[2:])
 	case "export":
 		err = runExport(os.Args[2:])
+	case "update":
+		err = runUpdate(os.Args[2:])
 	case "prefetch":
 		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		fmt.Println(versionText())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -177,6 +196,7 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 type mountFlags struct {
 	endpoint, bucket, prefix, region string
 	downloadURL                      string
+	device, rcAddr, driveLetter      string
 	// refusedSecret holds the removed --secret-key value. It is never read or
 	// printed: the value exists only so the flag package parses the command
 	// line correctly, and its presence is the thing that is refused.
@@ -209,6 +229,18 @@ func addStorageFlags(fs *flag.FlagSet) *mountFlags {
 	fs.StringVar(&m.refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
 	fs.BoolVar(&m.secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
 	fs.StringVar(&m.downloadURL, "download-url", "", "dl Worker to stream reads through")
+	// The device name is what a conflict copy is called (issue #30): a
+	// person's two devices need to be told apart by name, so the flag is
+	// here rather than only in the environment, and the plan sanitizes
+	// whatever it carries into a filename both platforms accept.
+	fs.StringVar(&m.device, "device", "", "name for this device in a conflict copy")
+	// rclone's remote control is how the background fill, the conflict
+	// guard and `drive status` all reach the one mount. Two mounts on the
+	// same host (the two-machine proof, issue #30) cannot both bind one
+	// loopback address, so the address is a flag and an environment
+	// variable with a constant default; a non-loopback value is refused.
+	fs.StringVar(&m.rcAddr, "rc-addr", "", "loopback address the mount's remote control binds")
+	fs.StringVar(&m.driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
 	m.common = addCommonFlags(fs)
 	return m
 }
@@ -226,10 +258,16 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	})
 	if refused {
 		// The value did land in this process's command line before it was
-		// refused -- the shell history and ps already hold it -- so the refusal
+		// refused — the shell history and ps already hold it — so the refusal
 		// cannot unsay that. It says so, and it says to replace the key, because
 		// a value that has been through argv is a value that has been exposed.
 		return "", StorageConfig{}, fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(m.common.home)))
+	}
+	// A drive letter is a Windows mount point. On Mac and Linux the mount is a
+	// folder, so the flag is refused there rather than silently ignored, which
+	// would leave a person believing their mount went somewhere it did not.
+	if m.driveLetter != "" && CurrentGOOS() != "windows" {
+		return "", StorageConfig{}, errors.New("--drive-letter is only for Windows; on Mac and Linux the drive mounts at the drive folder")
 	}
 	// The secret's sources are the config file this CLI wrote (mode 0600), the
 	// environment, or stdin (--secret-key-stdin). None of them is argv, which
@@ -245,6 +283,24 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	rclone, err := ResolveRclone(m.common.rclone)
 	if err != nil {
 		return "", StorageConfig{}, err
+	}
+	// DRIVE_DEVICE is read here, beside the flag, so both sources of the
+	// device name live in one place; Mount sanitizes whatever it is given.
+	if strings.TrimSpace(m.device) != "" {
+		_ = os.Setenv(deviceEnvName, m.device)
+	}
+	if strings.TrimSpace(m.rcAddr) != "" {
+		// A remote-control address that is not loopback is refused here
+		// rather than silently replaced by the shipped one: rclone's
+		// remote control is unauthenticated by design, so a value that
+		// would bind it off this machine is a named failure at the
+		// operator's own command. The background login item still
+		// falls back, because it is not a command and cannot answer.
+		if !IsLoopbackAddr(m.rcAddr) {
+			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
+				"is unauthenticated, so it binds %s only", m.rcAddr, RCAddr())
+		}
+		_ = os.Setenv(rcAddrEnvName, m.rcAddr)
 	}
 	return rclone, c, nil
 }
@@ -270,7 +326,7 @@ func runMount(args []string) error {
 	if err := CheckRclone(CurrentGOOS(), rclone); err != nil {
 		return err
 	}
-	return Mount(CurrentGOOS(), m.common.home, rclone, c, m.foreground, m.dryRun)
+	return Mount(CurrentGOOS(), m.common.home, rclone, c, m.foreground, m.dryRun, m.driveLetter)
 }
 
 func runUnmount(args []string) error {

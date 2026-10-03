@@ -11,16 +11,17 @@ same files.
 
 ## Before you start
 
-You need an invite and a machine running macOS or Linux. The drive is not open
-yet, so ask on the pricing page.
+You need an invite and a machine running macOS, Linux or Windows. The drive is
+not open yet, so ask on the pricing page.
 
-Nothing else. The install command brings rclone with it: the Linux packages
-declare `Depends: rclone` and the macOS formula declares a `rclone` dependency,
-so the package manager installs both. The mount needs rclone 1.68.0 or newer,
-and `drive init` says so and prints the fix if the one your package manager
-picks is older — Ubuntu 24.04's archive rclone is 1.60.1, so on that release
-install rclone from [rclone.org/downloads](https://rclone.org/downloads/)
-first.
+Nothing else on macOS and Linux. The install command brings rclone with it: the
+Linux packages declare `Depends: rclone` and the macOS formula declares a
+`rclone` dependency, so the package manager installs both. The mount needs
+rclone 1.68.0 or newer, and `drive init` says so and prints the fix if the one
+your package manager picks is older — Ubuntu 24.04's archive rclone is 1.60.1,
+so on that release install rclone from
+[rclone.org/downloads](https://rclone.org/downloads/) first. On Windows the
+installer brings rclone and WinFsp, so nothing is installed by hand there.
 
 ## 1. Install the command
 
@@ -46,7 +47,23 @@ One command installs the drive CLI and rclone together. The release that
 publishes these packages runs on a `v*` tag (`.goreleaser.yaml`), and until the
 first release you can build the same package from the source with
 `goreleaser release --snapshot --clean` and install the file it writes under
-`dist/`.
+`dist/`, or install from the source with
+`go install github.com/Nishfleet/drive/cmd/drive@latest`.
+
+On Windows, the MSI installer does it: it puts `drive.exe` and rclone on your
+PATH, brings WinFsp in through WinFsp's own package dependency, and registers
+the logon task. Until a signed release exists there is nothing public to
+download yet, and `winget install Nishfleet.Drive` comes with that release.
+
+When a new version ships, one command moves you to it:
+
+```sh
+drive update
+```
+
+It runs the same `go install` from a new shell, so it leaves the old binary in
+place until the new one is built, and your Drive folder and mount keep working
+throughout. `drive version` says which version you are on.
 
 ## 2. Point it at your storage
 
@@ -70,9 +87,10 @@ drive init
 
 `drive init` is the whole first run: it checks rclone is present and new
 enough, writes the login item that starts the mount at the next login (a
-launchd item on macOS, a systemd user unit on Linux), starts it now, and then
-looks for Claude, Codex, Gemini, Cursor and Kiro and connects each one it
-finds. A folder called **Drive** appears in your home directory, and every app
+launchd item on macOS, a systemd user unit on Linux, a Task Scheduler task on
+Windows), starts it now, and then looks for Claude, Codex, Gemini, Cursor and
+Kiro and connects each one it finds. A folder called **Drive** appears in your
+home directory on macOS and Linux, and a drive letter on Windows, and every app
 on the machine can open it. [Agents](/agents) has the details, including what
 an agent key cannot do.
 
@@ -88,6 +106,17 @@ drive status
 Storage is metered from the moment the mount starts, and {{FREE_USD}} of it is
 free every month. [Pricing and your bill](/pricing) has the ceiling and four
 worked sizes.
+
+## 5. Keep it current
+
+```sh
+drive update
+```
+
+`drive update` reads the newest released version, installs it with the same
+`go install` command this page started with, and prints the version the
+installed binary now reports. `drive update --check` says whether a newer
+version exists and changes nothing.
 
 ## Next
 
