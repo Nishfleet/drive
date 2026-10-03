@@ -135,6 +135,15 @@ of its young life, at 10 GB. It is the smallest number in this document and the 
 because it is the difference between a customer moving a folder and a customer being billed for a
 folder move as if the moved bytes were new storage.
 
+One honest bound on the sentence the limits page draws from this: the first hour a young move lands in
+still books the extra minutes, because the waiver is a `NOT EXISTS` on the successor row and that row
+does not exist until the successor's create event is stored. The nightly reconciler finds the missing
+create in the provider's own listing and rewinds the watermark, so the corrected number is what any
+monthly bill is built from — which is what "a move never adds a byte to your bill" claims, and what
+`test/meter.test.mjs`'s late-arrival case proves. The exception applies to a same-size save-replace too
+(Nish's decision A, 2026-10-03), which is the same shape in `file_versions`; at most 60 minutes × the
+size is waived per same-millisecond, same-size handoff.
+
 ## What I searched and did not adopt
 
 - **A directory-rename primitive in S3, in B2's native API and in S3-compatible servers**: none of
