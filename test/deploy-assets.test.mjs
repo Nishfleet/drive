@@ -421,12 +421,33 @@ test("a deployment with no api binding is a closed door, not an open one", async
   );
 });
 
+test("a binding that fails answers the one failure table's words", async () => {
+  // A service Worker that throws mid sign-in: the family must not answer a
+  // stack, or the asset layer's 404, or a bare Hono string. app.onError
+  // (src/index.js) already maps an error raised anywhere on this app to the
+  // message table's one sentence, and this is the check that holds the
+  // property the caller actually sees when the api Worker is unreachable
+  // behind the binding.
+  const response = await siteRequest(new Request("https://drive.test/v1/health"), {
+    API: {
+      fetch: () => Promise.reject(new Error("the api Worker threw")),
+    },
+  });
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "the message table speaks, whatever failed underneath it",
+  );
+});
+
 test("one host answers both families: the api Worker behind the binding", async () => {
   // The proof this issue asks for, at the level a worker can prove it: the
   // site's own route table, a service binding, and the api Worker's own
-  // dispatcher behind it. The CLI's POST /v1/device/code comes back with the
-  // api Worker's own answer, and no part of the device flow is re-implemented
-  // on the site side.
+  // dispatcher behind it. The binding is injected, because no deployment has
+  // produced one — drive-api is not deployed, and a real binding fails this
+  // Worker's own deploy until it is — so what this proves is that the two
+  // Workers compose through this route table, not that the live host answers.
   const env = {
     API: {
       fetch: (/** @type {Request} */ request) =>
