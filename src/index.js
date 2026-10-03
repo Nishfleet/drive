@@ -410,7 +410,12 @@ export function createApp() {
     if (c.env.DRIVE_DB) {
       capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
     }
-    return handleUsageRequest(c.req.raw, { ...account, capUsd });
+    // The third argument is the live rclone upload queue, which the Worker
+    // cannot know until the device store lands (build-spec.md data model
+    // `devices`): it is rclone's, on the Mac. Until then the endpoint answers
+    // the line as null and the usage page hides it, which is the honest answer
+    // for an account whose no device has signed in yet (drive issue #308).
+    return handleUsageRequest(c.req.raw, { ...account, capUsd }, null);
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The

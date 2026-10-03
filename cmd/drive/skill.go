@@ -116,6 +116,8 @@ func skillBody(driveDir string) string {
 		"- To find a file by name, use the `search_files` MCP tool. For the\n" +
 		"  fast, index-backed search, run `drive search <words>` in a terminal:\n" +
 		"  it answers from the drive's file index and does not walk the folder.\n" +
+		"- The folder is not fully on the computer: the parts an app has opened\n" +
+		"  sit in a capped cache, and `drive cache --max 5G` sizes it.\n" +
 		"- Deletes are recoverable: `drive restore <file>` brings a file back.\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve`\n" +
 		"  when the changes are ready to copy back.\n"

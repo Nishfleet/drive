@@ -29,10 +29,13 @@ Usage:
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
-  drive status [flags]     the mount, the upload queue, what is kept offline, and this month's cost
+  drive status [flags]     the mount, the cache, the upload queue, what is kept offline, and this month's cost
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
+  drive cache              show the disk the mount's cache uses and its limit
+  drive cache --max 5G     change that limit
+  drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
@@ -79,6 +82,10 @@ Link flags (share, request):
   --api         api Worker base URL (env DRIVE_API_URL)
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
+
+Cache flags:
+  --max     the cache limit, a size like 5G or 500M (default 20G)
+  --clear   empty the cache now; uploads waiting and files kept offline stay
 
 Export flags:
   --out   file to write the export to; stdout when it is not given
@@ -142,6 +149,8 @@ func main() {
 		err = runResume(os.Args[2:])
 	case "cap":
 		err = runCap(os.Args[2:])
+	case "cache":
+		err = runCache(os.Args[2:])
 	case "share":
 		err = runShare(os.Args[2:])
 	case "request":
