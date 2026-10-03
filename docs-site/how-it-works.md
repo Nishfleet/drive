@@ -32,8 +32,8 @@ offline stay on this computer, are never evicted, and count toward that limit.
 
 ## Keeping a folder on this computer
 
-If you are going somewhere with no network, tell the drive to keep the folder
-here first:
+If you are going somewhere with no network, keep a cache copy of the folder on
+this computer first:
 
 ```sh
 drive offline <path>      # keep this file or folder on the computer
