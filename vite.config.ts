@@ -94,7 +94,7 @@ function webAnalyticsBeacon(): Plugin {
       // readFileSync would then fail on a path that looks plausible.
       if (assetsDir !== "" && !isAbsolute(assetsDir)) {
         throw new Error(
-          `drive-web-analytics-beacon: the client output directory is not absolute: ${assetsDir}`,
+          `drive-web-analytics-beacon (environment client): build.outDir resolved to ${assetsDir}, which is not an absolute path`,
         );
       }
       return true;

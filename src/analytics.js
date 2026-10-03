@@ -34,6 +34,27 @@
 // secret: the token is in the HTML of every page a visitor loads, so it is
 // public by construction, and Cloudflare's own docs say so. An unset setting
 // is the switched-off case and is not an error.
+/**
+ * The Cloudflare Web Analytics beacon (drive issue #246).
+ *
+ * switched off by design: Nish decided on 2026-10-03 to ship the code half now
+ * and the token half later, so nothing renders until a build setting carries the
+ * dashboard's token. The dashboard mints the token and no API this host can
+ * reach can mint one, so the token and the real page-view proof are a separate
+ * follow-up for Nish, and this module and the plugin in vite.config.ts are the
+ * whole of the change.
+ *
+ * The module holds the parts a page must not get wrong: the token's shape, the
+ * tag, where in a document the tag goes, and how a page that already carries a
+ * beacon is handled. The plugin in vite.config.ts holds only which pages and
+ * which build, so the six pages in BEACON_PAGES can move without touching a
+ * build hook.
+ */
+
+// The build-time setting that carries the beacon token. It is a variable, not a
+// secret: the token is in the HTML of every page a visitor loads, so it is
+// public by construction, and Cloudflare's own docs say so. An unset setting
+// is the switched-off case and is not an error.
 export const BEACON_TOKEN_SETTING = "DRIVE_CF_BEACON_TOKEN";
 
 // The pages the beacon is rendered into, as the file names the build emits: the
@@ -57,22 +78,22 @@ export const BEACON_PAGES = Object.freeze([
 // `defer` so it costs no layout and no main-thread parse before the page's own
 // work, and the single-quoted data attribute so the JSON inside it needs no
 // HTML entity escaping.
+// Cloudflare's beacon snippet, as the dashboard writes it. One string, so the
+// tag, the strip and the reader are three uses of one URL.
 const BEACON_SRC = "https://static.cloudflareinsights.com/beacon.min.js";
 
-// Any beacon tag already in a page, however it is wrapped or quoted: the
-// dashboard snippet a person may have pasted by hand, and this module's own
-// output from an earlier build. A page that already carries one has it removed
-// before the new tag goes in, so a re-build with a different token replaces the
-// old token instead of sending the site's page views to a token nobody reads
-// any more. The host is Cloudflare's static insights host and the match is on
-// the script under it, not on one file name: Cloudflare has changed the file
-// name of the beacon, and a page that still carries the old one must not end up
-// with two beacons.
+// Two patterns over that one URL, deliberately:
 //
-// Both patterns tolerate whitespace before the closing `>`. HTML allows it, so a
-// hand-formatted snippet can carry it, and a tag the strip does not recognise
-// and the reader does not count is exactly the page that would ship two beacons
-// and report its page views twice.
+// * EXISTING_BEACON (the strip) takes a whole script element, from `<script`
+//   through a tolerant `</script>` and the line under it, and it also takes an
+//   opening tag that carries other attributes in any order, because the
+//   dashboard snippet can be pasted by hand in any order.
+// * ANY_BEACON (the reader) is the whole script element under the same host and
+//   nothing more, so it counts the beacon a page carries however the opening tag
+//   is arranged.
+//
+// test/web-analytics.test.mjs pins both against the same four shapes, so the
+// agreement between them is a test rather than a hope that they stay in step.
 const EXISTING_BEACON =
   /[ \t]*<script\b[^>]*\bsrc=["'][^"']*static\.cloudflareinsights\.com\/[^"']*["'][^>]*\s*>\s*<\/script\s*>\r?\n?/g;
 const ANY_BEACON = /<script\b[^>]*static\.cloudflareinsights\.com\/[^>]*\s*>\s*<\/script\s*>/g;
@@ -127,7 +148,9 @@ const TOKEN_SHAPE = /^[0-9a-f]{32}$/i;
  * A value that is present but not the dashboard's 32-hex token is an error, and
  * the build fails on it: a beacon with a wrong token still loads the third-party
  * script on every page view and reports nothing, which spends the budget below
- * and buys no measurement.
+ * and buys no measurement. The message quotes the first characters to look for
+ * (a truncated paste, an editor's smart quotes, a URL instead of the token), not
+ * only the length, because the number alone does not say which of those it was.
  * @param {string | undefined} setting the raw setting value
  * @returns {string} the token to render, or "" when the setting is not set
  */
@@ -136,7 +159,7 @@ export function beaconToken(setting) {
   if (value === "") return "";
   if (!TOKEN_SHAPE.test(value)) {
     throw new Error(
-      `${BEACON_TOKEN_SETTING} is not a Cloudflare Web Analytics beacon token: expected 32 hex characters, got ${value.length} characters. Set it to the token in the Cloudflare dashboard's beacon snippet (Web Analytics -> your site), or unset it to ship the pages with no beacon at all.`,
+      `${BEACON_TOKEN_SETTING} is not a Cloudflare Web Analytics beacon token: expected 32 hex characters, got ${value.length} starting ${JSON.stringify(value.slice(0, 8))}. Set it to the token in the Cloudflare dashboard's beacon snippet (Web Analytics -> your site), or unset it to ship the pages with no beacon at all.`,
     );
   }
   return value;

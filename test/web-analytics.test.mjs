@@ -160,6 +160,11 @@ test("a foreign analytics script is not the beacon and does not fail the build",
   const html = read("public/signin.html").replace("</head>", `  ${foreign}\n</head>`);
   const built = withBeacon(html, beaconToken(TOKEN));
   assert.equal(beaconTagsIn(built).length, 1, "the foreign script is not a beacon");
+  assert.equal(
+    assertSingleBeacon(built, "signin.html"),
+    built,
+    "the build's gate lets a foreign script through, because it counts beacons",
+  );
   assert.ok(built.includes(foreign), "the foreign script is left where the page put it");
 });
 
@@ -219,11 +224,11 @@ test("the build's self-check passes on one beacon and fails on zero or two", () 
   assert.equal(assertSingleBeacon(built, name), built, "one beacon passes the build's gate");
   assert.throws(
     () => assertSingleBeacon(html, name),
-    new RegExp(name),
-    "no beacon fails the build",
+    new RegExp(`${name} carries 0`),
+    "no beacon fails the build, and the count is in the message",
   );
   assert.throws(
-    () => assertSingleBeacon(`${built}\n${beaconTag(built === html ? TOKEN : OTHER_TOKEN)}`, name),
+    () => assertSingleBeacon(`${built}\n${beaconTag(OTHER_TOKEN)}`, name),
     new RegExp(`${name} carries 2`),
     "two beacons fail the build, so a paste the strip missed cannot ship",
   );
