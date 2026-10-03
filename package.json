@@ -16,11 +16,10 @@
     "pretest": "npm run check",
     "docs:render": "node src/render-docs.js",
     "docs:build": "npm run docs:render && vitepress build docs-site",
-    "eval:agents": "npm run docs:render && evals/agents/node_modules/.bin/promptfoo eval --config evals/agents/promptfooconfig.yaml --output evals/agents/results/latest.json && npm run eval:agents:endstate",
+    "eval:agents": "npm run docs:render && evals/agents/node_modules/.bin/promptfoo eval --config evals/agents/promptfooconfig.yaml --output evals/agents/results/latest.json ${DRIVE_EVAL_SPLIT:+--tests $DRIVE_EVAL_SPLIT} && npm run eval:agents:endstate",
     "test": "npm run docs:build && node --test",
     "eval:agents:install": "python3 -m venv evals/agents/.venv && evals/agents/.venv/bin/pip install -q -r evals/agents/requirements.txt",
-    "eval:agents:endstate": "node src/render-docs.js && evals/agents/.venv/bin/inspect eval evals/agents/endstate.py"
-  },
+    "eval:agents:endstate": "node src/render-docs.js && evals/agents/.venv/bin/inspect eval evals/agents/endstate.py"  },
   "engines": {
     "node": ">=24"
   },

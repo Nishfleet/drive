@@ -19,12 +19,15 @@ promptfoo is not a root dependency, so a root `npm ci` does not install it. Do
 not run `npx` or `npm exec` for it: that downloads the package each time and
 fills a runner's memory limit (drive#257).
 
-A held-out run is the same command with the split's path set. That path is
-outside this checkout, so the hill-climber (#223) cannot read the tasks from
-the repo:
+A held-out run is the same command with the split's path set, once.
+`DRIVE_EVAL_SPLIT` is the setting both suites read: promptfoo gets it
+as its `--tests` flag and the end-state suite uses it as its task
+file. That path is outside this checkout, so the hill-climber (#223)
+cannot read the tasks from the repo:
 
 ```sh
-npm run eval:agents -- --tests /home/nish/.local/share/drive/eval-holdout.yaml
+DRIVE_EVAL_SPLIT=/home/nish/.local/share/drive/eval-holdout.yaml \
+  npm run eval:agents
 ```
 
 ## The tool, and why
@@ -120,19 +123,24 @@ never reads the agent's answer:
 
 - **the target file exists with the right bytes** — the task's own end state;
 - **nothing got deleted** — every seeded file still holds its bytes;
-- **the key is scoped** — every prefix the stand-in holds belongs to an account
-  this run created, so nothing landed outside `u/` or in another account's
-  folder.
+- **the key is scoped** — the only work anywhere on the stand-in is
+  inside this sample's own `u/<id>/` prefix. The grader lists every
+  object in the bucket (the server's directory cache is off, so a
+  write the agent made is already there) and fails on any key
+  outside the sample's prefix or inside another account's folder,
+  and on a listing that could not be made at all.
 
 The stand-in is anonymous (no `--auth-key`), like the repo's own: a key minted
 and enforced by a storage endpoint is the STS work in `workers/api/src/s3-keys.js`,
 and its real-vendor proof is #173. That is the one part of "the key is scoped"
 this stand-in cannot carry, and it is why the check above is a prefix check.
 
-`sandbox="local"` runs the agent's shell on the eval host. A model under test
-gets a shell: run it on a machine where that is acceptable, or move the suite
-to an Inspect compose sandbox (the isolation upgrade this slice leaves open).
-
+**Warning: a model under test gets the eval host's own shell.** `sandbox="local"
+` (the default) lets it read the host's environment, repository and any
+credentials on it, and reach the stand-in's directory. Run it on a machine
+where that is acceptable and free of secrets, or move the suite to an Inspect
+compose sandbox (`DRIVE_EVAL_SANDBOX=compose`, the isolation upgrade this slice
+leaves open).
 ## What is not done yet
 
 The end-state suite runs its tasks on a storage stand-in the agent reaches with

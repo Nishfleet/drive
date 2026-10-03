@@ -112,6 +112,31 @@ test("the graded facts are the account's files, and the seed is the module's", (
   assert.ok(!scorerBody.includes("state.output"), "the grader does not grade the answer text");
 });
 
+test("the grader reads a real inventory and fails closed when it cannot", () => {
+  const source = module();
+  // The whole object inventory, recursively, not the parent's directory list:
+  // `lsd` on `u/` sees only immediate account folders, so a write into another
+  // account's prefix or outside `u/` is invisible to it.
+  assert.match(source, /def keys\(self\)/, "the stand-in exposes a real inventory");
+  assert.match(source, /"lsf"/, "the inventory is a recursive file listing");
+  assert.match(source, /--recursive/, "the listing recurses");
+  assert.match(source, /--files-only/, "the listing holds objects, not folders");
+  assert.ok(!source.includes("roots("), "the lsd-on-u check is gone");
+  // A call that fails or hangs returns None, and the grader fails closed.
+  assert.match(source, /except \(subprocess\.TimeoutExpired, OSError\)/, "a dead stand-in is caught");
+  assert.match(source, /the stand-in's listing failed/, "a failed listing is a failure, not a pass");
+  // A correct save writes a new key inside the account's own prefix; that is
+  // allowed, and only a key outside it is an escape.
+  assert.match(source, /key\.startswith\(own\)/, "the account's own prefix is allowed");
+  assert.match(source, /wrote into another account's folder/, "cross-account writes fail");
+  assert.match(source, /wrote outside its own prefix/, "writes outside u/ fail");
+  // The server's directory cache must be zero, or a write the agent made is
+  // invisible to the grader for up to five minutes.
+  assert.match(source, /"--dir-cache-time",\s*"0"/, "the stand-in's dir cache is off");
+  // The held-out split reaches this suite by the same setting as the reader.
+  assert.match(source, /DRIVE_EVAL_SPLIT/, "the task file follows the split setting");
+});
+
 test("the agent's prompt carries the same docs and help the reading suite carries", () => {
   const source = module();
   assert.match(source, /docs-site.*\.rendered/, "the docs come from the one render");
