@@ -45,9 +45,15 @@ test("the module is valid Python that names the tool's own agent and scorer seam
   for (const seam of ["basic_agent", "scorer", "Task", "Sample", "sandbox"]) {
     assert.ok(source.includes(seam), `the module uses Inspect's own ${seam} seam`);
   }
-  assert.ok(
-    !/subprocess\.Popen\(\s*\[\s*"bash"/.test(source),
-    "the agent's shell is the sandbox's, not one the module spawns by hand",
+  // The agent's shell is Inspect's own bash tool, wired into its own agent
+  // solver. Asserting that is what makes the check prove something: a module
+  // that spawned bash itself would fail this even though it passed a search
+  // for the word.
+  assert.match(source, /from inspect_ai\.tool import bash/, "the shell tool is Inspect's");
+  assert.match(
+    source,
+    /basic_agent\([\s\S]{0,120}tools=\[bash\(timeout=60\)\]/,
+    "the shell belongs to Inspect's own agent solver",
   );
 });
 
@@ -89,6 +95,14 @@ test("the graded facts are the account's files, and the seed is the module's", (
   const source = module();
   // The seeded files the grader promises not to lose are written here, once.
   assert.match(source, /SEED = \{/, "the seed is one table in the module");
+  // A task's own editable file is not one of the seeds the grader promises not
+  // to lose, so the two sets cannot collapse into one another.
+  assert.match(source, /setup_path/, "a task can seed the file it grades");
+  const tasks = read("evals/agents/tasks/endstate.yaml");
+  assert.ok(
+    tasks.includes("setup_path: notes/draft.txt"),
+    "the replace task grades a file it seeded, not one SEED owns",
+  );
   // The three checks the issue names are the grader's, in its own words.
   for (const check of ["nothing got deleted", "the key is scoped", "the right bytes"]) {
     assert.ok(source.includes(check), `the grader carries its own ${check} check`);

@@ -26,6 +26,7 @@ Run it with the suite's one command, `npm run eval:agents`.
 from __future__ import annotations
 
 import atexit
+import os
 import re
 import subprocess
 import tempfile
@@ -290,15 +291,24 @@ def dataset_from(yaml_path: Path, standin: Standin) -> MemoryDataset:
     """One sample per task, each on its own fresh stand-in account."""
     entries = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     # Every sample's seeded files are written before the stand-in serves them,
-    # and the endpoint the prompt carries is the one the server logs.
-    for _ in entries:
+    # and the endpoint the prompt carries is the one the server logs. The
+    # account list is built in the same loop, so it cannot drift from the
+    # entries the second loop walks.
+    accounts: list[str] = []
+    for entry in entries:
         account = standin.account()
         _STANDINS[account] = standin
+        accounts.append(account)
+        # A task's own editable file, seeded next to the ones it must leave
+        # alone: replacing a file the "nothing got deleted" check also reads
+        # would make that check fail no matter what the agent did.
+        if "setup_path" in entry:
+            target = standin.root / BUCKET / "u" / account / entry["setup_path"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(entry["setup_bytes"], encoding="utf-8")
     standin.start()
-    accounts = iter(list(_STANDINS))
     samples: list[Sample] = []
-    for entry in entries:
-        account = next(accounts)
+    for entry, account in zip(entries, accounts):
         meta: dict[str, Any] = {
             "account": account,
             "grader": entry["grader"],
@@ -347,6 +357,6 @@ def drive_endstate() -> Task:
             ),
         ],
         scorer=end_state(),
-        sandbox="local",
+        sandbox=os.environ.get("DRIVE_EVAL_SANDBOX", "local"),
         metadata={"slice": "end-state graders on a fresh stand-in account (drive#298)"},
     )

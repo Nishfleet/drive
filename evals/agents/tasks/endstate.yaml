@@ -56,13 +56,16 @@
 - description: replace a file's contents and leave the others alone
   source: docs-site/quickstart.md, "2. Point it at your storage"; docs-site/security.md, "The spending cap"
   grader: save_file
-  target_path: notes/todo.txt
+  setup_path: notes/draft.txt
+  setup_bytes: "yesterday's draft\n"
+  target_path: notes/draft.txt
   target_bytes: "buy a plane ticket\nbook the hotel\n"
   why_hard: >
     A replace is a delete underneath — the agent has to overwrite the key
     rather than remove it first, or the stand-in's answer is a lost file, and
-    the other files must still be there when it has finished.
+    the notes and the photo it started with must still be there when it has
+    finished.
   task: >
-    Update notes/todo.txt in my account so it holds exactly these two lines,
+    Update notes/draft.txt in my account so it holds exactly these two lines,
     in this order, each with a newline: "buy a plane ticket" then "book the
     hotel". Leave every other file in the account alone.
