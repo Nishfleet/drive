@@ -20,9 +20,9 @@ func detachedProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: detachedProcess | newProcessGroup}
 }
 
-// ownGroupProcAttr starts the child in its own process group, so a signal that
-// reaches the group does not reach this process. Setpgid's Windows
-// counterpart is CREATE_NEW_PROCESS_GROUP.
+// ownGroupProcAttr starts the child in its own process group, so a signal sent to
+// the parent's group does not reach the child. Setpgid's Windows counterpart
+// is CREATE_NEW_PROCESS_GROUP.
 func ownGroupProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: newProcessGroup}
 }

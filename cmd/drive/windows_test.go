@@ -350,7 +350,7 @@ func TestWindowsMountProof(t *testing.T) {
 		// runs, so a missing rclone here means that install broke. Skipping
 		// would leave the job green with no drive-letter mount in it, so this
 		// is a failure, not a skip.
-		t.Fatalf("rclone is not on PATH, so the job's install step broke: %v", err)
+		t.Fatalf("rclone is not on PATH, so the windows-latest job's rclone install step broke: %v", err)
 	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "data"), 0o755); err != nil {
