@@ -49,13 +49,14 @@ export const DODO_EVENT_NAME = "drive.usage";
 const INGEST_BATCH = 1000;
 
 /**
- * How far back the gap detector looks, in hours. A day and a day over is
- * chosen so the detector is a cheap bounded read on every probe rather than a
+ * How far back the gap detector looks, in hours. Two days is chosen so the
+ * detector is a cheap bounded read on every probe rather than a
  * walk of every push the deployment has ever made: the question an operator
- * has is "is money being lost right now", and an hour is long enough that the
+ * has is "is money being lost right now", and two days is long enough that the
  * two nightly runs and a deploy cannot outrun the window, and short enough
  * that the statement is one indexed range on billing_pushes_hour_idx and
- * usage_minutes' hour index. It is exported and named so the window is a
+ * usage_minutes_hour_idx (migrations/drive/0005_meter.sql,
+ * 0013_billing_pushes.sql). It is exported and named so the window is a
  * tested constant rather than a literal buried in a query.
  */
 export const BILLING_PUSH_GAP_HOURS = 48;
@@ -63,15 +64,22 @@ export const BILLING_PUSH_GAP_HOURS = 48;
 /**
  * The metered hours inside the window that no push reached.
  *
- * The read is a LEFT JOIN from the hours the meter actually rolled to the
- * pushes that were recorded for them, so the gap is computed by the database
- * rather than by pulling both sets into the isolate and subtracting them
- * there. Only hours an account with a Dodo customer holds count: an account
- * with no dodo_customer_id is skipped by the push for a reason that is not a
- * lost push (there is no Dodo customer to bill), and counting its hours would
- * raise a permanent false alarm on every deployment that has signed nobody up
- * yet. The WHERE also drops the hour still in progress, which the meter has
- * not closed and therefore neither the rollup nor the push has seen.
+ * The read is an anti-join (NOT EXISTS) from the hours the meter actually
+ * rolled to the pushes that were recorded for them, so the gap is computed by
+ * the database rather than by pulling both sets into the isolate and
+ * subtracting them there. Only hours an account with a Dodo customer holds
+ * count (the accounts join is INNER, on dodo_customer_id): an account with no
+ * dodo_customer_id is skipped by the push for a reason that is not a lost push
+ * (there is no Dodo customer to bill), and counting its hours would raise a
+ * permanent false alarm on every deployment that has signed nobody up yet. The
+ * WHERE also drops the hour still in progress, which the meter has not closed
+ * and therefore neither the rollup nor the push has seen.
+ *
+ * The result is a count of distinct hours, not of (account, hour) pairs: 100
+ * stuck accounts across 48 hours is 48 here, because the question the report
+ * answers is "does the push reach anyone", and one line per hour is what an
+ * operator reads. Distinct-account counts are deliberately not a second figure
+ * on this line.
  *
  * @param {D1Database} db
  * @param {{now?: number|Date|string, hours?: number}} [options]
