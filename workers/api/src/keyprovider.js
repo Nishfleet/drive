@@ -7,8 +7,10 @@
  * @typedef {"list"|"read"|"write"|"delete"} Capability
  * @typedef {{prefix: string, capabilities: ReadonlyArray<Capability>}} KeyScope
  *
- * The secret is shown once and never stored by the api.
- * @typedef {{keyId: string, accessKeyId: string, secret: string}} MintedKey
+ * The secret is shown once and never stored by the api. `expiresAt` is the
+ * epoch second the credential stops working at, or null when the kind never
+ * expires: the caller (the CLI) shows it, and the store enforces it.
+ * @typedef {{keyId: string, accessKeyId: string, secret: string, sessionToken?: string|null, expiresIn?: number|null, expiresAt?: number|null}} MintedKey
  *
  * @typedef {object} KeyProvider
  * @property {(scope: KeyScope) => Promise<MintedKey>} mint
@@ -41,6 +43,114 @@ export const CAPABILITIES_BY_KIND = Object.freeze({
   s3: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
   branch: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
 });
+
+/**
+ * The hour. Every machine credential — an agent tool's key, a raw s3 key, a
+ * key a sandbox holds — lives this long and is renewed only while what holds
+ * it is still allowed (drive issue #106).
+ *
+ * Space hands out a one-hour scoped credential and swaps it as the agent
+ * works; ours lived until the person revoked it, so a leaked agent key was a
+ * key that worked forever. The api Worker keeps only a hash, so a leaked
+ * *secret* is not what this bounds: what it bounds is the credential itself,
+ * which is what a sandbox environment, a shared terminal or a copied MCP
+ * entry hands over.
+ */
+export const AGENT_KEY_TTL_SECONDS = 3600;
+
+/**
+ * How long a minted credential is good for, by kind.
+ *
+ * `null` is a key that never dies on its own, and only one kind earns it: a
+ * person's own device. The table is the authority, exactly as
+ * CAPABILITIES_BY_KIND is, so a kind cannot be given a short life in one
+ * place and a long one in another. Every other kind is a machine credential,
+ * so every other kind gets the hour; the two tables are pinned to each other
+ * by the test in workers/api/test/keyprovider.test.js, so a kind cannot be
+ * added to one without the other.
+ * @type {Readonly<Record<KeyKind, number|null>>}
+ */
+export const KEY_TTL_SECONDS = Object.freeze({
+  device: null,
+  agent: AGENT_KEY_TTL_SECONDS,
+  s3: AGENT_KEY_TTL_SECONDS,
+  branch: AGENT_KEY_TTL_SECONDS,
+});
+
+/**
+ * The seconds a kind's credential lives, or null when it never expires. An
+ * unknown kind is refused here rather than answered `null`: a typo silently
+ * minting an immortal credential is the failure the whole table exists to
+ * stop.
+ * @param {KeyKind} kind
+ * @returns {number|null}
+ */
+export function keyTtlSeconds(kind) {
+  if (!Object.hasOwn(KEY_TTL_SECONDS, kind)) {
+    throw new TypeError(`No key lifetime for kind ${JSON.stringify(kind)}.`);
+  }
+  const ttl = KEY_TTL_SECONDS[/** @type {KeyKind} */ (kind)];
+  return typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0 ? ttl : null;
+}
+
+/**
+ * The seconds a minted credential lives, with the kind's hour as the ceiling
+ * (drive issue #106).
+ *
+ * A provider may name a session lifetime of its own, and a shorter one wins:
+ * a session that dies in 15 minutes must not be stretched to the api's hour
+ * by bookkeeping that outlives it. A longer one does not win, and that is the
+ * half the issue is about — "one hour, and no longer" is a claim the api
+ * makes about its own credential, so a provider session of six hours is
+ * refused by the api at the hour and a tool that keeps working keeps asking
+ * for a fresh credential. The api's enforcement is the bound, so the bound
+ * cannot be widened from a config file.
+ *
+ * `null` still means the kind never expires, and still only a person's own
+ * device earns it.
+ * @param {KeyKind} kind
+ * @param {number|null|undefined} providerExpiresIn the provider session's own
+ *   seconds, when it names one
+ * @returns {number|null}
+ */
+export function mintTtlSeconds(kind, providerExpiresIn) {
+  const ceiling = keyTtlSeconds(kind);
+  if (ceiling === null) {
+    return null;
+  }
+  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
+    return ceiling;
+  }
+  if (providerExpiresIn <= 0) {
+    return ceiling;
+  }
+  return Math.min(providerExpiresIn, ceiling);
+}
+
+/**
+ * The seconds a renewal may add to a row, and the ceiling on every renewal
+ * that row will ever get (drive issue #106).
+ *
+ * A provider that names a session lifetime of its own keeps it: a credential
+ * whose session dies in 15 minutes must not be renewed into an hour, because
+ * the hour would be a claim the provider does not stand behind. So the row
+ * carries the lifetime the mint actually gave it — the kind's hour as a
+ * ceiling, the provider's own session when that is shorter — and every
+ * renewal is measured from that. A row written before the column existed
+ * carries nothing, and the kind's hour is then the ceiling: an old row is not
+ * handed a longer life than a new one.
+ *
+ * @param {{kind?: string, ttlSeconds?: number|null}} device the row being renewed
+ * @param {number} ceiling the kind's own lifetime
+ * @returns {number}
+ */
+export function renewTtlSeconds(device, ceiling) {
+  const row = /** @type {{ttlSeconds?: number|null}} */ (device).ttlSeconds;
+  if (typeof row === "number" && Number.isFinite(row) && row > 0) {
+    return Math.min(row, ceiling);
+  }
+  return ceiling;
+}
 
 /** @typedef {"read_only"|"read_write"} TeamRole */
 

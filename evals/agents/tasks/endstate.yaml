@@ -1,0 +1,71 @@
+# The end-state split (drive issue #298): the tasks whose graders check the
+# stand-in account instead of the answer text.
+#
+# Each task runs on its own fresh account on the storage stand-in: a
+# `u/<id>/` prefix with `notes/todo.txt` and `photos/keep.txt` seeded into it,
+# reached with a real key pair over `rclone serve s3`. The grader is
+# endstate.py's `end_state` scorer, which reads the account back and checks
+# three things: the target file holds the right bytes, nothing got deleted,
+# and nothing landed outside the account's own prefix.
+#
+# `grader` names the end-state check, `target_path`/`target_bytes` the bytes
+# it must find. A read-only task sets `grader: unchanged` and its grader asks
+# for the account exactly as it started.
+#
+# Where the tasks came from: the docs' own examples (quickstart step 2 and 5,
+# the Web Files page), then the hard cases the parent issue lists. Every hard
+# task says why a person finds it hard.
+
+- description: save the quickstart's first file into the account
+  source: docs-site/quickstart.md, "2. Point it at your storage"
+  grader: save_file
+  target_path: report.txt
+  target_bytes: "drive holds this\n"
+  task: >
+    Save a file called report.txt at the top of my drive account, containing
+    exactly the line "drive holds this" (with a newline at the end). Tell me
+    what you did.
+
+- description: copy a file inside the account, leaving the original in place
+  source: docs-site/quickstart.md, "5. Check it"; docs-site/limits.md, "Not in version 1"
+  grader: save_file
+  target_path: backup/todo.txt
+  target_bytes: "buy a plane ticket\n"
+  why_hard: >
+    A copy is a read and a write, and version 1 has no copy command — so the
+    agent has to fetch the bytes first and put them back at a second path
+    without touching the first, which is exactly the mistake a person makes
+    with a mount that caches.
+  task: >
+    There is a file notes/todo.txt in my account. Make a backup of it at
+    backup/todo.txt, so both paths hold the same bytes afterwards. Do not
+    change the original.
+
+- description: report the account's files and change nothing
+  source: docs-site/agents.md, "What an agent key can do"
+  grader: unchanged
+  why_hard: >
+    The task is a read, but the graded fact is a negative: an agent that
+    "helpfully" rewrites what it read, or mounts and lets a write-back fire,
+    fails — and the refusal to write is the very thing an agent key promises.
+  task: >
+    List every file in my drive account, with the folder it is in. Read only:
+    by the end of this task the account must hold exactly the files it holds
+    now, with the same bytes.
+
+- description: replace a file's contents and leave the others alone
+  source: docs-site/quickstart.md, "2. Point it at your storage"; docs-site/security.md, "The spending cap"
+  grader: save_file
+  setup_path: notes/draft.txt
+  setup_bytes: "yesterday's draft\n"
+  target_path: notes/draft.txt
+  target_bytes: "buy a plane ticket\nbook the hotel\n"
+  why_hard: >
+    A replace is a delete underneath — the agent has to overwrite the key
+    rather than remove it first, or the stand-in's answer is a lost file, and
+    the notes and the photo it started with must still be there when it has
+    finished.
+  task: >
+    Update notes/draft.txt in my account so it holds exactly these two lines,
+    in this order, each with a newline: "buy a plane ticket" then "book the
+    hotel". Leave every other file in the account alone.

@@ -7,15 +7,27 @@
 //
 //   * the FileStore (src/files.js), for the copy and for the file listings the
 //     diff compares, and
-//   * the `branches` table (migration 0003), for the snapshot taken at branch
-//     time and the branch's state (`open` / `approved` / `discarded`).
+//   * the `branches` table (migration 0003), for the branch's state
+//     (`open` / `approved` / `discarded`), and
+//   * the snapshot store (a KV namespace, `BRANCH_SNAPSHOTS`, migration 0012),
+//     for the `{size, etag, modified}` snapshot taken at branch time — one
+//     entry per file, held out of the row so a branch of tens of thousands of
+//     files lands (drive#252, the phase 2 of drive#157). A nightly sweep
+//     (`backfillBranchSnapshots`) moves the rows that predate the namespace
+//     out of that column, so the column is on its way to being dropped
+//     (drive#321);
 //
 // The copy is a server-side copy (`FileStore.copy`): S3's CopyObject on the
 // real store, so a branch never streams the bytes through the Worker. The
 // snapshot is one entry per file, `{size, etag, modified}` at branch time, so
 // an approve can tell a file the agent changed from one the original changed
 // under it — the done-when's "an approve where the original changed after
-// branching stops and names the file".
+// branching stops and names the file". The snapshot lives in KV, and the row
+// carries a pointer to its key and its byte length; a row written before
+// migration 0012 has an empty pointer and its JSON still in the legacy
+// `branches.snapshot` column, which `readSnapshot` falls back to so an open
+// branch made before this change still diffs and approves, until
+// `backfillBranchSnapshots` sweeps it into the namespace.
 //
 // Two rules make that safe:
 //
@@ -42,12 +54,107 @@ import { unauthorizedResponse } from "./status.js";
 /** @typedef {import("./files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
 /** @typedef {{size: number, etag: string|null, modified: number|null}} Fingerprint */
-/** One row of the `branches` table as this module uses it. */
-/**
- * @typedef {{name: string, sourcePrefix: string, branchPrefix: string,
+/** One row of the `branches` table as this module uses it. The snapshot is
+ * resolved by `readSnapshot` (the KV value when the row carries a pointer, the
+ * legacy `branches.snapshot` column otherwise); `snapshotKey`/`snapshotBytes`
+ * are what the row actually stores. `id` is the row's own primary key
+ * (migration 0015): a name can hold more than one closed row, so close and
+ * snapshot writes name this id rather than the name.
+ * @typedef {{id: number, name: string, sourcePrefix: string, branchPrefix: string,
  *   state: string, createdAt: string, changedBy: string,
- *   snapshot: Record<string, Fingerprint>}} Branch
+ *   snapshot: Record<string, Fingerprint>,
+ *   snapshotKey: string, snapshotBytes: number}} Branch
  */
+
+/**
+ * The snapshot store (drive issue #252, phase 2 of #157): the JSON for a
+ * branch, held in a KV namespace rather than in the `branches` row, so a
+ * branch of tens of thousands of files lands instead of being refused by D1's
+ * 1 MiB row limit. The row keeps a pointer to the key and the value's length
+ * (migration 0012); this interface is the seam the Worker binds (KV) and the
+ * seam tests stand in for, so `createBranch`/`diffBranch`/`approve` never name
+ * a provider.
+ *
+ * `put` writes the JSON and returns its byte length; `get` reads it back, or
+ * null when the key is not there (a row pointing at a value KV does not hold
+ * is a real state, not an empty branch, and is handled where it is read).
+ *
+ * @typedef {object} SnapshotStore
+ * @property {(key: string, json: string) => Promise<number>} put Writes the
+ *   snapshot JSON and answers its byte length.
+ * @property {(key: string) => Promise<string|null>} get Reads the snapshot
+ *   JSON back, or null when the key holds nothing.
+ */
+
+/** The prefix every snapshot key carries, so one account's snapshot is never
+ * another's. The account id sits in a full segment (`u/<id>/…`) so an id that
+ * is a prefix of another (`1` and `10`) cannot reach across — the same rule
+ * `accountPrefix` applies to storage keys (src/files.js).
+ * @param {{id: string}} account
+ * @param {string} name the branch name
+ * @returns {string} the KV key
+ */
+export function snapshotKey(account, name) {
+  if (typeof account !== "object" || account === null || typeof account.id !== "string") {
+    throw new TypeError(
+      `a snapshot key needs a signed-in account with an id, got ${String(account)}`,
+    );
+  }
+  if (account.id.length === 0 || account.id.includes("/")) {
+    throw new TypeError(`an account id is one path segment, got "${account.id}"`);
+  }
+  return `u/${account.id}/branch/${name}`;
+}
+
+/**
+ * The KV-backed snapshot store. `kv` is the BRANCH_SNAPSHOTS namespace
+ * (cloudflare.config.ts); it is a thin object over the binding, so there is
+ * nothing to cache on the isolate and no stale copy to serve — the same shape
+ * `linksFor` has for share links (src/index.js).
+ * @param {KVNamespace} kv
+ * @returns {SnapshotStore}
+ */
+export function createKvSnapshotStore(kv) {
+  if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") {
+    throw new TypeError(`createKvSnapshotStore needs a KV namespace, got ${String(kv)}`);
+  }
+  return {
+    async put(key, json) {
+      await kv.put(key, json);
+      // The byte length is what the row records so a caller can see a branch's
+      // snapshot size without reading the value back.
+      return new TextEncoder().encode(json).length;
+    },
+    async get(key) {
+      return kv.get(key);
+    },
+  };
+}
+
+/**
+ * An in-memory snapshot store, for the test harness and for a deployment with
+ * no BRANCH_SNAPSHOTS binding. It holds one JSON per key in a Map, so a second
+ * instance is a fresh store over the same keys only if it is handed the same
+ * Map; the tests that need a snapshot written by one call and read by another
+ * share this object. Production always has the KV binding (a missing one makes
+ * `createBranch` fall back to the row, below, rather than drop a branch).
+ * @param {Map<string, string>} [values]
+ * @returns {SnapshotStore & {values: Map<string, string>}}
+ */
+export function createMemorySnapshotStore(values = new Map()) {
+  return {
+    values,
+    /** @param {string} key @param {string} json */
+    async put(key, json) {
+      values.set(key, json);
+      return new TextEncoder().encode(json).length;
+    },
+    /** @param {string} key */
+    async get(key) {
+      return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
+    },
+  };
+}
 
 /** The one place an unknown thrown value becomes a message: a caught value is
  * `unknown`, and only an Error has a `.message` to log.
@@ -64,6 +171,27 @@ export const BRANCHES_ENDPOINT = "/api/branches";
  * definition of where branches live (the `.branches` folder), not two.
  */
 export const BRANCHES_ROOT = BRANCHES_PATH;
+
+/** The snapshot backfill's schedule, in the Worker's cron syntax (the
+ * `triggers.scheduled` entry in cloudflare.config.ts). 05:00 UTC is the hour
+ * after the 03:00 reindex and the 04:00 meter reconciler, so the three nightly
+ * walks never share a trip. The sweep is the only way a backfill starts, so a
+ * web request cannot walk every open branch a drive ever made and spend the
+ * KV writes for all of them — the same rule the reindex's safety review
+ * reached (issue #18). */
+export const SNAPSHOT_BACKFILL_SCHEDULE = "0 5 * * *";
+
+/** How many pre-namespace rows one sweep moves. The nightly trigger is the only
+ * way a backfill runs, so one run is bounded rather than walked to the end of
+ * the table: the rows left over are the same rows the next night finds, in the
+ * same order, because the sweep is idempotent. Sized to the query budget: one
+ * row costs two subrequests (the KV write and the row update) beside the one
+ * read, and the Workers free plan allows 50 subrequests per invocation, so 24
+ * rows (49 calls) stays inside that ceiling with the headroom the meter's own
+ * MAX_CATCHUP_HOURS keeps. The backfill is one-time work, so a night of 24 rows
+ * is the price of a run that cannot hit the limit.
+ */
+export const SNAPSHOT_BACKFILL_ROWS = 24;
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -176,6 +304,64 @@ export function sameFile(a, b) {
     return a.etag === b.etag && a.size === b.size;
   }
   return a.size === b.size && a.modified === b.modified;
+}
+
+/**
+ * The snapshot JSON for one branch, as a map of relative path to fingerprint.
+ * The value comes from the KV store when the row carries a pointer (the
+ * current shape, migration 0012), and from the legacy `branches.snapshot`
+ * column when it does not (a row written before this change, which must keep
+ * diffing). A value that cannot be read as a map is treated as empty, exactly
+ * as `toBranch` treats an unreadable column: an approve with an unreadable
+ * snapshot stops on every file, which is the safe direction.
+ *
+ * `getBranch`/`listBranches` read the column once and hand it here; the KV
+ * read happens per branch that is actually diffed, so a list does not fetch
+ * every branch's snapshot up front (drive#252's read-path requirement).
+ *
+ * Exported because the one other reader of a branch row's snapshot is the
+ * rewind preview (src/rewind.js), which diffs a row `listBranches` returned and
+ * must resolve the same way this does rather than open-code the rule.
+ *
+ * @param {SnapshotStore|null|undefined} snapshots
+ * @param {string} key the row's `snapshot_key`, '' when the row predates KV
+ * @param {unknown} columnValue the row's legacy `snapshot` column
+ * @returns {Promise<Record<string, Fingerprint>>}
+ */
+export async function readSnapshot(snapshots, key, columnValue) {
+  if (key !== "" && snapshots) {
+    const value = await snapshots.get(key);
+    if (typeof value === "string") {
+      return parseSnapshot(value);
+    }
+    // A row that names a key the store does not hold is a real state, not an
+    // empty branch: falling through to the (empty) column makes the diff see
+    // every file as added, which surfaces as a full-count diff rather than a
+    // silent "no changes". parseSnapshot is the one reader, so the two sources
+    // cannot drift.
+  }
+  return parseSnapshot(typeof columnValue === "string" ? columnValue : "{}");
+}
+
+/**
+ * The one reader of a snapshot's JSON: a JSON object of fingerprints, or an
+ * empty map. A value that is not an object, or does not parse, is empty — the
+ * same safe direction as a missing entry.
+ * @param {string} json
+ * @returns {Record<string, Fingerprint>}
+ */
+function parseSnapshot(json) {
+  /** @type {Record<string, Fingerprint>} */
+  let snapshot = {};
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
+    }
+  } catch {
+    snapshot = {};
+  }
+  return snapshot;
 }
 
 /**
@@ -346,26 +532,17 @@ export async function diffBranch(store, branch) {
 
 // ---------------------------------------------------------------- the table
 
-/** A row as this module uses it: a parsed snapshot and camelCase names.
- * A D1 row is untyped (`Record<string, unknown>`), so each column is read by
- * name and given the shape the schema promises (migration 0003).
+/** A row as this module uses it: camelCase names, and the snapshot already
+ * resolved by `readSnapshot` (the KV value when the row carries a pointer, the
+ * legacy column otherwise). A D1 row is untyped (`Record<string, unknown>`), so
+ * each column is read by name and given the shape the schema promises
+ * (migrations 0003 and 0012).
  * @param {Record<string, unknown>} row
+ * @param {Record<string, Fingerprint>} snapshot
  * @returns {Branch} */
-function toBranch(row) {
-  /** @type {Record<string, Fingerprint>} */
-  let snapshot = {};
-  try {
-    const parsed = JSON.parse(typeof row.snapshot === "string" ? row.snapshot : "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
-    }
-  } catch {
-    // A snapshot that cannot be read is treated as empty rather than as "no
-    // changes": an approve with an unreadable snapshot stops on every file,
-    // which is the safe direction.
-    snapshot = {};
-  }
+function toBranch(row, snapshot) {
   return {
+    id: Number(row.id),
     name: String(row.name),
     sourcePrefix: String(row.source_prefix),
     branchPrefix: String(row.branch_prefix),
@@ -379,24 +556,64 @@ function toBranch(row) {
     // what a branch a person made in the app is.
     changedBy: typeof row.changed_by_key_id === "string" ? row.changed_by_key_id : "",
     snapshot,
+    // Where the snapshot itself lives (migration 0012). The key is '' on a row
+    // written before this change, which is what sends the read back to the
+    // legacy column, and the byte length is 0 on such a row.
+    snapshotKey: typeof row.snapshot_key === "string" ? row.snapshot_key : "",
+    snapshotBytes: typeof row.snapshot_bytes === "number" ? row.snapshot_bytes : 0,
   };
 }
+
+/** The columns every branch read selects. The open-row pin and the newest-closed
+ * fallback share this list so a generation cannot drop a column the other still
+ * reads.
+ */
+const BRANCH_COLUMNS =
+  "id, name, source_prefix, branch_prefix, snapshot, snapshot_key, snapshot_bytes, " +
+  "state, created_at, changed_by_key_id";
 
 /** One of the account's own branches, or null. A name from another account is
  * "no such branch".
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {{id: string}} account
  * @param {string} name
- * @returns {Promise<Branch|null>} */
-async function getBranch(db, account, name) {
-  const row = await db
+ * @returns {Promise<Branch|null>}
+ *
+ * The open branch of a name is what the diff, approve and discard act on. The
+ * table keeps one row per branch, so a name can hold a closed row and an open
+ * one at once: without the open row pinned here the read returns the older
+ * closed row and a fresh branch answers "already closed". A name with no open
+ * row still resolves, to its newest row, so "that branch is not open" is a 409
+ * and not a 404 (the guard is in approveBranch and discardBranch themselves,
+ * so a direct call is refused too, not just the route).
+ */
+export async function getBranch(db, snapshots, account, name) {
+  const open = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
-        "FROM branches WHERE account_id = ?1 AND name = ?2",
+      `SELECT ${BRANCH_COLUMNS} FROM branches WHERE account_id = ?1 AND name = ?2 AND state = 'open'`,
     )
     .bind(account.id, name)
     .first();
-  return row === undefined || row === null ? null : toBranch(row);
+  const row =
+    open !== undefined && open !== null
+      ? open
+      : await db
+          .prepare(
+            `SELECT ${BRANCH_COLUMNS} FROM branches ` +
+              "WHERE account_id = ?1 AND name = ?2 ORDER BY created_at DESC, id DESC LIMIT 1",
+          )
+          .bind(account.id, name)
+          .first();
+  if (row === undefined || row === null) {
+    return null;
+  }
+  const snapshot = await readSnapshot(
+    snapshots,
+    typeof row.snapshot_key === "string" ? row.snapshot_key : "",
+    row.snapshot,
+  );
+  return toBranch(row, snapshot);
 }
 
 // --------------------------------------------------------------- the actions
@@ -409,12 +626,16 @@ async function getBranch(db, account, name) {
  * a 409 rather than a silent overwrite of the first branch's snapshot.
  *
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store; without it the
+ *   snapshot falls back to the legacy `branches.snapshot` column (the
+ *   pre-#252 behaviour) so a deployment that has not added the namespace yet
+ *   still branches small folders.
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
  * @param {() => number} now
  */
-export async function createBranch(db, store, account, request, now = () => Date.now()) {
+export async function createBranch(db, snapshots, store, account, request, now = () => Date.now()) {
   const folder = validatePath(request.folder);
   if (folder.error) {
     return { error: `That folder cannot be branched: ${folder.error}`, status: 400 };
@@ -445,18 +666,11 @@ export async function createBranch(db, store, account, request, now = () => Date
   if (kind === "missing") {
     return { error: "That folder is not in the drive.", status: 404 };
   }
-  const existing = await getBranch(db, account, name);
+  const existing = await getBranch(db, snapshots, account, name);
   if (existing && existing.state === "open") {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
-  let snapshot;
-  try {
-    snapshot = await copyFolder(store, folderPath, branchPrefix);
-  } catch (error) {
-    console.error?.(`branch copy failed for ${account.id}/${name}: ${errorText(error)}`);
-    return { error: failureMessage("storage-down"), status: 500 };
-  }
   const createdAt = new Date(now()).toISOString();
   // Whose key branched this folder (issue #13's third comment: "we already mint
   // one key per agent, so record the key on each change"). A branch a person
@@ -466,49 +680,156 @@ export async function createBranch(db, store, account, request, now = () => Date
   // for the activity list, and every read of this row is scoped by account_id
   // in the query itself, never by the value of this column.
   const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
+  // Claim the name before touching the store. The partial unique index on
+  // (account_id, name) where state = 'open' then makes this the one create
+  // that may copy into the prefix: two creates of a name in the same moment
+  // can no longer both walk and clear /.branches/<name>/ and overwrite each
+  // other's copies, because the loser fails this INSERT before it copies
+  // anything. The snapshot lands after the copy, so a row that is claimed but
+  // interrupted is closed by the catch below rather than left open on an
+  // empty prefix.
+  let claimId;
   try {
-    await db
+    const claimed = await db
       .prepare(
-        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
-          "VALUES (?1,?2,?3,?4,?5,'open',?6,?7)",
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id) " +
+          "VALUES (?1,?2,?3,?4,'{}','',0,'open',?5,?6)",
       )
-      .bind(
-        account.id,
-        name,
-        folderPath,
-        branchPrefix,
-        JSON.stringify(snapshot),
-        createdAt,
-        changedBy,
-      )
+      .bind(account.id, name, folderPath, branchPrefix, createdAt, changedBy)
       .run();
-  } catch (error) {
-    // The copy is on disk but the row did not land, so the branch would be
-    // invisible and a retry would see the name as free. Clean the copy up, then
-    // report the failure rather than returning 201 for a half-made branch.
-    //
-    // A row over the database's own row limit lands here with the column's name
-    // in the error, never silently (drive#157): D1's row limit is 1 MiB and a
-    // 100,000-file branch snapshots to ~11 MiB, measured against these
-    // migrations (test/branches-snapshot.test.mjs is the pinned number, and
-    // `snapshot-bound` in src/messages.js is what the person is told, and the
-    // phase-2 design is issue #252).
-    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
-    console.error?.(`branch insert failed for ${account.id}/${name}: ${errorText(error)}`);
-    try {
-      for (const rel of Object.keys(snapshot)) {
-        await store.remove(`${branchPrefix}/${rel}`);
-      }
-      await db
-        .prepare(
-          "UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2 AND state = 'open'",
-        )
-        .bind(account.id, name)
-        .run();
-    } catch {
-      /* best-effort cleanup; the 500 is the answer */
+    if (!claimed.success) {
+      return { error: failureMessage("unexpected"), status: 500 };
     }
-    return { error: failureMessage(oversize ? "snapshot-bound" : "unexpected"), status: 500 };
+    claimId = Number(claimed.meta.last_row_id);
+    if (!Number.isInteger(claimId) || claimId < 1) {
+      return { error: failureMessage("unexpected"), status: 500 };
+    }
+  } catch (error) {
+    // The open-name index refused a second branch of a name that is already
+    // open (a concurrent create that won, or one this process did not see).
+    // Re-read to tell that race (409) from a real database failure (500); the
+    // INSERT is the only write that can report either.
+    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
+    console.error?.(`branch claim failed for ${account.id}/${name}: ${errorText(error)}`);
+    if (oversize) {
+      return { error: failureMessage("snapshot-bound"), status: 500 };
+    }
+    const raced = await getBranch(db, snapshots, account, name);
+    if (raced && raced.state === "open") {
+      return { error: failureMessage("branch-exists"), status: 409 };
+    }
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
+  // Only this row's id is the claim; a later open branch of the same name is
+  // a different row and these writes must not move it. The close reports
+  // whether it landed, because a claim that stays open is not a cosmetic
+  // problem: the open-name index then answers 409 to every later branch of
+  // that name, so the caller hears about the failure instead of a clean answer
+  // over a leaked claim (`drive discard <name>` is what clears it).
+  const abandonClaim = async () => {
+    const attempt = async () => {
+      try {
+        const done = await db
+          .prepare("UPDATE branches SET state = 'discarded' WHERE id = ?1 AND state = 'open'")
+          .bind(claimId)
+          .run();
+        return done.success === true;
+      } catch (error) {
+        console.error?.(`branch claim close failed for ${account.id}/${name}: ${errorText(error)}`);
+        return false;
+      }
+    };
+    if (await attempt()) {
+      return true;
+    }
+    return await attempt();
+  };
+  // A name branched before leaves its last copy under .branches/<name>/. Clear
+  // it before copying, or a file the original no longer has stays in the new
+  // branch: the diff would call it added and the next approve would copy a
+  // deleted file back into the original.
+  try {
+    await removePrefixFiles(store, branchPrefix);
+  } catch (error) {
+    console.error?.(`branch prefix clear failed for ${account.id}/${name}: ${errorText(error)}`);
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until drive discard clears it",
+      );
+    }
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
+  /** @type {Record<string, Fingerprint>} */
+  let snapshot;
+  try {
+    snapshot = await copyFolder(store, folderPath, branchPrefix);
+  } catch (error) {
+    console.error?.(`branch copy failed for ${account.id}/${name}: ${errorText(error)}`);
+    try {
+      await removePrefixFiles(store, branchPrefix);
+    } catch (cleanupError) {
+      console.error?.(
+        `branch copy cleanup failed for ${account.id}/${name}: ${errorText(cleanupError)}`,
+      );
+    }
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until drive discard clears it",
+      );
+    }
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
+  const key = snapshots ? snapshotKey(account, name) : "";
+  try {
+    const saved = await saveSnapshot(db, claimId, snapshot, snapshots, key);
+    if (!saved.success) {
+      await removePrefixFiles(store, branchPrefix);
+      return { error: failureMessage("unexpected"), status: 500 };
+    }
+    if (typeof saved.meta.changes !== "number") {
+      await removePrefixFiles(store, branchPrefix);
+      if (!(await abandonClaim())) {
+        console.error?.(
+          `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+            "the name stays claimed until drive discard clears it",
+        );
+      }
+      return { error: failureMessage("unexpected"), status: 500 };
+    }
+    if (saved.meta.changes === 0) {
+      await removePrefixFiles(store, branchPrefix);
+      return { error: failureMessage("branch-not-open"), status: 409 };
+    }
+  } catch (error) {
+    const oversize = /too (big|large)|string or blob/i.test(errorText(error));
+    console.error?.(`branch snapshot save failed for ${account.id}/${name}: ${errorText(error)}`);
+    try {
+      await removePrefixFiles(store, branchPrefix);
+    } catch (cleanupError) {
+      console.error?.(
+        `branch snapshot cleanup failed for ${account.id}/${name}: ${errorText(cleanupError)}`,
+      );
+    }
+    if (!(await abandonClaim())) {
+      console.error?.(
+        `branch claim for ${account.id}/${name} could not be closed (row ${claimId}); ` +
+          "the name stays claimed until drive discard clears it",
+      );
+    }
+    // The KV write is storage; a D1 refusal of this row is the database. The
+    // two cannot share a sentence: a namespace that cannot be written is the
+    // same answer as a copy that cannot be written, and a row the engine
+    // refuses as too big is the snapshot-bound sentence the person can act on.
+    const dbFailure = /D1_ERROR|UNIQUE|constraint|SQLITE/i.test(errorText(error));
+    return {
+      error: failureMessage(
+        oversize ? "snapshot-bound" : dbFailure ? "unexpected" : "storage-down",
+      ),
+      status: 500,
+    };
   }
   return {
     name,
@@ -526,25 +847,70 @@ export async function createBranch(db, store, account, request, now = () => Date
  * changed and whether the original moved under it. The count is the live diff,
  * so it is the number `drive diff` would print, not a number taken on trust
  * from branch time. Closed branches report zero; they need no store walk.
+ *
+ * One row per name, and it is the row every name-scoped read resolves to: the
+ * open branch if there is one, else the newest closed row. 0015 lets a name be
+ * closed more than once, so without that rule the list would hold one line
+ * per generation — the same name, the same state, the same count — and the
+ * rewind list and `drive branches` would grow a dead line for every approve
+ * that was ever retried. The history stays on the table; it is this list that
+ * shows the branch a person can still act on.
+ *
+ * The row's snapshot column is not selected and the snapshot is not put in the
+ * answer (drive#252): the list is the account's whole set of branches, and one
+ * snapshot is ~117 bytes a file, so a 100,000-file branch would put ~11 MiB of
+ * metadata in one JSON body for a screen that only shows a count. What the row
+ * carries instead is the pointer (`snapshotKey`) and the value's length
+ * (`snapshotBytes`); a caller that diffs one branch — the rewind preview,
+ * `GET /api/branches/<name>` — resolves that branch's snapshot through
+ * `readSnapshot` and pays for one branch, not for all of them. A branch row
+ * from this list therefore does NOT carry a usable `snapshot`: its `changed`
+ * and `sourceChanged` counts are already computed here, and a diff must call
+ * `readSnapshot` first.
+ *
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  */
-export async function listBranches(db, store, account) {
+export async function listBranches(db, snapshots, store, account) {
   const result = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
-        "FROM branches WHERE account_id = ?1 ORDER BY created_at DESC, name",
+      "SELECT id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, state, " +
+        "created_at, changed_by_key_id FROM branches WHERE account_id = ?1 " +
+        "ORDER BY (state = 'open') DESC, created_at DESC, id DESC",
     )
     .bind(account.id)
     .all();
+  const rows = result?.results ?? [];
+  // The legacy inline snapshots, and only those: a row written before migration
+  // 0012 carries its JSON in `branches.snapshot` and has no `snapshot_key`, and
+  // it has to keep diffing correctly, so its column is read here. Keyed by the
+  // row's own id so two generations of one name cannot share a snapshot.
+  const legacy = await db
+    .prepare("SELECT id, snapshot FROM branches WHERE account_id = ?1 AND snapshot_key = ''")
+    .bind(account.id)
+    .all();
+  /** @type {Map<number, unknown>} */
+  const inline = new Map();
+  for (const row of legacy?.results ?? []) {
+    inline.set(Number(row.id), row.snapshot);
+  }
   const branches = [];
-  for (const row of result?.results ?? []) {
-    const branch = toBranch(row);
+  /** @type {Set<string>} */
+  const seenNames = new Set();
+  for (const row of rows) {
+    const name = String(row.name);
+    if (seenNames.has(name)) {
+      continue;
+    }
+    seenNames.add(name);
+    const branch = toBranch(row, {});
     let changed = 0;
     let sourceChanged = 0;
     if (branch.state === "open") {
-      const diff = await diffBranch(store, branch);
+      const snapshot = await readSnapshot(snapshots, branch.snapshotKey, inline.get(branch.id));
+      const diff = await diffBranch(store, { ...branch, snapshot });
       changed = diff.added.length + diff.changed.length + diff.removed.length;
       sourceChanged = diff.sourceChanged.length;
     }
@@ -563,6 +929,7 @@ export async function listBranches(db, store, account) {
  * resumes from where a partial run left off instead of re-reporting applied
  * files as drift and locking the branch forever.
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
@@ -570,8 +937,8 @@ export async function listBranches(db, store, account) {
  *   |{error: string, status: number, files: string[]}
  *   |{error: string, status: number}>}
  */
-export async function approveBranch(db, store, account, name) {
-  const branch = await getBranch(db, account, name);
+export async function approveBranch(db, snapshots, store, account, name) {
+  const branch = await getBranch(db, snapshots, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
@@ -585,7 +952,10 @@ export async function approveBranch(db, store, account, name) {
   const touched = new Set([...diff.added, ...diff.changed, ...diff.removed]);
   const initialClashes = diff.sourceChanged.filter((rel) => touched.has(rel));
   if (initialClashes.length > 0) {
-    return sourceMoved(initialClashes, diff.sourceChanged.length);
+    // The named list is the whole clash set, so the count is its own length:
+    // the total source-drift count includes files this approve never touches,
+    // which would make "and N more" name files the caller cannot act on.
+    return sourceMoved(initialClashes, initialClashes.length);
   }
   const snapshot = { ...branch.snapshot };
   /** @type {{added: string[], changed: string[], removed: string[]}} */
@@ -601,7 +971,7 @@ export async function approveBranch(db, store, account, name) {
     for (const rel of diff.added) {
       const current = await fileFingerprint(store, `${branch.sourcePrefix}/${rel}`);
       if (current !== null) {
-        failure = sourceMoved([rel], rel === diff.sourceChanged[0] ? 1 : 1);
+        failure = sourceMoved([rel], 1);
         break;
       }
       await store.copy(`${branch.branchPrefix}/${rel}`, `${branch.sourcePrefix}/${rel}`);
@@ -645,22 +1015,39 @@ export async function approveBranch(db, store, account, name) {
     console.error?.(`approve failed for ${account.id}/${name}: ${errorText(error)}`);
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
-  if (appliedAny && failure === null) {
-    await saveSnapshot(db, account, name, snapshot);
-  }
   if (failure !== null) {
     // Record what was applied so a retry resumes; the caller sees the clash.
     if (appliedAny) {
-      await saveSnapshot(db, account, name, snapshot);
+      await saveSnapshot(db, branch.id, snapshot, snapshots);
     }
     return failure;
   }
+  if (appliedAny) {
+    await saveSnapshot(db, branch.id, snapshot, snapshots);
+  }
+  // Close the row before the branch's own copies go: if the close failed with
+  // the copies already gone, a retry of an open branch would read every
+  // applied file as "removed" and delete it from the original. Closed first,
+  // the worst a cleanup failure leaves is a dead prefix, which the next
+  // branch of the name clears before it copies.
   const result = await db
-    .prepare("UPDATE branches SET state = 'approved' WHERE account_id = ?1 AND name = ?2")
-    .bind(account.id, name)
+    .prepare("UPDATE branches SET state = 'approved' WHERE id = ?1 AND state = 'open'")
+    .bind(branch.id)
     .run();
-  if (!result?.success) {
+  if (!result.success) {
     return { error: failureMessage("unexpected"), status: 500 };
+  }
+  if (typeof result.meta.changes !== "number") {
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
+  if (result.meta.changes === 0) {
+    return { error: failureMessage("branch-not-open"), status: 409 };
+  }
+  // A newer open branch of this name owns `/.branches/<name>/` now; deleting
+  // our copies after releasing the name would erase that generation's files.
+  const successor = await getBranch(db, snapshots, account, name);
+  if (successor?.state !== "open") {
+    await removeBranchFiles(store, branch);
   }
   return { name, state: "approved", applied };
 }
@@ -671,53 +1058,231 @@ export async function approveBranch(db, store, account, name) {
  * exactly as it was. The bytes stay recoverable through the storage's own
  * version history for 30 days (docs/build-spec.md, "Old versions").
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
  * @returns {Promise<{name: string, state: string, removed: number}
  *   |{error: string, status: number}>}
  */
-export async function discardBranch(db, store, account, name) {
-  const branch = await getBranch(db, account, name);
+export async function discardBranch(db, snapshots, store, account, name) {
+  const branch = await getBranch(db, snapshots, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
   if (branch.state !== "open") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
-  let removed = 0;
-  try {
-    for (const rel of (await listFiles(store, branch.branchPrefix)).keys()) {
-      await store.remove(`${branch.branchPrefix}/${rel}`);
-      removed++;
-    }
-  } catch (error) {
-    console.error?.(`discard failed for ${account.id}/${name}: ${errorText(error)}`);
-    return { error: failureMessage("storage-down"), status: 500 };
-  }
+  // Close the row before the copies go, the same order approve uses: if the
+  // copies were already gone and the close then failed, a retry of the still-
+  // open branch would read every file as removed and delete it from the
+  // original. Closed first, a cleanup that cannot finish leaves a dead prefix,
+  // which the next branch of the name clears before it copies.
   const result = await db
-    .prepare("UPDATE branches SET state = 'discarded' WHERE account_id = ?1 AND name = ?2")
-    .bind(account.id, name)
+    .prepare("UPDATE branches SET state = 'discarded' WHERE id = ?1 AND state = 'open'")
+    .bind(branch.id)
     .run();
-  if (!result?.success) {
+  if (!result.success) {
     return { error: failureMessage("unexpected"), status: 500 };
+  }
+  if (typeof result.meta.changes !== "number") {
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
+  if (result.meta.changes === 0) {
+    return { error: failureMessage("branch-not-open"), status: 409 };
+  }
+  let removed = 0;
+  const successor = await getBranch(db, snapshots, account, name);
+  if (successor?.state !== "open") {
+    try {
+      removed = await removePrefixFiles(store, branch.branchPrefix);
+    } catch (error) {
+      console.error?.(`discard failed for ${account.id}/${name}: ${errorText(error)}`);
+    }
   }
   return { name, state: "discarded", removed };
 }
 
 // Persists one account's branch snapshot, so an approve that is retried after
 // a partial run sees each file it already copied back as no longer changed.
+// The value goes where this branch's snapshot already lives: the KV store when
+// the row carries a pointer (drive#252), and the legacy column otherwise, so a
+// row written before this change resumes exactly as it did. A row with a
+// pointer also gets its byte length refreshed, so `snapshotBytes` stays the
+// honest length of the value the diff reads.
 /**
  * @param {D1Database} db
- * @param {{id: string}} account
- * @param {string} name
+ * @param {number} id the row's own id
  * @param {Record<string, Fingerprint>} snapshot
+ * @param {SnapshotStore|null} [snapshots] the KV snapshot store
+ * @param {string} [key] the KV key to write on first save of a claimed row
+ * @returns {Promise<D1Result>}
  */
-async function saveSnapshot(db, account, name, snapshot) {
-  await db
-    .prepare("UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2")
-    .bind(account.id, name, JSON.stringify(snapshot))
+async function saveSnapshot(db, id, snapshot, snapshots = null, key = "") {
+  const json = JSON.stringify(snapshot);
+  if (snapshots) {
+    // The row decides the key, not this function, except the first save of a
+    // newly claimed row which has not stored a pointer yet. `branches.snapshot_key`
+    // is already `u/<id>/branch/<name>` after that, so an approve can never
+    // write another account's value even if the caller handed it a strange store.
+    const row = await db
+      .prepare("SELECT snapshot_key FROM branches WHERE id = ?1 AND state = 'open'")
+      .bind(id)
+      .first();
+    const stored = row && typeof row.snapshot_key === "string" ? row.snapshot_key : "";
+    const resolved = stored !== "" ? stored : key;
+    if (resolved !== "") {
+      const bytes = await snapshots.put(resolved, json);
+      return db
+        .prepare(
+          "UPDATE branches SET snapshot_key = ?2, snapshot_bytes = ?3 WHERE id = ?1 AND state = 'open'",
+        )
+        .bind(id, resolved, bytes)
+        .run();
+    }
+  }
+  return db
+    .prepare("UPDATE branches SET snapshot = ?2 WHERE id = ?1 AND state = 'open'")
+    .bind(id, json)
     .run();
+}
+
+// Every file under a prefix, removed, returning how many. A branch prefix is a
+// folder and the stores delete one object at a time (S3 has no folders), so
+// clearing what a name left behind is a walk of that folder's own listing.
+//
+// The prefix must be a folder strictly under the branches root. A branch name
+// is a single path segment (checkedBranchName refuses slashes and ".."), so
+// every real prefix passes; the guard is what holds if a row is ever written
+// with something else, so a corrupt `branch_prefix` can never turn a clear
+// into a bulk delete of the account's own files. Both the approve cleanup and
+// the discard path go through here, so the guard covers both.
+/**
+ * @param {import("./files.js").FileStore} store a scoped store
+ * @param {string} prefix
+ * @returns {Promise<number>}
+ */
+export async function removePrefixFiles(store, prefix) {
+  if (
+    typeof prefix !== "string" ||
+    !prefix.startsWith(`${BRANCHES_ROOT}/`) ||
+    prefix === `${BRANCHES_ROOT}/`
+  ) {
+    throw new Error(`refusing to clear ${JSON.stringify(prefix)}: not a branch folder`);
+  }
+  let removed = 0;
+  for (const rel of (await listFiles(store, prefix)).keys()) {
+    await store.remove(`${prefix}/${rel}`);
+    removed++;
+  }
+  return removed;
+}
+
+// The branch's own copies, gone. After an approve they have nothing left to
+// do, and leaving them makes a name branched again start from a prefix that
+// holds a previous branch's files: the diff would read them as the new
+// branch's additions and the next approve would copy a file the original had
+// deleted straight back into it.
+/**
+ * @param {import("./files.js").FileStore} store a scoped store
+ * @param {{sourcePrefix: string, branchPrefix: string, snapshot: Record<string, Fingerprint>}} branch
+ */
+async function removeBranchFiles(store, branch) {
+  try {
+    await removePrefixFiles(store, branch.branchPrefix);
+  } catch (error) {
+    console.error?.(`branch cleanup failed for ${branch.branchPrefix}: ${errorText(error)}`);
+  }
+}
+
+/**
+ * The backfill of the rows that predate the namespace (drive issue #321, the
+ * step 1 of #252's remainder). Migration 0012 moved NEW snapshots into
+ * `BRANCH_SNAPSHOTS` and left every older row's JSON in the legacy
+ * `branches.snapshot` column with an empty `snapshot_key`, which `readSnapshot`
+ * still resolves. This sweep moves those old rows: every OPEN branch with
+ * `snapshot_key = ''` gets its column JSON written under its own
+ * `snapshotKey(account, name)` — the key a new branch of that name would have
+ * — and the row's pointer and byte length are set to it.
+ *
+ * Three rules the issue states:
+ *
+ *   * idempotent. The query matches `snapshot_key = ''` only, and the update
+ *     is guarded the same way, so a second sweep over a moved row matches
+ *     nothing and a sweep interrupted between the KV write and the row update
+ *     simply does that row again.
+ *   * it does not touch a closed branch. The query filters `state = 'open'`:
+ *     an approved or discarded branch keeps its snapshot exactly where it was,
+ *     its diff is the count on its row, and a closed branch resurrected later
+ *     would be re-snapshotted at branch time rather than read from a value
+ *     stored for a row that was already closed.
+ *   * the column is NOT cleared. The JSON stays in `branches.snapshot`, so the
+ *     previous version of the code still reads a well-formed row and a rollback
+ *     stays a code rollback; the drop is the later phase, once nothing reads
+ *     the column.
+ *
+ * Why this is safe to run before the drop: a row this moves could only ever
+ * have been written with the old 1 MiB row limit in force, so its JSON is
+ * bounded by that limit (a folder over the limit was refused at branch time,
+ * migration 0012's own note, #157's phase-1 measurement). The sweep never moves
+ * a value the old code could not have held.
+ *
+ * A KV or D1 failure throws: the nightly trigger awaits this, so Cloudflare
+ * records a failed run and retries the next night, and a sweep that moved some
+ * rows and then failed is resumed rather than reported as done.
+ *
+ * @param {D1Database} db the drive database (`branches`)
+ * @param {SnapshotStore} snapshots the branch snapshot store; a backfill with
+ *   no namespace is a programming error, not an empty report
+ * @param {number} [rows] how many open pre-namespace rows this run moves
+ * @returns {Promise<{moved: number, files: number, bytes: number,
+ *   branches: {account: string, name: string, key: string, bytes: number}[]}>}
+ */
+export async function backfillBranchSnapshots(db, snapshots, rows = SNAPSHOT_BACKFILL_ROWS) {
+  if (!snapshots || typeof snapshots.put !== "function") {
+    throw new TypeError("backfillBranchSnapshots needs the branch snapshot store");
+  }
+  if (!Number.isInteger(rows) || rows < 1) {
+    throw new TypeError(`a backfill row limit is a positive integer, got ${String(rows)}`);
+  }
+  const found = await db
+    .prepare(
+      "SELECT account_id, name, snapshot FROM branches " +
+        "WHERE state = 'open' AND snapshot_key = '' ORDER BY account_id, name LIMIT ?1",
+    )
+    .bind(rows)
+    .all();
+  /** @type {{account: string, name: string, key: string, bytes: number}[]} */
+  const moved = [];
+  let files = 0;
+  let bytes = 0;
+  for (const row of found?.results ?? []) {
+    const account = typeof row.account_id === "string" ? row.account_id : "";
+    const name = typeof row.name === "string" ? row.name : "";
+    // The JSON is moved verbatim, not re-encoded: it is the exact value
+    // `readSnapshot` handed the diff all along, so a moved row diffs and
+    // approves against the same map it did from the column.
+    const json = typeof row.snapshot === "string" ? row.snapshot : "{}";
+    // The key a branch of this name would have (the row's account decides it,
+    // the row's name is the last segment), built through the one builder
+    // `createBranch` uses, so a caller cannot name another account's value.
+    const key = snapshotKey({ id: account }, name);
+    const length = await snapshots.put(key, json);
+    // The guard repeats the query's, so a row that changed state or already
+    // moved under this sweep (a concurrent approve, a second sweep) is not
+    // written back. Idempotence here is the database's, not the caller's.
+    await db
+      .prepare(
+        "UPDATE branches SET snapshot_key = ?3, snapshot_bytes = ?4 " +
+          "WHERE account_id = ?1 AND name = ?2 AND state = 'open' AND snapshot_key = ''",
+      )
+      .bind(account, name, key, length)
+      .run();
+    moved.push({ account, name, key, bytes: length });
+    bytes += length;
+    files += Object.keys(parseSnapshot(json)).length;
+  }
+  return { moved: moved.length, files, bytes, branches: moved };
 }
 
 /**
@@ -754,11 +1319,19 @@ function sourceMoved(named, total) {
  *
  * @param {Request} request
  * @param {unknown} db the branches table
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
  */
-export async function handleBranchesRequest(request, db, store, account, now = () => Date.now()) {
+export async function handleBranchesRequest(
+  request,
+  db,
+  snapshots,
+  store,
+  account,
+  now = () => Date.now(),
+) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -771,14 +1344,21 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   const rest = url.pathname.slice(BRANCHES_ENDPOINT.length).replace(/\/$/, "");
   if (rest === "") {
     if (request.method === "GET") {
-      return json({ branches: await listBranches(database, scoped, account) });
+      const branches = (await listBranches(database, snapshots, scoped, account)).map(
+        ({ snapshot, id, ...summary }) => {
+          void snapshot;
+          void id;
+          return summary;
+        },
+      );
+      return json({ branches });
     }
     if (request.method === "POST") {
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);
       }
-      const result = await createBranch(database, scoped, account, read.body, now);
+      const result = await createBranch(database, snapshots, scoped, account, read.body, now);
       if (result.error) {
         return json(result, result.status);
       }
@@ -793,7 +1373,12 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   // docs/api.md).
   let name;
   const tail = rest.replace(/^\//, "");
-  const [rawName, action] = tail.split("/");
+  const [rawName, action, ...extra] = tail.split("/");
+  // A third segment is a URL this route family does not have (an approve is
+  // /api/branches/<name>/approve), never a way to act anyway.
+  if (extra.length > 0) {
+    return json({ error: failureMessage("branch-path-unknown") }, 404);
+  }
   try {
     name = decodeURIComponent(rawName);
   } catch {
@@ -803,33 +1388,41 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     if (request.method !== "GET") {
       return plain("Method not allowed. GET the branch's diff.", 405, { allow: "GET" });
     }
-    const branch = await getBranch(database, account, name);
+    const branch = await getBranch(database, snapshots, account, name);
     if (!branch) {
       return json({ error: failureMessage("branch-not-found") }, 404);
     }
-    const diff = await diffBranch(scoped, branch);
+    // A closed branch has had its copies applied back (approve) or removed
+    // (discard), so diffing its now-empty prefix against the snapshot would
+    // report every file as removed — a wrong answer where the honest one is
+    // that there is nothing pending. Open branches diff as before; the state
+    // is always in the answer so the caller can tell.
+    const diff =
+      branch.state === "open"
+        ? await diffBranch(scoped, branch)
+        : { added: [], changed: [], removed: [], sourceChanged: [] };
     return json({
       branch: {
         name,
         sourcePrefix: branch.sourcePrefix,
         state: branch.state,
         changedBy: branch.changedBy,
+        snapshotKey: branch.snapshotKey,
+        snapshotBytes: branch.snapshotBytes,
       },
       diff,
     });
   }
-  if (action === "approve" && request.method === "POST") {
-    const result = await approveBranch(database, scoped, account, name);
-    // `approveBranch` answers a union, so the failed arm is the one that
-    // carries a status; `"error" in result` is that arm's discriminator and
-    // narrows the success arm to the object `json` sends with a 200.
-    if ("error" in result) {
-      return json(result, result.status);
+  if (action === "approve" || action === "discard") {
+    if (request.method !== "POST") {
+      return plain(`Method not allowed. POST the branch to ${action} it.`, 405, {
+        allow: "POST",
+      });
     }
-    return json(result);
-  }
-  if (action === "discard" && request.method === "POST") {
-    const result = await discardBranch(database, scoped, account, name);
+    const result =
+      action === "approve"
+        ? await approveBranch(database, snapshots, scoped, account, name)
+        : await discardBranch(database, snapshots, scoped, account, name);
     if ("error" in result) {
       return json(result, result.status);
     }

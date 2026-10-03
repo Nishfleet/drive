@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -494,7 +495,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			"this mount can carry in a conflict filename")
 	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
-		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
+		return failDetail("drive-folder", err, p.MountDir)
 	}
 	config := []byte(RcloneConfig(c))
 	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
@@ -511,17 +512,22 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	}
 	if goos == "darwin" {
 		if err := bootstrapLaunchd(itemPath); err != nil {
-			return err
+			return failDetail("login-item", err)
 		}
-	} else {
-		for _, action := range mountSystemctlActions() {
-			args := []string{"--user", action}
-			if action != "daemon-reload" {
-				args = append(args, SystemdUnitName)
-			}
-			if err := exec.Command("systemctl", args...).Run(); err != nil {
-				return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
-			}
+	} else if err := startLinuxLoginItem(); err != nil {
+		// A clean container and a first-run sandbox often have no systemd user
+		// bus (drive#105): systemctl is missing, or it cannot reach the user
+		// manager. Only that falls back to a detached rclone, because there is
+		// no systemd to start the unit at login. A systemd host whose unit
+		// fails to start (a bad unit, a full disk) is a named error, not a
+		// fallback: a detached rclone there plus the unit still enabled would
+		// mount a second rclone at the next login.
+		if !systemdUserSessionAbsent(err) {
+			return failDetail("login-item", err)
+		}
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, itemPath)
+		if err := startLinuxMountDetached(p); err != nil {
+			return failDetail("mount-failed", err)
 		}
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
@@ -531,9 +537,76 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
-		return fmt.Errorf("start prefetch: %w", err)
+		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
-	fmt.Printf("Mounted at %s\n", p.MountDir)
+	printMountedLine(p.MountDir)
+	return nil
+}
+
+// startLinuxLoginItem enables and restarts the systemd user unit this command
+// just wrote. A missing user bus is a named error so the caller can start the
+// mount in the background instead of reporting success with nothing mounted.
+func startLinuxLoginItem() error {
+	for _, action := range mountSystemctlActions() {
+		args := []string{"--user", action}
+		if action != "daemon-reload" {
+			args = append(args, SystemdUnitName)
+		}
+		if err := exec.Command("systemctl", args...).Run(); err != nil {
+			return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+		}
+	}
+	return nil
+}
+
+// systemdUserSessionAbsent reports whether a startLinuxLoginItem error means
+// there is no systemd user manager to start the login item with: systemctl is
+// not installed, or it cannot reach the user bus. Every other systemctl
+// failure (a unit that will not start, a full disk, a permission) is a real
+// error the caller must see, not a reason to leave a detached mount behind.
+func systemdUserSessionAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, absent := range []string{
+		"executable file not found", // systemctl is not installed
+		"Failed to connect to bus", // no user bus, no D-Bus session
+		"not been booted with systemd", // no systemd user manager
+		"XDG_RUNTIME_DIR not set", // no user session to attach to
+	} {
+		if strings.Contains(msg, absent) {
+			return true
+		}
+	}
+	return false
+}
+
+// startLinuxMountDetached starts rclone in its own session so `drive init` can
+// finish and exit while the mount stays up. rclone's own --log-file is already
+// on the plan; stdout and stderr go there too so a container without journald
+// still has the log.
+func startLinuxMountDetached(p MountPlan) error {
+	rclonePath, err := exec.LookPath(p.RcloneBin)
+	if err != nil {
+		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p.LogPath), 0o755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	log, err := os.OpenFile(p.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open mount log %s: %w", p.LogPath, err)
+	}
+	defer log.Close()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(rclonePath, p.Args()...)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	cmd.SysProcAttr = detachedProcAttr()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone mount: %w", err)
+	}
 	return nil
 }
 
@@ -544,7 +617,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 func mountForeground(p MountPlan, home string) error {
 	rclonePath, err := exec.LookPath(p.RcloneBin)
 	if err != nil {
-		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+		return failDetail("no-rclone", err)
 	}
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.Command(rclonePath, p.Args()...)
@@ -553,7 +626,7 @@ func mountForeground(p MountPlan, home string) error {
 	// Start the child first, so the signal handler below never sees a nil
 	// Process: a SIGINT between Notify and Run would otherwise panic.
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("rclone mount: %w", err)
+		return failDetail("mount-failed", fmt.Errorf("rclone mount: %w", err), p.LogPath)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -593,6 +666,22 @@ func mountForeground(p MountPlan, home string) error {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
+	// The live upload-queue report (drive issue #318) runs in this process for
+	// as long as the mount does, on the same remote control: it reads the
+	// queue rclone is holding (vfs/queue, core/stats, core/bwlimit) and reports
+	// it to the api Worker over the device token this device already holds, so
+	// the first-run and usage pages show the same numbers `drive status` prints.
+	// It is started after rclone is up and stopped with the mount, and every
+	// failed pass goes to the mount's log, so a report problem is a named
+	// failure rather than a silent no-op.
+	queueCtx, cancelQueue := context.WithCancel(context.Background())
+	go func() {
+		_, _ = MountedDir(p.GOOS, p.MountDir)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		for err := range RunQueueReportLoop(queueCtx, c, home) {
+			fmt.Fprintf(os.Stderr, "drive: queue report: %v\n", err)
+		}
+	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -619,17 +708,36 @@ func mountForeground(p MountPlan, home string) error {
 	<-joined
 	cancelFill()
 	cancelConflict()
+	cancelQueue()
 	if runErr != nil {
-		return fmt.Errorf("rclone mount: %w", runErr)
+		// rclone's own words are in its log, never on the terminal: the person
+		// gets the table's what and the log path to read (drive#117).
+		return failDetail("mount-failed", fmt.Errorf("rclone mount: %w", runErr), p.LogPath)
 	}
 	return nil
 }
 
+// printMountedLine ends a successful mount on one clear line (drive#117):
+// where the drive is, and what to try first.
+func printMountedLine(mountDir string) {
+	fmt.Printf("Mounted at %s. Try: echo hello > %q\n", mountDir, filepath.Join(mountDir, "hello.txt"))
+}
+
 // waitMounted polls Mounted until the kernel reports the mount, then returns
-// nil. A mount that never appears is a named failure with the command that was
-// started, not a success with a warning.
+// nil. The wait is never silent (drive#117): "Starting the mount" and a dot
+// every half second stay on screen, so a first run that takes thirty seconds
+// never looks hung.
 func waitMounted(goos, home string) error {
-	deadline := time.Now().Add(mountWait)
+	return waitMountedFor(goos, home, mountWait, 200*time.Millisecond, os.Stdout)
+}
+
+// waitMountedFor is waitMounted with the wait, the poll tick and the output
+// injected, so the timeout and its words are testable in milliseconds.
+func waitMountedFor(goos, home string, wait, tick time.Duration, out io.Writer) error {
+	fmt.Fprint(out, "Starting the mount ")
+	defer fmt.Fprintln(out)
+	deadline := time.Now().Add(wait)
+	shown := 0
 	for time.Now().Before(deadline) {
 		on, err := Mounted(goos, home)
 		if err != nil {
@@ -638,10 +746,13 @@ func waitMounted(goos, home string) error {
 		if on {
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(tick)
+		shown++
+		if shown%3 == 0 {
+			fmt.Fprint(out, ".")
+		}
 	}
-	return fmt.Errorf("the mount did not come up within %s; check the login item and %s",
-		mountWait, mountLogHint(goos, home))
+	return failDetail("mount-hung", nil, wait.String(), mountLogHint(goos, home))
 }
 
 // mountWait bounds the wait for a freshly started mount to appear.
@@ -752,20 +863,27 @@ func Unmount(goos, home string) error {
 		return unmountWindows(home)
 	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("stat %s: %w", itemPath, err)
+		return failDetail("unexpected", fmt.Errorf("stat %s: %w", itemPath, err))
 	}
 	if goos == "darwin" {
 		return bootoutLaunchd(itemPath)
 	}
 	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
-		return fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
+		if stopErr := stopMount(goos, home); stopErr != nil {
+			return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr))
+		}
+		// The mount is down but the login item could not be disabled, and only
+		// uninstall and logout delete its file afterwards: a bare `drive
+		// unmount` would otherwise report success while the unit starts again
+		// at the next login. The error names the disable that failed.
+		return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err))
 	}
 	return nil
 }
@@ -866,13 +984,13 @@ func ResolveRclone(rclone string) (string, error) {
 	if rclone == "" {
 		path, err := exec.LookPath("rclone")
 		if err != nil {
-			return "", fmt.Errorf("rclone not found on PATH: %w", err)
+			return "", failDetail("no-rclone", err)
 		}
 		return absPath(path)
 	}
 	parent, err := exec.LookPath(rclone)
 	if err != nil {
-		return "", fmt.Errorf("rclone binary %q not found: %w", rclone, err)
+		return "", failDetail("no-rclone", fmt.Errorf("rclone binary %q not found", rclone))
 	}
 	return absPath(parent)
 }

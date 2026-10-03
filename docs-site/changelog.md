@@ -10,6 +10,21 @@ the live site.
 
 ## 2026-10-03
 
+- `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
+  with no delete, stores it 0600, and prints the prefix plus the two env var
+  names an agent tool would run on — never the secret, never on the command
+  line. One api base fronts both `/api/branches` and `/v1/keys`.
+- The Dodo billing push host is configurable via `DODO_BASE_URL` (env), defaulting
+  to `test.dodopayments.com`, so live billing can be switched on with one env var
+  instead of a code change. The source never names the live host; a misconfigured
+  URL is rejected at ingest time to keep the bearer token on an https
+  `dodopayments.com` host.
+- One command installs the drive CLI and rclone together: the Linux `.deb` and
+  `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
+  and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
+  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  removes that login item.
+
 - `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
   disk is rclone's own VFS cache, capped at 20G with 1G of free space always
   kept, and a size you choose. `drive status` shows the same use. Files waiting
@@ -38,6 +53,12 @@ the live site.
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported
   as stopped.
+- `drive offline <path>` and `drive online`: keep a file or folder on this
+  computer before you lose the network, see what is kept with
+  `drive offline --list`, and let the disk go again with `drive online`. The
+  offline list is on `drive status`.
+- `drive pause` and `drive resume`: hold new saves on this computer and send
+  nothing, and the hold survives a restart.
 - Windows installs from an MSI built with the stock WiX toolchain: it puts
   `drive.exe` and rclone on PATH, brings WinFsp in through WinFsp's own
   package dependency (never a vendored copy), registers the logon task, and
@@ -50,6 +71,12 @@ the live site.
 - The share card is now rendered from a committed source page, and its price is
   gated against the one price config, so a re-priced product moves the card
   with the page instead of leaving a stale picture behind.
+- A key one of your tools holds now stops working after an hour of not being
+  used, and the api Worker restarts that hour quietly on every request the tool
+  makes. Revoking a tool stops the renewal at once. A key that leaks is
+  therefore a key that is worth nothing to whoever holds it once you stop
+  working, and one hour is the longest a copied tool entry is useful without
+  you. Your own device sign-in is unchanged.
 
 ## 2026-09-30
 

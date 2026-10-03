@@ -16,11 +16,13 @@ import { exportRoute } from "./export-routes.js";
 import {
   listKeysRoute,
   mintKeyRoute,
+  renewKeyRoute,
   revokeKeyRoute,
   revokePresentedKeyRoute,
   storageListRoute,
   storageWriteRoute,
 } from "./key-routes.js";
+import { reportUploadQueueRoute } from "./queue-routes.js";
 import {
   createTeamRoute,
   inviteMemberRoute,
@@ -120,6 +122,31 @@ export const routes = [
     path: "/v1/keys/:keyId",
     auth: "account",
     handler: revokeKeyRoute,
+  },
+  // Renewing is behind the same gate as minting, and that is the whole point
+  // (drive issue #106): the credential that asks is the signed-in device's
+  // token, so a leaked storage key — which holds no device token — can never
+  // restart its own hour.
+  {
+    method: "POST",
+    path: "/v1/keys/:keyId/renew",
+    auth: "account",
+    handler: renewKeyRoute,
+  },
+
+  // ---- the live upload-queue report (drive#318) ----
+  //
+  // An account route, so the bearer device token the CLI already holds is the
+  // credential and the row is keyed by the account that gate resolved. The
+  // interval is the rate limit, enforced in the store's write (queues.js): a
+  // report sooner than QUEUE_REPORT_INTERVAL_SECONDS since the last accepted
+  // one is a 429 with retry-after, which a report loop ticking at the same
+  // interval cannot trip.
+  {
+    method: "POST",
+    path: "/v1/queue",
+    auth: "account",
+    handler: reportUploadQueueRoute,
   },
 
   // ---- own-data export (account lifecycle, drive#34) ----

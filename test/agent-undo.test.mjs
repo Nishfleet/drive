@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createBranch, handleBranchesRequest } from "../src/branches.js";
+import { createBranch, createKvSnapshotStore, handleBranchesRequest } from "../src/branches.js";
 import { createMemoryStore, scopeStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
@@ -36,7 +36,7 @@ import {
   rewindBranch,
   rewindPreview,
 } from "../src/rewind.js";
-import { sqlitePlaceholders } from "./harness.mjs";
+import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -77,6 +77,8 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0012_branch_snapshot_kv.sql",
+    "drive/0015_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -95,19 +97,31 @@ function makeD1() {
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
+   * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    // D1 binds a numbered placeholder by its NUMBER; node:sqlite binds the
+    // rewritten anonymous `?` by appearance. `sqliteBoundValues` bridges the
+    // two, so an out-of-order statement (`SET b = ?3 … WHERE a = ?1`, the
+    // shape src/branches.js saveSnapshot sends) binds the same value here as
+    // it does in production.
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+      sqliteBoundValues(sql, params)
+    );
     const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -145,10 +159,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -156,10 +171,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })
@@ -251,8 +267,13 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   await scoped.write("/Photos/a.txt", new Blob(["original a"]).stream(), "text/plain");
   await scoped.write("/Photos/keep.txt", new Blob(["untouched"]).stream(), "text/plain");
   const db = makeD1();
+  // The branch snapshot lives in the KV namespace the Worker binds (drive
+  // #252), and this test drives it through the same store object the route
+  // gets, so the rewind below reads a snapshot out of KV rather than the row.
+  const snapshots = createKvSnapshotStore(createTestKv());
   const created = await createBranch(
     db,
+    snapshots,
     scoped,
     ACCOUNT,
     { folder: "/Photos", name: "fix", changedBy },
@@ -261,23 +282,24 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   // The agent edits one file and deletes another, inside the branch copy.
   await scoped.write("/.branches/fix/a.txt", new Blob(["agent rewrote a"]).stream(), "text/plain");
   await scoped.remove("/.branches/fix/keep.txt");
-  return { raw, scoped, db, created };
+  return { raw, scoped, db, snapshots, created };
 }
 
 test("the rewind screen lists what the agent changed before anything is touched", async () => {
   // The store goes in unscoped, exactly as src/index.js hands it over; the
   // handler applies the scope. That is the same call the Worker makes, so a
   // test cannot pass where the Worker would fail.
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   const branches = await handleBranchesRequest(
     new Request(`https://drive.test/api/branches`, { method: "GET" }),
     db,
+    snapshots,
     raw,
     ACCOUNT,
     () => AT,
   );
   const [row] = (await branches.json()).branches;
-  const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT);
+  const preview = await rewindPreview(scopeStore(raw, ACCOUNT), row, AT, snapshots);
   // The list is the branch's own live diff, so the screen's promise is what a
   // rewind actually does — one file changed, one removed, and the file the
   // agent never touched is not named.
@@ -306,9 +328,9 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   // it". The rewind removes the agent's copy and never names the original, so
   // the original is byte-for-byte what it was before the agent started — the
   // agent's edits and deletes die with the branch.
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
-  const result = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
+  const result = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT);
   // `rewindBranch` answers a union; `"error" in result` is its discriminator
   // and the success arm above carries state/rewound/changedBy, not error.
   assert.ok(!("error" in result));
@@ -323,7 +345,7 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   assert.equal(await text(scoped, "/.branches/fix/a.txt").catch(() => null), null);
   // And a second click is refused rather than re-removing nothing: the branch
   // is closed, and "already closed" is its own message.
-  const again = await rewindBranch(db, scoped, ACCOUNT, "fix", AT);
+  const again = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT);
   assert.equal(failedStatus(again), 409);
   assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
 });
@@ -332,18 +354,18 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // The window is enforced where the rewind happens, so a caller who ignores
   // the page cannot rewind a branch whose old versions are gone. Day 30 is
   // still inside; day 31 is not.
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
-  const row = await rewindBranchRowFor(db, raw, "fix");
+  const row = await rewindBranchRowFor(db, snapshots, raw, "fix");
   // The branch above was just created, so the list that reads it back has it;
   // `assert.ok` narrows the null the lookup honestly returns.
   assert.ok(row);
 
-  const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS);
+  const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS, snapshots);
   assert.equal(inside.canRewind, true);
   assert.equal(inside.ageDays, 30);
 
-  const outside = await rewindPreview(scoped, row, AT + 31 * DAY_MS);
+  const outside = await rewindPreview(scoped, row, AT + 31 * DAY_MS, snapshots);
   assert.equal(outside.canRewind, false);
   assert.equal(outside.unavailableReason, "window-closed");
   // The screen still says what happened and when it stops being true, so a
@@ -352,7 +374,7 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   assert.match(outside.restorableUntil, /^2026-10-30T/);
 
   // And the POST is refused with the message table's own sentence.
-  const refused = await rewindBranch(db, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
+  const refused = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
   assert.equal(failedStatus(refused), 409);
   assert.equal(
     /** @type {{error: string}} */ (refused).error,
@@ -367,16 +389,17 @@ test("one account can never read or rewind another account's branch", async () =
   // The account gate is the isolation: another account's branch name is "not
   // found", never "forbidden", and never a file list. This is the same answer
   // `drive branches` gives for another account's name.
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   const otherRaw = createMemoryStore();
-  assert.equal(await rewindBranchRowFor(db, raw, "nope"), null);
-  const other = await rewindBranch(db, scopeStore(otherRaw, OTHER), OTHER, "fix", AT);
+  assert.equal(await rewindBranchRowFor(db, snapshots, raw, "nope"), null);
+  const other = await rewindBranch(db, snapshots, scopeStore(otherRaw, OTHER), OTHER, "fix", AT);
   assert.equal(failedStatus(other), 404);
   assert.equal(/** @type {{error: string}} */ (other).error, failureMessage("branch-not-found"));
   // The list an account sees is its own: account B sees no branches at all.
   const listed = await handleRewindRequest(
     new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
     db,
+    snapshots,
     otherRaw,
     OTHER,
     () => AT,
@@ -384,16 +407,17 @@ test("one account can never read or rewind another account's branch", async () =
   assert.deepEqual((await listed.json()).rewinds, []);
   // And the branch account A made is still there and still rewound-able, so
   // B's miss changed nothing.
-  assert.ok(await rewindBranchRowFor(db, raw, "fix"));
+  assert.ok(await rewindBranchRowFor(db, snapshots, raw, "fix"));
 });
 
 test("the rewind route lists, previews, rewinds and refuses the rest", async () => {
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   /** @param {string} path @param {RequestInit} [init] */
   const call = (path, init) =>
     handleRewindRequest(
       new Request(`https://drive.test${REWIND_ENDPOINT}${path}`, init),
       db,
+      snapshots,
       raw,
       ACCOUNT,
       () => AT,
@@ -429,10 +453,11 @@ test("the rewind route lists, previews, rewinds and refuses the rest", async () 
 test("the rewind route refuses an anonymous caller with no data at all", async () => {
   // The gate: 401 before the store or the database is touched, so a stranger
   // learns nothing about which branches exist.
-  const { raw, db } = await agentBranch();
+  const { raw, db, snapshots } = await agentBranch();
   const response = await handleRewindRequest(
     new Request(`https://drive.test${REWIND_ENDPOINT}/fix`, { method: "POST" }),
     db,
+    snapshots,
     raw,
     null,
     () => AT,
@@ -450,14 +475,16 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
 // answers each row with the branch plus the two diff counts the screen shows.
 /**
  * @param {D1Database} db
+ * @param {import("../src/branches.js").SnapshotStore|null} snapshots
  * @param {import("../src/files.js").FileStore} raw
  * @param {string} name
  * @returns {Promise<import("../src/branches.js").Branch & {changed: number, sourceChanged: number}|null>}
  */
-async function rewindBranchRowFor(db, raw, name) {
+async function rewindBranchRowFor(db, snapshots, raw, name) {
   const branches = await handleBranchesRequest(
     new Request(`https://drive.test/api/branches`, { method: "GET" }),
     db,
+    snapshots,
     raw,
     ACCOUNT,
     () => AT,

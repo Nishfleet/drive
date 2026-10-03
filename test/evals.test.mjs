@@ -8,16 +8,20 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 // The eval's CLI help text is cmd/drive/main.go's `usage` const, so the gate
-// asks the same function `npm run docs:render` writes the snapshot with. A
-// second copy of that pattern is how the gate went green on a file the render
-// had stopped producing.
-import { cliUsageText } from "../src/render-docs.js";
+// asks the same function `npm run eval:sync-help` writes the committed snapshot
+// with. The snapshot stays committed and the docs build never writes it:
+// `docs:render` runs inside `npm test` before these gates, so a render that
+// wrote the snapshot there made this gate compare the render's output with
+// itself, and a stale committed snapshot passed CI while the step dirtied a
+// clean main (drive#332).
+import { cliUsageText, renderDocs } from "../src/render-docs.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -87,16 +91,74 @@ function docsAndHelp() {
   return `${pages.join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
 }
 
-/** @param {EvalGrader} a @returns {string} */
-function graderSource(a) {
-  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
-  return a.value;
+/** @param {string | boolean | number | { pass: boolean }} result */
+function passed(result) {
+  if (typeof result === "object" && result !== null) return result.pass;
+  return Boolean(result);
 }
 
-/** @param {string} value @param {string} output */
-function gradeJavascript(value, output) {
-  const fn = new Function("output", `"use strict"; return (${value});`);
-  return fn(output);
+/**
+ * The promptfoo javascript-assertion context, so the repo's gate and the
+ * real run grade a task the same way.
+ *
+ * @typedef {{ vars: Record<string, string> }} EvalContext
+ */
+
+/**
+ * Build a grader the way promptfoo's `handleJavascript` does: a single-line
+ * value is an expression, a multi-line value is the function body. Keeping
+ * this in step with the tool is the gate's whole job.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function graderBody(value) {
+  if (value.includes("\n")) return value.trimEnd();
+  const trimmed = value.trim().replace(/;+\s*$/, "");
+  if (/^(const|let|var)\s/.test(trimmed)) {
+    const lastSemi = trimmed.lastIndexOf(";");
+    if (lastSemi !== -1) {
+      const statements = trimmed.slice(0, lastSemi + 1);
+      const expression = trimmed.slice(lastSemi + 1).trim();
+      if (expression) return `${statements} return ${expression}`;
+    }
+    return trimmed;
+  }
+  return `return ${trimmed}`;
+}
+
+/**
+ * @param {EvalGrader} a
+ * @param {string} output
+ * @param {EvalContext} [context] defaults to a context with no vars, so a
+ *   grader that needs one fails here rather than passing on empty input
+ * @returns {boolean | number | { pass: boolean, score?: number, reason?: string }}
+ */
+function gradeJavascript(a, output, context = { vars: {} }) {
+  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
+  const fn = new Function("output", "context", `"use strict"; ${graderBody(a.value)}`);
+  return fn(output, context);
+}
+
+/**
+ * The vars promptfoo hands an assertion at run time, read from the config's
+ * `defaultTest.vars`: a `file://` ref is the file's contents, resolved against
+ * the config's own directory, so a grader and this gate read the same
+ * rendered page.
+ *
+ * @returns {EvalContext}
+ */
+function gradingContext() {
+  const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
+  /** @type {Record<string, string>} */
+  const vars = {};
+  for (const [name, value] of Object.entries(cfg.defaultTest?.vars ?? {})) {
+    vars[name] =
+      typeof value === "string" && value.startsWith("file://")
+        ? readFileSync(join(evals, value.slice(7)), "utf8")
+        : String(value);
+  }
+  return { vars };
 }
 
 const rendered = join(root, "docs-site", ".rendered");
@@ -186,16 +248,17 @@ test("programmatic graders only, and the judge lives on a different family", () 
 test("the same transcript graded twice agrees 100%", () => {
   const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const samples = [docsAndHelp(), "", "lorem ipsum"];
+  const context = gradingContext();
   let n = 0;
   let disagreements = 0;
   for (const t of tasks) {
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
       for (const sample of samples) {
-        const first = gradeJavascript(graderSource(a), sample);
-        const second = gradeJavascript(graderSource(a), sample);
+        const first = gradeJavascript(a, sample, context);
+        const second = gradeJavascript(a, sample, context);
         n += 1;
-        if (first !== second) disagreements += 1;
+        if (passed(first) !== passed(second)) disagreements += 1;
       }
     }
   }
@@ -207,17 +270,59 @@ test("the same transcript graded twice agrees 100%", () => {
   );
 });
 
+test("a task whose answer is a date in the docs follows the newest heading (drive#324)", () => {
+  // The changelog's newest dated heading is the fact the answer carries, so a
+  // grader that cannot state that date without a literal in the task file is
+  // a grader that broke on the day the changelog moved. Two of the answers
+  // below are the real failure: the day the changelog gained a heading
+  // (2026-10-03, which failed 6/6 while the task still asserted 2026-10-02)
+  // and the day before it.
+  const changelog = readFileSync(join(rendered, "changelog.md"), "utf8");
+  const headings = [...changelog.matchAll(/^## (\d{4}-\d{2}-\d{2})/gm)].map((m) => m[1]);
+  assert.ok(headings.length >= 1, "the changelog has at least one dated heading");
+  const [newest, older] = headings;
+
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const task = tasks.find((t) => t.description === "the newest thing that shipped");
+  assert.ok(task, "the train split still has the newest-thing task");
+  const context = gradingContext();
+  assert.equal(
+    context.vars.docs_changelog,
+    changelog,
+    "the grader and this gate read the same rendered changelog promptfoo hands the assertion",
+  );
+  const js = task.assert.filter((a) => a.type === "javascript");
+  assert.ok(js.length >= 1, "the newest-thing task has a programmatic grader");
+  for (const a of js) {
+    assert.ok(
+      passed(gradeJavascript(a, `The newest thing shipped is ${newest}.`, context)),
+      `${task.description}: an answer naming the newest heading ${newest} passes`,
+    );
+    if (older) {
+      assert.ok(
+        !passed(gradeJavascript(a, `The newest thing shipped is ${older}.`, context)),
+        `${task.description}: an answer naming the older heading ${older} fails, so the grader follows the changelog`,
+      );
+    }
+    assert.ok(
+      !passed(gradeJavascript(a, "The newest thing shipped is 2026-10-01.", context)),
+      `${task.description}: an answer naming no heading in the changelog fails`,
+    );
+  }
+});
+
 test("pasting the public docs and drive --help satisfies every train grader", () => {
   // The agent only sees those two sources plus the task. A grader that fails
   // on them is asking for a fact the task cannot know, or a negative the docs trip.
-  const context = docsAndHelp();
+  const context = gradingContext();
+  const contextText = `${Object.values(context.vars).join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
   const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const fails = [];
   for (const t of tasks) {
-    const output = `${context}\n${t.vars.task}`;
+    const output = `${contextText}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
+      if (!passed(gradeJavascript(a, output, context))) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy:\n${fails.join("\n")}`);
@@ -228,14 +333,15 @@ test("pasting the public docs and drive --help satisfies the held-out graders", 
     t.skip(`held-out file is not on this machine: ${HOLDOUT_DEFAULT}`);
     return;
   }
-  const context = docsAndHelp();
+  const context = gradingContext();
+  const contextText = `${Object.values(context.vars).join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
   const tasks = loadTasks(HOLDOUT_DEFAULT);
   const fails = [];
   for (const t of tasks) {
-    const output = `${context}\n${t.vars.task}`;
+    const output = `${contextText}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
+      if (!passed(gradeJavascript(a, output, context))) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy holdout:\n${fails.join("\n")}`);
@@ -285,7 +391,27 @@ test("the prompt reads only the docs, the help text and the task", () => {
 test("drive --help snapshot still matches the shipped CLI", () => {
   const m = cliUsageText().trim();
   const snapshot = read("evals/agents/context/drive-help.txt").trim();
-  assert.equal(snapshot, m, "help text drift would break the context");
+  assert.equal(snapshot, m, "help text drift would break the context; run npm run eval:sync-help");
+});
+
+test("docs:render never writes the committed CLI-help snapshot", () => {
+  // The snapshot is committed and the gate above checks it, so only
+  // `npm run eval:sync-help` may write it. docs:render runs inside npm test
+  // before these gates; if it touched the snapshot, the gate would compare the
+  // render's own output with itself and a stale snapshot would pass CI
+  // (drive#332). This pins the render path out of the committed file's way.
+  const snapshot = read("evals/agents/context/drive-help.txt");
+  const tmpDir = mkdtempSync(join(os.tmpdir(), "drive-render-"));
+  try {
+    renderDocs(tmpDir);
+    assert.equal(
+      read("evals/agents/context/drive-help.txt"),
+      snapshot,
+      "renderDocs must not rewrite the committed snapshot; use npm run eval:sync-help",
+    );
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("package.json wires the one command and the stock tool", () => {

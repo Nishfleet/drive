@@ -40,14 +40,16 @@ Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 Stated plainly, because a security page that lists only the good news is not
 useful:
 
-- We run the storage the files sit in, so an operator with production access to
-  that account can reach the bytes. There is no end-to-end encryption in
-  version 1, and we are not in a position to claim your files are unreadable to
-  us.
-- A key, and a session running as you, can read your files. That is the
+- **We cannot claim we cannot reach your files.** We run the storage they sit
+  in, so an operator with production access to that account can reach the
+  bytes, and there is no end-to-end encryption in version 1.
+- **We cannot read a file through your key.** A key can only do what its kind of
+  key is allowed to do, and a key that has been revoked is dead from then on.
+- **A key, and a session running as you, can read your files.** That is the
   product: the point is that your agents can read them.
-- Secrets do not live in the Drive repository or on this site. The CLI reads
-  them from the environment, not from a file inside the Drive folder.
+- **We cannot keep your secrets for you.** They do not live in the Drive
+  repository or on this site, and the CLI reads them from the environment
+  rather than from a file inside the Drive folder.
 
 ## Not claimed
 

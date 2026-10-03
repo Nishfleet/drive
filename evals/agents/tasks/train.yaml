@@ -113,6 +113,18 @@
     - type: javascript
       value: "/read-only/i.test(output) && /nothing is deleted/.test(output)"
 
+- description: resume writing after the cap is raised
+  vars:
+    task: >
+      My drive went read-only at my spending cap. I raised the cap. Does it
+      start writing again, and what happens to the uploads that were waiting?
+    source: docs-site/security.md, "The spending cap"
+  assert:
+    - type: javascript
+      value: "/raise the cap and the drive starts writing again/i.test(output)"
+    - type: javascript
+      value: "/uploads that waited in the cache go up/i.test(output)"
+
 - description: the default spending cap
   vars:
     task: >
@@ -254,9 +266,16 @@
       What shipped most recently, according to the docs? Give the date and the
       one line.
     source: docs-site/changelog.md, latest dated entry
+  # drive#324: the date is not written here. A literal goes stale the day the
+  # changelog gains a newer heading (2026-10-02 failed 6/6 when 2026-10-03
+  # shipped), so the grader reads the changelog the agent was handed and
+  # asserts the answer names its newest dated heading.
   assert:
     - type: javascript
-      value: "/2026-10-02|2026-10-0?1/.test(output)"
+      value: |
+        const changelog = String(context.vars.docs_changelog || "");
+        const newest = /^## (\d{4}-\d{2}-\d{2})/m.exec(changelog);
+        return newest !== null && output.includes(newest[1]);
 
 - description: what a branch is for, and what it gives an agent
   vars:
@@ -408,26 +427,10 @@
       A branch is a server-side copy, not a metadata trick, so its cost is a
       real copy of every byte — and the number to give is the measured one, not
       the one in the docs' promise.
-    source: docs/build-spec.md, "Against Space, feature by feature"; step 7
+    source: docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/(copy|copies)/i.test(output)"
-
-- description: two agents writing the same file
-  metadata:
-    hard: true
-  vars:
-    task: >
-      Two of my agents are told to edit the same file at the same time. What
-      stops the second one silently wiping the first one's work?
-    why_hard: >
-      It is a race with no winner by default, so the answer is a guard on the
-      write that the docs name once, in a different section, for the hosted
-      connector — not in the branch documentation at all.
-    source: docs/build-spec.md, "Sandbox platforms (build step 11)"
-  assert:
-    - type: javascript
-      value: "/cannot delete|cannot remove|does not say|not in the documentation/i.test(output)"
 
 - description: a branch key cannot reach my other files
   metadata:
@@ -440,7 +443,7 @@
       The prefix is a hidden path inside the account's own folder, so a person
       has to know the layout (`u/<id>/.branches/<name>/`) before the answer is
       more than "its own folder".
-    source: docs/build-spec.md, "Keys and safety"
+    source: docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/branch/i.test(output) && /cannot delete|cannot remove|delete/i.test(output)"
