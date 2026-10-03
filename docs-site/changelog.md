@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-03
 
+- `drive update` and `drive version`: an update replaces the installed CLI
+  with the latest released version by the same `go install` command a person
+  installs with, and `drive version` prints the version the binary was built
+  and installed at, so an update is visible.
 - Windows gets the same `drive mount` the Mac and Linux have had: `rclone
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
