@@ -15,7 +15,7 @@ import {
   monthBillCents,
   monthlyCeilingUsd,
 } from "../src/billing.js";
-import { FAQ, faqMarkdown, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { PAGES, SITE } from "../src/seo.js";
@@ -93,6 +93,43 @@ test("a page may not use a marker src/docs.js does not define", () => {
     () => applyMarkers("{{NOT_A_MARKER}}"),
     /NOT_A_MARKER/,
     "an unknown marker must fail the render, not ship as a literal",
+  );
+});
+
+// The cache numbers (drive issue #112) are the shipped defaults in
+// cmd/drive/config.go, read here the way test/home-demos.test.mjs reads the
+// mount's flags: a page that says 20G while the CLI mounts with 6G is a page
+// that lies about the disk, so the two are one file apart and this is the gate
+// between them.
+test("the cache numbers on the pages are the ones the CLI mounts with", () => {
+  const go = readFileSync(new URL("../cmd/drive/config.go", import.meta.url), "utf8");
+  /** @param {string} name @returns {string} */
+  const goConst = (name) => {
+    const match = go.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`, ""));
+    assert.ok(match, `${name} must be a Go string constant in cmd/drive/config.go`);
+    return match[1];
+  };
+  const limit = goConst("vfsCacheMaxValue");
+  const floor = goConst("vfsCacheMinFreeSpaceValue");
+  for (const [file, name] of [
+    ["how-it-works.md", "how it works"],
+    ["limits.md", "limits"],
+  ]) {
+    const page = shipped(file);
+    assert.ok(page.includes(limit), `${name} page must state the ${limit} cache limit`);
+    assert.ok(page.includes(floor), `${name} page must state the ${floor} free-space floor`);
+  }
+  // And the marker the page uses renders from those constants, so the two
+  // cannot be checked against the page but disagree with each other.
+  assert.equal(
+    markerValues().CACHE_LIMIT,
+    limit,
+    "the CACHE_LIMIT marker must be the CLI's own limit",
+  );
+  assert.equal(
+    markerValues().CACHE_FLOOR,
+    floor,
+    "the CACHE_FLOOR marker must be the CLI's own floor",
   );
 });
 
@@ -186,6 +223,30 @@ test("the security page states the same key table, and what we cannot claim", ()
   assert.doesNotMatch(page, /SOC 2/i, "the security page must not claim a certification");
 });
 
+test("the security page answers whether writing resumes once the cap is raised", () => {
+  // The gap issue #303 names, from both directions. A train task of the agent
+  // eval (#222) was dropped because its answer is nowhere in the reading
+  // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
+  // at the cap, and neither said what raising it does. The pages an agent
+  // reads were also the only place the answer could live, because the code that
+  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // is not served. So the answer is one sentence on the page that already
+  // states the cap, and this pins it: an eval cannot grade an answer the
+  // reading stack does not carry, and a page that loses the sentence fails here
+  // rather than in the next run's score.
+  const page = shipped("security.md");
+  assert.match(
+    page,
+    /raise the cap and the drive starts writing again/i,
+    "the security page must say writing resumes once the cap is raised",
+  );
+  assert.match(
+    page,
+    /uploads that waited in the cache go up/i,
+    "the security page must say the uploads that waited are sent",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
@@ -218,6 +279,28 @@ test("the changelog opens today and every entry is a real line", () => {
     page.includes(dollars(BILLING_CONFIG.perTbUsd)),
     "the changelog must state the ceiling it recorded",
   );
+});
+
+test("the changelog's docs list names every page in DOC_PAGES order", () => {
+  // The changelog repeats the docs list in prose ("These docs: ..."), a second
+  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // sitemap and the built site, but not in this sentence, so an agent reading
+  // the changelog missed a shipped page. The gate reads that one sentence and
+  // requires every DOC_PAGES title, in the same order, so the next page added
+  // to DOC_PAGES fails here until the changelog names it.
+  const changelog = shipped("changelog.md");
+  const bullet = changelog.match(/[*-] These docs:([\s\S]*?)(?=\n[*-] |\n\n)/);
+  assert.ok(bullet, "the changelog must carry its 'These docs:' list");
+  const names = bullet[1].replace(/\s+/g, " ").toLowerCase();
+  let at = -1;
+  for (const page of DOC_PAGES) {
+    const found = names.indexOf(page.title.toLowerCase(), at + 1);
+    assert.ok(
+      found > at,
+      `the changelog's docs list must name ${page.title} after the page before it`,
+    );
+    at = found;
+  }
 });
 
 test("every FAQ answer rests on a scoreboard row that is a measured win", () => {
