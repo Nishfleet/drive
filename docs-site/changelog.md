@@ -23,6 +23,11 @@ the live site.
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported
   as stopped.
+- Windows installs from an MSI built with the stock WiX toolchain: it puts
+  `drive.exe` and rclone on PATH, brings WinFsp in through WinFsp's own
+  package dependency (never a vendored copy), registers the logon task, and
+  uninstalls to a clean machine. The builds are unsigned and pre-release, so
+  there is nothing to install from a public release yet.
 
 - The Benchmarks page: every speed scenario the suite measures, next to the
   published rival figure for the same case, with losses labelled losses. Linux

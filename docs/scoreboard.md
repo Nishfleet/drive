@@ -58,6 +58,7 @@ that repeats it, or `not yet measured`). Nothing here is estimated.
 | disk use | zero bytes on disk; caches only the parts an app asks for - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured | #112 |
 | minimum macOS | macOS Tahoe 26.4 or later - [spacefs.com](https://spacefs.com) FAQ checked 2026-09-30 | not yet measured; the mount proof now runs on macOS through `rclone nfsmount` (no macFUSE), and #116's CI job runs it on the Mac images GitHub offers; the publishable minimum is the oldest of those images with a green run | not yet measured | #116 |
 | pause and resume an upload | not published - [spacefs.com](https://spacefs.com) checked 2026-09-30 | not yet measured | not yet measured | #100 |
+| Windows install and mount | "Mac and Linux; Windows 'coming soon'" - [spacefs.com/changelog](https://spacefs.com/changelog/) checked 2026-09-30 | not yet measured (the Windows MSI builds with the stock WiX toolchain; the windows-latest job in drive#291 runs the silent install, the drive-letter write and read back, and the clean uninstall, and this row takes its figure from that run's log) | not yet measured | #154 |
 
 ## Rows with no issue yet
 
