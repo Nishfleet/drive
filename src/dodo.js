@@ -23,9 +23,20 @@
 // passes the platform's fetch. A missing API key skips the ingest rather
 // than failing the meter's rollup: the meter is the source of truth, and a
 // deploy that has not set the key must still roll hours.
+//
+// That skip is deliberately silent, which is the problem this module's
+// detector below answers (drive issue #334). A deploy that never set the key,
+// or set it on the wrong Worker, rolls metered hours every hour and bills
+// nobody, and nothing said so: the health endpoint excludes secrets on
+// purpose, so such a deployment looks healthy. unpushedBillingHours() names
+// the gap between the hours the meter rolled and the hours this table holds,
+// and billingPushGap() is the report a person reads. The skip itself is
+// untouched: it still returns {pushed: 0} and never throws, because a
+// Cloudflare retry of a rollup over a missing key is worse than the loss it
+// would try to fix.
 
 import { monthBillCents } from "./billing.js";
-import { hourStart, monthStart, monthUsageThrough } from "./meter.js";
+import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
 // The test-mode host and ingest path are split so the host can be overridden
 // by DODO_BASE_URL while the path stays fixed. The default stays the test
@@ -36,6 +47,115 @@ export const DODO_TEST_INGEST_URL = `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`;
 export const DODO_EVENT_NAME = "drive.usage";
 
 const INGEST_BATCH = 1000;
+
+/**
+ * How far back the gap detector looks, in hours. Two days is chosen so the
+ * detector is a cheap bounded read on every probe rather than a
+ * walk of every push the deployment has ever made: the question an operator
+ * has is "is money being lost right now", and two days is long enough that the
+ * two nightly runs and a deploy cannot outrun the window, and short enough
+ * that the statement is one indexed range on billing_pushes_hour_idx and
+ * usage_minutes_hour_idx (migrations/drive/0005_meter.sql,
+ * 0013_billing_pushes.sql). It is exported and named so the window is a
+ * tested constant rather than a literal buried in a query.
+ */
+export const BILLING_PUSH_GAP_HOURS = 48;
+
+/**
+ * The metered hours inside the window that no push reached.
+ *
+ * The read is an anti-join (NOT EXISTS) from the hours the meter actually
+ * rolled to the pushes that were recorded for them, so the gap is computed by
+ * the database rather than by pulling both sets into the isolate and
+ * subtracting them there. Only hours an account with a Dodo customer holds
+ * count (the accounts join is INNER, on dodo_customer_id): an account with no
+ * dodo_customer_id is skipped by the push for a reason that is not a lost push
+ * (there is no Dodo customer to bill), and counting its hours would raise a
+ * permanent false alarm on every deployment that has signed nobody up yet. The
+ * WHERE also drops the hour still in progress, which the meter has not closed
+ * and therefore neither the rollup nor the push has seen.
+ *
+ * The result is a count of distinct hours, not of (account, hour) pairs: 100
+ * stuck accounts across 48 hours is 48 here, because the question the report
+ * answers is "does the push reach anyone", and one line per hour is what an
+ * operator reads. Distinct-account counts are deliberately not a second figure
+ * on this line.
+ *
+ * @param {D1Database} db
+ * @param {{now?: number|Date|string, hours?: number}} [options]
+ * @returns {Promise<number[]>} the hour starts, oldest first
+ */
+export async function unpushedBillingHours(db, options = {}) {
+  if (!db) {
+    throw new Error("billing gap: METER_DB binding is not configured");
+  }
+  const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
+  const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
+  if (!Number.isSafeInteger(hours) || hours <= 0) {
+    throw new TypeError(
+      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
+    );
+  }
+  const lastClosed = hourStart(now) - HOUR_MS;
+  const from = lastClosed - (hours - 1) * HOUR_MS;
+  const result = await db
+    .prepare(
+      `SELECT DISTINCT u.hour AS hour
+       FROM usage_minutes u
+       INNER JOIN accounts a ON a.id = u.account_id
+       WHERE u.hour >= ?1 AND u.hour <= ?2
+         AND a.dodo_customer_id IS NOT NULL
+         AND a.dodo_customer_id <> ''
+         AND NOT EXISTS (
+           SELECT 1 FROM billing_pushes b
+           WHERE b.hour = u.hour AND b.account_id = u.account_id
+         )
+       ORDER BY u.hour ASC`,
+    )
+    .bind(from, lastClosed)
+    .all();
+  /** @type {number[]} */
+  const gap = [];
+  for (const row of result.results ?? []) {
+    const hour = Number(row.hour);
+    if (!Number.isSafeInteger(hour)) {
+      throw new TypeError(
+        `usage_minutes has a row whose hour is not a number: ${String(row.hour)}`,
+      );
+    }
+    gap.push(hour);
+  }
+  return gap;
+}
+
+/**
+ * What a person reads when they ask "is the billing push actually working".
+ *
+ * Value-free by design: a count of hours that rolled and reached nobody, the
+ * oldest of them, and whether the key is missing. No key, no account id, so
+ * the report is safe to log. The caller joins it with the run's own push
+ * result, because only the caller knows that.
+ *
+ * `missingKey` is the difference between the two causes this issues names: a
+ * key never set, and a key set on the wrong Worker. The first shows here
+ * because the binding is empty. The second does not, which is why the hour
+ * count is the centre of the report: a key that is present but wrong still
+ * leaves hours unpushed, and only the count says so.
+ *
+ * @param {D1Database} db
+ * @param {{apiKey?: string, now?: number|Date|string, hours?: number}} [options]
+ * @returns {Promise<{hours: number, since: number|null, missingKey: boolean}>}
+ */
+export async function billingPushGap(db, options = {}) {
+  const apiKey = typeof options.apiKey === "string" ? options.apiKey : "";
+  const missingKey = apiKey.length === 0;
+  const gap = await unpushedBillingHours(db, options);
+  return {
+    hours: gap.length,
+    since: gap.length > 0 ? gap[0] : null,
+    missingKey,
+  };
+}
 
 /**
  * Resolve the ingest URL from an optional base URL override. When
@@ -221,33 +341,50 @@ export async function pushBillingHours(db, hours, options = {}) {
 }
 
 /**
- * @param {unknown} now
+ * One instant as epoch milliseconds, from the three shapes a caller hands a
+ * trigger. The push's own `now` and the gap detector's share this one parser,
+ * so the detector is always measured on the same clock the push stamped its
+ * rows with (every billing_pushes.pushed_at below goes through here): two
+ * parsers would be two chances for the detector to disagree with the very
+ * table it is comparing against.
+ * @param {number|Date|string} now
+ * @param {string} field the caller's own name for the value, in the message
  * @returns {number}
  */
-function toPushedAt(now) {
+function toMillis(now, field) {
   if (typeof now === "number") {
     if (!Number.isFinite(now)) {
-      throw new TypeError(`now must be a finite number of milliseconds, got ${String(now)}`);
+      throw new TypeError(`${field} must be a finite number of milliseconds, got ${String(now)}`);
     }
     return Math.trunc(now);
   }
   if (now instanceof Date) {
     const time = now.getTime();
     if (!Number.isFinite(time)) {
-      throw new TypeError("now is an invalid Date");
+      throw new TypeError(`${field} is an invalid Date`);
     }
     return time;
   }
   if (typeof now === "string") {
     const time = Date.parse(now);
     if (!Number.isFinite(time)) {
-      throw new TypeError(`now is not a parseable timestamp: ${now}`);
+      throw new TypeError(`${field} is not a parseable timestamp: ${now}`);
     }
     return time;
   }
   throw new TypeError(
-    `now must be epoch milliseconds, a Date or an ISO string, got ${String(now)}`,
+    `${field} must be epoch milliseconds, a Date or an ISO string, got ${String(now)}`,
   );
+}
+
+/**
+ * The push's own stamp, the one shape `toMillis` above serves. Kept as its own
+ * name so the call site reads as the push's field rather than a conversion.
+ * @param {number|Date|string} now
+ * @returns {number}
+ */
+function toPushedAt(now) {
+  return toMillis(now, "now");
 }
 
 /**
