@@ -461,11 +461,6 @@ func TestAConnectedToolKeepsTheExistingKeyOnASecondRun(t *testing.T) {
 // that are here: it carries and shows the expiry the mint answers with, and it
 // asks for a renewal when a stored key is about to run out.
 
-// agentKeyTTL is the hour the api Worker mints an agent key with
-// (workers/api/src/keyprovider.js AGENT_KEY_TTL_SECONDS). The fake Worker
-// answers with this window so the CLI's own handling is what the test proves.
-const agentKeyTTL = time.Hour
-
 // renewAnswerOffset is how far past a mint's window the fake Worker's renew
 // answer sits. It is not a rule the real Worker has; it exists so a test can
 // tell an expiry that was decoded from the answer and written to disk from one
