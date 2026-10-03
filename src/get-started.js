@@ -117,7 +117,7 @@ export function emptyState(screen) {
 /**
  * The upload-progress line for a queue, assembled by the module from the
  * module's own fragments, so this page and `drive status` print one line.
- * @param {{uploadedBytes: number, totalBytes: number, files?: number}} upload
+ * @param {{uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean}} upload
  * @returns {string}
  */
 export function uploadLine(upload) {
@@ -151,7 +151,7 @@ export function syncErrorNotification() {
 
 /**
  * The whole poll payload, as the page's render() reads it.
- * @typedef {{state?: string, devices?: DeviceRow[], upload?: {uploadedBytes: number, totalBytes: number, files?: number}|null}} StatusPayload
+ * @typedef {{state?: string, devices?: DeviceRow[], upload?: {uploadedBytes: number, totalBytes: number, files?: number, paused?: boolean}|null}} StatusPayload
  */
 
 /**

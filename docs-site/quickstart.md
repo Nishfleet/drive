@@ -11,12 +11,15 @@ same files.
 
 ## Before you start
 
-You need an invite and a machine running macOS or Linux. The drive is not open
-yet, so ask on the pricing page. You also need [rclone](https://rclone.org) and
-[Go](https://go.dev) on the machine; both are stock tools, and neither is
-installed for you.
+You need an invite and a machine running macOS, Linux or Windows. The drive is
+not open yet, so ask on the pricing page. On macOS and Linux you also need
+[rclone](https://rclone.org) and [Go](https://go.dev) on the machine; both are
+stock tools, and neither is installed for you. On Windows the installer brings
+both, so nothing is installed by hand there.
 
 ## 1. Install the command
+
+On macOS and Linux:
 
 ```sh
 go install github.com/Nishfleet/drive/cmd/drive@latest
@@ -25,6 +28,21 @@ go install github.com/Nishfleet/drive/cmd/drive@latest
 That puts `drive` in your Go bin directory. There is no install script and no
 release download yet — see [Limits](/limits) — so this is the one that works
 today.
+
+On Windows, the MSI installer does it: it puts `drive.exe` and rclone on your
+PATH, brings WinFsp in through WinFsp's own package dependency, and registers
+the logon task. Until a signed release exists there is nothing public to
+download yet, and `winget install Nishfleet.Drive` comes with that release.
+
+When a new version ships, one command moves you to it:
+
+```sh
+drive update
+```
+
+It runs the same `go install` from a new shell, so it leaves the old binary in
+place until the new one is built, and your Drive folder and mount keep working
+throughout. `drive version` says which version you are on.
 
 ## 2. Point it at your storage
 
@@ -69,6 +87,17 @@ drive status
 Storage is metered from the moment the mount starts, and {{FREE_USD}} of it is
 free every month. [Pricing and your bill](/pricing) has the ceiling and four
 worked sizes.
+
+## 6. Keep it current
+
+```sh
+drive update
+```
+
+`drive update` reads the newest released version, installs it with the same
+`go install` command this page started with, and prints the version the
+installed binary now reports. `drive update --check` says whether a newer
+version exists and changes nothing.
 
 ## Next
 

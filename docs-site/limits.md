@@ -26,7 +26,12 @@ would rather you read it here than find out in week three.
 - **No branch or approve commands.** Agents work in the live folder, so a
   large edit has no copy to sit in while you check it.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **No Windows.** macOS and Linux.
+- **Windows installs with an MSI, not a command.** Windows gets the
+  same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
+  and a Task Scheduler task at logon. The installer builds in CI with the
+  stock WiX toolchain and WinFsp arrives through its own package dependency,
+  never a vendored copy. Builds are unsigned until a signing certificate is
+  bought, so no published release exists yet (#154).
 - **No second person on the account.** One account, your devices, your agents.
 
 ## Where we are slower than the alternatives

@@ -189,6 +189,263 @@ func TestStandinMountProof(t *testing.T) {
 	}
 }
 
+// TestStandinPauseProof is the drive issue #100 done-when proof, run against a
+// local S3 stand-in (`rclone serve s3`, stock), exactly as TestStandinMountProof
+// is. It asserts the issue's own bullets:
+//
+//  1. `drive pause` stops the bytes leaving within a few seconds.
+//  2. `drive resume` finishes the upload, and the file arrives once: one
+//     transfer, nothing lost and nothing sent twice.
+//  3. Pausing survives a restart of the mount, and `drive status` says Paused.
+//
+// The pause and resume are the real commands, run as the CLI binary, so the
+// proof covers the rc calls and the marker file together. The byte counter
+// read here is rclone's own core/stats answer, read back over the same socket
+// the CLI uses; the final object size is checked independently with a second
+// rclone process, so the file's arrival is not the CLI's word for itself.
+//
+// Like the mount proof it needs FUSE, and skips where an unprivileged mount is
+// refused (run it in `unshare -Urm` on such a host). Set
+// DRIVE_STANDIN_PAUSE_MB to change the file size (default 200).
+func TestStandinPauseProof(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone is not installed")
+	}
+	if testing.Short() {
+		t.Skip("stand-in pause proof skipped in -short mode")
+	}
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data", "bucket")
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	for _, d := range []string{dataDir, home, mountDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mb := 200
+	if v := os.Getenv("DRIVE_STANDIN_PAUSE_MB"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &mb); err != nil {
+			t.Fatalf("DRIVE_STANDIN_PAUSE_MB: %v", err)
+		}
+	}
+	size := int64(mb) << 20
+
+	port := freePort(t)
+	// A free rc port, not the shipped 5572: another rclone on this host may
+	// already hold that address (the two-machine proof, a leftover daemon),
+	// and pause/resume/status have to reach THIS mount.
+	rcAddr := "127.0.0.1:" + freePort(t)
+	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
+	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+		"--auth-key", accessKey+","+secretKey, "--addr", "127.0.0.1:"+port)
+	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
+	waitForPort(t, port)
+
+	cfg := testStorage()
+	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
+	cfg.Endpoint = "http://127.0.0.1:" + port
+	cfg.Bucket, cfg.Prefix = "bucket", "u/standin"
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mount := func() *exec.Cmd {
+		cmd := exec.Command(driveBin(t), "mount",
+			"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+			"--prefix", cfg.Prefix, "--foreground")
+		cmd.Env = append(os.Environ(),
+			"DRIVE_S3_ACCESS_KEY_ID="+accessKey,
+			"DRIVE_S3_SECRET_ACCESS_KEY="+secretKey,
+			"DRIVE_RC_ADDR="+rcAddr,
+			"DRIVE_PREFETCH=0",
+		)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitForMount(t, cmd, mountDir) {
+			_ = cmd.Process.Signal(os.Interrupt)
+			_ = cmd.Wait()
+			t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+				"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run StandinPause", mountDir)
+		}
+		return cmd
+	}
+	unmount := func(cmd *exec.Cmd) {
+		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Logf("signal mount: %v", err)
+		}
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", mountDir).Run()
+		_ = exec.Command("fusermount", "-u", mountDir).Run()
+	}
+
+	rc := func() *rcClient { return newRCClient("rclone", rcAddr, "") }
+	readBytes := func(t *testing.T) int64 {
+		t.Helper()
+		stats, err := rc().ReadStats(context.Background())
+		if err != nil {
+			t.Fatalf("rc core/stats: %v", err)
+		}
+		return stats.Bytes
+	}
+	run := func(t *testing.T, args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, driveBin(t), args...)
+		cmd.Env = append(os.Environ(), "HOME="+home, "DRIVE_RC_ADDR="+rcAddr)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("drive %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	current := mount()
+	defer func() {
+		if current != nil {
+			unmount(current)
+		}
+	}()
+
+	// A slow, known rate makes the window between "transfer running" and
+	// "transfer paused" wide enough to measure; it is rclone's own rate, set
+	// through the same rc API `drive pause` uses. UP:DOWN, so 10M caps uploads.
+	if err := rc().SetBwLimit(context.Background(), "10M:off"); err != nil {
+		t.Fatalf("set a measurable rate: %v", err)
+	}
+
+	// Write the file through the mount. rclone queues it for --vfs-write-back,
+	// then the upload starts.
+	if err := writePatternFile(filepath.Join(mountDir, "pause-proof.bin"), size); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		stats, err := rc().ReadStats(context.Background())
+		if err != nil {
+			t.Fatalf("rc core/stats: %v", err)
+		}
+		if stats.Bytes > 0 && len(stats.Transferring) > 0 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if b := readBytes(t); b == 0 {
+		t.Fatalf("the upload never started, so there is nothing to pause")
+	}
+
+	// Pause through the real command. `drive status` must say Paused while it is.
+	if out := run(t, "pause", "--home", home); !strings.Contains(out, pausedLabel) {
+		t.Errorf("drive pause said %q, want the Paused word", out)
+	}
+	if on, err := Mounted(CurrentGOOS(), home); err != nil || !on {
+		t.Fatalf("mount disappeared: on=%v err=%v", on, err)
+	}
+	// Give the in-flight chunk time to finish, then prove the next window is
+	// flat: bytes did leave the machine after the call, but then none did.
+	time.Sleep(5 * time.Second)
+	b1 := readBytes(t)
+	time.Sleep(6 * time.Second)
+	b2 := readBytes(t)
+	if b2 != b1 {
+		t.Errorf("pause did not stop the bytes: %d then %d after six seconds", b1, b2)
+	}
+	if b2 >= size {
+		t.Fatalf("the upload finished at %d bytes despite the pause, so the pause never applied", b2)
+	}
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after pause = %q, want the Paused word (drive status prints this line)", got)
+	}
+
+	// Resume and let it finish. The final size is checked against the object in
+	// the stand-in, and the transfer count against one, so a file sent twice or
+	// a file that never arrived both fail here.
+	if out := run(t, "resume", "--home", home); !strings.Contains(out, resumedLabel) {
+		t.Errorf("drive resume said %q, want the Resumed word", out)
+	}
+	deadline = time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		if readBytes(t) == size {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	stats, err := rc().ReadStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Bytes != size {
+		t.Errorf("after resume the transfer is %d of %d bytes, want the whole file", stats.Bytes, size)
+	}
+	if stats.TotalTransfers != 1 {
+		t.Errorf("transfers = %d, want exactly 1: a resumed file must not be sent twice", stats.TotalTransfers)
+	}
+	queueDeadline := time.Now().Add(15 * time.Second)
+	var queue Queue
+	for {
+		queue, err = rc().ReadQueue(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Queue) == 0 || time.Now().After(queueDeadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if len(queue.Queue) != 0 {
+		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
+	}
+	listing := exec.Command("rclone", "lsl", "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/pause-proof.bin")
+	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	out, err := listing.Output()
+	if err != nil {
+		t.Fatalf("independent rclone lsl: %v", err)
+	}
+	if !strings.Contains(string(out), fmt.Sprint(size)) {
+		t.Errorf("the stand-in lists %q, want the %d-byte object", strings.TrimSpace(string(out)), size)
+	}
+
+	// Pause survives a restart of the mount: pause, stop the mount, start it
+	// again, and prove a fresh write does not move.
+	run(t, "pause", "--home", home)
+	unmount(current)
+	current = mount()
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after a restart = %q, want the Paused word", got)
+	}
+	if got, err := rc().BwLimit(context.Background()); err != nil {
+		t.Fatalf("rc core/bwlimit after a restart: %v", err)
+	} else if got.Rate != "1Ki:off" {
+		t.Errorf("after a restart rclone reports rate %q, want 1Ki:off (the paused rate)", got.Rate)
+	}
+	if err := writePatternFile(filepath.Join(mountDir, "after-restart.bin"), 32<<20); err != nil {
+		t.Fatal(err)
+	}
+	// --vfs-write-back is 5s; wait past it, then a window. The paused rate is
+	// 1 KiB/s (rclone's 0 means "off"), so a few KiB may leave; a 32 MiB file
+	// at full speed would have finished.
+	time.Sleep(9 * time.Second)
+	if b := readBytes(t); b > 64*1024 {
+		t.Errorf("a paused mount sent %d bytes after a restart, want at most 64 KiB at 1 KiB/s", b)
+	}
+}
+
 func writePatternFile(path string, size int64) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -390,7 +647,12 @@ func unmountForCleanup(mountDir string) error {
 // this host runs the same mount the product runs against the real account with
 // no code change. Credentials are constants: the server is loopback only and
 // the config file is written under this test's TempDir.
-func standinOn(t *testing.T, root, prefix string) StorageConfig {
+// standinOn starts the stand-in and hands back both the config that reaches
+// it and the server process itself, so a test that needs storage to go away
+// and come back (issue #30's offline arm) can stop and restart the one
+// server it is talking to rather than killing whatever rclone happens to be
+// serving on this host.
+func standinOn(t *testing.T, root, prefix string) (StorageConfig, *exec.Cmd) {
 	t.Helper()
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -414,7 +676,7 @@ func standinOn(t *testing.T, root, prefix string) StorageConfig {
 	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
 	cfg.Bucket = "bucket"
 	cfg.Prefix = prefix
-	return cfg
+	return cfg, serve
 }
 
 // seedStandin writes one fixture of size bytes into the stand-in's storage
@@ -525,7 +787,7 @@ func TestOpenTimeColdAndWarm(t *testing.T) {
 		t.Skip("open-time measurement skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/open")
+	cfg, _ := standinOn(t, root, "u/open")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	sizes := openSizes()
@@ -585,7 +847,7 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Skip("stand-in proof skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/fillcap")
+	cfg, _ := standinOn(t, root, "u/fillcap")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	const name = "fill.bin"
@@ -656,7 +918,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 		t.Skip("stand-in proof skipped in -short mode")
 	}
 	root := t.TempDir()
-	cfg := standinOn(t, root, "u/fillslow")
+	cfg, _ := standinOn(t, root, "u/fillslow")
 	seedHome := filepath.Join(root, "seed-home")
 	seedEnv := standinEnv(t, seedHome, cfg)
 	const fillName, openName = "fill.bin", "open.bin"
@@ -693,8 +955,9 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string) error {
-			return fillReadFile(filepath.Join(mountDir, fillName))
+		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
+			_, err := fillReadFile(filepath.Join(mountDir, fillName))
+			return err
 		})
 		filled <- err
 	}()
