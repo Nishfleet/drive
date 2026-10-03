@@ -14,15 +14,17 @@ import {
   BRANCHES_ENDPOINT,
   BRANCHES_ROOT,
   createBranch,
+  createKvSnapshotStore,
   diffBranch,
   discardBranch,
   handleBranchesRequest,
   listBranches,
+  readSnapshot,
   relativePath,
   sameFile,
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
-import { sqlitePlaceholders } from "./harness.mjs";
+import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
 const OTHER = { id: "acct-2", name: "Someone else" };
@@ -44,6 +46,7 @@ function makeD1() {
     "drive/0002_file_index.sql",
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
+    "drive/0012_branch_snapshot_kv.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -65,7 +68,14 @@ function makeD1() {
    * @returns {{results: Record<string, unknown>[], changes: number}}
    */
   const runOne = (sql, params = []) => {
-    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (params);
+    // D1 binds a numbered placeholder by its NUMBER; node:sqlite binds the
+    // rewritten anonymous `?` by appearance. `sqliteBoundValues` bridges the
+    // two, so an out-of-order statement (`SET b = ?3 … WHERE a = ?1`, the
+    // shape src/branches.js saveSnapshot sends) binds the same value here as
+    // it does in production.
+    const values = /** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+      sqliteBoundValues(sql, params)
+    );
     const prepared = sqlitePlaceholders(sql);
     if (/^\s*(SELECT|WITH)/i.test(sql)) {
       return {
@@ -193,14 +203,18 @@ function makeD1() {
   );
 }
 
-/** A fresh scoped drive with a small tree. */
+/** A fresh scoped drive with a small tree, and the KV snapshot store the
+ * branch snapshot now lives in (drive issue #252). Every test that makes a
+ * branch here goes through that store, so the tests exercise the shipping path
+ * rather than the legacy column fallback. */
 async function driven() {
   const raw = createMemoryStore();
   const scoped = scopeStore(raw, ACCOUNT);
   await scoped.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   await scoped.write("/Photos/sub/b.txt", new Blob(["bb"]).stream(), "text/plain");
   await scoped.write("/Notes.md", new Blob(["notes"]).stream(), "text/plain");
-  return { raw, scoped, db: makeD1() };
+  const kv = createTestKv();
+  return { raw, scoped, db: makeD1(), kv, snapshots: createKvSnapshotStore(kv) };
 }
 
 /**
@@ -271,8 +285,11 @@ test("sameFile is content first, then size and time, and never a missing file", 
 // ---------------------------------------------------------------- the branch
 
 test("createBranch copies the folder server-side and snapshots it", async () => {
-  const { scoped, db } = await driven();
-  const branch = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, kv, snapshots } = await driven();
+  const branch = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
   assert.equal(branch.name, "work");
   assert.equal(branch.sourcePrefix, "/Photos");
   assert.equal(branch.branchPrefix, `${BRANCHES_ROOT}/work`);
@@ -284,14 +301,37 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/sub/b.txt`), "bb");
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
 
-  // The snapshot is the content fingerprint of the source files.
+  // The snapshot is the content fingerprint of the source files, and it lives
+  // in the KV namespace, not in the row (drive issue #252): the row carries the
+  // key and the value's byte length, and the value itself is the JSON read
+  // straight out of the namespace.
   const row = db.sqlite
-    .prepare("SELECT snapshot, state FROM branches WHERE account_id = ? AND name = ?")
+    .prepare(
+      "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches WHERE account_id = ? AND name = ?",
+    )
     .get(ACCOUNT.id, "work");
   assert.ok(row, "the branch this test just created has a row");
-  const snapshot = JSON.parse(/** @type {string} */ (row.snapshot));
+  assert.equal(
+    row.snapshot,
+    "{}",
+    "the row no longer carries the snapshot's JSON: that is the whole point of #252",
+  );
+  assert.equal(
+    row.snapshot_key,
+    `u/${ACCOUNT.id}/branch/work`,
+    "the row points at an account-scoped KV key, never a bare name",
+  );
+  // The value is read off the namespace itself, not through the module, so a
+  // store that remembered a write the namespace never took cannot pass here.
+  const stored = /** @type {string} */ (kv.values.get(/** @type {string} */ (row.snapshot_key)));
+  const snapshot = JSON.parse(stored);
   assert.deepEqual(Object.keys(snapshot).sort(), ["a.txt", "sub/b.txt"]);
   assert.ok(snapshot["a.txt"].etag, "the snapshot must carry a content fingerprint");
+  assert.equal(
+    row.snapshot_bytes,
+    Buffer.byteLength(stored),
+    "the row records the value's real byte length, which is what makes the row small",
+  );
 });
 
 test("the folder walk hands each copy the size its listing reported", async () => {
@@ -301,7 +341,7 @@ test("the folder walk hands each copy the size its listing reported", async () =
   // is what a 100,000-file branch must not do. The size here is reported by the
   // listing (no 6 GB of bytes exist in this test), which is where a real one
   // gets it.
-  const { scoped, db } = await driven();
+  const { scoped, db, snapshots } = await driven();
   await scoped.write("/Photos/archive.iso", new Blob(["iso"]).stream(), "application/octet-stream");
   const sixGb = 6 * 1024 ** 3;
   /** @type {Array<{from: string, to: string, size: number|undefined}>} */
@@ -321,7 +361,10 @@ test("the folder walk hands each copy the size its listing reported", async () =
       return scoped.copy(from, to, size);
     },
   };
-  const branch = await createBranch(db, store, ACCOUNT, { folder: "/Photos", name: "work" });
+  const branch = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
   assert.equal(branch.files, 3);
   assert.deepEqual(copies, [
     { from: "/Photos/a.txt", to: `/${BRANCHES_FOLDER}/work/a.txt`, size: 1 },
@@ -331,8 +374,8 @@ test("the folder walk hands each copy the size its listing reported", async () =
 });
 
 test("a branch never shows up as a folder in the drive root", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   // The scoped store hides the drive's own folders at the root, so a
   // branch is never met as a folder on the drive root (or in the index
   // that walks it): the walk that makes a copy cannot step into the copy
@@ -355,17 +398,20 @@ test("a branch never shows up as a folder in the drive root", async () => {
 });
 
 test("a second branch of the same name is refused, not silently overwritten", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   // The name is still open, so a second branch of a folder is refused on the
   // conflict rather than clobbering the copy that is already there.
-  const again = await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
   assert.equal(again.status, 409);
   assert.match(again.error, /still open/i);
 });
 
 test("createBranch refuses a bad folder, a bad name and the branches folder", async () => {
-  const { scoped, db } = await driven();
+  const { scoped, db, snapshots } = await driven();
   // A bad folder is refused whatever else the request carries. The API's own
   // shape allows an absent `name` (the server validates it), so this request is
   // the one a client that posted only a folder sends.
@@ -373,6 +419,7 @@ test("createBranch refuses a bad folder, a bad name and the branches folder", as
     failedStatus(
       await createBranch(
         db,
+        snapshots,
         scoped,
         ACCOUNT,
         /** @type {{folder: unknown, name: unknown}} */ ({ folder: "../etc" }),
@@ -381,38 +428,45 @@ test("createBranch refuses a bad folder, a bad name and the branches folder", as
     400,
   );
   assert.equal(
-    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "../x" })),
+    failedStatus(
+      await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "../x" }),
+    ),
     400,
   );
   assert.equal(
-    failedStatus(await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" })),
+    failedStatus(
+      await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "a/b" }),
+    ),
     400,
   );
-  const branches = await createBranch(db, scoped, ACCOUNT, { folder: BRANCHES_ROOT, name: "x" });
+  const branches = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: BRANCHES_ROOT,
+    name: "x",
+  });
   assert.equal(failedStatus(branches), 400);
   assert.match(/** @type {{error: string}} */ (branches).error, /branches folder/);
 });
 
 test("listBranches reports the live changed count and the original's drift", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
-  let [branch] = await listBranches(db, scoped, ACCOUNT);
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  let [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 0);
   assert.equal(branch.sourceChanged, 0);
 
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
-  [branch] = await listBranches(db, scoped, ACCOUNT);
+  [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.changed, 1);
   assert.equal(branch.sourceChanged, 0);
 
   await scoped.write("/Photos/a.txt", new Blob(["changed under it"]).stream(), "text/plain");
-  [branch] = await listBranches(db, scoped, ACCOUNT);
+  [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.sourceChanged, 1);
 });
 
 test("diffBranch names added, changed and removed files, and the original's drift", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(`${BRANCHES_ROOT}/work/new.txt`, new Blob(["n"]).stream(), "text/plain");
   await scoped.write(
     `${BRANCHES_ROOT}/work/sub/b.txt`,
@@ -421,8 +475,14 @@ test("diffBranch names added, changed and removed files, and the original's drif
   );
   await scoped.remove(`${BRANCHES_ROOT}/work/a.txt`);
 
-  const branch = (await listBranches(db, scoped, ACCOUNT))[0];
-  const diff = await diffBranch(scoped, branch);
+  const branch = (await listBranches(db, snapshots, scoped, ACCOUNT))[0];
+  // A list row carries a pointer, not the JSON (drive#252), so the diff reads
+  // the snapshot through the module's own reader — the same call the route and
+  // the rewind preview make. This is the one-branch read the pointer is for.
+  const diff = await diffBranch(scoped, {
+    ...branch,
+    snapshot: await readSnapshot(snapshots, branch.snapshotKey, branch.snapshot),
+  });
   assert.deepEqual(diff.added, ["new.txt"]);
   assert.deepEqual(diff.changed, ["sub/b.txt"]);
   assert.deepEqual(diff.removed, ["a.txt"]);
@@ -430,13 +490,13 @@ test("diffBranch names added, changed and removed files, and the original's drif
 });
 
 test("approve copies a branch's changes back when the original is untouched", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
   await scoped.write(`${BRANCHES_ROOT}/work/new.txt`, new Blob(["new"]).stream(), "text/plain");
   await scoped.remove(`${BRANCHES_ROOT}/work/sub/b.txt`);
 
-  const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  const result = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
   // `approveBranch` answers a union: either the branch was approved with the
   // lists it applied, or it failed with a status. The success arm is the one
   // these assertions are about, and `"error" in result` is the discriminator
@@ -451,12 +511,12 @@ test("approve copies a branch's changes back when the original is untouched", as
   assert.equal(await readText(scoped, "/Photos/sub/b.txt"), null);
 
   // A second approve is refused: the branch is closed, not re-applied.
-  assert.equal(failedStatus(await approveBranch(db, scoped, ACCOUNT, "work")), 409);
+  assert.equal(failedStatus(await approveBranch(db, snapshots, scoped, ACCOUNT, "work")), 409);
 });
 
 test("approve stops and names the file when the original changed after branching", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(
     `${BRANCHES_ROOT}/work/a.txt`,
     new Blob(["agent edit"]).stream(),
@@ -464,7 +524,7 @@ test("approve stops and names the file when the original changed after branching
   );
   await scoped.write("/Photos/a.txt", new Blob(["person edit"]).stream(), "text/plain");
 
-  const result = await approveBranch(db, scoped, ACCOUNT, "work");
+  const result = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
   assert.equal(failedStatus(result), 409);
   // The 409 that names the moved original is its own arm, carrying the files.
   assert.ok("files" in result);
@@ -473,45 +533,46 @@ test("approve stops and names the file when the original changed after branching
   // Nothing was copied back: the person's edit is intact and the branch is
   // still open.
   assert.equal(await readText(scoped, "/Photos/a.txt"), "person edit");
-  const [branch] = await listBranches(db, scoped, ACCOUNT);
+  const [branch] = await listBranches(db, snapshots, scoped, ACCOUNT);
   assert.equal(branch.state, "open");
 });
 
 test("discard throws the branch away and leaves the original untouched", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   await scoped.write(
     `${BRANCHES_ROOT}/work/a.txt`,
     new Blob(["agent edit"]).stream(),
     "text/plain",
   );
 
-  const result = await discardBranch(db, scoped, ACCOUNT, "work");
+  const result = await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
   assert.deepEqual(result, { name: "work", state: "discarded", removed: 2 });
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/sub/b.txt`), null);
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
-  assert.deepEqual((await listBranches(db, scoped, ACCOUNT))[0].state, "discarded");
+  assert.deepEqual((await listBranches(db, snapshots, scoped, ACCOUNT))[0].state, "discarded");
 });
 
 test("a branch of another account is not found, ever", async () => {
-  const { scoped, db } = await driven();
-  await createBranch(db, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
   const other = scopeStore(createMemoryStore(), OTHER);
-  assert.equal(failedStatus(await approveBranch(db, other, OTHER, "work")), 404);
-  assert.equal(failedStatus(await discardBranch(db, other, OTHER, "work")), 404);
-  assert.deepEqual(await listBranches(db, other, OTHER), []);
+  assert.equal(failedStatus(await approveBranch(db, snapshots, other, OTHER, "work")), 404);
+  assert.equal(failedStatus(await discardBranch(db, snapshots, other, OTHER, "work")), 404);
+  assert.deepEqual(await listBranches(db, snapshots, other, OTHER), []);
 });
 
 // ----------------------------------------------------------------- the route
 
 test("the branch route lists, makes, diffs, approves and discards", async () => {
-  const { raw, db } = await driven();
+  const { raw, db, snapshots } = await driven();
   const account = ACCOUNT;
 
   const created = await handleBranchesRequest(
     request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
     db,
+    snapshots,
     raw,
     account,
   );
@@ -520,7 +581,13 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   assert.equal(createdBody.branch.name, "work");
   assert.equal(createdBody.branch.files, 2);
 
-  const listed = await handleBranchesRequest(request("GET", BRANCHES_ENDPOINT), db, raw, account);
+  const listed = await handleBranchesRequest(
+    request("GET", BRANCHES_ENDPOINT),
+    db,
+    snapshots,
+    raw,
+    account,
+  );
   const listedBody = await listed.json();
   assert.equal(listedBody.branches.length, 1);
 
@@ -530,6 +597,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   const diff = await handleBranchesRequest(
     request("GET", `${BRANCHES_ENDPOINT}/work`),
     db,
+    snapshots,
     raw,
     account,
   );
@@ -539,6 +607,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   const approved = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
     db,
+    snapshots,
     raw,
     account,
   );
@@ -548,6 +617,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   const second = await handleBranchesRequest(
     request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "second" }),
     db,
+    snapshots,
     raw,
     account,
   );
@@ -555,6 +625,7 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   const discarded = await handleBranchesRequest(
     request("POST", `${BRANCHES_ENDPOINT}/second/discard`, {}),
     db,
+    snapshots,
     raw,
     account,
   );
@@ -563,14 +634,21 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
 });
 
 test("the branch route refuses an anonymous caller, a bad method and a missing branch", async () => {
-  const { raw, db } = await driven();
-  const anonymous = await handleBranchesRequest(request("GET", BRANCHES_ENDPOINT), db, raw, null);
+  const { raw, db, snapshots } = await driven();
+  const anonymous = await handleBranchesRequest(
+    request("GET", BRANCHES_ENDPOINT),
+    db,
+    snapshots,
+    raw,
+    null,
+  );
   assert.equal(anonymous.status, 401);
   assert.match(await anonymous.text(), /not signed in/);
 
   const wrongMethod = await handleBranchesRequest(
     request("DELETE", BRANCHES_ENDPOINT),
     db,
+    snapshots,
     raw,
     ACCOUNT,
   );
@@ -580,6 +658,7 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
   const missing = await handleBranchesRequest(
     request("GET", `${BRANCHES_ENDPOINT}/nope`),
     db,
+    snapshots,
     raw,
     ACCOUNT,
   );
@@ -592,6 +671,7 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
       body: "{",
     }),
     db,
+    snapshots,
     raw,
     ACCOUNT,
   );

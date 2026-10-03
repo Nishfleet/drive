@@ -48,6 +48,16 @@
 //     key and push the endpoint into a false 503. The one name the result
 //     reports is the binding, never the key.
 //
+//   - The branch snapshot namespace. A branch's snapshot moved out of the D1
+//     row into KV (drive issue #252), so every diff and every approve reads this
+//     namespace, and a namespace that cannot be read stops branches without any
+//     other endpoint failing. The probe is a `get` on a key nothing writes —
+//     branch snapshot keys are account-scoped (`snapshotKey` in
+//     src/branches.js), so no customer key can collide with the probe and the
+//     probe reveals nothing, because a missing key reads back null. The
+//     question the check asks is only whether the binding answers, not whether
+//     it holds anything.
+//
 // Deliberately NOT checked, because a false 503 pages a human for nothing:
 //   - Secrets. Their presence is a deployment shape, not a reachability
 //     question, and a value cannot be probed without risking disclosure.
@@ -120,6 +130,7 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "SIGNIN_GLOBAL_RATE_LIMITER",
   "REQUEST_UPLOAD_RATE_LIMITER",
   "REQUEST_UPLOAD_LINK_RATE_LIMITER",
+  "BRANCH_SNAPSHOTS",
 ]);
 
 const JSON_HEADERS = Object.freeze({
@@ -306,6 +317,22 @@ async function checkRateLimiter(limiter, timeoutMs, name) {
 }
 
 /**
+ * The branch snapshot namespace (drive issue #252). The probe is one `get` on
+ * a key nothing writes, so the check is a read: it cannot mutate the namespace,
+ * it cannot spend a write quota, and it cannot disclose a customer's snapshot
+ * because the key is not a customer key. A namespace that answers `null` has
+ * proven it is reachable, which is the whole question.
+ *
+ * @param {{get: (key: string) => Promise<unknown>}} kv
+ * @param {number} timeoutMs
+ * @param {string} name the binding's name, reported on failure
+ * @returns {Promise<void>}
+ */
+async function checkKv(kv, timeoutMs, name) {
+  await withTimeout(kv.get("health-probe-branch-snapshots"), timeoutMs, name);
+}
+
+/**
  * Runs every dependency check and reports the outcome as data, so a test can
  * read it and the fetch handler can render it without the two disagreeing.
  *
@@ -404,6 +431,27 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
         ),
     });
   }
+  // The branch snapshot namespace (drive issue #252), guarded by shape for the
+  // same reason as the limiters above: a binding that is present but is not a
+  // namespace is as broken as a missing one, and both get the same name.
+  const snapshots = env.BRANCH_SNAPSHOTS;
+  if (
+    typeof snapshots !== "object" ||
+    snapshots === null ||
+    !("get" in snapshots) ||
+    typeof snapshots.get !== "function"
+  ) {
+    return { ok: false, failing: "BRANCH_SNAPSHOTS" };
+  }
+  checks.push({
+    name: "BRANCH_SNAPSHOTS",
+    run: (left) =>
+      checkKv(
+        /** @type {{get: (key: string) => Promise<unknown>}} */ (snapshots),
+        left,
+        "BRANCH_SNAPSHOTS",
+      ),
+  });
 
   for (const check of checks) {
     // One deadline for the whole check, not one per dependency: a Worker

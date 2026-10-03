@@ -77,6 +77,27 @@ export default defineConfig({
         name: "drive-data",
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
       }),
+      // The branch snapshot store (drive issue #252, the phase 2 of #157). A
+      // branch records one `{size, etag, modified}` entry per file it copied;
+      // that is ~117 bytes a file, so a 100,000-file branch is ~11 MiB of JSON
+      // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
+      // and why the snapshot now lives here instead. The `branches` row keeps
+      // a pointer to the key and the value's byte length
+      // (migrations/drive/0012_branch_snapshot_kv.sql), and
+      // src/branches.js readSnapshot prefers this namespace and falls back to
+      // the legacy column for a row written before the migration.
+      //
+      // Optional, not required: `snapshotsFor()` in src/index.js answers null
+      // for a deployment with no namespace, and every reader treats null as
+      // "use the row", so it is deliberately NOT on the health check's
+      // required-bindings list (src/health.js) — a binding that a small
+      // deployment legitimately lacks must not page a human. It is created
+      // once, out of band, because an unattended `cf deploy` does not
+      // provision a namespace (it prompts, and nothing answers):
+      //   cf kv namespaces create --title drive-branch-snapshots
+      BRANCH_SNAPSHOTS: bindings.kv({
+        id: "13f2292d4fdc448492c2a4603e1cc682",
+      }),
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the
       // runtime knows to inject it; a missing secret produces a warning at
