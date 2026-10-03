@@ -64,3 +64,10 @@ jobs:
       # the same checksum, against a local `rclone serve s3` stand-in.
       - name: Stand-in mount proof
         run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
+      # Transfer reliability (drive#107). Needs a FUSE mount, same skip as the
+      # mount proof. CI uses 64 MiB so the job fits; the issue's 1 GB size is
+      # DRIVE_STANDIN_INTERRUPT_MB=1024 on a real mount (`unshare -Urm`).
+      - name: Transfer reliability proofs
+        env:
+          DRIVE_STANDIN_INTERRUPT_MB: "64"
+        run: go test ./cmd/drive/ -run 'TestStandin(InterruptUpload|Crash|DiskFull)' -v -timeout 300s
