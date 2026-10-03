@@ -118,7 +118,7 @@ export default defineConfig({
       //       install -m600 /dev/null ~/.config/drive/secrets.env  # then edit
       //       cf deploy --prebuilt --secrets-file ~/.config/drive/secrets.env
       //   (2) stdin, which leaves the value out of argv too:
-      //       cf workers secrets update DODO_PAYMENTS_API_KEY --type secret_text
+      //       cf workers secrets update DODO_PAYMENTS_API_KEY --type secret_text < ~/.config/drive/dodo-key.txt
       METER_EVENT_TOKEN: bindings.secret(),
       // The Dodo billing push (drive issue #51) reads
       // `DODO_PAYMENTS_API_KEY` from a Worker secret, the same
