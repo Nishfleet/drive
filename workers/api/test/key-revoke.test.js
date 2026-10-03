@@ -294,7 +294,10 @@ test("DELETE /v1/keys signs out every device on the account and no other", async
   }
 
   const signedOut = await dispatch(
-    new Request("https://api.test/v1/keys", { method: "DELETE", headers: bearer(first.deviceToken) }),
+    new Request("https://api.test/v1/keys", {
+      method: "DELETE",
+      headers: bearer(first.deviceToken),
+    }),
     baseCtx(store, null),
   );
   assert.equal(signedOut.status, 204);
@@ -310,13 +313,14 @@ test("DELETE /v1/keys signs out every device on the account and no other", async
   }
   // ...and the keys themselves are revoked, so a key pair copied out of a
   // config file is worthless too (drive#20 made the same promise for a member
-  // removed from a team).
+  // removed from a team). The stand-in's listKeys answers a plain array and the
+  // D1 one a Promise, so it is awaited either way.
   assert.deepEqual(
-    store.listKeys(first.account).map((key) => key.revokedAt !== null),
+    (await store.listKeys(first.account)).map((key) => key.revokedAt !== null),
     [true, true],
   );
   assert.deepEqual(
-    store.listKeys(other.account).map((key) => key.revokedAt !== null),
+    (await store.listKeys(other.account)).map((key) => key.revokedAt !== null),
     [false],
   );
 
@@ -339,12 +343,15 @@ test("DELETE /v1/keys signs out every device on the account and no other", async
   // tests/integration/signout-all-d1.test.mjs, which can call the store
   // directly without needing a live token to do it.)
   const again = await dispatch(
-    new Request("https://api.test/v1/keys", { method: "DELETE", headers: bearer(first.deviceToken) }),
+    new Request("https://api.test/v1/keys", {
+      method: "DELETE",
+      headers: bearer(first.deviceToken),
+    }),
     baseCtx(store, null),
   );
   assert.equal(again.status, 401);
   assert.deepEqual(
-    store.listKeys(other.account).map((key) => key.revokedAt !== null),
+    (await store.listKeys(other.account)).map((key) => key.revokedAt !== null),
     [false],
   );
 });
@@ -392,7 +399,7 @@ test("DELETE /v1/keys asks for a signed-in account and nothing else", async () =
   );
   assert.equal(withBody.status, 204);
   const mintedKeyId = await minted.json().then((body) => body.keyId);
-  const after = store.listKeys(signed.account).find((key) => key.keyId === mintedKeyId);
+  const after = (await store.listKeys(signed.account)).find((key) => key.keyId === mintedKeyId);
   assert.ok(after !== undefined, "the key must still be listed");
   assert.notEqual(after.revokedAt, null, "a key the body named must still be revoked");
 });

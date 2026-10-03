@@ -255,6 +255,21 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * Revoke every live device token on one account: the device-token half of
+     * "sign out of every device" (drive#236). Delegated here for the same
+     * reason `revokeDeviceToken` is: this object re-exposes the sign-in store's
+     * whole surface so it can stand in for it, and a method that is only on the
+     * store behind it would make it a store that is no longer the thing callers
+     * hold. The account comes from the gate, never from a request, exactly as in
+     * the single-token revoke.
+     * @param {{id: string}} account
+     * @returns {Promise<import("./device-signin.js").RevokeAllResult>}
+     */
+    revokeAllDeviceTokens(account) {
+      return signin.revokeAllDeviceTokens(account);
+    },
+
+    /**
      * The token rows that can no longer authenticate: expired or revoked. The
      * bearer lookup already refuses both, so dropping them is housekeeping and
      * never the security boundary — a store that never swept would refuse the

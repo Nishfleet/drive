@@ -32,7 +32,11 @@ import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 // `0010_accounts_devices.sql`'s `devices` table gained with drive#106, because
 // the key rows here are written the way the mint writes them. `0012` alters
 // `devices`, so it runs after `0010`, and the default list carries `0010`.
-const MIGRATIONS = [...DRIVE_MIGRATIONS, "drive/0007_device_codes.sql", "drive/0012_agent_key_ttl.sql"];
+const MIGRATIONS = [
+  ...DRIVE_MIGRATIONS,
+  "drive/0007_device_codes.sql",
+  "drive/0012_agent_key_ttl.sql",
+];
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
 const NOW = 1_800_000_000_000;
@@ -59,18 +63,19 @@ async function deviceToken(db, account, name) {
 
 test("signing out every device revokes the account's keys and tokens, and no other's", async () => {
   const made = createTestAuth({ migrations: MIGRATIONS });
-  const auth = made.auth;
   const db = made.db;
   const mine = await signIn(made, "mine@example.com");
   const theirs = await signIn(made, "theirs@example.com");
 
   // Two keys and two device tokens on each account: two signed-in devices per
   // person, so the proof is about rows and not about one credential.
-  const myKeys = [
+  const myKeys = /** @type {{id: string, name: string, kind: "agent" | "device"}[]} */ ([
     { id: "key_mine_laptop", name: "laptop", kind: "agent" },
     { id: "key_mine_desktop", name: "desktop", kind: "device" },
-  ];
-  const theirKeys = [{ id: "key_theirs_pi", name: "pi", kind: "agent" }];
+  ]);
+  const theirKeys = /** @type {{id: string, name: string, kind: "agent" | "device"}[]} */ ([
+    { id: "key_theirs_pi", name: "pi", kind: "agent" },
+  ]);
   const deviceStore = createD1DeviceStore(db, { now: () => NOW });
   for (const key of [...myKeys, ...theirKeys]) {
     const account = myKeys.includes(key) ? mine.account : theirs.account;
@@ -95,14 +100,15 @@ test("signing out every device revokes the account's keys and tokens, and no oth
   const myOtherToken = await deviceToken(db, mine.account, "Nish's desktop");
   const theirToken = await deviceToken(db, theirs.account, "Nish's Pi");
 
-
   // Everything is live before the call.
   const signin = createD1DeviceSigninStore(db, { now: () => NOW });
   const resolved = await signin.accountForDeviceToken(myToken);
-  assert.equal(resolved.id, mine.account.id, "the live token resolves to its own account");
+  assert.ok(resolved !== null, "the live token resolves to its own account");
+  assert.equal(resolved.id, mine.account.id);
   assert.notEqual(await signin.accountForDeviceToken(theirToken), null);
   for (const key of [...myKeys, ...theirKeys]) {
     const row = db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(key.id);
+    assert.ok(row !== undefined, `${key.id} has a row before the sign-out`);
     assert.equal(row.revoked_at, null, `${key.id} starts live`);
   }
 
@@ -116,9 +122,13 @@ test("signing out every device revokes the account's keys and tokens, and no oth
   // The rows, read back off the database rather than off the store's answer.
   for (const key of myKeys) {
     const row = db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(key.id);
+    assert.ok(row !== undefined, `${key.id} has a row after the sign-out`);
     assert.notEqual(row.revoked_at, null, `${key.id} must be revoked in the row`);
   }
-  const theirRow = db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get("key_theirs_pi");
+  const theirRow = db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get("key_theirs_pi");
+  assert.ok(theirRow !== undefined, "the other account's key row is there to stay live");
   assert.equal(theirRow.revoked_at, null, "another account's key row stays live");
 
   // The store's own single bearer lookup refuses the signed-out tokens, so the
@@ -137,6 +147,7 @@ test("signing out every device revokes the account's keys and tokens, and no oth
   const theirRowAfter = db.sqlite
     .prepare("SELECT revoked_at FROM devices WHERE id = ?")
     .get("key_theirs_pi");
+  assert.ok(theirRowAfter !== undefined, "the other account's key row is still there");
   assert.equal(theirRowAfter.revoked_at, null, "a repeat pass leaves the other account alone");
 
   // The revoked token rows are still there: the bulk revoke is the row write the

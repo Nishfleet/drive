@@ -750,7 +750,9 @@ export function createD1DeviceSigninStore(db, options = {}) {
         nowSeconds(now()),
         account.id,
       );
-      return { revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0) };
+      return {
+        revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
+      };
     },
 
     /**
