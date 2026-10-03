@@ -49,6 +49,7 @@ function shippedPages() {
 // count of 0 or 2 is what a reader would see rather than what one spelling of
 // the tag matches. The whole element, opening tag through `</script>`, so the
 // strip below can put the page back the way it shipped.
+/** @param {string} html */
 const beaconTagsIn = (html) => html.match(/<script\b[^>]*beacon\.min\.js[^>]*><\/script>/g) ?? [];
 
 test("the six pages the issue names are the six the list holds", () => {
