@@ -37,6 +37,7 @@ import {
 } from "../src/get-started.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -55,7 +56,7 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "../src/status.js";
-import { createTestAuth, signIn } from "./harness.mjs";
+import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -674,4 +675,72 @@ test("the page raises one desktop notification per sync error", () => {
   for (const match of source.matchAll(/Notification\.requestPermission\(\)/g)) {
     assert.ok(match.index > functionStart, "the prompt is a function, not a load-time prompt");
   }
+});
+
+test("the Worker reads a device's reported queue into the status payload", async () => {
+  // Drive issue #318 through the Worker's own route, not only through the
+  // handler: a device reports its queue to the api Worker (POST /v1/queue) and
+  // the first-run page's poll reads it back from the same row. The report is
+  // written by the store the route uses, over the real migrations, and the
+  // status route is driven through a signed-in session against the real app.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "queue@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  // The Worker's own store, reading the wall clock the route reads, so a
+  // report written here is live to the poll under test.
+  const store = createD1QueueStore(made.db);
+  const poll = () =>
+    workerFetch(
+      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      env,
+    );
+
+  // No device has reported yet: the honest null #308 answers.
+  const before = await (await poll()).json();
+  assert.equal(before.upload, null, "an account whose no device has reported has no queue");
+
+  // One device reports its queue; the poll reads exactly that row.
+  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  assert.equal((await store.record(account.id, queue)).stored, true);
+  const after = await (await poll()).json();
+  assert.deepEqual(after.upload, queue, "the poll did not carry the device's own queue");
+  assert.equal(uploadLine(after.upload), uploadProgress(queue).label);
+  assert.equal(after.upload.paused, false);
+
+  // A second account's report is never read as this one's.
+  assert.equal((await store.record("acct_other", { ...queue, files: 1 })).stored, true);
+  const stillThis = await (await poll()).json();
+  assert.deepEqual(stillThis.upload, queue, "another account's report replaced this one");
+
+  // A paused queue reads as paused, so the page says the bytes are not leaving
+  // rather than showing a stalled "Uploading" count. The line is the word
+  // table's own paused line (UPLOAD_LABEL.pausedLine) over the same arithmetic
+  // uploadProgress() does, so the page and the CLI cannot spell it two ways.
+  await made.db
+    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
+    .bind(account.id)
+    .run();
+  const paused = await (await poll()).json();
+  assert.equal(paused.upload.paused, true);
+  assert.ok(
+    uploadLine(paused.upload).startsWith(UPLOAD_LABEL.paused),
+    `paused line ${uploadLine(paused.upload)} does not lead with the paused word`,
+  );
+  assert.equal(uploadLine(paused.upload), uploadProgress(paused.upload).label);
+
+  // A report the freshness window has passed reads as no queue to report
+  // rather than as a stale one (the issue's staleness bullet). The row's clock
+  // is aged directly, because a real mount going away is the only thing that
+  // makes a report stale and there is no wall clock to wait out here.
+  await made.db
+    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
+    .run();
+  const stale = await (await poll()).json();
+  assert.equal(stale.upload, null, "a device that has not reported for a while still shows a queue");
 });

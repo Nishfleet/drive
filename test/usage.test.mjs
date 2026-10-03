@@ -27,8 +27,10 @@ import {
 } from "../src/billing.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
-import { uploadProgress } from "../src/status.js";
+import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
+import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -576,4 +578,64 @@ test("the upload-progress line is the endpoint's words, rendered and nothing els
   const script = page.slice(page.indexOf("<script>"));
   assert.doesNotMatch(script, /formatBytes|UPLOAD_LABEL|uploadProgress/);
   assert.doesNotMatch(script, /Uploading \{|of \{|\{percent\}/);
+});
+
+test("the usage page shows the queue a device reported, through the Worker's own route", async () => {
+  // Drive issue #318 on the second surface, through the route rather than the
+  // handler: a device reports its queue to the api Worker, and the usage page's
+  // poll reads the same row and renders it into `uploadLine`. The line is the
+  // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
+  // page and `drive status` all say the same sentence about the same queue.
+  const made = createTestAuth();
+  const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const read = () =>
+    workerFetch(
+      new Request("https://drive.test/api/usage", { headers: { cookie } }),
+      env,
+    );
+
+  // No device has reported: the line is null and the page hides it, the honest
+  // answer for an account whose no device has signed in yet (drive issue #308).
+  const before = await (await read()).json();
+  assert.equal(before.uploadLine, null, "an account with no report has no upload line");
+
+  // One device reports its queue; the usage read carries the same finished
+  // line the first-run page draws from the same numbers.
+  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  assert.equal((await store.record(signedInAccount.id, queue)).stored, true);
+  const after = await (await read()).json();
+  assert.equal(after.uploadLine, uploadProgress(queue).label, "the line is not the word table's own");
+  assert.equal(after.uploadLine, uploadLine(queue), "the two pages render the same sentence");
+  assert.ok(after.uploadLine.includes("Uploading 3 files"), `line ${after.uploadLine} is not the queue's own`);
+  // The money on the answer is untouched by the queue: they are two fields.
+  assert.equal(typeof after.capLine, "string");
+  assert.equal(after.billUsd, 0, "the empty month is still the empty month");
+
+  // A paused queue renders the paused line, so the page never shows bytes that
+  // are not leaving as "Uploading".
+  await made.db
+    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
+    .bind(signedInAccount.id)
+    .run();
+  const paused = await (await read()).json();
+  assert.ok(
+    paused.uploadLine.startsWith(UPLOAD_LABEL.paused),
+    `paused line ${paused.uploadLine} does not lead with the paused word`,
+  );
+  assert.equal(paused.uploadLine, uploadProgress({ ...queue, paused: true }).label);
+
+  // A report the freshness window has passed reads as no queue rather than as a
+  // stale line, so the page hides the line instead of freezing a number.
+  await made.db
+    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
+    .run();
+  assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");
 });
