@@ -8,9 +8,6 @@ description: What version 1 of Drive does not do, and where it is slower than th
 This page is the honest one. Anything here is not in the product today, and we
 would rather you read it here than find out in week three.
 
-Version 1 is not open yet, has no restore command, has no second person on the
-one account, and Windows has no public installer yet.
-
 ## Not in version 1
 
 - **We are not open yet.** Sign-ups on the pricing page go to a waitlist, and
@@ -35,19 +32,18 @@ one account, and Windows has no public installer yet.
   stock WiX toolchain and WinFsp arrives through its own package dependency,
   never a vendored copy. Builds are unsigned until a signing certificate is
   bought, so no published release exists yet (#154).
-- **No second person on the account.** There is one account, and adding a
-  teammate is not in version 1. When someone leaves there is no access of
-  theirs to take away: revoke that machine's key with `drive logout` on the
-  machine itself, and turn its links off with `drive share --revoke <t>`.
-- **No write-conflict rule.** The docs do not say what happens when two agents
-  write the same file at once.
+- **No second person on the account.** There is one account, your devices and
+  your agents, so sharing a folder with a colleague is not a version 1 thing.
+  When someone leaves there is no access of theirs to take away: revoke that
+  machine's key with `drive logout` on the machine itself, and turn its links
+  off with `drive share --revoke <t>`.
 
 ## Where we are slower than the alternatives
 
-- **First open of a large file.** The first open has extra latency: a 5 GB
-  video streams on demand and starts before the whole file has arrived, but a
-  slow connection will stutter. `drive offline <path>` keeps a cache copy of
-  the folder on this computer instead.
+- **First open of a large file.** A file streams on demand, so a 5 GB video
+  starts before the whole file has arrived, but the first open on a slow
+  connection will stutter. `drive offline <path>` keeps a folder on this
+  computer instead, which is what a rival's local copy already does.
 - **Rename and move are not free.** A folder move is a copy and a delete on
   plain object storage. It does not copy the bytes through your machine, but
   it is still not an instant rename, and a big move takes time.

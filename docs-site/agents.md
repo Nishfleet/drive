@@ -42,8 +42,9 @@ list, read and write there and cannot remove anything — the same rule every
 agent key follows. Your other files are outside its reach, and only you can
 approve the copy back.
 
-Stop one tool and leave the others with `drive agents revoke claude` (or
-`codex`, `cursor`, `gemini` or `kiro`). Each one is connected on its own.
+Stop a tool with `drive agents revoke <tool>`, using the tool's own name
+(`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
+connected, because each one is connected on its own.
 
 ## What an agent key can do
 

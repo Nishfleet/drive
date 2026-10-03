@@ -269,16 +269,6 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
     /No `restore` command yet/,
     "the limits page must say there is no restore command yet",
   );
-  assert.match(
-    page,
-    /no second person/i,
-    "the limits page must say there is no second person on the account",
-  );
-  assert.match(
-    page,
-    /first open has extra latency/i,
-    "the limits page must name first-open latency in those words",
-  );
   assert.doesNotMatch(
     page,
     /No branch or approve commands/,

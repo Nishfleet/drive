@@ -64,9 +64,8 @@ at all.
 
 ## A bill that looks wrong, checked in order
 
-Check the metered figure and the ceiling first, then the free $1. Only the
-metered figure is the bill. A per-minute bill with a ceiling and a free
-allowance can look wrong three different ways:
+A per-minute bill with a ceiling and a free allowance can look wrong three
+different ways, and only the first one is the bill:
 
 1. **The metered figure.** `drive status` shows this month's cost so far, and
    the usage page shows the month's stored size worked out from the same

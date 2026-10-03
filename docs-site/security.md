@@ -21,9 +21,9 @@ not. {{AGENT_CANNOT_DELETE}}
 
 ## The spending cap
 
-Set a cap with `drive cap <dollars>` and the drive goes read-only at it:
-nothing is deleted and the bill stops there. The default cap is
-{{DEFAULT_CAP}}. It protects your bill rather than your files.
+Set a cap and the drive goes read-only at it: nothing is deleted and the bill
+stops there. The default cap is {{DEFAULT_CAP}}. It protects your bill rather
+than your files.
 
 Raise the cap and the drive starts writing again: the write key comes back, the
 mount picks it up at its next start (`drive cap` restarts it for you), and the
@@ -33,7 +33,7 @@ uploads that waited in the cache go up.
 
 `drive logout` stops the mount and removes this machine's key and config. A key
 that no longer exists cannot be used, and the next mount asks for a new one.
-Each agent tool is revoked on its own with `drive agents revoke claude`.
+Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 
 ## What we can and cannot reach
 
