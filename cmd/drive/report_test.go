@@ -30,8 +30,8 @@ func TestQueueReportFromTheMeasuredShapes(t *testing.T) {
 		{Name: "notes.txt", Size: 4096, Uploading: false},
 	}}
 	stats := Stats{
-		Bytes:       12120064,
-		TotalBytes:  157286400,
+		Bytes:        12120064,
+		TotalBytes:   157286400,
 		Transferring: []Transfer{{Name: "big.bin", Bytes: 12120064, Size: 157286400, Percentage: 7}},
 	}
 	got := queueReportFrom(queue, stats, false)

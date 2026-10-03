@@ -480,7 +480,11 @@ export function createApp() {
     // whose no device has signed in yet or whose mount is gone (drive issue
     // #308), so the usage page hides the line rather than showing a stale
     // one.
-    return handleUsageRequest(c.req.raw, { ...account, capUsd }, await liveQueueFor(c.env, account));
+    return handleUsageRequest(
+      c.req.raw,
+      { ...account, capUsd },
+      await liveQueueFor(c.env, account),
+    );
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The

@@ -11,13 +11,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createTestD1 } from "../../../test/harness.mjs";
 import { AUTH_COOKIE_PREFIX } from "../../../src/auth.js";
 import { failureMessage } from "../../../src/messages.js";
-import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../src/queues.js";
-import { parseQueueReport, reportUploadQueueRoute } from "../src/queue-routes.js";
+import { createTestD1 } from "../../../test/harness.mjs";
 import { dispatch } from "../src/index.js";
 import { createMemoryStore } from "../src/keystore.js";
+import { parseQueueReport, reportUploadQueueRoute } from "../src/queue-routes.js";
+import { createD1QueueStore, QUEUE_REPORT_INTERVAL_SECONDS } from "../src/queues.js";
 
 const QUEUE = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
 
@@ -32,8 +32,8 @@ const SESSION_COOKIE = `__Secure-${AUTH_COOKIE_PREFIX}.session_token`;
 // its interval is the rate limit — so this is the device half only.
 function limits() {
   const pass = {
-    /** @param {{key: string}} options */
-    async limit(options) {
+    /** @param {{key: string}} _options */
+    async limit(_options) {
       return { success: true };
     },
   };
@@ -131,10 +131,18 @@ async function signInDevice(store, clock, queues, account) {
  * the bearer token through, and the D1 queue store the route writes.
  * @param {{clock: ReturnType<typeof fixedClock>, db?: ReturnType<typeof createTestD1>, account?: {id: string, name: string}|null, withQueues?: boolean}} options
  */
-async function signedIn({ clock, db = createTestD1(), account = { id: "acct_1", name: "Your drive" }, withQueues = true }) {
+async function signedIn({
+  clock,
+  db = createTestD1(),
+  account = { id: "acct_1", name: "Your drive" },
+  withQueues = true,
+}) {
   const store = createMemoryStore({ now: clock.now });
   const queues = withQueues ? createD1QueueStore(db, { now: clock.now }) : null;
-  const signed = account === null ? { token: "", sessionToken: "" } : await signInDevice(store, clock, queues, account);
+  const signed =
+    account === null
+      ? { token: "", sessionToken: "" }
+      : await signInDevice(store, clock, queues, account);
   return {
     store,
     queues,

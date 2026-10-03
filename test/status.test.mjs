@@ -37,7 +37,6 @@ import {
 } from "../src/get-started.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
-import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -56,6 +55,7 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "../src/status.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -742,5 +742,9 @@ test("the Worker reads a device's reported queue into the status payload", async
     .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, account.id)
     .run();
   const stale = await (await poll()).json();
-  assert.equal(stale.upload, null, "a device that has not reported for a while still shows a queue");
+  assert.equal(
+    stale.upload,
+    null,
+    "a device that has not reported for a while still shows a queue",
+  );
 });

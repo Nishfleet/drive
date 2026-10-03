@@ -596,10 +596,7 @@ test("the usage page shows the queue a device reported, through the Worker's own
   };
   const store = createD1QueueStore(made.db);
   const read = () =>
-    workerFetch(
-      new Request("https://drive.test/api/usage", { headers: { cookie } }),
-      env,
-    );
+    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
 
   // No device has reported: the line is null and the page hides it, the honest
   // answer for an account whose no device has signed in yet (drive issue #308).
@@ -611,9 +608,16 @@ test("the usage page shows the queue a device reported, through the Worker's own
   const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
   assert.equal((await store.record(signedInAccount.id, queue)).stored, true);
   const after = await (await read()).json();
-  assert.equal(after.uploadLine, uploadProgress(queue).label, "the line is not the word table's own");
+  assert.equal(
+    after.uploadLine,
+    uploadProgress(queue).label,
+    "the line is not the word table's own",
+  );
   assert.equal(after.uploadLine, uploadLine(queue), "the two pages render the same sentence");
-  assert.ok(after.uploadLine.includes("Uploading 3 files"), `line ${after.uploadLine} is not the queue's own`);
+  assert.ok(
+    after.uploadLine.includes("Uploading 3 files"),
+    `line ${after.uploadLine} is not the queue's own`,
+  );
   // The money on the answer is untouched by the queue: they are two fields.
   assert.equal(typeof after.capLine, "string");
   assert.equal(after.billUsd, 0, "the empty month is still the empty month");

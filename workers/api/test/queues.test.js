@@ -49,7 +49,11 @@ test("a report is written and read back as the queue the pages render", async ()
   const clock = fixedClock();
   const db = createTestD1();
   const store = createD1QueueStore(db, { now: clock.now });
-  assert.equal(await store.latest("acct_1"), null, "an account that has never reported has no queue");
+  assert.equal(
+    await store.latest("acct_1"),
+    null,
+    "an account that has never reported has no queue",
+  );
 
   const stored = await store.record("acct_1", { ...QUEUE, paused: true });
   assert.equal(stored.stored, true, `the first report was refused: ${JSON.stringify(stored)}`);
@@ -94,7 +98,10 @@ test("a report is refused inside the interval and accepted one tick later", asyn
   assert.equal((await store.latest("acct_1"))?.uploadedBytes, 300_000_000);
 
   clock.advance(1);
-  assert.equal((await store.record("acct_1", { ...QUEUE, uploadedBytes: 600_000_000 })).stored, true);
+  assert.equal(
+    (await store.record("acct_1", { ...QUEUE, uploadedBytes: 600_000_000 })).stored,
+    true,
+  );
   assert.equal((await store.latest("acct_1"))?.uploadedBytes, 600_000_000);
 });
 
@@ -171,7 +178,13 @@ test("a row that cannot be a queue is refused rather than rendered", async () =>
   assert.throws(
     () =>
       uploadQueueFromRow(
-        { account_id: "acct_1", total_bytes: -1, uploaded_bytes: 0, file_count: 0, reported_at: at },
+        {
+          account_id: "acct_1",
+          total_bytes: -1,
+          uploaded_bytes: 0,
+          file_count: 0,
+          reported_at: at,
+        },
         at,
       ),
     TypeError,

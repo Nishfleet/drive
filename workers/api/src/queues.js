@@ -161,7 +161,10 @@ export function createD1QueueStore(db, options = {}) {
         await first(db, "SELECT reported_at FROM device_queues WHERE account_id = ?1", accountId)
       );
       const storedAt = Number(row?.reported_at ?? at);
-      return { stored: false, retryAfter: Math.max(1, QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt)) };
+      return {
+        stored: false,
+        retryAfter: Math.max(1, QUEUE_REPORT_INTERVAL_SECONDS - (at - storedAt)),
+      };
     },
 
     /**
