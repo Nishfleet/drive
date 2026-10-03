@@ -254,9 +254,16 @@
       What shipped most recently, according to the docs? Give the date and the
       one line.
     source: docs-site/changelog.md, latest dated entry
+  # drive#324: the date is not written here. A literal goes stale the day the
+  # changelog gains a newer heading (2026-10-02 failed 6/6 when 2026-10-03
+  # shipped), so the grader reads the changelog the agent was handed and
+  # asserts the answer names its newest dated heading.
   assert:
     - type: javascript
-      value: "/2026-10-02|2026-10-0?1/.test(output)"
+      value: |
+        const changelog = String(context.vars.docs_changelog || "");
+        const newest = /^## (\d{4}-\d{2}-\d{2})/m.exec(changelog);
+        return newest !== null && output.includes(newest[1]);
 
 - description: what a branch is for, and what it gives an agent
   vars:

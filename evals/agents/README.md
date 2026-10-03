@@ -82,6 +82,18 @@ is prose, and its rubric is a list of checkable claims rather than a score; a
 judge, when one is added, is a **different model family** from the agent under
 test.
 
+A grader also sees the same reading stack the agent saw: promptfoo hands an
+assertion a `context`, and `context.vars` holds `defaultTest.vars` already
+resolved, so a `file://` ref is that page's text. A task whose answer is a
+fact the docs carry on a given day reads that fact out of `context` rather than
+writing it into the task file. `the newest thing that shipped` is the case in
+point: a literal date there failed 6/6 on 2026-10-03, the day the changelog
+gained a heading above the one the task asserted (drive#324), and a grader that
+tracks the changelog needs no edit when it does. `test/evals.test.mjs` grades
+with the same `context` and the same body promptfoo builds, so the repo's own
+gate fails on a grader that cannot name the newest heading — the failure the
+grader-as-a-pure-function-of-the-whole-docs-corpus test could not see.
+
 ## Splits, and where the held-out set lives
 
 The train split is roughly two thirds of the tasks and is this file. The
