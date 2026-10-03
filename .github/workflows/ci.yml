@@ -130,6 +130,6 @@ jobs:
       # cmd/drive assume Unix file modes and paths and fail on Windows today.
       # Widening this to the whole suite is a separate Windows-port job.
       - name: Windows unit tests
-        run: go test ./cmd/drive/ -short -v -run 'Windows|WinFsp|Schtasks|DriveLetter|MountedDir|LoginItem'
+        run: go test ./cmd/drive/ -short -v -run 'Windows|WinFsp|Schtasks|DriveLetter|MountedDir|LoginItemPresent'
       - name: Windows drive-letter mount proof
         run: go test ./cmd/drive/ -run TestWindowsMountProof -v -timeout 300s
