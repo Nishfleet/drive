@@ -14,9 +14,12 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 // The eval's CLI help text is cmd/drive/main.go's `usage` const, so the gate
-// asks the same function `npm run docs:render` writes the snapshot with. A
-// second copy of that pattern is how the gate went green on a file the render
-// had stopped producing.
+// asks the same function `npm run eval:sync-help` writes the committed snapshot
+// with. The snapshot stays committed and the docs build never writes it:
+// `docs:render` runs inside `npm test` before these gates, so a render that
+// wrote the snapshot there made this gate compare the render's output with
+// itself, and a stale committed snapshot passed CI while the step dirtied a
+// clean main (drive#332).
 import { cliUsageText } from "../src/render-docs.js";
 
 const require = createRequire(import.meta.url);
@@ -387,7 +390,7 @@ test("the prompt reads only the docs, the help text and the task", () => {
 test("drive --help snapshot still matches the shipped CLI", () => {
   const m = cliUsageText().trim();
   const snapshot = read("evals/agents/context/drive-help.txt").trim();
-  assert.equal(snapshot, m, "help text drift would break the context");
+  assert.equal(snapshot, m, "help text drift would break the context; run npm run eval:sync-help");
 });
 
 test("package.json wires the one command and the stock tool", () => {

@@ -61,11 +61,14 @@ const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.ur
 
 // The agent eval's own reading stack (evals/agents, drive#222) carries the
 // CLI's help text next to the rendered pages, and that text is the CLI's
-// words: `cmd/drive/main.go`'s `usage` const. It used to be a pasted snapshot,
-// and main's Windows work added a mount flag (2026-10-03) that left it stale,
-// which is exactly the drift this render pass removes: writing it here means
-// `npm run docs:render` regenerates it, so a flag added to the CLI cannot
-// leave the eval asking about flags the help no longer shows.
+// words: `cmd/drive/main.go`'s `usage` const. The snapshot is a committed file
+// that only `npm run eval:sync-help` writes. It used to ride `docs:render`,
+// and that made the gate compare the render's own fresh write to main.go: two
+// live values that agree by construction, so a stale committed snapshot passed
+// CI while `npm run docs:render` dirtied a clean main (drive#332). One command
+// of its own keeps the committed file the single input the eval reads and the
+// single artifact the gate checks, so a flag added to the CLI fails the build
+// instead of being rewritten just ahead of the check that looks for it.
 const MAIN_GO = fileURLToPath(new URL("../cmd/drive/main.go", import.meta.url));
 export const HELP_SNAPSHOT = fileURLToPath(
   new URL("../evals/agents/context/drive-help.txt", import.meta.url),
@@ -88,7 +91,8 @@ export function cliUsageText() {
 /**
  * Write the eval's CLI-help snapshot from main.go, so the eval's context and
  * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
- * it directly, and the eval's own gate keeps reading the file it wrote.
+ * it directly, and the eval's own gate compares the committed file to the same
+ * text this writes.
  * @param {string} [snapshotPath] defaults to evals/agents/context/drive-help.txt
  * @returns {string} the text written
  */
@@ -185,8 +189,13 @@ export function renderDocs(outDir = RENDERED_DIR) {
 
 // `node src/render-docs.js` is what `npm run docs:render` runs, so the docs
 // build has one entry point and no script file of its own. The help snapshot
-// rides the same entry point: one command renders the docs the eval reads.
+// does NOT ride it: `docs:render` runs inside `npm test` before the tests, so
+// writing the committed snapshot here let the snapshot gate compare the build's
+// output with itself, and a stale snapshot passed CI (drive#332). `--sync-help`
+// is the one command that writes the snapshot the eval reads.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   renderDocs();
-  renderHelpSnapshot();
+  if (process.argv.includes("--sync-help")) {
+    renderHelpSnapshot();
+  }
 }
