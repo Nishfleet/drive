@@ -281,6 +281,28 @@ test("the changelog opens today and every entry is a real line", () => {
   );
 });
 
+test("the changelog's docs list names every page in DOC_PAGES order", () => {
+  // The changelog repeats the docs list in prose ("These docs: ..."), a second
+  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // sitemap and the built site, but not in this sentence, so an agent reading
+  // the changelog missed a shipped page. The gate reads that one sentence and
+  // requires every DOC_PAGES title, in the same order, so the next page added
+  // to DOC_PAGES fails here until the changelog names it.
+  const changelog = shipped("changelog.md");
+  const bullet = changelog.match(/[*-] These docs:([\s\S]*?)(?=\n[*-] |\n\n)/);
+  assert.ok(bullet, "the changelog must carry its 'These docs:' list");
+  const names = bullet[1].replace(/\s+/g, " ").toLowerCase();
+  let at = -1;
+  for (const page of DOC_PAGES) {
+    const found = names.indexOf(page.title.toLowerCase(), at + 1);
+    assert.ok(
+      found > at,
+      `the changelog's docs list must name ${page.title} after the page before it`,
+    );
+    at = found;
+  }
+});
+
 test("every FAQ answer rests on a scoreboard row that is a measured win", () => {
   // The orchestrator's rule (issue #98, comment 2026-09-30): a line
   // whose row is still "not yet measured" stays out of the published
