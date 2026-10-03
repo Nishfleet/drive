@@ -34,6 +34,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #318). A queue row is a customer row like any other, so a
   // test that reads one reads it from the real schema.
   "drive/0014_device_queues.sql",
+  // Each branch row's own id, so a name can be closed more than once
+  // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
+  // state) primary key, and after 0012's snapshot pointer columns.
+  "drive/0015_branch_row_id.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */

@@ -742,6 +742,7 @@ test("a real `rclone serve s3` ListObjectsV2 becomes rows", () => {
   assert.equal(photo.size, 2400);
   assert.equal(photo.modified, Date.parse("2026-09-30T11:00:00.000Z"));
   assert.equal(photo.path, "/holiday.jpg");
+  assert.equal(photo.etag, "");
   assert.throws(
     () => parseListObjects(/** @type {string} */ (/** @type {unknown} */ (null)), "u/1/", "/"),
     TypeError,
