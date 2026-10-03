@@ -6,7 +6,7 @@ import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { bearerToken } from "../workers/api/src/http.js";
+import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
@@ -159,6 +159,26 @@ let filesStore;
  */
 function devStorage(env) {
   return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+}
+
+/**
+ * The api Worker's service binding, read off this Worker's own env as the
+ * optional value it is until the api Worker is deployed (drive#156/#341,
+ * #342). It is read here rather than declared in cloudflare.config.ts for the
+ * same reason devStorage's two vars are: a declared binding is required at
+ * deploy, and Cloudflare fails this Worker's own deploy against a service
+ * binding whose target Worker does not exist
+ * (https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#deployment
+ * — "the target Worker must be deployed first, before Worker A. Otherwise,
+ * when you attempt to deploy Worker A, deployment will fail"). So the
+ * binding is declared when the deploy step ships drive-api beside this
+ * Worker, and until then the /v1/* family answers its closed door instead of
+ * pretending to be routed.
+ * @param {Env} env
+ * @returns {Env & {API?: Fetcher}}
+ */
+function apiBinding(env) {
+  return /** @type {Env & {API?: Fetcher}} */ (env);
 }
 
 /**
@@ -377,6 +397,36 @@ export function createApp() {
   // account gate is what holds it.
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
 
+  // --------------------------------------------------- the second family (/v1/*)
+  // The api Worker's family on the one host that answers the CLI's one base
+  // (drive#156/#341: `drive agents` posts /v1/keys to the same APIBase
+  // `drive search` posts /api/search to, cmd/drive/api.go). This Worker is the
+  // one that answers that address, so /v1/* is forwarded here rather than
+  // served here: the request goes over the service binding unchanged — method,
+  // path, query, headers and body — and the api Worker's own dispatcher
+  // answers it with its own account gate, its own edge limits and its own
+  // words. Nothing about a device sign-in is re-implemented on this side.
+  //
+  // The prefix is the api registry's own (workers/api/src/routes.js
+  // API_PREFIX, the value every path in that registry starts with), spelled
+  // here the way every route path on this app is spelled, and
+  // cloudflare.config.ts carries the same list in runWorkerFirst, which is
+  // what routes a /v1/* request to this route instead of the asset layer.
+  // test/deploy-assets.test.mjs pins this route, the config's list and the
+  // registry against that one constant.
+  app.all("/v1/*", (c) => {
+    const api = apiBinding(c.env).API;
+    // A deployment with no binding is the closed door, not an open one: the
+    // api Worker is a separate deployable that no deploy has shipped yet (its
+    // deploy step is the one line the worker App's token cannot push), and a
+    // declared binding to a Worker that does not exist fails this Worker's own
+    // deploy. So until drive-api is deployed and the binding is declared,
+    // /v1/* says so in the message table's words rather than falling through
+    // to the asset layer and serving a 404 page to a CLI mid sign-in.
+    if (!api) return errorResponse(503, failureMessage("unexpected"));
+    return api.fetch(c.req.raw);
+  });
+
   // ---------------------------------------------------------- account routes
   // Each method is registered on its own (rather than with app.all) so Hono's
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
@@ -582,8 +632,9 @@ export function createApp() {
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
-// and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
-// cloudflare.config.ts). Anything that does reach it and is not an API falls
+// and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
+// Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
+// it and is not an API falls
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
 /**
