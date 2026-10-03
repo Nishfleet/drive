@@ -29,13 +29,14 @@ import {
 } from "../src/meter.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
-// The Worker entrypoint as this file drives it: `scheduled` is optional on the
-// runtime's handler type and takes an execution context this test has no use
-// for, so the one call made here is typed as made (the same cast
-// test/meter.test.mjs makes).
-const worker = /** @type {{scheduled(event: unknown, env?: unknown): Promise<unknown>}} */ (
-  /** @type {unknown} */ (workerModule)
-);
+// The Worker entrypoint as this file drives it. `scheduled` is optional on the
+// runtime's handler type and takes an execution context the meter's trip has
+// no use for, so the one call made here is typed as made — the same cast
+// test/meter.test.mjs makes, widened for the three parameters that trip passes.
+const worker =
+  /** @type {{scheduled(event: unknown, env?: unknown, context?: unknown, store?: unknown, fetchImpl?: typeof fetch): Promise<unknown>}} */ (
+    /** @type {unknown} */ (workerModule)
+  );
 
 const HOUR_MS = 60 * MINUTE_MS;
 const ACCOUNT = "abc123";
@@ -375,7 +376,20 @@ test("the hourly cron pushes the hour it just rolled", async () => {
   const recorder = recordingFetch();
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY },
+    // The three parameters the meter's trip never uses: the execution context,
+    // the reindex store, and the push's fetch. fetch is passed here rather
+    // than read off env — DODO_FETCH was removed from production with the
+    // env cast when #325 made the key a declared secret.
+    //
+    // Positional on purpose: the runtime contract is scheduled(event, env,
+    // context) and every later parameter is a test seam with a default, so a
+    // call that skips them says so. The seam's home is this one parameter
+    // (fetchImpl) and the two before it, which is why they are spelled out
+    // here rather than collected into an options object everything must carry.
+    undefined,
+    undefined,
+    recorder.fetch,
   );
   assert.equal(recorder.calls.length, 1);
   assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);

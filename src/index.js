@@ -602,9 +602,12 @@ export default {
    * @param {import("./files.js").FileStore} [store] the storage store,
    *   injectable so the reindex's own tests hand one in instead of standing
    *   in the runtime's fetch
+   * @param {typeof fetch} [fetchImpl] the Dodo push's fetch, injectable for
+   *   the same reason: a test records the ingest request instead of reaching
+   *   DODO_TEST_INGEST_URL (src/dodo.js). Production takes the platform's fetch.
    * @returns {Promise<void>}
    */
-  async scheduled(event, env, context, store = storeFor(env)) {
+  async scheduled(event, env, context, store = storeFor(env), fetchImpl = globalThis.fetch) {
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.
@@ -618,12 +621,12 @@ export default {
       }
       // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
       // A missing key skips rather than failing the rollup; a failed ingest
-      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
-      // the unit tests can record the request without reaching the network.
-      const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch}} */ (env);
+      // throws so Cloudflare retries. The key is a declared Worker secret
+      // (cloudflare.config.ts), so it reads straight off env with no cast;
+      // fetch is the `fetchImpl` parameter, never an env name.
       await pushBillingHours(env.METER_DB, hours, {
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        apiKey: env.DODO_PAYMENTS_API_KEY,
+        fetch: fetchImpl,
         now: event.scheduledTime,
       });
       return;
