@@ -18,7 +18,7 @@ import {
 import { FAQ, faqMarkdown, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { SITE } from "../src/seo.js";
+import { PAGES, SITE } from "../src/seo.js";
 import { INSTALL_COMMAND } from "../src/status.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
@@ -324,13 +324,19 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   }
 });
 
-test("the sitemap lists the docs pages on the canonical origin, in order", () => {
+test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+  // The indexable pages come from src/seo.js PAGES rather than a typed path,
+  // so a page that moves there moves this expectation with it instead of the
+  // test and the sitemap drifting together.
   assert.deepEqual(
     locations,
-    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) => `${SITE.origin}${path}`),
-    "the sitemap must list the home page and every docs page, in order",
+    [
+      ...PAGES.filter((page) => page.indexable).map((page) => page.path),
+      ...DOC_PAGES.map((page) => page.url),
+    ].map((path) => `${SITE.origin}${path}`),
+    "the sitemap must list every indexable page and every docs page, in order",
   );
   // A docs URL in the sitemap that nothing serves is the drift the issue names:
   // a page that exists on disk and is not in the sitemap, or the reverse.
