@@ -273,68 +273,82 @@ async function seedDrive(dir, bucket) {
   }
 }
 
+/** Every object under one account's prefix, counted through the store. A listing
+ * of `/` with S3's delimiter answers folders as prefixes and hides the objects
+ * inside them, so it is a count of folders, not a count of files: the guard
+ * below would pass on a drive holding 100,000 files in its folders. The walk is
+ * cheap on a drive that is already empty -- one list call per folder found,
+ * and one call at all on a prefix with none -- and it is what makes the refusal
+ * mean "this account's prefix holds no files at all".
+ * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @returns {Promise<number>}
+ */
+async function countFilesUnderPrefix(store) {
+  const queue = ["/"];
+  let files = 0;
+  while (queue.length > 0) {
+    const folder = queue.shift();
+    for (const entry of await store.list(folder)) {
+      if (entry.kind === "folder") {
+        queue.push(entry.path);
+      } else {
+        files += 1;
+      }
+    }
+  }
+  return files;
+}
+
 /** The same files written to a real bucket, through the shipped store, because
  * a real account is not a folder the test may write into directly. Each file
  * is an empty object under this account's own prefix, put in bounded batches so
- * 100,000 of them do not open 100,000 sockets at once.
+ * 100,000 of them do not open 100,000 sockets at once. Every name the proof
+ * searches for is written here, so the search measures the same corpus the
+ * stand-in seeds.
  *
- * Every name the proof searches for is written here, so the search measures
- * the same corpus the stand-in seeds. A real bucket that already holds objects
- * under this prefix is refused rather than merged: the count the test asserts
- * (`built.indexed === FILES`) is only true on a drive holding exactly the
- * proof's files.
+ * The paths are pushed into `written` as each batch starts, so the caller can
+ * take them out again whatever happens: this is a billed object in a real
+ * account, and a seed that dies half-way through must not leave its half.
  * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {string[]} written the paths this call writes, filled in as it goes
  * @returns {Promise<void>}
  */
-async function seedRealDrive(store) {
-  const before = await store.list("/");
-  // Folders are not files here: an S3 prefix outlives the object that wrote it,
-  // so a drive this proof already ran on lists its own 20 empty folders again
-  // and would refuse itself. What must be empty is the objects under the
-  // account's prefix, because the count the test asserts (`built.indexed ===
-  // FILES`) is the proof's own.
-  const files = before.filter((entry) => entry.kind !== "folder");
-  if (files.length > 0) {
+async function seedRealDrive(store, written) {
+  const before = await countFilesUnderPrefix(store);
+  if (before > 0) {
     throw new Error(
-      `the real bucket already holds ${files.length} file(s) under this account's prefix; empty it before running the proof`,
+      `the real bucket already holds ${before} file(s) under this account's prefix; empty it before running the proof`,
     );
-  }
-  for (let f = 0; f < FOLDERS; f++) {
-    await store.write(`/${`folder-${f}`}/.keep`, "", "application/octet-stream");
-    await store.remove(`/${`folder-${f}`}/.keep`);
   }
   for (let start = 0; start < FILES; start += 50) {
     const batch = [];
+    const paths = [];
     for (let i = start; i < Math.min(start + 50, FILES); i++) {
+      paths.push(filePath(i));
       batch.push(store.write(filePath(i), "", "application/octet-stream"));
     }
+    written.push(...paths);
     await Promise.all(batch);
   }
 }
 
-/** Every file the proof seeded, removed again: a real account is left as it
- * was found. A removal that fails is named, because a proof that quietly left
- * 100,000 objects behind in a customer's bucket is not a proof that can be
- * re-run.
+/** Every file the proof seeded, removed again, and nothing else: the list it
+ * removes is exactly what the seed wrote, so a file this account already held
+ * is never a candidate. A removal that fails is thrown rather than swallowed,
+ * because a proof that quietly left 100,000 objects behind in a customer's
+ * bucket is not a proof that can be re-run. The removals are batched like the
+ * seed, so the drive is left as it was found in the time the seed took.
  * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {string[]} written the paths seedRealDrive wrote
  * @returns {Promise<void>}
  */
-async function clearRealDrive(store) {
-  // Bounded batches, like the seed above: one removal at a time is
-  // 100,000 sequential round trips to the vendor, which is slower than
-  // the whole proof, while 50 at a time empties the drive in the time
-  // the seed took. A removal that fails is thrown, not swallowed, so a
-  // half-cleared drive is named rather than quietly left behind.
-  for (let f = 0; f < FOLDERS; f++) {
-    const folder = `folder-${f}`;
-    const entries = await store.list(`/${folder}`);
-    for (let start = 0; start < entries.length; start += 50) {
-      const batch = [];
-      for (let i = start; i < Math.min(start + 50, entries.length); i++) {
-        batch.push(store.remove(`/${folder}/${entries[i].name}`));
-      }
-      await Promise.all(batch);
+async function clearRealDrive(store, written) {
+  for (let start = 0; start < written.length; start += 50) {
+    const batch = [];
+    for (let i = start; i < Math.min(start + 50, written.length); i++) {
+      batch.push(store.remove(written[i]));
     }
+    await Promise.all(batch);
   }
 }
 
@@ -447,8 +461,12 @@ test("100,000 real files: the index search is under a second, the bucket walk it
   // objects it did not find there.
   if (storage.real) {
     t.diagnostic(`seeding ${FILES} files into ${storage.bucket} on ${storage.endpoint}`);
-    await seedRealDrive(store);
-    t.after(() => clearRealDrive(store));
+    // Registered before the first object is written: these are billed objects
+    // in a real account, not rows in a fixture, so a seed that dies half-way
+    // through must still take out what it wrote.
+    const written = [];
+    t.after(() => clearRealDrive(store, written));
+    await seedRealDrive(store, written);
   }
 
   // The nightly build, timed: this is the walk a search must not repeat.

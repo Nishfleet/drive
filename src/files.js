@@ -871,9 +871,11 @@ export function createMemoryStore() {
  * SigV4 signs the payload hash, so a stream must be in hand before the request
  * goes out; a body that is already bytes is passed through untouched.
  *
- * Only a signed store reads a body this way: the unsigned stand-in sends the
- * stream as it is, which is what `rclone serve s3` expects and what keeps the
- * no-credential path free of a buffer it does not need.
+ * The whole-body buffer is also this store's size ceiling: a signed write holds
+ * the object to hash it, and the FileStore interface carries no multipart write
+ * to step around it. Only a signed store reads a body this way: the unsigned
+ * stand-in sends the stream as it is, which is what `rclone serve s3` expects
+ * and what keeps the no-credential path free of a buffer it does not need.
  * @param {BodyInit} body
  * @returns {Promise<Uint8Array>}
  */
@@ -887,8 +889,11 @@ async function signableBody(body) {
   if (typeof Blob !== "undefined" && body instanceof Blob) {
     return new Uint8Array(await body.arrayBuffer());
   }
-  // The only BodyInit left is a ReadableStream (FormData, URLSearchParams and
-  // ArrayBuffer are not produced by the write paths the store serves).
+  if (typeof ReadableStream === "undefined" || !(body instanceof ReadableStream)) {
+    throw new TypeError(
+      `cannot send a body of type ${Object.prototype.toString.call(body)}: a signed write hashes the payload, and only a stream, bytes, a Blob or a string can be read as one`,
+    );
+  }
   /** @type {ReadableStream<Uint8Array>} */
   const stream = /** @type {any} */ (body);
   const chunks = [];
@@ -950,6 +955,10 @@ export function createS3Store(config) {
         sessionToken: credentials.sessionToken,
         region,
         service: "s3",
+        // No retry inside the signer, the same setting the api Worker's client
+        // uses (workers/api/src/s3.js): a retry that succeeds after a real
+        // refusal hides the refusal, and every caller above has its own named
+        // failure for a non-ok answer.
         retries: 0,
       })
     : null;
