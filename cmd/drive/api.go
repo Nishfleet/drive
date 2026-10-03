@@ -86,8 +86,9 @@ func NewAPIClient(apiBase, token string) (*APIClient, error) {
 }
 
 // post sends a JSON body and decodes a JSON answer. An api Worker error is
-// {error: <sentence>} (docs/api.md), so that sentence is what a person reads
-// rather than a bare status code.
+// {error: <sentence>} (docs/api.md), so that sentence is kept in the detail
+// (DRIVE_DEBUG); the person sees the message table's words for the failure
+// class instead of raw text from the service (drive#117).
 func (c *APIClient) post(path string, body, out any) error {
 	return c.do(http.MethodPost, path, body, out)
 }
@@ -99,13 +100,13 @@ func (c *APIClient) do(method, path string, body, out any) error {
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("encode the request: %w", err)
+			return failDetail("unexpected", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequest(method, c.Base+path, reader)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, c.Base+path, err)
+		return failDetail("unexpected", err)
 	}
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
@@ -119,22 +120,26 @@ func (c *APIClient) do(method, path string, body, out any) error {
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%s %s%s: %w", method, c.Base, path, err)
+		return failDetail("offline", err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("read %s %s%s: %w", method, c.Base, path, err)
+		return failDetail("unexpected", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return &APIError{Method: method, Path: path, Status: response.Status, Body: string(raw)}
+		err := &APIError{Method: method, Path: path, Status: response.Status, Body: string(raw)}
+		f := failDetail(apiFailureKind(err), err)
+		if s := err.Sentence(); s != "" {
+			f = f.withService(s)
+		}
+		return f
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%s %s%s answered %s, which could not be read: %w",
-			method, c.Base, path, response.Status, err)
+		return failDetail("api-answer", err)
 	}
 	return nil
 }
@@ -151,16 +156,25 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	message := strings.TrimSpace(e.Body)
-	var decoded struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(message), &decoded); err == nil && decoded.Error != "" {
-		message = decoded.Error
+	if s := e.Sentence(); s != "" {
+		message = s
 	}
 	if message == "" {
 		return fmt.Sprintf("%s %s: %s", e.Method, e.Path, e.Status)
 	}
 	return fmt.Sprintf("%s %s: %s: %s", e.Method, e.Path, e.Status, message)
+}
+
+// Sentence is the api Worker's own {error} sentence (docs/api.md), when the
+// body carried one. A person reads that sentence rather than a status code.
+func (e *APIError) Sentence() string {
+	var decoded struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(e.Body)), &decoded); err != nil {
+		return ""
+	}
+	return decoded.Error
 }
 
 // RequestDeviceCode starts a device sign-in (POST /v1/device/code). The
@@ -169,10 +183,17 @@ func (e *APIError) Error() string {
 func (c *APIClient) RequestDeviceCode(deviceName string) (DeviceCode, error) {
 	var code DeviceCode
 	if err := c.post(deviceCodePath, map[string]string{"name": deviceName}, &code); err != nil {
-		return DeviceCode{}, err
+		// A Worker that reaches this route but answers with something unusable
+		// is classified by do() (api-answer/offline/key-revoked); keep those
+		// words, and never let an unclassified error through.
+		var f *failure
+		if errors.As(err, &f) {
+			return DeviceCode{}, f
+		}
+		return DeviceCode{}, failDetail("unexpected", err)
 	}
 	if code.UserCode == "" || code.DeviceCode == "" || code.VerificationURI == "" {
-		return DeviceCode{}, errors.New("the api Worker sent no device code; run `drive init` again in a moment")
+		return DeviceCode{}, fail("api-answer")
 	}
 	return code, nil
 }
@@ -189,16 +210,17 @@ type pollResult struct {
 func (c *APIClient) pollToken(deviceCode string) (pollResult, error) {
 	var result pollResult
 	err := c.post(deviceTokenPath, map[string]string{"device_code": deviceCode}, &result)
-	if err != nil {
-		var expired *APIError
-		// The Worker answers an expired or unknown code with 400; a poll loop
-		// must stop there rather than spin until the CLI's own deadline.
-		if errors.As(err, &expired) && strings.Contains(expired.Status, "400") {
-			return result, err
-		}
-		return result, err
+	if err == nil {
+		return result, nil
 	}
-	return result, nil
+	// The Worker answers an expired or unknown code with 400; a poll loop must
+	// stop there rather than spin until the CLI's own deadline, with the
+	// sign-in-expired words.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && strings.Contains(apiErr.Status, "400") {
+		return result, fail("sign-in-expired")
+	}
+	return result, failDetail(apiFailureKind(err), err)
 }
 
 // SignIn runs the device flow on the terminal: ask for a code, print it and
@@ -228,7 +250,7 @@ func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Accoun
 	for {
 		select {
 		case <-timeout:
-			return "", Account{}, errors.New("that code expired before it was approved; run `drive init` again for a new one")
+			return "", Account{}, fail("sign-in-expired")
 		case <-wait.C:
 		}
 		result, err := client.pollToken(code.DeviceCode)
@@ -238,14 +260,14 @@ func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Accoun
 		switch result.Status {
 		case "approved":
 			if result.DeviceToken == "" || result.Account == nil {
-				return "", Account{}, errors.New("the api Worker approved the code but sent no device token; run `drive init` again")
+				return "", Account{}, fail("api-answer")
 			}
 			return result.DeviceToken, *result.Account, nil
 		case "pending":
 			fmt.Fprint(out, ".")
 			continue
 		default:
-			return "", Account{}, fmt.Errorf("the api Worker answered %q to the device poll; run `drive init` again", result.Status)
+			return "", Account{}, failDetail("api-answer", fmt.Errorf("the api Worker answered %q to the device poll", result.Status))
 		}
 	}
 }
@@ -258,7 +280,7 @@ func (c *APIClient) MintKey(kind, name string) (MintedKey, error) {
 		return MintedKey{}, err
 	}
 	if key.KeyID == "" || key.Secret == "" {
-		return MintedKey{}, errors.New("the api Worker sent no key; run `drive init` again in a moment")
+		return MintedKey{}, fail("api-answer")
 	}
 	return key, nil
 }
@@ -396,11 +418,11 @@ func LoadCredentials(home string) (Credentials, error) {
 		return Credentials{}, nil
 	}
 	if err != nil {
-		return Credentials{}, fmt.Errorf("read %s: %w", CredentialsPath(home), err)
+		return Credentials{}, failDetail("unexpected", fmt.Errorf("read %s: %w", CredentialsPath(home), err))
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return Credentials{}, fmt.Errorf("%s is not valid JSON: %w", CredentialsPath(home), err)
+		return Credentials{}, failDetail("unexpected", fmt.Errorf("%s is not valid JSON: %w", CredentialsPath(home), err))
 	}
 	return creds, nil
 }
@@ -410,7 +432,7 @@ func LoadCredentials(home string) (Credentials, error) {
 func SaveCredentials(home string, creds Credentials) error {
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode the credentials: %w", err)
+		return failDetail("unexpected", fmt.Errorf("encode the credentials: %w", err))
 	}
 	data = append(data, '\n')
 	if err := WriteFileAtomic(CredentialsPath(home), data, 0o600); err != nil {
