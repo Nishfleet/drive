@@ -28,9 +28,10 @@
 // swept every open pre-namespace row into the namespace (drive#321), and
 // `readSnapshot` no longer falls back to the legacy `branches.snapshot` column
 // (drive#329), so the only place a snapshot lives is the namespace. The
-// namespace is a required binding (`BRANCH_SNAPSHOTS` in the health check's
-// `REQUIRED_BINDINGS`), so a store is always present and a row with an empty
-// pointer reads as empty rather than from a column nothing writes any more.
+// namespace is a required binding (`BRANCH_SNAPSHOTS` in src/health.js
+// `REQUIRED_BINDINGS`, already on that list before this change), so a store is
+// always present and a row with an empty pointer reads as empty rather than
+// from a column nothing writes any more.
 //
 // Two rules make that safe:
 //
@@ -809,6 +810,14 @@ export async function approveBranch(db, snapshots, store, account, name) {
   if (branch.state !== "open") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
+  if (branch.snapshotKey === "") {
+    // drive#329: the snapshot has one source. An empty pointer is a pre-sweep
+    // row the nightly backfill has not reached; copying from an empty snapshot
+    // would treat every copy file as added, and `saveSnapshot` would then throw
+    // after the work. Refuse before anything is copied. Production has none of
+    // these rows (the #321 sweep's COUNT query is 0).
+    return { error: failureMessage("unexpected"), status: 500 };
+  }
   const diff = await diffBranch(store, branch);
   // The files the original moved that an overwrite would clobber: only those
   // stop the run. A file the original changed at a path the branch did not
@@ -943,8 +952,8 @@ export async function discardBranch(db, snapshots, store, account, name) {
 // (drive#252): the legacy `branches.snapshot` column is no longer written
 // (drive#329), so a row with a pointer is the only row this can save. A row
 // with an empty pointer is a pre-backfill row the sweep has not reached (or a
-// closed one, which is never saved again), and the caller has already refused
-// to approve it, so the save answers the generic failure rather than writing
+// closed one, which is never saved again), and `approveBranch` refuses it
+// before it copies, so the save answers the generic failure rather than writing
 // somewhere a diff will not read. The row's byte length is refreshed, so
 // `snapshotBytes` stays the honest length of the value the diff reads.
 /**

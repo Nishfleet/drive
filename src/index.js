@@ -206,7 +206,8 @@ function linksFor(env) {
 // which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
 // and the row holds a pointer to it instead. Required since drive#329 dropped
 // the legacy-column fallback: a missing binding is a 503 on every branch and
-// rewind route, and BRANCH_SNAPSHOTS is on the health check's required list.
+// rewind route, and BRANCH_SNAPSHOTS is already on src/health.js
+// `REQUIRED_BINDINGS` (required before this change).
 // `null` is still the answer a missing binding gets, so the handlers can refuse
 // it by name rather than throw on the first put.
 /**

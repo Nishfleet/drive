@@ -571,6 +571,29 @@ test("a branch of another account is not found, ever", async () => {
   assert.deepEqual(await listBranches(db, snapshots, other, OTHER), []);
 });
 
+test("approve refuses an open row with no snapshot pointer before it copies", async () => {
+  // drive#329: an empty pointer is not filled from the leftover column, so an
+  // approve of a pre-sweep row must stop before it treats every copy file as
+  // added and writes them into the original.
+  const { scoped, db, snapshots, kv } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const key = snapshotKey(ACCOUNT, "work");
+  const json = kv.values.get(key);
+  assert.equal(typeof json, "string");
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = ?3, snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "work", json)
+    .run();
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  assert.equal(failedStatus(await approveBranch(db, snapshots, scoped, ACCOUNT, "work")), 500);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "the original was not copied over");
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), "edited");
+});
+
 // ------------------------------------------------- the snapshot backfill
 
 /**
