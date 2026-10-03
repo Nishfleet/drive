@@ -554,9 +554,10 @@ export async function handleCapRequest(request, account, capStore) {
  */
 function swapCredential(report) {
   const applied = Array.isArray(report.applied) ? report.applied : [];
-  const minted = /** @type {{accessKeyId?: unknown, secret?: unknown, sessionToken?: unknown}|undefined} */ (
-    applied.length === 0 ? undefined : applied[applied.length - 1].minted
-  );
+  const minted =
+    /** @type {{accessKeyId?: unknown, secret?: unknown, sessionToken?: unknown}|undefined} */ (
+      applied.length === 0 ? undefined : applied[applied.length - 1].minted
+    );
   if (typeof minted !== "object" || minted === null) {
     return null;
   }

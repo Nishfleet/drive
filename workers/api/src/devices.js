@@ -488,11 +488,7 @@ export function createD1DeviceStore(db, options = {}) {
       const at = now();
       const peak = await monthUsageRollup(db, accountId, at, at);
       const start = monthStart(at);
-      const end = Date.UTC(
-        new Date(start).getUTCFullYear(),
-        new Date(start).getUTCMonth() + 1,
-        1,
-      );
+      const end = Date.UTC(new Date(start).getUTCFullYear(), new Date(start).getUTCMonth() + 1, 1);
       const row = await first(
         db,
         `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes
@@ -502,7 +498,9 @@ export function createD1DeviceStore(db, options = {}) {
         start,
         end,
       );
-      const gbMinutes = Number(row?.gb_minutes ?? 0);
+      const gbMinutes = Number(
+        /** @type {{gb_minutes?: unknown} | null | undefined} */ (row)?.gb_minutes ?? 0,
+      );
       if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
         throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
       }

@@ -927,7 +927,11 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
   );
   assert.equal(swapped.status, 200);
   const body = await swapped.json();
-  assert.equal(body.cap.state, "read_only", "a cap below what the month already counted is reached");
+  assert.equal(
+    body.cap.state,
+    "read_only",
+    "a cap below what the month already counted is reached",
+  );
   assert.equal(body.mount.restart, true);
   // The three values the mount needs to sign. The secret and the token are a
   // credential, so they are only ever in this response and in the rclone

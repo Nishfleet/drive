@@ -160,7 +160,9 @@ async function startMount(rcloneBin, workDir, cred) {
       if (Date.now() > deadline) {
         child.kill("SIGTERM");
         const log = await readFile(logPath, "utf8").catch(() => "");
-        throw new Error(`rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-8).join("\n")}`);
+        throw new Error(
+          `rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-8).join("\n")}`,
+        );
       }
       await sleep(400);
     }
@@ -315,7 +317,11 @@ async function proof(t, rcloneBin, workDir) {
   const keptAfter = await readFile(path.join(mount.mountDir, "kept.txt"), "utf8");
   assert.equal(keptAfter, keptBody, "the capped mount still reads the file that was there");
   const pendingOnMount = await readFile(path.join(mount.mountDir, "pending.txt"), "utf8");
-  assert.equal(pendingOnMount, pendingBody, "the queued upload is still in the VFS cache after the swap");
+  assert.equal(
+    pendingOnMount,
+    pendingBody,
+    "the queued upload is still in the VFS cache after the swap",
+  );
   await sleep(8_000);
   const pendingWhileCapped = await root.send("GET", { bucket: BUCKET, key: pendingKey });
   assert.notEqual(
@@ -376,7 +382,11 @@ async function proof(t, rcloneBin, workDir) {
   );
   assert.equal(pendingAfter.text, pendingBody);
   const keptStill = await readFile(path.join(mount.mountDir, "kept.txt"), "utf8");
-  assert.equal(keptStill, keptBody, "raising the cap must not lose the file that was already there");
+  assert.equal(
+    keptStill,
+    keptBody,
+    "raising the cap must not lose the file that was already there",
+  );
   t.diagnostic(`pending.txt reached storage at ${new Date().toISOString()}`);
 }
 
@@ -425,7 +435,10 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
     );
   }
   const retryDir = await mkdtemp(path.join(tmpdir(), "drive-cap-mount-"));
-  const resultFile = path.join(await mkdtemp(path.join(tmpdir(), "drive-cap-mount-result-")), "result");
+  const resultFile = path.join(
+    await mkdtemp(path.join(tmpdir(), "drive-cap-mount-result-")),
+    "result",
+  );
   const inner = spawnSync(
     "unshare",
     ["-Urm", "--propagation", "private", process.execPath, TEST_FILE],

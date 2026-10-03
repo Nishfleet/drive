@@ -18,7 +18,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BILLING_CONFIG, MINUTES_PER_MONTH } from "../../src/billing.js";
-import { dollarsToCapCents, enforceCap, handleCapRequest, READ_ONLY_CAPABILITIES } from "../../src/cap.js";
+import {
+  dollarsToCapCents,
+  enforceCap,
+  handleCapRequest,
+  READ_ONLY_CAPABILITIES,
+} from "../../src/cap.js";
 import { monthStart } from "../../src/meter.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
@@ -195,7 +200,9 @@ test("drive cap below the month already counted swaps on the real rows", async (
   assert.equal(typeof body.credential?.secret, "string");
   assert.deepEqual(
     JSON.parse(
-      String(rowIn(sqlite, "SELECT capabilities FROM devices WHERE id = ?", "key_device").capabilities),
+      String(
+        rowIn(sqlite, "SELECT capabilities FROM devices WHERE id = ?", "key_device").capabilities,
+      ),
     ),
     [...READ_ONLY_CAPABILITIES],
   );
