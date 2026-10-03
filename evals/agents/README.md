@@ -47,7 +47,9 @@ Only drive's own words:
   `docs-site/.rendered/`, exactly the Markdown the site serves to agents;
 - the `drive --help` text in `context/drive-help.txt`, which
   `test/evals.test.mjs` proves still matches the `usage` string in
-  `cmd/drive/main.go`.
+  `cmd/drive/main.go`. It is not pasted by hand: `npm run docs:render` writes
+  it from that string, so the CLI gaining a flag cannot leave the snapshot
+  stale.
 
 `prompts/agent.md` pastes both in, then the task. Nothing else.
 

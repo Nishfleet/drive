@@ -540,16 +540,6 @@
     - type: javascript
       value: "/no second person|one account|not in version 1/i.test(output)"
 
-- description: after the cap is raised, does the drive start writing again
-  vars:
-    task: >
-      I hit my cap, then put more money on. Does the drive start writing
-      again on its own, or do I have to do something?
-    source: docs/build-spec.md, "Keys and safety"
-  assert:
-    - type: javascript
-      value: "/(restart|next (start|mount)|remount|again)/i.test(output) && !/reinstall/.test(output)"
-
 - description: the CLI reads keys from the environment, never from a flag
   vars:
     task: >

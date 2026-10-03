@@ -13,7 +13,7 @@
 // template or a stale string. Plain functions, so `node --test` runs this
 // directly.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { faqMarkdown, markerValues } from "./docs.js";
 import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
@@ -58,6 +58,42 @@ export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 // a number nobody has measured.
 const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
 const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
+
+// The agent eval's own reading stack (evals/agents, drive#222) carries the
+// CLI's help text next to the rendered pages, and that text is the CLI's
+// words: `cmd/drive/main.go`'s `usage` const. It used to be a pasted snapshot,
+// and main's Windows work added a mount flag (2026-10-03) that left it stale,
+// which is exactly the drift this render pass removes: writing it here means
+// `npm run docs:render` regenerates it, so a flag added to the CLI cannot
+// leave the eval asking about flags the help no longer shows.
+const MAIN_GO = fileURLToPath(new URL("../cmd/drive/main.go", import.meta.url));
+export const HELP_SNAPSHOT = fileURLToPath(
+  new URL("../evals/agents/context/drive-help.txt", import.meta.url),
+);
+
+/** The `usage` const's text, or an error that names the file nothing matched. */
+function cliUsageText() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  const match = src.match(/const usage = `([\s\S]*?)`\nconst version/);
+  if (!match) {
+    throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
+  }
+  return match[1].trim();
+}
+
+/**
+ * Write the eval's CLI-help snapshot from main.go, so the eval's context and
+ * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
+ * it directly, and the eval's own gate keeps reading the file it wrote.
+ * @param {string} [snapshotPath] defaults to evals/agents/context/drive-help.txt
+ * @returns {string} the text written
+ */
+export function renderHelpSnapshot(snapshotPath = HELP_SNAPSHOT) {
+  const text = `${cliUsageText()}\n`;
+  mkdirSync(dirname(snapshotPath), { recursive: true });
+  writeFileSync(snapshotPath, text);
+  return text;
+}
 
 /** The two published sections of docs/benchmarks.md, from the Linux heading. */
 function publishedBenchmarks() {
@@ -144,7 +180,9 @@ export function renderDocs(outDir = RENDERED_DIR) {
 }
 
 // `node src/render-docs.js` is what `npm run docs:render` runs, so the docs
-// build has one entry point and no script file of its own.
+// build has one entry point and no script file of its own. The help snapshot
+// rides the same entry point: one command renders the docs the eval reads.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   renderDocs();
+  renderHelpSnapshot();
 }
