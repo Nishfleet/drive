@@ -297,9 +297,9 @@ async function seedRealDrive(store) {
     await store.write(`/${`folder-${f}`}/.keep`, "", "application/octet-stream");
     await store.remove(`/${`folder-${f}`}/.keep`);
   }
-  for (let start = 0; start < FILES; start += 250) {
+  for (let start = 0; start < FILES; start += 50) {
     const batch = [];
-    for (let i = start; i < Math.min(start + 250, FILES); i++) {
+    for (let i = start; i < Math.min(start + 50, FILES); i++) {
       batch.push(store.write(filePath(i), "", "application/octet-stream"));
     }
     await Promise.all(batch);
