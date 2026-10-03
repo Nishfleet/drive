@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-03
 
+- `drive update` and `drive version`: an update replaces the installed CLI
+  with the latest released version by the same `go install` command a person
+  installs with, and `drive version` prints the version the binary was built
+  and installed at, so an update is visible.
 - Windows gets the same `drive mount` the Mac and Linux have had: `rclone
   mount` with WinFsp as the driver, mounted at the first free drive letter from
   D: up, started at login by a stock Task Scheduler task (no helper scripts),
@@ -19,6 +23,11 @@ the live site.
   detach the letter, and find a stale mount by reading the letters the running
   rclone processes hold, so a letter rclone is still holding is never reported
   as stopped.
+- Windows installs from an MSI built with the stock WiX toolchain: it puts
+  `drive.exe` and rclone on PATH, brings WinFsp in through WinFsp's own
+  package dependency (never a vendored copy), registers the logon task, and
+  uninstalls to a clean machine. The builds are unsigned and pre-release, so
+  there is nothing to install from a public release yet.
 
 - The Benchmarks page: every speed scenario the suite measures, next to the
   published rival figure for the same case, with losses labelled losses. Linux

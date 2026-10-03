@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,6 +35,21 @@ type MountPlan struct {
 	// after `drive pause` comes back already paused.
 	Bwlimit string
 	VFSArgs []string
+	// Device is this machine's name in a conflict copy's filename
+	// (issue #30). DRIVE_DEVICE when the operator sets it, else the
+	// hostname, sanitized so it is a filename everywhere the mount
+	// goes.
+	Device string
+	// RCAddr is the loopback address the mount's remote control binds.
+	// The background fill, the conflict guard and every operator
+	// reach the same one, so it is on the plan rather than a constant
+	// each of them keeps.
+	RCAddr string
+	// StagingDir is where the conflict guard keeps a save's bytes for
+	// the moments they could still be lost. It is inside this device's
+	// own drive folder, never inside the mount dir, so nothing staged
+	// is ever visible in the drive.
+	StagingDir string
 	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
 	// when none is configured. It is a mount argument, not a line in the
 	// rclone config the user owns: rclone streams every read through the
@@ -87,12 +103,6 @@ func VFSArgs() []string {
 		// without a second index.
 		"--vfs-read-chunk-size-limit", vfsChunkSizeLimit(),
 		"--vfs-cache-max-age", vfsMaxAge(),
-		// The remote control is how the background fill reads the cache's
-		// live state and refreshes the directory (fill_run.go), and how
-		// `drive status` reports the cache. rclone's remote control is
-		// unauthenticated by design, so it binds to loopback only: 127.0.0.1,
-		// never :5572 on every interface.
-		"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth",
 	}
 }
 
@@ -140,6 +150,9 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		CacheDir:    DefaultCacheDir(home),
 		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
 		VFSArgs:     VFSArgs(),
+		Device:      DeviceName(),
+		RCAddr:      RCAddr(),
+		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
 		// A pause that is in force when the mount is (re)started keeps being in
 		// force (drive issue #100): rclone's bandwidth limit lives in its own
@@ -148,6 +161,75 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		// already leaving.
 		Bwlimit: PausedRate(home),
 	}
+}
+
+// deviceEnvName is the environment variable that carries the device name
+// (issue #30). The flag is the person's own command; the environment is
+// what the login item (launchd, systemd) carries forward.
+const deviceEnvName = "DRIVE_DEVICE"
+
+// DeviceName is the name this device carries in a conflict copy's
+// filename (issue #30). DRIVE_DEVICE wins so a person's machine can
+// answer to the name they chose ("studio", not "Johns-Macbook-Pro");
+// otherwise the hostname, sanitized. An unset DRIVE_DEVICE is the common
+// case and never an error: the hostname is a name.
+func DeviceName() string {
+	if set := strings.TrimSpace(os.Getenv(deviceEnvName)); set != "" {
+		if name := SanitizeDevice(set); name != "" {
+			return name
+		}
+	}
+	return DefaultDeviceName()
+}
+
+// ConflictStagingDir is where the conflict guard keeps a save's bytes
+// while it could still be lost. It is inside the device's own config
+// folder, so a staged copy is never visible in the drive and never
+// uploaded by anything but the guard's own conflict copy.
+func ConflictStagingDir(home string) string {
+	return filepath.Join(DefaultConfigDir(home), "conflict-staging")
+}
+
+// rcAddrEnvName is the environment variable that carries the remote
+// control's loopback address. Two mounts of the same drive on one host
+// (the two-machine proof, issue #30) cannot both bind one address, so the
+// address is overridable; the constant below is the shipped value and a
+// person's mount never sets either.
+const rcAddrEnvName = "DRIVE_RC_ADDR"
+
+// RCAddr is the loopback address the mount's remote control binds.
+// rclone's remote control is unauthenticated by design, so it binds to
+// loopback only and never to a wildcard: the background fill, the
+// conflict guard and `drive status` all reach this one address. A
+// DRIVE_RC_ADDR that is not a loopback address is refused and the shipped
+// address is used, because a wildcard bind would put an unauthenticated
+// control port on the network.
+func RCAddr() string {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
+		if IsLoopbackAddr(set) {
+			return set
+		}
+		return loopbackRCAddr
+	}
+	return loopbackRCAddr
+}
+
+// IsLoopbackAddr reports whether addr is a loopback host:port. The remote
+// control is unauthenticated (rclone's own design), so anything that would
+// bind off the machine is refused rather than used.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "localhost.":
+		return true
+	}
+	return false
 }
 
 // mountDirFor is the mount point for goos: ~/Drive on Mac and Linux, and the
@@ -173,6 +255,12 @@ func (p MountPlan) Args() []string {
 		"--cache-dir", p.CacheDir,
 		"--log-file", p.LogPath,
 		"--log-level", "INFO",
+		// The remote control is how the background fill reads the cache's
+		// live state and refreshes the directory (fill_run.go), how the
+		// conflict guard reads this device's own upload queue and the
+		// object's hash at a path (conflict_guard.go), and how `drive
+		// status` reports the cache. It is one address for all of them.
+		"--rc", "--rc-addr", p.RCAddr, "--rc-no-auth",
 	)
 	// The download host, when one is configured (issue #58). It is the S3
 	// provider's own flag --s3-download-url, the one rclone's docs list for
@@ -189,9 +277,9 @@ func (p MountPlan) Args() []string {
 	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
 	// the mount with the same rate `core/bwlimit rate="1KiB:off"` sets, and
 	// RCLONE_BWLIMIT is not needed because the flag is already in the vector.
-	// The remote control that `drive pause` and `drive resume` use is bound by
-	// VFSArgs above, so the mount answers both commands without a second
-	// listener.
+	// The remote control that `drive pause` and `drive resume` use is the same
+	// loopback address this vector binds (`--rc-addr`, p.RCAddr), so those
+	// commands talk to this mount and no second listener is added.
 	if p.Bwlimit != "" {
 		args = append(args, "--bwlimit", p.Bwlimit)
 	}
@@ -368,6 +456,14 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
 	}
+	// The device name this mount answers to in a conflict copy. It is a
+	// filename, so it is sanitized whatever the operator typed or the
+	// hostname carries, and a refusal here is a named failure at the person's
+	// own command rather than a conflict file with an unreadable name.
+	if p.Device == "" {
+		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
+			"this mount can carry in a conflict filename")
+	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
 	}
@@ -448,9 +544,21 @@ func mountForeground(p MountPlan, home string) error {
 		// of the mount, so the loop's first pass waits for the mount to appear
 		// (the same proof `drive mount` already makes) instead of racing it.
 		_, _ = MountedDir(p.GOOS, p.MountDir)
-		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
 		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
+		}
+	}()
+	// The conflict guard (issue #30) runs in this process for as long as the
+	// mount does, on the same remote control: it watches this device's own
+	// upload queue, stages the bytes that could still be lost, and when another
+	// device's save lands it writes the conflict copy so both versions survive.
+	conflictCtx, cancelConflict := context.WithCancel(context.Background())
+	go func() {
+		_, _ = MountedDir(p.GOOS, p.MountDir)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.StagingDir, c) {
+			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
@@ -478,6 +586,7 @@ func mountForeground(p MountPlan, home string) error {
 	close(quit)
 	<-joined
 	cancelFill()
+	cancelConflict()
 	if runErr != nil {
 		return fmt.Errorf("rclone mount: %w", runErr)
 	}
