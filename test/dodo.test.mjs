@@ -386,6 +386,44 @@ test("the hourly cron pushes the hour it just rolled", async () => {
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
 });
 
+test("the cron reports the skipped push in the log, and does not throw over it", async () => {
+  // A deployment whose key was never set: the meter's rollup still runs, the
+  // push still returns {pushed: 0}, and the detector beside it writes one
+  // operator-facing line. The scheduled() call must resolve, because a throw
+  // here would be Cloudflare retrying a rollup over a missing key — the exact
+  // outcome issue #334 says must not happen.
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  db.insertVersion({
+    accountId: ACCOUNT,
+    fileId: "file-1",
+    path: `/u/${ACCOUNT}/notes.md`,
+    sizeBytes: BYTES_PER_GB,
+    createdAt: midnight(),
+  });
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    await worker.scheduled(
+      { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+      { METER_DB: db }, // no DODO_PAYMENTS_API_KEY: the missing-key case
+    );
+  } finally {
+    console.error = originalError;
+  }
+  const line = logged.find((args) => String(args[0]).includes("metered hours reached nobody"));
+  assert.ok(line, `the cron must log the skipped push, got ${JSON.stringify(logged)}`);
+  const text = line.map(String).join(" ");
+  assert.ok(text.includes("DODO_PAYMENTS_API_KEY"), "the line names the key that is missing");
+  assert.equal(text.includes(KEY), false, "and never any key value");
+  assert.ok(text.includes("hours="), "and counts the hours that reached nobody");
+  assert.ok(
+    !text.includes(ACCOUNT),
+    "and never an account id, so the log line carries no customer data",
+  );
+});
+
 // --- the detector for a push that was skipped (drive issue #334) ---------
 //
 // A missing or mis-set DODO_PAYMENTS_API_KEY makes pushBillingHours return

@@ -77,7 +77,9 @@ export async function unpushedBillingHours(db, options = {}) {
   const now = toMillis(options.now === undefined ? Date.now() : options.now, "now");
   const hours = options.hours === undefined ? BILLING_PUSH_GAP_HOURS : options.hours;
   if (!Number.isSafeInteger(hours) || hours <= 0) {
-    throw new TypeError(`the gap window must be a positive whole number of hours, got ${String(hours)}`);
+    throw new TypeError(
+      `the gap window must be a positive whole number of hours, got ${String(hours)}`,
+    );
   }
   const lastClosed = hourStart(now) - HOUR_MS;
   const from = lastClosed - (hours - 1) * HOUR_MS;
@@ -102,7 +104,9 @@ export async function unpushedBillingHours(db, options = {}) {
   for (const row of result.results ?? []) {
     const hour = Number(row.hour);
     if (!Number.isSafeInteger(hour)) {
-      throw new TypeError(`usage_minutes has a row whose hour is not a number: ${String(row.hour)}`);
+      throw new TypeError(
+        `usage_minutes has a row whose hour is not a number: ${String(row.hour)}`,
+      );
     }
     gap.push(hour);
   }

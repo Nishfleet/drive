@@ -17,7 +17,7 @@ import {
   SNAPSHOT_BACKFILL_SCHEDULE,
 } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { pushBillingHours } from "./dodo.js";
+import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -621,11 +621,42 @@ export default {
       // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
       // the unit tests can record the request without reaching the network.
       const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch}} */ (env);
-      await pushBillingHours(env.METER_DB, hours, {
+      const pushed = await pushBillingHours(env.METER_DB, hours, {
         apiKey: dodo.DODO_PAYMENTS_API_KEY,
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         now: event.scheduledTime,
       });
+      // The report on the skip (drive issue #334). pushBillingHours returns
+      // {pushed: 0} for a missing key on purpose, and that silence is the
+      // bug this names: a deploy whose key was never set, or was set on the
+      // wrong Worker, rolls metered hours and bills nobody while /api/health
+      // stays green, because health deliberately does not look at secrets.
+      // This runs on the cron, beside the skip, and logs the gap in the same
+      // console.error the meter's other actionable failures use (see src/health.js
+      // and src/waitlist.js), so it reaches a person reading Worker logs
+      // without turning a billing-config gap into a 503 outage page. It never
+      // throws and never changes the rollup's result: a report must not fail
+      // the rollup that produced the numbers it is reporting on.
+      const gap = await billingPushGap(env.METER_DB, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        now: event.scheduledTime,
+      });
+      if (gap.hours > 0) {
+        console.error(
+          "billing: metered hours reached nobody",
+          gap.missingKey
+            ? "DODO_PAYMENTS_API_KEY is not set on this Worker, so the push skipped"
+            : "DODO_PAYMENTS_API_KEY is set but hours are still unpushed; check the key is the right one for this Worker",
+          `hours=${gap.hours}`,
+          `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
+        );
+      } else if (pushed.pushed > 0) {
+        // The healthy counter-case, so the log line's absence is meaningful
+        // and a person tailing logs can tell "nothing wrong" from "the report
+        // stopped running". Logged at no level above error, and never with the
+        // key or an account id.
+        console.error(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
+      }
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
