@@ -17,6 +17,10 @@ import (
 //   - resume:  rc core/bwlimit rate=off. The same file finished at exactly
 //     157,286,400 bytes with transfers=1.
 //
+// The remote control is the one the mount already binds (mount.go VFSArgs,
+// loopback), through the one client in this CLI (rc.go extends the fill loop's
+// rcClient), so no second listener and no second rc path exist.
+//
 // No queue, no transfer bookkeeping and no scheduler is written here: rclone
 // already owns the queue (rc vfs/queue) and the rate, and `drive status` reads
 // rclone's answers (rc.go). The only state this CLI keeps is the marker, which
@@ -77,7 +81,7 @@ func runPause(args []string) error {
 	// pause nobody applied is never recorded as one, and `drive status` does
 	// not then say Paused over bytes that are still leaving.
 	if on {
-		if err := newRCClient(RCSocketPath(home)).SetBwLimit(pausedRate); err != nil {
+		if err := setBwLimit(pausedRate); err != nil {
 			return fmt.Errorf("could not pause the running mount: %w", err)
 		}
 	}
@@ -87,6 +91,19 @@ func runPause(args []string) error {
 	fmt.Println(pausedLine())
 	fmt.Println(pausedNote)
 	return nil
+}
+
+// setBwLimit sets the running mount's rate through rclone's own remote
+// control. It is one call so pause, resume and the status line that reads the
+// rate back all go through the same client and the same address.
+func setBwLimit(rate string) error {
+	c, err := mountRCClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	return c.SetBwLimit(ctx, rate)
 }
 
 // runResume is `drive resume`: start the bytes moving again.
@@ -116,7 +133,7 @@ func runResume(args []string) error {
 	// repaired by the next `drive mount`, which would then start paused: the
 	// safe direction, and it says Paused rather than lying.
 	if on {
-		if err := newRCClient(RCSocketPath(home)).SetBwLimit(resumeRate); err != nil {
+		if err := setBwLimit(resumeRate); err != nil {
 			return fmt.Errorf("could not resume the running mount: %w", err)
 		}
 	}

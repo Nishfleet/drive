@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,8 +49,8 @@ func runStatus(args []string) error {
 		return errFlagParse
 	}
 	home := common.home
-	mountDir := DefaultMountDir(home)
-	on, err := Mounted(CurrentGOOS(), home)
+	goos := CurrentGOOS()
+	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
 	}
@@ -57,18 +59,53 @@ func runStatus(args []string) error {
 		state = "mounted"
 	}
 	fmt.Printf("drive: %s\n", state)
-	fmt.Printf("mount dir: %s\n", mountDir)
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	loginItem := LoginItemPath(CurrentGOOS(), home)
-	exists := "absent"
-	if _, err := os.Stat(loginItem); err == nil {
-		exists = "present"
+	mountDir := DefaultMountDir(home)
+	if goos == "windows" {
+		// The mount point is a drive letter. It is counted at the volume root
+		// (windowsVolumeRoot: "D:\\") — the bare "D:" is drive-relative and
+		// reads the per-drive current directory, which would answer about the
+		// wrong place entirely. An unmounted drive has nothing to list, so no
+		// letter is named and nothing is read.
+		if !on {
+			fmt.Printf("drive letter: not mounted\n")
+		} else if letter, err := windowsMountLetter(); err == nil {
+			mountDir = windowsVolumeRoot(letter)
+			fmt.Printf("drive letter: %s\n", letter)
+		} else {
+			// Mounted is what the volume check just proved. The letter could not
+			// be read back, so it is named as unknown, never as unmounted.
+			fmt.Printf("drive letter: mounted, but the letter could not be read (%v)\n", err)
+		}
+	} else {
+		fmt.Printf("mount dir: %s\n", mountDir)
 	}
-	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
-		fmt.Printf("entries: %d\n", n)
+	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
+	if goos == "windows" {
+		// The login item on Windows is the Task Scheduler task, so status
+		// names the task rather than a file that does not exist.
+		present, err := LoginItemPresent(goos, home)
+		switch {
+		case err != nil:
+			fmt.Printf("login task: %s (unreadable: %v)\n", WindowsTaskName, err)
+		case present:
+			fmt.Printf("login task: %s (present)\n", WindowsTaskName)
+		default:
+			fmt.Printf("login task: %s (absent)\n", WindowsTaskName)
+		}
+	} else {
+		loginItem := LoginItemPath(goos, home)
+		exists := "absent"
+		if _, err := os.Stat(loginItem); err == nil {
+			exists = "present"
+		}
+		fmt.Printf("login item: %s (%s)\n", loginItem, exists)
+	}
+	if on {
+		if n, err := countEntries(mountDir, 2*time.Second); err != nil {
+			fmt.Printf("entries: (unreadable: %v)\n", err)
+		} else if n > 0 {
+			fmt.Printf("entries: %d\n", n)
+		}
 	}
 	// The upload queue is read from the cache directory the mount was started
 	// with (`--cache-dir`, the same DefaultCacheDir), so it is the queue of
@@ -85,10 +122,19 @@ func runStatus(args []string) error {
 	}
 	// Whether the bytes are leaving at all, in the one word the pages use
 	// (src/status.js UPLOAD_LABEL.paused). The answer is rclone's own: the rate
-	// in force, asked through rc (rc.go), with the marker file beside it so a
-	// mount that is not up still says Paused rather than nothing.
-	fmt.Println(transfersLine(home, on, RCSocketPath(home)))
-	if reason := readCostLine(*api); reason != "" {
+	// in force, asked over the remote control the mount already binds, with
+	// the marker file beside it so a drive that is paused but not mounted
+	// still says Paused rather than nothing.
+	fmt.Println(transfersLine(home, on))
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		return err
+	}
+	base := strings.TrimSpace(*api)
+	if base == "" {
+		base = creds.APIBase
+	}
+	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
@@ -104,24 +150,29 @@ func runStatus(args []string) error {
 // `"name": "shape.bin", "size": 10485760, "uploading": false` from vfs/queue
 // while it waited.
 //
-// The lines are printed only when the mount answers. An absent socket means no
-// mount is running, which the lines above already say, so no second way to
-// report that is invented here; a socket that answers something this file
-// cannot parse is a named failure rather than a blank line.
+// The lines are printed only when the mount answers. A mount that is not
+// running is a state the lines above already say, so no second way to report
+// that is invented here; an rc answer this file cannot parse is a named
+// failure rather than a blank line.
 func rcProgressLines(home string, on bool) (string, string) {
 	if !on {
 		return "", ""
 	}
-	socket := RCSocketPath(home)
-	if !rcReachable(socket) {
-		return "", ""
-	}
-	c := newRCClient(socket)
-	queue, err := c.ReadQueue()
+	c, err := mountRCClient()
 	if err != nil {
 		return "", fmt.Sprintf("per file: unknown (%v)", err)
 	}
-	stats, err := c.ReadStats()
+	ctx, cancel := rcCtx()
+	defer cancel()
+	queue, err := c.ReadQueue(ctx)
+	if err != nil {
+		// A mount that is up but whose remote control has not finished
+		// starting answers nothing; that is the same "unknown" a parse
+		// failure is, and both name their cause rather than printing an
+		// empty queue nobody can tell from a real one.
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	stats, err := c.ReadStats(ctx)
 	if err != nil {
 		return "", fmt.Sprintf("per file: unknown (%v)", err)
 	}
@@ -207,20 +258,23 @@ func fileSizeLabel(bytes int64) string {
 }
 
 // transfersLine is the transfers line: whether the bytes are leaving at all.
-// The answer is rclone's own rate when the mount is up (asked through rc) and
-// the marker file otherwise, so a drive that is paused but not mounted still
-// says Paused rather than nothing.
-func transfersLine(home string, on bool, socket string) string {
+// The answer is rclone's own rate when the mount is up (asked over the remote
+// control the mount already binds) and the marker file otherwise, so a drive
+// that is paused but not mounted still says Paused rather than nothing.
+func transfersLine(home string, on bool) string {
 	if !on {
 		return transfersNotMounted
 	}
 	if Paused(home) {
 		return "transfers: " + pausedLabel
 	}
-	if !rcReachable(socket) {
-		return transfersRunning
+	c, err := mountRCClient()
+	if err != nil {
+		return "transfers: unknown (" + err.Error() + ")"
 	}
-	limit, err := newRCClient(socket).BwLimit()
+	ctx, cancel := rcCtx()
+	defer cancel()
+	limit, err := c.BwLimit(ctx)
 	if err != nil {
 		return "transfers: unknown (" + err.Error() + ")"
 	}
@@ -331,6 +385,7 @@ type UsageSummary struct {
 	MeteredUsd float64 `json:"meteredUsd"`
 	BillUsd    float64 `json:"billUsd"`
 	CeilingUsd float64 `json:"ceilingUsd"`
+	CapLine    string  `json:"capLine"`
 	Cap        struct {
 		CapUsd       float64 `json:"capUsd"`
 		CountedUsd   float64 `json:"countedUsd"`
@@ -345,7 +400,7 @@ type UsageSummary struct {
 // true, and a person who cannot reach the usage service still needs to know
 // whether the drive is mounted. The reason is printed with it, so a missing
 // number is always a named failure rather than a quiet zero.
-func readCostLine(apiBase string) string {
+func readCostLine(apiBase, token string) string {
 	if strings.TrimSpace(apiBase) == "" {
 		return "no api Worker configured; set --api or DRIVE_API_URL"
 	}
@@ -353,8 +408,15 @@ func readCostLine(apiBase string) string {
 	if err != nil {
 		return err.Error()
 	}
+	req, err := http.NewRequest(http.MethodGet, base+USAGE_PATH, nil)
+	if err != nil {
+		return err.Error()
+	}
+	if token != "" {
+		req.Header.Set("authorization", "Bearer "+token)
+	}
 	client := &http.Client{Timeout: usageTimeout}
-	resp, err := client.Get(base + USAGE_PATH)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
 	}
@@ -366,34 +428,29 @@ func readCostLine(apiBase string) string {
 	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
 		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
 	}
-	fmt.Printf("this month: %s of %s cap (%s)\n",
-		USD(u.MeteredUsd), USD(u.Cap.CapUsd), costState(u.Cap.State))
-	return ""
-}
-
-// costState turns the cap's own state into the word on this line, and says
-// what to do about it. `active` is the quiet word; `read_only` is the one a
-// person has to act on, so it carries the reason (src/billing.js
-// `capStatus()`).
-func costState(state string) string {
-	if state == "read_only" {
-		return "read-only, writes are off until the cap is raised"
+	line := strings.TrimSpace(u.CapLine)
+	if line == "" {
+		return "the usage response had no capLine"
 	}
-	return state
-}
-
-// USD renders dollars the way a bill and a terminal agree on: cents always, so
-// "$0.00" never looks like a missing number and "$12.00" never looks like a
-// whole dollar the cap does not mean.
-func USD(amount float64) string {
-	return fmt.Sprintf("$%.2f", amount)
+	fmt.Println(line)
+	return ""
 }
 
 // parseAPIBase checks the api Worker URL and drops its trailing slash, so the
 // endpoint path is appended the same way every time. A URL is operator
-// config, but it is printed and put in an error, so the same rejection
-// config.go applies to a rclone config value applies here: a newline would
-// break the line it is printed on, and a NUL byte is never a URL.
+// config, but it is printed and put in an error, so it is held to the same
+// rule as the secret itself (issue #75):
+//
+//   - user:password@ in a URL is a credential on the command line and in every
+//     line that prints the URL, so it is refused rather than carried;
+//   - no error here echoes the value back. Each failure names the fault and
+//     stops, because a URL that parses as scheme "user" and opaque
+//     "password@host" clears every parsed field a check could look at, so
+//     "check first, then print" is not a rule a new branch can rely on;
+//   - a secret goes over TLS, so plain http is only good enough on loopback.
+//
+// The same rejection config.go applies to a rclone config value applies here: a
+// newline would break the line it is printed on, and a NUL byte is never a URL.
 func parseAPIBase(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if err := checkConfigValue("api Worker URL", trimmed); err != nil {
@@ -401,13 +458,53 @@ func parseAPIBase(raw string) (string, error) {
 	}
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("api Worker URL %q: %w", trimmed, err)
+		// url.Error's message quotes the URL it was given, and that URL may
+		// carry a credential. The inner error names the actual fault (a bad
+		// port, a bad escape) without repeating the value, so that is what is
+		// reported.
+		if inner := errors.Unwrap(err); inner != nil {
+			return "", fmt.Errorf("api Worker URL does not parse: %v", inner)
+		}
+		return "", errors.New("api Worker URL does not parse")
+	}
+	if u.User != nil {
+		return "", errors.New("api Worker URL carries credentials; the key is sent in the Authorization header, not in the URL")
+	}
+	if u.Opaque != "" {
+		return "", errors.New("api Worker URL does not name a host")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("api Worker URL %q must be http or https", trimmed)
+		return "", errors.New("api Worker URL must be http or https")
 	}
 	if u.Host == "" {
-		return "", fmt.Errorf("api Worker URL %q has no host", trimmed)
+		return "", errors.New("api Worker URL has no host")
+	}
+	// A secret travels only over TLS. Plain http is accepted for the loopback
+	// hosts the stand-in server and a local dev Worker use, and nowhere else:
+	// the storage secret is in every request this CLI makes to the Worker, and
+	// cleartext to a remote host is the same exposure as a flag in ps.
+	if u.Scheme == "http" && !loopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("api Worker URL must be https://%s ...; plain http carries the storage secret in the clear", u.Host)
 	}
 	return strings.TrimSuffix(trimmed, "/"), nil
+}
+
+// loopbackHost reports whether host is this machine. The stand-in server, a
+// local dev Worker and the test server all talk over loopback, where cleartext
+// never leaves the machine.
+//
+// The whole 127.0.0.0/8 block and the IPv6 loopback are this machine, not just
+// 127.0.0.1, and `localhost` is matched without regard to case the way DNS
+// resolves it. A name that is an IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)
+// is loopback too: net.IP.IsLoopback knows all of them, so the check goes
+// through it rather than a hand-written list of spellings that would silently
+// fall out of date.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(strings.Trim(host, "[]"), "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

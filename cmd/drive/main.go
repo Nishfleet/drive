@@ -17,31 +17,69 @@ Usage:
   drive agents [flags]                  list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
+  drive branch <folder> [flags]         copy a folder into a branch an agent works in
+  drive branches [flags]                list branches and how many files changed
+  drive diff <branch> [flags]           files added, changed or removed in a branch
+  drive approve <branch> [flags]        copy a branch's changes back into the original
+  drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
+  drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     the mount, the upload queue, and this month's cost
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
-  drive logout [flags]     stop the mount and delete this device's key and config
+  drive cap <dollars>      change the spending cap
+  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive request <folder>   make a page anyone can drop files onto
+  drive share --list       list this account's links (also on drive request)
+  drive share --revoke <t> turn one link off (also on drive request)
+  drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
+  drive export [flags]     write this account's data to a file (or stdout)
   drive version            print the version
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
 
+Search flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --limit  how many results to print (default 50, max 200)
+
+Branch flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --name   branch name (the folder's own name unless given)
+
 Mount flags:
   --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
   --bucket      storage bucket (env DRIVE_S3_BUCKET)
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
+  --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --drive-letter  Windows: the drive letter to mount (first free letter from D:)
+  --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
-The device keys are read from the environment, never a flag, so they stay out
-of ps output and the shell history: DRIVE_S3_ACCESS_KEY_ID and
-DRIVE_S3_SECRET_ACCESS_KEY.
+Link flags (share, request):
+  --api         api Worker base URL (env DRIVE_API_URL)
+  --list        list this account's links instead of minting one
+  --revoke      revoke the link with this token (a full link URL also works)
+
+Export flags:
+  --out   file to write the export to; stdout when it is not given
+
+The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
+The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
+or --secret-key-stdin. --secret-key is refused.
+
+Logout flags:
+  --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
+  --force       discard files waiting to upload instead of refusing to logout
+  --forget-pending  clear the failed-revoke record, after you have revoked the
+               key on the devices page in the web app
 `
 const version = "0.1.0"
 
@@ -56,18 +94,42 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "agents":
 		err = runAgents(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
+	case "branch":
+		err = runBranch(os.Args[2:])
+	case "branches":
+		err = runBranches(os.Args[2:])
+	case "diff":
+		err = runDiff(os.Args[2:])
+	case "approve":
+		err = runApprove(os.Args[2:])
+	case "discard":
+		err = runDiscard(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
+	case "uninstall":
+		err = runUninstall(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
 	case "pause":
 		err = runPause(os.Args[2:])
 	case "resume":
 		err = runResume(os.Args[2:])
+	case "cap":
+		err = runCap(os.Args[2:])
+	case "share":
+		err = runShare(os.Args[2:])
+	case "request":
+		err = runRequest(os.Args[2:])
 	case "logout":
 		err = runLogout(os.Args[2:])
+	case "export":
+		err = runExport(os.Args[2:])
+	case "prefetch":
+		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -110,12 +172,27 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var endpoint, bucket, prefix, region string
-	var foreground, dryRun bool
+	var refusedSecret string
+	var endpoint, bucket, prefix, region, downloadURL, driveLetter string
+	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&region, "region", "", "S3 region name")
+	// The old secret flag is registered only so the flag package consumes it
+	// correctly and can report whether it was passed; the value lands in a
+	// variable that is never read or printed, and any use is refused with the
+	// ways that are safe. A value like --bucket secret-key=x is a bucket, not
+	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
+	// is, and nothing after the first `--` reaches it.
+	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
+	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
+	// The dl Worker (drive issue #58). Absent, the mount reads from the
+	// endpoint and counts nothing; set, every read streams through the dl
+	// Worker so the account's download bytes are counted (docs/build-spec.md
+	// "The pieces", items 2 and 4).
+	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
+	fs.StringVar(&driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -125,7 +202,33 @@ func runMount(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region)
+	refused := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "secret-key" {
+			refused = true
+		}
+	})
+	if refused {
+		// The value did land in this process's command line before it was
+		// refused — the shell history and ps already hold it — so the refusal
+		// cannot unsay that. It says so, and it says to replace the key, because
+		// a value that has been through argv is a value that has been exposed.
+		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
+	}
+	// A drive letter is a Windows mount point. On Mac and Linux the mount is a
+	// folder, so the flag is refused there rather than silently ignored, which
+	// would leave a person believing their mount went somewhere it did not.
+	if driveLetter != "" && CurrentGOOS() != "windows" {
+		return errors.New("--drive-letter is only for Windows; on Mac and Linux the drive mounts at the drive folder")
+	}
+	// The secret's sources are the config file this CLI wrote (mode 0600), the
+	// environment, or stdin (--secret-key-stdin). None of them is argv, which is
+	// world-readable in ps for the life of the process.
+	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
+	if err != nil {
+		return err
+	}
+	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey)
 	if err != nil {
 		return err
 	}
@@ -133,7 +236,7 @@ func runMount(args []string) error {
 	if err != nil {
 		return err
 	}
-	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
+	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun, driveLetter)
 }
 
 func runUnmount(args []string) error {

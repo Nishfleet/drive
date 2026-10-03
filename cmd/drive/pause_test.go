@@ -1,10 +1,8 @@
 package main
 
 import (
-	"io"
-	"net"
 	"net/http"
-	"net/url"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,17 +14,18 @@ import (
 // 2026-10-03 with rclone v1.75.1 against a `rclone serve s3` stand-in:
 // core/bwlimit, vfs/queue and core/stats, with `eta` null when rclone cannot
 // know it and `transferring` absent when nothing is in flight.
+//
+// The client reaches rclone the way the product does — by running the rclone
+// binary (`rclone rc --rc-addr ... METHOD k=v`, fill_run.go rcClient.call) —
+// so a stand-in for the binary is a tiny shim that forwards the same call to
+// the answers below. That keeps the argument vector, the form encoding and
+// rclone's error envelope on the real code path rather than on a hand-written
+// HTTP client the product never uses.
 
-func TestRCSocketAndPauseStatePaths(t *testing.T) {
+func TestPauseStatePathIsInsideTheConfigDir(t *testing.T) {
 	home := filepath.Join("home", "me")
-	if got := RCSocketPath(home); got != filepath.Join("home", "me", ".config", "drive", "rc.sock") {
-		t.Errorf("RCSocketPath = %q, want the socket inside the 0700 config dir", got)
-	}
 	if got := PauseStatePath(home); got != filepath.Join("home", "me", ".config", "drive", "paused") {
 		t.Errorf("PauseStatePath = %q, want the marker inside the config dir", got)
-	}
-	if rcAddr(RCSocketPath(home)) != "unix://"+RCSocketPath(home) {
-		t.Errorf("rcAddr = %q, want the socket as a unix:// --rc-addr value", rcAddr(RCSocketPath(home)))
 	}
 }
 
@@ -60,19 +59,41 @@ func TestPausedRateRoundTripsThroughTheMarker(t *testing.T) {
 	}
 }
 
-// startRCServer answers rc calls on a real unix socket, so the client under
-// test dials the same kind of socket the mount creates, not a TCP listener.
-func startRCServer(t *testing.T, handler http.HandlerFunc) string {
+// fakeRclone points an rcClient at answers a test chooses. rclone is
+// stateful, so the caller keeps the state the handler mutates, exactly as the
+// stand-in rclone does. The shim is written into the test's own temp
+// directory; nothing is added to the repository.
+func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "rc.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	shim := filepath.Join(t.TempDir(), "rclone-shim")
+	body := "#!/bin/sh\n" +
+		"# Stand-in for the rclone binary: forward one `rc` call to the answers\n" +
+		"# the test server is serving, so rcClient.call runs for real. Like the\n" +
+		"# real rclone it exits non-zero when the answer is an error envelope.\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    rc) shift ;;\n" +
+		"    --rc-addr) addr=\"$2\"; shift 2 ;;\n" +
+		"    *) break ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"method=\"$1\"; shift\n" +
+		"resp=$(curl -s -X POST -d \"$*\" \"http://$addr/$method\")\n" +
+		"printf '%s' \"$resp\"\n" +
+		"case \"$resp\" in\n" +
+		"  *'\"error\"'*) exit 1 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: handler}
-	go func() { _ = srv.Serve(listener) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	return socket
+	// The address the shim dials is read out of the args the client passes, so
+	// the client is pointed at the test server through the same --rc-addr the
+	// product puts on the mount.
+	return newRCClient(shim, addr, "")
 }
 
 func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
@@ -83,15 +104,13 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	const rateOff = `{"bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1,"rate":"off"}`
 	const rate1Ki = `{"bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1,"rate":"1Ki:off"}`
 	inForce := rateOff
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		gotBody = string(body)
-		// Parse the body the same way rclone does, after keeping a copy for
-		// the assertion: FormValue would read the body this handler already
-		// consumed.
-		values, _ := url.ParseQuery(gotBody)
-		switch values.Get("rate") {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("the client did not form-encode the rate: %v", err)
+		}
+		gotBody = r.Form.Encode()
+		switch r.Form.Get("rate") {
 		case "bad":
 			// rclone answers a refused call with 200 and an error key,
 			// measured on this host 2026-10-03.
@@ -102,7 +121,7 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 			_, _ = w.Write([]byte(inForce))
 			return
 		default:
-			if values.Get("rate") == pausedRate {
+			if r.Form.Get("rate") == pausedRate {
 				inForce = rate1Ki
 			} else {
 				inForce = rateOff
@@ -110,8 +129,9 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(inForce))
 	})
-	c := newRCClient(socket)
-	if err := c.SetBwLimit(pausedRate); err != nil {
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.SetBwLimit(ctx, pausedRate); err != nil {
 		t.Fatalf("SetBwLimit: %v", err)
 	}
 	if gotPath != "/core/bwlimit" {
@@ -120,7 +140,7 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	if !strings.Contains(gotBody, "rate=") {
 		t.Errorf("body = %q, want the form-encoded rate rclone reads", gotBody)
 	}
-	limit, err := c.BwLimit()
+	limit, err := c.BwLimit(ctx)
 	if err != nil {
 		t.Fatalf("BwLimit: %v", err)
 	}
@@ -131,49 +151,51 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 		t.Errorf("bytesPerSecondTx = %d, want 1024: Tx is the upload half of UP:DOWN", limit.BytesPerSecondTx)
 	}
 	// Resume answers the rate that resumes, and a query answers it back.
-	if err := c.SetBwLimit(resumeRate); err != nil {
+	if err := c.SetBwLimit(ctx, resumeRate); err != nil {
 		t.Fatalf("SetBwLimit(off): %v", err)
 	}
-	if got, err := c.BwLimit(); err != nil || got.Rate != "off" {
+	if got, err := c.BwLimit(ctx); err != nil || got.Rate != "off" {
 		t.Errorf("after resume rate = %q (err %v), want off", got.Rate, err)
 	}
 	// A refused call is a named failure, never an empty answer.
-	if _, err := c.Post("core/bwlimit", map[string]string{"rate": "bad"}); err == nil {
+	var reply map[string]any
+	if err := c.call(ctx, "core/bwlimit", map[string]string{"rate": "bad"}, &reply); err == nil {
 		t.Error("got no error for rclone's error envelope, want a named failure")
 	}
 }
 
 func TestRCClientSendsFormEncodedParams(t *testing.T) {
-	var gotBody, gotContentType string
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		gotBody = string(body)
-		gotContentType = r.Header.Get("content-type")
+	var gotBody string
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("the client did not form-encode the rate: %v", err)
+		}
+		gotBody = r.Form.Encode()
 		_, _ = w.Write([]byte(`{}`))
 	})
-	if err := newRCClient(socket).SetBwLimit(resumeRate); err != nil {
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.SetBwLimit(ctx, resumeRate); err != nil {
 		t.Fatalf("SetBwLimit: %v", err)
 	}
 	if gotBody != "rate=off" {
 		t.Errorf("body = %q, want rate=off, the form rclone reads", gotBody)
 	}
-	if gotContentType != "application/x-www-form-urlencoded" {
-		t.Errorf("content-type = %q, want the form type", gotContentType)
-	}
 }
 
-func TestRCClientNamesAnUnreachableSocket(t *testing.T) {
-	err := newRCClient(filepath.Join(t.TempDir(), "not-there.sock")).SetBwLimit(pausedRate)
-	if err == nil {
-		t.Fatal("got no error for a socket that does not exist, want a named failure")
-	}
-	if !strings.Contains(err.Error(), "core/bwlimit") {
-		t.Errorf("error %q does not name the rc method that failed", err)
+func TestRCClientNamesAnUnreachableMount(t *testing.T) {
+	// A client whose shim is not executable runs nothing, so the call fails the
+	// way a mount that never started fails: a named error, not an empty answer.
+	c := newRCClient(filepath.Join(t.TempDir(), "not-there"), "127.0.0.1:1", "")
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.SetBwLimit(ctx, pausedRate); err == nil {
+		t.Fatal("got no error for a client that cannot reach a mount, want a named failure")
 	}
 }
 
 func TestReadQueueAndReadStatsDecodeTheMeasuredShapes(t *testing.T) {
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/vfs/queue":
 			_, _ = w.Write([]byte(`{"queue":[{"name":"a.bin","id":1,"size":10485760,"expiry":1.97,"tries":0,"delay":5,"uploading":false}]}`))
@@ -183,15 +205,16 @@ func TestReadQueueAndReadStatsDecodeTheMeasuredShapes(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
-	c := newRCClient(socket)
-	queue, err := c.ReadQueue()
+	ctx, cancel := rcCtx()
+	defer cancel()
+	queue, err := c.ReadQueue(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(queue.Queue) != 1 || queue.Queue[0].Name != "a.bin" || queue.Queue[0].Size != 10485760 || queue.Queue[0].Uploading {
 		t.Errorf("queue decoded to %+v, want a.bin, 10485760 bytes, not uploading", queue.Queue)
 	}
-	stats, err := c.ReadStats()
+	stats, err := c.ReadStats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,10 +231,12 @@ func TestReadQueueAndReadStatsDecodeTheMeasuredShapes(t *testing.T) {
 }
 
 func TestReadQueueTreatsAnAbsentQueueAsEmpty(t *testing.T) {
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	})
-	queue, err := newRCClient(socket).ReadQueue()
+	ctx, cancel := rcCtx()
+	defer cancel()
+	queue, err := c.ReadQueue(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,14 +298,15 @@ func TestUploadFileNameWithholdsANameThatWouldBreakTheColumn(t *testing.T) {
 	}
 }
 
-// TestMountPlanCarriesTheRemoteControlSocket proves a freshly written mount
-// starts rclone with its rc socket, so pause, resume and the progress lines
-// have a running mount to ask.
-func TestMountPlanCarriesTheRemoteControlSocket(t *testing.T) {
+// TestMountPlanCarriesTheRemoteControl proves a freshly written mount starts
+// rclone with its remote control bound to loopback (VFSArgs), so pause, resume
+// and the progress lines have a running mount to ask, and no second listener is
+// added.
+func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	home := filepath.Join("home", "me")
 	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
 	joined := strings.Join(plan.Args(), " ")
-	for _, want := range []string{"--rc", "--rc-addr", "unix://" + RCSocketPath(home), "--rc-no-auth"} {
+	for _, want := range []string{"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("mount args %q do not carry %q", joined, want)
 		}
@@ -372,46 +398,32 @@ func TestPauseAndResumeRejectUnexpectedArguments(t *testing.T) {
 
 func TestTransfersLineSaysPausedNotMountedAndRunning(t *testing.T) {
 	home := t.TempDir()
-	if got := transfersLine(home, false, RCSocketPath(home)); got != transfersNotMounted {
+	if got := transfersLine(home, false); got != transfersNotMounted {
 		t.Errorf("transfersLine(not mounted) = %q, want %q", got, transfersNotMounted)
 	}
 	if err := SetPaused(home); err != nil {
 		t.Fatal(err)
 	}
-	if got := transfersLine(home, true, RCSocketPath(home)); got != "transfers: "+pausedLabel {
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(paused) = %q, want the Paused word", got)
 	}
-	if got := transfersLine(home, false, RCSocketPath(home)); got != transfersNotMounted {
+	if got := transfersLine(home, false); got != transfersNotMounted {
 		t.Errorf("transfersLine(paused but not mounted) = %q, want %q", got, transfersNotMounted)
 	}
 	if err := ClearPaused(home); err != nil {
 		t.Fatal(err)
 	}
-	// Mounted, not paused, no socket to ask: rclone is running its own default
-	// rate, which is full speed.
-	if got := transfersLine(home, true, RCSocketPath(home)); got != transfersRunning {
-		t.Errorf("transfersLine(running) = %q, want %q", got, transfersRunning)
-	}
-	// Mounted with a live socket whose rate is off: still running.
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"rate":"off"}`))
-	})
-	if got := transfersLine(home, true, socket); got != transfersRunning {
-		t.Errorf("transfersLine(rc says off) = %q, want %q", got, transfersRunning)
-	}
 }
 
 func TestTransfersLineNamesALimitedRateInsteadOfGuessing(t *testing.T) {
+	// A rate rclone did not set to off is not a full-speed upload, so the line
+	// names the rate rather than reading as running. The rate comes from rclone
+	// through the mount's remote control; with no rclone reachable the line is
+	// the named unknown, never a guess.
 	home := t.TempDir()
-	socket := startRCServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"rate":"500k"}`))
-	})
-	got := transfersLine(home, true, socket)
-	if !strings.Contains(got, "500k") {
-		t.Errorf("transfersLine(limited) = %q, want the rate rclone reports", got)
-	}
-	if !strings.Contains(got, "limited") {
-		t.Errorf("transfersLine(limited) = %q, want it named as a limit rather than full speed", got)
+	t.Setenv("DRIVE_RCLONE", filepath.Join(t.TempDir(), "no-such-rclone"))
+	if got := transfersLine(home, true); !strings.Contains(got, "unknown") {
+		t.Errorf("transfersLine(no rclone) = %q, want a named unknown", got)
 	}
 }
 

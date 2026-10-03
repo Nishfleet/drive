@@ -22,8 +22,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
   storage each month, and a card is only needed to go past it. It comes off the
   bill as a dollar line, after the ceiling and the downloads.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
-- Version history: free. Every earlier version is kept 1 day, then one per day
-  for 30 days; any file can be restored.
+- Version history: not in version 1.
 - No plan sizes and no fixed plans: you are billed for the GB you store, so a
   1 TB drive kept 60% full bills $11 a month ($12 of storage, less the $1).
 
@@ -50,14 +49,15 @@ Worked examples, each the amount charged after the $1 free:
 
 Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
-holds all eight in one file.
+holds all nine in one file.
 
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
-- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, versions, restore, and how the bill is counted.
+- [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the ceiling and four worked sizes.
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
+- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security.md): who can see your files, and what we cannot claim.
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog.md): one line per shipped thing.
 

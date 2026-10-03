@@ -70,11 +70,31 @@ export const SITE = Object.freeze({
 // page's.
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
+  // The notes starter (drive issue #15). It is the one public page that is an
+  // optional, off-by-default starting point rather than the product's own
+  // surface, and the crowd it is for finds it by search, so it is indexable and
+  // in the sitemap. Its price line is PRICE's, like every other page's.
+  Object.freeze({ path: "/starter.html", indexable: true }),
   Object.freeze({ path: "/get-started.html", indexable: false }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+  // The upload-request page is a stranger's one-folder drop box, reached only
+  // from a link the owner minted: noindex so a crawler never finds one
+  // (issue #19). It carries its own title and description rather than
+  // inheriting the pricing page's.
+  Object.freeze({ path: "/upload.html", indexable: false }),
+  // The sign-in screen is where a person starts a session, so it is noindex
+  // and out of the sitemap: a crawler has no session and nothing to read
+  // there (drive#10).
+  Object.freeze({ path: "/signin.html", indexable: false }),
+  // The share card's source (drive issue #123). It is the 1200x630 canvas
+  // public/og.png is rendered from, not a page a person navigates to, so it is
+  // noindex and out of the sitemap like the other non-indexable assets; it is
+  // registered here because test/seo.test.mjs requires every public HTML page
+  // to be, and its copy is gated by test/og-card.test.mjs against PRICE.
+  Object.freeze({ path: "/og-card.html", indexable: false }),
 ]);
 
 // The docs pages (drive issue #98), as the URLs a crawler reads. The docs are
@@ -89,11 +109,15 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "Pricing and your bill", path: "/docs/pricing" }),
   Object.freeze({ title: "FAQ", path: "/docs/faq" }),
   Object.freeze({ title: "Limits", path: "/docs/limits" }),
+  Object.freeze({ title: "Benchmarks", path: "/docs/benchmarks" }),
   Object.freeze({ title: "Security", path: "/docs/security" }),
   Object.freeze({ title: "Changelog", path: "/docs/changelog" }),
 ]);
 
-/** The absolute URL of a public page, from its site-relative path. */
+/** The absolute URL of a public page, from its site-relative path.
+ * @param {{title?: string, path: string, indexable?: boolean}} page
+ * @returns {string}
+ */
 export function pageUrl(page) {
   return absoluteUrl(page.path);
 }
@@ -118,7 +142,23 @@ export function absoluteUrl(path) {
  * opposite of the page. UnitPriceSpecification carries the unit, and the
  * description carries the full rule, so nothing in the markup is a bare number
  * a reader could take at face value.
- * @returns {Record<string, unknown>}
+ * @returns {{
+ *   "@context": string,
+ *   "@type": string,
+ *   name: string,
+ *   applicationCategory: string,
+ *   operatingSystem: string,
+ *   description: string,
+ *   url: string,
+ *   image: string,
+ *   offers: {
+ *     "@type": string,
+ *     price: string,
+ *     priceCurrency: string,
+ *     priceSpecification: { "@type": string, price: string, priceCurrency: string, unitText: string },
+ *     description: string,
+ *   },
+ * }}
  */
 export function softwareApplicationLd() {
   const price = BILLING.capFloorUsd.toFixed(2);

@@ -18,9 +18,9 @@
 //
 // The shapes the two consumers read (the usage page and `drive usage`, issue
 // #53) are in test/usage.test.mjs.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
   B2_FALLBACK_CONFIG,
   BILLING_CONFIG,
@@ -29,18 +29,34 @@ import {
   handleUsageRequest,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyStorageBillUsd,
   monthlyCeilingUsd,
+  monthlyStorageBillUsd,
   savedLine,
+  storedGb,
   usageSummary,
 } from "../src/billing.js";
+import worker from "../src/index.js";
+
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 
 // Minutes in an average month, the spec's divisor. Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
 const MINUTES_PER_MONTH = 43800;
+/** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 /** The same dollars the module formats, for a label assertion. */
+/** @param {number} cents */
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
 test("the six storage figures Nish named, for data held all month", () => {
@@ -116,11 +132,13 @@ test("a part-month bills for the part, the spec's 500 GB for 3 days", () => {
 test("the two 'you saved' lines, each with its copy", () => {
   // A capped month (metered over the ceiling): saved = metered - bill.
   const capped = savedLine(fullMonthGbMinutes(2000), 2000);
+  assert.ok(capped);
   assert.equal(capped.usd, 24, "2 TB held all month: metered $40, bill $16");
   assert.equal(capped.copy, "Our price cap saved you $24.00.");
   // An uncapped month (metered under the ceiling): saved = ceiling - bill,
   // because the ceiling is what the drive would have cost on a flat plan.
   const uncapped = savedLine(fullMonthGbMinutes(300), 300);
+  assert.ok(uncapped);
   assert.equal(uncapped.usd, 6, "300 GB: ceiling $12, bill $6");
   assert.equal(uncapped.copy, "You paid $6.00 less than a flat plan.");
   // Hidden when there is no saving: a metered bill exactly at the ceiling.
@@ -264,10 +282,7 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -290,11 +305,11 @@ test("the Worker routes the usage read to the handler", async () => {
   // reached the handler rather than the asset layer.
   const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
   for (const path of ["/api/usage", "/api/usage/"]) {
-    const response = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const response = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(response.status, 401, `${path} must reach the handler`);
   }
   // A stray path is still the asset layer's 404, not a hand-rolled page.
-  const asset = await worker.fetch(new Request("https://drive.test/nope"), env);
+  const asset = await workerFetch(new Request("https://drive.test/nope"), env);
   assert.equal(asset.status, 200);
 });
 
@@ -390,7 +405,12 @@ test("every line is integer cents, whatever the meter recorded", () => {
         downloadBytes: 987654321,
         averageStoredGb: 42.7,
       });
-      for (const key of ["storageCents", "downloadCents", "creditCents", "totalCents"]) {
+      for (const key of /** @type {const} */ ([
+        "storageCents",
+        "downloadCents",
+        "creditCents",
+        "totalCents",
+      ])) {
         assert.equal(Number.isInteger(bill[key]), true, `${key} is ${bill[key]}`);
       }
       for (const line of bill.lines) {
@@ -405,10 +425,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
   for (const bad of [Number.NaN, -1, "600", null]) {
     assert.throws(() => monthBillCents({ gbMinutes: bad, peakGb: 0 }), TypeError);
     assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: bad }), TypeError);
-    assert.throws(
-      () => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: bad }),
-      TypeError,
-    );
+    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, downloadBytes: bad }), TypeError);
     assert.throws(
       () => monthBillCents({ gbMinutes: 0, peakGb: 0, averageStoredGb: bad }),
       TypeError,
@@ -434,6 +451,29 @@ test("every line is integer cents, whatever the meter recorded", () => {
       downloadBytes: 0,
       averageStoredGb: 0,
     }).totalCents,
+  );
+});
+
+test("a peak is whole bytes and nothing else, whichever door it comes through", () => {
+  // The meter writes whole bytes (usageStatement), the reader returns whole
+  // bytes (monthUsageRollup), and storedGb is the third door into the same
+  // number: a fractional byte count is a broken caller, not a size to bill,
+  // so it is refused here rather than divided into a fractional GB.
+  assert.equal(storedGb(800e9), 800);
+  assert.equal(storedGb(0), 0);
+  for (const bad of [1.5, Number.NaN, -1, "800", null, undefined]) {
+    assert.throws(() => storedGb(bad), TypeError);
+  }
+  // monthBillCents takes the peak as bytes (the meter's own unit) or as GB,
+  // never both, and the bytes spelling reaches the same ceiling the GB one
+  // says: a fractional byte count is refused on this path too.
+  const byBytes = monthBillCents({ gbMinutes: 0, peakBytes: 800e9 });
+  const byGb = monthBillCents({ gbMinutes: 0, peakGb: 800 });
+  assert.equal(byBytes.storageCents, byGb.storageCents);
+  assert.throws(() => monthBillCents({ gbMinutes: 0, peakBytes: 1.5 }), TypeError);
+  assert.throws(
+    () => monthBillCents({ gbMinutes: 0, peakBytes: 800e9, peakGb: 800 }),
+    /never both/,
   );
 });
 

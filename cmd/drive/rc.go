@@ -1,42 +1,41 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// The rclone remote-control client. `drive pause`, `drive resume` and the
-// progress lines in `drive status` all work by asking the running mount the
-// question through rclone's own rc API (rclone.org/rc), measured on this host
-// 2026-10-03 with rclone v1.75.1 against a `rclone serve s3` stand-in:
+// `drive pause`, `drive resume` and the per-file progress lines in
+// `drive status` (drive issue #100). Every question they ask is asked of the
+// running mount through rclone's own remote-control API (rclone.org/rc), over
+// the loopback address the mount already binds (fill_run.go loopbackRCAddr,
+// mounted by VFSArgs), so there is one rclone rc client in this CLI and one
+// address in the product.
+//
+// Measured on this host 2026-10-03 with rclone v1.75.1 against a
+// `rclone serve s3` stand-in:
 //
 //   - core/bwlimit with no argument answers the rate in force; core/bwlimit
 //     rate="1KiB:off" sets it. rclone's rate is "UP:DOWN" (its own --bwlimit
 //     docs), so Tx is the upload direction and the paused rate caps the
 //     upload at 1 KiB/s while downloads stay unlimited.
-//   - vfs/queue answers one entry per file waiting to upload
-//     (name, size, uploading), with no second queue kept by this CLI.
+//   - vfs/queue answers one entry per file waiting to upload (name, size,
+//     uploading), with no second queue kept by this CLI.
 //   - core/stats answers the file in flight now (name, size, bytes,
 //     percentage, eta) and the group's totals.
 //
 // Measured proof that the paused rate stops bytes leaving, same stand-in,
-// same file: bytes transferred read 15,626,240 before the call and
-// 19,066,880 six seconds after it (the in-flight chunk finished), then
-// 19,066,880 again six seconds later — a flat line. rate=off finished the
-// file at exactly 157,286,400 bytes with transfers=1, so nothing was lost and
-// nothing was sent twice.
+// same file: bytes transferred read 15,626,240 before the call and 19,066,880
+// six seconds after it (the in-flight chunk finished), then 19,066,880 again
+// six seconds later — a flat line. rate=off finished the file at exactly
+// 157,286,400 bytes with transfers=1, so nothing was lost and nothing was
+// sent twice.
 
 // pausedRate is the rclone bandwidth string that pauses uploads and leaves
 // downloads alone. rclone's --bwlimit and rc core/bwlimit both read "UP:DOWN"
@@ -49,22 +48,6 @@ const pausedRate = "1KiB:off"
 // resumeRate is rclone's own word for no limit at all.
 const resumeRate = "off"
 
-// rcDialTimeout and rcTimeout bound one rc call. `drive status` is what a
-// person runs when something is wrong, so a hung socket must turn a status
-// line into a named failure rather than a hung terminal.
-const (
-	rcDialTimeout = 2 * time.Second
-	rcTimeout     = 5 * time.Second
-)
-
-// RCSocketPath is the unix socket the mount's rclone listens on. It is inside
-// the config directory, which WriteFileAtomic creates 0700, so the socket is
-// reachable by this user and by root only: the same protection the rclone
-// config file gets, and a credential is never needed on this call.
-func RCSocketPath(home string) string {
-	return filepath.Join(DefaultConfigDir(home), "rc.sock")
-}
-
 // PauseStatePath is where the paused state is remembered. rclone's bandwidth
 // limit lives in the running process, so a restart of the mount comes back
 // unlimited unless this CLI writes the limit into the mount's own command line
@@ -74,72 +57,36 @@ func PauseStatePath(home string) string {
 	return filepath.Join(DefaultConfigDir(home), "paused")
 }
 
-// rcAddr renders the socket as rclone's --rc-addr value. A TCP listener would
-// put an rc endpoint on the machine; a unix socket in a 0700 directory cannot
-// be reached from anywhere but this user's processes.
-func rcAddr(socketPath string) string {
-	return "unix://" + socketPath
+// rcTimeout bounds one rc call. `drive status` is what a person runs when
+// something is wrong, so a hung remote control must turn a status line into a
+// named failure rather than a hung terminal. It is the same order of
+// magnitude as the fill loop's own per-call bound (fillContextTimeout).
+const rcTimeout = 30 * time.Second
+
+// mountRCClient returns the remote-control client for this device's running
+// mount, or an error when the binary cannot be resolved. It is the same client
+// the background fill uses (fill_run.go newRCClient) on the same loopback
+// address VFSArgs binds, so `drive pause`, `drive resume` and the progress
+// lines in `drive status` ask the running mount rather than guessing, and the
+// product has one rc client and one rc address.
+//
+// The methods used here (core/bwlimit, vfs/queue, core/stats) take no `fs`
+// argument, so no remote path is needed to address them.
+//
+// A caller that only prints a line must not fail on a machine with no rclone
+// installed, so a resolve failure is reported by the caller's error, not by
+// the constructor.
+func mountRCClient() (*rcClient, error) {
+	binary, err := ResolveRclone("")
+	if err != nil {
+		return nil, fmt.Errorf("rclone: %w", err)
+	}
+	return newRCClient(binary, loopbackRCAddr, ""), nil
 }
 
-// rcClient is one rclone rc connection over its unix socket. The transport
-// dials the socket directly, so no port, no localhost listener and no origin
-// check is ever involved.
-type rcClient struct {
-	socketPath string
-}
-
-// newRCClient returns the client for this mount's socket. It does not connect:
-// a caller that only wants to print a status line must not fail on a machine
-// with no mount at all.
-func newRCClient(socketPath string) *rcClient {
-	return &rcClient{socketPath: socketPath}
-}
-
-// Post calls one rc method with form-encoded parameters and returns the
-// response body. Every failure is named, because a caller that hides one
-// prints a queue or a rate that was never read.
-func (c *rcClient) Post(method string, params map[string]string) ([]byte, error) {
-	body := make(url.Values, len(params))
-	for k, v := range params {
-		body.Set(k, v)
-	}
-	req, err := http.NewRequest(http.MethodPost, "http://localhost/"+method, strings.NewReader(body.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("rc %s: %w", method, err)
-	}
-	req.Header.Set("content-type", "application/x-www-form-urlencoded")
-	client := &http.Client{
-		Timeout: rcTimeout,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				_ = ctx
-				_ = network
-				_ = addr
-				return net.DialTimeout("unix", c.socketPath, rcDialTimeout)
-			},
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("rc %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-	out, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, fmt.Errorf("rc %s: read: %w", method, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("rc %s: %s: %s", method, resp.Status, bytes.TrimSpace(out))
-	}
-	// rclone answers a refused call with 200 and an "error" key, so a failed
-	// call must be read as a failure and not as an empty answer.
-	var envelope struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(out, &envelope); err == nil && envelope.Error != "" {
-		return nil, fmt.Errorf("rc %s: %s", method, envelope.Error)
-	}
-	return out, nil
+// rcCtx bounds one remote-control call. See rcTimeout.
+func rcCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), rcTimeout)
 }
 
 // BwLimit is the rate rclone is running with right now: what core/bwlimit
@@ -150,23 +97,19 @@ type BwLimit struct {
 	BytesPerSecondTx int64  `json:"bytesPerSecondTx"`
 }
 
-// SetBwLimit sets the rate. An empty rate means no limit, which is what
-// `drive resume` wants.
-func (c *rcClient) SetBwLimit(rate string) error {
-	params := map[string]string{"rate": rate}
-	_, err := c.Post("core/bwlimit", params)
-	return err
+// SetBwLimit sets the rate on the running mount. An empty rate means no limit,
+// which is what `drive resume` wants. The call is rclone's own documented
+// method; this CLI keeps no rate of its own.
+func (c *rcClient) SetBwLimit(ctx context.Context, rate string) error {
+	var reply map[string]any
+	return c.call(ctx, "core/bwlimit", map[string]string{"rate": rate}, &reply)
 }
 
-// BwLimit asks what rate is in force.
-func (c *rcClient) BwLimit() (BwLimit, error) {
-	out, err := c.Post("core/bwlimit", nil)
-	if err != nil {
-		return BwLimit{}, err
-	}
+// BwLimit asks the running mount what rate is in force.
+func (c *rcClient) BwLimit(ctx context.Context) (BwLimit, error) {
 	var l BwLimit
-	if err := json.Unmarshal(out, &l); err != nil {
-		return BwLimit{}, fmt.Errorf("rc core/bwlimit: parse: %w", err)
+	if err := c.call(ctx, "core/bwlimit", nil, &l); err != nil {
+		return BwLimit{}, err
 	}
 	return l, nil
 }
@@ -187,14 +130,10 @@ type Queue struct {
 
 // ReadQueue asks the mount what it is waiting to send. An absent queue key is
 // an empty queue, which is the true answer when nothing has been saved.
-func (c *rcClient) ReadQueue() (Queue, error) {
-	out, err := c.Post("vfs/queue", nil)
-	if err != nil {
-		return Queue{}, err
-	}
+func (c *rcClient) ReadQueue(ctx context.Context) (Queue, error) {
 	var q Queue
-	if err := json.Unmarshal(out, &q); err != nil {
-		return Queue{}, fmt.Errorf("rc vfs/queue: parse: %w", err)
+	if err := c.call(ctx, "vfs/queue", nil, &q); err != nil {
+		return Queue{}, err
 	}
 	if q.Queue == nil {
 		q.Queue = []QueueItem{}
@@ -211,8 +150,8 @@ type Transfer struct {
 	Eta        *float64 `json:"eta"`
 }
 
-// Stats is the part of core/stats this file reads: the totals and the one
-// transfer in flight.
+// Stats is the part of core/stats this file reads: the totals and the files in
+// flight.
 type Stats struct {
 	Bytes          int64      `json:"bytes"`
 	TotalBytes     int64      `json:"totalBytes"`
@@ -223,27 +162,15 @@ type Stats struct {
 }
 
 // ReadStats asks the mount for its transfer totals and the file in flight.
-func (c *rcClient) ReadStats() (Stats, error) {
-	out, err := c.Post("core/stats", nil)
-	if err != nil {
-		return Stats{}, err
-	}
+func (c *rcClient) ReadStats(ctx context.Context) (Stats, error) {
 	var s Stats
-	if err := json.Unmarshal(out, &s); err != nil {
-		return Stats{}, fmt.Errorf("rc core/stats: parse: %w", err)
+	if err := c.call(ctx, "core/stats", nil, &s); err != nil {
+		return Stats{}, err
 	}
 	if s.Transferring == nil {
 		s.Transferring = []Transfer{}
 	}
 	return s, nil
-}
-
-// rcReachable reports whether the mount's socket is there to be asked. A
-// socket that does not exist is not a failure: it means no mount is running,
-// which is a state `drive status` already prints a line for.
-func rcReachable(socketPath string) bool {
-	_, err := os.Stat(socketPath)
-	return err == nil
 }
 
 // SetPaused records that uploads are stopped. The file is written atomically
@@ -266,7 +193,10 @@ func ClearPaused(home string) error {
 
 // PausedRate returns the rate the mount should start with, or "" when uploads
 // are not paused. It is what mount.go BuildMountPlan reads, so a restart of
-// the mount starts already paused and no person has to pause it again.
+// the mount starts already paused and no person has to pause it again. A
+// marker that cannot be read is not a pause: `drive pause` wrote it, so a
+// missing one means not paused, and a pause that was never recorded must not
+// be guessed out of an unreadable file.
 func PausedRate(home string) string {
 	data, err := os.ReadFile(PauseStatePath(home))
 	if err != nil {

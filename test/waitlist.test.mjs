@@ -1,65 +1,95 @@
 // Unit tests for the waitlist sign-up logic, exercising every branch with a
 // fake D1 object and a fake rate limiter so no network is needed.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { failureMessage } from "../src/messages.js";
 import {
-  validateSignup,
-  recordSignup,
   handleWaitlistRequest,
   isSameOriginRequest,
+  recordSignup,
   SOURCES,
+  validateSignup,
 } from "../src/waitlist.js";
-import { failureMessage } from "../src/messages.js";
 
-// A minimal in-memory D1Database stub that implements the subset of the API
-// the code actually uses: prepare().bind().first().
+/**
+ * The minimal in-memory D1Database stub. D1's own types are the runtime's
+ * `declare abstract class`, so the stub is typed in full and handed to the
+ * interface the handler imports through one documented cast; the parts the
+ * waitlist lane does not use still throw rather than standing in silently.
+ * @typedef {{id: number, email: string, source: string, created_at: string}} WaitlistRow
+ * @typedef {D1Database & {waitlist: Map<string, WaitlistRow>}} FakeWaitlistDB
+ * @returns {FakeWaitlistDB}
+ */
 function makeFakeDB() {
   const rows = new Map();
-  return {
-    waitlist: rows,
-    prepare(sql) {
-      if (sql.startsWith("INSERT")) {
-        return {
-          bind(email, source) {
-            return {
-              first() {
-                if (rows.has(email)) {
-                  return null;
-                }
-                const id = rows.size + 1;
-                const now = new Date().toISOString();
-                const row = { id, email, source, created_at: now };
-                rows.set(email, row);
-                return row;
-              },
-            };
-          },
-        };
-      }
-      if (sql.startsWith("SELECT")) {
-        return {
-          bind(email) {
-            return {
-              first() {
-                return rows.get(email) || null;
-              },
-            };
-          },
-        };
-      }
-      throw new Error(`unexpected sql: ${sql}`);
-    },
-  };
+  return /** @type {FakeWaitlistDB} */ (
+    /** @type {unknown} */ ({
+      waitlist: rows,
+      /** @param {string} sql */
+      prepare(sql) {
+        if (sql.startsWith("INSERT")) {
+          return {
+            /**
+             * @param {string} email
+             * @param {string} source
+             */
+            bind(email, source) {
+              return {
+                first() {
+                  if (rows.has(email)) {
+                    return null;
+                  }
+                  const id = rows.size + 1;
+                  const now = new Date().toISOString();
+                  const row = { id, email, source, created_at: now };
+                  rows.set(email, row);
+                  return row;
+                },
+              };
+            },
+          };
+        }
+        if (sql.startsWith("SELECT")) {
+          return {
+            /** @param {string} email */
+            bind(email) {
+              return {
+                first() {
+                  return rows.get(email) || null;
+                },
+              };
+            },
+          };
+        }
+        throw new Error(`unexpected sql: ${sql}`);
+      },
+      async batch() {
+        throw new Error("the waitlist fake only prepares one statement");
+      },
+      async exec() {
+        throw new Error("the waitlist fake only prepares one statement");
+      },
+      withSession() {
+        throw new Error("the waitlist fake has no session");
+      },
+      async dump() {
+        throw new Error("the waitlist fake has no dump");
+      },
+    })
+  );
 }
 
 // The rate limiting binding's whole contract is limit({ key }) -> { success }.
 // The fake records every call so a test can assert the key and that the
 // limiter is consulted before the database.
 function makeRateLimiter({ success = true } = {}) {
+  /** @type {Array<{key: string}>} */
   const calls = [];
   return {
     calls,
+    /** @param {{key: string}} options */
     async limit(options) {
       calls.push(options);
       return { success };
@@ -72,10 +102,10 @@ const ALLOWED = () => makeRateLimiter();
 // --- email validation (bullet 4: a proven validator) ----------------------
 
 test("validateSignup rejects missing input", () => {
-  assert.deepEqual(validateSignup(null), {
+  assert.deepEqual(validateSignup(/** @type {unknown} */ (null)), {
     error: "Send a JSON object with an email.",
   });
-  assert.deepEqual(validateSignup("not an object"), {
+  assert.deepEqual(validateSignup(/** @type {unknown} */ ("not an object")), {
     error: "Send a JSON object with an email.",
   });
   assert.deepEqual(validateSignup({}), {
@@ -164,6 +194,7 @@ test("recordSignup inserts a new row", async () => {
     source: "pricing-page",
   });
   assert.equal(already, false);
+  assert.ok(row);
   assert.equal(row.email, "new@example.com");
   assert.equal(row.source, "pricing-page");
   assert.ok(typeof row.id === "number" && row.id > 0);
@@ -178,6 +209,7 @@ test("recordSignup returns the existing row on duplicate", async () => {
     source: "business",
   });
   assert.equal(already, true);
+  assert.ok(row);
   assert.equal(row.email, "dup@example.com");
   // The original source is kept (ON CONFLICT DO NOTHING).
   assert.equal(row.source, "pricing-page");
@@ -193,15 +225,17 @@ test("recordSignup throws loud on phantom conflict", async () => {
   });
   // Simulate the INSERT returning null but the SELECT also missing.
   const originalPrepare = db.prepare;
-  db.prepare = function (sql) {
+  db.prepare = /** @param {string} sql */ (sql) => {
     if (sql.startsWith("INSERT")) {
       return originalPrepare(sql);
     }
-    return {
-      bind() {
-        return { first: () => null };
-      },
-    };
+    return /** @type {D1PreparedStatement} */ (
+      /** @type {unknown} */ ({
+        bind() {
+          return { first: () => null };
+        },
+      })
+    );
   };
   await assert.rejects(
     recordSignup(db, { email: "gone@example.com", source: "pricing-page" }),
@@ -258,11 +292,7 @@ test("handleWaitlistRequest rate limits before touching the database", async () 
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "early@example.com" }),
   });
-  const res = await handleWaitlistRequest(
-    req,
-    db,
-    makeRateLimiter({ success: false }),
-  );
+  const res = await handleWaitlistRequest(req, db, makeRateLimiter({ success: false }));
   assert.equal(res.status, 429);
   assert.equal(prepared, 0, "the database must not be consulted when denied");
 });
@@ -361,13 +391,11 @@ test("handleWaitlistRequest rejects an oversized streamed body with no content-l
     method: "POST",
     headers: { "content-type": "application/json" },
     body: stream,
-    duplex: "half",
+    // `duplex` is a Node/undici RequestInit field the Workers RequestInit type
+    // does not carry; a streamed body needs it set or the constructor throws.
+    ...{ duplex: "half" },
   });
-  assert.equal(
-    req.headers.get("content-length"),
-    null,
-    "a streamed body has no content-length",
-  );
+  assert.equal(req.headers.get("content-length"), null, "a streamed body has no content-length");
   const res = await handleWaitlistRequest(req, db, ALLOWED());
   assert.equal(res.status, 413);
   const data = await res.json();
@@ -458,9 +486,7 @@ test("isSameOriginRequest accepts our own origin and a request without Origin", 
     true,
   );
   assert.equal(
-    isSameOriginRequest(
-      new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist"),
-    ),
+    isSameOriginRequest(new Request("https://drive-pricing.nishant345.workers.dev/api/waitlist")),
     true,
   );
   assert.equal(
@@ -491,7 +517,11 @@ test("handleWaitlistRequest returns 503 when D1 binding is missing", async () =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "test@example.com" }),
   });
-  const res = await handleWaitlistRequest(req, null, ALLOWED());
+  const res = await handleWaitlistRequest(
+    req,
+    /** @type {D1Database} */ (/** @type {unknown} */ (null)),
+    ALLOWED(),
+  );
   assert.equal(res.status, 503);
   const data = await res.json();
   // The visitor reads the table's storage-down words, built from the table so
@@ -503,19 +533,21 @@ test("handleWaitlistRequest returns 503 when D1 binding is missing", async () =>
 
 test("a storage failure becomes the storage-down message, never the raw error", async () => {
   const secret = "d1 blew up: keyId=AKIAIOSFODNN7EXAMPLE path=/u/999/secret.txt";
-  const brokenDb = {
-    prepare() {
-      return {
-        bind() {
-          return {
-            async first() {
-              throw new Error(secret);
-            },
-          };
-        },
-      };
-    },
-  };
+  const brokenDb = /** @type {D1Database} */ (
+    /** @type {unknown} */ ({
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                throw new Error(secret);
+              },
+            };
+          },
+        };
+      },
+    })
+  );
   const req = new Request("https://example.com/api/waitlist", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -603,7 +635,7 @@ test("handleWaitlistRequest also reads form-data from the no-JS form post", asyn
   const res = await handleWaitlistRequest(req, db, ALLOWED());
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
-  assert.equal(db.waitlist.get("form@example.com").source, "business");
+  assert.equal(db.waitlist.get("form@example.com")?.source, "business");
 });
 
 test("handleWaitlistRequest reads a urlencoded no-JS form post", async () => {
@@ -616,16 +648,13 @@ test("handleWaitlistRequest reads a urlencoded no-JS form post", async () => {
   const res = await handleWaitlistRequest(req, db, ALLOWED());
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
-  assert.equal(db.waitlist.get("url@example.com").source, "business");
+  assert.equal(db.waitlist.get("url@example.com")?.source, "business");
 });
 
 // --- the page never shows error.message (bullet 2, client half) -----------
 
 test("the pricing page never prints a raw Error message into the live region", () => {
-  const page = readFileSync(
-    new URL("../public/index.html", import.meta.url),
-    "utf8",
-  );
+  const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.ok(
     !page.includes("error.message"),
     "the page must not show a raw Error.message; map it to the table first",

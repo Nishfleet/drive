@@ -57,10 +57,25 @@ export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 // whose row is not a measured win fails here, at the build, instead of shipping
 // a number nobody has measured.
 const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
+const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
 
-/** The markers that need a file read: today, just the FAQ's own Markdown. */
+/** The two published sections of docs/benchmarks.md, from the Linux heading. */
+function publishedBenchmarks() {
+  const text = readFileSync(BENCHMARKS, "utf8");
+  const start = text.indexOf("## Linux VPS");
+  const end = text.indexOf("<!-- end published -->");
+  if (start < 0) {
+    throw new Error("docs/benchmarks.md has no Linux VPS section to publish");
+  }
+  if (end < start) {
+    throw new Error("docs/benchmarks.md has no end-published marker after the Linux section");
+  }
+  return text.slice(start, end).trim();
+}
+
+/** The markers that need a file read: the FAQ and the Benchmarks table. */
 function fileMarkers() {
-  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")) };
+  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")), BENCHMARKS: publishedBenchmarks() };
 }
 
 // A marker's value may itself carry markers: the FAQ's answers are Markdown
@@ -85,9 +100,7 @@ const MAX_MARKER_ROUNDS = 10;
 export function applyMarkers(source, values = markerValues(), used = new Set()) {
   let text = source;
   for (let round = 0; ; round += 1) {
-    const names = [
-      ...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1])),
-    ];
+    const names = [...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))];
     if (names.length === 0) {
       return text;
     }
@@ -98,9 +111,7 @@ export function applyMarkers(source, values = markerValues(), used = new Set()) 
     }
     for (const name of names) {
       if (!(name in values)) {
-        throw new Error(
-          `docs page uses {{${name}}}, which src/docs.js does not define`,
-        );
+        throw new Error(`docs page uses {{${name}}}, which src/docs.js does not define`);
       }
       used.add(name);
     }
@@ -127,9 +138,7 @@ export function renderDocs(outDir = RENDERED_DIR) {
   // render fails rather than shipping quietly.
   const unused = Object.keys(values).filter((name) => !used.has(name));
   if (unused.length > 0) {
-    throw new Error(
-      `src/docs.js defines markers no page uses: ${unused.join(", ")}`,
-    );
+    throw new Error(`src/docs.js defines markers no page uses: ${unused.join(", ")}`);
   }
   return DOC_PAGES;
 }

@@ -128,47 +128,53 @@ func TestUploadLabelMatchesThePageWords(t *testing.T) {
 	}
 }
 
-func TestReadCostLinePrintsTheMonthAndCap(t *testing.T) {
-	var gotPath string
+func TestReadCostLinePrintsTheCapLineFromTheWorker(t *testing.T) {
+	const capLine = "Cap $12.00: $1.25 counted this month, $10.75 left."
+	var gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		// The empty-month shape src/billing.js `usageSummary()` returns
-		// before the meter and the account store land (issues #6 and #2).
+		gotAuth = r.Header.Get("authorization")
 		var u UsageSummary
 		u.MeteredUsd, u.BillUsd, u.CeilingUsd = 1.25, 1.25, 12
 		u.Cap.CapUsd, u.Cap.CountedUsd, u.Cap.RemainingUsd, u.Cap.State = 12, 1.25, 10.75, "active"
+		u.CapLine = capLine
 		_ = json.NewEncoder(w).Encode(u)
 	}))
 	defer srv.Close()
 
 	line := captureStdout(t, func() {
-		if reason := readCostLine(srv.URL); reason != "" {
-			t.Errorf("readCostLine said %q, want the numbers", reason)
+		if reason := readCostLine(srv.URL, "dtok_test"); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap line", reason)
 		}
 	})
 	if gotPath != USAGE_PATH {
 		t.Errorf("read %s, want %s", gotPath, USAGE_PATH)
 	}
-	if !strings.Contains(line, "$1.25 of $12.00 cap") {
-		t.Errorf("got %q, want the metered cost and the cap on the line", line)
+	if gotAuth != "Bearer dtok_test" {
+		t.Errorf("authorization = %q, want the device token", gotAuth)
+	}
+	if !strings.Contains(line, capLine) {
+		t.Errorf("got %q, want the Worker's capLine printed as-is", line)
 	}
 }
 
-func TestReadCostLineSaysReadOnlyAndWhatToDo(t *testing.T) {
+func TestReadCostLinePrintsTheWorkersReadOnlyCapLine(t *testing.T) {
+	const capLine = "Your drive is read-only because it reached its spending cap; nothing was deleted. Raise the cap on the usage page to start writing again.\nCap $12.00 reached: $16.00 counted this month. Uploads waiting in the cache stay on this Mac and go up once the cap is raised."
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"meteredUsd":16,"billUsd":16,"ceilingUsd":16,"cap":{"capUsd":12,"countedUsd":16,"remainingUsd":0,"state":"read_only"}}`))
+		var u UsageSummary
+		u.CapLine = capLine
+		u.Cap.State = "read_only"
+		_ = json.NewEncoder(w).Encode(u)
 	}))
 	defer srv.Close()
 
 	line := captureStdout(t, func() {
-		if reason := readCostLine(srv.URL); reason != "" {
-			t.Errorf("readCostLine said %q, want the numbers", reason)
+		if reason := readCostLine(srv.URL, ""); reason != "" {
+			t.Errorf("readCostLine said %q, want the cap line", reason)
 		}
 	})
-	// A read-only drive is the one cost line that has to carry an action:
-	// every error says what to do next (issue #35).
 	if !strings.Contains(line, "read-only") || !strings.Contains(line, "cap is raised") {
-		t.Errorf("got %q, want the read-only state and what to do about it", line)
+		t.Errorf("got %q, want the Worker's read-only capLine", line)
 	}
 }
 
@@ -185,7 +191,7 @@ func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			line := captureStdout(t, func() {
-				reason := readCostLine(tc.base)
+				reason := readCostLine(tc.base, "")
 				if !strings.Contains(reason, tc.want) {
 					t.Errorf("reason %q does not name %q", reason, tc.want)
 				}
@@ -204,7 +210,7 @@ func TestReadCostLineNamesAnUnreachableService(t *testing.T) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	reason := readCostLine(srv.URL)
+	reason := readCostLine(srv.URL, "")
 	if !strings.Contains(reason, "500") {
 		t.Errorf("reason %q, want the failing status named", reason)
 	}

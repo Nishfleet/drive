@@ -38,6 +38,8 @@ agents.
   we can answer with a measured number
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what
   version 1 does not do
+- [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks) —
+  measured speed, including where we lose
 - [Security](https://drive-pricing.nishant345.workers.dev/docs/security) — who
   can see your files
 - [Changelog](https://drive-pricing.nishant345.workers.dev/docs/changelog) —
@@ -55,14 +57,20 @@ and the invoice disagree.
 
 | Path | What it is |
 | --- | --- |
-| `cmd/drive/` | the `drive` CLI (Go) |
-| `src/` | the pricing Worker: the pages, the waitlist, the cap, the usage read, and the money in `billing.js` |
-| `workers/api/` | the api Worker: health, keys, usage |
+| `cmd/drive/` | the `drive` CLI (Go), with its tests beside it |
+| `src/` | the site Worker: the route table in `index.js`, the files, share, search, usage, cap and waitlist handlers, the meter, and the money in `billing.js` |
+| `test/` | the site Worker's tests (`*.test.mjs`), `integration/` for the D1 ones, and `harness.mjs` for the shared sign-in test setup |
+| `workers/api/` | the api Worker: keys, device sign-in, teams, export and storage events (`src/`, tests in `test/`) |
+| `workers/dl/` | the download Worker (`src/`, tests in `test/`) |
+| `public/` | the static pages (pricing, sign-in, files, usage, upload), `site.css`, `robots.txt` and `llms.txt`. `public/docs/` is generated and never committed |
+| `get-started.html` | the get-started page, at the repo root so Vite builds it to `/get-started.html` |
 | `docs-site/` | the docs pages and the VitePress build |
-| `docs/` | the build spec and the API notes |
-| `migrations/` | D1 migrations for the waitlist |
+| `docs/` | the build spec and spec, the API notes, the scoreboard, benchmarks, `research/` and `design/` |
+| `migrations/` | D1 migrations, split by database: `waitlist/` for the sign-up table, `drive/` for customer tables |
+| `cloudflare.config.ts` | the Worker, its D1 bindings (`WAITLIST_DB`, `DRIVE_DB`), secrets and cron triggers |
 
-`npm test` typechecks the JavaScript, builds the docs and runs the test suite.
+Run `npm ci` first. `npm test` typechecks, lints, builds the docs and runs the test suite.
+To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
