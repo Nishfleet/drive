@@ -35,11 +35,16 @@ import {
 /**
  * The one family the api Worker serves, and the prefix the site Worker
  * forwards on the one base the CLI posts to (drive#156/#341, #342). Every
- * path in the registry below starts with it — the walk in test/index.test.js
- * checks that against the registry itself — so the site Worker's route
- * (src/index.js) and its assets config (cloudflare.config.ts) are pinned
- * against this one value rather than a second spelling of "/v1" drifting free
- * of the routes that serve it.
+ * route below lives under it — the walk in test/index.test.js checks the
+ * registry against it — so the site Worker's route (src/index.js) and its
+ * assets config (cloudflare.config.ts) are pinned against this one value
+ * rather than a second spelling of "/v1" drifting free of the routes that
+ * serve it.
+ *
+ * The one route that does not live under it, POST /api/keys/revoke, is the
+ * exception that walk carries on its own (drive#354): `drive logout` calls it
+ * with the key the rclone config holds, so it cannot want a session and the
+ * site's deny-by-default /api/* gate answers it first.
  */
 export const API_PREFIX = "/v1";
 
