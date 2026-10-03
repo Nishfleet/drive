@@ -217,7 +217,7 @@ The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") 
 
 ## Build step 1 on the real iDrive e2 account (2026-10-03, drive#173)
 
-The real account is the fleet worker's own: endpoint `https://s3.eu-west-3.idrivee2.com`, region `eu-west-3`, bucket `drive-prod`, and the master credential read from the VPS credential store (`~/.config/rclone/rclone.conf`, section `[idrive]`) as environment variables. The credential never enters this repo, a commit, a PR body or a log line. The bucket was created and configured through the same `workers/api/src/s3.js` the api Worker runs, and every setting below is read back from the bucket by `readBucketConfig`, not taken from a PUT's status:
+The real account is the one behind the `idrive` rclone remote on this host (Nish saved it 2026-10-03 17:26Z): endpoint `https://s3.eu-west-3.idrivee2.com`, region `eu-west-3`, bucket `drive-prod`, and the master credential read from the VPS credential store (`~/.config/rclone/rclone.conf`, section `[idrive]`) as environment variables. The credential never enters this repo, a commit, a PR body or a log line. The bucket was created and configured through the same `workers/api/src/s3.js` the api Worker runs, and every setting below is read back from the bucket by `readBucketConfig`, not taken from a PUT's status:
 
 | Bucket setting | Read back from `drive-prod` |
 |---|---|
@@ -265,14 +265,14 @@ The vendor's own words (idrive.com/e2, Pricing FAQ): "IDrive® e2 calculates the
 
 The part that matters to the meter is the minimum: "IDrive® e2 enforces a minimum storage duration of 30 days", and an object deleted before day 30 "will be charged for the remaining days up to the 30th day as if the object was still stored" — the vendor calls that *Deleted Storage*, against *Active Storage* for what exists.
 
-- A 1-day hidden-version rule is a billing lie here. A delete's hidden version is billed for the rest of 30 days, so version history costs 30 days of storage per delete, not one. Build step 8's 31-day purge and step 5's GB-minutes reconciler both have to be written against this number, not against a 1-day lifecycle rule.
-- $5 per TB-month on the Veeam/MSP/Reseller plan ($6 pay-as-you-go), charged per TB, and under 1 TB is still charged the whole 1 TB. Egress is free up to 3x the storage volume, then $0.01 per GB-month; ingress, deletion and API requests are free.
+- A 1-day hidden-version rule caps retention, not cost. A delete inside the cycle reduces nothing on the bill: iDrive charges the deleted object's bytes to day 30. Step 5's reconciler reads a day's GB-minutes from `usage_minutes` and the provider's own bytes for the same account, and on this shape those two are not the same number for any day that carried deletes — so the gap has to be modelled, not read as drift. That is #364, because what the customer is billed for a delete is Nish's call.
+- $5 per TB-month on the Veeam/MSP/Reseller plan ($6 pay-as-you-go), charged per TB, and under 1 TB is still charged the whole 1 TB. Downloads are free up to 3x the stored volume, then $10/TB (about $0.01 per GB). Ingress, deletion and API requests are free.
 
 ### What passed on the real bucket, and the verdict
 
 Step 1's done-when has two halves. The hidden-version half passes on iDrive, measured on the real bucket: save `report.txt` (version `bfe496a6-ddd8-45a6-8288-364e6317ce09`), `DELETE` it (delete marker `ce7bdd7e-4c05-4a44-b024-ba152ee8b4bc`), and the version listing shows the marker as `latest=true deleteMarker=true size=0` with the save behind it as `latest=false deleteMarker=false size=36`; `GET ?versionId=<hidden version>` answers `200` with MD5 `ac955fc7aef49e7cda604ecabfa66d16`, the MD5 of the bytes saved.
 
-The other half — a key that cannot read another account's folder — fails, and it is the question step 1 asks first. So **iDrive e2 is not primary storage**, and step 1's own rule ("if any fails, use B2") sends the build to Backblaze B2. The follow-up issue filed with this change carries that work: build step 1's bucket and minting on B2, which is the same `STORAGE_*` configuration on a provider whose STS does `AssumeRole` with a session policy, and the deleted-storage cost exposure above.
+The other half — a key that cannot read another account's folder — fails, and it is the question step 1 asks first. So **iDrive e2 is not primary storage**, and step 1's own rule ("if any fails, use B2") sends the build to Backblaze B2. The bucket there and the mint on it are #363; what a delete inside a billing cycle costs the customer is #364, which is Nish's call and not this section's.
 
 What #173 leaves behind in code: nothing. Every difference between the stand-in and the real account was configuration — endpoint, region, bucket, credential, and the bucket settings in the table above. What this change does is replace every line that deferred to this issue ("#173 checks the real vendor", "lands with iDrive e2 (issue #173)", "iDrive e2 replaces it") with the measurement: `workers/api/src/s3-keys.js`, `workers/api/src/s3.js`, `workers/api/src/index.js`, `workers/api/src/devices.js`, the two test headers, `docs/api.md`, `docs/benchmarks.md`, `docs/spec.md` and this section.
 
