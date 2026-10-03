@@ -170,7 +170,7 @@ func runDriveHome(t *testing.T, rcAddr string, args ...string) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, driveBin(t), args...)
 	cmd.Env = append(os.Environ(), "DRIVE_RC_ADDR="+rcAddr, "DRIVE_PREFETCH=0")
-	cmd.SysProcAttr = ownGroupProcAttr()
+	cmd.SysProcAttr = ownProcessGroup()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("drive %s: %v\n%s", strings.Join(args, " "), err, out)

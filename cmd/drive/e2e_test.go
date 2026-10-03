@@ -308,7 +308,7 @@ func TestStandinPauseProof(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, driveBin(t), args...)
 		cmd.Env = append(os.Environ(), "HOME="+home, "DRIVE_RC_ADDR="+rcAddr)
-		cmd.SysProcAttr = ownGroupProcAttr()
+		cmd.SysProcAttr = ownProcessGroup()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("drive %s: %v\n%s", strings.Join(args, " "), err, out)

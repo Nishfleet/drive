@@ -102,7 +102,7 @@ jobs:
       - name: Download rclone (the vendor's own Windows build)
         shell: pwsh
         run: |
-          curl.exe -sSO "https://downloads.rclone.org/rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip"
+          curl.exe -sSO "https://downloads.rclone.org/${{ env.RCLONE_VERSION }}/rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip"
           Expand-Archive -Path "rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip" -DestinationPath rclone -Force
           $exe = Join-Path "rclone\rclone-${{ env.RCLONE_VERSION }}-windows-amd64" "rclone.exe"
           if (-not (Test-Path $exe)) { throw "rclone.exe was not in the vendor's zip" }

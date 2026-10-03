@@ -38,6 +38,16 @@ jobs:
           unzip -q rclone-current-linux-amd64.zip
           sudo install -m 0755 rclone-*/rclone /usr/local/bin/rclone
           rclone version
+      # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
+      # as they actually ship. `npm run build` writes the same static-asset
+      # bundle the deploy uploads, so the numbers are the site's and not a
+      # development server's. LHCI then serves that directory locally and
+      # asserts every page against the budget: a page that gets worse fails
+      # this job, which is what makes a budget a ratchet rather than a note.
+      # Lowering a number in lighthouserc.json is how a speed win gets locked
+      # in; raising one needs a measurement in the PR body.
+      - run: npm run build
+      - run: npx lhci autorun
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
@@ -76,3 +86,47 @@ jobs:
         run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
       - name: Two-device conflict proof
         run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s
+
+  # Windows (drive#153): the drive-letter mount through stock `rclone mount`
+  # with WinFsp as the driver. The unit tests cover every Windows branch; the
+  # proof mounts at the first free letter from D: up, writes a file through
+  # the drive letter, reads it back, then unmounts.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24"
+          cache: true
+      # rclone and WinFsp are the two stock pieces the mount stands on. Both
+      # are the vendor's own Windows builds, downloaded from the vendor's own
+      # release, not a vendored copy.
+      - name: Install rclone (the stock tool the mount drives)
+        shell: pwsh
+        run: |
+          curl.exe -sSO https://downloads.rclone.org/rclone-current-windows-amd64.zip
+          Expand-Archive -Path rclone-current-windows-amd64.zip -DestinationPath rclone
+          $exe = Get-ChildItem -Path rclone -Recurse -Filter rclone.exe | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $exe.FullName)
+          & $exe.FullName version
+      - name: Install WinFsp (the driver rclone mount needs on Windows)
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod https://api.github.com/repos/winfsp/winfsp/releases/latest
+          $asset = $release.assets | Where-Object { $_.name -like '*.msi' } | Select-Object -First 1
+          if (-not $asset) { throw 'the WinFsp release carries no .msi asset' }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile winfsp.msi
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', 'winfsp.msi', '/qn'
+          $bin = Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'
+          if (-not (Test-Path (Join-Path $bin 'winfsp-x64.dll'))) { throw 'WinFsp did not install its driver' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+      - run: go vet ./cmd/...
+      - name: Unit tests
+        run: go test ./cmd/... -short -v
+      - name: Windows drive-letter mount proof
+        run: go test ./cmd/drive/ -run TestWindowsMountProof -v -timeout 300s

@@ -272,7 +272,7 @@ func (e *transferEnv) status() string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, driveBin(e.t), "status", "--home", e.home)
 	cmd.Env = append(os.Environ(), "HOME="+e.home, "DRIVE_RC_ADDR="+e.rcAddr)
-	cmd.SysProcAttr = ownGroupProcAttr()
+	cmd.SysProcAttr = ownProcessGroup()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		e.t.Fatalf("drive status: %v\n%s", err, out)
