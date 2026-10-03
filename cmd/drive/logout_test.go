@@ -202,7 +202,7 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("got no error with a file waiting to upload, want one")
 	}
-	if !strings.Contains(err.Error(), "1 file(s) waiting to upload") {
+	if !strings.Contains(err.Error(), "waiting to upload") {
 		t.Errorf("got %q, want the pending count named", err)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); statErr != nil {

@@ -34,6 +34,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   approveBranch,
+  backfillBranchSnapshots,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -282,5 +283,133 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
       `(namespace drive-branch-snapshots), row text ${rowTextBytes} bytes, ` +
       `listed changed=${huge.changed} sourceChanged=${huge.sourceChanged}, diff all-zero, ` +
       `approved state=approved.`,
+  );
+});
+
+// The step 1 of drive#321: the rows that predate the namespace are moved into
+// it. This is the same proof shape as the file above — the real migrations
+// (0012 included) applied to a real SQLite engine, a real KV namespace behind
+// the module's own store — and the claim it makes is the one a unit test with
+// a hand-built table cannot: a pre-namespace row at the largest shape the old
+// code could really have written (D1's 1 MiB row limit bounded every
+// pre-0012 branch; #157's phase 1 measured the limit at 8,800 files) is swept
+// into the namespace under its own key, its row carries the pointer and the
+// value's true length, its closed siblings are not touched, and after the
+// sweep there is no OPEN row left reading the column.
+test("an open pre-namespace branch is backfilled into the namespace over the real schema", async () => {
+  const db = createTestD1();
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
+
+  // The largest pre-0012 row shape: a folder the old code accepted, just under
+  // the row limit it was written under. A 100,000-file folder was refused at
+  // branch time, so a real legacy row is bounded by this size.
+  const LEGACY_FILES = 8000;
+  /** @type {Record<string, {size: number, etag: string, modified: number}>} */
+  const legacy = {};
+  for (let index = 0; index < LEGACY_FILES; index += 1) {
+    const album = String(Math.floor(index / 1000)).padStart(3, "0");
+    legacy[`album-${album}/img-${String(index).padStart(6, "0")}.jpg`] = {
+      size: 102400 + (index % 900),
+      etag: (index % 100000).toString(16).padStart(32, "0"),
+      modified: AT - index,
+    };
+  }
+  const column = JSON.stringify(legacy);
+  assert.ok(
+    Buffer.byteLength(column) < D1_ROW_LIMIT,
+    `the legacy row is ${Buffer.byteLength(column)} bytes, under the ${D1_ROW_LIMIT}-byte row limit it was written under`,
+  );
+
+  // The rows migration 0012 inherited, written with plain SQL: the JSON in the
+  // column, the pointer at its '' default, the length at 0.
+  const insert = db.sqlite.prepare(
+    "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+      "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+  );
+  const createdAt = new Date(AT).toISOString();
+  insert.run(ACCOUNT.id, "old", "/Photos", "/.branches/old", column, "open", createdAt);
+  insert.run(ACCOUNT.id, "done", "/Photos", "/.branches/done", column, "approved", createdAt);
+  insert.run(ACCOUNT.id, "gone", "/Photos", "/.branches/gone", column, "discarded", createdAt);
+
+  /** @param {string} name @param {string} state */
+  const rowAt = (name, state) =>
+    /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
+      db.sqlite
+        .prepare(
+          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+            "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+        )
+        .get(ACCOUNT.id, name, state)
+    );
+
+  // Before: the pointer is empty and the column is the only source — the read
+  // `readSnapshot` has always done for these rows.
+  const before = rowAt("old", "open");
+  assert.equal(before.snapshot_key, "");
+  assert.equal(before.snapshot_bytes, 0);
+  assert.deepEqual(await readSnapshot(snapshots, before.snapshot_key, before.snapshot), legacy);
+
+  // The sweep: the open row moves, the closed rows do not.
+  const report = await backfillBranchSnapshots(db, snapshots);
+  assert.equal(report.moved, 1, "one open pre-namespace row");
+  assert.equal(report.files, LEGACY_FILES, "the report counts the entries it moved");
+  assert.equal(report.bytes, Buffer.byteLength(column), "the report counts the bytes it moved");
+
+  const moved = rowAt("old", "open");
+  assert.equal(moved.snapshot_key, snapshotKey(ACCOUNT, "old"));
+  assert.equal(
+    moved.snapshot_bytes,
+    Buffer.byteLength(column),
+    "the row records the value's own length",
+  );
+  // The value, read off the namespace itself: the exact column JSON, not a
+  // re-encoding of it, and the row still carries its own copy (the column is
+  // dropped only in the later phase, once nothing reads it).
+  assert.equal(kv.values.get(moved.snapshot_key), column);
+  assert.equal(moved.snapshot, column);
+  // The WRITE is real, and the READ resolves the same map through the pointer:
+  // 8,000 entries, every one of them the fingerprint the column held.
+  const afterRead = await readSnapshot(snapshots, moved.snapshot_key, moved.snapshot);
+  assert.equal(Object.keys(afterRead).length, LEGACY_FILES);
+  assert.deepEqual(afterRead, legacy);
+
+  // The closed branches: untouched, and no value of theirs in the namespace —
+  // their snapshot is the count their row already carries.
+  for (const [name, state] of [
+    ["done", "approved"],
+    ["gone", "discarded"],
+  ]) {
+    const closed = rowAt(name, state);
+    assert.equal(closed.snapshot_key, "", `${state} keeps its empty pointer`);
+    assert.equal(closed.snapshot_bytes, 0, `${state} keeps its zero byte length`);
+    assert.equal(closed.snapshot, column, `${state} keeps its JSON exactly where it was`);
+    assert.equal(
+      kv.values.has(snapshotKey(ACCOUNT, name)),
+      false,
+      `${state} has no namespace value`,
+    );
+  }
+
+  // The condition the drop phase waits on, as the query itself: no OPEN row
+  // is left without a pointer.
+  const remaining = /** @type {{n: number}} */ (
+    db.sqlite
+      .prepare("SELECT COUNT(*) AS n FROM branches WHERE state = 'open' AND snapshot_key = ''")
+      .get()
+  );
+  assert.equal(remaining.n, 0);
+
+  // Idempotent: the sweep matches `snapshot_key = ''`, so a second run moves
+  // nothing and the namespace is unchanged.
+  assert.equal((await backfillBranchSnapshots(db, snapshots)).moved, 0);
+
+  // The proof, in one line for the PR body.
+  console.log(
+    `drive#321 proof: branch "old" of account ${ACCOUNT.id}, ${LEGACY_FILES} files, ` +
+      `column ${Buffer.byteLength(column)} bytes (under D1's ${D1_ROW_LIMIT}-byte row limit), ` +
+      `taken ${createdAt}; backfill moved it to ${moved.snapshot_key} with ` +
+      `snapshot_bytes=${moved.snapshot_bytes}; the approved and discarded rows kept their column; ` +
+      `a second run moved 0; open rows without a pointer after: ${remaining.n}.`,
   );
 });

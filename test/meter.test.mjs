@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
+import { SNAPSHOT_BACKFILL_SCHEDULE } from "../src/branches.js";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
@@ -1829,6 +1830,18 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.equal(METER_CRON, "5 * * * *");
   assert.equal(METER_RECONCILE_SCHEDULE, "0 4 * * *");
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *");
+  assert.equal(
+    SNAPSHOT_BACKFILL_SCHEDULE,
+    "0 5 * * *",
+    "the snapshot backfill's own hour, after the other two nightly walks",
+  );
+  const schedules = [
+    METER_CRON,
+    METER_RECONCILE_SCHEDULE,
+    REINDEX_SCHEDULE,
+    SNAPSHOT_BACKFILL_SCHEDULE,
+  ];
+  assert.equal(new Set(schedules).size, schedules.length, "one trigger cannot be two trips");
   assert.notEqual(METER_CRON, REINDEX_SCHEDULE, "one trigger cannot be both trips");
   assert.notEqual(
     METER_RECONCILE_SCHEDULE,
@@ -1838,15 +1851,16 @@ test("the cron trigger the config declares is the one the meter exports", () => 
   assert.notEqual(METER_RECONCILE_SCHEDULE, METER_CRON, "the reconciler is not the hourly rollup");
   // The config takes the schedules from the modules that own them, so a
   // changed schedule cannot drift from the trigger that runs it: src/index.js
-  // tells the three trips apart by the cron string the platform hands it.
+  // tells the four trips apart by the cron string the platform hands it.
   assert.match(
     config,
     /import \{ METER_CRON, METER_RECONCILE_SCHEDULE \} from "\.\/src\/meter\.js";/,
   );
   assert.match(config, /import \{ REINDEX_SCHEDULE \} from "\.\/src\/search\.js";/);
+  assert.match(config, /import \{ SNAPSHOT_BACKFILL_SCHEDULE \} from "\.\/src\/branches\.js";/);
   assert.match(
     config,
-    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: METER_RECONCILE_SCHEDULE \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/,
+    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: METER_RECONCILE_SCHEDULE \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),\s*triggers\.scheduled\(\{ schedule: SNAPSHOT_BACKFILL_SCHEDULE \}\),?\s*\]/,
   );
 });
 

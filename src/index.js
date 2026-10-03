@@ -10,7 +10,13 @@ import { bearerToken } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
-import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
+import {
+  BRANCHES_ENDPOINT,
+  backfillBranchSnapshots,
+  createKvSnapshotStore,
+  handleBranchesRequest,
+  SNAPSHOT_BACKFILL_SCHEDULE,
+} from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
@@ -588,7 +594,7 @@ export default {
     return createApp().fetch(request, env);
   },
 
-  // Three Cron Triggers share this one handler, and the platform's cron string
+  // Four Cron Triggers share this one handler, and the platform's cron string
   // tells them apart, so no trigger spends another's work:
   //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
   //     has not been rolled yet into usage_minutes, oldest first
@@ -617,6 +623,15 @@ export default {
   //     drive has never served has nothing to rebuild, and no invented
   //     identity is indexed. Each account's rows are rebuilt from its own
   //     prefix (scopeStore), the same scoping a request path gets.
+  //   - The snapshot backfill (build step 7's contract, drive issue #321):
+  //     `backfillBranchSnapshots` moves the open pre-namespace rows' JSON out
+  //     of the legacy `branches.snapshot` column into BRANCH_SNAPSHOTS, under
+  //     each row's own `snapshotKey`, and sets the row's pointer and byte
+  //     length. It skips a closed branch and leaves the column in place, and
+  //     it is awaited so a failed sweep is a failed trigger Cloudflare
+  //     retries. The schedule is imported from the module that owns the sweep
+  //     (src/branches.js), pinned by test/branches.test.mjs the way
+  //     src/meter.js's METER_CRON is by test/meter.test.mjs.
   /**
    * @param {ScheduledController} event
    * @param {Env} env
@@ -657,6 +672,23 @@ export default {
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      return;
+    }
+    // The snapshot backfill's trip (drive issue #321): every open branch that
+    // predates the namespace keeps its JSON in the legacy `branches.snapshot`
+    // column, and this sweep moves each into BRANCH_SNAPSHOTS under its own
+    // key and sets the row's pointer and byte length — the step before the
+    // column can be dropped. Awaited, so a failed sweep is a failed trigger
+    // Cloudflare retries: the rows it did not reach are the next night's work,
+    // and the sweep is idempotent, so a repeat is free. The schedule is the
+    // only way a backfill starts, exactly like the reindex above: no web
+    // route walks every open branch a drive ever made.
+    if (event.cron === SNAPSHOT_BACKFILL_SCHEDULE) {
+      const snapshots = snapshotsFor(env);
+      if (!snapshots) {
+        throw new Error("the snapshot backfill needs the BRANCH_SNAPSHOTS namespace");
+      }
+      await backfillBranchSnapshots(env.DRIVE_DB, snapshots);
       return;
     }
     context.waitUntil(
