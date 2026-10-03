@@ -34,7 +34,12 @@ Usage:
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
+  drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Update flags:
+  --check   say whether a newer release exists, install nothing
+  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
@@ -79,7 +84,13 @@ Logout flags:
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
 `
-const version = "0.1.0"
+
+// version is the fallback when the toolchain records no module version
+// in this binary (a checkout build: go build, go run, go test). A binary
+// installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
+// carries that tag in its build information, and `drive version`
+// prints that instead (cmd/drive/update.go versionText).
+var version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -122,10 +133,12 @@ func main() {
 		err = runLogout(os.Args[2:])
 	case "export":
 		err = runExport(os.Args[2:])
+	case "update":
+		err = runUpdate(os.Args[2:])
 	case "prefetch":
 		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		fmt.Println(versionText())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
