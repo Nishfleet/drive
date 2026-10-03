@@ -262,11 +262,11 @@ func TestWindowsLoginItemIsATaskNotAFile(t *testing.T) {
 
 func TestMountedDirUsesTheDriveLetter(t *testing.T) {
 	// The Windows mount point is a drive letter, and a stat must hit the volume
-	// root (`D:\\`), not the drive-relative `D:` — the latter resolves against
+	// root (`D:\\`), never the drive-relative `D:` — the latter resolves against
 	// the process's per-drive current directory and would answer for any volume
-	// that exists, not for a Drive mount specifically. That normalization now
-	// lives in windowsVolumeMounted/Root, so MountedDir and the root helper must
-	// answer identically for every spelling of the same letter.
+	// that exists, not for a Drive mount specifically. The normalization now
+	// lives in windowsVolumeMounted/Root, so MountedDir must answer identically
+	// for every spelling of the same letter.
 	for _, spell := range []string{"Z:", "Z:\\", "z:", "z:\\"} {
 		got, err := MountedDir("windows", spell)
 		if err != nil {
@@ -276,22 +276,47 @@ func TestMountedDirUsesTheDriveLetter(t *testing.T) {
 			t.Errorf("MountedDir(windows, %q) = %v, want %v (the volume-root normalization)", spell, got, windowsVolumeMounted("Z:"))
 		}
 	}
+	// The normalization itself is the contract a bare letter cannot meet: only
+	// the rooted spelling is the volume root, and the rooted spelling is what
+	// both the mounted check and the status entry count are built on.
 	if windowsVolumeRoot("Z:") != `Z:\` || windowsVolumeRoot("Z:\\") != `Z:\` {
 		t.Errorf("windowsVolumeRoot must normalize to the bare root Z:\\")
 	}
+	if windowsVolumeRoot("Z:") == "Z:" {
+		t.Error("windowsVolumeRoot must not return the drive-relative Z:, which is what this normalization exists to prevent")
+	}
 }
 
-func TestWindowsMountedDriveLettersScansTheRange(t *testing.T) {
-	// The stale-mount scan must report a volume that os.Stat of its root sees,
-	// and never invent a free letter as if it were mounted. This only reads
-	// real volumes, so it lives on Windows.
-	if runtime.GOOS != "windows" {
-		t.Skip("windowsMountedDriveLetters reads real volumes")
+func TestWindowsRcloneMountLettersReadsTheProcessList(t *testing.T) {
+	// tasklist rows are CSV, and a command line with a comma is a quoted field
+	// with the comma doubled, so the record is matched by the existing letter
+	// reader rather than a CSV split. The rows below are what a Windows runner
+	// with a Drive mount, an unrelated volume and an unrelated process look
+	// like, and only the rclone row's letter is ever reported.
+	rows := strings.Join([]string{
+		`"rclone.exe","4242","Console","1","25,000 K"`,
+		`"rclone.exe","4242","Console","1","25,000 K"`,
+	}, "\r\n")
+	if letter, ok := windowsDriveLetterFromCommand(rows); ok {
+		t.Errorf("windowsDriveLetterFromCommand on a process list must not find a letter, got %q", letter)
 	}
-	for _, l := range windowsMountedDriveLetters() {
-		if !windowsVolumeMounted(l) {
-			t.Errorf("windowsMountedDriveLetters reported %s, but its root does not stat", l)
-		}
+	// The mount row carries the letter as its own token, exactly as the login
+	// task's command line does.
+	row := `"rclone.exe","4242","Console","1","25,000 K" mount drive:drive-standin/u/1 Z: --config C:\Users\t\.config\drive\rclone.conf`
+	if letter, ok := windowsDriveLetterFromCommand(row); !ok || letter != "Z:" {
+		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want Z:, true", row, letter, ok)
+	}
+}
+
+func TestWindowsRcloneMountLettersIsWindowsOnly(t *testing.T) {
+	// The reader shells out to tasklist, so on any other platform it returns
+	// the error it reports, not a wrong answer. The stop path propagates that
+	// error rather than reporting a stale mount as stopped.
+	if runtime.GOOS == "windows" {
+		t.Skip("tasklist exists on Windows")
+	}
+	if _, err := windowsRcloneMountLetters(); err == nil {
+		t.Error("windowsRcloneMountLetters off Windows must be an error, not an empty list")
 	}
 }
 
