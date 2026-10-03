@@ -392,7 +392,9 @@ let keyStoreDb;
  *
  * The half-configured stub matches the KeyProvider shape (`mint`, `revoke`,
  * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
- * method. The real S3 provider's `revoke` is still the vendor key API (#173).
+ * method. The real S3 provider's `revoke` is the vendor key API, and the one
+ * vendor measured (iDrive e2, drive#173, 2026-10-03) has none over S3: there a
+ * minted credential can only be left to expire.
  * @param {{[key: string]: unknown}} env
  * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
  */

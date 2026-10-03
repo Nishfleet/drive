@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-03
 
+- The storage answers are measured against the real iDrive e2 account (bucket
+  `drive-prod`, region `eu-west-3`): keys cannot be scoped to a folder (the
+  endpoint refuses `AssumeRole`), events are console destinations rather than
+  bucket API calls, and a month is one storage figure per 30-day cycle with a
+  30-day minimum on deleted files. iDrive fails build step 1's first question,
+  so per the spec's own rule the primary moves to Backblaze B2.
 - `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
   with no delete, stores it 0600, and prints the prefix plus the two env var
   names an agent tool would run on — never the secret, never on the command
