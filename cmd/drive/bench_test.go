@@ -23,10 +23,10 @@ package main
 // decision): the same benchmarks run against the loopback stand-in and against
 // the real account. A figure measured against the stand-in is a harness proof,
 // never a published number, so every line this file prints names which of the
-// two it came from. One guard is the exception: BenchmarkReadDuringPrefetch
-// asserts its overlap on the stand-in and only logs it on real storage
-// (issue #382), because a real link is shared between the user's read and the
-// prefetch pass and a loopback server is not.
+// two it came from. One guard is looser on HTTPS: BenchmarkReadDuringPrefetch
+// asserts 20 ms and 2x on a loopback (or any non-HTTPS) server, and 10x the
+// control on HTTPS real storage (issue #382), because a real link is shared
+// between the user's read and the prefetch pass and a loopback server is not.
 
 import (
 	"bytes"
@@ -933,22 +933,60 @@ func BenchmarkPrefetchBrowse(b *testing.B) {
 	b.Logf("prefetch-bench metric=small-file-with value=%.6f unit=s", withFile.Seconds())
 }
 
+// prefetchOverlapTooSlow reports whether the overlapping user read is a
+// regression for this storage. A non-HTTPS endpoint has no WAN link to share,
+// so 20 ms and 2x still apply. HTTPS real storage shares one link; issue #382
+// measured a healthy overlap of 3.1x to 3.4x, and the gate there is 10x the
+// control, which those pairs pass and a 200 ms stall of the user read fails.
+func prefetchOverlapTooSlow(with, without time.Duration, https bool) bool {
+	if https {
+		return with > without*10
+	}
+	return with > without+20*time.Millisecond && with > without*2
+}
+
+func TestPrefetchOverlapTooSlow(t *testing.T) {
+	cases := []struct {
+		name    string
+		with    time.Duration
+		without time.Duration
+		https   bool
+		want    bool
+	}{
+		{"stand-in holds", 13878 * time.Microsecond, 9809 * time.Microsecond, false, false},
+		{"stand-in 200ms stall", 211271 * time.Microsecond, 6949 * time.Microsecond, false, true},
+		{"https issue pair", 218692 * time.Microsecond, 63907 * time.Microsecond, true, false},
+		{"https this branch", 181956 * time.Microsecond, 59848 * time.Microsecond, true, false},
+		{"https 200ms stall", 214250 * time.Microsecond, 8533 * time.Microsecond, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := prefetchOverlapTooSlow(c.with, c.without, c.https)
+			if got != c.want {
+				t.Fatalf("prefetchOverlapTooSlow(%s, %s, https=%v)=%v want %v",
+					c.with, c.without, c.https, got, c.want)
+			}
+		})
+	}
+}
+
 func BenchmarkReadDuringPrefetch(b *testing.B) {
 	// This bench is the user-read vs prefetchOnce overlap with the same
 	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
 	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
 	// contend with the mount's own FUSE traffic.
 	//
-	// The overlap assertion at the bottom is stand-in-only (issue #382).
-	// The loopback stand-in has no link to share, so the only thing that
-	// can slow a user read there is the overlap itself, which is exactly
-	// what this bench guards. Real storage shares one link between the
-	// prefetch pass and the user's own read, and the first read through a
-	// fresh mount pays connection costs a loopback server does not have,
-	// so the same healthy overlap is slower there than any stand-in figure
-	// can be: drive#382 measured 218 ms against 64 ms on the iDrive e2
-	// account. Real storage logs the figures and does not assert them, so
-	// a `-bench Bench` run against a real endpoint finishes green.
+	// The overlap assertion at the bottom is 20 ms and 2x on a non-HTTPS
+	// server (issue #382). The loopback stand-in has no link to share, so
+	// the only thing that can slow a user read there is the overlap itself.
+	// HTTPS real storage shares one link between the prefetch pass and the
+	// user's own read, and the first read through a fresh mount pays
+	// connection costs a loopback server does not have, so the same healthy
+	// overlap is slower there than any stand-in figure can be: drive#382
+	// measured 218 ms against 64 ms (3.4x) on the iDrive e2 account, and
+	// this branch reproduced 194 ms against 62 ms (3.1x). The HTTPS gate
+	// is 10x the control, so those pairs pass and a stall that holds the
+	// pipe (a 200 ms injected delay, 25x) still fails.
 	h := benchSetup(b)
 	local := filepath.Join(h.root, "fixtures", "busy")
 	if err := os.MkdirAll(local, 0o755); err != nil {
@@ -999,15 +1037,18 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	region := envOr("DRIVE_BENCH_REGION", "unmeasured")
 	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s storage=%s region=%s", with.Seconds(), storage, region)
 	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s storage=%s region=%s", without.Seconds(), storage, region)
-	// Real storage: the figures above are the measurement, and the overlap
-	// is expected (see the comment at the top of this function), so the
-	// assertion below is the stand-in's alone. The reference pair a real run
-	// is compared against lives in docs/research/prefetch-overlap-bench.md.
-	if h.real {
-		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=stand-in-only storage=%s region=%s note=measured not asserted", storage, region)
-		return
+	// HTTPS is the real-storage check: h.real is also true for an HTTP
+	// server on this host's own IP, which has no WAN link to share, so that
+	// path keeps the 20 ms / 2x rule. The 10x pairs live in
+	// docs/research/prefetch-overlap-bench.md and in TestPrefetchOverlapTooSlow.
+	https := strings.HasPrefix(h.cfg.Endpoint, "https://")
+	if https {
+		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=real-10x storage=%s region=%s note=measured_not_2x", storage, region)
 	}
-	if with > without+20*time.Millisecond && with > without*2 {
+	if prefetchOverlapTooSlow(with, without, https) {
+		if https {
+			b.Fatalf("user read during prefetch %s is more than 10x %s without", with, without)
+		}
 		b.Fatalf("user read during prefetch %s is slower than %s without", with, without)
 	}
 }
