@@ -3,9 +3,11 @@
 -- existing table touched, no column dropped or renamed, so a rollback is
 -- rolling the code back. D1 has no down-migrations, so this file is one-way.
 --
--- Numbered 0011 and filed under drive/ because billing_pushes is customer
+-- Numbered 0013 and filed under drive/ because billing_pushes is customer
 -- data, the same drive database usage_minutes already lives in (METER_DB /
--- DRIVE_DB).
+-- DRIVE_DB). 0011 is rate_limit on origin/main and 0012 is branch snapshots,
+-- so this takes the next free number; the deploy sorts on the numeric prefix
+-- alone, and two files sharing one would race for the apply order.
 --
 -- The push reads accounts.dodo_customer_id, but `accounts` is NOT created
 -- here: 0010_accounts_devices.sql already owns it (id, email, created_at,

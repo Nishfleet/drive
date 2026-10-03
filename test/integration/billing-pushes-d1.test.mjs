@@ -43,8 +43,8 @@ test("no two migrations create the same table, so the apply order is never ambig
 
 test("the real migrations create billing_pushes and accounts", () => {
   assert.ok(
-    migrationFiles.includes("0011_billing_pushes.sql"),
-    "0011_billing_pushes.sql is missing",
+    migrationFiles.includes("0013_billing_pushes.sql"),
+    "0013_billing_pushes.sql is missing",
   );
   const { sqlite } = makeMeteredDB();
   const tables = sqlite
@@ -76,7 +76,7 @@ test("the real migrations create billing_pushes and accounts", () => {
     .join(",");
   assert.equal(key, "account_id,hour");
   const migration = readFileSync(
-    new URL("../../migrations/drive/0011_billing_pushes.sql", import.meta.url),
+    new URL("../../migrations/drive/0013_billing_pushes.sql", import.meta.url),
     "utf8",
   );
   assert.match(migration, /CREATE TABLE IF NOT EXISTS billing_pushes/);
