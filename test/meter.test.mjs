@@ -1663,6 +1663,18 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
       hiddenAt: midnight() + 40 * MINUTE_MS,
     },
     { sizeBytes: 4 * GB, createdAt: midnight() + 40 * MINUTE_MS, hiddenAt: null },
+    // An unrelated collision, the waiver key's documented bound (drive issue
+    // #104): a version hidden at the instant an unrelated, different-keyed
+    // version of the same size was created. The key is account + size +
+    // instant, so both sides must waive the same shortfall - the test holds
+    // SQL and JS to the same answer, not to the answer the key was written
+    // for, so the approximation cannot make the two drift apart.
+    {
+      sizeBytes: 8 * GB,
+      createdAt: midnight() + 20 * MINUTE_MS,
+      hiddenAt: midnight() + 50 * MINUTE_MS,
+    },
+    { sizeBytes: 8 * GB, createdAt: midnight() + 50 * MINUTE_MS, hiddenAt: null },
   ];
   for (let offset = 0; offset < 3; offset += 1) {
     const hour = midnight() + offset * 60 * MINUTE_MS;
