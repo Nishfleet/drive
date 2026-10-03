@@ -67,11 +67,9 @@ whether it is honest: whether the storage server copies the bytes or the user's 
   after". `rclone serve s3` (the stand-in delta-uploads.md used) was not used here because its
   fake-S3 backend blows up on the multipart copy path.
 - Mount: stock `rclone mount` with exactly the flags the product's mount passes — the values in
-  cmd/drive/config.go and VFSArgs() in cmd/drive/mount.go (`--vfs-cache-mode full`,
-  `--vfs-write-back 5s`, `--vfs-cache-max-size 20G`, `--dir-cache-time 5s`,
-  `--vfs-read-chunk-size 128M`, `--vfs-read-chunk-streams 2`, `--buffer-size 32M`,
-  `--transfers 4`, `--vfs-read-ahead 128k`, `--vfs-read-chunk-size-limit 1G`,
-  `--vfs-cache-max-age 24h`, `--rc --rc-addr 127.0.0.1:39199 --rc-no-auth`). A person's mount
+  cmd/drive/config.go and `VFSArgs()` in cmd/drive/mount.go (`--vfs-cache-mode full`, ...);
+  the remote-control flags `--rc --rc-addr <loopback> --rc-no-auth` are added by
+  `BuildMountPlan` (`cmd/drive/mount.go:263`) rather than `VFSArgs()`. A person's mount
   never sets a `DRIVE_BENCH_*` override, so none is set here.
 - Files: 200 × 64 KiB (Space's published shape for its 99 ms, so the two counts are over the same
   number of files) and 10 × 1 GiB (a 10 GiB folder, the "10 GB folder" this issue names). Both are
@@ -89,6 +87,9 @@ whether it is honest: whether the storage server copies the bytes or the user's 
 |---|------|-----:|-------------:|-------------------:|------------------:|---------------------------|
 | A | rename a 200-file folder (200 × 64 KiB = 13,107,200 B) | 5 | 0.45, 0.57, 0.57, 0.65, 0.72 (mean 0.59) | 200 | **0** | 28 KiB → 28 KiB |
 | B | move a 10 GiB folder (10 × 1 GiB = 10,737,418,240 B) | 3 | 20.06, 16.87, 15.99 (mean 17.6) | 10 | **0** | 28 KiB → 28 KiB |
+
+> Re-run on merged head (2026-10-03): rename mean 0.44 s (4 runs), move mean 19.2 s (2 runs).
+> Same shape every time: 0 bytes re-uploaded, VFS cache flat at 28 KiB.
 
 Readings worth quoting:
 
@@ -155,7 +156,7 @@ folder move as if the moved bytes were new storage.
   needs a FUSE mount plus its own metadata store, which docs/research/delta-uploads.md already
   measured as a 2.0–2.06× storage cost and a loss of the plain-file model. Out for the same reasons.
 
-## Repeating the measurements
+## Re-running the measurements against merged head
 
 Nothing is committed as a script: the commands below are pasted into a shell, the way
 docs/research/delta-uploads.md's are. No `*.sh`, no `scripts/`. The credential is a throwaway
@@ -215,6 +216,24 @@ grep -icE "Starting.*upload|Uploaded" /tmp/folder-moves-lab/mount.log # 0
 # and the bucket held the same bytes before and after:
 rclone size fm:fm-bucket --config /tmp/folder-moves-lab/rclone.conf
 ```
+
+A second run against the same stand-in after main's merge (2026-10-03, `/tmp/folder-moves-verify`,
+bucket `fm-verify-bucket`) confirmed the same shape:
+
+```
+rename-200 run 2-5 wall = 0.555, 0.449, 0.399, 0.353 (mean 0.44)
+move-10g   run 2-3 wall = 21.24, 17.08 (mean 19.2)
+serverSideCopies 200/10  serverSideCopyBytes 13107200 / 10737418240  totalTransfers 210  renames 210  deletes 210
+grep -c "Copied (server-side copy)" mount.log   # 210
+# 0.00 (any) upload lines
+du -sk cache  # 28 KiB → 28 KiB
+rclone size fm:fm-verify-bucket   # 210 objects / 10.012 GiB before and after
+```
+
+Re-run reason: `origin/main` advanced by 4 commits while this branch was open, and
+`BuildMountPlan` now passes the remote-control flags rather than `VFSArgs()` (the rc address is
+still loopback, and the VFS flags are unchanged). Nothing this issue ships changed the mount's
+byte path.
 
 The meter's numbers are the test, not a lab: `node --test test/meter.test.mjs` runs
 "a move adds no billed bytes, and a move inside the file's first hour adds none either" against the
