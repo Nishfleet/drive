@@ -1065,12 +1065,16 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 	}
 	writeCacheMax(t, home, capSize)
 	_ = standinEnv(t, home, cfg)
+	// This host already has a mount on the shipped 127.0.0.1:5572, so the
+	// proof binds its own loopback port. The client below reads that same
+	// address, or the stats call would talk to the other mount.
+	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
 	_, stop := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
+	c := newRCClient("rclone", RCAddr(), RemoteFor(cfg))
 	stats, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
