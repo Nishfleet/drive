@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-03
 
+- `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
+  with no delete, stores it 0600, and prints the prefix plus the two env var
+  names an agent tool would run on — never the secret, never on the command
+  line. One api base fronts both `/api/branches` and `/v1/keys`.
 - The Dodo billing push host is configurable via `DODO_BASE_URL` (env), defaulting
   to `test.dodopayments.com`, so live billing can be switched on with one env var
   instead of a code change. The source never names the live host; a misconfigured
