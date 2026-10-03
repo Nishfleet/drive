@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-03
 
+- `drive offline` and `drive online`: keep a file or folder on this computer
+  so it opens with no internet, and `drive status` lists what is kept and how
+  much disk it uses. New files in a kept folder stay kept. The copy lives in
+  rclone's own cache; filling the cache does not drop it.
+
 - `drive status` says what is waiting to upload and why: a cut-off upload
   resumes from rclone's VFS cache, a full cache disk fails with the table's
   disk-full words and loses nothing already saved, and a killed mount still

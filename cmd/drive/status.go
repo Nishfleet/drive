@@ -131,6 +131,27 @@ func runStatus(args []string) error {
 	// the marker file beside it so a drive that is paused but not mounted
 	// still says Paused rather than nothing.
 	fmt.Println(transfersLine(home, on))
+	// What this computer is keeping on purpose (issue #115). The list is read
+	// from the one file `drive offline` writes, and the sizes from the mount, so
+	// this line is the same numbers `drive offline --list` prints and neither
+	// can drift from the other.
+	idx, err := LoadOffline(home)
+	if err != nil {
+		return err
+	}
+	if idx.Empty() {
+		fmt.Println("offline: none")
+	} else {
+		usage, err := MeasureOffline(mountDir, idx.Paths)
+		if err != nil {
+			return err
+		}
+		_, bytes, err := UniqueOffline(mountDir, idx.Paths)
+		if err != nil {
+			return err
+		}
+		printOfflineUsage(usage, bytes)
+	}
 	creds, err := LoadCredentials(home)
 	if err != nil {
 		return err
