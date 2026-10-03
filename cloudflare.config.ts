@@ -110,6 +110,16 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
+      // The Dodo billing push (drive issue #51) reads
+      // DODO_PAYMENTS_API_KEY from a Worker secret, the same
+      // way METER_EVENT_TOKEN above does. A missing secret makes
+      // pushBillingHours skip the ingest rather than failing the
+      // meter's rollup (src/dodo.js), so a deploy that has not
+      // set it still rolls hours. Set it once, the same way the
+      // other secrets are set (it persists across deploys):
+      //   cf workers secrets update DODO_PAYMENTS_API_KEY --type secret_text \
+      //     --text <key> --worker drive-pricing
+      DODO_PAYMENTS_API_KEY: bindings.secret(),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.
