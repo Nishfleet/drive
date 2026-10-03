@@ -7,15 +7,23 @@
 //
 //   * the FileStore (src/files.js), for the copy and for the file listings the
 //     diff compares, and
-//   * the `branches` table (migration 0003), for the snapshot taken at branch
-//     time and the branch's state (`open` / `approved` / `discarded`).
+//   * the `branches` table (migration 0003), for the branch's state
+//     (`open` / `approved` / `discarded`), and
+//   * the snapshot store (a KV namespace, `BRANCH_SNAPSHOTS`, migration 0012),
+//     for the `{size, etag, modified}` snapshot taken at branch time — one
+//     entry per file, held out of the row so a branch of tens of thousands of
+//     files lands (drive#252, the phase 2 of drive#157).
 //
 // The copy is a server-side copy (`FileStore.copy`): S3's CopyObject on the
 // real store, so a branch never streams the bytes through the Worker. The
 // snapshot is one entry per file, `{size, etag, modified}` at branch time, so
 // an approve can tell a file the agent changed from one the original changed
 // under it — the done-when's "an approve where the original changed after
-// branching stops and names the file".
+// branching stops and names the file". The snapshot lives in KV, and the row
+// carries a pointer to its key and its byte length; a row written before
+// migration 0012 has an empty pointer and its JSON still in the legacy
+// `branches.snapshot` column, which `readSnapshot` falls back to so an open
+// branch made before this change still diffs and approves.
 //
 // Two rules make that safe:
 //
@@ -42,12 +50,105 @@ import { unauthorizedResponse } from "./status.js";
 /** @typedef {import("./files.js").FileStore} FileStore */
 /** One file at branch time: what `fingerprint` records and a diff compares. */
 /** @typedef {{size: number, etag: string|null, modified: number|null}} Fingerprint */
-/** One row of the `branches` table as this module uses it. */
-/**
+/** One row of the `branches` table as this module uses it. The snapshot is
+ * resolved by `readSnapshot` (the KV value when the row carries a pointer, the
+ * legacy `branches.snapshot` column otherwise); `snapshotKey`/`snapshotBytes`
+ * are what the row actually stores.
  * @typedef {{name: string, sourcePrefix: string, branchPrefix: string,
  *   state: string, createdAt: string, changedBy: string,
- *   snapshot: Record<string, Fingerprint>}} Branch
+ *   snapshot: Record<string, Fingerprint>,
+ *   snapshotKey: string, snapshotBytes: number}} Branch
  */
+
+/**
+ * The snapshot store (drive issue #252, phase 2 of #157): the JSON for a
+ * branch, held in a KV namespace rather than in the `branches` row, so a
+ * branch of tens of thousands of files lands instead of being refused by D1's
+ * 1 MiB row limit. The row keeps a pointer to the key and the value's length
+ * (migration 0012); this interface is the seam the Worker binds (KV) and the
+ * seam tests stand in for, so `createBranch`/`diffBranch`/`approve` never name
+ * a provider.
+ *
+ * `put` writes the JSON and returns its byte length; `get` reads it back, or
+ * null when the key is not there (a row pointing at a value KV does not hold
+ * is a real state, not an empty branch, and is handled where it is read).
+ *
+ * @typedef {object} SnapshotStore
+ * @property {(key: string, json: string) => Promise<number>} put Writes the
+ *   snapshot JSON and answers its byte length.
+ * @property {(key: string) => Promise<string|null>} get Reads the snapshot
+ *   JSON back, or null when the key holds nothing.
+ */
+
+/** The prefix every snapshot key carries, so one account's snapshot is never
+ * another's. The account id sits in a full segment (`u/<id>/…`) so an id that
+ * is a prefix of another (`1` and `10`) cannot reach across — the same rule
+ * `accountPrefix` applies to storage keys (src/files.js).
+ * @param {{id: string}} account
+ * @param {string} name the branch name
+ * @returns {string} the KV key
+ */
+export function snapshotKey(account, name) {
+  if (typeof account !== "object" || account === null || typeof account.id !== "string") {
+    throw new TypeError(
+      `a snapshot key needs a signed-in account with an id, got ${String(account)}`,
+    );
+  }
+  if (account.id.length === 0 || account.id.includes("/")) {
+    throw new TypeError(`an account id is one path segment, got "${account.id}"`);
+  }
+  return `u/${account.id}/branch/${name}`;
+}
+
+/**
+ * The KV-backed snapshot store. `kv` is the BRANCH_SNAPSHOTS namespace
+ * (cloudflare.config.ts); it is a thin object over the binding, so there is
+ * nothing to cache on the isolate and no stale copy to serve — the same shape
+ * `linksFor` has for share links (src/index.js).
+ * @param {KVNamespace} kv
+ * @returns {SnapshotStore}
+ */
+export function createKvSnapshotStore(kv) {
+  if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") {
+    throw new TypeError(`createKvSnapshotStore needs a KV namespace, got ${String(kv)}`);
+  }
+  return {
+    async put(key, json) {
+      await kv.put(key, json);
+      // The byte length is what the row records so a caller can see a branch's
+      // snapshot size without reading the value back.
+      return new TextEncoder().encode(json).length;
+    },
+    async get(key) {
+      return kv.get(key);
+    },
+  };
+}
+
+/**
+ * An in-memory snapshot store, for the test harness and for a deployment with
+ * no BRANCH_SNAPSHOTS binding. It holds one JSON per key in a Map, so a second
+ * instance is a fresh store over the same keys only if it is handed the same
+ * Map; the tests that need a snapshot written by one call and read by another
+ * share this object. Production always has the KV binding (a missing one makes
+ * `createBranch` fall back to the row, below, rather than drop a branch).
+ * @param {Map<string, string>} [values]
+ * @returns {SnapshotStore & {values: Map<string, string>}}
+ */
+export function createMemorySnapshotStore(values = new Map()) {
+  return {
+    values,
+    /** @param {string} key @param {string} json */
+    async put(key, json) {
+      values.set(key, json);
+      return new TextEncoder().encode(json).length;
+    },
+    /** @param {string} key */
+    async get(key) {
+      return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
+    },
+  };
+}
 
 /** The one place an unknown thrown value becomes a message: a caught value is
  * `unknown`, and only an Error has a `.message` to log.
@@ -176,6 +277,64 @@ export function sameFile(a, b) {
     return a.etag === b.etag && a.size === b.size;
   }
   return a.size === b.size && a.modified === b.modified;
+}
+
+/**
+ * The snapshot JSON for one branch, as a map of relative path to fingerprint.
+ * The value comes from the KV store when the row carries a pointer (the
+ * current shape, migration 0012), and from the legacy `branches.snapshot`
+ * column when it does not (a row written before this change, which must keep
+ * diffing). A value that cannot be read as a map is treated as empty, exactly
+ * as `toBranch` treats an unreadable column: an approve with an unreadable
+ * snapshot stops on every file, which is the safe direction.
+ *
+ * `getBranch`/`listBranches` read the column once and hand it here; the KV
+ * read happens per branch that is actually diffed, so a list does not fetch
+ * every branch's snapshot up front (drive#252's read-path requirement).
+ *
+ * Exported because the one other reader of a branch row's snapshot is the
+ * rewind preview (src/rewind.js), which diffs a row `listBranches` returned and
+ * must resolve the same way this does rather than open-code the rule.
+ *
+ * @param {SnapshotStore|null|undefined} snapshots
+ * @param {string} key the row's `snapshot_key`, '' when the row predates KV
+ * @param {unknown} columnValue the row's legacy `snapshot` column
+ * @returns {Promise<Record<string, Fingerprint>>}
+ */
+export async function readSnapshot(snapshots, key, columnValue) {
+  if (key !== "" && snapshots) {
+    const value = await snapshots.get(key);
+    if (typeof value === "string") {
+      return parseSnapshot(value);
+    }
+    // A row that names a key the store does not hold is a real state, not an
+    // empty branch: falling through to the (empty) column makes the diff see
+    // every file as added, which surfaces as a full-count diff rather than a
+    // silent "no changes". parseSnapshot is the one reader, so the two sources
+    // cannot drift.
+  }
+  return parseSnapshot(typeof columnValue === "string" ? columnValue : "{}");
+}
+
+/**
+ * The one reader of a snapshot's JSON: a JSON object of fingerprints, or an
+ * empty map. A value that is not an object, or does not parse, is empty — the
+ * same safe direction as a missing entry.
+ * @param {string} json
+ * @returns {Record<string, Fingerprint>}
+ */
+function parseSnapshot(json) {
+  /** @type {Record<string, Fingerprint>} */
+  let snapshot = {};
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
+    }
+  } catch {
+    snapshot = {};
+  }
+  return snapshot;
 }
 
 /**
@@ -346,25 +505,15 @@ export async function diffBranch(store, branch) {
 
 // ---------------------------------------------------------------- the table
 
-/** A row as this module uses it: a parsed snapshot and camelCase names.
- * A D1 row is untyped (`Record<string, unknown>`), so each column is read by
- * name and given the shape the schema promises (migration 0003).
+/** A row as this module uses it: camelCase names, and the snapshot already
+ * resolved by `readSnapshot` (the KV value when the row carries a pointer, the
+ * legacy column otherwise). A D1 row is untyped (`Record<string, unknown>`), so
+ * each column is read by name and given the shape the schema promises
+ * (migrations 0003 and 0012).
  * @param {Record<string, unknown>} row
+ * @param {Record<string, Fingerprint>} snapshot
  * @returns {Branch} */
-function toBranch(row) {
-  /** @type {Record<string, Fingerprint>} */
-  let snapshot = {};
-  try {
-    const parsed = JSON.parse(typeof row.snapshot === "string" ? row.snapshot : "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
-    }
-  } catch {
-    // A snapshot that cannot be read is treated as empty rather than as "no
-    // changes": an approve with an unreadable snapshot stops on every file,
-    // which is the safe direction.
-    snapshot = {};
-  }
+function toBranch(row, snapshot) {
   return {
     name: String(row.name),
     sourcePrefix: String(row.source_prefix),
@@ -379,24 +528,38 @@ function toBranch(row) {
     // what a branch a person made in the app is.
     changedBy: typeof row.changed_by_key_id === "string" ? row.changed_by_key_id : "",
     snapshot,
+    // Where the snapshot itself lives (migration 0012). The key is '' on a row
+    // written before this change, which is what sends the read back to the
+    // legacy column, and the byte length is 0 on such a row.
+    snapshotKey: typeof row.snapshot_key === "string" ? row.snapshot_key : "",
+    snapshotBytes: typeof row.snapshot_bytes === "number" ? row.snapshot_bytes : 0,
   };
 }
 
 /** One of the account's own branches, or null. A name from another account is
  * "no such branch".
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {{id: string}} account
  * @param {string} name
  * @returns {Promise<Branch|null>} */
-async function getBranch(db, account, name) {
+async function getBranch(db, snapshots, account, name) {
   const row = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
-        "FROM branches WHERE account_id = ?1 AND name = ?2",
+      "SELECT name, source_prefix, branch_prefix, snapshot, snapshot_key, snapshot_bytes, " +
+        "state, created_at, changed_by_key_id FROM branches WHERE account_id = ?1 AND name = ?2",
     )
     .bind(account.id, name)
     .first();
-  return row === undefined || row === null ? null : toBranch(row);
+  if (row === undefined || row === null) {
+    return null;
+  }
+  const snapshot = await readSnapshot(
+    snapshots,
+    typeof row.snapshot_key === "string" ? row.snapshot_key : "",
+    row.snapshot,
+  );
+  return toBranch(row, snapshot);
 }
 
 // --------------------------------------------------------------- the actions
@@ -409,12 +572,16 @@ async function getBranch(db, account, name) {
  * a 409 rather than a silent overwrite of the first branch's snapshot.
  *
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store; without it the
+ *   snapshot falls back to the legacy `branches.snapshot` column (the
+ *   pre-#252 behaviour) so a deployment that has not added the namespace yet
+ *   still branches small folders.
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {{folder: unknown, name: unknown, changedBy?: unknown}} request
  * @param {() => number} now
  */
-export async function createBranch(db, store, account, request, now = () => Date.now()) {
+export async function createBranch(db, snapshots, store, account, request, now = () => Date.now()) {
   const folder = validatePath(request.folder);
   if (folder.error) {
     return { error: `That folder cannot be branched: ${folder.error}`, status: 400 };
@@ -445,7 +612,7 @@ export async function createBranch(db, store, account, request, now = () => Date
   if (kind === "missing") {
     return { error: "That folder is not in the drive.", status: 404 };
   }
-  const existing = await getBranch(db, account, name);
+  const existing = await getBranch(db, snapshots, account, name);
   if (existing && existing.state === "open") {
     return { error: failureMessage("branch-exists"), status: 409 };
   }
@@ -466,18 +633,50 @@ export async function createBranch(db, store, account, request, now = () => Date
   // for the activity list, and every read of this row is scoped by account_id
   // in the query itself, never by the value of this column.
   const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
+  // The snapshot leaves the row and goes to the KV store (drive#252), so a
+  // branch of tens of thousands of files lands instead of being refused by
+  // D1's 1 MiB row limit. The row keeps a pointer to the key and the value's
+  // byte length (migration 0012); the legacy `snapshot` column is written as
+  // the empty object so the previous version of the code still reads a
+  // well-formed (empty) row on rollback, and a row made before this change
+  // keeps its JSON there for the fallback read.
+  const key = snapshots ? snapshotKey(account, name) : "";
+  let snapshotBytes = 0;
+  if (snapshots) {
+    try {
+      snapshotBytes = await snapshots.put(key, JSON.stringify(snapshot));
+    } catch (error) {
+      // The copy is on disk but the snapshot is not stored, so a diff would
+      // see the whole folder as added. Clean the copy up, then report the
+      // storage failure rather than returning 201 for a half-made branch.
+      console.error?.(
+        `branch snapshot write failed for ${account.id}/${name}: ${errorText(error)}`,
+      );
+      try {
+        for (const rel of Object.keys(snapshot)) {
+          await store.remove(`${branchPrefix}/${rel}`);
+        }
+      } catch {
+        /* best-effort cleanup; the 500 is the answer */
+      }
+      return { error: failureMessage("storage-down"), status: 500 };
+    }
+  }
   try {
     await db
       .prepare(
-        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id) " +
-          "VALUES (?1,?2,?3,?4,?5,'open',?6,?7)",
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+          "snapshot_key, snapshot_bytes, state, created_at, changed_by_key_id) " +
+          "VALUES (?1,?2,?3,?4,?5,?6,?7,'open',?8,?9)",
       )
       .bind(
         account.id,
         name,
         folderPath,
         branchPrefix,
-        JSON.stringify(snapshot),
+        snapshots ? "{}" : JSON.stringify(snapshot),
+        key,
+        snapshotBytes,
         createdAt,
         changedBy,
       )
@@ -487,17 +686,18 @@ export async function createBranch(db, store, account, request, now = () => Date
     // invisible and a retry would see the name as free. Clean the copy up, then
     // report the failure rather than returning 201 for a half-made branch.
     //
-    // A row over the database's own row limit lands here with the column's name
-    // in the error, never silently (drive#157): D1's row limit is 1 MiB and a
-    // 100,000-file branch snapshots to ~11 MiB, measured against these
-    // migrations (test/branches-snapshot.test.mjs is the pinned number, and
-    // `snapshot-bound` in src/messages.js is what the person is told, and the
-    // phase-2 design is issue #252).
+    // A row over the database's own row limit can no longer be the snapshot
+    // (drive#252 moved it to KV), but the check stays: another over-limit write
+    // on this row must still answer the legible `snapshot-bound` sentence
+    // rather than the generic one, and it costs one regex.
     const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch insert failed for ${account.id}/${name}: ${errorText(error)}`);
     try {
       for (const rel of Object.keys(snapshot)) {
         await store.remove(`${branchPrefix}/${rel}`);
+      }
+      if (snapshots) {
+        await snapshots.put(key, "");
       }
       await db
         .prepare(
@@ -526,25 +726,46 @@ export async function createBranch(db, store, account, request, now = () => Date
  * changed and whether the original moved under it. The count is the live diff,
  * so it is the number `drive diff` would print, not a number taken on trust
  * from branch time. Closed branches report zero; they need no store walk.
+ *
+ * The row's snapshot column is not selected and the snapshot is not put in the
+ * answer (drive#252): the list is the account's whole set of branches, and one
+ * snapshot is ~117 bytes a file, so a 100,000-file branch would put ~11 MiB of
+ * metadata in one JSON body for a screen that only shows a count. What the row
+ * carries instead is the pointer (`snapshotKey`) and the value's length
+ * (`snapshotBytes`); a caller that diffs one branch — the rewind preview,
+ * `GET /api/branches/<name>` — resolves that branch's snapshot through
+ * `readSnapshot` and pays for one branch, not for all of them. A branch row
+ * from this list therefore does NOT carry a usable `snapshot`: its `changed`
+ * and `sourceChanged` counts are already computed here, and a diff must call
+ * `readSnapshot` first.
+ *
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  */
-export async function listBranches(db, store, account) {
+export async function listBranches(db, snapshots, store, account) {
   const result = await db
     .prepare(
-      "SELECT name, source_prefix, branch_prefix, snapshot, state, created_at, changed_by_key_id " +
-        "FROM branches WHERE account_id = ?1 ORDER BY created_at DESC, name",
+      "SELECT name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, state, " +
+        "created_at, changed_by_key_id FROM branches WHERE account_id = ?1 " +
+        "ORDER BY created_at DESC, name",
     )
     .bind(account.id)
     .all();
   const branches = [];
   for (const row of result?.results ?? []) {
-    const branch = toBranch(row);
+    // No `snapshot` column is selected: an account's branch list must not pull
+    // every branch's snapshot into one answer, which is the read-path half of
+    // drive#252. The empty map here is the row's honest state — the row holds
+    // a pointer, not the JSON — and the count below resolves the one snapshot
+    // this branch needs, through the same reader every other diff uses.
+    const branch = toBranch(row, {});
     let changed = 0;
     let sourceChanged = 0;
     if (branch.state === "open") {
-      const diff = await diffBranch(store, branch);
+      const snapshot = await readSnapshot(snapshots, branch.snapshotKey, row.snapshot);
+      const diff = await diffBranch(store, { ...branch, snapshot });
       changed = diff.added.length + diff.changed.length + diff.removed.length;
       sourceChanged = diff.sourceChanged.length;
     }
@@ -563,6 +784,7 @@ export async function listBranches(db, store, account) {
  * resumes from where a partial run left off instead of re-reporting applied
  * files as drift and locking the branch forever.
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
@@ -570,8 +792,8 @@ export async function listBranches(db, store, account) {
  *   |{error: string, status: number, files: string[]}
  *   |{error: string, status: number}>}
  */
-export async function approveBranch(db, store, account, name) {
-  const branch = await getBranch(db, account, name);
+export async function approveBranch(db, snapshots, store, account, name) {
+  const branch = await getBranch(db, snapshots, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
@@ -646,12 +868,12 @@ export async function approveBranch(db, store, account, name) {
     failure = { error: failureMessage("storage-down"), status: 500 };
   }
   if (appliedAny && failure === null) {
-    await saveSnapshot(db, account, name, snapshot);
+    await saveSnapshot(db, account, name, snapshot, snapshots);
   }
   if (failure !== null) {
     // Record what was applied so a retry resumes; the caller sees the clash.
     if (appliedAny) {
-      await saveSnapshot(db, account, name, snapshot);
+      await saveSnapshot(db, account, name, snapshot, snapshots);
     }
     return failure;
   }
@@ -671,14 +893,15 @@ export async function approveBranch(db, store, account, name) {
  * exactly as it was. The bytes stay recoverable through the storage's own
  * version history for 30 days (docs/build-spec.md, "Old versions").
  * @param {D1Database} db
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore} store
  * @param {{id: string}} account
  * @param {string} name
  * @returns {Promise<{name: string, state: string, removed: number}
  *   |{error: string, status: number}>}
  */
-export async function discardBranch(db, store, account, name) {
-  const branch = await getBranch(db, account, name);
+export async function discardBranch(db, snapshots, store, account, name) {
+  const branch = await getBranch(db, snapshots, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
@@ -707,16 +930,41 @@ export async function discardBranch(db, store, account, name) {
 
 // Persists one account's branch snapshot, so an approve that is retried after
 // a partial run sees each file it already copied back as no longer changed.
+// The value goes where this branch's snapshot already lives: the KV store when
+// the row carries a pointer (drive#252), and the legacy column otherwise, so a
+// row written before this change resumes exactly as it did. A row with a
+// pointer also gets its byte length refreshed, so `snapshotBytes` stays the
+// honest length of the value the diff reads.
 /**
  * @param {D1Database} db
  * @param {{id: string}} account
  * @param {string} name
  * @param {Record<string, Fingerprint>} snapshot
+ * @param {SnapshotStore|null} [snapshots] the KV snapshot store
  */
-async function saveSnapshot(db, account, name, snapshot) {
+async function saveSnapshot(db, account, name, snapshot, snapshots = null) {
+  const json = JSON.stringify(snapshot);
+  if (snapshots) {
+    // The row decides the key, not this function: `branches.snapshot_key` is
+    // already `u/<id>/branch/<name>`, so an approve can never write another
+    // account's value even if the caller handed it a strange store.
+    const row = await db
+      .prepare("SELECT snapshot_key FROM branches WHERE account_id = ?1 AND name = ?2")
+      .bind(account.id, name)
+      .first();
+    const key = row && typeof row.snapshot_key === "string" ? row.snapshot_key : "";
+    if (key !== "") {
+      const bytes = await snapshots.put(key, json);
+      await db
+        .prepare("UPDATE branches SET snapshot_bytes = ?3 WHERE account_id = ?1 AND name = ?2")
+        .bind(account.id, name, bytes)
+        .run();
+      return;
+    }
+  }
   await db
     .prepare("UPDATE branches SET snapshot = ?3 WHERE account_id = ?1 AND name = ?2")
-    .bind(account.id, name, JSON.stringify(snapshot))
+    .bind(account.id, name, json)
     .run();
 }
 
@@ -754,11 +1002,19 @@ function sourceMoved(named, total) {
  *
  * @param {Request} request
  * @param {unknown} db the branches table
+ * @param {SnapshotStore|null} snapshots the KV snapshot store
  * @param {import("./files.js").FileStore|null} store the shared, unscoped store
  * @param {{id: string, name: string}|null} account the signed-in account
  * @param {() => number} now
  */
-export async function handleBranchesRequest(request, db, store, account, now = () => Date.now()) {
+export async function handleBranchesRequest(
+  request,
+  db,
+  snapshots,
+  store,
+  account,
+  now = () => Date.now(),
+) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -771,14 +1027,14 @@ export async function handleBranchesRequest(request, db, store, account, now = (
   const rest = url.pathname.slice(BRANCHES_ENDPOINT.length).replace(/\/$/, "");
   if (rest === "") {
     if (request.method === "GET") {
-      return json({ branches: await listBranches(database, scoped, account) });
+      return json({ branches: await listBranches(database, snapshots, scoped, account) });
     }
     if (request.method === "POST") {
       const read = await readJsonBody(request);
       if (read.error) {
         return json({ error: read.error }, 400);
       }
-      const result = await createBranch(database, scoped, account, read.body, now);
+      const result = await createBranch(database, snapshots, scoped, account, read.body, now);
       if (result.error) {
         return json(result, result.status);
       }
@@ -803,7 +1059,7 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     if (request.method !== "GET") {
       return plain("Method not allowed. GET the branch's diff.", 405, { allow: "GET" });
     }
-    const branch = await getBranch(database, account, name);
+    const branch = await getBranch(database, snapshots, account, name);
     if (!branch) {
       return json({ error: failureMessage("branch-not-found") }, 404);
     }
@@ -814,12 +1070,17 @@ export async function handleBranchesRequest(request, db, store, account, now = (
         sourcePrefix: branch.sourcePrefix,
         state: branch.state,
         changedBy: branch.changedBy,
+        // The pointer and the length, never the snapshot itself: this answer
+        // carries the diff the caller asked for, and the snapshot is the
+        // account's whole branch metadata (drive#252).
+        snapshotKey: branch.snapshotKey,
+        snapshotBytes: branch.snapshotBytes,
       },
       diff,
     });
   }
   if (action === "approve" && request.method === "POST") {
-    const result = await approveBranch(database, scoped, account, name);
+    const result = await approveBranch(database, snapshots, scoped, account, name);
     // `approveBranch` answers a union, so the failed arm is the one that
     // carries a status; `"error" in result` is that arm's discriminator and
     // narrows the success arm to the object `json` sends with a 200.
@@ -829,7 +1090,7 @@ export async function handleBranchesRequest(request, db, store, account, now = (
     return json(result);
   }
   if (action === "discard" && request.method === "POST") {
-    const result = await discardBranch(database, scoped, account, name);
+    const result = await discardBranch(database, snapshots, scoped, account, name);
     if ("error" in result) {
       return json(result, result.status);
     }
