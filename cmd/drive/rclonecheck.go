@@ -53,6 +53,9 @@ func CheckRclone(goos, rcloneBin string) error {
 // os/kernel. A binary that prints nothing parsable is reported with what it
 // did print, because a too-old build and a broken build need different fixes.
 func InstalledRcloneVersion(rcloneBin string) (string, error) {
+	// rcloneBin is the path ResolveRclone already resolved (a flag, DRIVE_RCLONE,
+	// or PATH). exec.Command takes an argument vector and runs no shell.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	out, err := exec.Command(rcloneBin, "version").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("rclone version: %w: %s", err, firstLine(string(out)))
