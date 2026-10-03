@@ -11,12 +11,13 @@ and the `drive` command's own help. This directory is that eval (drive issue
 npm run eval:agents
 ```
 
-That renders the docs pages (`npm run docs:render`), then runs the promptfoo
-binary pinned in `evals/agents/` against `promptfooconfig.yaml`. Install that
-project once with `npm ci --prefix evals/agents`. There is no wrapper script
-and promptfoo is not a root dependency, so a root `npm ci` does not install
-it. Do not run `npx` or `npm exec` for it: that downloads the package each
-time and fills a runner's memory limit (drive#257).
+That renders the docs pages (`npm run docs:render`), runs the promptfoo binary
+pinned in `evals/agents/` against `promptfooconfig.yaml`, then runs the
+end-state suite (`endstate.py`). Install once with `npm ci --prefix
+evals/agents` and `npm run eval:agents:install`. There is no wrapper script and
+promptfoo is not a root dependency, so a root `npm ci` does not install it. Do
+not run `npx` or `npm exec` for it: that downloads the package each time and
+fills a runner's memory limit (drive#257).
 
 A held-out run is the same command with the split's path set. That path is
 outside this checkout, so the hill-climber (#223) cannot read the tasks from
@@ -29,15 +30,21 @@ npm run eval:agents -- --tests /home/nish/.local/share/drive/eval-holdout.yaml
 ## The tool, and why
 
 **[promptfoo](https://promptfoo.dev/)**, pinned at `0.123.1` in
-`evals/agents/package.json`. The repo is a Node repo, its test suite already
-runs under Node, and promptfoo is the stock tool for "a set of tasks, a set of
-graders, run them against N models and report a score" with no harness to
-hand-write. Inspect (AISI) is the other stock choice the issue names; it is
-the better tool for sandboxed shell tasks with an end-state grader (the file
-exists, the key is scoped). This suite's first slice is docs-and-CLI reading,
-whose graders are checks on the answer, so splitting the repo's toolchain into
-Python buys nothing today. End-state graders on a mounted stand-in are the
-next slice.
+`evals/agents/package.json`, runs the docs-and-CLI reading suite; the
+end-state suite (`endstate.py`) runs on
+**[Inspect](https://inspect.aisi.org.uk/)**, pinned in `requirements.txt`. The
+split follows the slices: the reading suite's graders are checks on the
+answer, and promptfoo grades that well — its stock `javascript` assertion is a
+pure function of the output. The end-state suite's graders check a real
+account on a storage stand-in after an agent has worked in it, and that needs
+an agent loop with a shell plus a scorer that reads the sandbox. Inspect ships
+both (`basic_agent`, `@scorer`); promptfoo's tool callbacks are single-turn —
+its own docs point complete agent loops at "the Agents SDK provider or a
+custom provider" — so the end-state check there would be a hand-written
+provider, which the issue rules out. End-state graders on a mounted stand-in
+are the next slice after this one (a real `drive mount`, #229 and #241).
+Install once, beside promptfoo's one-time install: `npm run
+eval:agents:install`.
 
 ## What the agent gets
 
@@ -99,16 +106,39 @@ still measure spread, because reasoning models vary at temperature 0. A run
 sends the fleet worker virtual key as `OPENAI_API_KEY` (promptfoo's stock
 OpenAI-compatible env). It does not call a paid external API.
 
+## The end-state suite
+
+`endstate.py` is the second half of the question: not "did the agent say the
+right command" but "what does the account hold now". Each sample gets a fresh
+account on a storage stand-in — a local `rclone serve s3`, the same stock
+stand-in the repo's storage tests run, with a `u/<id>/` prefix for every
+account, exactly the layout `src/files.js` pins (`u/${account}`) — with two
+files seeded into it, and the agent works on it with a shell.
+
+The grader (`end_state`) reads the account back and checks three things, and
+never reads the agent's answer:
+
+- **the target file exists with the right bytes** — the task's own end state;
+- **nothing got deleted** — every seeded file still holds its bytes;
+- **the key is scoped** — every prefix the stand-in holds belongs to an account
+  this run created, so nothing landed outside `u/` or in another account's
+  folder.
+
+The stand-in is anonymous (no `--auth-key`), like the repo's own: a key minted
+and enforced by a storage endpoint is the STS work in `workers/api/src/s3-keys.js`,
+and its real-vendor proof is #173. That is the one part of "the key is scoped"
+this stand-in cannot carry, and it is why the check above is a prefix check.
+
+`sandbox="local"` runs the agent's shell on the eval host. A model under test
+gets a shell: run it on a machine where that is acceptable, or move the suite
+to an Inspect compose sandbox (the isolation upgrade this slice leaves open).
+
 ## What is not done yet
 
-The graders in this first slice check the answer the agent writes, because the
-running stack the issue asks for — a fresh account on the storage stand-in, a
-mounted folder, a scoped key to attempt a delete with — is not wired into the
-suite yet. That is the next slice, and it is where the programmatic graders
-become end-state checks (the file exists with the right bytes, the key is
-scoped, the cap is stored, nothing was deleted) instead of checks on the
-command list. Until then this suite measures whether an agent can read the
-docs and the CLI correctly, which is the first half of the question.
+The end-state suite runs its tasks on a storage stand-in the agent reaches with
+`rclone`; a real `drive mount` in the sandbox — the mounted folder, a scoped key
+to attempt a delete with, the cap swap — is the next slice, with the proofs that
+need a real mount (#229, #241).
 
 ## The scoreboard row
 
