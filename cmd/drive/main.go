@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -63,6 +64,10 @@ Mount flags:
   --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --rc-addr     loopback address the mount's remote control binds (env
+                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+  --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
+                default the hostname)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
 
@@ -180,7 +185,7 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
 	var refusedSecret string
-	var endpoint, bucket, prefix, region, downloadURL, driveLetter string
+	var endpoint, bucket, prefix, region, downloadURL, device, rcAddr, driveLetter string
 	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
@@ -199,6 +204,17 @@ func runMount(args []string) error {
 	// Worker so the account's download bytes are counted (docs/build-spec.md
 	// "The pieces", items 2 and 4).
 	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
+	// The device name is what a conflict copy is called (issue #30): a
+	// person's two devices need to be told apart by name, so the flag is
+	// here rather than only in the environment, and the plan sanitizes
+	// whatever it carries into a filename both platforms accept.
+	fs.StringVar(&device, "device", "", "name for this device in a conflict copy")
+	// rclone's remote control is how the background fill, the conflict
+	// guard and `drive status` all reach the one mount. Two mounts on the
+	// same host (the two-machine proof, issue #30) cannot both bind one
+	// loopback address, so the address is a flag and an environment
+	// variable with a constant default; a non-loopback value is refused.
+	fs.StringVar(&rcAddr, "rc-addr", "", "loopback address the mount's remote control binds")
 	fs.StringVar(&driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
@@ -242,6 +258,24 @@ func runMount(args []string) error {
 	rclone, err := ResolveRclone(common.rclone)
 	if err != nil {
 		return err
+	}
+	// DRIVE_DEVICE is read here, beside the flag, so both sources of the
+	// device name live in one place; Mount sanitizes whatever it is given.
+	if strings.TrimSpace(device) != "" {
+		_ = os.Setenv(deviceEnvName, device)
+	}
+	if strings.TrimSpace(rcAddr) != "" {
+		// A remote-control address that is not loopback is refused here
+		// rather than silently replaced by the shipped one: rclone's
+		// remote control is unauthenticated by design, so a value that
+		// would bind it off this machine is a named failure at the
+		// operator's own command. The background login item still
+		// falls back, because it is not a command and cannot answer.
+		if !IsLoopbackAddr(rcAddr) {
+			return fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
+				"is unauthenticated, so it binds %s only", rcAddr, RCAddr())
+		}
+		_ = os.Setenv(rcAddrEnvName, rcAddr)
 	}
 	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun, driveLetter)
 }
