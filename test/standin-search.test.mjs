@@ -314,10 +314,20 @@ async function seedRealDrive(store) {
  * @returns {Promise<void>}
  */
 async function clearRealDrive(store) {
+  // Bounded batches, like the seed above: one removal at a time is
+  // 100,000 sequential round trips to the vendor, which is slower than
+  // the whole proof, while 50 at a time empties the drive in the time
+  // the seed took. A removal that fails is thrown, not swallowed, so a
+  // half-cleared drive is named rather than quietly left behind.
   for (let f = 0; f < FOLDERS; f++) {
-    const folder = await store.list(`/${`folder-${f}`}`);
-    for (const entry of folder) {
-      await store.remove(`/${`folder-${f}`}/${entry.name}`);
+    const folder = `folder-${f}`;
+    const entries = await store.list(`/${folder}`);
+    for (let start = 0; start < entries.length; start += 50) {
+      const batch = [];
+      for (let i = start; i < Math.min(start + 50, entries.length); i++) {
+        batch.push(store.remove(`/${folder}/${entries[i].name}`));
+      }
+      await Promise.all(batch);
     }
   }
 }
