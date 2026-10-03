@@ -152,6 +152,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 }
 
 /**
+ * The D1-backed device and cap store. Every method is a prepared statement
+ * against `migrations/drive/0010_accounts_devices.sql`, so a key minted on
+ * one Worker instance is the row the cap swap on the next instance reads.
+ *
  * @param {D1Database} db
  * @param {{now?: () => number, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
  */

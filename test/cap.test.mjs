@@ -926,6 +926,11 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
     store,
   );
   assert.equal(swapped.status, 200);
+  assert.equal(
+    swapped.headers.get("cache-control"),
+    "no-store",
+    "the swap answer carries the secret, so it must not be stored",
+  );
   const body = await swapped.json();
   assert.equal(
     body.cap.state,

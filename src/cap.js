@@ -514,12 +514,13 @@ export async function handleCapRequest(request, account, capStore) {
   const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
+  const credential = swapCredential(report);
   return new Response(
     JSON.stringify({
       ...summary,
       capLine: capLine(summary.cap),
       mount: report.mount,
-      ...(swapCredential(report) ? { credential: swapCredential(report) } : {}),
+      ...(credential ? { credential } : {}),
     }),
     {
       status: 200,

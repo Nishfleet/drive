@@ -91,6 +91,8 @@ func runCap(args []string) error {
 	// local sources below stay the fallback for a deployment that swapped a
 	// key without handing one back — the restart still comes up, on the key the
 	// CLI already had, rather than not at all.
+	// Mount.Restart was already required above; a credential with restart
+	// false never reaches here.
 	if cred := answer.Credential; cred != nil && cred.AccessKeyID != "" && cred.Secret != "" {
 		cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret)
 		if err != nil {
@@ -98,6 +100,15 @@ func runCap(args []string) error {
 		}
 		cfg.AccessKey = cred.AccessKeyID
 		cfg.SessionToken = cred.SessionToken
+		// LoadStorageConfig checked the env copies. These two are the
+		// server-minted values that actually get written, so they need the
+		// same newline/NUL refuse or they inject an rclone option.
+		if err := checkConfigValue("access key", cfg.AccessKey); err != nil {
+			return fmt.Errorf("restart the mount: %w", err)
+		}
+		if err := checkConfigValue("session token", cfg.SessionToken); err != nil {
+			return fmt.Errorf("restart the mount: %w", err)
+		}
 		return RestartMount(CurrentGOOS(), home, rcloneBin, cfg)
 	}
 	// The same secret sources `drive mount` uses, in the same order and never a

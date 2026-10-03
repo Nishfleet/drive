@@ -31,11 +31,13 @@ func TestRcloneConfigRendersS3Remote(t *testing.T) {
 		"endpoint = http://127.0.0.1:39181",
 		"region = us-east-1",
 		"access_key_id = DRIVETESTACCESSKEY",
-		"no_check_bucket = true",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rclone config missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "no_check_bucket") {
+		t.Errorf("a permanent key can HeadBucket, so no_check_bucket must stay off:\n%s", got)
 	}
 }
 
@@ -356,6 +358,9 @@ func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	got := RcloneConfig(c)
 	if !strings.Contains(got, "session_token = "+c.SessionToken) {
 		t.Errorf("rclone config missing the session token rclone signs with:\n%s", got)
+	}
+	if !strings.Contains(got, "no_check_bucket = true") {
+		t.Errorf("a scoped key cannot HeadBucket, so rclone must skip the check:\n%s", got)
 	}
 	// It has to be the s3 backend's own option name, or rclone ignores the
 	// line and signs without it.

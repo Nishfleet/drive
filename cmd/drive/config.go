@@ -505,6 +505,8 @@ func firstNonEmpty(vals ...string) string {
 // when a remount drains the VFS cache. A drive key's session policy has
 // neither action (workers/api/src/s3-keys.js), so that check is 403 and the
 // queued file never goes up — which is the cap-raise path issue #241 proves.
+// A permanent key can HeadBucket, so the line is only written when a session
+// token is present.
 func RcloneConfig(c StorageConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s]\n", RcloneRemoteName)
@@ -514,10 +516,10 @@ func RcloneConfig(c StorageConfig) string {
 	fmt.Fprintf(&b, "secret_access_key = %s\n", c.SecretKey)
 	if c.SessionToken != "" {
 		fmt.Fprintf(&b, "session_token = %s\n", c.SessionToken)
+		fmt.Fprintf(&b, "no_check_bucket = true\n")
 	}
 	fmt.Fprintf(&b, "endpoint = %s\n", c.Endpoint)
 	fmt.Fprintf(&b, "region = %s\n", c.Region)
-	b.WriteString("no_check_bucket = true\n")
 	return b.String()
 }
 
