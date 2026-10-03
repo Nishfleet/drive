@@ -212,6 +212,22 @@ var messageTable = map[string][2]string{
 		"The branch was copied, but its key could not be minted.",
 		"Run `drive branch` again with the same name to mint the key; the copy is already there.",
 	},
+	"signout-everywhere-unconfirmed": {
+		"Nothing was signed out. Signing out every device is the change that cannot be undone by signing in again.",
+		"Run `drive logout --all --yes` when you mean it; every signed-in device of this account is signed out, this one included.",
+	},
+	"confirm-without-all": {
+		"--yes answers --all's confirm step, and there was no --all to answer.",
+		"Run `drive logout` to sign out this device alone, or `drive logout --all --yes` to sign out every device.",
+	},
+	"signout-everywhere-failed": {
+		"No device was signed out. Every device signed in to this account is still signed in.",
+		"Run `drive logout --all --yes` again when the api Worker answers; nothing was changed on either side.",
+	},
+	"signout-everywhere-no-account": {
+		"There is no signed-in account on this device to sign out everywhere.",
+		"Run `drive init` to sign in, then run `drive logout --all --yes`.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
