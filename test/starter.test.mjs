@@ -515,6 +515,14 @@ test("the shipped page carries the starter endpoint, the file list and the copy"
   assert.ok(page.includes("Notes"), "page names the Notes folder");
   assert.ok(page.includes(STARTER_COPY.title), "page carries the title copy");
   assert.ok(page.includes(STARTER_COPY.lede), "page carries the lede copy");
+  // The list is on the indexable page even before the script runs, so a
+  // crawler or a no-JS reader sees what the create writes. Each of the four
+  // paths is in the shipped markup, and the script replaces that static list
+  // with the endpoint's own rather than adding to it.
+  for (const file of STARTER_FILE_LIST) {
+    assert.ok(page.includes(`<li>${file.path}</li>`), `the page ships ${file.path} in its list`);
+  }
+  assert.ok(page.includes("filesList.replaceChildren()"), "the script replaces the list");
   // Every word the page SHIPS appears in it verbatim, so a module edit the
   // page does not follow fails here rather than drifting live. The
   // created/refilled/nothingCreated/failed pairs are left out on purpose:
@@ -524,7 +532,7 @@ test("the shipped page carries the starter endpoint, the file list and the copy"
   // sides have whitespace collapsed first, because the page wraps its prose
   // across source lines and the words, not the line breaks, are the copy.
   const flat = page.replace(/\s+/g, " ");
-  const atRuntime = new Set(["created", "refilled", "nothingCreated", "failed"]);
+  const atRuntime = new Set(["created", "refilled", "nothingCreated", "failed", "describeFailed"]);
   for (const [key, value] of Object.entries(STARTER_COPY)) {
     if (atRuntime.has(key)) continue;
     for (const word of typeof value === "string"
@@ -616,11 +624,19 @@ test("the handler's refusals are the message table's, never a second copy", asyn
 });
 
 test("the page's offline messages are the table's, not a second copy", () => {
-  assert.ok(page.includes(FAILURE_MESSAGES.offline.what), "offline message matches the table");
-  assert.ok(
-    page.includes(FAILURE_MESSAGES.unexpected.what),
-    "unexpected message matches the table",
-  );
+  // The page ships each pair as one sentence (the table's own `what` and
+  // `next` joined), so a wording change in the table fails here rather than
+  // leaving the page saying something older. The page splits the sentence at
+  // render time, so the two paragraphs the stylesheet already styles still
+  // get their own words.
+  for (const key of /** @type {const} */ (["offline", "unexpected"])) {
+    const pair = `${FAILURE_MESSAGES[key].what} ${FAILURE_MESSAGES[key].next}`;
+    assert.ok(page.includes(pair), `${key}'s pair is on the page, whole`);
+  }
+  // The offline pair is reachable, not dead code: the page's catch sets it
+  // and the pair is carried whole, split at render time.
+  assert.ok(page.includes("pairOf(OFFLINE_MESSAGE)"), "the offline pair is used");
+  assert.ok(page.includes("pairOf(UNEXPECTED_MESSAGE)"), "the unexpected pair is used");
 });
 
 test("the page is indexable and in the sitemap", () => {

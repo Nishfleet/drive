@@ -254,7 +254,7 @@ button:disabled {
     <span class="wordmark">Drive</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/">Pricing</a>
-    <a href="/starter" aria-current="page">Notes starter</a>
+    <a href="/starter.html" aria-current="page">Notes starter</a>
     <a href="/get-started">Get started</a>
     <a href="/signin">Sign in</a>
   </header>
@@ -262,7 +262,6 @@ button:disabled {
   <main>
     <section aria-labelledby="starter-heading">
       <h1 id="starter-heading">Notes starter</h1>
-      <p class="lede">Optional. Off by default, and never required.</p>
     </section>
 
     <section aria-labelledby="what-heading">
@@ -277,8 +276,14 @@ button:disabled {
         never overwrites the notes you already have.
       </p>
       <ul class="files" id="starter-files">
-        <!-- Filled by starter.js from the endpoint's own list, so the page
-             cannot name a file the create does not write. -->
+        <!-- The four files the create writes, so a crawler or a no-JS reader
+             sees the list on an indexable page. The script replaces these
+             with the endpoint's own list, and test/starter.test.mjs fails CI
+             when this shipped list drifts from STARTER_FILE_LIST. -->
+        <li>/Notes/README.md</li>
+        <li>/Notes/Inbox.md</li>
+        <li>/Notes/Templates/Daily note.md</li>
+        <li>/Notes/AGENTS.md</li>
       </ul>
     </section>
 
@@ -336,14 +341,13 @@ button:disabled {
 // person presses the button: that is the "off by default" rule, and it is also
 // enforced by the Worker.
 const STARTER_ENDPOINT = "/api/starter";
-// The message table's own two sentences (src/messages.js), which the page falls
-// back to when the browser never reached the service; test/starter.test.mjs
-// reads this page and fails CI when either string drifts from the table.
+// The message table's own two pairs (src/messages.js): the offline pair for a
+// browser that never reached the service, and the fallback pair for a reply
+// that carried no words of its own. test/starter.test.mjs reads this page and
+// fails CI when any of the four sentences drifts from the table. The same
+// shape public/index.html and public/signin.html use.
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
-// The one next step when the browser never reached the service, so the live
-// region reads as a what/next pair rather than the same sentence twice.
-const TRY_AGAIN = "Press the button again in a moment.";
 
 const filesList = document.getElementById("starter-files");
 const gate = document.getElementById("starter-gate");
@@ -359,6 +363,15 @@ function setStatus(state, what, next) {
   status.querySelector(".next").textContent = next;
 }
 
+// One sentence from the message table carries both its own `what` and its
+// `next`, so the page ships the pair whole; this splits it back into the two
+// paragraphs the stylesheet already styles, keeping the first period with the
+// `what` so the words are the table's own.
+function pairOf(sentence) {
+  const at = sentence.indexOf(". ");
+  return [sentence.slice(0, at + 1), sentence.slice(at + 2)];
+}
+
 // The endpoint is behind the account gate, so a signed-out reader is answered
 // 401. That is the honest signal that the page shows the sign-in line instead
 // of a button: nothing here decides anything the gate has not already decided.
@@ -369,6 +382,10 @@ fetch(STARTER_ENDPOINT)
   })
   .then((payload) => {
     if (Array.isArray(payload.files)) {
+      // The shipped list is the module's, and the endpoint's list replaces it
+      // so the page always shows what a create actually writes. Replace, not
+      // append: the static list is the same four paths.
+      filesList.replaceChildren();
       for (const path of payload.files) {
         const item = document.createElement("li");
         item.textContent = path;
@@ -386,21 +403,39 @@ button.addEventListener("click", async () => {
   button.disabled = true;
   note.textContent = "Creating…";
   try {
-    const response = await fetch(STARTER_ENDPOINT, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "create" }),
-    });
-    const payload = await response.json();
+    let response;
+    try {
+      response = await fetch(STARTER_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "create" }),
+      });
+    } catch (networkError) {
+      // fetch rejects only when the browser cannot reach the network at all;
+      // that is the offline pair, the table's words, never the raw error.
+      console.error("starter: create could not reach the service", networkError);
+      setStatus("error", ...pairOf(OFFLINE_MESSAGE));
+      return;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      // A non-JSON reply (an error page, a captive portal) is not something
+      // this page can explain; the table's fallback pair is shown and the raw
+      // text stays out of the live region.
+      console.error("starter: create reply was not JSON", parseError);
+      setStatus("error", ...pairOf(UNEXPECTED_MESSAGE));
+      return;
+    }
     if (response.ok && payload.ok) {
       setStatus("done", payload.what, payload.next);
-      note.textContent = "";
       return;
     }
     // What happened is the endpoint's own refusal when it sent one; the one
-    // thing to do next is the endpoint's when it sent one, and the page's own
-    // sentence when it did not — the table's retry advice, never a second copy
-    // of a message the module owns.
+    // thing to do next is the endpoint's when it sent one, and the table's
+    // fallback when it did not — never a second copy of a message the module
+    // owns.
     setStatus(
       "error",
       typeof payload.error === "string" && payload.error.length > 0
@@ -408,13 +443,8 @@ button.addEventListener("click", async () => {
         : UNEXPECTED_MESSAGE,
       typeof payload.next === "string" && payload.next.length > 0
         ? payload.next
-        : TRY_AGAIN,
+        : pairOf(UNEXPECTED_MESSAGE)[1],
     );
-  } catch (error) {
-    // The raw error goes to the console; the live region only ever shows a
-    // message built from the table.
-    console.error("starter: create failed", error);
-    setStatus("error", UNEXPECTED_MESSAGE, TRY_AGAIN);
   } finally {
     button.disabled = false;
     note.textContent = "";

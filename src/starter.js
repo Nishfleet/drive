@@ -163,6 +163,14 @@ export const STARTER_COPY = Object.freeze({
     what: "The starter could not be written.",
     next: FAILURE_MESSAGES.unexpected.next,
   }),
+  // A GET's describe failed. It is not the failed pair: nothing was being
+  // written, so the words do not say a write failed. starterFiles()
+  // re-validates every path on every call, so this is the one way the describe
+  // can fail, and it is a template the deployment must not serve.
+  describeFailed: Object.freeze({
+    what: "The starter's own files could not be read.",
+    next: FAILURE_MESSAGES.unexpected.next,
+  }),
   // The list the page shows before the button, one line per file, so a person
   // can see what they are agreeing to.
   filesHeading: "What it writes",
@@ -250,15 +258,33 @@ function json(body, status = 200) {
 }
 
 /**
- * The one answer for a failure inside this handler, whatever threw: the failed
- * pair's own words and nothing of the cause, so a validation throw from
- * starterFiles() on the GET reaches the page as the same words a store
- * failure does, and never as Hono's onError with a stack in it. A message
- * never carries raw error text (the safety rules in src/messages.js).
+ * The one answer for a store failure inside this handler, whatever threw: the
+ * failed pair's own words and nothing of the cause, so a store failure reaches
+ * the page as the words a person can act on and never as Hono's onError with a
+ * stack in it. A message never carries raw error text (the safety rules in
+ * src/messages.js). The cause is logged for the operator, the way
+ * src/branches.js logs its own store failures, so a real outage is visible in
+ * the Worker's logs rather than only in the person's screen.
+ * @param {unknown} cause
  * @returns {Response}
  */
-function failed() {
+function failed(cause) {
+  console.error("starter: the template could not be written", cause);
   return json({ error: STARTER_COPY.failed.what, next: STARTER_COPY.failed.next }, 500);
+}
+
+/**
+ * The same for a GET's describe, whose failure is the template itself rather
+ * than a write: the describe pair's words, and the cause in the log.
+ * @param {unknown} cause
+ * @returns {Response}
+ */
+function describeFailed(cause) {
+  console.error("starter: the template could not be read", cause);
+  return json(
+    { error: STARTER_COPY.describeFailed.what, next: STARTER_COPY.describeFailed.next },
+    500,
+  );
 }
 
 /**
@@ -298,8 +324,8 @@ export async function handleStarterRequest(request, store, account) {
     let files;
     try {
       files = starterFiles().map((file) => file.path);
-    } catch {
-      return failed();
+    } catch (cause) {
+      return describeFailed(cause);
     }
     return json({
       ok: true,
@@ -328,12 +354,13 @@ export async function handleStarterRequest(request, store, account) {
   let result;
   try {
     result = await createStarter(store);
-  } catch {
+  } catch (cause) {
     // A store failure is not a success and is not half reported: the route
-    // answers the failure words and puts nothing of the cause in the reply. A
-    // retry self-heals what was written, because every file already on the
-    // drive is found by the read check and kept.
-    return failed();
+    // answers the failure words, logs the cause for the operator, and puts
+    // nothing of the cause in the reply. A retry self-heals what was written,
+    // because every file already on the drive is found by the read check and
+    // kept.
+    return failed(cause);
   }
 
   const state =
