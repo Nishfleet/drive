@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ToolMinter mints a tool's own agent key through the api Worker (build step
@@ -34,6 +35,14 @@ func (m ToolMinter) MintKey(kind, name string) (MintedKey, error) {
 // key that is refused here is a key that still works server-side.
 func (m ToolMinter) RevokeKey(keyID string) error {
 	return m.Client.RevokeKey(keyID)
+}
+
+// RenewKey restarts the hour on a key this device already holds, and answers
+// with the restarted row. It writes the new expiry to disk and changes nothing
+// else: the credential is not replaced, so the tool's own MCP entry keeps
+// holding the pair that now works again.
+func (m ToolMinter) RenewKey(keyID string) (RenewedKey, error) {
+	return m.Client.RenewKey(keyID)
 }
 
 // runInit is the `drive init` command: the whole first-run setup, in one
@@ -203,9 +212,11 @@ func initAgents(env Env, apiBase ...string) error {
 		} else {
 			// The key id is not on screen: `drive agents revoke <tool>` names
 			// the tool, so the id is debug detail. The capabilities are the
-			// point - an agent key can never delete.
-			fmt.Printf("  %-8s connected (key: %s, never delete)\n",
-				t.Name, strings.Join(key.Capabilities, ", "))
+			// point - an agent key can never delete. The hour is the other
+			// half of that key's promise (issue #106): it is an instant the
+			// api Worker renews while the tool uses it.
+			fmt.Printf("  %-8s connected (key: %s, never delete, %s)\n",
+				t.Name, strings.Join(key.Capabilities, ", "), expiryLabel(key.ExpiresAt))
 		}
 		connected++
 	}
@@ -245,6 +256,16 @@ func printFirstRunNext(w io.Writer, goos, home, driveDir string) {
 // second `drive init` must not leave a tool holding a key nobody knows
 // about, so the existing key is reused and only the missing one is
 // minted.
+//
+// A stored key whose hour is nearly run out is renewed instead of reused
+// (issue #106). The api Worker renews a key on every request that proves the
+// tool is still using it, so a connected tool never notices; a tool that sat
+// idle for longer than its hour outlives its credential, and its next request
+// is refused. Renewing here is what brings it back without a person minting a
+// second key, and it changes nothing else on disk: the credential is not
+// replaced, so the tool's own MCP entry keeps working. What is written is the
+// renewed expiry, so the next command reads the Worker's own answer rather
+// than the mint's, and does not renew a key that already has an hour left.
 func mintToolKey(env Env, t Tool) error {
 	if env.Minter == nil {
 		return nil
@@ -253,13 +274,28 @@ func mintToolKey(env Env, t Tool) error {
 	if err != nil {
 		return err
 	}
-	if existing != nil {
+	if existing == nil {
+		if _, err := env.Minter.MintKey("agent", t.Name); err != nil {
+			return failDetail(apiFailureKind(err), err)
+		}
 		return nil
 	}
-	if _, err := env.Minter.MintKey("agent", t.Name); err != nil {
-		return failDetail(apiFailureKind(err), err)
+	if !needsRenew(existing, time.Now()) {
+		return nil
 	}
-	return nil
+	renewed, err := env.Minter.RenewKey(existing.KeyID)
+	if err != nil {
+		// A renewal that fails is reported, not swallowed: the key on disk is
+		// the one the tool is using, and a tool about to be left with a key
+		// whose hour has run out is a thing a person has to be told about. The
+		// words are the one table's, so this reads like every other failure
+		// the CLI prints.
+		return failDetail("key-renew-failed", err, t.Name)
+	}
+	// Only the window moves, so only the expiry is written back: the pair the
+	// tool holds is the one it had.
+	existing.ExpiresAt = renewed.ExpiresAt
+	return saveAgentKey(env.Home, t.Name, MintedKey(*existing))
 }
 
 // runAgents handles `drive agents`, `drive agents connect <tool>` and
