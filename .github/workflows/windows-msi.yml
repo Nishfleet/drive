@@ -123,6 +123,7 @@ jobs:
         shell: pwsh
         run: |
           wix build installer\drive.wxs -o installer\drive.msi `
+            -bindpath installer `
             -ext WixToolset.Util.wixext `
             -arch x64
           if (-not (Test-Path installer\drive.msi)) { throw "the MSI did not build" }
@@ -132,6 +133,7 @@ jobs:
         shell: pwsh
         run: |
           wix build installer\bundle.wxs -o installer\drive-setup.exe -arch x64 `
+            -bindpath installer `
             -ext WixToolset.Bal.wixext
           if (-not (Test-Path installer\drive-setup.exe)) { throw "the bundle did not build" }
           Write-Host "drive-setup.exe: $((Get-Item installer\drive-setup.exe).Length) bytes"
