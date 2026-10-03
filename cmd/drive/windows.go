@@ -182,8 +182,8 @@ func windowsVolumeRoot(letter string) string {
 // string: the same rclone argument vector the launchd plist and the systemd
 // unit carry, quoted the way CreateProcess splits it. The task itself stores
 // the plan as an Exec action's Command and Arguments (the XML, drive#368),
-// and `schtasks /Query` renders that pair back as this same string, so this
-// is both the display form and the string the letter-finding reads.
+// and `schtasks /Query` renders that pair back as one command line, so this
+// is the display form and the string the letter-finding reads.
 func WindowsTaskCommandLine(p MountPlan) string {
 	parts := append([]string{p.RcloneBin}, p.Args()...)
 	for i, a := range parts {
@@ -384,8 +384,11 @@ func schtasksCreateXMLArgs(taskName, xmlPath string) []string {
 
 // windowsTaskUser is the user the login task starts for, in the DOMAIN\user
 // form the task XML's UserId requires. USERDOMAIN and USERNAME are exported
-// by every Windows session; os/user is the fallback for a session that does
-// not have them.
+// by every Windows session; os/user resolves the same account from the
+// process token when they are missing. On Entra ID (Azure AD) joined
+// machines the names can take the tenant's own form (AzureAD\user@tenant);
+// if Task Scheduler refuses that name at /Create, mount fails with the
+// schtasks output naming it, which is the machine's own answer to debug.
 func windowsTaskUser() (string, error) {
 	domain, name := os.Getenv("USERDOMAIN"), os.Getenv("USERNAME")
 	if domain != "" && name != "" {
@@ -506,8 +509,17 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 	commandLine := WindowsTaskCommandLine(p)
 	taskXMLPath := windowsTaskXMLPath(p)
 	if dryRun {
+		userName, err := windowsTaskUser()
+		if err != nil {
+			return err
+		}
+		taskXMLBody, err := windowsTaskXML(p, userName)
+		if err != nil {
+			return err
+		}
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- Task Scheduler task %s (XML: %s) ---\n%s\n", WindowsTaskName, taskXMLPath, commandLine)
+		fmt.Printf("--- task XML ---\n%s\n", taskXMLBody)
 		fmt.Printf("--- would run ---\nschtasks %s\n", strings.Join(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath), " "))
 		return nil
 	}

@@ -433,6 +433,30 @@ func TestRunMountRefusesDriveLetterOffWindows(t *testing.T) {
 // through that letter, reads it back, then unmounts and proves the login task
 // and the letter are gone. It runs on windows-latest (the CI job installs
 // WinFsp first); every other platform skips with the reason.
+func TestWindowsTaskUserPrefersTheSessionDomain(t *testing.T) {
+	t.Setenv("USERDOMAIN", "DESKTOP")
+	t.Setenv("USERNAME", "test")
+	got, err := windowsTaskUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The DOMAIN\user form is what the task XML's UserId field requires.
+	if got != `DESKTOP\test` {
+		t.Errorf("windowsTaskUser() = %q, want DESKTOP\\test", got)
+	}
+	// With no session variables the answer comes from the process token; it
+	// must still name a user, never come back empty.
+	t.Setenv("USERDOMAIN", "")
+	t.Setenv("USERNAME", "")
+	got, err = windowsTaskUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" {
+		t.Error("windowsTaskUser() with no session variables = empty, want the token's user")
+	}
+}
+
 func TestWindowsMountProof(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("the drive-letter mount proof runs on windows-latest (rclone + WinFsp)")
