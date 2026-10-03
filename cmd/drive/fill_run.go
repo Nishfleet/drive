@@ -67,11 +67,16 @@ type vfsStats struct {
 	} `json:"diskCache"`
 	InUse int64 `json:"inUse"`
 	Opt   struct {
-		CacheMaxSize   int64 `json:"CacheMaxSize"`
-		ReadAhead      int64 `json:"ReadAhead"`
-		ChunkSize      int64 `json:"ChunkSize"`
-		ChunkSizeLimit int64 `json:"ChunkSizeLimit"`
-		WriteBack      int64 `json:"WriteBack"`
+		CacheMaxSize int64 `json:"CacheMaxSize"`
+		// CacheMinFreeSpace is the disk floor rclone keeps the cache above
+		// (--vfs-cache-min-free-space, issue #112). rclone reports it as -1
+		// when the flag is off, which is how the test tells "no floor" from
+		// "a floor of nothing".
+		CacheMinFreeSpace int64 `json:"CacheMinFreeSpace"`
+		ReadAhead         int64 `json:"ReadAhead"`
+		ChunkSize         int64 `json:"ChunkSize"`
+		ChunkSizeLimit    int64 `json:"ChunkSizeLimit"`
+		WriteBack         int64 `json:"WriteBack"`
 	} `json:"opt"`
 }
 
