@@ -26,6 +26,11 @@ type stubMinter struct{}
 func (stubMinter) MintKey(string, string) (MintedKey, error) { return MintedKey{}, nil }
 func (stubMinter) RevokeKey(string) error                    { return nil }
 
+// RenewKey is the third KeyMinter method (issue #106). The first-run transcript
+// stores no agent key, so no key needs an hour and there is nothing to
+// restart: the stub answers the same empty row the mint does.
+func (stubMinter) RenewKey(string) (RenewedKey, error) { return RenewedKey{}, nil }
+
 func printedFailure(err error) string {
 	var b strings.Builder
 	printFailure(&b, err)
