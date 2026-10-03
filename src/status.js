@@ -334,8 +334,10 @@ export function unauthorizedResponse() {
  * report one once the device store lands: an account with no signed-in device
  * has nothing waiting, and null is that answer rather than an invented zero
  * that would read as a live queue of no bytes. The field ships with the payload
- * now (drive issue #308) so both pages read one shape and the store that fills
- * it is a line here.
+ * now (drive issue #308) so both pages read one shape, and it is an argument
+ * to the handler rather than a value written here, so the store that fills it
+ * is one line at the call site and the payload shape does not change when it
+ * lands.
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401

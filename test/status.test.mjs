@@ -9,6 +9,10 @@
 //    read by calling the builders rather than by grepping a shipped HTML file
 //    for a sentence. The old drift tests are gone with the second copy of the
 //    words they policed.
+//
+// The usage page's upload-progress line (drive issue #308) is pinned in
+// test/usage.test.mjs, beside the rest of that page: GET /api/usage answers
+// with the line the same word table assembles.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
