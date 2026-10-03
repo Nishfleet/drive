@@ -398,8 +398,125 @@ func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	if len(f.copied) != 0 {
 		t.Errorf("wrote %v for a save that won", f.copied)
 	}
+	// The win is not decided on the pass that sees it: the other device's
+	// save can still land on top of it for the rest of the sync window, and
+	// that overwrite is exactly what the staged copy exists for.
+	if len(g.seen) != 1 {
+		t.Fatalf("the guard watches %v, wants the path held until the win window ends", g.seen)
+	}
+	for range conflictWinPolls {
+		if _, err := g.pass(context.Background(), f); err != nil {
+			t.Fatalf("pass during the win window: %v", err)
+		}
+	}
+	if len(f.copied) != 0 {
+		t.Errorf("wrote %v for a save that won", f.copied)
+	}
 	if len(g.seen) != 0 {
-		t.Errorf("still watches %v", g.seen)
+		t.Errorf("still watches %v after the win window ended", g.seen)
+	}
+}
+
+// TestConflictGuardKeepsASaveThatLandsSecondsLater proves the case a
+// same-instant proof cannot see. A device's own save has already landed, so
+// the plain path holds its bytes, and the other device's save lands on top
+// of it a moment later — the ordinary case when two people save the same
+// file seconds apart inside the mount's five-second write-back window. The
+// guard keeps the staged copy through that window and writes the conflict
+// copy, so the earlier save is not the save that silently disappears.
+func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
+	g, staging, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved-first\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 26}}
+	f.objects["report.txt"] = "nothing-here-yet"
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	// This device's upload has landed, and it is the plain path now.
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("A-this-device-saved-first\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the save landed: %v", err)
+	}
+	// The other device's save lands on top of it, seconds later.
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the other device's save landed: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex("A-this-device-saved-first\n") {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want || res.Claimed[0].LosingPath != "report.txt" {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+	if len(g.seen) != 0 {
+		t.Errorf("the guard still watches %v", g.seen)
+	}
+	// The staged copy is gone once the save it protected has been decided.
+	if _, err := os.Stat(filepath.Join(staging, "report.txt")); !os.IsNotExist(err) {
+		t.Errorf("the staged copy is still on disk: %v", err)
+	}
+}
+
+// TestConflictGuardStagesTheBytesTheUploadWillCarry proves a device that
+// writes the same path again before its write-back fires protects the newer
+// bytes, not the ones staged at first sight. The bytes the upload carries are
+// the bytes on the mount when it fires, so a staged copy of an older write
+// would be the wrong version to keep.
+func TestConflictGuardStagesTheBytesTheUploadWillCarry(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	path := filepath.Join(mountDir, "report.txt")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The first write is staged, then this device writes the path again
+	// with a different size, which is what rclone's VFS reports through
+	// the mount's stat.
+	if err := os.WriteFile(path, []byte("first write\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeBackend()
+	g := newConflictGuard("mac", mountDir, ConflictStagingDir(root))
+	f.pending = []queueEntry{{Name: "report.txt", Size: 13}}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass with the save queued: %v", err)
+	}
+	first := filepath.Join(ConflictStagingDir(root), "report.txt")
+	got, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first write\n" {
+		t.Fatalf("staged %q, want the first write", got)
+	}
+	if err := os.WriteFile(path, []byte("second write\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the save was written again: %v", err)
+	}
+	got, err = os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "second write\n" {
+		t.Errorf("staged %q, want the bytes the upload will carry (the second write)", got)
+	}
+	// The other device's save lands on top of the re-staged one, and the
+	// conflict copy is the bytes this device will actually upload.
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
+	if _, err := g.pass(context.Background(), f); err != nil {
+		t.Fatalf("pass after the other device's save landed: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if got := f.objects[want]; got != md5Hex("second write\n") {
+		t.Errorf("the conflict copy holds %q, want the second write", got)
 	}
 }
 

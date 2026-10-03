@@ -28,11 +28,16 @@ import (
 //   2. A path that leaves the queue has landed. The guard reads
 //      the object's hash at the plain path and compares it with
 //      this device's own hash. Equal means this device's save is
-//      the one that landed and there is nothing to protect.
-//   3. Different means the other device's save landed. The plain
-//      path holds the other device's bytes and this device's bytes
-//      are gone from storage, so the staged copy is uploaded as
-//      the conflict copy under the losing device's own name.
+//      the one that landed, but the save is not decided yet: the
+//      other device's own write-back timer may not have fired, so
+//      the plain path stays watched for conflictWinPolls passes
+//      before the win is declared and the staged copy is dropped.
+//   3. A hash that is neither this device's bytes nor the version
+//      that was there before means the other device's save landed.
+//      The plain path holds the other device's bytes and this
+//      device's bytes are gone from storage, so the staged copy is
+//      uploaded as the conflict copy under the losing device's own
+//      name.
 //
 // The rule never deletes, never renames and never guesses: a hash
 // that is neither this device's bytes nor the version that was
@@ -58,12 +63,22 @@ const conflictContextTimeout = 30 * time.Second
 // a silent one is a lost save nobody heard about.
 const conflictStageMax = 64 << 20
 
-// conflictClaimPolls is how long an already-landed path is watched
-// before the guard gives up on it. A landed path whose object hash
-// still matches the version that preceded the save is not a decided
-// conflict, and staying on it forever would grow the map on a mount
-// that never stops.
+// conflictClaimPolls is how long a path whose upload has left the queue
+// is watched while the plain path still holds the version that preceded
+// the save (the upload has not landed, or it landed on a path that had no
+// object). Such a path is not a decided conflict, and staying on it
+// forever would grow the map on a mount that never stops.
 const conflictClaimPolls = 20
+
+// conflictWinPolls is how long the guard keeps watching after this
+// device's own save has landed at the plain path, before concluding the
+// save was not overwritten. Another device's upload can land on top of
+// this one for the whole of one sync window after it: a save made two
+// seconds later still has its five-second write-back to land on top of an
+// upload that landed a moment ago. The plain path is polled every
+// conflictInterval, so conflictWinPolls passes cover that window with
+// margin for rclone's own scheduling.
+const conflictWinPolls = 20
 
 // conflictReportEvery is the least time between two reports of the
 // same cause, so a persistent failure keeps a named heartbeat on the
@@ -102,8 +117,22 @@ type pendingSave struct {
 	// upload.
 	reported bool
 	// polls is how many passes this path has been watched since its
-	// upload left the queue without landing.
+	// upload left the queue without landing, while the plain path still
+	// holds the version that preceded the save.
 	polls int
+	// winPolls is non-zero once this device's own save has landed at the
+	// plain path. While it is ticking, the guard keeps watching for an
+	// overwrite by another device rather than declaring the save the winner
+	// the instant it sees its own bytes: an upload can land on top of an
+	// own upload seconds later and still be within one sync window.
+	winPolls int
+	// stagedMtime and stagedSize are the mtime and size of the file this
+	// device staged. The bytes the upload will carry are the bytes on this
+	// device's mount at upload time, so a save written again before the
+	// upload fires is re-staged on change, lest the staged copy be an older
+	// version than the one that gets overwritten.
+	stagedMtime time.Time
+	stagedSize  int64
 }
 
 // conflictBackend is what one guard pass needs from a running mount.
@@ -209,8 +238,27 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	// other saves in the same queue from being protected.
 	for name := range inFlight {
 		if save, ok := g.seen[name]; ok {
-			// A path already recorded is not staged again. A skip is
-			// named once: the same line every 500ms for the life of
+			// A path already recorded is not staged again from scratch, but it
+			// is re-staged when this device has written it again, so the bytes
+			// protected are the ones the upload will carry rather than the ones
+			// staged at first sight. The mtime and size are rclone's own signal
+			// that the VFS cache changed, so the re-stage is one stat per
+			// watched path instead of a re-copy on every pass.
+			if save.reason == "" && g.mountChanged(name, save) {
+				staged, hash, reason, err := g.stage(name)
+				if err != nil {
+					return res, err
+				}
+				// A re-stage that names a skip (gone, over the cap) leaves the
+				// bytes already staged in place: it is safer to protect the
+				// older bytes than to fail the pass and protect none.
+				if reason == "" {
+					info := g.mountStat(name)
+					save.staged, save.hash = staged, hash
+					save.stagedMtime, save.stagedSize = info.modTime, info.size
+				}
+			}
+			// A skip is named once: the same line every 500ms for the life of
 			// an upload is not a thing a person can read.
 			if save.reason != "" && !save.reported {
 				res.Skipped = append(res.Skipped, ConflictSkip{Remote: name, Reason: save.reason})
@@ -231,7 +279,14 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		if err != nil {
 			return res, fmt.Errorf("conflict: read %s before the save lands: %w", name, err)
 		}
-		g.seen[name] = &pendingSave{hash: hash, previous: previous, staged: staged}
+		info := g.mountStat(name)
+		g.seen[name] = &pendingSave{
+			hash:        hash,
+			previous:    previous,
+			staged:      staged,
+			stagedMtime: info.modTime,
+			stagedSize:  info.size,
+		}
 	}
 
 	// Steps 2 and 3: a path that left the queue has landed. Compare
@@ -241,10 +296,12 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			continue
 		}
 		if save.reason != "" {
-			// The queue has released a save the rule left alone, so
-			// this device cannot protect it and holding the entry
-			// would grow the map on a mount that never stops.
-			delete(g.seen, name)
+			// The queue has released a save the rule left alone, so this
+			// device cannot protect it. Drop it and its staged bytes:
+			// holding the entry would grow the map on a mount that never
+			// stops, and the staged bytes are a local copy of a save that
+			// is already gone.
+			g.drop(name, save)
 			continue
 		}
 		save.polls++
@@ -254,8 +311,16 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 		switch {
 		case landed == save.hash:
-			// This device's save is the one that landed.
-			delete(g.seen, name)
+			// This device's save is the one that landed. An overwrite can
+			// still land on top of it for the whole sync window after it,
+			// because the other device's own write-back timer has not fired
+			// yet, so the guard does not declare a win the moment it sees
+			// its own bytes: it watches for conflictWinPolls passes and only
+			// then drops the entry and its staged copy.
+			save.winPolls++
+			if save.winPolls >= conflictWinPolls {
+				g.drop(name, save)
+			}
 		case landed == "" || landed == save.previous:
 			// Nothing has landed where this save was going, or the
 			// object is the version that preceded the save: not a
@@ -263,7 +328,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			// error, or the upload is still on its way, so it is
 			// watched a little longer.
 			if save.polls >= conflictClaimPolls {
-				delete(g.seen, name)
+				g.drop(name, save)
 			}
 		default:
 			// The plain path holds a version that is neither this
@@ -313,6 +378,7 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 		}
 		if kept == save.hash {
 			delete(g.seen, path)
+			g.releaseStaged(save.staged)
 			return ConflictCopy{Remote: name, LosingPath: path, Device: g.device}, nil
 		}
 		if index >= conflictCopyLimit {
@@ -321,10 +387,58 @@ func (g *conflictGuard) claim(ctx context.Context, b conflictBackend, path strin
 	}
 }
 
-// freeConflictName is the conflict name for path, starting at index:
-// 1 is the plain conflict name, and 2 and up append the number, so a
-// device that loses the same file twice does not overwrite the copy
-// of its first loss. The index is where the search starts rather
+// drop stops watching a path and removes the staged copy that guarded it.
+// It is how the watch list stays the size of the saves actually in flight,
+// and how a staged copy does not outlive the save it was staged for.
+func (g *conflictGuard) drop(name string, save *pendingSave) {
+	delete(g.seen, name)
+	g.releaseStaged(save.staged)
+}
+
+// releaseStaged removes one staged copy. A save that was never staged (a
+// named skip) has nothing to remove, and a staged copy that is already
+// gone is not an error: the point is that nothing accumulates in this
+// device's own config folder.
+func (g *conflictGuard) releaseStaged(staged string) {
+	if staged == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(g.stagingRoot, filepath.FromSlash(staged)))
+}
+
+// mountStat is the size and mtime of a path as this device's mount serves
+// it. A path that cannot be stated is reported as the zero value, which
+// mountChanged reads as "unchanged", so a stat that fails never triggers a
+// re-stage on its own.
+func (g *conflictGuard) mountStat(name string) mountFileInfo {
+	info, err := os.Stat(filepath.Join(g.mountDir, filepath.FromSlash(name)))
+	if err != nil {
+		return mountFileInfo{}
+	}
+	return mountFileInfo{modTime: info.ModTime(), size: info.Size()}
+}
+
+// mountFileInfo is the part of a file's stat the guard compares between
+// passes: when either changes, this device has written the file again.
+type mountFileInfo struct {
+	modTime time.Time
+	size    int64
+}
+
+// mountChanged reports whether this device's mount now serves different
+// bytes at the path than the ones staged. rclone's VFS updates the mtime
+// when the file is written, so the mtime and the size are rclone's own
+// signal that the write-back upload will carry newer bytes than the staged
+// copy holds.
+func (g *conflictGuard) mountChanged(name string, save *pendingSave) bool {
+	info := g.mountStat(name)
+	if info.modTime.IsZero() || save.stagedMtime.IsZero() {
+		return false
+	}
+	return !info.modTime.Equal(save.stagedMtime) || info.size != save.stagedSize
+}
+
+// freeConflictName is the conflict name for path, starting at index: The index is where the search starts rather
 // than the first name tried, because a caller that just found a name
 // taken retries from the next one.
 func freeConflictName(ctx context.Context, b conflictBackend, path, device string, start int) (string, error) {

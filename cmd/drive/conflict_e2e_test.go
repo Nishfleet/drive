@@ -222,6 +222,149 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	t.Logf("after the reconnect: plain=%q, conflict=%q, both saves kept", plain, conflict)
 }
 
+// startConflictDevice brings up one device's `drive mount` for cfg and returns
+// its stop. Each device is its own machine: its own home, config, prefix and
+// VFS cache, sharing only the storage backend, which is exactly two machines. A
+// host that will not bring up an unprivileged FUSE mount skips the calling test
+// naming the host's own constraint, because a proof of a mount is not a proof
+// at all when the mount did not come up (the note on
+// TestTwoDevicesKeepBothSaves).
+func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr string) func() {
+	t.Helper()
+	cmd := exec.Command(driveBin(t), "mount",
+		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+		"--prefix", cfg.Prefix, "--foreground", "--device", device,
+		"--rc-addr", rcAddr)
+	cmd.Env = append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+	)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	mountDir := filepath.Join(home, "Drive")
+	if !waitForMount(t, cmd, mountDir) {
+		stopStandinProcess(cmd, mountDir)
+		// The mount's own log is the real reason, not a guess: a reader of this
+		// skip needs to know whether the host refused FUSE or the mount had a
+		// bad argument.
+		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
+			t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
+		}
+		t.Skipf("this host will not bring up the %s mount (%s)", device, mountSkipReason())
+	}
+	return func() { stopStandinProcess(cmd, mountDir) }
+}
+
+// TestTwoSavesSecondsApartInOneWindowBothSurvive proves the rule holds when the
+// two saves are not in the same instant. One sync window is the mount's own
+// 5-second write-back, so a save made two seconds after the other is still
+// inside it: the first has not left its mount when the second one is made. Each
+// device's upload leaves on its own timer, so the first device's save has
+// already landed and its own object is the plain path when the second one lands
+// on top of it.
+//
+// This is the case a same-instant proof cannot see, so it is its own proof.
+func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+	root := t.TempDir()
+	cfg, _ := standinOn(t, root, "u/conflict-gap")
+	t.Setenv(deviceEnvName, "mac")
+	deviceA := DeviceName()
+
+	homeA := filepath.Join(root, "home-a")
+	mountA := filepath.Join(homeA, "Drive")
+	homeB := filepath.Join(root, "home-b")
+	mountB := filepath.Join(homeB, "Drive")
+	for _, d := range []string{mountA, mountB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rcA, rcB := "127.0.0.1:"+freePort(t), "127.0.0.1:"+freePort(t)
+	stopA := startConflictDevice(t, cfg, homeA, deviceA, rcA)
+	defer stopA()
+	stopB := startConflictDevice(t, cfg, homeB, "linux", rcB)
+	defer stopB()
+
+	const name = "notes.txt"
+	const bodyA = "A: saved first, a moment before the other device saved\n"
+	const bodyB = "B: saved second, still inside the same sync window\n"
+	if err := os.WriteFile(filepath.Join(mountA, name), []byte(bodyA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two seconds later: inside the mount's 5-second write-back window, so the
+	// first save has not left device A when the second one is made.
+	time.Sleep(2 * time.Second)
+	if err := os.WriteFile(filepath.Join(mountB, name), []byte(bodyB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Either device can be the one whose upload lands first, so the rule is
+	// checked by what is kept rather than by who won.
+	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
+	var kept string
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, n := range candidates {
+			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
+				kept = n
+				break
+			}
+		}
+		if kept != "" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if kept == "" {
+		t.Fatalf("one save was lost: neither %v appeared on device A", candidates)
+	}
+	plain, err := os.ReadFile(filepath.Join(mountA, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := os.ReadFile(filepath.Join(mountA, kept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{bodyA, bodyB} {
+		if string(plain) != want && string(conflict) != want {
+			t.Errorf("the save %q survived nowhere: plain=%q conflict=%q", want, plain, conflict)
+		}
+	}
+	if string(plain) == string(conflict) {
+		t.Errorf("both saves are the same bytes (%q): one device's save was overwritten", plain)
+	}
+	// Both devices see both files that survived: the plain file and the one
+	// conflict copy — named for whichever device lost. There is never one per
+	// device; the two machines agreed on what to keep only by what landed on
+	// top, which is exactly what cannot be faked by two directories.
+	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
+		for _, n := range []string{name, kept} {
+			if _, err := os.Stat(filepath.Join(m.dir, n)); err != nil {
+				t.Errorf("device %s cannot see %s: %v", m.label, n, err)
+			}
+		}
+	}
+	entries, err := os.ReadDir(mountA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 {
+		t.Errorf("device A's drive lists %v, want the plain file and the conflict copy", names)
+	}
+	t.Logf("two saves seconds apart, one sync window: plain=%q, conflict=%q, A's listing=%v",
+		plain, kept, names)
+}
+
 // tailLines is the last n lines of s, so a skip message can carry the mount's
 // own words instead of this test's guess at them.
 func tailLines(s string, n int) string {
