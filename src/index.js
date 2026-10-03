@@ -50,6 +50,7 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -357,6 +358,26 @@ export function createApp() {
   app.post(FILES_ENDPOINT, filesHandler);
   app.get(`${FILES_ENDPOINT}/*`, filesHandler);
   app.post(`${FILES_ENDPOINT}/*`, filesHandler);
+
+  // The optional notes starter (drive issue #15). A GET describes the template
+  // and writes nothing; a POST with `action: "create"` fills in the starter's
+  // own files, and only the ones that are missing. Same store handling as the
+  // files lane: the handler scopes the store to the account it is handed, and
+  // no withIndex, so a starter's files are not search rows a person never
+  // asked to index. Off by default is enforced by the gate and the method
+  // together: nothing in the Worker calls the create for a person, and the
+  // only route that runs it is a POST behind the account gate.
+  /** @param {DriveContext} c */
+  const starterHandler = (c) => {
+    const account = c.get("account");
+    return handleStarterRequest(
+      c.req.raw,
+      account ? scopeStore(storeFor(c.env), account) : null,
+      account,
+    );
+  };
+  app.get(STARTER_ENDPOINT, starterHandler);
+  app.post(STARTER_ENDPOINT, starterHandler);
 
   // Branches (build step 7, drive#8): the folder copy, the diff, approve and
   // discard. The store is handed in unscoped (the handler scopes it) and

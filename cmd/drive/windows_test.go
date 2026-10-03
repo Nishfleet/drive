@@ -356,7 +356,7 @@ func TestWindowsMountProof(t *testing.T) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := standinOn(t, root, "u/standin")
+	cfg, _ := standinOn(t, root, "u/standin")
 	// Seed one object into the stand-in through stock rclone, so the read is
 	// of an object and not a local file the mount happens to see.
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {

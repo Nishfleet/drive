@@ -178,27 +178,52 @@ export function syncStatus(device, now = Date.now()) {
 
 // The upload-progress line, as a table of fragments so the page can carry the
 // same words it cannot import (`drive status` prints the assembled line).
+// `paused` and `resumed` are the two states `drive pause` and `drive resume`
+// name, printed by the status line and by the CLI's own command output; the Go
+// CLI mirrors this table (cmd/drive/pause.go) and
+// TestStatusWordsMatchThePageWords joins the two copies.
 export const UPLOAD_LABEL = Object.freeze({
   upToDate: "Up to date",
   oneFile: "Uploading 1 file",
   manyFiles: "Uploading {files} files",
   noCount: "Uploading",
   progress: "{uploaded} of {total} ({percent}%)",
+  // A paused queue is not a moving one. Its line names the state first and
+  // then what is still waiting, so a person reads "Paused" and not
+  // "Uploading" for bytes that are not leaving.
+  paused: "Paused",
+  resumed: "Resumed",
+  pausedOne: "1 file waiting",
+  pausedMany: "{files} files waiting",
+  pausedLine: "Paused: {waiting} ({left} left)",
+  // Why a queued file has not gone up yet (drive issue #107). `drive status`
+  // prints these; the page carries the same fragments so the two copies cannot
+  // drift. Disk-full uses FAILURE_MESSAGES["disk-cache-full"] instead.
+  waitingWhy: "They are waiting to upload.",
+  waitingUnmounted: "They are waiting because the drive is not mounted.",
+  waitingUnmountedNext: "They will upload when the drive is mounted again.",
 });
 
 /**
  * Upload progress for `drive status` and the page's activity line: how much of
  * the queue has gone up. Zero total means nothing is waiting, which is a
  * complete state ("Up to date"), not an error and not a division by zero.
+ *
+ * A `paused` upload is the same arithmetic in a stopped state (drive issue
+ * #100): the label leads with the pause word and the bytes still to send, so a
+ * paused drive never reads as an uploading one. An explicit `paused: false`
+ * behaves like an absent flag, so a caller that always sets the field does not
+ * pause its own queue.
  * @param {unknown} upload
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
     throw new TypeError(`uploadProgress needs an upload object, got ${String(upload)}`);
   }
-  const fields = /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown}} */ (
-    upload
-  );
+  const fields =
+    /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown, paused?: unknown}} */ (
+      upload
+    );
   const uploaded = fields.uploadedBytes;
   const total = fields.totalBytes;
   if (typeof uploaded !== "number" || !Number.isFinite(uploaded) || uploaded < 0) {
@@ -219,6 +244,23 @@ export function uploadProgress(upload) {
   // that null rather than on a missing field.
   const count = fields.files;
   const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
+  // The pause is the same arithmetic in a stopped state, read off the payload
+  // the same defensive way: only a literal true pauses, so `paused: false` and
+  // an absent flag both leave the uploading line alone.
+  if (fields.paused === true) {
+    const left = formatBytes(total - uploaded);
+    const waiting =
+      files === null
+        ? null
+        : files === 1
+          ? UPLOAD_LABEL.pausedOne
+          : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
+    const label =
+      waiting === null
+        ? `${UPLOAD_LABEL.paused}: ${left} left`
+        : UPLOAD_LABEL.pausedLine.replace("{waiting}", waiting).replace("{left}", left);
+    return { percent, label };
+  }
   const head =
     files === null
       ? UPLOAD_LABEL.noCount
