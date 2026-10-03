@@ -28,6 +28,16 @@ jobs:
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
+      # test/standin-search.test.mjs proves the issue's number - 100,000 real
+      # files, a search under a second - over a local `rclone serve s3`, and it
+      # skips itself where rclone is absent. Installing it here is what keeps
+      # that proof on every PR rather than only on the host that built it.
+      - name: Install rclone (the stock tool the S3 stand-in serves)
+        run: |
+          curl -sSO https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip -q rclone-current-linux-amd64.zip
+          sudo install -m 0755 rclone-*/rclone /usr/local/bin/rclone
+          rclone version
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
