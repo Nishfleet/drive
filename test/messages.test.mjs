@@ -209,6 +209,9 @@ test("the branch route refuses a body that is not a JSON object in the table's w
       // The body is refused before the branches table is touched, so this only
       // has to be there for the route to get as far as reading the request.
       {},
+      // No snapshot store and no table: the body is refused before either is
+      // read, and this is the shape of a request with no account's data on it.
+      null,
       createMemoryStore(),
       account,
     );

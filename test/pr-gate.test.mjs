@@ -197,7 +197,10 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // account store land (issues #2 and #6), but it is behind the same gate as
   // every other account route (issue #73): the one gate, so a request that
   // cannot prove an account is a 401 rather than an empty month.
-  assert.match(srcFile("billing.js"), /export function handleUsageRequest\(request, account\)/);
+  assert.match(
+    srcFile("billing.js"),
+    /export function handleUsageRequest\(request, account, upload = null\)/,
+  );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);
   assert.equal(usage.status, 401, "the usage read is behind the account gate");
   assert.deepEqual(await usage.json(), {
