@@ -186,6 +186,30 @@ test("the security page states the same key table, and what we cannot claim", ()
   assert.doesNotMatch(page, /SOC 2/i, "the security page must not claim a certification");
 });
 
+test("the security page answers whether writing resumes once the cap is raised", () => {
+  // The gap issue #303 names, from both directions. A train task of the agent
+  // eval (#222) was dropped because its answer is nowhere in the reading
+  // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
+  // at the cap, and neither said what raising it does. The pages an agent
+  // reads were also the only place the answer could live, because the code that
+  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // is not served. So the answer is one sentence on the page that already
+  // states the cap, and this pins it: an eval cannot grade an answer the
+  // reading stack does not carry, and a page that loses the sentence fails here
+  // rather than in the next run's score.
+  const page = shipped("security.md");
+  assert.match(
+    page,
+    /raise the cap and the drive starts writing again/i,
+    "the security page must say writing resumes once the cap is raised",
+  );
+  assert.match(
+    page,
+    /uploads that waited in the cache go up/i,
+    "the security page must say the uploads that waited are sent",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
