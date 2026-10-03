@@ -20,22 +20,20 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
-const docsQuickstart = readFileSync(
-  new URL("../docs-site/quickstart.md", import.meta.url),
-  "utf8",
-);
+const docsQuickstart = readFileSync(new URL("../docs-site/quickstart.md", import.meta.url), "utf8");
 
-const workerFetch =
-  /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
-    /** @type {unknown} */ (worker.fetch)
-  );
+const workerFetch = /** @type {(request: Request, env?: unknown) => Promise<Response>} */ (
+  /** @type {unknown} */ (worker.fetch)
+);
 
 /**
  * @param {string} query
  * @param {string} [method]
  */
 function quoteRequest(query, method = "GET") {
-  const url = query ? `https://drive.test${QUOTE_ENDPOINT}?${query}` : `https://drive.test${QUOTE_ENDPOINT}`;
+  const url = query
+    ? `https://drive.test${QUOTE_ENDPOINT}?${query}`
+    : `https://drive.test${QUOTE_ENDPOINT}`;
   return new Request(url, { method });
 }
 

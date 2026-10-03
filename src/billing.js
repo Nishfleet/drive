@@ -783,11 +783,13 @@ export function handleQuoteRequest(request) {
   const url = new URL(request.url);
   const tbRaw = url.searchParams.get("tb");
   const gbRaw = url.searchParams.get("gb");
-  if ((tbRaw === null) === (gbRaw === null)) {
-    return quoteSizeError();
+  let raw = null;
+  if (tbRaw !== null && gbRaw === null) {
+    raw = tbRaw;
+  } else if (gbRaw !== null && tbRaw === null) {
+    raw = gbRaw;
   }
-  const raw = tbRaw ?? gbRaw;
-  if (raw.trim() === "") {
+  if (raw === null || raw.trim() === "") {
     return quoteSizeError();
   }
   const parsed = Number(raw);
