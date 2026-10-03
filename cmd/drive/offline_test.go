@@ -123,8 +123,33 @@ func TestOverOfflineCap(t *testing.T) {
 		t.Fatal("a set that equals the cap fits")
 	}
 	err := offlineCapError(21<<30, 20<<30)
-	if err == nil || !strings.Contains(err.Error(), "cache limit") || strings.Contains(err.Error(), "drive cache --max") {
+	if err == nil || !strings.Contains(err.Error(), "cache limit") || !strings.Contains(err.Error(), "drive cache --max") {
 		t.Fatalf("cap error = %v", err)
+	}
+}
+
+func TestOfflineCapBytesReadsThePersonsLimit(t *testing.T) {
+	home := t.TempDir()
+	got, err := OfflineCapBytes(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := parseSizeSuffix(vfsCacheMaxValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("default offline cap = %d, want the shipped %d", got, want)
+	}
+	if err := SaveCacheMax(home, "5G"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = OfflineCapBytes(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 5<<30 {
+		t.Errorf("offline cap after drive cache --max 5G = %d, want 5 GiB", got)
 	}
 }
 

@@ -230,7 +230,7 @@ func TestClearCacheKeepsTheUploadsWaiting(t *testing.T) {
 	writeCached(t, home, "bucket/u/me/queued.bin", 1<<20, true)
 	writeCached(t, home, "bucket/u/me/small.txt", 1<<10, false)
 
-	if err := ClearCache(DefaultCacheDir(home)); err != nil {
+	if err := ClearCache(DefaultCacheDir(home), nil); err != nil {
 		t.Fatal(err)
 	}
 	kept, err := PendingUploads(DefaultCacheDir(home))
@@ -276,8 +276,96 @@ func TestClearCacheKeepsTheUploadsWaiting(t *testing.T) {
 	}
 	// Clearing an already-empty cache is not an error: it is what an empty
 	// cache is.
-	if err := ClearCache(DefaultCacheDir(t.TempDir())); err != nil {
+	if err := ClearCache(DefaultCacheDir(t.TempDir()), nil); err != nil {
 		t.Fatalf("clear on an unused cache: %v", err)
+	}
+}
+
+// `drive cache --clear` must not drop a file `drive offline` promised to keep
+// (issue #115). The uploads waiting still survive the same walk.
+func TestClearCacheKeepsOfflineFiles(t *testing.T) {
+	home := t.TempDir()
+	writeCached(t, home, "bucket/u/me/done.bin", 2<<20, false)
+	writeCached(t, home, "bucket/u/me/keep.bin", 3<<20, false)
+	writeCached(t, home, "bucket/u/me/queued.bin", 1<<20, true)
+	if err := SaveOffline(home, OfflineIndex{Paths: []string{"keep.bin"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearCache(DefaultCacheDir(home), []string{"keep.bin"}); err != nil {
+		t.Fatal(err)
+	}
+	used, files, err := CacheUse(DefaultCacheDir(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 4<<20 {
+		t.Errorf("cache after clear holds %d bytes, want the offline file plus the upload still waiting", used)
+	}
+	if files != 2 {
+		t.Errorf("cache after clear holds %d files, want keep.bin and queued.bin", files)
+	}
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "keep.bin")); err != nil {
+		t.Errorf("the kept-offline file was deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "done.bin")); !os.IsNotExist(err) {
+		t.Errorf("a cached file that is neither queued nor kept offline should be gone, stat err = %v", err)
+	}
+}
+
+// The three commands the issue names, each through the real entry point.
+func TestDriveCacheCommands(t *testing.T) {
+	home := t.TempDir()
+	writeCached(t, home, "bucket/u/me/keep.bin", 2<<20, false)
+	writeCached(t, home, "bucket/u/me/other.bin", 1<<20, false)
+	if err := SaveOffline(home, OfflineIndex{Paths: []string{"keep.bin"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = runCache([]string{"--home", home, "--max", "5G"})
+	})
+	if err != nil {
+		t.Fatalf("drive cache --max: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "cache limit set to 5G") {
+		t.Errorf("drive cache --max: %q", out)
+	}
+	got, err := ResolveCacheMax(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "5G" {
+		t.Errorf("limit after --max = %q, want 5G", got)
+	}
+
+	out = captureStdout(t, func() {
+		err = runCache([]string{"--home", home})
+	})
+	if err != nil {
+		t.Fatalf("drive cache: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "cache on disk:") || !strings.Contains(out, "cache limit: 5G") {
+		t.Errorf("drive cache: %q", out)
+	}
+	if !strings.Contains(out, "kept offline:") || !strings.Contains(out, "counting toward the limit") {
+		t.Errorf("drive cache should name the kept-offline files against the limit: %q", out)
+	}
+
+	out = captureStdout(t, func() {
+		err = runCache([]string{"--home", home, "--clear"})
+	})
+	if err != nil {
+		t.Fatalf("drive cache --clear: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "files kept offline stay") {
+		t.Errorf("drive cache --clear: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "keep.bin")); err != nil {
+		t.Errorf("drive cache --clear dropped the kept-offline file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "other.bin")); !os.IsNotExist(err) {
+		t.Errorf("drive cache --clear left a file it should have dropped, stat err = %v", err)
 	}
 }
 
@@ -297,14 +385,20 @@ func TestCacheRefusesTwoOperationsAtOnce(t *testing.T) {
 // open does not need a second command to see what it uses. It is the same
 // numbers `drive cache` prints.
 func TestStatusCarriesTheCacheLine(t *testing.T) {
-	src, err := os.ReadFile("status.go")
-	if err != nil {
-		t.Fatal(err)
+	home := t.TempDir()
+	writeCacheMax(t, home, "5G")
+	writeCached(t, home, "bucket/u/me/movie.mp4", 3<<20, false)
+	var reason string
+	out := captureStdout(t, func() {
+		reason = cacheStatusLine(home)
+	})
+	if reason != "" {
+		t.Fatalf("cacheStatusLine: %s", reason)
 	}
-	if !strings.Contains(string(src), "func cacheStatusLine(") {
-		t.Fatal("status.go must carry the cache line behind its own function")
+	if !strings.Contains(out, "cache:") || !strings.Contains(out, "5G") {
+		t.Fatalf("drive status cache line = %q", out)
 	}
-	if !strings.Contains(string(src), "CacheUse(DefaultCacheDir(home))") {
-		t.Error("the cache line must measure the cache dir the same way `drive cache` does")
+	if !strings.Contains(out, FormatBytes(3<<20)) {
+		t.Errorf("cache line missing the measured size: %q", out)
 	}
 }

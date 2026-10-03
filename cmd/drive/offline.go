@@ -301,7 +301,7 @@ func overOfflineCap(bytes, cap int64) bool {
 // fit. The cache limit is the mount's `--vfs-cache-max-size`; there is no
 // second cache command.
 func offlineCapError(bytes, cap int64) error {
-	return fmt.Errorf("keeping this offline needs %s and the cache limit is %s",
+	return fmt.Errorf("keeping this offline needs %s and the cache limit is %s; raise it with `drive cache --max` or keep less",
 		FormatBytes(bytes), FormatBytes(cap))
 }
 
@@ -320,11 +320,17 @@ func offlineMountDir(home string) string {
 }
 
 // OfflineCapBytes is the limit a kept-offline set has to fit inside: the same
-// `--vfs-cache-max-size` (vfsCacheMaxValue) mount.go puts on the command line,
-// read from the one constant rather than kept in a second copy. There is no
-// other cache to keep a file in — see the top of this file — so this is the
-// number, and the reason `drive offline` refuses a set that cannot fit.
-func OfflineCapBytes() (int64, error) { return parseSizeSuffix(vfsCacheMaxValue) }
+// `--vfs-cache-max-size` the mount runs with, which is the value `drive cache
+// --max` wrote or the shipped 20G default. There is no other cache to keep a
+// file in — see the top of this file — so this is the number, and the reason
+// `drive offline` refuses a set that cannot fit.
+func OfflineCapBytes(home string) (int64, error) {
+	maxSize, err := ResolveCacheMax(home)
+	if err != nil {
+		return 0, err
+	}
+	return parseSizeSuffix(maxSize)
+}
 
 // KeepOffline downloads a full copy of rel into rclone's VFS cache and reports
 // how many bytes it read. The read is through the mount, byte for byte the read
@@ -411,7 +417,7 @@ func runOffline(args []string) error {
 	if err != nil {
 		return err
 	}
-	capBytes, err := OfflineCapBytes()
+	capBytes, err := OfflineCapBytes(common.home)
 	if err != nil {
 		return err
 	}
@@ -515,7 +521,7 @@ func printOffline(mountDir, home string) error {
 	if err != nil {
 		return err
 	}
-	printOfflineUsage(usage, bytes)
+	printOfflineUsage(home, usage, bytes)
 	return nil
 }
 
@@ -523,12 +529,9 @@ func printOffline(mountDir, home string) error {
 // own files and bytes, then the one line that answers "how much of my disk is
 // this". Shared with `drive status` so the two cannot drift. bytes is
 // UniqueOffline's count, so a nested folder is not added twice.
-func printOfflineUsage(usage []OfflineUsage, bytes int64) {
-	capBytes, err := OfflineCapBytes()
+func printOfflineUsage(home string, usage []OfflineUsage, bytes int64) {
+	capBytes, err := OfflineCapBytes(home)
 	if err != nil {
-		// vfsCacheMaxValue is a constant this file wrote; a parse failure here
-		// is a bug in the product, not operator input, so it is reported
-		// rather than read as an unlimited cache.
 		fmt.Printf("offline: %s kept (the cache limit is unreadable: %v)\n", pluralPaths(len(usage)), err)
 		return
 	}

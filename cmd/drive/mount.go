@@ -72,7 +72,7 @@ type MountPlan struct {
 // --max` wrote, or the shipped 20G default when they never chose one. It is a
 // parameter rather than a constant read here, so the number in the mount args,
 // the number in the mount's live options and the number `drive cache` prints
-// are one value resolved once in LoadCacheMax rather than three.
+// are one value resolved once in ResolveCacheMax rather than three.
 //
 // The tunable values (read-ahead, chunk size, chunk streams, buffer size,
 // transfers) may be overridden by a DRIVE_BENCH_<FLAG> environment variable

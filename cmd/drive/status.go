@@ -158,7 +158,7 @@ func runStatus(args []string) error {
 		if err != nil {
 			return err
 		}
-		printOfflineUsage(usage, bytes)
+		printOfflineUsage(home, usage, bytes)
 	}
 	creds, err := LoadCredentials(home)
 	if err != nil {

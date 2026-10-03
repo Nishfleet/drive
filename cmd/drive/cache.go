@@ -23,6 +23,7 @@ import (
 //   - `drive cache`            what is on disk now, and the limit it is held to
 //   - `drive cache --max 5G`   change the limit (and re-mount so it takes now)
 //   - `drive cache --clear`    empty the cache, leaving the uploads still waiting
+//                              and the files kept offline (issue #115)
 //
 // A hard cap is always on: the mount carries --vfs-cache-max-size (the person's
 // number, 20G by default) and --vfs-cache-min-free-space 1G, so the cache can
@@ -115,16 +116,15 @@ func setCacheMax(home, maxSize, rclone string) error {
 	return nil
 }
 
-// clearCache empties the cache while leaving the uploads still waiting. The
-// rule is rclone's own, read from the metadata rclone wrote rather than from a
-// list this command keeps: a cached file whose vfs metadata is Dirty is one
-// rclone has not finished uploading, so it and its metadata stay, and every
-// other cached file goes.
-//
-// The queued bytes are the person's work in progress, so the count and size of
-// what was kept is printed, not just what was removed.
+// clearCache empties the cache while leaving the uploads still waiting and the
+// files this computer keeps offline. Dirty metadata is rclone's own queue; the
+// offline list is `drive offline`'s promise. Everything else goes.
 func clearCache(home, rclone string) error {
-	if err := ClearCache(DefaultCacheDir(home)); err != nil {
+	idx, err := LoadOffline(home)
+	if err != nil {
+		return err
+	}
+	if err := ClearCache(DefaultCacheDir(home), idx.Paths); err != nil {
 		return err
 	}
 	maxSize, err := ResolveCacheMax(home)
@@ -135,7 +135,11 @@ func clearCache(home, rclone string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("cache cleared; %s still on disk for the uploads waiting to go up\n", FormatBytes(kept.Bytes))
+	msg := fmt.Sprintf("cache cleared; %s still on disk for the uploads waiting to go up", FormatBytes(kept.Bytes))
+	if !idx.Empty() {
+		msg += "; files kept offline stay and count toward the limit"
+	}
+	fmt.Println(msg)
 	return printCacheAt(home, maxSize)
 }
 
@@ -152,7 +156,9 @@ func printCache(home string) error {
 // printCacheAt prints the two lines the issue asks for: what is on disk now and
 // the limit it is held to. The floor is printed as well, because it is the
 // other half of the cap and a person comparing the two numbers can see the
-// cache is allowed less than the limit on a nearly-full disk.
+// cache is allowed less than the limit on a nearly-full disk. Kept-offline
+// files (issue #115) are named when any exist, because they count toward the
+// same limit.
 func printCacheAt(home, maxSize string) error {
 	used, files, err := CacheUse(DefaultCacheDir(home))
 	if err != nil {
@@ -170,6 +176,14 @@ func printCacheAt(home, maxSize string) error {
 		fmt.Printf(", and %s of free space kept on the disk holding it", vfsCacheMinFreeSpaceValue)
 	}
 	fmt.Println()
+	idx, err := LoadOffline(home)
+	if err != nil {
+		return err
+	}
+	if !idx.Empty() {
+		offBytes, offFiles := cacheOfflineUse(DefaultCacheDir(home), idx.Paths)
+		fmt.Printf("kept offline: %s in %d files, counting toward the limit\n", FormatBytes(offBytes), offFiles)
+	}
 	return nil
 }
 
@@ -211,13 +225,68 @@ func CacheUse(cacheDir string) (int64, int, error) {
 	return total, files, nil
 }
 
-// ClearCache empties the cache except the files rclone still has to upload.
+// cacheRelKeptOffline reports whether a cache-relative path (the key after
+// stripping vfs/ or vfsMeta/) is one of the mount-relative paths `drive
+// offline` keeps. The cache key is remote + object path
+// (`drive/bucket/u/me/Photos/a.jpg`); the offline path is the object path
+// (`Photos` or `Photos/a.jpg`). A suffix match, or a `/offline/` directory
+// prefix inside the key, is the object path.
+func cacheRelKeptOffline(rel string, offline []string) bool {
+	rel = filepath.ToSlash(rel)
+	for _, p := range offline {
+		p = strings.Trim(filepath.ToSlash(p), "/")
+		if p == "" {
+			continue
+		}
+		if rel == p || strings.HasSuffix(rel, "/"+p) {
+			return true
+		}
+		if strings.Contains(rel, "/"+p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// cacheOfflineUse is the bytes and files in the VFS cache that belong to the
+// kept-offline set, so `drive cache` can say those files count toward the
+// limit without a second walk of the mount.
+func cacheOfflineUse(cacheDir string, offline []string) (int64, int) {
+	if len(offline) == 0 {
+		return 0, 0
+	}
+	root := filepath.Join(cacheDir, "vfs")
+	var (
+		total int64
+		files int
+	)
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !cacheRelKeptOffline(queueKey(cacheDir, p), offline) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		files++
+		return nil
+	})
+	return total, files
+}
+
+// ClearCache empties the cache except the files rclone still has to upload
+// and the files this computer keeps offline (issue #115).
 //
-// What survives is decided by rclone's own metadata, not by a list this
-// command keeps: Dirty is true while a cached file has not reached the object
-// store, and rclone re-uploads those on the next mount. The queue is read
-// before the walk starts, so a file rclone begins uploading while this runs is
-// already known.
+// What survives is decided by rclone's own metadata and the kept-offline list,
+// not by a list this command invents: Dirty is true while a cached file has
+// not reached the object store, and rclone re-uploads those on the next mount.
+// A kept-offline file is the same bytes rclone already holds; deleting it
+// would break `drive offline`'s promise. The queue is read before the walk
+// starts, so a file rclone begins uploading while this runs is already known.
 //
 // Two things go for everything else: the bytes under vfs/, and the metadata
 // under vfsMeta/ that says the file is there. Both are removed on purpose -
@@ -225,7 +294,7 @@ func CacheUse(cacheDir string) (int64, int, error) {
 // has a file it does not, so the next open of that file would read a file that
 // is not there instead of fetching it again. Dropping the record too is what
 // makes the next open a cold read, which is what an emptied cache means.
-func ClearCache(cacheDir string) error {
+func ClearCache(cacheDir string, offline []string) error {
 	queued := map[string]bool{}
 	metaRoot := filepath.Join(cacheDir, "vfsMeta")
 	err := filepath.WalkDir(metaRoot, func(p string, d fs.DirEntry, err error) error {
@@ -238,6 +307,7 @@ func ClearCache(cacheDir string) error {
 		if d.IsDir() {
 			return nil
 		}
+		key := queueKey(cacheDir, p)
 		data, err := os.ReadFile(p)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -249,8 +319,8 @@ func ClearCache(cacheDir string) error {
 		if err := json.Unmarshal(data, &meta); err != nil {
 			return fmt.Errorf("parse vfs metadata %s: %w", p, err)
 		}
-		if meta.Dirty {
-			queued[queueKey(cacheDir, p)] = true
+		if meta.Dirty || cacheRelKeptOffline(key, offline) {
+			queued[key] = true
 			return nil
 		}
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
