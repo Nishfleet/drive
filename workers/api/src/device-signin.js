@@ -46,6 +46,7 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  * @property {(deviceCode: string) => Promise<PollResult>} pollDeviceCode
  * @property {(token: string) => Promise<{id: string, name: string, email: string|null}|null>} accountForDeviceToken
  * @property {(token: string) => Promise<RevokeResult>} revokeDeviceToken
+ * @property {(account: {id: string}) => Promise<{revoked: number}>} revokeAllDeviceTokens
  * @property {(at?: number) => Promise<number>} sweepDeviceTokens
  */
 
@@ -70,6 +71,13 @@ import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
  * A revoke's answer: what the row says, or a named refusal for a token the
  * store never held.
  * @typedef {{revoked: true, expiresAt: number, revokedAt: number}|{error: "not-found"}} RevokeResult
+ */
+
+/**
+ * A bulk revoke's answer: how many of the account's live tokens went dead. It
+ * counts the rows it changed, never the rows it found, so "0" means every
+ * token on this account was already dead and the answer is about the new ones.
+ * @typedef {{revoked: number}} RevokeAllResult
  */
 
 // How long a device code is good for, and how often the CLI may poll
@@ -360,6 +368,40 @@ export function createMemoryDeviceSigninStore(options = {}) {
         row.revokedAt = nowSeconds(now());
       }
       return { revoked: true, expiresAt: row.expiresAt, revokedAt: row.revokedAt };
+    },
+
+    /**
+     * Revoke every live device token on one account: the "sign out of every
+     * device" half (drive#34, slice drive#236). This is `revokeDeviceToken`
+     * without the caller's own token in front of it — one account id, every
+     * row.
+     *
+     * The account id is the only filter and it is an id, never a token: the
+     * caller of this method is the account route behind the account gate
+     * (device-routes.js / key-routes.js), which resolved the account from a
+     * credential it already holds, so a caller cannot name another account's
+     * rows any more than it could with the single-token revoke. A row that is
+     * already dead is left exactly as it is: the first revoke's timestamp is
+     * the row's own history, and a bulk pass that is run twice must not rewrite
+     * it. Idempotent, so the second call answers `0` and nothing more.
+     *
+     * Expired rows are counted too where they are not yet marked revoked: the
+     * bearer lookup already refuses them, so the write is housekeeping on those
+     * and the count is about the live ones the caller cared about. What is
+     * never done here is deleting a row — `sweepDeviceTokens` does that, and
+     * only for rows that can no longer authenticate.
+     * @param {{id: string}} account
+     * @returns {Promise<RevokeAllResult>}
+     */
+    async revokeAllDeviceTokens(account) {
+      let revoked = 0;
+      for (const row of tokens.values()) {
+        if (row.account.id === account.id && row.revokedAt === null) {
+          row.revokedAt = nowSeconds(now());
+          revoked++;
+        }
+      }
+      return { revoked };
     },
 
     /**
@@ -680,6 +722,35 @@ export function createD1DeviceSigninStore(db, options = {}) {
         expiresAt: Number(row.expires_at),
         revokedAt: Number(row.revoked_at),
       };
+    },
+
+    /**
+     * Revoke every live device token on one account: the "sign out of every
+     * device" half (drive#34, slice drive#236). One statement, filtered on the
+     * account id the gate resolved, so no loop reads rows it cannot name.
+     *
+     * The write is conditional on `revoked_at IS NULL`, which is what makes it
+     * both idempotent and honest about a row's history: a token that is already
+     * dead keeps the first revoke's timestamp, and `meta.changes` therefore
+     * counts only the rows this call actually killed. A caller that runs this
+     * twice sees `0` the second time.
+     *
+     * Nothing is deleted. The expiry and revocation columns are the same ones
+     * the single bearer lookup reads, so a token killed here is refused at the
+     * gate for every route at once, exactly as a revoke by `DELETE
+     * /v1/device/token` is; the rows drop later, through the same sweep the
+     * single revoke's rows drop through.
+     * @param {{id: string}} account
+     * @returns {Promise<RevokeAllResult>}
+     */
+    async revokeAllDeviceTokens(account) {
+      const changed = await run(
+        db,
+        "UPDATE device_tokens SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        nowSeconds(now()),
+        account.id,
+      );
+      return { revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0) };
     },
 
     /**

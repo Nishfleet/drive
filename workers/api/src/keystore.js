@@ -325,6 +325,30 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * Revoke every live key this account holds: the key half of "sign out of
+     * every device" (drive#34, slice drive#236). The account id is the whole
+     * filter, taken from the account gate rather than from the request, so one
+     * account cannot name another's rows here any more than it could with
+     * `revokeKey`.
+     *
+     * Idempotent and history-preserving, like every other revoke here: a row
+     * that is already revoked keeps the first timestamp, and only rows this
+     * call actually killed are counted, so a second call answers `0`.
+     * @param {{id: string}} account
+     * @returns {{revoked: number}}
+     */
+    revokeAllKeys(account) {
+      let revoked = 0;
+      for (const device of devices.values()) {
+        if (device.accountId === account.id && device.revokedAt === null) {
+          device.revokedAt = nowSeconds(now());
+          revoked++;
+        }
+      }
+      return { revoked };
+    },
+
+    /**
      * Restart the hour on one of the account's own keys (drive issue #106).
      *
      * This is the renewal a caller makes on purpose: the signed-in device
@@ -502,6 +526,15 @@ export function createMemoryStore(options = {}) {
      * route reads `store.teams` either way and neither path is special-cased.
      */
     teams: options.teams ?? createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
+
+    // The device sign-in store this key store delegates to, exposed because
+    // `DELETE /v1/keys` has to reach the account's device tokens as well as its
+    // keys and the dispatcher hands a route this one store (device-signin.js).
+    // Exposing it is not a second way in: every method here that touches a
+    // device token already forwards to this same object, so a caller that holds
+    // the key store holds the sign-in store it was built with and never a
+    // different one.
+    signin,
   };
 }
 
