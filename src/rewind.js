@@ -112,12 +112,16 @@ function plain(message, status, headers = {}) {
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
  * @param {number} now epoch milliseconds, injected so the tests pin the clock
- * @param {import("./branches.js").SnapshotStore|null} [snapshots] the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store;
+ *   required because the leftover column is no longer a source (drive#329)
  * @returns {Promise<RewindPreview>}
  */
-export async function rewindPreview(store, branch, now, snapshots = null) {
+export async function rewindPreview(store, branch, now, snapshots) {
   if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`rewindPreview needs a clock, got ${String(now)}`);
+  }
+  if (!snapshots) {
+    throw new TypeError("rewindPreview needs the branch snapshot store");
   }
   const createdAt = Date.parse(branch.createdAt);
   if (!Number.isFinite(createdAt)) {
