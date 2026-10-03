@@ -37,6 +37,7 @@ export function rcloneListingRows(objects, prefix, delimiter) {
   // A listing with no delimiter answers every key inside the prefix as
   // Contents, which is what rclone does, so the split only happens when the
   // store sent one.
+  /** @param {string} name @returns {boolean} */
   const deeper = (name) => delimiter !== "" && rest(name).includes(delimiter);
   // The folder a key below the prefix cuts off, as the text after the prefix
   // up to and including the first delimiter. Carrying the delimiter in the
