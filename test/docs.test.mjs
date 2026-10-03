@@ -15,7 +15,7 @@ import {
   monthBillCents,
   monthlyCeilingUsd,
 } from "../src/billing.js";
-import { FAQ, faqMarkdown, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { PAGES, SITE } from "../src/seo.js";
@@ -93,6 +93,43 @@ test("a page may not use a marker src/docs.js does not define", () => {
     () => applyMarkers("{{NOT_A_MARKER}}"),
     /NOT_A_MARKER/,
     "an unknown marker must fail the render, not ship as a literal",
+  );
+});
+
+// The cache numbers (drive issue #112) are the shipped defaults in
+// cmd/drive/config.go, read here the way test/home-demos.test.mjs reads the
+// mount's flags: a page that says 20G while the CLI mounts with 6G is a page
+// that lies about the disk, so the two are one file apart and this is the gate
+// between them.
+test("the cache numbers on the pages are the ones the CLI mounts with", () => {
+  const go = readFileSync(new URL("../cmd/drive/config.go", import.meta.url), "utf8");
+  /** @param {string} name @returns {string} */
+  const goConst = (name) => {
+    const match = go.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`, ""));
+    assert.ok(match, `${name} must be a Go string constant in cmd/drive/config.go`);
+    return match[1];
+  };
+  const limit = goConst("vfsCacheMaxValue");
+  const floor = goConst("vfsCacheMinFreeSpaceValue");
+  for (const [file, name] of [
+    ["how-it-works.md", "how it works"],
+    ["limits.md", "limits"],
+  ]) {
+    const page = shipped(file);
+    assert.ok(page.includes(limit), `${name} page must state the ${limit} cache limit`);
+    assert.ok(page.includes(floor), `${name} page must state the ${floor} free-space floor`);
+  }
+  // And the marker the page uses renders from those constants, so the two
+  // cannot be checked against the page but disagree with each other.
+  assert.equal(
+    markerValues().CACHE_LIMIT,
+    limit,
+    "the CACHE_LIMIT marker must be the CLI's own limit",
+  );
+  assert.equal(
+    markerValues().CACHE_FLOOR,
+    floor,
+    "the CACHE_FLOOR marker must be the CLI's own floor",
   );
 });
 

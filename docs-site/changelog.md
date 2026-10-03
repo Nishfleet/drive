@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-03
 
+- `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
+  disk is rclone's own VFS cache, capped at 20G with 1G of free space always
+  kept, and a size you choose. `drive status` shows the same use. Files waiting
+  to upload and files kept offline survive `--clear` and count toward the
+  limit.
+
 - `drive offline` and `drive online`: keep a file or folder on this computer
   so it opens with no internet, and `drive status` lists what is kept and how
   much disk it uses. New files in a kept folder stay kept. The copy lives in

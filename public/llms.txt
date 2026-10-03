@@ -7,8 +7,9 @@
 > Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
 
 Drive is a mounted folder (macOS and Linux) where your files live in object
-storage instead of on your laptop disk, so libraries bigger than the laptop
-open on demand. Agents read and write the same files through the folder, the
+storage; what is on your disk is the parts you have opened, held in a cache
+capped at 20G with 1G of your disk always kept free. Libraries bigger than the
+laptop open on demand. Agents read and write the same files through the folder, the
 MCP filesystem server, or the S3 API, each with its own scoped key.
 
 ## Pricing
@@ -37,6 +38,12 @@ Worked examples, each the amount charged after the $1 free:
 
 - A drive folder that works in any app. Files stream on demand, so a 5 GB video
   opens without downloading first.
+- The cache on your disk is capped at 20G, and 1G of free space is always kept.
+  Your disk never fills up; the cache is capped at a size you choose.
+  `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
+  changes it, and `drive cache --clear` empties it without touching a file still
+  waiting to upload. `drive status` shows the same cache use. Files you keep
+  offline stay, are never evicted, and count toward that limit.
 - Saves reach storage a few seconds after the file is closed and appear on the
   other machines.
 - A spending cap you set; at the cap the drive goes read-only and nothing is

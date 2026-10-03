@@ -122,7 +122,7 @@ func TestConnectWritesTheSkillNote(t *testing.T) {
 			}
 			path, _ := tool.SkillPath(env)
 			text := readFile(t, path)
-			for _, want := range []string{skillBegin, skillEnd, env.DriveDir, "search_files", "drive search", "drive restore", "drive branch"} {
+			for _, want := range []string{skillBegin, skillEnd, env.DriveDir, "search_files", "drive search", "the parts an app has opened", "drive cache --max", "drive restore", "drive branch"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s skill note is missing %q:\n%s", name, want, text)
 				}
