@@ -44,15 +44,16 @@ const updateModule = "github.com/Nishfleet/drive"
 // drives cannot drift from the one a person ran by hand.
 const updateModulePath = updateModule + "/cmd/drive"
 
-// moduleProxyBase is the Go module proxy a release is read from. `@latest` is
-// what `go install <updateModulePath>@latest` resolves through, so this is the
-// released-tag check, not a parallel source.
-const moduleProxyBase = "https://proxy.golang.org"
-
 // updateTimeout bounds the released-version read. An update command that
 // cannot reach the proxy must say so inside a command's worth of time, not
 // hold the terminal.
 const updateTimeout = 30 * time.Second
+
+// noProxySentinel is the GOPROXY entry that means "no module proxy": the
+// toolchain resolves modules through VCS instead, so there is no proxy to ask
+// for the latest release and this command must say so rather than read a
+// version no install could produce.
+const noProxySentinel = "off"
 
 // updateOptions is everything one `drive update` run needs. Every default
 // lives in updateDrive, so the zero value runs the production path: the
@@ -62,6 +63,9 @@ const updateTimeout = 30 * time.Second
 // runs.
 type updateOptions struct {
 	// proxyBase is the module proxy the released version is read from.
+	// Empty means the toolchain's own effective GOPROXY (see
+	// effectiveProxyBase), so the version check and the install it gates
+	// resolve through the same proxy. A test pins it at a local server.
 	proxyBase string
 	// goBin is the Go toolchain to drive; empty means `go` from PATH
 	// (DRIVE_GO fills it, the way --rclone and DRIVE_RCLONE do).
@@ -112,10 +116,6 @@ func runUpdate(args []string) error {
 // version, install it with the Go toolchain unless it is already installed or
 // --check was passed, then report the version the installed binary carries.
 func updateDrive(o updateOptions) error {
-	proxyBase := o.proxyBase
-	if proxyBase == "" {
-		proxyBase = moduleProxyBase
-	}
 	// A caller that leaves out and err unset gets the console, not a nil
 	// writer, so the zero value is the production path rather than a panic.
 	out, errw := o.out, o.err
@@ -124,6 +124,26 @@ func updateDrive(o updateOptions) error {
 	}
 	if errw == nil {
 		errw = os.Stderr
+	}
+	// The version check and the install it gates resolve through one proxy.
+	// `go install @latest` follows the toolchain's effective GOPROXY, so a
+	// hard-coded proxy.golang.org here could read a version from a feed the
+	// install never consults. The toolchain is asked, and only a test's own
+	// proxyBase overrides the answer.
+	//
+	// The toolchain is resolved first, because asking it is the way the
+	// proxy is read: a machine with no Go on PATH has no install to drive,
+	// so it fails with the missing-toolchain error rather than a proxy one.
+	goBin, err := resolveGo(o.goBin)
+	if err != nil {
+		return err
+	}
+	proxyBase := o.proxyBase
+	if proxyBase == "" {
+		proxyBase, err = effectiveProxyBase(goBin, o.goEnv)
+		if err != nil {
+			return err
+		}
 	}
 	latest, err := latestModuleVersion(proxyBase)
 	if err != nil {
@@ -140,10 +160,6 @@ func updateDrive(o updateOptions) error {
 	if o.checkOnly {
 		fmt.Fprintf(out, "a newer drive is available: %s (this machine runs %s)\n", latest, from)
 		return nil
-	}
-	goBin, err := resolveGo(o.goBin)
-	if err != nil {
-		return err
 	}
 	if err := installLatestRelease(goBin, o.goEnv, o.dir, out, errw); err != nil {
 		return err
@@ -230,12 +246,52 @@ func installLatestRelease(goBin string, env []string, dir string, out, errw io.W
 	return nil
 }
 
+// effectiveProxyBase is the module proxy the toolchain will resolve
+// `go install <updateModulePath>@latest` through: the first URL in the
+// effective GOPROXY. Asking the toolchain (`go env -json GOPROXY`) is what
+// makes this one source of truth with the install, instead of a second place
+// a proxy URL is written down.
+//
+// GOPROXY is a comma-separated list ending in `,direct` on a stock install,
+// and `direct` resolves through VCS with no module proxy in front of it, so
+// there is no `@latest` answer to read. A machine that has turned the proxy
+// off (`GOPROXY=off`) has the same problem and gets the same named error,
+// rather than this command quietly reading a version nothing could install.
+func effectiveProxyBase(goBin string, env []string) (string, error) {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is the resolved go toolchain, the argument is the fixed GOPROXY name, and exec.Command takes an argument vector, not a shell.
+	cmd := exec.Command(goBin, "env", "-json", "GOPROXY")
+	cmd.Env = env
+	raw, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ask %s which module proxy it installs from: %w", goBin, err)
+	}
+	var cfg struct {
+		GOPROXY string
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", fmt.Errorf("ask %s which module proxy it installs from: %s", goBin, strings.TrimSpace(string(raw)))
+	}
+	for _, entry := range strings.Split(cfg.GOPROXY, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || entry == noProxySentinel || entry == "direct" {
+			continue
+		}
+		return entry, nil
+	}
+	return "", fmt.Errorf("this machine resolves Go modules with GOPROXY=%s, which names no module proxy, so the latest release cannot be read; set GOPROXY to a proxy URL (for example https://proxy.golang.org) and run drive update again", cfg.GOPROXY)
+}
+
 // installedDrivePath is where `go install <updateModulePath>@latest` writes
 // the binary: $GOBIN, or $GOPATH/bin. GOEXE carries the platform suffix, which
 // is empty on macOS and Linux, the two platforms drive ships
 // (docs-site/limits.md). Reading it out of the toolchain rather than guessing
 // $HOME/go means an install this command just ran is never reported at a path
 // it did not write to.
+//
+// GOPATH is a list, and the toolchain installs into the first entry, so this
+// takes the first entry too. Joining the whole value would name a directory
+// (`/home/u/go:/opt/go`) that does not exist, and the command would then fail
+// to read back the binary it had just installed.
 func installedDrivePath(goBin string, env []string) (string, error) {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is the resolved go toolchain, the arguments are the fixed env names, and exec.Command takes an argument vector, not a shell.
 	cmd := exec.Command(goBin, "env", "-json", "GOBIN", "GOPATH", "GOEXE")
@@ -254,12 +310,26 @@ func installedDrivePath(goBin string, env []string) (string, error) {
 	}
 	bin := paths.GOBIN
 	if bin == "" {
-		if paths.GOPATH == "" {
+		first, ok := firstGOPATHEntry(paths.GOPATH)
+		if !ok {
 			return "", fmt.Errorf("%s installs to an empty GOBIN and reports no GOPATH", goBin)
 		}
-		bin = filepath.Join(paths.GOPATH, "bin")
+		bin = filepath.Join(first, "bin")
 	}
 	return filepath.Join(bin, "drive"+paths.GOEXE), nil
+}
+
+// firstGOPATHEntry is the first directory in a GOPATH value, which is the one
+// the toolchain installs binaries into. A GOPATH with several entries names
+// the same install directory whichever way the rest is used. An empty value,
+// or one that holds only separators, has no entry to install into.
+func firstGOPATHEntry(gopath string) (string, bool) {
+	for _, entry := range strings.Split(gopath, string(os.PathListSeparator)) {
+		if entry != "" {
+			return entry, true
+		}
+	}
+	return "", false
 }
 
 // versionText is what `drive version` prints: the module version the toolchain

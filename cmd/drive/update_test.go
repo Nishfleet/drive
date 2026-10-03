@@ -167,7 +167,7 @@ func updateTestDir(t *testing.T) string {
 func updateTestEnv(t *testing.T, proxyURL string) []string {
 	t.Helper()
 	gopath := updateTestDir(t)
-	return append(os.Environ(),
+	return append(cleanGoEnv(),
 		"GOPATH="+gopath,
 		"GOBIN="+filepath.Join(gopath, "bin"),
 		"GOCACHE="+updateTestDir(t),
@@ -176,6 +176,30 @@ func updateTestEnv(t *testing.T, proxyURL string) []string {
 		"GOTOOLCHAIN=local",
 		"GOFLAGS=",
 	)
+}
+
+// cleanGoEnv is this process's environment with every Go toolchain setting
+// removed. A test that pins GOPROXY, GOPATH or GOBIN must replace the value
+// the host exported, not sit beside it: an environment with two entries of the
+// same name is resolved differently by different systems, so a test that left
+// the host's setting in could read it instead of the one it pinned.
+func cleanGoEnv() []string {
+	drop := map[string]bool{
+		"GOPATH": true, "GOBIN": true, "GOCACHE": true, "GOPROXY": true,
+		"GOSUMDB": true, "GOTOOLCHAIN": true, "GOFLAGS": true,
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		name := e
+		if i := strings.Index(e, "="); i >= 0 {
+			name = e[:i]
+		}
+		if drop[name] {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
 }
 
 // envValue reads one NAME=value out of an environment.
@@ -318,7 +342,9 @@ func TestUpdateFailsOnProxyError(t *testing.T) {
 	}
 }
 
-// No Go toolchain: the command says so and installs nothing.
+// No Go toolchain: the command says so and installs nothing. PATH points at
+// an empty directory, not at a system path a Go install could live on, so the
+// test proves the missing-toolchain path wherever it runs.
 func TestUpdateFailsWhenGoIsMissing(t *testing.T) {
 	zipPath := makeProxyZip(t)
 	proxyURL, cleanup := localProxy(t, zipPath)
@@ -328,7 +354,7 @@ func TestUpdateFailsWhenGoIsMissing(t *testing.T) {
 	// process's exec.LookPath reads, which is what resolveGo consults, and
 	// env is the environment any child the install would start would get
 	// (this test never reaches the install).
-	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("PATH", t.TempDir())
 	out := new(strings.Builder)
 	err := updateDrive(updateOptions{
 		proxyBase: proxyURL,
@@ -345,6 +371,78 @@ func TestUpdateFailsWhenGoIsMissing(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "installing") {
 		t.Fatal("a missing toolchain must not reach the install")
+	}
+}
+
+// The version check reads the proxy the toolchain will install through, not a
+// hard-coded one: with GOPROXY pointed at the local proxy and no proxyBase
+// override, --check finds the release the local proxy serves. If the check
+// ignored GOPROXY it would ask proxy.golang.org, which 404s for this module,
+// and the test would fail.
+func TestUpdateResolvesTheProxyFromTheToolchain(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+	zipPath := makeProxyZip(t)
+	proxyURL, cleanup := localProxy(t, zipPath)
+	defer cleanup()
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		goEnv:     updateTestEnv(t, proxyURL),
+		dir:       t.TempDir(),
+		out:       out,
+		checkOnly: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := "a newer drive is available: v0.9.9 (this machine runs 0.1.0)"
+	if got := out.String(); !strings.Contains(got, want) {
+		t.Fatalf("--check output = %q, want %q", got, want)
+	}
+}
+
+// A machine whose GOPROXY names no module proxy has no released version to
+// read, and the command says exactly that rather than reading some other
+// source the install could not use.
+func TestUpdateFailsWhenTheToolchainHasNoProxy(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+	err := updateDrive(updateOptions{
+		goEnv:     updateTestEnv(t, "off"),
+		dir:       t.TempDir(),
+		out:       io.Discard,
+		err:       io.Discard,
+		checkOnly: true,
+	})
+	if err == nil {
+		t.Fatal("GOPROXY=off must be an error, not a silent version read")
+	}
+	if !strings.Contains(err.Error(), "GOPROXY") {
+		t.Fatalf("the error should name GOPROXY, got: %v", err)
+	}
+}
+
+// The toolchain installs into the first entry of a multi-entry GOPATH, so the
+// path this command reports from must be the first entry too.
+func TestInstalledDrivePathUsesTheFirstGOPATHEntry(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	env := append(cleanGoEnv(),
+		"GOPATH="+first+string(os.PathListSeparator)+second,
+		"GOBIN=",
+	)
+	got, err := installedDrivePath("go", env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Join(first, "bin"), "drive")
+	if got != want {
+		t.Fatalf("installedDrivePath = %q, want the first GOPATH entry %q", got, want)
 	}
 }
 
