@@ -514,7 +514,6 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		if err := bootstrapLaunchd(itemPath); err != nil {
 			return failDetail("login-item", err)
 		}
-<<<<<<< HEAD
 	} else if err := startLinuxLoginItem(); err != nil {
 		// A clean container and a first-run sandbox often have no systemd user
 		// bus (drive#105): systemctl is missing, or it cannot reach the user
