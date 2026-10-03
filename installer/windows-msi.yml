@@ -143,13 +143,13 @@ jobs:
       - name: Install WinFsp (its own MSI, silent)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/i`, "$PWD\installer\winfsp.msi", `/qn`, `/norestart`
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\winfsp.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "WinFsp's MSI exited $($p.ExitCode)" }
 
       - name: Install Drive (silent, msiexec /qn)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/i`, "$PWD\installer\drive.msi", `/qn`, `/norestart`
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\drive.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "the Drive MSI exited $($p.ExitCode)" }
 
       - name: Prove WinFsp is installed
@@ -189,15 +189,15 @@ jobs:
             "--addr", "127.0.0.1:39181", "--log-level", "INFO"
           Start-Sleep -Seconds 5
           try {
-            $home = "C:\Users\runneradmin"
+            $driveHome = "C:\Users\runneradmin"
             $env:DRIVE_S3_ACCESS_KEY_ID = "MSIACCESSKEY"
             $env:DRIVE_S3_SECRET_ACCESS_KEY = "msisecret"
-            $out = & drive.exe mount --home $home --endpoint http://127.0.0.1:39181 `
+            $out = & drive.exe mount --home $driveHome --endpoint http://127.0.0.1:39181 `
               --bucket drive-standin --prefix u/msi-test
             Write-Host "mount: $out"
             if ($LASTEXITCODE -ne 0) { throw "drive mount exited $LASTEXITCODE" }
 
-            $status = & drive.exe status --home $home
+            $status = & drive.exe status --home $driveHome
             Write-Host "status: $status"
             $letter = ($status | Select-String -Pattern "drive letter: ([A-Za-z]:)").Matches[0].Groups[1].Value
             if (-not $letter) { throw "no drive letter in drive status output"; exit 1 }
@@ -212,7 +212,7 @@ jobs:
             }
             Write-Host "write/read back: $read"
 
-            & drive.exe unmount --home $home
+            & drive.exe unmount --home $driveHome
             if ($LASTEXITCODE -ne 0) { throw "drive unmount exited $LASTEXITCODE"; exit 1 }
             Start-Sleep -Seconds 3
             if (Test-Path $path) { throw "$letter is still mounted after unmount"; exit 1 }
@@ -236,7 +236,7 @@ jobs:
       - name: Uninstall Drive (silent)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/x`, "$PWD\installer\drive.msi", `/qn`, `/norestart`
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "$PWD\installer\drive.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "the Drive uninstall exited $($p.ExitCode)" }
 
       - name: Prove the uninstall is clean
@@ -272,7 +272,7 @@ jobs:
       - name: Install through the bundle (the route winget install takes)
         shell: pwsh
         run: |
-          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList `/quiet`, `/norestart`
+          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList @('/quiet', '/norestart')
           if ($p.ExitCode -ne 0) { throw "drive-setup.exe exited $($p.ExitCode)" }
 
       - name: Prove the bundle installed Drive and its WinFsp payload
@@ -294,7 +294,7 @@ jobs:
       - name: Uninstall through the bundle
         shell: pwsh
         run: |
-          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList `/uninstall`, `/quiet`, `/norestart`
+          $p = Start-Process installer\drive-setup.exe -Wait -PassThru -ArgumentList @('/uninstall', '/quiet', '/norestart')
           if ($p.ExitCode -ne 0) { throw "the bundle uninstall exited $($p.ExitCode)" }
 
       - name: Prove the bundle uninstall is clean, WinFsp included
