@@ -14,10 +14,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { monthBillCents } from "../src/billing.js";
 import {
+  BILLING_PUSH_GAP_HOURS,
   billingEventId,
+  billingPushGap,
   DODO_EVENT_NAME,
   DODO_TEST_INGEST_URL,
   pushBillingHours,
+  unpushedBillingHours,
 } from "../src/dodo.js";
 import workerModule from "../src/index.js";
 import {
@@ -381,4 +384,125 @@ test("the hourly cron pushes the hour it just rolled", async () => {
   assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);
   assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, midnight()));
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
+});
+
+// --- the detector for a push that was skipped (drive issue #334) ---------
+//
+// A missing or mis-set DODO_PAYMENTS_API_KEY makes pushBillingHours return
+// {pushed: 0} and do nothing, on purpose: a rollup must not fail over the
+// key. The cost of that choice is silence, and a metered hour that rolled but
+// never reached Dodo is a billing loss with no alarm on it. These tests pin
+// the detector that gives the silence a name, and pin the skip itself as
+// still-returning.
+
+test("a rolled hour with no billing_pushes row is named as unpushed", async () => {
+  const day = await storedHours(10, 3);
+  // The meter rolled three hours; the push never ran, so nothing is recorded.
+  const gap = await unpushedBillingHours(day.db, { now: day.from + 3 * HOUR_MS });
+  assert.deepEqual(
+    gap.map((hour) => hour - day.from),
+    [0, HOUR_MS, 2 * HOUR_MS],
+    "every metered hour with no push is in the gap, oldest first",
+  );
+});
+
+test("an hour that was pushed leaves the gap, and one customer is not a gap", async () => {
+  const day = await storedHours(10, 3);
+  const recorder = recordingFetch();
+  // Push only the first two hours, the way a run that started late would.
+  await pushBillingHours(day.db, [day.from, day.from + HOUR_MS], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: day.from + 2 * HOUR_MS,
+  });
+  const gap = await unpushedBillingHours(day.db, { now: day.from + 3 * HOUR_MS });
+  assert.deepEqual(
+    gap.map((hour) => hour - day.from),
+    [2 * HOUR_MS],
+    "a pushed hour is not a gap, and the pushed rows are not counted twice",
+  );
+
+  // An account with no dodo_customer_id is skipped for a different reason
+  // (there is no Dodo customer to bill), so its metered hours are not a
+  // lost push and must not raise a false alarm.
+  const { db } = makeMeteredDB();
+  await recordUsage(db, ACCOUNT, midnight(), 60, BYTES_PER_GB, midnight() + HOUR_MS);
+  assert.deepEqual(
+    await unpushedBillingHours(db, { now: midnight() + HOUR_MS }),
+    [],
+    "an account with no Dodo customer has nothing to push and is not a gap",
+  );
+});
+
+test("the gap reads only the hours a person would bill for, not all of history", async () => {
+  const day = await storedHours(10, 48);
+  const recorder = recordingFetch();
+  // Forty-eight hours metered, only the first day ever pushed: the shape a
+  // deployment whose key was unset for a day actually leaves behind.
+  for (let h = 0; h < 24; h++) {
+    await pushBillingHours(day.db, [day.from + h * HOUR_MS], {
+      apiKey: KEY,
+      fetch: recorder.fetch,
+      now: day.from + (h + 1) * HOUR_MS,
+    });
+  }
+  const gap = await unpushedBillingHours(day.db, { now: day.from + 48 * HOUR_MS });
+  assert.equal(gap.length, 24, "the unpushed second day is the gap");
+  assert.equal(gap[0], day.from + 24 * HOUR_MS);
+  // The read is bounded: it must not walk the whole history on every probe,
+  // so a deployment with months of pushes still answers in one indexed read.
+  assert.equal(BILLING_PUSH_GAP_HOURS, 48, "the window is a named, tested constant");
+});
+
+test("billingPushGap names the gap and the key, and never the value", async () => {
+  const day = await storedHours(10, 2);
+  const gap = await billingPushGap(day.db, { apiKey: "", now: day.from + 2 * HOUR_MS });
+  assert.equal(gap.pushed, 0);
+  assert.equal(gap.hours, 2, "two metered hours reached nobody");
+  assert.equal(gap.since, day.from);
+  // The report is what reaches a log and a health body, so it names the
+  // secret whose absence caused it and never its value: a probe must not be
+  // able to disclose the key by reporting on it.
+  const serialised = JSON.stringify(gap);
+  assert.equal(serialised.includes(KEY), false);
+  assert.equal(serialised.includes("secret"), false, "the report never carries the value");
+  assert.ok(gap.missingKey, "a report that cannot say the key is missing cannot act");
+});
+
+test("a report on a key that works names no gap", async () => {
+  const day = await storedHours(10, 2);
+  const recorder = recordingFetch();
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: day.from + 2 * HOUR_MS,
+  });
+  const gap = await billingPushGap(day.db, { apiKey: KEY, now: day.from + 2 * HOUR_MS });
+  assert.deepEqual(gap, {
+    pushed: 0,
+    hours: 0,
+    since: null,
+    missingKey: false,
+  });
+});
+
+test("the skip path still returns rather than throwing, missing key or not", async () => {
+  // The issue's second acceptance bullet, kept as the guard it is: the
+  // detector must not turn the deliberate skip into a failed rollup, because
+  // Cloudflare retries a throwing cron and must not retry a rollup over a
+  // key. A missing key and an account with no Dodo customer both return.
+  const day = await storedHours(10, 1);
+  const recorder = recordingFetch();
+  const skipped = await pushBillingHours(day.db, day.hours, {
+    fetch: recorder.fetch,
+    now: day.from + HOUR_MS,
+  });
+  assert.deepEqual(skipped, { pushed: 0 }, "a missing key returns {pushed: 0}, it does not throw");
+  assert.equal(recorder.calls.length, 0, "and it sends nothing");
+
+  // The detector runs beside the skip and reports the same condition
+  // without turning it into a throw either.
+  const gap = await billingPushGap(day.db, { apiKey: "", now: day.from + HOUR_MS });
+  assert.equal(gap.hours, 1, "the detector names what the skip hid");
+  assert.equal(gap.missingKey, true);
 });
