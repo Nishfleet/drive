@@ -9,7 +9,7 @@ import (
 )
 
 func TestVFSArgsAddsReadAheadAndKeepsDirCacheAndSkipsRefresh(t *testing.T) {
-	args := VFSArgs()
+	args := VFSArgs(vfsCacheMaxValue)
 	if !hasArgPair(args, "--vfs-read-ahead", vfsReadAheadValue) {
 		t.Errorf("VFSArgs missing adjacent --vfs-read-ahead %s:\n%v", vfsReadAheadValue, args)
 	}

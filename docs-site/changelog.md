@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-03
 
+- `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
+  disk is rclone's own VFS cache, capped at 20G with 1G of free space always
+  kept, and a size you choose. `drive status` shows the same use. Files waiting
+  to upload and files kept offline survive `--clear` and count toward the
+  limit.
+
 - `drive offline` and `drive online`: keep a file or folder on this computer
   so it opens with no internet, and `drive status` lists what is kept and how
   much disk it uses. New files in a kept folder stay kept. The copy lives in
@@ -72,7 +78,7 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  Limits, Security and this changelog, each also served as Markdown.
+  Limits, Benchmarks, Security and this changelog, each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.
 

@@ -25,6 +25,10 @@ Set a cap and the drive goes read-only at it: nothing is deleted and the bill
 stops there. The default cap is {{DEFAULT_CAP}}. It protects your bill rather
 than your files.
 
+Raise the cap and the drive starts writing again: the write key comes back, the
+mount picks it up at its next start (`drive cap` restarts it for you), and the
+uploads that waited in the cache go up.
+
 ## Revoking
 
 `drive logout` stops the mount and removes this machine's key and config. A key
