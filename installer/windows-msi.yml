@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 40
     env:
       GO_VERSION: "1.24"
-      RCLONE_VERSION: "v1.75.0"
+      RCLONE_RELEASE: "v1.75.0"
       # WinFsp's own release, pinned to a tag. The MSI is downloaded from
       # WinFsp's own GitHub release at build time and never vendored.
       # WINFSP_MSI_SHA256 is the digest of that exact asset, checked after the
@@ -102,9 +102,9 @@ jobs:
       - name: Download rclone (the vendor's own Windows build)
         shell: pwsh
         run: |
-          curl.exe -sSO "https://downloads.rclone.org/${{ env.RCLONE_VERSION }}/rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip"
-          Expand-Archive -Path "rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip" -DestinationPath rclone -Force
-          $exe = Join-Path "rclone\rclone-${{ env.RCLONE_VERSION }}-windows-amd64" "rclone.exe"
+          curl.exe -sSO "https://downloads.rclone.org/${{ env.RCLONE_RELEASE }}/rclone-${{ env.RCLONE_RELEASE }}-windows-amd64.zip"
+          Expand-Archive -Path "rclone-${{ env.RCLONE_RELEASE }}-windows-amd64.zip" -DestinationPath rclone -Force
+          $exe = Join-Path "rclone\rclone-${{ env.RCLONE_RELEASE }}-windows-amd64" "rclone.exe"
           if (-not (Test-Path $exe)) { throw "rclone.exe was not in the vendor's zip" }
           Copy-Item $exe installer\rclone.exe
           & $exe version
