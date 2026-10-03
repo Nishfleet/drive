@@ -185,6 +185,50 @@ test("upload progress rejects nonsense instead of reporting it as done", () => {
   assert.throws(() => formatBytes(-1), TypeError);
 });
 
+// A paused queue is the same arithmetic stopped, and it must never read as an
+// uploading one (drive issue #100). The page renders this through uploadLine,
+// which is the same function `drive status` mirrors.
+test("a paused queue says Paused and what is left, not Uploading", () => {
+  assert.equal(
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+      paused: true,
+    }).label,
+    "Paused: 3 files waiting (900 MB left)",
+  );
+  assert.equal(
+    uploadProgress({ uploadedBytes: 0, totalBytes: 60_000_000, files: 1, paused: true }).label,
+    "Paused: 1 file waiting (60 MB left)",
+  );
+  // A queue with no file count still says Paused and what is left.
+  assert.equal(
+    uploadProgress({ uploadedBytes: 10, totalBytes: 100, paused: true }).label,
+    "Paused: 90 B left",
+  );
+  // Paused with nothing queued is complete, not a division by zero and not a
+  // second word for the same state.
+  assert.deepEqual(uploadProgress({ uploadedBytes: 0, totalBytes: 0, paused: true }), {
+    percent: 100,
+    label: "Up to date",
+  });
+  // The page's line goes through the module's words, so the page shows the
+  // pause word (src/get-started.js uploadLine).
+  assert.match(
+    uploadLine({ uploadedBytes: 0, totalBytes: 1024, files: 1, paused: true }),
+    /^Paused/,
+  );
+  // A caller that always sets paused: false does not pause its own queue.
+  assert.equal(
+    uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false }).label,
+    "Uploading 1 file: 1 B of 2 B (50%)",
+  );
+  // The paused and resumed words live in the one table the CLI also mirrors.
+  assert.equal(UPLOAD_LABEL.paused, "Paused");
+  assert.equal(UPLOAD_LABEL.resumed, "Resumed");
+});
+
 test("bytes stay one short line at both ends of the scale", () => {
   assert.equal(formatBytes(0), "0 B");
   assert.equal(formatBytes(999), "999 B");

@@ -169,15 +169,15 @@ func TestFillReaderReadsThroughTheMount(t *testing.T) {
 	// not report an error for a tree it can read, and must not read a file
 	// that has been removed under it.
 	read := fillReader(dir)
-	if err := read("drive:bucket/u/1"); err != nil {
+	if err := read("drive:bucket/u/1", true); err != nil {
 		t.Fatalf("fill read: %v", err)
 	}
 	// A file that vanished between the walk and the read is not an error: the
 	// next pass sees the new tree.
-	if err := fillReadFile(filepath.Join(dir, "gone.bin")); err != nil {
+	if _, err := fillReadFile(filepath.Join(dir, "gone.bin")); err != nil {
 		t.Errorf("a removed file failed the fill: %v", err)
 	}
-	if err := fillReadFile(dir); err == nil {
+	if _, err := fillReadFile(dir); err == nil {
 		t.Error("reading a directory as a file returned no error")
 	}
 }
@@ -272,7 +272,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := &countedBackend{used: capBytes, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			t.Error("the fill read a file although the cache was already at the cap")
 			return nil
 		})
@@ -289,7 +289,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 
 	t.Run("a busy machine does not fill", func(t *testing.T) {
 		b := &countedBackend{used: 0, cap: 20 << 30, addPerRead: 1 << 30}
-		res, err := fillPass(context.Background(), b, false, 2.5, 2.0, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 2.5, 2.0, func(string, bool) error {
 			t.Error("the fill read a file on a busy machine")
 			return nil
 		})
@@ -310,7 +310,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 		// cannot stop rclone mid-read, so it must say so rather than report
 		// success with the cache over the user's cap.
 		b := &countedBackend{used: capBytes - (1 << 20), cap: capBytes, addPerRead: 4 << 30}
-		_, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		_, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			b.used += b.addPerRead
 			return nil
 		})
@@ -325,7 +325,7 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 	t.Run("a fill under the cap succeeds and reports rclone's own numbers", func(t *testing.T) {
 		capBytes, _ := parseSizeSuffix("20G")
 		b := &countedBackend{used: 1 << 30, cap: capBytes, addPerRead: 500 << 20}
-		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string) error {
+		res, err := fillPass(context.Background(), b, false, 0.1, 0.1, func(string, bool) error {
 			b.used += b.addPerRead
 			return nil
 		})
@@ -346,6 +346,57 @@ func TestBackgroundFillNeverExceedsTheCap(t *testing.T) {
 			t.Errorf("the fill refreshed the directory %d times, want 1", b.refreshes)
 		}
 	})
+
+	t.Run("a kept-offline set is still read when the cache is at the cap", func(t *testing.T) {
+		capBytes, _ := parseSizeSuffix("20G")
+		b := &countedBackend{used: capBytes, cap: capBytes}
+		var idleArg *bool
+		res, err := fillPass(context.Background(), b, true, 3.5, 3.0, func(_ string, idle bool) error {
+			idleArg = &idle
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("fillPass at the cap with a kept-offline set: %v", err)
+		}
+		if idleArg == nil {
+			t.Fatal("the keep-warm read did not run with the cache at the cap")
+		}
+		if *idleArg {
+			t.Error("the keep-warm pass filled the rest of the drive at the cap")
+		}
+		if !res.Ran() {
+			t.Error("the keep-warm pass did not refresh the directory cache")
+		}
+	})
+}
+
+// A folder kept offline is walked, not opened as a file: rclone's cache is
+// filled file by file, and opening the folder itself is an error
+// (TestFillReaderReadsThroughTheMount).
+func TestFillTargetsWalksAKeptFolder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "keep", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep", "a.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep", "nested", "b.txt"), []byte("beta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.txt"), []byte("gamma"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targets := fillTargets{root: dir, offline: []string{"keep"}}
+	if err := targets.read("", false); err != nil {
+		t.Fatalf("walking a kept-offline folder: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep", "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := targets.read("", false); err != nil {
+		t.Fatalf("a new file inside a kept-offline folder failed the keep-warm: %v", err)
+	}
 }
 
 // hasArg reports whether args contains flag at all.

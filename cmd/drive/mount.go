@@ -22,6 +22,10 @@ import (
 // live in the rclone config this CLI writes, so the same plan works against the
 // local S3 stand-in and against the real storage (step 1) with no code change.
 type MountPlan struct {
+	// err carries a failure that must stop the mount (issue #112): a
+	// cache-max file the machine cannot read. Mount() returns it rather than
+	// starting a mount whose limit nobody can state.
+	err        error
 	GOOS       string
 	RcloneBin  string
 	Subcommand string // "nfsmount" on macOS, "mount" on Linux
@@ -29,8 +33,15 @@ type MountPlan struct {
 	MountDir   string
 	ConfigPath string
 	CacheDir   string
-	LogPath    string
-	VFSArgs    []string
+	// CacheMax is the resolved cache limit this plan mounts with, so the
+	// command line, the login item and `drive cache` report one number.
+	CacheMax string
+	LogPath  string
+	// Bwlimit is the rclone rate the mount starts with, "" for no limit
+	// (drive issue #100). PausedRate(home) fills it, so a mount started again
+	// after `drive pause` comes back already paused.
+	Bwlimit string
+	VFSArgs []string
 	// Device is this machine's name in a conflict copy's filename
 	// (issue #30). DRIVE_DEVICE when the operator sets it, else the
 	// hostname, sanitized so it is a filename everywhere the mount
@@ -57,6 +68,12 @@ type MountPlan struct {
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
 // for rclone's mount and nfsmount commands describe each one.
 //
+// cacheMax is the person's cache limit (issue #112): the value `drive cache
+// --max` wrote, or the shipped 20G default when they never chose one. It is a
+// parameter rather than a constant read here, so the number in the mount args,
+// the number in the mount's live options and the number `drive cache` prints
+// are one value resolved once in ResolveCacheMax rather than three.
+//
 // The tunable values (read-ahead, chunk size, chunk streams, buffer size,
 // transfers) may be overridden by a DRIVE_BENCH_<FLAG> environment variable
 // (e.g. DRIVE_BENCH_VFS_READ_AHEAD=0). That is the speed hill-climb's (issue
@@ -65,11 +82,16 @@ type MountPlan struct {
 // round, and a person's real mount never sets it. The four safety values are
 // NOT overridable, and TestVFSArgsPinsTheSafetyFlags fails if anything
 // changes them.
-func VFSArgs() []string {
+func VFSArgs(cacheMax string) []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
 		"--vfs-write-back", vfsWriteBackValue,
-		"--vfs-cache-max-size", vfsCacheMaxValue,
+		"--vfs-cache-max-size", cacheMax,
+		// The second half of the cap, and it is on every mount (issue #112):
+		// rclone will not let the cache take the disk it lives on below this
+		// much free space, whatever the max-size above would allow. That is
+		// what makes a cap a cap rather than a promise.
+		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
 		// S3 sends no change notifications, so without a short directory cache
 		// a save made on the other machine waits out rclone's 5-minute default
 		// before it is visible here. The step-3 two-machine proof measured it
@@ -128,8 +150,17 @@ func RemoteFor(c StorageConfig) string {
 }
 
 // BuildMountPlan resolves the mount command for goos. It is the single place
-// that knows nfsmount is the macOS command and mount is the Linux one.
+// that knows nfsmount is the macOS command and mount is the Linux one, and
+// the single place the paused state is translated into rclone's command line
+// (drive issue #100).
 func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
+	// The limit the person chose, falling back to the shipped default. A
+	// unreadable or nonsense cache-max file is a named error, not a quiet
+	// 20G: ResolveCacheMax says which file and what it held.
+	cacheMax, err := ResolveCacheMax(home)
+	if err != nil {
+		return MountPlan{CacheMax: vfsCacheMaxValue, err: err}
+	}
 	sub := "mount"
 	if goos == "darwin" {
 		sub = "nfsmount"
@@ -142,12 +173,19 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		MountDir:    mountDirFor(goos, home),
 		ConfigPath:  RcloneConfigPath(home),
 		CacheDir:    DefaultCacheDir(home),
+		CacheMax:    cacheMax,
 		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:     VFSArgs(),
+		VFSArgs:     VFSArgs(cacheMax),
 		Device:      DeviceName(),
 		RCAddr:      RCAddr(),
 		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
+		// A pause that is in force when the mount is (re)started keeps being in
+		// force (drive issue #100): rclone's bandwidth limit lives in its own
+		// process, so without this line a restart would start sending bytes at
+		// full speed and the marker file would say Paused over bytes that are
+		// already leaving.
+		Bwlimit: PausedRate(home),
 	}
 }
 
@@ -259,6 +297,17 @@ func (p MountPlan) Args() []string {
 	// a local stand-in.
 	if p.DownloadURL != "" {
 		args = append(args, "--s3-download-url", p.DownloadURL)
+	}
+	// The paused rate goes on rclone's own command line, so a mount that is
+	// started again after a `drive pause` comes back already paused. Measured
+	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
+	// the mount with the same rate `core/bwlimit rate="1KiB:off"` sets, and
+	// RCLONE_BWLIMIT is not needed because the flag is already in the vector.
+	// The remote control that `drive pause` and `drive resume` use is the same
+	// loopback address this vector binds (`--rc-addr`, p.RCAddr), so those
+	// commands talk to this mount and no second listener is added.
+	if p.Bwlimit != "" {
+		args = append(args, "--bwlimit", p.Bwlimit)
 	}
 	return args
 }
@@ -404,6 +453,9 @@ func LoginItemFiles(goos, home string) []string {
 // otherwise the login item starts it (launchd on macOS, systemd on Linux).
 func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool, driveLetter string) error {
 	p := BuildMountPlan(goos, home, rcloneBin, c)
+	if p.err != nil {
+		return p.err
+	}
 	// Windows is its own path: a drive letter, a WinFsp check and a Task
 	// Scheduler login task, and no prefetch sidecar (there is no Windows
 	// directory watcher). The letter is resolved here, where an error can be
@@ -557,7 +609,10 @@ func mountForeground(p MountPlan, home string) error {
 	// no file the fill keeps anywhere but rclone's capped VFS cache. It is
 	// started after rclone is up and stopped with the mount, and every pass it
 	// reports goes to the mount's log, so a fill problem is a named failure a
-	// person can read rather than a silent no-op.
+	// person can read rather than a silent no-op. It is also what keeps a file
+	// or folder the person chose to keep offline (#115) in the cache, by
+	// re-reading it on every pass so rclone's own eviction order takes from
+	// the rest of the drive first.
 	fillCtx, cancelFill := context.WithCancel(context.Background())
 	go func() {
 		// rclone's own remote control is not listening for the first moments
@@ -565,7 +620,7 @@ func mountForeground(p MountPlan, home string) error {
 		// (the same proof `drive mount` already makes) instead of racing it.
 		_, _ = MountedDir(p.GOOS, p.MountDir)
 		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
-		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
+		for err := range RunFillLoop(fillCtx, c, home, p.MountDir) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
 		}
 	}()
@@ -782,18 +837,30 @@ func Mounted(goos, home string) (bool, error) {
 // on the same host) asks the same platform question. One switch, so a caller
 // cannot drift from what `drive mount` waits on.
 func MountedDir(goos, mountDir string) (bool, error) {
+	// A FUSE mount whose backing store has gone away can block findmnt the
+	// same way it blocks ReadDir (countEntries already bounds that). `drive
+	// status` and `drive pause` both ask Mounted, so a wedged mount must
+	// become a named timeout rather than a hung terminal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	switch goos {
 	case "darwin":
-		out, err := exec.Command("mount").Output()
+		out, err := exec.CommandContext(ctx, "mount").Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("mount: timed out")
+			}
 			return false, fmt.Errorf("mount: %w", err)
 		}
 		return bsdMountHasMountPoint(string(out), mountDir), nil
 	case "windows":
 		return windowsVolumeMounted(mountDir), nil
 	default:
-		out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
+		out, err := exec.CommandContext(ctx, "findmnt", "-n", "-M", mountDir).Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("findmnt %s: timed out", mountDir)
+			}
 			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 				return false, nil
 			}

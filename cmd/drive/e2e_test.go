@@ -189,6 +189,263 @@ func TestStandinMountProof(t *testing.T) {
 	}
 }
 
+// TestStandinPauseProof is the drive issue #100 done-when proof, run against a
+// local S3 stand-in (`rclone serve s3`, stock), exactly as TestStandinMountProof
+// is. It asserts the issue's own bullets:
+//
+//  1. `drive pause` stops the bytes leaving within a few seconds.
+//  2. `drive resume` finishes the upload, and the file arrives once: one
+//     transfer, nothing lost and nothing sent twice.
+//  3. Pausing survives a restart of the mount, and `drive status` says Paused.
+//
+// The pause and resume are the real commands, run as the CLI binary, so the
+// proof covers the rc calls and the marker file together. The byte counter
+// read here is rclone's own core/stats answer, read back over the same socket
+// the CLI uses; the final object size is checked independently with a second
+// rclone process, so the file's arrival is not the CLI's word for itself.
+//
+// Like the mount proof it needs FUSE, and skips where an unprivileged mount is
+// refused (run it in `unshare -Urm` on such a host). Set
+// DRIVE_STANDIN_PAUSE_MB to change the file size (default 200).
+func TestStandinPauseProof(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone is not installed")
+	}
+	if testing.Short() {
+		t.Skip("stand-in pause proof skipped in -short mode")
+	}
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data", "bucket")
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	for _, d := range []string{dataDir, home, mountDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mb := 200
+	if v := os.Getenv("DRIVE_STANDIN_PAUSE_MB"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &mb); err != nil {
+			t.Fatalf("DRIVE_STANDIN_PAUSE_MB: %v", err)
+		}
+	}
+	size := int64(mb) << 20
+
+	port := freePort(t)
+	// A free rc port, not the shipped 5572: another rclone on this host may
+	// already hold that address (the two-machine proof, a leftover daemon),
+	// and pause/resume/status have to reach THIS mount.
+	rcAddr := "127.0.0.1:" + freePort(t)
+	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
+	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+		"--auth-key", accessKey+","+secretKey, "--addr", "127.0.0.1:"+port)
+	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
+	waitForPort(t, port)
+
+	cfg := testStorage()
+	cfg.AccessKey, cfg.SecretKey = accessKey, secretKey
+	cfg.Endpoint = "http://127.0.0.1:" + port
+	cfg.Bucket, cfg.Prefix = "bucket", "u/standin"
+	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mount := func() *exec.Cmd {
+		cmd := exec.Command(driveBin(t), "mount",
+			"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
+			"--prefix", cfg.Prefix, "--foreground")
+		cmd.Env = append(os.Environ(),
+			"DRIVE_S3_ACCESS_KEY_ID="+accessKey,
+			"DRIVE_S3_SECRET_ACCESS_KEY="+secretKey,
+			"DRIVE_RC_ADDR="+rcAddr,
+			"DRIVE_PREFETCH=0",
+		)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitForMount(t, cmd, mountDir) {
+			_ = cmd.Process.Signal(os.Interrupt)
+			_ = cmd.Wait()
+			t.Skipf("this host does not permit an unprivileged FUSE mount on %s; "+
+				"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run StandinPause", mountDir)
+		}
+		return cmd
+	}
+	unmount := func(cmd *exec.Cmd) {
+		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Logf("signal mount: %v", err)
+		}
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		_ = exec.Command("fusermount3", "-u", mountDir).Run()
+		_ = exec.Command("fusermount", "-u", mountDir).Run()
+	}
+
+	rc := func() *rcClient { return newRCClient("rclone", rcAddr, "") }
+	readBytes := func(t *testing.T) int64 {
+		t.Helper()
+		stats, err := rc().ReadStats(context.Background())
+		if err != nil {
+			t.Fatalf("rc core/stats: %v", err)
+		}
+		return stats.Bytes
+	}
+	run := func(t *testing.T, args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, driveBin(t), args...)
+		cmd.Env = append(os.Environ(), "HOME="+home, "DRIVE_RC_ADDR="+rcAddr)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("drive %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	current := mount()
+	defer func() {
+		if current != nil {
+			unmount(current)
+		}
+	}()
+
+	// A slow, known rate makes the window between "transfer running" and
+	// "transfer paused" wide enough to measure; it is rclone's own rate, set
+	// through the same rc API `drive pause` uses. UP:DOWN, so 10M caps uploads.
+	if err := rc().SetBwLimit(context.Background(), "10M:off"); err != nil {
+		t.Fatalf("set a measurable rate: %v", err)
+	}
+
+	// Write the file through the mount. rclone queues it for --vfs-write-back,
+	// then the upload starts.
+	if err := writePatternFile(filepath.Join(mountDir, "pause-proof.bin"), size); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		stats, err := rc().ReadStats(context.Background())
+		if err != nil {
+			t.Fatalf("rc core/stats: %v", err)
+		}
+		if stats.Bytes > 0 && len(stats.Transferring) > 0 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if b := readBytes(t); b == 0 {
+		t.Fatalf("the upload never started, so there is nothing to pause")
+	}
+
+	// Pause through the real command. `drive status` must say Paused while it is.
+	if out := run(t, "pause", "--home", home); !strings.Contains(out, pausedLabel) {
+		t.Errorf("drive pause said %q, want the Paused word", out)
+	}
+	if on, err := Mounted(CurrentGOOS(), home); err != nil || !on {
+		t.Fatalf("mount disappeared: on=%v err=%v", on, err)
+	}
+	// Give the in-flight chunk time to finish, then prove the next window is
+	// flat: bytes did leave the machine after the call, but then none did.
+	time.Sleep(5 * time.Second)
+	b1 := readBytes(t)
+	time.Sleep(6 * time.Second)
+	b2 := readBytes(t)
+	if b2 != b1 {
+		t.Errorf("pause did not stop the bytes: %d then %d after six seconds", b1, b2)
+	}
+	if b2 >= size {
+		t.Fatalf("the upload finished at %d bytes despite the pause, so the pause never applied", b2)
+	}
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after pause = %q, want the Paused word (drive status prints this line)", got)
+	}
+
+	// Resume and let it finish. The final size is checked against the object in
+	// the stand-in, and the transfer count against one, so a file sent twice or
+	// a file that never arrived both fail here.
+	if out := run(t, "resume", "--home", home); !strings.Contains(out, resumedLabel) {
+		t.Errorf("drive resume said %q, want the Resumed word", out)
+	}
+	deadline = time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		if readBytes(t) == size {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	stats, err := rc().ReadStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Bytes != size {
+		t.Errorf("after resume the transfer is %d of %d bytes, want the whole file", stats.Bytes, size)
+	}
+	if stats.TotalTransfers != 1 {
+		t.Errorf("transfers = %d, want exactly 1: a resumed file must not be sent twice", stats.TotalTransfers)
+	}
+	queueDeadline := time.Now().Add(15 * time.Second)
+	var queue Queue
+	for {
+		queue, err = rc().ReadQueue(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Queue) == 0 || time.Now().After(queueDeadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if len(queue.Queue) != 0 {
+		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
+	}
+	listing := exec.Command("rclone", "lsl", "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/pause-proof.bin")
+	listing.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(home))
+	out, err := listing.Output()
+	if err != nil {
+		t.Fatalf("independent rclone lsl: %v", err)
+	}
+	if !strings.Contains(string(out), fmt.Sprint(size)) {
+		t.Errorf("the stand-in lists %q, want the %d-byte object", strings.TrimSpace(string(out)), size)
+	}
+
+	// Pause survives a restart of the mount: pause, stop the mount, start it
+	// again, and prove a fresh write does not move.
+	run(t, "pause", "--home", home)
+	unmount(current)
+	current = mount()
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after a restart = %q, want the Paused word", got)
+	}
+	if got, err := rc().BwLimit(context.Background()); err != nil {
+		t.Fatalf("rc core/bwlimit after a restart: %v", err)
+	} else if got.Rate != "1Ki:off" {
+		t.Errorf("after a restart rclone reports rate %q, want 1Ki:off (the paused rate)", got.Rate)
+	}
+	if err := writePatternFile(filepath.Join(mountDir, "after-restart.bin"), 32<<20); err != nil {
+		t.Fatal(err)
+	}
+	// --vfs-write-back is 5s; wait past it, then a window. The paused rate is
+	// 1 KiB/s (rclone's 0 means "off"), so a few KiB may leave; a 32 MiB file
+	// at full speed would have finished.
+	time.Sleep(9 * time.Second)
+	if b := readBytes(t); b > 64*1024 {
+		t.Errorf("a paused mount sent %d bytes after a restart, want at most 64 KiB at 1 KiB/s", b)
+	}
+}
+
 func writePatternFile(path string, size int64) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -698,8 +955,9 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 	c := newRCClient("rclone", loopbackRCAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
-		_, err := fillPass(ctx, c, false, 0, 0, func(string) error {
-			return fillReadFile(filepath.Join(mountDir, fillName))
+		_, err := fillPass(ctx, c, false, 0, 0, func(string, bool) error {
+			_, err := fillReadFile(filepath.Join(mountDir, fillName))
+			return err
 		})
 		filled <- err
 	}()
@@ -767,4 +1025,112 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(builtBinDir)
 	}
 	os.Exit(code)
+}
+
+// TestCacheCapHoldsThroughAReadPastIt is the finish line for #112: on a real
+// mount against the storage stand-in, with the person's own limit on the mount
+// (--vfs-cache-max-size, read back off the running mount's own options rather
+// than from this test's copy), reading more than the limit into the cache
+// leaves the cache at or under that limit. The mount also carries
+// --vfs-cache-min-free-space, the second half of the cap, and that is read back
+// the same way.
+//
+// Stand-in figures are a harness proof, never publishable (issue #242 owns the
+// real-storage run), which is why every line names it. The limit is small
+// (DRIVE_CACHE_CAP_TEST) so the proof runs in a worker's memory budget rather
+// than filling 20 GiB to show that 20 GiB is a cap.
+func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+	root := t.TempDir()
+	cfg, _ := standinOn(t, root, "u/cachecap")
+	seedHome := filepath.Join(root, "seed-home")
+	seedEnv := standinEnv(t, seedHome, cfg)
+	const capSize = "24M"
+	// Six files of 6 MiB each: the full read asks for 36 MiB of a 24 MiB cap,
+	// so the read only fits because rclone reclaims as it goes. A cap that
+	// did nothing would leave the cache at 36 MiB.
+	seedStandin(t, root, cfg, seedEnv, "one.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "two.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "three.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "four.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "five.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "six.bin", 6<<20)
+
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCacheMax(t, home, capSize)
+	_ = standinEnv(t, home, cfg)
+	// This host already has a mount on the shipped 127.0.0.1:5572, so the
+	// proof binds its own loopback port. The client below reads that same
+	// address, or the stats call would talk to the other mount.
+	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
+	_, stop := startStandinMount(t, home, mountDir, cfg)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	c := newRCClient("rclone", RCAddr(), RemoteFor(cfg))
+	stats, err := c.stats(ctx)
+	if err != nil {
+		t.Fatalf("read the running mount's cache stats: %v", err)
+	}
+	wantCap, err := parseSizeSuffix(capSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Opt.CacheMaxSize != wantCap {
+		t.Fatalf("the mount's --vfs-cache-max-size is %d bytes, want the %d the person set", stats.Opt.CacheMaxSize, wantCap)
+	}
+	wantFloor, err := parseSizeSuffix(vfsCacheMinFreeSpaceValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Opt.CacheMinFreeSpace != wantFloor {
+		t.Errorf("the mount's --vfs-cache-min-free-space is %d bytes, want %d", stats.Opt.CacheMinFreeSpace, wantFloor)
+	}
+
+	// Read past the cap: each file is read in full, so the six together ask
+	// for 36 MiB against a 24 MiB cap.
+	for _, name := range []string{"one.bin", "two.bin", "three.bin", "four.bin", "five.bin", "six.bin"} {
+		if _, err := fillReadFile(filepath.Join(mountDir, name)); err != nil {
+			t.Fatalf("read %s through the mount: %v", name, err)
+		}
+	}
+	// rclone checks the cap on its cache poll, so the reclaim happens on that
+	// clock and not the instant a read finishes. Waiting for the mount to
+	// report a cache at or under the cap is waiting for rclone's own answer,
+	// not for a guess.
+	deadline := time.Now().Add(2 * time.Minute)
+	var used, capBytes int64
+	var files int
+	for {
+		used, files, err = CacheUse(DefaultCacheDir(home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		capBytes, err = liveCacheBytes(stats.DiskCache.Path, stats.DiskCache.BytesUsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if used <= wantCap {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the cache is %s, still over the %s cap, two minutes after the read", FormatBytes(used), capSize)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Logf("read 6 x 6 MiB through the mount with a %s cap: cache on disk %s in %d files (rclone's own count %s), storage=stand-in, repeat: go test ./cmd/drive -run TestCacheCapHoldsThroughAReadPastIt -v",
+		capSize, FormatBytes(used), files, FormatBytes(capBytes))
+	if used > wantCap {
+		t.Errorf("the cache is %s, over the %s cap it was given", FormatBytes(used), capSize)
+	}
+	if files == 0 {
+		t.Error("nothing landed in the cache, so the read never reached the mount's cache")
+	}
 }

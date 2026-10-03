@@ -15,6 +15,22 @@ the live site.
   and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
   the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
   removes that login item.
+
+- `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
+  disk is rclone's own VFS cache, capped at 20G with 1G of free space always
+  kept, and a size you choose. `drive status` shows the same use. Files waiting
+  to upload and files kept offline survive `--clear` and count toward the
+  limit.
+
+- `drive offline` and `drive online`: keep a file or folder on this computer
+  so it opens with no internet, and `drive status` lists what is kept and how
+  much disk it uses. New files in a kept folder stay kept. The copy lives in
+  rclone's own cache; filling the cache does not drop it.
+
+- `drive status` says what is waiting to upload and why: a cut-off upload
+  resumes from rclone's VFS cache, a full cache disk fails with the table's
+  disk-full words and loses nothing already saved, and a killed mount still
+  shows the waiting files until they go up.
 - `drive update` and `drive version`: an update replaces the installed CLI
   with the latest released version by the same `go install` command a person
   installs with, and `drive version` prints the version the binary was built
