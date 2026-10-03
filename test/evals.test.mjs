@@ -131,6 +131,7 @@ function graderBody(value) {
  * @returns {boolean | number | { pass: boolean, score?: number, reason?: string }}
  */
 function gradeJavascript(a, output, context = { vars: {} }) {
+  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
   const fn = new Function("output", "context", `"use strict"; ${graderBody(a.value)}`);
   return fn(output, context);
 }
