@@ -182,6 +182,30 @@ function apiBinding(env) {
 }
 
 /**
+ * The forward to the api Worker over the service binding, shared by the two
+ * routes this Worker forwards: the /v1/* family and the one /api/* route
+ * registered ahead of the account gate. The request goes over unchanged —
+ * method, path, query, headers and body — and the api Worker's own dispatcher
+ * answers it with its own gate, its own edge limits and its own words.
+ * Nothing either family serves is re-implemented on this side.
+ *
+ * A deployment with no binding is the closed door, not an open one: the api
+ * Worker is a separate deployable that no deploy has shipped yet (its deploy
+ * step is the one line the worker App's token cannot push), and a declared
+ * binding to a Worker that does not exist fails this Worker's own deploy. So
+ * until drive-api is deployed and the binding is declared, both routes say so
+ * in the message table's words rather than falling through to the asset layer
+ * and serving a 404 page to a CLI mid sign-in.
+ * @param {DriveContext} c
+ * @returns {Response | Promise<Response>}
+ */
+function forwardToApi(c) {
+  const api = apiBinding(c.env).API;
+  if (!api) return errorResponse(503, failureMessage("unexpected"));
+  return api.fetch(c.req.raw);
+}
+
+/**
  * @param {Env} env
  * @returns {import("./files.js").FileStore}
  */
@@ -383,6 +407,18 @@ export function createApp() {
   // Strict-Transport-Security, and the rest Hono ships) on every response.
   app.use("*", secureHeaders());
 
+  // The api Worker's one route in this Worker's own namespace, registered
+  // ahead of the account gate so the gate never answers it (drive#354). The
+  // api registry declares POST /api/keys/revoke outside its /v1 family
+  // (workers/api/src/routes.js, the walk's one exception) because `drive
+  // logout` posts it with the storage key the rclone config holds: the key
+  // itself is the credential, so there is no session to gate on. It is the
+  // one deliberate hole in the deny-by-default gate below — a wrong key is
+  // the api Worker's own 401, a right one its 204, and no account route is
+  // reachable through it — and test/account-gate.test.mjs pins that it is the
+  // only such route.
+  app.all("/api/keys/revoke", forwardToApi);
+
   // Deny-by-default account gate on /api/*. Public routes are declared in
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
@@ -402,10 +438,7 @@ export function createApp() {
   // (drive#156/#341: `drive agents` posts /v1/keys to the same APIBase
   // `drive search` posts /api/search to, cmd/drive/api.go). This Worker is the
   // one that answers that address, so /v1/* is forwarded here rather than
-  // served here: the request goes over the service binding unchanged — method,
-  // path, query, headers and body — and the api Worker's own dispatcher
-  // answers it with its own account gate, its own edge limits and its own
-  // words. Nothing about a device sign-in is re-implemented on this side.
+  // served here.
   //
   // The prefix is the api registry's own (workers/api/src/routes.js
   // API_PREFIX, the value every path in that registry starts with), spelled
@@ -414,18 +447,7 @@ export function createApp() {
   // what routes a /v1/* request to this route instead of the asset layer.
   // test/deploy-assets.test.mjs pins this route, the config's list and the
   // registry against that one constant.
-  app.all("/v1/*", (c) => {
-    const api = apiBinding(c.env).API;
-    // A deployment with no binding is the closed door, not an open one: the
-    // api Worker is a separate deployable that no deploy has shipped yet (its
-    // deploy step is the one line the worker App's token cannot push), and a
-    // declared binding to a Worker that does not exist fails this Worker's own
-    // deploy. So until drive-api is deployed and the binding is declared,
-    // /v1/* says so in the message table's words rather than falling through
-    // to the asset layer and serving a 404 page to a CLI mid sign-in.
-    if (!api) return errorResponse(503, failureMessage("unexpected"));
-    return api.fetch(c.req.raw);
-  });
+  app.all("/v1/*", forwardToApi);
 
   // ---------------------------------------------------------- account routes
   // Each method is registered on its own (rather than with app.all) so Hono's
