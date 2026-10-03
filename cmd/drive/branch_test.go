@@ -4,19 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
 
 // `drive branch`, `drive branches`, `drive diff`, `drive approve` and
-// `drive discard` against a stand-in api Worker: the same JSON
-// src/branches.js returns, served by net/http/httptest, so the commands'
-// parsing, their words and the token they carry are tested without a network.
+// `drive discard` against a stand-in that serves BOTH /api/branches* and
+// /v1/keys (drive#156): one host fronts both families, the same shape
+// credentials.APIBase uses in production.
 
-// branchServer is one httptest server that answers every branch route and
-// records the requests, so a test can assert the CLI asked for the right
-// path with the right credential. The body is read in the handler because the
-// server closes it once the handler returns.
+// branchCall is one request the CLI made. The body is read in the handler
+// because the server closes it once the handler returns.
 type branchCall struct {
 	Method string
 	Path   string
@@ -24,7 +23,22 @@ type branchCall struct {
 	Body   map[string]string
 }
 
+// branchMintSecret is a distinctive secret the stand-in mints, so a test can
+// prove runBranch never prints it (drive#75).
+const branchMintSecret = "sk_branch_secret_must_not_print"
+
+type branchStandIn struct {
+	createConflict bool
+	failMint       bool
+	failGet        bool
+}
+
 func branchServer(t *testing.T) (*httptest.Server, *[]branchCall) {
+	t.Helper()
+	return branchServerWith(t, branchStandIn{})
+}
+
+func branchServerWith(t *testing.T, cfg branchStandIn) (*httptest.Server, *[]branchCall) {
 	t.Helper()
 	calls := &[]branchCall{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,15 +52,40 @@ func branchServer(t *testing.T) (*httptest.Server, *[]branchCall) {
 		w.Header().Set("content-type", "application/json; charset=utf-8")
 		switch {
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH:
-			writeJSON(t, w, 201, `{"branch":{"name":"work","sourcePrefix":"/Photos","branchPrefix":"/.branches/work","state":"open","files":2}}`)
+			if cfg.createConflict {
+				writeJSON(t, w, 409, `{"error":"A branch with that name is still open. Choose another name, or discard the open branch first."}`)
+				return
+			}
+			name := body["name"]
+			if name == "" {
+				name = "work"
+			}
+			writeJSON(t, w, 201, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"open","files":2}}`)
 		case r.Method == "GET" && r.URL.Path == BRANCHES_PATH:
 			writeJSON(t, w, 200, `{"branches":[{"name":"work","sourcePrefix":"/Photos","state":"open","changed":3,"sourceChanged":1}]}`)
-		case r.Method == "GET" && r.URL.Path == BRANCHES_PATH+"/work":
-			writeJSON(t, w, 200, `{"branch":{"name":"work","state":"open"},"diff":{"added":["new.txt"],"changed":["a.txt"],"removed":[],"sourceChanged":["a.txt"]}}`)
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, BRANCHES_PATH+"/") && !strings.Contains(r.URL.Path[len(BRANCHES_PATH)+1:], "/"):
+			if cfg.failGet {
+				writeJSON(t, w, 500, `{"error":"The branch list could not be read."}`)
+				return
+			}
+			name := r.URL.Path[len(BRANCHES_PATH)+1:]
+			writeJSON(t, w, 200, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"open","files":2},"diff":{"added":["new.txt"],"changed":["a.txt"],"removed":[],"sourceChanged":["a.txt"]}}`)
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH+"/work/approve":
 			writeJSON(t, w, 200, `{"name":"work","state":"approved","applied":{"added":["new.txt"],"changed":["a.txt"],"removed":[]}}`)
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH+"/work/discard":
 			writeJSON(t, w, 200, `{"name":"work","state":"discarded","removed":2}`)
+		case r.Method == "POST" && r.URL.Path == keysPath:
+			if cfg.failMint {
+				writeJSON(t, w, 500, `{"error":"The api Worker could not mint a key."}`)
+				return
+			}
+			name := body["name"]
+			if name == "" {
+				name = "work"
+			}
+			writeJSON(t, w, 201, `{"keyId":"key_`+name+`","accessKeyId":"ak_`+name+`","secret":"`+branchMintSecret+`","prefix":"u/acct-1/.branches/`+name+`/","capabilities":["list","read","write"]}`)
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, keysPath+"/"):
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeJSON(t, w, 404, `{"error":"No such branch."}`)
 		}
@@ -77,6 +116,15 @@ func signedInHome(t *testing.T) string {
 	return home
 }
 
+func callWith(calls []branchCall, method, path string) *branchCall {
+	for i := range calls {
+		if calls[i].Method == method && calls[i].Path == path {
+			return &calls[i]
+		}
+	}
+	return nil
+}
+
 func TestRunBranchCopiesAndPrintsTheBranch(t *testing.T) {
 	server, requests := branchServer(t)
 	home := signedInHome(t)
@@ -88,27 +136,193 @@ func TestRunBranchCopiesAndPrintsTheBranch(t *testing.T) {
 	if !strings.Contains(out, `created branch "work" from /Photos (2 files)`) {
 		t.Errorf("output = %q", out)
 	}
-	if len(*requests) != 1 {
-		t.Fatalf("requests = %d, want 1", len(*requests))
+	create := callWith(*requests, "POST", BRANCHES_PATH)
+	if create == nil {
+		t.Fatalf("requests = %v, want POST %s", *requests, BRANCHES_PATH)
 	}
-	last := (*requests)[0]
-	if last.Path != BRANCHES_PATH {
-		t.Errorf("path = %q, want %q", last.Path, BRANCHES_PATH)
+	if create.Auth != "Bearer devtok" {
+		t.Errorf("authorization = %q, want the device token", create.Auth)
 	}
-	if last.Auth != "Bearer devtok" {
-		t.Errorf("authorization = %q, want the device token", last.Auth)
+	if create.Body["folder"] != "/Photos" || create.Body["name"] != "work" {
+		t.Errorf("body = %v", create.Body)
 	}
-	if last.Body["folder"] != "/Photos" || last.Body["name"] != "work" {
-		t.Errorf("body = %v", last.Body)
+}
+
+func TestRunBranchMintsAScopedKeyWithNoDelete(t *testing.T) {
+	server, requests := branchServer(t)
+	home := signedInHome(t)
+	out := captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
+	mint := callWith(*requests, "POST", keysPath)
+	if mint == nil {
+		t.Fatalf("requests = %v, want POST %s", *requests, keysPath)
+	}
+	if mint.Body["kind"] != "branch" || mint.Body["name"] != "work" {
+		t.Errorf("mint body = %v, want kind=branch name=work", mint.Body)
+	}
+	if mint.Auth != "Bearer devtok" {
+		t.Errorf("mint authorization = %q, want the device token", mint.Auth)
+	}
+	wantPrefix := "u/acct-1/.branches/work/"
+	if !strings.Contains(out, wantPrefix) {
+		t.Errorf("output %q missing prefix %q", out, wantPrefix)
+	}
+	if !strings.Contains(out, "no delete") {
+		t.Errorf("output %q must say the key has no delete", out)
+	}
+	if !strings.Contains(out, "DRIVE_ACCESS_KEY_ID") || !strings.Contains(out, "DRIVE_SECRET_ACCESS_KEY") {
+		t.Errorf("output %q must name the two env vars, never argv", out)
+	}
+	if strings.Contains(out, branchMintSecret) {
+		t.Errorf("output leaked the secret")
+	}
+	if strings.Contains(out, "ak_work") {
+		t.Errorf("output leaked the access key id")
+	}
+	stored, err := branchKeyFor(home, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil {
+		t.Fatal("expected the branch key to be stored")
+	}
+	if stored.Prefix != wantPrefix {
+		t.Errorf("stored prefix = %q, want %q", stored.Prefix, wantPrefix)
+	}
+	for _, cap := range stored.Capabilities {
+		if cap == "delete" {
+			t.Fatalf("stored capabilities include delete: %v", stored.Capabilities)
+		}
+	}
+	info, err := os.Stat(BranchKeysPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("branch-keys.json mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestRunBranchRecoversAKeyWhenTheNameIsAlreadyOpen(t *testing.T) {
+	server, requests := branchServerWith(t, branchStandIn{createConflict: true})
+	home := signedInHome(t)
+	out := captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
+	if !strings.Contains(out, `branch "work" is already open`) {
+		t.Errorf("output = %q, want the recovery sentence", out)
+	}
+	if callWith(*requests, "GET", BRANCHES_PATH+"/work") == nil {
+		t.Errorf("requests = %v, want GET of the open branch", *requests)
+	}
+	mint := callWith(*requests, "POST", keysPath)
+	if mint == nil || mint.Body["kind"] != "branch" {
+		t.Errorf("requests = %v, want a branch mint after the 409", *requests)
+	}
+	stored, err := branchKeyFor(home, "work")
+	if err != nil || stored == nil {
+		t.Fatalf("stored key = %v err = %v, want a recovered key", stored, err)
+	}
+}
+
+func TestRunBranchReusesAStoredKeyOnASecondRun(t *testing.T) {
+	server, _ := branchServer(t)
+	home := signedInHome(t)
+	_ = captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("first runBranch: %v", err)
+		}
+	})
+	conflict, requests := branchServerWith(t, branchStandIn{createConflict: true})
+	_ = captureStdout(t, func() {
+		if err := runBranch([]string{"--api", conflict.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("second runBranch: %v", err)
+		}
+	})
+	if callWith(*requests, "POST", keysPath) != nil {
+		t.Errorf("second run minted again: %v", *requests)
+	}
+}
+
+func TestRunBranchTellsThePersonToRetryWhenMintFails(t *testing.T) {
+	server, _ := branchServerWith(t, branchStandIn{failMint: true})
+	home := signedInHome(t)
+	err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"})
+	if err == nil {
+		t.Fatal("expected mint failure")
+	}
+	if !strings.Contains(err.Error(), "key could not be minted") {
+		t.Errorf("err = %v, want the mint-failed words", err)
+	}
+	if !strings.Contains(err.Error(), "same name") {
+		t.Errorf("err = %v, want the retry next step", err)
+	}
+	stored, storeErr := branchKeyFor(home, "work")
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	if stored != nil {
+		t.Errorf("stored a key after a failed mint: %+v", stored)
+	}
+}
+
+func TestRunBranchNamesAFailedLookupAfterAConflict(t *testing.T) {
+	server, _ := branchServerWith(t, branchStandIn{createConflict: true, failGet: true})
+	home := signedInHome(t)
+	err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"})
+	if err == nil {
+		t.Fatal("expected the GET failure")
+	}
+	if !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("err = %v, want the GET failure, not the 409", err)
+	}
+	if strings.Contains(err.Error(), "still open") {
+		t.Errorf("err = %v, leaked the original 409", err)
+	}
+}
+
+func TestRunBranchRevokesAStoredKeyThatIsNotABranchKey(t *testing.T) {
+	home := signedInHome(t)
+	if err := saveBranchKey(home, "work", MintedKey{
+		KeyID:        "key_old",
+		AccessKeyID:  "ak_old",
+		Secret:       "sk_old",
+		Prefix:       "u/acct-1/",
+		Capabilities: []string{"list", "read", "write", "delete"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, requests := branchServerWith(t, branchStandIn{createConflict: true})
+	_ = captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
+	if callWith(*requests, "DELETE", keysPath+"/key_old") == nil {
+		t.Errorf("did not revoke the unusable stored key: %v", *requests)
+	}
+	stored, err := branchKeyFor(home, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || stored.KeyID != "key_work" {
+		t.Errorf("stored = %+v, want the newly minted key", stored)
 	}
 }
 
 func TestRunBranchDefaultsTheNameToTheFolder(t *testing.T) {
 	server, requests := branchServer(t)
 	home := signedInHome(t)
-	if err := runBranch([]string{"--api", server.URL, "--home", home, "/Photos"}); err != nil {
-		t.Fatalf("runBranch: %v", err)
-	}
+	_ = captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
 	if (*requests)[0].Body["name"] != "Photos" {
 		t.Errorf("default name = %q, want the folder's name", (*requests)[0].Body["name"])
 	}

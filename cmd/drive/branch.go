@@ -1,14 +1,21 @@
 package main
 
-// The branch commands (drive issue #8, build step 7): branch a folder for an
-// agent to work in, list branches, see the diff, approve it back or throw it
-// away. One HTTP family, /api/branches* (src/branches.js), spoken with the
-// same device token `drive init` signed in with, so the branch the CLI names,
-// the diff it prints and the state the server records cannot disagree.
+// The branch commands (drive issue #8, build step 7, drive#156): branch a
+// folder for an agent to work in, list branches, see the diff, approve it
+// back or throw it away. Two HTTP families on the same APIBase (drive#156):
+// /api/branches* (src/branches.js) copies and records the branch, and
+// POST /v1/keys {kind:"branch", name} mints the key limited to that copy.
+// Both use the device token `drive init` signed in with, so the branch the
+// CLI names, the key it stores and the state the server records cannot
+// disagree.
 //
-// `drive branch` copies a folder server-side into `.branches/<name>/`; the
-// branch name defaults to the folder's own name, and `--name` picks another
-// when that one is taken.
+// `drive branch` copies a folder server-side into `.branches/<name>/` and
+// mints a branch key (list/read/write, no delete) scoped to
+// `u/<account>/.branches/<name>/`. The branch name defaults to the folder's
+// own name, and `--name` picks another when that one is taken. The key is
+// stored 0600 in branch-keys.json so approve, discard, or a re-run after a
+// failed mint can find it. The secret is never printed and never put on the
+// command line (drive#75).
 
 import (
 	"errors"
@@ -72,9 +79,10 @@ type branchDiscardAnswer struct {
 const BRANCHES_PATH = "/api/branches"
 
 // branchClient builds the client every branch command uses. The api base is
-// the deployment's own (--api / DRIVE_API_URL), falling back to the base
-// `drive init` signed in to, and the token is this device's, so a branch is
-// made and approved as the signed-in account.
+// the deployment's own (--api / DRIVE_API_URL), falling back to the one base
+// `drive init` signed in to. That base fronts both /api/branches* and
+// /v1/keys (drive#156); there is no second keysBase. The token is this
+// device's, so a branch is made, keyed and approved as the signed-in account.
 func branchClient(home, api string) (*APIClient, error) {
 	creds, err := LoadCredentials(home)
 	if err != nil {
@@ -152,13 +160,135 @@ func runBranch(args []string) error {
 		return err
 	}
 	var answer branchCreateAnswer
+	recovered := false
 	if err := client.post(BRANCHES_PATH, map[string]string{"folder": folder, "name": branchName}, &answer); err != nil {
+		if !isAPIStatus(err, "409") {
+			return err
+		}
+		// A second `drive branch` on an open name is 409. That is also the
+		// recovery path after a mint that failed: the copy is already there,
+		// so this run fetches it and mints the key the first run missed.
+		recovered = true
+		var existing branchDiffAnswer
+		if getErr := client.do("GET", branchPathFor(branchName), nil, &existing); getErr != nil {
+			return getErr
+		}
+		answer.Branch = existing.Branch
+	}
+	createdName := answer.Branch.Name
+	if strings.TrimSpace(createdName) == "" {
+		createdName = branchName
+	}
+	key, err := ensureBranchKey(*home, client, createdName, recovered)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("created branch %q from %s (%d %s)\n",
-		answer.Branch.Name, answer.Branch.SourcePrefix, answer.Branch.Files, pluralFiles(answer.Branch.Files))
-	fmt.Printf("  %s\n", answer.Branch.BranchPrefix)
+	printBranchResult(answer.Branch, key, recovered)
 	return nil
+}
+
+// isAPIStatus reports whether err is an api Worker refusal with this status
+// code in its status line (the shape APIClient.do wraps as *APIError).
+func isAPIStatus(err error, code string) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && strings.Contains(apiErr.Status, code)
+}
+
+// ensureBranchKey mints a branch key and stores it 0600, or reuses a stored
+// one when this is a 409 recovery and the key is already on disk. A fresh
+// create always mints, so a reused branch name after discard does not keep
+// the old key.
+func ensureBranchKey(home string, client *APIClient, name string, recovered bool) (MintedKey, error) {
+	if recovered {
+		existing, err := branchKeyFor(home, name)
+		if err != nil {
+			return MintedKey{}, err
+		}
+		if existing != nil {
+			key := MintedKey(*existing)
+			if err := checkBranchKey(name, key); err == nil {
+				return key, nil
+			}
+			if existing.KeyID != "" {
+				if err := client.RevokeKey(existing.KeyID); err != nil && !isAPIStatus(err, "404") {
+					return MintedKey{}, err
+				}
+			}
+		}
+	}
+	key, err := client.MintKey("branch", name)
+	if err != nil {
+		return MintedKey{}, failDetail("branch-key-mint", err)
+	}
+	if err := checkBranchKey(name, key); err != nil {
+		return MintedKey{}, err
+	}
+	if err := saveBranchKey(home, name, key); err != nil {
+		return MintedKey{}, err
+	}
+	return key, nil
+}
+
+// checkBranchKey refuses a minted key that is not a branch key: the prefix
+// must be the branch folder, and delete must be absent. The secret is
+// required (MintKey already checks) but is never printed.
+func checkBranchKey(name string, key MintedKey) error {
+	if key.KeyID == "" || key.Secret == "" || key.Prefix == "" {
+		return fail("api-answer")
+	}
+	want := "/.branches/" + name + "/"
+	if !strings.Contains(key.Prefix, want) {
+		return fail("api-answer")
+	}
+	for _, cap := range key.Capabilities {
+		if cap == "delete" {
+			return fail("api-answer")
+		}
+	}
+	return nil
+}
+
+func printBranchResult(branch BranchSummary, key MintedKey, recovered bool) {
+	if recovered {
+		fmt.Printf("branch %q is already open from %s (%d %s)\n",
+			branch.Name, branch.SourcePrefix, branch.Files, pluralFiles(branch.Files))
+	} else {
+		fmt.Printf("created branch %q from %s (%d %s)\n",
+			branch.Name, branch.SourcePrefix, branch.Files, pluralFiles(branch.Files))
+	}
+	fmt.Printf("  %s\n", branch.BranchPrefix)
+	printBranchKey(key)
+}
+
+// printBranchKey shows the person the prefix and the two env var names an
+// agent tool would run on (drive#75). The secret and the access key id stay
+// out of the terminal and off the command line; they live in the 0600 file.
+func printBranchKey(key MintedKey) {
+	fmt.Printf("  branch key %s (no delete)\n", key.Prefix)
+	fmt.Printf("  an agent tool runs with %s_ACCESS_KEY_ID and %s_SECRET_ACCESS_KEY in its environment, never on the command line\n",
+		agentKeyEnv, agentKeyEnv)
+}
+
+// dropBranchKey revokes the stored branch key on the server and forgets the
+// local copy. Approve and discard pass the branch name the person typed
+// (`drive approve <branch>` / `drive discard <branch>`), which is the same
+// name `drive branch --name` stored the key under — not the folder path. A
+// missing local key is not an error: an older CLI created the branch with no
+// key. A 404 from revoke means the key is already gone.
+func dropBranchKey(home, name string, client *APIClient) error {
+	key, err := branchKeyFor(home, name)
+	if err != nil {
+		return err
+	}
+	if key == nil {
+		return nil
+	}
+	if key.KeyID != "" {
+		if err := client.RevokeKey(key.KeyID); err != nil && !isAPIStatus(err, "404") {
+			return err
+		}
+	}
+	return removeBranchKey(home, name)
 }
 
 func runBranches(args []string) error {
@@ -260,7 +390,7 @@ func runApprove(args []string) error {
 	}
 	applied := len(answer.Applied.Added) + len(answer.Applied.Changed) + len(answer.Applied.Removed)
 	fmt.Printf("approved branch %q: %d %s copied back\n", answer.Name, applied, pluralFiles(applied))
-	return nil
+	return dropBranchKey(*home, fs.Arg(0), client)
 }
 
 func runDiscard(args []string) error {
@@ -283,7 +413,7 @@ func runDiscard(args []string) error {
 	}
 	fmt.Printf("discarded branch %q (%d %s removed; the original is untouched)\n",
 		answer.Name, answer.Removed, pluralFiles(answer.Removed))
-	return nil
+	return dropBranchKey(*home, fs.Arg(0), client)
 }
 
 func pluralFiles(n int) string {
