@@ -34,6 +34,7 @@ import {
   CAPABILITIES_BY_KIND,
   KEY_KINDS,
   keyTtlSeconds,
+  mintTtlSeconds,
   scopeFor,
   teamScopeFor,
 } from "./keyprovider.js";
@@ -134,12 +135,12 @@ export function createMemoryStore(options = {}) {
         expiresIn: minted.expiresIn ?? null,
       };
     }
-    // The hour. The provider's own session lifetime wins when it names one —
-    // a provider session that dies in 15 minutes must not be extended by the
-    // api's own bookkeeping — and the kind table decides when it does not.
-    // `null` is a key that never expires, and only a person's own device is
-    // one (keyprovider.js KEY_TTL_SECONDS).
-    const ttl = credential.expiresIn ?? keyTtlSeconds(kind);
+    // The hour. The kind's own lifetime is the ceiling, and a provider session
+    // that names a shorter one wins: a session that dies in 15 minutes must
+    // not be stretched by bookkeeping that outlives it. `null` is a key that
+    // never expires, and only a person's own device is one
+    // (keyprovider.js KEY_TTL_SECONDS).
+    const ttl = mintTtlSeconds(kind, credential.expiresIn);
     /** @type {Device} */
     const device = {
       id: keyId,
@@ -539,6 +540,13 @@ export function createMemoryStore(options = {}) {
  * The window length comes from the row's own kind, so a renewal can never
  * hand out a longer life than the mint gave, and a row's capabilities are not
  * touched here at all — renewing is about time, never about powers.
+ *
+ * A renewal also never shortens the window the row already carries. Two
+ * requests can read the same row and renew in either order, and a write that
+ * lands second must not pull the hour back to the earlier one's value: a key
+ * that is something is using is the one thing this must not cut short. The
+ * rule is written once here rather than in each store's SQL, so the answer a
+ * store returns and the row it wrote are the same claim.
  * @param {Device} device
  * @param {number} at epoch seconds, the injected clock's now
  * @returns {Device} the row with its expiry moved to `at + ttl`
@@ -548,7 +556,10 @@ export function renewKeyWindow(device, at) {
   if (ttl === null || device.revokedAt !== null) {
     return device;
   }
-  return { ...device, expiresAt: at + ttl };
+  const next = at + ttl;
+  const held = device.expiresAt;
+  const expiresAt = held === undefined || held === null ? next : Math.max(next, held);
+  return { ...device, expiresAt };
 }
 
 /**

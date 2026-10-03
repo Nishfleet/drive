@@ -35,10 +35,11 @@ func (m ToolMinter) RevokeKey(keyID string) error {
 	return m.Client.RevokeKey(keyID)
 }
 
-// RenewKey restarts the hour on a key this device already holds. It changes
-// nothing on disk: the credential is not replaced, only the server-side window,
-// so the tool's own MCP entry keeps holding the key that now works again.
-func (m ToolMinter) RenewKey(keyID string) error {
+// RenewKey restarts the hour on a key this device already holds, and answers
+// with the restarted row. It writes the new expiry to disk and changes nothing
+// else: the credential is not replaced, so the tool's own MCP entry keeps
+// holding the pair that now works again.
+func (m ToolMinter) RenewKey(keyID string) (RenewedKey, error) {
 	return m.Client.RenewKey(keyID)
 }
 
@@ -176,8 +177,10 @@ func initAgents(env Env, apiBase ...string) error {
 // tool is still using it, so a connected tool never notices; a tool that sat
 // idle for longer than its hour outlives its credential, and its next request
 // is refused. Renewing here is what brings it back without a person minting a
-// second key, and it changes nothing on disk: the credential is not replaced,
-// only the server-side window, so the tool's own MCP entry keeps working.
+// second key, and it changes nothing else on disk: the credential is not
+// replaced, so the tool's own MCP entry keeps working. What is written is the
+// renewed expiry, so the next command reads the Worker's own answer rather
+// than the mint's, and does not renew a key that already has an hour left.
 func mintToolKey(env Env, t Tool) error {
 	if env.Minter == nil {
 		return nil
@@ -195,13 +198,17 @@ func mintToolKey(env Env, t Tool) error {
 	if !needsRenew(existing, time.Now()) {
 		return nil
 	}
-	if err := env.Minter.RenewKey(existing.KeyID); err != nil {
+	renewed, err := env.Minter.RenewKey(existing.KeyID)
+	if err != nil {
 		// A renewal that fails is reported, not swallowed: the key on disk is
 		// the one the tool is using, and a tool about to be left with a key
 		// whose hour has run out is a thing a person has to be told about.
 		return fmt.Errorf("renew the %s key: %w", t.Name, err)
 	}
-	return nil
+	// Only the window moves, so only the expiry is written back: the pair the
+	// tool holds is the one it had.
+	existing.ExpiresAt = renewed.ExpiresAt
+	return saveAgentKey(env.Home, t.Name, MintedKey(*existing))
 }
 
 // runAgents handles `drive agents`, `drive agents connect <tool>` and

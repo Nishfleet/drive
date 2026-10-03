@@ -116,8 +116,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The row comes back with a fresh hour and no secret: renewing replaces
-		// the window, never the credential.
-		at := time.Now().Add(agentKeyTTL).Unix()
+		// the window, never the credential. The window sits renewAnswerOffset
+		// further out than a mint's, so a test can tell an answer that was
+		// decoded and stored from one that was left at the mint's value.
+		at := time.Now().Add(agentKeyTTL + renewAnswerOffset).Unix()
 		key.ExpiresAt = &at
 		f.keys[id] = key
 		writeTestJSON(w, 200, map[string]any{
@@ -464,6 +466,12 @@ func TestAConnectedToolKeepsTheExistingKeyOnASecondRun(t *testing.T) {
 // answers with this window so the CLI's own handling is what the test proves.
 const agentKeyTTL = time.Hour
 
+// renewAnswerOffset is how far past a mint's window the fake Worker's renew
+// answer sits. It is not a rule the real Worker has; it exists so a test can
+// tell an expiry that was decoded from the answer and written to disk from one
+// that was left at the mint's value.
+const renewAnswerOffset = agentKeyTTL / 2
+
 func TestAnAgentKeyCarriesItsExpiryAndADeviceKeyDoesNot(t *testing.T) {
 	home := t.TempDir()
 	api := newFakeAPI()
@@ -587,6 +595,27 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 	}
 	if after.AccessKeyID != key.AccessKeyID || after.Secret != key.Secret {
 		t.Fatal("a renewal replaced the credential, so the tool's own entry broke")
+	}
+	// The expiry written is the answer the Worker gave, not the mint's value the
+	// CLI already had: a stored expiry left at the mint's reads wrong to a
+	// person, and it is what would make the very next command renew again.
+	answered := api.keys["key_cursor"].ExpiresAt
+	if answered == nil {
+		t.Fatal("the fake Worker sent no expiry with the renewal")
+	}
+	if after.ExpiresAt == nil || *after.ExpiresAt != *answered {
+		t.Fatalf("the stored expiry is %v, want the renewed answer %v", after.ExpiresAt, answered)
+	}
+	if after.ExpiresAt == nil || !time.Unix(*after.ExpiresAt, 0).After(time.Unix(almost, 0)) {
+		t.Fatalf("the stored expiry %v is not past the %d the key had before", after.ExpiresAt, almost)
+	}
+	// Which is what stops the loop: the key now has an hour left, so a second
+	// command reuses it instead of asking again.
+	if err := mintToolKey(env, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.renewedIDs) != 1 {
+		t.Fatalf("renewed %v, want no renewal for the key that just got its hour", api.renewedIDs)
 	}
 }
 

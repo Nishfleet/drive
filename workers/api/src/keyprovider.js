@@ -93,6 +93,40 @@ export function keyTtlSeconds(kind) {
   return typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0 ? ttl : null;
 }
 
+/**
+ * The seconds a minted credential lives, with the kind's hour as the ceiling
+ * (drive issue #106).
+ *
+ * A provider may name a session lifetime of its own, and a shorter one wins:
+ * a session that dies in 15 minutes must not be stretched to the api's hour
+ * by bookkeeping that outlives it. A longer one does not win, and that is the
+ * half the issue is about — "one hour, and no longer" is a claim the api
+ * makes about its own credential, so a provider session of six hours is
+ * refused by the api at the hour and a tool that keeps working keeps asking
+ * for a fresh credential. The api's enforcement is the bound, so the bound
+ * cannot be widened from a config file.
+ *
+ * `null` still means the kind never expires, and still only a person's own
+ * device earns it.
+ * @param {KeyKind} kind
+ * @param {number|null|undefined} providerExpiresIn the provider session's own
+ *   seconds, when it names one
+ * @returns {number|null}
+ */
+export function mintTtlSeconds(kind, providerExpiresIn) {
+  const ceiling = keyTtlSeconds(kind);
+  if (ceiling === null) {
+    return null;
+  }
+  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
+    return ceiling;
+  }
+  if (providerExpiresIn <= 0) {
+    return ceiling;
+  }
+  return Math.min(providerExpiresIn, ceiling);
+}
+
 /** @typedef {"read_only"|"read_write"} TeamRole */
 
 /** @type {ReadonlyArray<TeamRole>} */

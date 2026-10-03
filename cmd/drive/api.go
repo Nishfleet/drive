@@ -270,6 +270,20 @@ func (c *APIClient) RevokeKey(keyID string) error {
 	return c.do(http.MethodDelete, keysPath+"/"+url.PathEscape(keyID), nil, nil)
 }
 
+// RenewedKey is POST /v1/keys/<keyId>/renew's answer: the key's public
+// row after the restart. It carries no secret, because a restart changes
+// nothing about the credential — only the server-side window moves, so the
+// tool's own MCP entry still holds the pair that now works again.
+type RenewedKey struct {
+	KeyID        string   `json:"keyId"`
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	Capabilities []string `json:"capabilities"`
+	// ExpiresAt is the epoch second the api Worker stops accepting the
+	// credential after this restart, or nil for a kind that never expires.
+	ExpiresAt *int64 `json:"expiresAt"`
+}
+
 // RenewKey restarts the hour on one of this device's keys (POST
 // /v1/keys/<keyId>/renew, issue #106).
 //
@@ -281,12 +295,22 @@ func (c *APIClient) RevokeKey(keyID string) error {
 // own signed-in token that asks — a leaked storage key holds no device token,
 // so it cannot restart its own hour.
 //
-// The credential is not replaced, so the tool's own MCP entry keeps working
-// and there is nothing new to write to disk; only the server-side window
-// moves. 409 means the key is revoked, which is the state `drive agents
-// revoke` reaches on purpose.
-func (c *APIClient) RenewKey(keyID string) error {
-	return c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, nil)
+// The credential is not replaced, so the tool's own MCP entry keeps working.
+// What it does replace is the expiry the CLI shows and decides against, and
+// that is why the answer comes back rather than being dropped: a stored
+// expiry left at the mint's value would keep reading as "an hour from when
+// the key was made", which is both wrong to show and a reason to renew again
+// on the very next command. 409 means the key is revoked, which is the state
+// `drive agents revoke` reaches on purpose.
+func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
+	var renewed RenewedKey
+	if err := c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, &renewed); err != nil {
+		return RenewedKey{}, err
+	}
+	if renewed.KeyID == "" {
+		return RenewedKey{}, errors.New("the api Worker sent no key; run `drive init` again in a moment")
+	}
+	return renewed, nil
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE

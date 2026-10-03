@@ -25,6 +25,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { sha256Hex } from "../../workers/api/src/db.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { AGENT_KEY_TTL_SECONDS } from "../../workers/api/src/keyprovider.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
@@ -135,6 +136,130 @@ test("a revoked agent cannot renew, and its row keeps the expiry it was minted w
   const row = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.equal(row.expires_at, minted.expiresAt, "the expiry is the mint's, untouched");
   assert.notEqual(row.revoked_at, null, "and the row says the key is dead");
+});
+
+test("a machine row written before the column gets an hour, and then dies", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  // The row is written by the D1 store itself, the module that owns the
+  // `devices` table, so the test cannot smuggle a shape the writer would not
+  // produce. `expiresAt` is simply absent, which is what drive#106's
+  // expand-only migration leaves behind for every key that existed before
+  // it: a nullable column with no default, no NOT NULL, nothing backfilled.
+  const devices = createD1DeviceStore(db, { now: clock.now });
+  const account = { id: "acct_old", name: "Old drive" };
+  await devices.put({
+    id: "key_old",
+    accountId: account.id,
+    name: "laptop",
+    kind: "agent",
+    accessKeyId: "ak_old",
+    secretHash: await sha256Hex("sk_old"),
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write"],
+    createdAt: 1,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  assert.equal(
+    rowIn(sqlite, "SELECT expires_at FROM devices WHERE id = ?", "key_old").expires_at,
+    null,
+  );
+
+  // A NULL on a machine kind means "no hour was minted with this one", not
+  // "this one lasts forever": the first request that proves it is still in
+  // use is what starts the hour, so a key leaked before the migration cannot
+  // be held immortal.
+  const second = storeOver(db, clock);
+  const at = clock.now() / 1000;
+  const device = await second.authenticate("ak_old", "sk_old");
+  assert.ok(device, "the pre-migration key keeps working, so no connected tool breaks");
+  assert.equal(
+    rowIn(sqlite, "SELECT expires_at FROM devices WHERE id = ?", "key_old").expires_at,
+    at + AGENT_KEY_TTL_SECONDS,
+    "and that first request handed it the hour",
+  );
+
+  // Which is the same hour every other key gets: unused, it dies.
+  const third = storeOver(db, clock);
+  clock.advance(AGENT_KEY_TTL_SECONDS + 1);
+  assert.equal(await third.authenticate("ak_old", "sk_old"), null);
+  assert.equal(
+    rowIn(sqlite, "SELECT expires_at FROM devices WHERE id = ?", "key_old").expires_at,
+    at + AGENT_KEY_TTL_SECONDS,
+    "and no later request restarted it",
+  );
+});
+
+test("the renewed answer carries the stamp it just wrote, not the row as it was read", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_stamp", name: "Stamp drive" };
+  const minted = await store.mintKey(account, { kind: "agent", name: "claude" });
+  // The mint wrote no last_seen_at, so the row the renew reads has none: the
+  // answer has to carry what the renew itself stamped.
+  assert.equal((await store.listKeys(account))[0].lastSeenAt, null);
+
+  clock.advance(AGENT_KEY_TTL_SECONDS + 60);
+  const result = await store.renewKey(account, minted.keyId);
+  assert.ok(!("error" in result), "a live key is renewed");
+  if ("error" in result) {
+    return;
+  }
+  assert.equal(result.renewed, true);
+  assert.equal(
+    result.device.lastSeenAt,
+    clock.now() / 1000,
+    "the answer's stamp is the one written",
+  );
+  assert.equal(result.device.expiresAt, clock.now() / 1000 + AGENT_KEY_TTL_SECONDS);
+  assert.equal(
+    rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).last_seen_at,
+    clock.now() / 1000,
+    "and the row holds the same one",
+  );
+  // The answer is the public row: no secret, and no new powers.
+  assert.ok(!("secret" in result.device));
+  assert.deepEqual(result.device.capabilities, ["list", "read", "write"]);
+});
+
+test("a renewal never shortens the window the row already carries", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const devices = createD1DeviceStore(db, { now: clock.now });
+  const account = { id: "acct_race", name: "Race drive" };
+  // A row whose window sits further out than the hour this request would give
+  // it: two requests can read the same row and renew in either order, and the
+  // one that lands second is the one at risk of pulling the hour back to the
+  // earlier value.
+  const ahead = clock.now() / 1000 + AGENT_KEY_TTL_SECONDS * 2;
+  await devices.put({
+    id: "key_race",
+    accountId: account.id,
+    name: "claude",
+    kind: "agent",
+    accessKeyId: "ak_race",
+    secretHash: await sha256Hex("sk_race"),
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write"],
+    createdAt: 1,
+    expiresAt: ahead,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+
+  const store = storeOver(db, clock);
+  const result = await store.renewKey(account, "key_race");
+  assert.ok(!("error" in result), "a live key is renewed");
+  if ("error" in result) {
+    return;
+  }
+  // The row keeps the window it had, and the answer says so: a renewal that
+  // extends nothing reports nothing to have moved.
+  assert.equal(rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", "key_race").expires_at, ahead);
+  assert.equal(result.device.expiresAt, ahead);
+  assert.equal(result.renewed, false, "and the answer does not claim a window it did not move");
 });
 
 test("a device key row written before the column stays expired-free and still works", async () => {

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
   KEY_KINDS,
   KEY_TTL_SECONDS,
   keyTtlSeconds,
+  mintTtlSeconds,
   scopeFor,
 } from "../src/keyprovider.js";
 
@@ -157,4 +159,34 @@ test("an unknown kind is refused a lifetime rather than handed an immortal crede
     () => keyTtlSeconds(/** @type {import("../src/keyprovider.js").KeyKind} */ ("root")),
     /lifetime/i,
   );
+  assert.throws(() => mintTtlSeconds("root", 900), /lifetime/i);
+});
+
+test("the kind's hour is the ceiling: a shorter provider session wins, a longer one cannot", () => {
+  // A session the provider will drop in 15 minutes must not be stretched by
+  // bookkeeping that outlives it.
+  assert.equal(mintTtlSeconds("agent", 900), 900);
+  assert.equal(mintTtlSeconds("s3", 1), 1);
+  // And the other way is the half the issue is about: "one hour, and no
+  // longer" is the api's own claim about its own credential, so a provider
+  // session of six hours is refused at the hour rather than honoured.
+  assert.equal(mintTtlSeconds("agent", 43200), AGENT_KEY_TTL_SECONDS);
+  assert.equal(mintTtlSeconds("branch", 86400), 3600);
+  // A kind that never expires keeps that, whatever the provider says.
+  assert.equal(mintTtlSeconds("device", 43200), null);
+  assert.equal(mintTtlSeconds("device", null), null);
+  // No provider session named, or a nonsense one, falls back to the hour.
+  assert.equal(mintTtlSeconds("agent", null), 3600);
+  assert.equal(mintTtlSeconds("agent", undefined), 3600);
+  assert.equal(mintTtlSeconds("agent", 0), 3600);
+  assert.equal(mintTtlSeconds("agent", -1), 3600);
+  assert.equal(mintTtlSeconds("agent", Number.NaN), 3600);
+  assert.equal(mintTtlSeconds("agent", Number.POSITIVE_INFINITY), 3600);
+});
+
+test("every machine kind is capped at the hour, so no config widens it", () => {
+  for (const kind of KEY_KINDS.filter((k) => k !== "device")) {
+    assert.equal(mintTtlSeconds(kind, 43200), 3600, `${kind} is capped at the hour`);
+    assert.equal(mintTtlSeconds(kind, 60), 60, `${kind} may still be shorter`);
+  }
 });

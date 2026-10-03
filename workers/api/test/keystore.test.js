@@ -432,3 +432,33 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
   );
   assert.equal(renewKeyWindow({ ...agent, kind: "device", expiresAt: null }, at).expiresAt, null);
 });
+
+test("the renewal rule never shortens a window the row already carries", () => {
+  const at = 1_000_000;
+  const agent = {
+    id: "key_agent",
+    accountId: "a",
+    name: "claude",
+    kind: "agent",
+    accessKeyId: "ak",
+    secretHash: "00",
+    prefix: "u/a/",
+    capabilities: ["list", "read", "write"],
+    createdAt: at - 60,
+    lastSeenAt: null,
+    revokedAt: null,
+    // A window already further out than the hour this request would give it:
+    // two requests can read the same row and renew in either order, and the
+    // one that lands second must not pull the hour back to the earlier value.
+    expiresAt: at + AGENT_KEY_TTL_SECONDS * 2,
+  };
+  assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS * 2);
+  // The powers are still untouched: a renewal is about time.
+  assert.deepEqual(renewKeyWindow(agent, at).capabilities, agent.capabilities);
+  // And a row with no expiry is given the hour rather than a maximum against
+  // nothing.
+  assert.equal(
+    renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
+    at + AGENT_KEY_TTL_SECONDS,
+  );
+});
