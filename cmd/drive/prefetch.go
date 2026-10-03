@@ -35,17 +35,27 @@ var (
 func prefetchEnabled() bool { return os.Getenv("DRIVE_PREFETCH") != "0" }
 
 func PrefetchLoginItemPath(goos, home string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return PrefetchLaunchdPlistPath(home)
+	case "windows":
+		// Windows has no prefetch sidecar: its directory watcher is the stub
+		// (prefetch_stub.go), so there is no item to write or stop.
+		return ""
+	default:
+		return PrefetchSystemdUnitPath(home)
 	}
-	return PrefetchSystemdUnitPath(home)
 }
 
 func PrefetchLoginItem(goos, driveBin, home string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return prefetchLaunchdPlist(driveBin, home)
+	case "windows":
+		return ""
+	default:
+		return prefetchSystemdUnit(driveBin, home)
 	}
-	return prefetchSystemdUnit(driveBin, home)
 }
 
 func prefetchSystemdUnit(driveBin, home string) string {
@@ -91,7 +101,7 @@ func prefetchLaunchdPlist(driveBin, home string) string {
 }
 
 func startPrefetchLoginItem(goos, home, itemPath string) error {
-	if !prefetchEnabled() {
+	if !prefetchEnabled() || goos == "windows" {
 		return nil
 	}
 	if goos == "darwin" {
@@ -110,6 +120,9 @@ func startPrefetchLoginItem(goos, home, itemPath string) error {
 }
 
 func stopPrefetchLoginItem(goos, home string) error {
+	if goos == "windows" {
+		return nil
+	}
 	itemPath := PrefetchLoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

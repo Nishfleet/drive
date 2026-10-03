@@ -16,15 +16,22 @@ would rather you read it here than find out in week three.
   download. Today you build it from the source, with one command:
   `go install github.com/Nishfleet/drive/cmd/drive@latest`. A one-line
   install is on the way.
-- **macOS is read-only for us.** We can prove the drive on a Mac only on a
-  GitHub macOS runner or by hand, so what we have measured end to end is
-  Linux.
+- **macOS is read-only for us.** The Mac mount is stock `rclone nfsmount`, which
+  uses the system's own NFS server, so there is no macFUSE to install. The mount
+  proof runs on a Mac, but we cannot measure a person's real Mac, so what we
+  have measured end to end is Linux. We name the oldest Mac version only after
+  a green Mac run (#116 owns both).
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
 - **No branch or approve commands.** Agents work in the live folder, so a
   large edit has no copy to sit in while you check it.
 - **No app or a desktop icon.** The drive is a folder and a command line.
-- **No Windows.** macOS and Linux.
+- **Windows installs with an MSI, not a command.** Windows gets the
+  same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
+  and a Task Scheduler task at logon. The installer builds in CI with the
+  stock WiX toolchain and WinFsp arrives through its own package dependency,
+  never a vendored copy. Builds are unsigned until a signing certificate is
+  bought, so no published release exists yet (#154).
 - **No second person on the account.** One account, your devices, your agents.
 
 ## Where we are slower than the alternatives

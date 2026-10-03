@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The rest of `drive status`: the lines that say what the drive is doing, not
@@ -49,8 +51,8 @@ func runStatus(args []string) error {
 		return errFlagParse
 	}
 	home := common.home
-	mountDir := DefaultMountDir(home)
-	on, err := Mounted(CurrentGOOS(), home)
+	goos := CurrentGOOS()
+	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
 	}
@@ -59,18 +61,53 @@ func runStatus(args []string) error {
 		state = "mounted"
 	}
 	fmt.Printf("drive: %s\n", state)
-	fmt.Printf("mount dir: %s\n", mountDir)
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	loginItem := LoginItemPath(CurrentGOOS(), home)
-	exists := "absent"
-	if _, err := os.Stat(loginItem); err == nil {
-		exists = "present"
+	mountDir := DefaultMountDir(home)
+	if goos == "windows" {
+		// The mount point is a drive letter. It is counted at the volume root
+		// (windowsVolumeRoot: "D:\\") — the bare "D:" is drive-relative and
+		// reads the per-drive current directory, which would answer about the
+		// wrong place entirely. An unmounted drive has nothing to list, so no
+		// letter is named and nothing is read.
+		if !on {
+			fmt.Printf("drive letter: not mounted\n")
+		} else if letter, err := windowsMountLetter(); err == nil {
+			mountDir = windowsVolumeRoot(letter)
+			fmt.Printf("drive letter: %s\n", letter)
+		} else {
+			// Mounted is what the volume check just proved. The letter could not
+			// be read back, so it is named as unknown, never as unmounted.
+			fmt.Printf("drive letter: mounted, but the letter could not be read (%v)\n", err)
+		}
+	} else {
+		fmt.Printf("mount dir: %s\n", mountDir)
 	}
-	fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
-		fmt.Printf("entries: %d\n", n)
+	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
+	if goos == "windows" {
+		// The login item on Windows is the Task Scheduler task, so status
+		// names the task rather than a file that does not exist.
+		present, err := LoginItemPresent(goos, home)
+		switch {
+		case err != nil:
+			fmt.Printf("login task: %s (unreadable: %v)\n", WindowsTaskName, err)
+		case present:
+			fmt.Printf("login task: %s (present)\n", WindowsTaskName)
+		default:
+			fmt.Printf("login task: %s (absent)\n", WindowsTaskName)
+		}
+	} else {
+		loginItem := LoginItemPath(goos, home)
+		exists := "absent"
+		if _, err := os.Stat(loginItem); err == nil {
+			exists = "present"
+		}
+		fmt.Printf("login item: %s (%s)\n", loginItem, exists)
+	}
+	if on {
+		if n, err := countEntries(mountDir, 2*time.Second); err != nil {
+			fmt.Printf("entries: (unreadable: %v)\n", err)
+		} else if n > 0 {
+			fmt.Printf("entries: %d\n", n)
+		}
 	}
 	// The upload queue is read from the cache directory the mount was started
 	// with (`--cache-dir`, the same DefaultCacheDir), so it is the queue of
@@ -80,6 +117,20 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
+	if why := queueWhy(on, cacheIsFull(home, on), Paused(home), queue); why != "" {
+		fmt.Println(why)
+	}
+	if lines, reason := rcProgressLines(home, on); lines != "" {
+		fmt.Print(lines)
+	} else if reason != "" {
+		fmt.Println(reason)
+	}
+	// Whether the bytes are leaving at all, in the one word the pages use
+	// (src/status.js UPLOAD_LABEL.paused). The answer is rclone's own: the rate
+	// in force, asked over the remote control the mount already binds, with
+	// the marker file beside it so a drive that is paused but not mounted
+	// still says Paused rather than nothing.
+	fmt.Println(transfersLine(home, on))
 	// What this computer is keeping on purpose (issue #115). The list is read
 	// from the one file `drive offline` writes, and the sizes from the mount, so
 	// this line is the same numbers `drive offline --list` prints and neither
@@ -95,7 +146,11 @@ func runStatus(args []string) error {
 		if err != nil {
 			return err
 		}
-		printOfflineUsage(usage)
+		_, bytes, err := UniqueOffline(mountDir, idx.Paths)
+		if err != nil {
+			return err
+		}
+		printOfflineUsage(usage, bytes)
 	}
 	creds, err := LoadCredentials(home)
 	if err != nil {
@@ -109,6 +164,163 @@ func runStatus(args []string) error {
 		fmt.Printf("this month: unknown (%s)\n", reason)
 	}
 	return nil
+}
+
+// rcProgressLines renders the per-file progress `drive status` shows (drive
+// issue #100): each file waiting or in flight, its size, its percent and its
+// time left, then the total left. Every number is read from rclone's own rc
+// answers: vfs/queue for what is waiting and how big it is, core/stats for the
+// file in flight (percentage and eta) and the bytes already up. Measured on
+// this host 2026-10-03 with rclone v1.75.1 against a `rclone serve s3`
+// stand-in: a 10 MiB file read back
+// `"name": "shape.bin", "size": 10485760, "uploading": false` from vfs/queue
+// while it waited.
+//
+// The lines are printed only when the mount answers. A mount that is not
+// running is a state the lines above already say, so no second way to report
+// that is invented here; an rc answer this file cannot parse is a named
+// failure rather than a blank line.
+func rcProgressLines(home string, on bool) (string, string) {
+	if !on {
+		return "", ""
+	}
+	c, err := mountRCClient()
+	if err != nil {
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	queue, err := c.ReadQueue(ctx)
+	if err != nil {
+		// A mount that is up but whose remote control has not finished
+		// starting answers nothing; that is the same "unknown" a parse
+		// failure is, and both name their cause rather than printing an
+		// empty queue nobody can tell from a real one.
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	stats, err := c.ReadStats(ctx)
+	if err != nil {
+		return "", fmt.Sprintf("per file: unknown (%v)", err)
+	}
+	return formatRCProgress(queue.Queue, stats), ""
+}
+
+// formatRCProgress is the per-file block `drive status` prints: each queued
+// file's name, size, percent and time left, then the bytes still to send.
+// It is a pure join of rclone's two answers so a unit test can pin the
+// columns without a live mount.
+func formatRCProgress(items []QueueItem, stats Stats) string {
+	inFlight := map[string]Transfer{}
+	for _, t := range stats.Transferring {
+		inFlight[t.Name] = t
+	}
+	var b strings.Builder
+	var left int64
+	for _, item := range items {
+		left += item.Size
+		progress := "waiting"
+		if t, ok := inFlight[item.Name]; ok {
+			left -= t.Bytes
+			progress = fmt.Sprintf("%d%%, %s left", t.Percentage, etaLabel(t.Eta))
+		} else if item.Uploading {
+			progress = sendingLabel
+		}
+		fmt.Fprintf(&b, "  %s  %s  %s\n",
+			uploadFileName(item.Name), fileSizeLabel(item.Size), progress)
+	}
+	fmt.Fprintf(&b, "bytes left: %s\n", fileSizeLabel(left))
+	return b.String()
+}
+
+// sendingLabel is the word for the one file rclone says it is sending but has
+// no percentage for yet.
+const sendingLabel = "sending"
+
+// etaLabel renders rclone's own eta (seconds until the file finishes, null
+// when rclone cannot know) as a person reads it. An unknown eta is "unknown",
+// never a zero that would read as "now".
+func etaLabel(eta *float64) string {
+	if eta == nil {
+		return "unknown"
+	}
+	seconds := int64(*eta)
+	if seconds < 0 {
+		seconds = 0
+	}
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("%dm %02ds", seconds/60, seconds%60)
+	default:
+		return fmt.Sprintf("%dh %02dm", seconds/3600, (seconds%3600)/60)
+	}
+}
+
+// uploadFileName renders the queue entry's name for one column. rclone's
+// vfs/queue gives the path with the remote stripped, so it is already the name
+// the person saved; a newline in it would break the column, so the name is
+// withheld rather than printed across two lines.
+func uploadFileName(name string) string {
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "(name withheld)"
+		}
+	}
+	return name
+}
+
+// fileSizeLabel renders one size for the per-file column, in the KiB the
+// storage side works in.
+func fileSizeLabel(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// transfersLine is the transfers line: whether the bytes are leaving at all.
+// The answer is rclone's own rate when the mount is up (asked over the remote
+// control the mount already binds) and the marker file otherwise, so a drive
+// that is paused but not mounted still says Paused rather than nothing.
+func transfersLine(home string, on bool) string {
+	if !on {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return transfersNotMounted
+	}
+	c, err := mountRCClient()
+	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return "transfers: unknown (" + err.Error() + ")"
+	}
+	ctx, cancel := rcCtx()
+	defer cancel()
+	limit, err := c.BwLimit(ctx)
+	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
+		return "transfers: unknown (" + err.Error() + ")"
+	}
+	if rateIsPaused(limit.Rate) {
+		return "transfers: " + pausedLabel
+	}
+	if limit.Rate == resumeRate {
+		return transfersRunning
+	}
+	// A rate rclone did not set to off is not a full-speed upload. Name it
+	// rather than guessing a number out of it.
+	return "transfers: limited to " + limit.Rate
 }
 
 // VFSMeta is the part of rclone's VFS cache metadata this file reads. rclone
@@ -154,6 +366,14 @@ func PendingUploads(cacheDir string) (Pending, error) {
 		}
 		var meta VFSMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
+			// A crash can leave rclone's meta file half-written (drive issue
+			// #107). That file is not a queue entry yet, and must not hide
+			// the files that did parse. Complete junk is still an error, so
+			// "up to date" cannot come from a cache we cannot read.
+			trimmed := bytes.TrimSpace(data)
+			if len(trimmed) == 0 || (trimmed[0] == '{' && !json.Valid(data)) {
+				return nil
+			}
 			return fmt.Errorf("parse vfs metadata %s: %w", path, err)
 		}
 		if !meta.Dirty {
@@ -161,6 +381,7 @@ func PendingUploads(cacheDir string) (Pending, error) {
 		}
 		q.Files++
 		q.Bytes += meta.Size
+		q.Names = append(q.Names, filepath.Base(path))
 		return nil
 	})
 	if err != nil {
@@ -174,6 +395,10 @@ func PendingUploads(cacheDir string) (Pending, error) {
 type Pending struct {
 	Files int
 	Bytes int64
+	// Names are the dirty files' names, so `drive status` can say what is
+	// waiting when the mount is down and rclone's vfs/queue cannot answer
+	// (drive issue #107, the crash case).
+	Names []string
 }
 
 // UPLOAD_WORDS are the words `drive status` uses for the queue, kept next to
@@ -187,7 +412,59 @@ const (
 	upToDateLabel  = "Up to date"
 	uploadingLabel = "Uploading %d file"
 	uploadingMany  = "Uploading %d files"
+	// waitingToUploadWhy is the reason `drive status` prints when files are
+	// queued and the mount is up: rclone's VFS cache will send them. The
+	// unmounted pair is the crash case (drive issue #107): the files are
+	// still in the cache, and they go up when the drive is mounted again.
+	waitingToUploadWhy   = "They are waiting to upload."
+	waitingUnmountedWhy  = "They are waiting because the drive is not mounted."
+	waitingUnmountedNext = "They will upload when the drive is mounted again."
+	diskCacheFullWhat    = "The local cache is full, so new saves can't upload."
+	diskCacheFullNext    = "Free up disk space on this device and try the save again."
 )
+
+// queueWhy is the line after the uploads count: what is waiting and why
+// (drive issue #107). An empty queue with space left is a complete state and
+// prints nothing extra. A full cache is a failure even with nothing queued,
+// because that is the save that just bounced. Pause is issue #100's words on
+// the transfers line, so this function stays silent while paused unless the
+// cache is also full.
+func queueWhy(on, outOfSpace, paused bool, q Pending) string {
+	if outOfSpace {
+		return diskCacheFullWhat + " " + diskCacheFullNext
+	}
+	if paused || q.Files == 0 {
+		return ""
+	}
+	if !on {
+		var b strings.Builder
+		for _, name := range q.Names {
+			fmt.Fprintf(&b, "  %s\n", uploadFileName(name))
+		}
+		fmt.Fprintf(&b, "%s %s", waitingUnmountedWhy, waitingUnmountedNext)
+		return b.String()
+	}
+	return waitingToUploadWhy
+}
+
+// cacheIsFull is whether the VFS cache disk cannot take another save. The
+// mount's own answer is rclone rc vfs/stats diskCache.outOfSpace (rclone.org
+// mount, the field the fill loop already reads). When the mount is down, or
+// that call cannot answer, the cache directory's free space is the same
+// question asked of the kernel.
+func cacheIsFull(home string, on bool) bool {
+	if on {
+		c, err := mountRCClient()
+		if err == nil {
+			ctx, cancel := rcCtx()
+			defer cancel()
+			if full, err := c.cacheOutOfSpace(ctx); err == nil && full {
+				return true
+			}
+		}
+	}
+	return cacheDiskHasNoSpace(DefaultCacheDir(home))
+}
 
 // UploadLabel renders the queue line. Zero files is a complete state, not an
 // error and not a division by zero: the answer is that nothing is waiting.

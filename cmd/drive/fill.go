@@ -106,9 +106,10 @@ func DefaultFillPolicy() FillPolicy {
 //   - otherwise the fill runs only when the machine is idle, so it can never
 //     compete with the app a person is actually using.
 //
-// A pinned folder is listed in Offline, so a person who pinned something gets
-// it filled even on a busy machine; that is the promise they were given, and
-// the cost is the bytes, not their foreground speed (the cap still holds).
+// A folder kept offline is listed in the kept-offline index, so a person who
+// kept something gets it filled even on a busy machine; that is the promise
+// they were given, and the cost is the bytes, not their foreground speed (the
+// cap still holds).
 func ShouldFill(offline bool, load1, load5 float64) bool {
 	return offline || MachineIdle(load1, load5)
 }

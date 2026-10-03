@@ -235,16 +235,88 @@ func MeasureOffline(mountDir string, paths []string) ([]OfflineUsage, error) {
 	return out, nil
 }
 
-// TotalOffline is the whole kept-offline set in one number, which is what the
-// cap check and the `drive status` line read. Nested entries are counted once:
-// `drive offline /Photos` then `drive offline /Photos/2024` keeps one line per
-// request, and the bytes are not reported twice.
+// TotalOffline sums each path's own files and bytes. Nested entries can
+// overlap; UniqueOffline is the number the cap and the status total use.
 func TotalOffline(usage []OfflineUsage) (files int, bytes int64) {
 	for _, u := range usage {
 		files += u.Files
 		bytes += u.Bytes
 	}
 	return files, bytes
+}
+
+// UniqueOffline counts each file once, even when a folder and a file inside
+// it are both on the kept-offline list, so the cap and the status total are
+// the disk the set actually uses.
+func UniqueOffline(mountDir string, paths []string) (int, int64, error) {
+	seen := make(map[string]struct{})
+	var files int
+	var bytes int64
+	for _, rel := range paths {
+		full := filepath.Join(mountDir, filepath.FromSlash(rel))
+		err := filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				abs = p
+			}
+			if _, ok := seen[abs]; ok {
+				return nil
+			}
+			seen[abs] = struct{}{}
+			files++
+			bytes += info.Size()
+			return nil
+		})
+		if err != nil {
+			return 0, 0, fmt.Errorf("measure %s: %w", rel, err)
+		}
+	}
+	return files, bytes, nil
+}
+
+// overOfflineCap reports whether a kept-offline set cannot fit inside the
+// mount's cache limit. A zero or negative cap is "no limit", which is rclone's
+// own `--vfs-cache-max-size` off.
+func overOfflineCap(bytes, cap int64) bool {
+	return cap > 0 && bytes > cap
+}
+
+// offlineCapError is the refusal `drive offline` prints when the set cannot
+// fit. The cache limit is the mount's `--vfs-cache-max-size`; there is no
+// second cache command.
+func offlineCapError(bytes, cap int64) error {
+	return fmt.Errorf("keeping this offline needs %s and the cache limit is %s",
+		FormatBytes(bytes), FormatBytes(cap))
+}
+
+// offlineMountDir is the folder `drive offline` reads through: the live mount
+// point. On Windows that is the drive letter, not ~/Drive.
+func offlineMountDir(home string) string {
+	goos := CurrentGOOS()
+	on, err := Mounted(goos, home)
+	if err == nil && on && goos == "windows" {
+		letter, err := windowsMountLetter()
+		if err == nil {
+			return windowsVolumeRoot(letter)
+		}
+	}
+	return DefaultMountDir(home)
 }
 
 // OfflineCapBytes is the limit a kept-offline set has to fit inside: the same
@@ -312,7 +384,7 @@ func runOffline(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	mountDir := DefaultMountDir(common.home)
+	mountDir := offlineMountDir(common.home)
 	if *list {
 		return printOffline(mountDir, common.home)
 	}
@@ -327,29 +399,32 @@ func runOffline(args []string) error {
 		}
 		rels = append(rels, rel)
 	}
-	// Measure everything asked for, so a set that cannot fit is refused as one
-	// number and not one file at a time.
-	usage, err := MeasureOffline(mountDir, rels)
-	if err != nil {
-		return err
-	}
-	_, bytes := TotalOffline(usage)
-	capBytes, err := OfflineCapBytes()
-	if err != nil {
-		return err
-	}
-	if capBytes > 0 && bytes > capBytes {
-		return fmt.Errorf("keeping %d %s offline needs %s and the cache limit is %s; raise it with `drive cache --max` before keeping this much",
-			len(rels), pluralPaths(len(rels)), FormatBytes(bytes), FormatBytes(capBytes))
-	}
 	idx, err := LoadOffline(common.home)
 	if err != nil {
 		return err
 	}
+	would := OfflineIndex{Paths: append([]string(nil), idx.Paths...)}
+	for _, rel := range rels {
+		would.Add(rel)
+	}
+	_, bytes, err := UniqueOffline(mountDir, would.Paths)
+	if err != nil {
+		return err
+	}
+	capBytes, err := OfflineCapBytes()
+	if err != nil {
+		return err
+	}
+	if overOfflineCap(bytes, capBytes) {
+		return offlineCapError(bytes, capBytes)
+	}
 	added := make([]string, 0, len(rels))
+	already := make(map[string]bool, len(rels))
 	for _, rel := range rels {
 		if idx.Add(rel) {
 			added = append(added, rel)
+		} else {
+			already[rel] = true
 		}
 	}
 	if len(added) > 0 {
@@ -365,9 +440,13 @@ func runOffline(args []string) error {
 			return err
 		}
 	}
+	usage, err := MeasureOffline(mountDir, rels)
+	if err != nil {
+		return err
+	}
 	for _, u := range usage {
 		note := ""
-		if !idx.Has(u.Path) {
+		if already[u.Path] {
 			note = " (already kept offline)"
 		}
 		fmt.Printf("kept offline: %s (%s, %d %s)%s\n",
@@ -432,15 +511,19 @@ func printOffline(mountDir, home string) error {
 	if err != nil {
 		return err
 	}
-	printOfflineUsage(usage)
+	_, bytes, err := UniqueOffline(mountDir, idx.Paths)
+	if err != nil {
+		return err
+	}
+	printOfflineUsage(usage, bytes)
 	return nil
 }
 
 // printOfflineUsage writes the kept-offline block: one line per path with its
 // own files and bytes, then the one line that answers "how much of my disk is
-// this". Shared with `drive status` so the two cannot drift.
-func printOfflineUsage(usage []OfflineUsage) {
-	_, bytes := TotalOffline(usage)
+// this". Shared with `drive status` so the two cannot drift. bytes is
+// UniqueOffline's count, so a nested folder is not added twice.
+func printOfflineUsage(usage []OfflineUsage, bytes int64) {
 	capBytes, err := OfflineCapBytes()
 	if err != nil {
 		// vfsCacheMaxValue is a constant this file wrote; a parse failure here

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -112,7 +113,7 @@ func (c *rcClient) stats(ctx context.Context) (vfsStats, error) {
 }
 
 // refresh asks rclone to refresh the mount's directory cache, so a file just
-// written to the object store (or a folder just pinned offline) is visible to
+// written to the object store (or a folder just kept offline) is visible to
 // the read the fill does next. rclone's vfs/refresh is the stock call for
 // this; the loop does not list the object store a second way.
 func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
@@ -179,32 +180,31 @@ func fillPass(ctx context.Context, c fillBackend, offline bool, load1, load5 flo
 	res.BytesBefore = beforeBytes
 	res.CapBytes = before.Opt.CacheMaxSize
 
-	// A cache already at or over the cap is rclone's to reclaim, on its own
-	// poll, by evicting the least recently used files. The fill does not
-	// compete with that: it stops, so a fill never pushes the cache further
-	// past the cap than a foreground read would.
-	if res.CapBytes > 0 && res.BytesBefore >= res.CapBytes {
+	atCap := res.CapBytes > 0 && res.BytesBefore >= res.CapBytes
+	idle := MachineIdle(load1, load5)
+	// A cache already at the cap is rclone's to reclaim, except for a set the
+	// person kept offline (#115): those files must still be re-read so rclone's
+	// own last-access eviction drops the rest of the drive first. The rest of
+	// the tree is filled only when the machine is idle and the cache is under
+	// the cap, so a keep-warm pass never competes with a foreground open.
+	keepWarm := offline
+	fillRest := idle && !atCap
+	if !keepWarm && !fillRest {
 		res.Idle = ShouldFill(offline, load1, load5)
 		return res, nil
 	}
-
-	if !ShouldFill(offline, load1, load5) {
-		res.Idle = false
-		return res, nil
-	}
-	res.Idle = true
+	res.Idle = ShouldFill(offline, load1, load5)
 	if err := c.refresh(ctx, true); err != nil {
 		return res, fmt.Errorf("fill: refresh directory cache: %w", err)
 	}
 	res.Refreshed = true
 
 	// The read is through the mount, into io.Discard, so the bytes land in
-	// rclone's VFS cache and nowhere else. read is called once per pass with
-	// the mounted remote and whether this is an idle pass, so the kept-offline
-	// set (#115) is read on every pass and the rest of the tree only when the
-	// machine is idle; the mount path is built by the caller.
+	// rclone's VFS cache and nowhere else. idle here is fillRest: a kept-offline
+	// set is read on every pass, and the rest of the tree only when this pass
+	// is actually filling under the cap.
 	if read != nil {
-		if err := read(c.remote(), MachineIdle(load1, load5)); err != nil {
+		if err := read(c.remote(), fillRest); err != nil {
 			return res, fmt.Errorf("fill: read into cache: %w", err)
 		}
 	}
@@ -219,12 +219,11 @@ func fillPass(ctx context.Context, c fillBackend, offline bool, load1, load5 flo
 	}
 	res.BytesAfter = afterBytes
 	// The cap is rclone's own --vfs-cache-max-size, read live from the mount.
-	// rclone evicts over the cap on its cache poll; a fill that is still over
-	// it the moment it stops is over it by one file's worth at most and rclone
-	// reclaims it on the next poll. What the loop guarantees is that it never
-	// fills past the cap on its own: when the cache is within one chunk of the
-	// cap it stops and waits for rclone's poll.
-	if res.CapBytes > 0 && res.BytesAfter > res.CapBytes {
+	// rclone evicts over the cap on its cache poll. A keep-warm of the
+	// kept-offline set is allowed to sit at or over the cap: that is rclone
+	// evicting everything else. A fill of the rest of the tree that crossed
+	// the cap is a named failure, because that pass was supposed to stop.
+	if fillRest && res.CapBytes > 0 && res.BytesAfter > res.CapBytes {
 		return res, fmt.Errorf("fill: cache %s is over the %s cap; refusing to fill further",
 			FormatBytes(res.BytesAfter), FormatBytes(res.CapBytes))
 	}
@@ -387,15 +386,16 @@ type fillTargets struct {
 // on an idle pass. A path that has been deleted from the drive reads as
 // nothing rather than failing the pass: the next pass sees the new tree.
 func (t fillTargets) read(_ string, idle bool) error {
-	if len(t.offline) > 0 {
-		for _, rel := range t.offline {
-			if _, err := fillReadFile(filepath.Join(t.root, filepath.FromSlash(rel))); err != nil {
-				return err
+	for _, rel := range t.offline {
+		if _, err := KeepOffline(t.root, rel); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
 			}
+			return err
 		}
-		if !idle {
-			return nil
-		}
+	}
+	if !idle {
+		return nil
 	}
 	return fillReadTree(t.root)
 }
@@ -435,7 +435,7 @@ const fillContextTimeout = 30 * time.Second
 // offline (#115), and it is the one setting this rule changes.
 //
 // It is short because the rule depends on rclone's eviction order rather than
-// on a pin: the kept-offline set survives `--vfs-cache-max-size` because the
+// on a second cache: the kept-offline set survives `--vfs-cache-max-size` because the
 // product re-reads it often enough to be the most recently used item every
 // time rclone evicts. rclone's own cache poll defaults to one minute
 // (`--vfs-cache-poll-interval`), so ten seconds puts six keep-warm reads
@@ -459,12 +459,15 @@ const offlineFillInterval = 10 * time.Second
 // keep-warm just as immediately. Every error is returned on the returned error
 // channel with a named cause, and the loop continues: one bad pass must not
 // take the mount down, and it must not be silent either.
-func RunFillLoop(ctx context.Context, c *rcClient, home string) <-chan error {
+func RunFillLoop(ctx context.Context, c *rcClient, home, mountDir string) <-chan error {
 	errs := make(chan error, 1)
 	go func() {
 		defer close(errs)
+		if mountDir == "" {
+			mountDir = DefaultMountDir(home)
+		}
 		for {
-			targets := fillTargets{root: DefaultMountDir(home)}
+			targets := fillTargets{root: mountDir}
 			idx, err := LoadOffline(home)
 			if err != nil {
 				select {
