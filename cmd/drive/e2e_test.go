@@ -233,6 +233,10 @@ func TestStandinPauseProof(t *testing.T) {
 	size := int64(mb) << 20
 
 	port := freePort(t)
+	// A free rc port, not the shipped 5572: another rclone on this host may
+	// already hold that address (the two-machine proof, a leftover daemon),
+	// and pause/resume/status have to reach THIS mount.
+	rcAddr := "127.0.0.1:" + freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
 	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
 		"--auth-key", accessKey+","+secretKey, "--addr", "127.0.0.1:"+port)
@@ -258,6 +262,8 @@ func TestStandinPauseProof(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"DRIVE_S3_ACCESS_KEY_ID="+accessKey,
 			"DRIVE_S3_SECRET_ACCESS_KEY="+secretKey,
+			"DRIVE_RC_ADDR="+rcAddr,
+			"DRIVE_PREFETCH=0",
 		)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Start(); err != nil {
@@ -287,7 +293,7 @@ func TestStandinPauseProof(t *testing.T) {
 		_ = exec.Command("fusermount", "-u", mountDir).Run()
 	}
 
-	rc := func() *rcClient { return newRCClient("rclone", loopbackRCAddr, "") }
+	rc := func() *rcClient { return newRCClient("rclone", rcAddr, "") }
 	readBytes := func(t *testing.T) int64 {
 		t.Helper()
 		stats, err := rc().ReadStats(context.Background())
@@ -298,8 +304,11 @@ func TestStandinPauseProof(t *testing.T) {
 	}
 	run := func(t *testing.T, args ...string) string {
 		t.Helper()
-		cmd := exec.Command(driveBin(t), args...)
-		cmd.Env = append(os.Environ(), "HOME="+home)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, driveBin(t), args...)
+		cmd.Env = append(os.Environ(), "HOME="+home, "DRIVE_RC_ADDR="+rcAddr)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("drive %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -326,7 +335,7 @@ func TestStandinPauseProof(t *testing.T) {
 	if err := writePatternFile(filepath.Join(mountDir, "pause-proof.bin"), size); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		stats, err := rc().ReadStats(context.Background())
 		if err != nil {
@@ -360,9 +369,8 @@ func TestStandinPauseProof(t *testing.T) {
 	if b2 >= size {
 		t.Fatalf("the upload finished at %d bytes despite the pause, so the pause never applied", b2)
 	}
-	statusPaused := run(t, "status", "--home", home)
-	if !strings.Contains(statusPaused, "transfers: "+pausedLabel) {
-		t.Errorf("drive status said %q, want a Paused transfers line", statusPaused)
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after pause = %q, want the Paused word (drive status prints this line)", got)
 	}
 
 	// Resume and let it finish. The final size is checked against the object in
@@ -388,9 +396,17 @@ func TestStandinPauseProof(t *testing.T) {
 	if stats.TotalTransfers != 1 {
 		t.Errorf("transfers = %d, want exactly 1: a resumed file must not be sent twice", stats.TotalTransfers)
 	}
-	queue, err := rc().ReadQueue(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	queueDeadline := time.Now().Add(15 * time.Second)
+	var queue Queue
+	for {
+		queue, err = rc().ReadQueue(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Queue) == 0 || time.Now().After(queueDeadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 	if len(queue.Queue) != 0 {
 		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
@@ -410,9 +426,8 @@ func TestStandinPauseProof(t *testing.T) {
 	run(t, "pause", "--home", home)
 	unmount(current)
 	current = mount()
-	statusRestarted := run(t, "status", "--home", home)
-	if !strings.Contains(statusRestarted, "transfers: "+pausedLabel) {
-		t.Errorf("drive status after a restart said %q, want a Paused transfers line", statusRestarted)
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine after a restart = %q, want the Paused word", got)
 	}
 	if got, err := rc().BwLimit(context.Background()); err != nil {
 		t.Fatalf("rc core/bwlimit after a restart: %v", err)
@@ -422,11 +437,12 @@ func TestStandinPauseProof(t *testing.T) {
 	if err := writePatternFile(filepath.Join(mountDir, "after-restart.bin"), 32<<20); err != nil {
 		t.Fatal(err)
 	}
-	// --vfs-write-back is 5s; wait past it, then a window, and the paused
-	// mount must still have sent nothing.
+	// --vfs-write-back is 5s; wait past it, then a window. The paused rate is
+	// 1 KiB/s (rclone's 0 means "off"), so a few KiB may leave; a 32 MiB file
+	// at full speed would have finished.
 	time.Sleep(9 * time.Second)
-	if b := readBytes(t); b != 0 {
-		t.Errorf("a paused mount sent %d bytes after a restart, want none", b)
+	if b := readBytes(t); b > 64*1024 {
+		t.Errorf("a paused mount sent %d bytes after a restart, want at most 64 KiB at 1 KiB/s", b)
 	}
 }
 

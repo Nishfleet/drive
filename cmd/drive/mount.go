@@ -759,18 +759,30 @@ func Mounted(goos, home string) (bool, error) {
 // on the same host) asks the same platform question. One switch, so a caller
 // cannot drift from what `drive mount` waits on.
 func MountedDir(goos, mountDir string) (bool, error) {
+	// A FUSE mount whose backing store has gone away can block findmnt the
+	// same way it blocks ReadDir (countEntries already bounds that). `drive
+	// status` and `drive pause` both ask Mounted, so a wedged mount must
+	// become a named timeout rather than a hung terminal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	switch goos {
 	case "darwin":
-		out, err := exec.Command("mount").Output()
+		out, err := exec.CommandContext(ctx, "mount").Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("mount: timed out")
+			}
 			return false, fmt.Errorf("mount: %w", err)
 		}
 		return bsdMountHasMountPoint(string(out), mountDir), nil
 	case "windows":
 		return windowsVolumeMounted(mountDir), nil
 	default:
-		out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
+		out, err := exec.CommandContext(ctx, "findmnt", "-n", "-M", mountDir).Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("findmnt %s: timed out", mountDir)
+			}
 			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
 				return false, nil
 			}
