@@ -40,8 +40,10 @@ would rather you read it here than find out in week three.
   it is still not an instant rename, and a big move takes time.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
-- **One machine's disk is still a cache.** Your machine holds what it has
-  already read. Clearing the cache means re-reading from the network.
+- **Your disk holds a cache, and it is capped.** What is on disk is the parts
+  of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
+  and the drive always keeps at least {{CACHE_FLOOR}} of your disk free, so it
+  never fills. {{CACHE_COMMANDS}}; a file waiting to upload is never cleared.
 
 ## Where we are better
 

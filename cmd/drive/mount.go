@@ -21,6 +21,10 @@ import (
 // live in the rclone config this CLI writes, so the same plan works against the
 // local S3 stand-in and against the real storage (step 1) with no code change.
 type MountPlan struct {
+	// err carries a failure that must stop the mount (issue #112): a
+	// cache-max file the machine cannot read. Mount() returns it rather than
+	// starting a mount whose limit nobody can state.
+	err        error
 	GOOS       string
 	RcloneBin  string
 	Subcommand string // "nfsmount" on macOS, "mount" on Linux
@@ -28,8 +32,11 @@ type MountPlan struct {
 	MountDir   string
 	ConfigPath string
 	CacheDir   string
-	LogPath    string
-	VFSArgs    []string
+	// CacheMax is the resolved cache limit this plan mounts with, so the
+	// command line, the login item and `drive cache` report one number.
+	CacheMax string
+	LogPath  string
+	VFSArgs  []string
 	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
 	// when none is configured. It is a mount argument, not a line in the
 	// rclone config the user owns: rclone streams every read through the
@@ -41,6 +48,12 @@ type MountPlan struct {
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
 // for rclone's mount and nfsmount commands describe each one.
 //
+// cacheMax is the person's cache limit (issue #112): the value `drive cache
+// --max` wrote, or the shipped 20G default when they never chose one. It is a
+// parameter rather than a constant read here, so the number in the mount args,
+// the number in the mount's live options and the number `drive cache` prints
+// are one value resolved once in LoadCacheMax rather than three.
+//
 // The tunable values (read-ahead, chunk size, chunk streams, buffer size,
 // transfers) may be overridden by a DRIVE_BENCH_<FLAG> environment variable
 // (e.g. DRIVE_BENCH_VFS_READ_AHEAD=0). That is the speed hill-climb's (issue
@@ -49,11 +62,16 @@ type MountPlan struct {
 // round, and a person's real mount never sets it. The four safety values are
 // NOT overridable, and TestVFSArgsPinsTheSafetyFlags fails if anything
 // changes them.
-func VFSArgs() []string {
+func VFSArgs(cacheMax string) []string {
 	return []string{
 		"--vfs-cache-mode", vfsCacheModeValue,
 		"--vfs-write-back", vfsWriteBackValue,
-		"--vfs-cache-max-size", vfsCacheMaxValue,
+		"--vfs-cache-max-size", cacheMax,
+		// The second half of the cap, and it is on every mount (issue #112):
+		// rclone will not let the cache take the disk it lives on below this
+		// much free space, whatever the max-size above would allow. That is
+		// what makes a cap a cap rather than a promise.
+		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
 		// S3 sends no change notifications, so without a short directory cache
 		// a save made on the other machine waits out rclone's 5-minute default
 		// before it is visible here. The step-3 two-machine proof measured it
@@ -120,6 +138,13 @@ func RemoteFor(c StorageConfig) string {
 // BuildMountPlan resolves the mount command for goos. It is the single place
 // that knows nfsmount is the macOS command and mount is the Linux one.
 func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
+	// The limit the person chose, falling back to the shipped default. A
+	// unreadable or nonsense cache-max file is a named error, not a quiet
+	// 20G: ResolveCacheMax says which file and what it held.
+	cacheMax, err := ResolveCacheMax(home)
+	if err != nil {
+		return MountPlan{CacheMax: vfsCacheMaxValue, err: err}
+	}
 	sub := "mount"
 	if goos == "darwin" {
 		sub = "nfsmount"
@@ -132,8 +157,9 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		MountDir:    DefaultMountDir(home),
 		ConfigPath:  RcloneConfigPath(home),
 		CacheDir:    DefaultCacheDir(home),
+		CacheMax:    cacheMax,
 		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
-		VFSArgs:     VFSArgs(),
+		VFSArgs:     VFSArgs(cacheMax),
 		DownloadURL: c.DownloadURL,
 	}
 }
@@ -268,6 +294,9 @@ func LoginItem(goos string, p MountPlan) string {
 // otherwise the login item starts it (launchd on macOS, systemd on Linux).
 func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool) error {
 	p := BuildMountPlan(goos, home, rcloneBin, c)
+	if p.err != nil {
+		return p.err
+	}
 	item := []byte(LoginItem(goos, p))
 	itemPath := LoginItemPath(goos, home)
 	// The mount dir is created only once the plan is real: --dry-run writes

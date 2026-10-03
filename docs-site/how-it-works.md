@@ -22,6 +22,12 @@ parts it asks for arrive as it reads, so a 5 GB video starts playing without a
 5 GB download first. A save reaches storage a few seconds after you close the
 file, and then shows up on your other machines.
 
+What is on your disk is the parts you have already opened, held in a cache
+capped at {{CACHE_LIMIT}} with {{CACHE_FLOOR}} of your disk always kept free.
+`drive cache` shows the disk in use and the limit, `drive cache --max <size>`
+changes it, and `drive cache --clear` empties it without touching a file still
+waiting to upload.
+
 ## Versions
 
 Version history is not in version 1. See [Limits](/limits) for what is not in

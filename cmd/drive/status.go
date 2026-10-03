@@ -80,6 +80,14 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
+	// The cache line (issue #112). It is the same walk and the same limit
+	// `drive cache` reports, so the number on this line and the number on the
+	// cache line cannot disagree: both come from CacheUse on the cache dir
+	// and ResolveCacheMax on the config dir. A cache that cannot be measured
+	// is said, not hidden - the same rule the cost line below holds to.
+	if reason := cacheStatusLine(home); reason != "" {
+		fmt.Printf("cache: unknown (%s)\n", reason)
+	}
 	creds, err := LoadCredentials(home)
 	if err != nil {
 		return err
@@ -315,4 +323,20 @@ func loopbackHost(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// cacheStatusLine prints the cache line and returns the reason it could not be
+// printed (empty when it was). It is `drive cache`'s own line, with the same
+// walk and the same limit, kept here so the two commands cannot drift.
+func cacheStatusLine(home string) string {
+	used, files, err := CacheUse(DefaultCacheDir(home))
+	if err != nil {
+		return err.Error()
+	}
+	maxSize, err := ResolveCacheMax(home)
+	if err != nil {
+		return err.Error()
+	}
+	fmt.Printf("cache: %s in %d files, limit %s\n", FormatBytes(used), files, maxSize)
+	return ""
 }

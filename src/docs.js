@@ -253,6 +253,13 @@ export function faqMarkdown(scoreboardText) {
  * which this module will not open — it is plain data and pure functions).
  * @param {Record<string, string>} [extra]
  */
+// The cache limit and floor are the shipped defaults from cmd/drive/config.go,
+// and test/docs.test.mjs asserts they still match the Go source.
+const CACHE_LIMIT = "20G";
+const CACHE_FLOOR = "1G";
+const CACHE_COMMANDS =
+  "`drive cache` shows the disk in use and the limit, `drive cache --max <size>` changes it, `drive cache --clear` empties it";
+
 export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
@@ -262,6 +269,9 @@ export function markerValues(extra = {}) {
     CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
     CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
+    CACHE_LIMIT,
+    CACHE_FLOOR,
+    CACHE_COMMANDS,
     FREE_DOWNLOAD_MULTIPLE: String(BILLING_CONFIG.freeDownloadMultiplier),
     DOWNLOAD_RATE: `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`,
     AGENT_TOOLS: AGENT_TOOLS.join(", "),

@@ -82,16 +82,22 @@ func hillClimbRows() []hillClimbRow {
 		{
 			scenario: "open-time", metric: "first-byte", set: "tune",
 			seed: func(t *testing.T, h *hillStandin) { h.seed(t, "get.bin", 1<<20) },
-			cmd:  func(h *hillStandin) string { return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "get.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "get.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "video-start", metric: "first-byte", set: "tune",
 			seed: func(t *testing.T, h *hillStandin) { h.seed(t, "video.bin", 5<<30) },
-			cmd:  func(h *hillStandin) string { return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "video.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "video.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "small-file-get-1mib", metric: "get", set: "tune",
-			cmd: func(h *hillStandin) string { return "cat " + h.shell(filepath.Join(h.mountDir, "get.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "cat " + h.shell(filepath.Join(h.mountDir, "get.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "small-file-put-4kib", metric: "put", set: "tune",
@@ -122,16 +128,22 @@ func hillClimbRows() []hillClimbRow {
 		{
 			scenario: "open-time", metric: "first-byte", set: "hold",
 			seed: func(t *testing.T, h *hillStandin) { h.seed(t, "hold-get.bin", 512<<10) },
-			cmd:  func(h *hillStandin) string { return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "hold-get.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "hold-get.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "video-start", metric: "first-byte", set: "hold",
 			seed: func(t *testing.T, h *hillStandin) { h.seed(t, "hold-video.bin", 64<<20) },
-			cmd:  func(h *hillStandin) string { return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "hold-video.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "head -c 1 " + h.shell(filepath.Join(h.mountDir, "hold-video.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "small-file-get-1mib", metric: "get", set: "hold",
-			cmd: func(h *hillStandin) string { return "cat " + h.shell(filepath.Join(h.mountDir, "hold-get.bin")) + " >/dev/null" },
+			cmd: func(h *hillStandin) string {
+				return "cat " + h.shell(filepath.Join(h.mountDir, "hold-get.bin")) + " >/dev/null"
+			},
 		},
 		{
 			scenario: "small-file-put-4kib", metric: "put", set: "hold",
@@ -149,7 +161,9 @@ func hillClimbRows() []hillClimbRow {
 			prepare: func(h *hillStandin) string {
 				return "cp " + h.shell(filepath.Join(h.root, "fixtures", "hold-edit.bin")) + " " + h.shell(filepath.Join(h.mountDir, "hold-edit.bin"))
 			},
-			cmd: func(h *hillStandin) string { return "printf x >> " + h.shell(filepath.Join(h.mountDir, "hold-edit.bin")) },
+			cmd: func(h *hillStandin) string {
+				return "printf x >> " + h.shell(filepath.Join(h.mountDir, "hold-edit.bin"))
+			},
 		},
 		{
 			scenario: "big-folder-rename", metric: "rename", set: "hold", copies: 10,
@@ -356,7 +370,7 @@ func (k benchKV) String() string {
 }
 
 func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
-	args := VFSArgs()
+	args := VFSArgs(vfsCacheMaxValue)
 	for _, tc := range []struct {
 		flag  string
 		value string
@@ -379,7 +393,7 @@ func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
 
 func TestTunedVFSValueOverride(t *testing.T) {
 	t.Setenv("DRIVE_BENCH_VFS_READ_AHEAD", "1M")
-	args := VFSArgs()
+	args := VFSArgs(vfsCacheMaxValue)
 	if !hasArgPair(args, "--vfs-read-ahead", "1M") {
 		t.Fatalf("DRIVE_BENCH_VFS_READ_AHEAD did not retune --vfs-read-ahead:\n%v", args)
 	}
@@ -393,7 +407,7 @@ func TestTunedVFSValueOverride(t *testing.T) {
 
 func TestTunedVFSValueEmptyFallsBackToShipped(t *testing.T) {
 	t.Setenv("DRIVE_BENCH_VFS_READ_AHEAD", "   ")
-	args := VFSArgs()
+	args := VFSArgs(vfsCacheMaxValue)
 	if !hasArgPair(args, "--vfs-read-ahead", vfsReadAheadValue) {
 		t.Fatalf("empty DRIVE_BENCH_VFS_READ_AHEAD must keep the shipped value %s:\n%v", vfsReadAheadValue, args)
 	}
