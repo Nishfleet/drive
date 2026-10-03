@@ -816,6 +816,10 @@ export async function approveBranch(db, snapshots, store, account, name) {
     // would treat every copy file as added, and `saveSnapshot` would then throw
     // after the work. Refuse before anything is copied. Production has none of
     // these rows (the #321 sweep's COUNT query is 0).
+    // `unexpected` is the closest word in src/messages.js: this is a
+    // programmer/data fault (the sweep missed a row), not storage-down
+    // (the namespace is bound) and not branch-not-found (the row exists).
+    // No closer key exists, and a new user-facing sentence is out of scope.
     return { error: failureMessage("unexpected"), status: 500 };
   }
   const diff = await diffBranch(store, branch);
@@ -961,7 +965,7 @@ export async function discardBranch(db, snapshots, store, account, name) {
  * @param {{id: string}} account
  * @param {string} name
  * @param {Record<string, Fingerprint>} snapshot
- * @param {SnapshotStore} [snapshots] the KV snapshot store
+ * @param {SnapshotStore} snapshots the KV snapshot store
  */
 async function saveSnapshot(db, account, name, snapshot, snapshots) {
   const json = JSON.stringify(snapshot);
@@ -1011,9 +1015,14 @@ async function saveSnapshot(db, account, name, snapshot, snapshots) {
  *     stored for a row that was already closed. A closed branch's column JSON
  *     is never read (drive#329 reads a closed branch through its `state` and
  *     its count), so leaving it is history, not a live fallback.
- *   * the column is NOT cleared. The JSON stays in `branches.snapshot`, so a
- *     rollback of drive#329's code change alone still reads a well-formed row;
- *     dropping the column is the later phase, a migration of its own.
+ *   * the column is NOT cleared. The JSON stays in `branches.snapshot` for
+ *     rows this sweep moved — those were written when the old code still
+ *     filled the column, so a rollback of drive#329's code still reads them.
+ *     That is not true of a branch created after this ships: `createBranch`
+ *     no longer writes the column, so it stays `DEFAULT '{}'`. Rolling the
+ *     code back would then read an empty snapshot and an approve would copy
+ *     the whole branch over the original. Rollback of this code is not safe
+ *     for those new rows. Dropping the column is the later phase.
  *
  * Why this is safe to run before the drop: a row this moves could only ever
  * have been written with the old 1 MiB row limit in force, so its JSON is
