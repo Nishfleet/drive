@@ -132,4 +132,6 @@ jobs:
       - name: Windows unit tests
         run: go test ./cmd/drive/ -short -v -run 'Windows|WinFsp|Schtasks|DriveLetter|MountedDir|LoginItemPresent'
       - name: Windows drive-letter mount proof
+        env:
+          DRIVE_DEBUG: "1"
         run: go test ./cmd/drive/ -run TestWindowsMountProof -v -timeout 300s
