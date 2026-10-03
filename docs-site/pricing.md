@@ -61,3 +61,20 @@ at all.
   out from, and a test fails the build if the page and the invoice disagree.
 - What is not in version 1 is on the [Limits](/limits) page, and it is
   stated there rather than promised here.
+
+## A bill that looks wrong, checked in order
+
+A per-minute bill with a ceiling and a free allowance can look wrong three
+different ways, and only the first one is the bill:
+
+1. **The metered figure.** `drive status` shows this month's cost so far, and
+   the usage page shows the month's stored size worked out from the same
+   numbers as the invoice.
+2. **The ceiling.** Your bill is the smaller of the metered cost and the
+   ceiling, so a drive that grew pays for the days each file was there, never
+   more than the ceiling below.
+3. **The free {{FREE_USD}}.** It comes off the total, never below zero, so a
+   small drive can bill nothing at all.
+
+When those three agree with the invoice, [tell us](/faq) the month and the
+figure; the docs do not promise a refund, so nobody will read one here.

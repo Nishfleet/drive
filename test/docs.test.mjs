@@ -262,14 +262,27 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   );
   // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
   // page as "not in the CLI", never shown as working. A test cannot read the Go
-  // switch, so this pins the two that the docs otherwise lean on.
-  for (const missing of ["restore", "branch"]) {
+  // switch, so this pins the one that the docs otherwise lean on. `branch` used
+  // to be on this list: cmd/drive/main.go now ships branch, branches, diff,
+  // approve and discard, and the agents page documents them (issue #306), so
+  // the gap line was removed and the page must not claim the gap anymore.
+  for (const missing of ["restore"]) {
     assert.match(
       page,
       new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
       `the limits page must say there is no ${missing} command yet`,
     );
   }
+  assert.doesNotMatch(
+    page,
+    /No branch or approve commands/,
+    "branch and approve ship today, so the limits page must not call them a gap",
+  );
+  assert.match(
+    page,
+    /`?drive (branch|approve)`?/,
+    "the limits page must speak of branch and approve as commands that exist",
+  );
 });
 
 test("the changelog opens today and every entry is a real line", () => {
@@ -395,6 +408,90 @@ test("no [verify] line ships in any docs page", () => {
   }
 });
 
+test("no docs page claims a cross-machine sync time the scoreboard has not measured", () => {
+  // drive#275: how-it-works.md and public/llms.txt said a save reaches storage
+  // "a few seconds after you close the file" and appears on the other machines,
+  // while the scoreboard's "cross-machine sync time" row says not yet measured
+  // for two real machines (the row's own issue is #121) and the Benchmarks page
+  // opens by promising nothing is estimated. Same drift shape as #133, one row
+  // over. The wording is downgraded, and this gate keeps it downgraded: while
+  // the row is unmeasured, a page may not pair a cross-machine claim with a
+  // stated duration. The gate reads the row's verdict, so the day #121 lands a
+  // real measurement the pages may carry the figure again without editing this
+  // test. The drift sat across a line break, so each surface is folded to one
+  // line first, the way the shipped page reads.
+  const SYNC_ROW = "cross-machine sync time";
+  const SYNC_ISSUE = 121;
+  const VERDICTS = ["win", "lose", "not yet measured"];
+  const verdict = scoreboardVerdict(scoreboard, SYNC_ROW);
+  assert.ok(
+    VERDICTS.includes(verdict),
+    `docs/scoreboard.md's "${SYNC_ROW}" row carries verdict "${verdict}", which is not one this gate knows`,
+  );
+  if (verdict === "win") {
+    // The row is measured, so a figure on a page is a claim the scoreboard
+    // backs and this gate has nothing left to say about it.
+    return;
+  }
+  /** Fold a rendered page to one line, so a sentence hard-wrapped in the source
+   * is checked as the one sentence a reader sees. @param {string} text */
+  const fold = (text) => text.replace(/\r?\n/g, " ");
+  // Every surface a person or an agent reads: the nine docs pages, read as the
+  // build wrote them, and the site-wide llms.txt the pages are listed in.
+  /** @type {Array<[string, string]>} */
+  const surfaces = [
+    .../** @type {Array<[string, string]>} */ (
+      DOC_PAGES.map((page) => [page.file, fold(shipped(page.file))])
+    ),
+    ["public/llms.txt", fold(readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8"))],
+  ];
+  // A duration beside a save arriving on another machine, either order, held to
+  // one table cell or sentence by [^|]{0,160} (excludes markdown table pipes, so
+  // the Benchmarks table's own figures cannot chain across cells). "a few
+  // seconds", "within 5 s", "in seconds", "half a second", "a few minutes".
+  const machineMention =
+    /\b(?:other machines?|another machine|other computers?|another computer|other macs?|another mac|other devices?|another device|across machines|both machines)\b/i;
+  const duration =
+    /\b(?:a |an |about |around |in |within |under |over |after )?(?:few|couple(?: of)?|half an?|one|two|three|four|five|ten|\d[\d.]*)\s*(?:milliseconds?|ms|seconds?|secs?|minutes?|mins?)\b|\b(?:within|in|under|over|about|after)\s+(?:a |an )?(?:few|couple of|half an?|\d[\d.]*)?\s*(?:seconds?|minutes?|milliseconds?|ms)\b/i;
+  const timeThenMachine = new RegExp(
+    `(?:${duration.source})[^|]{0,160}?(?:${machineMention.source})`,
+    "i",
+  );
+  const machineThenTime = new RegExp(
+    `(?:${machineMention.source})[^|]{0,160}?(?:${duration.source})`,
+    "i",
+  );
+  for (const [name, text] of surfaces) {
+    assert.doesNotMatch(
+      text,
+      timeThenMachine,
+      `${name} states how long a save takes to cross to another machine, and the scoreboard's "${SYNC_ROW}" row is not yet measured (issue #${SYNC_ISSUE}: two real machines)`,
+    );
+    assert.doesNotMatch(
+      text,
+      machineThenTime,
+      `${name} states how long a save takes to cross to another machine, and the scoreboard's "${SYNC_ROW}" row is not yet measured (issue #${SYNC_ISSUE}: two real machines)`,
+    );
+  }
+  // And the two surfaces the drift was found on keep the honest sentence, so a
+  // reword that drops the "not yet measured" instead of the figure fails here.
+  const downgraded = /(?:a save|save) takes[^.;]{0,80}not yet measured/i;
+  const howItWorks = surfaces.find(([name]) => name === "how-it-works.md");
+  const rootLlms = surfaces.find(([name]) => name === "public/llms.txt");
+  assert.ok(howItWorks, "the how-it-works page must be one of the surfaces");
+  assert.ok(rootLlms, "the root llms.txt must be one of the surfaces");
+  assert.match(
+    howItWorks[1],
+    downgraded,
+    "how-it-works.md must say how long a save takes is not yet measured",
+  );
+  assert.match(
+    rootLlms[1],
+    downgraded,
+    "public/llms.txt must say how long a save takes is not yet measured",
+  );
+});
+
 test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   const llms = shipped("llms.txt");
   const full = shipped("llms-full.txt");
@@ -455,6 +552,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
     "go install github.com/Nishfleet/drive/cmd/drive@latest",
+    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
+    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
+    "brew install nishfleet/tap/drive",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",

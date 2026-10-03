@@ -29,6 +29,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -862,4 +863,37 @@ func reexecInNetNamespace() error {
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Stdin = strings.NewReader("")
 	return cmd.Run()
+}
+
+// TestSystemdUserSessionAbsentGatesTheFallback pins which startLinuxLoginItem
+// errors Mount treats as "no systemd user manager, start the mount in the
+// background" (drive#105) and which it returns as a real error. The fallback
+// is for a clean container that has no user bus to start the login item with;
+// a systemd host whose unit simply fails to start must be reported, because a
+// detached rclone there plus the unit still enabled would mount a second
+// rclone at the next login. The absent cases below are the two the
+// clean-container proof produced (systemctl missing, and systemctl present but
+// unable to reach the bus).
+func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
+	absent := []string{
+		"systemctl --user daemon-reload: exec: \"systemctl\": executable file not found in $PATH",
+		"systemctl --user restart drive-mount.service: Failed to connect to bus: No medium found",
+		"systemctl --user daemon-reload: System has not been booted with systemd (PID 1) - can't operate.",
+		"systemctl --user enable drive-mount.service: Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined",
+	}
+	for _, msg := range absent {
+		if !systemdUserSessionAbsent(errors.New(msg)) {
+			t.Errorf("systemdUserSessionAbsent(%q) = false, want true: no user manager, so the background mount is the only way to end mounted", msg)
+		}
+	}
+	real := []string{
+		"systemctl --user restart drive-mount.service: exit status 1: Job failed. Run \"journalctl -xe\" for details.",
+		"systemctl --user daemon-reload: exit status 1: failed to write /run/user/1000/systemd: No space left on device",
+		"systemctl --user enable drive-mount.service: permission denied",
+	}
+	for _, msg := range real {
+		if systemdUserSessionAbsent(errors.New(msg)) {
+			t.Errorf("systemdUserSessionAbsent(%q) = true, want false: this systemd host works, so a failed action is an error, not a fallback", msg)
+		}
+	}
 }

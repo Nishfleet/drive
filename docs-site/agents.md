@@ -23,6 +23,29 @@ drive agents connect claude
 drive agents revoke claude
 ```
 
+## A branch an agent works in
+
+Give an agent a copy of a folder so its work sits somewhere you can look at it
+before it touches your files:
+
+```sh
+drive branch <folder>     # copy the folder into a branch
+drive branches           # list the branches and how many files changed
+drive diff <branch>       # the files added, changed or removed in it
+drive approve <branch>    # copy the branch's changes back into the folder
+drive discard <branch>    # throw the branch away; the folder is untouched
+```
+
+The agent works with its own branch key: a branch key is scoped to the
+branch's one path under `.branches/<name>/` in your account folder, so it can
+list, read and write there and cannot remove anything — the same rule every
+agent key follows. Your other files are outside its reach, and only you can
+approve the copy back.
+
+Stop a tool with `drive agents revoke <tool>`, using the tool's own name
+(`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
+connected, because each one is connected on its own.
+
 ## What an agent key can do
 
 An agent tool gets its own key, and the key is deliberately weaker than the key
@@ -33,6 +56,24 @@ your own machine has:
 {{AGENT_CANNOT_DELETE}} An agent can create, change and rename anything in your
 Drive; it cannot remove anything, so an agent that decides a file is finished
 leaves it in place. Deleting needs a person.
+
+## Branch keys
+
+`drive branch <folder>` creates a server-side copy of that folder for an agent
+to work in. The branch takes the folder's name, or `--name <n>`. The agent gets a
+**branch key** limited to the branch's own prefix:
+`u/<your-id>/.branches/<branch-name>/`. It can read and write inside that
+branch, but it cannot delete — the same rule as a regular agent key. A branch
+key cannot reach your other files or other branches.
+
+Since a branch is a full copy, it counts against your storage until you
+discard or approve it. Measured branch times for large folders are on the
+Benchmarks page.
+
+When you are done, `drive approve <branch>` copies the branch's changes back
+to the original folder. If the original changed since you branched, `approve`
+stops and lists the conflicting files. `drive discard <branch>` throws the
+branch away; the original is untouched.
 
 ## Sessions and the folder
 

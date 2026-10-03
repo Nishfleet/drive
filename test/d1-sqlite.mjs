@@ -113,7 +113,7 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  */
 /**
  * @typedef {D1Database & {
- *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state", TableView>,
+ *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts", TableView>,
  *   insertVersion(version: {accountId?: string, fileId: string, path?: string, sizeBytes: number, createdAt: number, hiddenAt?: number | null}): void,
  * }} MeteredD1
  */
@@ -216,6 +216,8 @@ export function d1Over(sqlite, { onQuery } = {}) {
         usage_minutes: table("usage_minutes", (row) => `${row.account_id}|${row.hour}`),
         events_seen: table("events_seen", (row) => row.b2_event_id),
         meter_rollup_state: table("meter_rollup_state", (row) => row.id),
+        billing_pushes: table("billing_pushes", (row) => `${row.account_id}|${row.hour}`),
+        accounts: table("accounts", (row) => row.id),
       },
       // One version row written straight into the real schema, for the shapes an
       // event cannot express (a 0-byte version, an instant that is not a whole

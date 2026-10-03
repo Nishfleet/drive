@@ -1,8 +1,8 @@
 drive - a Finder drive for people and their agents
 
 Usage:
-  drive init [flags]                    find installed agent tools and connect each to the drive
-  drive agents [flags]                  list agent tools and whether the drive is connected
+  drive init [flags]      mount the drive, start it at login, and connect your agent tools
+  drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
   drive search <words> [flags]          find files by name, from the drive index
@@ -64,6 +64,13 @@ Mount flags:
                 default the hostname)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
+
+Mount flags work on drive init too: init mounts the drive first, then
+connects the agent tools, so one command takes a machine from nothing to a
+mounted drive.
+
+Init flags:
+  --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
 
 Link flags (share, request):
   --api         api Worker base URL (env DRIVE_API_URL)
