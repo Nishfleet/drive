@@ -78,6 +78,7 @@ function makeD1() {
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
     "drive/0012_branch_snapshot_kv.sql",
+    "drive/0015_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -112,10 +113,15 @@ function makeD1() {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -153,10 +159,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -164,10 +171,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })

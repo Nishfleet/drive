@@ -325,7 +325,7 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
   // column, the pointer at its '' default, the length at 0.
   const insert = db.sqlite.prepare(
     "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-      "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+      "state, created_at, changed_by_key_id) VALUES (?,?,?,?,?,?,?,'a-key')",
   );
   const createdAt = new Date(AT).toISOString();
   insert.run(ACCOUNT.id, "old", "/Photos", "/.branches/old", column, "open", createdAt);
@@ -338,7 +338,7 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
       db.sqlite
         .prepare(
           "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-            "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+            "WHERE account_id = ? AND name = ? AND state = ?",
         )
         .get(ACCOUNT.id, name, state)
     );
