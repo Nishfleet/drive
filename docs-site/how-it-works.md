@@ -19,8 +19,10 @@ layer; you see files.
 
 A file in your Drive is not fully on your disk. When an app opens one, the
 parts it asks for arrive as it reads, so a 5 GB video starts playing without a
-5 GB download first. A save reaches storage a few seconds after you close the
-file, and then shows up on your other machines.
+5 GB download first. A save uploads after you close the file, and then shows
+up on your other machines. How long a save takes to cross between two real
+machines is not yet measured. See [Benchmarks](/benchmarks) for the rows that
+do and do not carry a figure.
 
 What is on your disk is the parts you have already opened, held in a cache
 capped at {{CACHE_LIMIT}} with {{CACHE_FLOOR}} of your disk always kept free.

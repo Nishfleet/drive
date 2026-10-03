@@ -44,8 +44,10 @@ Worked examples, each the amount charged after the $1 free:
   changes it, and `drive cache --clear` empties it without touching a file still
   waiting to upload. `drive status` shows the same cache use. Files you keep
   offline stay, are never evicted, and count toward that limit.
-- Saves reach storage a few seconds after the file is closed and appear on the
-  other machines.
+- Saves upload after the file is closed and appear on the other machines. How
+  long a save takes to cross between two real machines is not yet measured.
+  The [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md)
+  page carries the rows that do and do not have a figure.
 - A spending cap you set; at the cap the drive goes read-only and nothing is
   deleted.
 - Agents read and write freely but cannot permanently delete; a person can undo
