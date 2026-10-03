@@ -128,6 +128,24 @@ drive update
 version the installed binary now reports. `drive update --check` says whether a
 newer version exists and changes nothing.
 
+## 6. Bring files in
+
+rclone already talks to the folders you have elsewhere. Name a remote once,
+then this command copies it into the mounted drive:
+
+```sh
+rclone config
+drive import photos:
+drive status
+```
+
+`rclone config` is rclone's own setup. It has Dropbox and Google Drive
+backends; we never see those passwords, and we register no app of ours. Name
+the remote something other than `drive` — that name is the mount. `drive import
+photos:` copies into the mounted drive folder with rclone's own `copy`. The
+drive must be mounted (`drive init` first). `drive status` shows the files
+landing.
+
 ## Next
 
 - [How it works](/how-it-works) — plain files, versions, restore.

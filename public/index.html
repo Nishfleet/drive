@@ -156,7 +156,8 @@ main {
   gap: 10px;
 }
 
-.field-row input[type="email"] {
+.field-row input[type="email"],
+.field-row input[type="number"] {
   flex: 1 1 260px;
   min-width: 0;
   padding: 13px 14px;
@@ -440,6 +441,27 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   max-width: 56em;
 }
 
+/* ---- Savings calculator (drive issue #14) -------------------------------- */
+
+.calculator {
+  margin: clamp(28px, 4vh, 44px) 0 0;
+  max-width: 620px;
+}
+
+.calculator h2 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: clamp(22px, 2.6vw, 28px);
+  font-weight: 600;
+}
+
+.calculator-lede {
+  margin: 0 0 16px;
+  font-size: 16px;
+  color: var(--ink-soft);
+  max-width: 34em;
+}
+
 /* ---- Three columns, one of them a person -------------------------------- */
 
 .columns {
@@ -544,6 +566,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   }
 
   .field-row input[type="email"],
+  .field-row input[type="number"],
   .field-row button {
     flex: 1 1 100%;
   }
@@ -612,6 +635,21 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
         <a href="/">Pricing</a>
       </nav>
       <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
+    </section>
+
+    <section class="calculator" id="calculator" aria-labelledby="calculator-heading">
+      <h2 id="calculator-heading">What a month would cost</h2>
+      <p class="calculator-lede">Enter how much you store. The bill is our metered price, capped at our own flat-plan ceiling, less the free $1.</p>
+      <form id="quote" class="waitlist" action="/api/quote" method="get">
+        <label class="field-label" for="quote-tb">TB you keep all month</label>
+        <div class="field-row">
+          <input id="quote-tb" name="tb" type="number" min="0" max="10000" step="0.1" required
+                 inputmode="decimal" value="1">
+          <button type="submit">See the bill</button>
+        </div>
+        <p class="form-note" id="quote-note" role="status" aria-live="polite">Enter a size to see this month's bill beside our flat-plan ceiling.</p>
+      </form>
+      <noscript><p class="form-note">Without JavaScript the form returns the same numbers as JSON from /api/quote.</p></noscript>
     </section>
 
     <section class="strip" aria-label="You pay only for what you store">
@@ -797,6 +835,58 @@ form.addEventListener("submit", async (event) => {
     say(userMessage, "error");
   } finally {
     submit.disabled = false;
+  }
+});
+
+const quoteForm = document.getElementById("quote");
+const quoteNote = document.getElementById("quote-note");
+const quoteTb = document.getElementById("quote-tb");
+const quoteSubmit = quoteForm.querySelector("button[type=submit]");
+
+function sayQuote(message, kind) {
+  quoteNote.textContent = message;
+  quoteNote.classList.toggle("is-error", kind === "error");
+  quoteNote.classList.toggle("is-done", kind === "done");
+}
+
+quoteForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  quoteSubmit.disabled = true;
+  sayQuote("Working it out…", "pending");
+  let userMessage = UNEXPECTED_MESSAGE;
+  try {
+    let response;
+    try {
+      response = await fetch("/api/quote?tb=" + encodeURIComponent(quoteTb.value.trim()));
+    } catch (networkError) {
+      userMessage = OFFLINE_MESSAGE;
+      throw networkError;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      userMessage = UNEXPECTED_MESSAGE;
+      throw parseError;
+    }
+    if (!response.ok) {
+      sayQuote(
+        typeof payload.error === "string" && payload.error.length > 0
+          ? payload.error
+          : UNEXPECTED_MESSAGE,
+        "error",
+      );
+      return;
+    }
+    sayQuote(
+      "This month: " + payload.labels.bill + ". Flat-plan ceiling: " + payload.labels.ceiling + ".",
+      "done",
+    );
+  } catch (error) {
+    console.error("quote: request failed", error);
+    sayQuote(userMessage, "error");
+  } finally {
+    quoteSubmit.disabled = false;
   }
 });
   </script>

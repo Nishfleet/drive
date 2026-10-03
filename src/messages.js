@@ -206,6 +206,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That did not work.",
     next: "Try again in a moment.",
   }),
+  // The public savings calculator (drive issue #14): the size was missing,
+  // not a number, negative, or past the quote ceiling, so nothing was billed
+  // and the one thing to do is enter a size the quote can use.
+  "quote-size": Object.freeze({
+    what: "That size is not a storage amount we can quote.",
+    next: "Enter how many TB or GB you store, as a number of 0 or more.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the

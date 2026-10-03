@@ -560,6 +560,7 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
     "export DRIVE_S3_PREFIX=your-folder",
     "export DRIVE_S3_ACCESS_KEY_ID=...",
     "export DRIVE_S3_SECRET_ACCESS_KEY=...",
+    "rclone config",
   ]);
 
   let samples = 0;

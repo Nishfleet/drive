@@ -9,7 +9,14 @@ import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
-import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
+import {
+  BILLING_CONFIG,
+  handleQuoteRequest,
+  handleUsageRequest,
+  QUOTE_ENDPOINT,
+  USAGE_ENDPOINT,
+  usageSummary,
+} from "./billing.js";
 import {
   BRANCHES_ENDPOINT,
   backfillBranchSnapshots,
@@ -115,6 +122,8 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 //     and one that expires or is revoked answers 404 (src/share.js).
 //   - /api/request/info and /api/request/upload: the logged-out side of an
 //     upload request, where the token in the query is the whole proof.
+//   - /api/quote: the public savings calculator (drive issue #14). It quotes
+//     the price for a size, not an account, so it has no session to need.
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
@@ -125,6 +134,7 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${SHARE_LINK_PREFIX}/*`,
   `${REQUEST_ENDPOINT}/info`,
   `${REQUEST_ENDPOINT}/upload`,
+  QUOTE_ENDPOINT,
 ]);
 
 /** @param {string} pathname */
@@ -573,6 +583,10 @@ export function createApp() {
   app.post("/api/waitlist", (c) =>
     handleWaitlistRequest(c.req.raw, c.env.WAITLIST_DB, c.env.WAITLIST_RATE_LIMITER),
   );
+
+  // The public savings calculator (drive issue #14). GET only; the handler
+  // refuses every other method. No account: it quotes the price, not a bill.
+  app.get(QUOTE_ENDPOINT, (c) => handleQuoteRequest(c.req.raw));
 
   // The meter's event intake (issue #6), behind the provider's shared token.
   app.post("/api/storage-events", (c) =>

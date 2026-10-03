@@ -42,6 +42,7 @@ Usage:
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
+  drive import <remote>    copy files from an rclone remote you already have
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
 
@@ -100,6 +101,11 @@ Cache flags:
 
 Export flags:
   --out   file to write the export to; stdout when it is not given
+
+Import flags:
+  --rclone   path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --dry-run  print the copy rclone would run, copy nothing
+  --home     home directory (default $HOME)
 
 The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
 The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
@@ -170,6 +176,8 @@ func main() {
 		err = runLogout(os.Args[2:])
 	case "export":
 		err = runExport(os.Args[2:])
+	case "import":
+		err = runImport(os.Args[2:])
 	case "update":
 		err = runUpdate(os.Args[2:])
 	case "prefetch":
