@@ -87,12 +87,6 @@ function docsAndHelp() {
   return `${pages.join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
 }
 
-/** @param {EvalGrader} a @returns {string} */
-function graderSource(a) {
-  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
-  return a.value;
-}
-
 /** @param {string | boolean | number | { pass: boolean }} result */
 function passed(result) {
   if (typeof result === "object" && result !== null) return result.pass;
