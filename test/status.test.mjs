@@ -308,6 +308,30 @@ test("the Worker routes the page's poll to the status handler", async () => {
   assert.equal(asset.status, 200);
 });
 
+test("a signed-out person cannot describe or create the starter", async () => {
+  // The starter's own page is a public asset, so the route behind it is what
+  // protects the drive: the gate answers 401 for both methods, and the asset
+  // layer never runs. This is the anonymous-401 proof this route needs, and
+  // it walks Hono's real matcher rather than a factory per account-owning
+  // route, so a new route that skips the gate fails here.
+  const describe = await workerFetch(new Request("https://drive.test/api/starter"), {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  });
+  assert.equal(describe.status, 401, "a signed-out describe answers 401");
+  assert.deepEqual(await describe.json(), { error: failureMessage("unauthorized") });
+
+  const create = await workerFetch(
+    new Request("https://drive.test/api/starter", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "create" }),
+    }),
+    { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } },
+  );
+  assert.equal(create.status, 401, "a signed-out create answers 401");
+  assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
+});
+
 test("the pricing page links to the first-run page", () => {
   // The first-run page is what a person sees after sign-up; without a link it
   // is a page nothing reaches. The nav sits outside the waitlist form so it
