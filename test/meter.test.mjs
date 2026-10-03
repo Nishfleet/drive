@@ -1704,7 +1704,7 @@ test("the SQL rollup and the JS reference agree exactly, on the awkward shapes",
 /**
  * Books every hour the meter's own trigger would, and returns the account's
  * total GB-minutes from the usage rows the rollup wrote.
- * @param {import("./d1-sqlite.mjs").MeteredD1["db"]} db
+ * @param {ReturnType<typeof makeMeteredDB>["db"]} db
  * @param {number} hours
  */
 async function bookedGbMinutes(db, hours) {
@@ -1715,7 +1715,8 @@ async function bookedGbMinutes(db, hours) {
     .prepare("SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1")
     .bind("abc123")
     .all();
-  return (rows.results || []).reduce((total, row) => total + Number(row.gb_minutes_live), 0);
+  const results = /** @type {{gb_minutes_live: number}[]} */ (rows.results || []);
+  return results.reduce((total, row) => total + Number(row.gb_minutes_live), 0);
 }
 
 /**
@@ -1723,7 +1724,7 @@ async function bookedGbMinutes(db, hours) {
  * `moveAt` minutes past midnight: the new key's create and the old key's
  * hide, the two events a server-side move produces (in the order the storage
  * server sends them).
- * @param {number} moveAt minutes past midnight, or undefined for no move
+ * @param {number|undefined} moveAt minutes past midnight, or undefined for no move
  */
 async function oneFileWithMove(moveAt) {
   const size = 10 * GB;

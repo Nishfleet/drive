@@ -343,7 +343,7 @@ export function versionGbMinutesInHour(version, hour, now = Date.now(), continue
 /**
  * GB-minutes for a list of versions over one hour: the exact integer
  * byte-minute sum scaled once, the same total rollupHour's SQL stores.
- * @param {{createdAt: number, hiddenAt: number|null}[]} versions
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}[]} versions
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
  */
@@ -358,18 +358,27 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   // otherIndex !== index is the SQL's s.b2_file_id <> v.b2_file_id for a
   // well-formed list, where each row appears once: a different entry is a
   // different row, and rows are keyed by the account and b2_file_id pair.
+  // The retirement instant, hoisted so the size and instant reads are the
+  // same row for both sides of the comparison.
   const continued = new Set(
-    versions.filter((version, index) => {
-      if (version.hiddenAt === null || version.hiddenAt === undefined) {
-        return false;
-      }
-      return versions.some(
-        (other, otherIndex) =>
-          otherIndex !== index &&
-          Number(other.sizeBytes) === Number(version.sizeBytes) &&
-          toMillis(other.createdAt, "createdAt") === toMillis(version.hiddenAt, "hiddenAt"),
-      );
-    }),
+    versions
+      .map((version) => ({
+        version,
+        // Both sides are numbers by the time they get here: toVersion turns a
+        // stored row into ms, and a call-built version carries ms (drive
+        // issue #104).
+        stoppedAt: version.hiddenAt == null ? null : toMillis(version.hiddenAt, "hiddenAt"),
+      }))
+      .filter((entry) => entry.stoppedAt !== null)
+      .filter((entry) =>
+        versions.some(
+          (other, otherIndex) =>
+            otherIndex !== versions.indexOf(entry.version) &&
+            Number(other.sizeBytes) === Number(entry.version.sizeBytes) &&
+            toMillis(other.createdAt, "createdAt") === entry.stoppedAt,
+        ),
+      )
+      .map((entry) => entry.version),
   );
   let units = 0;
   for (const version of versions) {
