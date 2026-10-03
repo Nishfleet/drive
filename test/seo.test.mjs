@@ -20,8 +20,8 @@ import {
   BILLING,
   DOC_PAGES,
   PAGES,
-  ROOT_PAGES,
   pageUrl,
+  ROOT_PAGES,
   SITE,
   softwareApplicationLd,
 } from "../src/seo.js";
@@ -108,15 +108,23 @@ test("every page in PAGES ships from the source its flag names", () => {
     const inPublic = existsSync(new URL(name, publicDir));
     const inRoot = existsSync(new URL(name, rootDir));
     if (page.root) {
-      assert.ok(inRoot,
-        `${page.path} is registered as a built Vite entry at the repo root, but ${name} does not exist there`);
-      assert.ok(!inPublic,
-        `${page.path} is registered as a built Vite entry at the repo root, so public/${name} must not also exist: a page that ships twice is drift`);
+      assert.ok(
+        inRoot,
+        `${page.path} is registered as a built Vite entry at the repo root, but ${name} does not exist there`,
+      );
+      assert.ok(
+        !inPublic,
+        `${page.path} is registered as a built Vite entry at the repo root, so public/${name} must not also exist: a page that ships twice is drift`,
+      );
     } else {
-      assert.ok(inPublic,
-        `${page.path} is registered as a public/ asset, but public/${name} does not exist`);
-      assert.ok(!inRoot,
-        `${page.path} is registered as a public/ asset, so ${name} must not also exist at the repo root: a page that ships twice is drift`);
+      assert.ok(
+        inPublic,
+        `${page.path} is registered as a public/ asset, but public/${name} does not exist`,
+      );
+      assert.ok(
+        !inRoot,
+        `${page.path} is registered as a public/ asset, so ${name} must not also exist at the repo root: a page that ships twice is drift`,
+      );
     }
   }
 });
