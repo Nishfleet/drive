@@ -59,6 +59,34 @@ func TestPausedRateRoundTripsThroughTheMarker(t *testing.T) {
 	}
 }
 
+func TestPausedRateJunkFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	path := PauseStatePath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// "off" is rclone's full-speed word. A junk marker must not become that
+	// rate on the next mount, or a pause would resume itself.
+	if err := os.WriteFile(path, []byte("off\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := PausedRate(home); got != pausedRate {
+		t.Errorf("PausedRate(junk) = %q, want %q so a restart stays paused", got, pausedRate)
+	}
+	if !Paused(home) {
+		t.Error("a junk marker reports not paused")
+	}
+}
+
+func TestRateIsPausedAcceptsBothSpellings(t *testing.T) {
+	if !rateIsPaused(pausedRate) || !rateIsPaused(rclonePausedRate) {
+		t.Error("the paused spellings we set and rclone reports must both count as paused")
+	}
+	if rateIsPaused(resumeRate) || rateIsPaused("") || rateIsPaused("1M:off") {
+		t.Error("full speed and other rates must not count as paused")
+	}
+}
+
 // fakeRclone points an rcClient at answers a test chooses. rclone is
 // stateful, so the caller keeps the state the handler mutates, exactly as the
 // stand-in rclone does. The shim is written into the test's own temp
@@ -81,7 +109,15 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 		"  esac\n" +
 		"done\n" +
 		"method=\"$1\"; shift\n" +
-		"resp=$(curl -s -X POST -d \"$*\" \"http://$addr/$method\")\n" +
+		"body=\"\"\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ -n \"$body\" ]; then body=\"$body&$arg\"; else body=\"$arg\"; fi\n" +
+		"done\n" +
+		"if [ -n \"$body\" ]; then\n" +
+		"  resp=$(curl -s -X POST -d \"$body\" \"http://$addr/$method\")\n" +
+		"else\n" +
+		"  resp=$(curl -s -X POST \"http://$addr/$method\")\n" +
+		"fi\n" +
 		"printf '%s' \"$resp\"\n" +
 		"case \"$resp\" in\n" +
 		"  *'\"error\"'*) exit 1 ;;\n" +
@@ -248,6 +284,63 @@ func TestReadQueueTreatsAnAbsentQueueAsEmpty(t *testing.T) {
 	}
 }
 
+func TestHoldQueuedUploadsPostsQueueSetExpiry(t *testing.T) {
+	var gotPath, gotID, gotExpiry string
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/vfs/queue":
+			_, _ = w.Write([]byte(`{"queue":[{"name":"a.bin","id":7,"size":10,"expiry":1.97,"tries":0,"delay":5,"uploading":false}]}`))
+		case "/vfs/queue-set-expiry":
+			gotPath = r.URL.Path
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("the client did not form-encode the expiry: %v", err)
+			}
+			gotID = r.Form.Get("id")
+			gotExpiry = r.Form.Get("expiry")
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.HoldQueuedUploads(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/vfs/queue-set-expiry" {
+		t.Errorf("posted to %s, want /vfs/queue-set-expiry", gotPath)
+	}
+	if gotID != "7" || gotExpiry != queueHoldExpiry {
+		t.Errorf("id=%q expiry=%q, want 7 and the hold expiry", gotID, gotExpiry)
+	}
+}
+
+func TestReleaseQueuedUploadsPostsANegativeExpiry(t *testing.T) {
+	var gotExpiry string
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/vfs/queue":
+			_, _ = w.Write([]byte(`{"queue":[{"name":"a.bin","id":7,"size":10,"uploading":false}]}`))
+		case "/vfs/queue-set-expiry":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("the client did not form-encode the expiry: %v", err)
+			}
+			gotExpiry = r.Form.Get("expiry")
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	ctx, cancel := rcCtx()
+	defer cancel()
+	if err := c.ReleaseQueuedUploads(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if gotExpiry != queueReleaseExpiry {
+		t.Errorf("expiry=%q, want the release expiry", gotExpiry)
+	}
+}
+
 func TestEtaLabelRendersSecondsAsAReadableTime(t *testing.T) {
 	cases := []struct {
 		name string
@@ -291,7 +384,7 @@ func TestUploadFileNameWithholdsANameThatWouldBreakTheColumn(t *testing.T) {
 	if got := uploadFileName("movie.mp4"); got != "movie.mp4" {
 		t.Errorf("uploadFileName = %q, want the name as saved", got)
 	}
-	for _, bad := range []string{"a\nb", "a\rb"} {
+	for _, bad := range []string{"a\nb", "a\rb", "a\tb", "a\x1bb"} {
 		if got := uploadFileName(bad); got != "(name withheld)" {
 			t.Errorf("uploadFileName(%q) = %q, want the name withheld", bad, got)
 		}
@@ -420,14 +513,44 @@ func TestTransfersLineSaysPausedNotMountedAndRunning(t *testing.T) {
 	if err := SetPaused(home); err != nil {
 		t.Fatal(err)
 	}
-	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
-		t.Errorf("transfersLine(paused) = %q, want the Paused word", got)
-	}
 	if got := transfersLine(home, false); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(paused but not mounted) = %q, want the Paused word", got)
 	}
+	// Mounted with rclone unreachable falls back to the marker, so a pause
+	// that cannot be confirmed still says Paused rather than unknown.
+	t.Setenv("DRIVE_RCLONE", filepath.Join(t.TempDir(), "no-such-rclone"))
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine(paused, rclone missing) = %q, want the Paused word", got)
+	}
 	if err := ClearPaused(home); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTransfersLineTrustsTheLiveRateWhenMounted(t *testing.T) {
+	home := t.TempDir()
+	if err := SetPaused(home); err != nil {
+		t.Fatal(err)
+	}
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"rate":"off","bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1}`))
+	})
+	t.Setenv("DRIVE_RCLONE", c.binary)
+	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	if got := transfersLine(home, true); got != transfersRunning {
+		t.Errorf("transfersLine(mounted, live off, marker present) = %q, want running", got)
+	}
+}
+
+func TestTransfersLineReadsPausedFromTheLiveRate(t *testing.T) {
+	home := t.TempDir()
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"rate":"1Ki:off","bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1}`))
+	})
+	t.Setenv("DRIVE_RCLONE", c.binary)
+	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine(mounted, live paused, no marker) = %q, want the Paused word", got)
 	}
 }
 

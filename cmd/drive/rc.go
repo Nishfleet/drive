@@ -27,6 +27,9 @@ import (
 //     upload at 1 KiB/s while downloads stay unlimited.
 //   - vfs/queue answers one entry per file waiting to upload (name, size,
 //     uploading), with no second queue kept by this CLI.
+//   - vfs/queue-set-expiry delays or releases a waiting item; pause holds
+//     the queue this way, and resume releases it. In-flight items ignore
+//     expiry: core/bwlimit is what slows those.
 //   - core/stats answers the file in flight now (name, size, bytes,
 //     percentage, eta) and the group's totals.
 //
@@ -45,8 +48,19 @@ import (
 // "1KiB:off" flattens the byte counter while "off" resumes it.
 const pausedRate = "1KiB:off"
 
+// rclonePausedRate is how rclone reports the paused rate back. It collapses
+// "1KiB" to "1Ki" in core/bwlimit's answer. Both spellings mean the same cap.
+const rclonePausedRate = "1Ki:off"
+
 // resumeRate is rclone's own word for no limit at all.
 const resumeRate = "off"
+
+// queueHoldExpiry is a far-future vfs/queue-set-expiry (rclone.org/rc). A
+// large positive number delays the item until resume; a large negative number
+// makes it eligible immediately. An item that has already started uploading
+// is not affected: rclone says so, and core/bwlimit is what slows that one.
+const queueHoldExpiry = "1000000000"
+const queueReleaseExpiry = "-1000000000"
 
 // PauseStatePath is where the paused state is remembered. rclone's bandwidth
 // limit lives in the running process, so a restart of the mount comes back
@@ -70,7 +84,8 @@ const rcTimeout = 30 * time.Second
 // progress lines in `drive status` ask the running mount rather than guessing,
 // and the product has one rc client and one rc address.
 //
-// The methods used here (core/bwlimit, vfs/queue, core/stats) take no `fs`
+// The methods used here (core/bwlimit, vfs/queue, vfs/queue-set-expiry,
+// core/stats) take no `fs`
 // argument, so no remote path is needed to address them. vfs/queue is the
 // same call the conflict guard already makes (conflict_guard.go queue); this
 // client omits `fs` when it has none, which is rclone's default for the
@@ -147,6 +162,42 @@ func (c *rcClient) ReadQueue(ctx context.Context) (Queue, error) {
 	return Queue{Queue: items}, nil
 }
 
+// SetQueueExpiry sets one vfs/queue item's expiry (rc vfs/queue-set-expiry).
+// expiry is seconds from now, as rclone's docs take it.
+func (c *rcClient) SetQueueExpiry(ctx context.Context, id int, expiry string) error {
+	var reply map[string]any
+	params := map[string]string{"id": fmt.Sprintf("%d", id), "expiry": expiry}
+	if c.fs != "" {
+		params["fs"] = c.fs
+	}
+	return c.call(ctx, "vfs/queue-set-expiry", params, &reply)
+}
+
+// HoldQueuedUploads delays every waiting VFS upload through rclone's own
+// queue-set-expiry, so pause is a hold of rclone's queue, not a second queue.
+// In-flight items are left to core/bwlimit: rclone ignores expiry on them.
+func (c *rcClient) HoldQueuedUploads(ctx context.Context) error {
+	return c.setQueueExpiries(ctx, queueHoldExpiry)
+}
+
+// ReleaseQueuedUploads makes every waiting VFS upload eligible now.
+func (c *rcClient) ReleaseQueuedUploads(ctx context.Context) error {
+	return c.setQueueExpiries(ctx, queueReleaseExpiry)
+}
+
+func (c *rcClient) setQueueExpiries(ctx context.Context, expiry string) error {
+	entries, err := c.queue(ctx)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := c.SetQueueExpiry(ctx, e.ID, expiry); err != nil {
+			return fmt.Errorf("vfs/queue-set-expiry id=%d: %w", e.ID, err)
+		}
+	}
+	return nil
+}
+
 // Transfer is the file rclone is sending right now, as core/stats names it.
 type Transfer struct {
 	Name       string   `json:"name"`
@@ -200,19 +251,37 @@ func ClearPaused(home string) error {
 // PausedRate returns the rate the mount should start with, or "" when uploads
 // are not paused. It is what mount.go BuildMountPlan reads, so a restart of
 // the mount starts already paused and no person has to pause it again. A
-// marker that cannot be read is not a pause: `drive pause` wrote it, so a
-// missing one means not paused, and a pause that was never recorded must not
-// be guessed out of an unreadable file.
+// missing marker is not a pause. An unreadable or junk marker is a pause:
+// fail closed so a restart does not send at full speed.
 func PausedRate(home string) string {
-	data, err := os.ReadFile(PauseStatePath(home))
+	path := PauseStatePath(home)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		if errors.Is(err, fs.ErrNotExist) {
+			return ""
+		}
+		// Unreadable is not "not paused": a marker we cannot read still
+		// means the last pause should hold, so a restart does not start
+		// sending at full speed.
+		return pausedRate
 	}
 	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" {
-		return ""
+	if trimmed == "" || trimmed == pausedRate || trimmed == rclonePausedRate {
+		return pausedRate
 	}
-	return trimmed
+	// Junk is not a rate: fail closed and keep the pause.
+	return pausedRate
+}
+
+// rateIsPaused reports whether rclone's own core/bwlimit answer is the paused
+// rate. rclone reports "1Ki:off" for the "1KiB:off" we set.
+func rateIsPaused(rate string) bool {
+	switch strings.TrimSpace(rate) {
+	case pausedRate, rclonePausedRate:
+		return true
+	default:
+		return false
+	}
 }
 
 // Paused reports whether the mount is paused, as recorded in the marker file.

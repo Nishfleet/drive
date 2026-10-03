@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The rest of `drive status`: the lines that say what the drive is doing, not
@@ -236,8 +237,10 @@ func etaLabel(eta *float64) string {
 // the person saved; a newline in it would break the column, so the name is
 // withheld rather than printed across two lines.
 func uploadFileName(name string) string {
-	if strings.ContainsAny(name, "\r\n") {
-		return "(name withheld)"
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "(name withheld)"
+		}
 	}
 	return name
 }
@@ -262,24 +265,30 @@ func fileSizeLabel(bytes int64) string {
 // control the mount already binds) and the marker file otherwise, so a drive
 // that is paused but not mounted still says Paused rather than nothing.
 func transfersLine(home string, on bool) string {
-	// The marker is the pause that survives a restart: ask it first, so a
-	// drive that is paused with the mount down still says Paused rather than
-	// "not mounted" over a stop the person just asked for.
-	if Paused(home) {
-		return "transfers: " + pausedLabel
-	}
 	if !on {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
 		return transfersNotMounted
 	}
 	c, err := mountRCClient()
 	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
 		return "transfers: unknown (" + err.Error() + ")"
 	}
 	ctx, cancel := rcCtx()
 	defer cancel()
 	limit, err := c.BwLimit(ctx)
 	if err != nil {
+		if Paused(home) {
+			return "transfers: " + pausedLabel
+		}
 		return "transfers: unknown (" + err.Error() + ")"
+	}
+	if rateIsPaused(limit.Rate) {
+		return "transfers: " + pausedLabel
 	}
 	if limit.Rate == resumeRate {
 		return transfersRunning
