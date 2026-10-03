@@ -129,13 +129,23 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		RcloneBin:   rcloneBin,
 		Subcommand:  sub,
 		Remote:      RemoteFor(c),
-		MountDir:    DefaultMountDir(home),
+		MountDir:    mountDirFor(goos, home),
 		ConfigPath:  RcloneConfigPath(home),
 		CacheDir:    DefaultCacheDir(home),
 		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
 		VFSArgs:     VFSArgs(),
 		DownloadURL: c.DownloadURL,
 	}
+}
+
+// mountDirFor is the mount point for goos: ~/Drive on Mac and Linux, and the
+// first drive-letter candidate on Windows, which Mount replaces with the first
+// free letter from D: up (WindowsDriveLetter).
+func mountDirFor(goos, home string) string {
+	if goos == "windows" {
+		return windowsDefaultLetter
+	}
+	return DefaultMountDir(home)
 }
 
 // Args is the full rclone argument vector, in the order the docs show.
@@ -247,27 +257,77 @@ func systemdEscapeArg(arg string) string {
 	return `"` + arg + `"`
 }
 
-// LoginItemPath is where the login item for goos is written.
+// LoginItemPath is where the login item for goos is written. Windows has no
+// login-item file: its item is a Task Scheduler task (WindowsTaskName),
+// registered with the OS, so the empty string is the honest answer for the
+// file-shaped callers.
 func LoginItemPath(goos, home string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return LaunchdPlistPath(home)
+	case "windows":
+		return ""
+	default:
+		return SystemdUnitPath(home)
 	}
-	return SystemdUnitPath(home)
 }
 
 // LoginItem renders the login item for goos.
 func LoginItem(goos string, p MountPlan) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return LaunchdPlist(p)
+	case "windows":
+		return WindowsTaskCommandLine(p)
+	default:
+		return SystemdUnit(p)
 	}
-	return SystemdUnit(p)
+}
+
+// LoginItemPresent answers whether the login item for goos is registered. On
+// Windows that is the Task Scheduler task, not a file; on Mac and Linux it is
+// the item file.
+func LoginItemPresent(goos, home string) (bool, error) {
+	if goos == "windows" {
+		return windowsTaskPresent(WindowsTaskName)
+	}
+	path := LoginItemPath(goos, home)
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+}
+
+// LoginItemFiles are the on-disk login-item files for goos. Windows has none:
+// its login item is the Task Scheduler task, which Unmount removes through
+// schtasks, so the file-removal paths have nothing to unlink.
+func LoginItemFiles(goos, home string) []string {
+	if goos == "windows" {
+		return nil
+	}
+	return []string{LoginItemPath(goos, home), PrefetchLoginItemPath(goos, home)}
 }
 
 // Mount writes the rclone config and the login item, then starts the mount.
 // foreground runs rclone in this process (used by the proof and by debugging);
 // otherwise the login item starts it (launchd on macOS, systemd on Linux).
-func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool) error {
+func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool, driveLetter string) error {
 	p := BuildMountPlan(goos, home, rcloneBin, c)
+	// Windows is its own path: a drive letter, a WinFsp check and a Task
+	// Scheduler login task, and no prefetch sidecar (there is no Windows
+	// directory watcher). The letter is resolved here, where an error can be
+	// returned, and the plan carries it into the task's command line.
+	if goos == "windows" {
+		letter, err := WindowsDriveLetter(driveLetter, driveLetterFree)
+		if err != nil {
+			return err
+		}
+		p.MountDir = letter
+		return mountWindows(p, home, c, foreground, dryRun)
+	}
 	item := []byte(LoginItem(goos, p))
 	itemPath := LoginItemPath(goos, home)
 	// The mount dir is created only once the plan is real: --dry-run writes
@@ -364,7 +424,7 @@ func mountForeground(p MountPlan, home string) error {
 		// rclone's own remote control is not listening for the first moments
 		// of the mount, so the loop's first pass waits for the mount to appear
 		// (the same proof `drive mount` already makes) instead of racing it.
-		_, _ = Mounted(p.GOOS, home)
+		_, _ = MountedDir(p.GOOS, p.MountDir)
 		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
 		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
@@ -423,11 +483,11 @@ func waitMounted(goos, home string) error {
 // mountWait bounds the wait for a freshly started mount to appear.
 const mountWait = 30 * time.Second
 
-// mountLogHint is where to look when the mount did not come up: launchd
-// writes the item's output to the log path from the plan; on Linux the user
-// journal owns a systemd unit's output.
+// mountLogHint is where to look when the mount did not come up: launchd and
+// the Windows login task write rclone's output to the log path from the plan;
+// on Linux the user journal owns a systemd unit's output.
 func mountLogHint(goos, home string) string {
-	if goos == "darwin" {
+	if goos == "darwin" || goos == "windows" {
 		return filepath.Join(DefaultConfigDir(home), "mount.log")
 	}
 	return "journalctl --user -u " + SystemdUnitName
@@ -509,12 +569,24 @@ func launchctlArgvLabel(label, action, target, itemPath string) []string {
 // uploads still waiting: nothing in this function deletes it, so a file
 // queued before the cap was reached is still there when writes resume.
 func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {
+	// On Windows the drive letter is chosen at mount time; read it from the
+	// login task before Unmount removes it, so a restart keeps the same letter
+	// instead of moving the person's drive.
+	driveLetter := ""
+	if goos == "windows" {
+		if letter, err := windowsMountLetter(); err == nil {
+			driveLetter = letter
+		}
+	}
 	if err := Unmount(goos, home); err != nil {
 		return err
 	}
-	return Mount(goos, home, rcloneBin, c, false, false)
+	return Mount(goos, home, rcloneBin, c, false, false, driveLetter)
 }
 func Unmount(goos, home string) error {
+	if goos == "windows" {
+		return unmountWindows(home)
+	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
 		return err
 	}
@@ -536,24 +608,44 @@ func Unmount(goos, home string) error {
 
 // Mounted reports whether MountDir has a live mount. Linux asks the kernel
 // mount table through findmnt; macOS has no findmnt, so the BSD mount listing
-// is the platform's own answer and its mount-point field is what is compared.
+// is the platform's own answer and its mount-point field is what is compared;
+// Windows has neither, so the drive letter the login task names is the
+// question asked of the volume table, through os.Stat.
 func Mounted(goos, home string) (bool, error) {
-	mountDir := DefaultMountDir(home)
-	if goos == "darwin" {
+	if goos == "windows" {
+		letter, err := windowsMountLetter()
+		if err != nil {
+			return false, err
+		}
+		return windowsVolumeMounted(letter), nil
+	}
+	return MountedDir(goos, DefaultMountDir(home))
+}
+
+// MountedDir is Mounted for a mount point that is not <home>/Drive, so a caller
+// holding the mount point itself (the proofs, whose dir may be a second mount
+// on the same host) asks the same platform question. One switch, so a caller
+// cannot drift from what `drive mount` waits on.
+func MountedDir(goos, mountDir string) (bool, error) {
+	switch goos {
+	case "darwin":
 		out, err := exec.Command("mount").Output()
 		if err != nil {
 			return false, fmt.Errorf("mount: %w", err)
 		}
 		return bsdMountHasMountPoint(string(out), mountDir), nil
-	}
-	out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
-	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
-			return false, nil
+	case "windows":
+		return windowsVolumeMounted(mountDir), nil
+	default:
+		out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
+		if err != nil {
+			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+				return false, nil
+			}
+			return false, fmt.Errorf("findmnt %s: %w", mountDir, err)
 		}
-		return false, fmt.Errorf("findmnt %s: %w", mountDir, err)
+		return strings.TrimSpace(string(out)) != "", nil
 	}
-	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // bsdMountHasMountPoint reports whether a `mount` listing mounts dir. A line
