@@ -995,13 +995,16 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 		b.Fatalf("read with prefetch stopped: %v", err)
 	}
 	without := time.Since(start)
-	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s storage=%s", with.Seconds(), h.storageName())
-	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s storage=%s", without.Seconds(), h.storageName())
+	storage := h.storageName()
+	region := envOr("DRIVE_BENCH_REGION", "unmeasured")
+	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s storage=%s region=%s", with.Seconds(), storage, region)
+	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s storage=%s region=%s", without.Seconds(), storage, region)
 	// Real storage: the figures above are the measurement, and the overlap
 	// is expected (see the comment at the top of this function), so the
-	// assertion below is the stand-in's alone.
+	// assertion below is the stand-in's alone. The reference pair a real run
+	// is compared against lives in docs/research/prefetch-overlap-bench.md.
 	if h.real {
-		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=stand-in-only storage=real")
+		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=stand-in-only storage=%s region=%s note=measured not asserted", storage, region)
 		return
 	}
 	if with > without+20*time.Millisecond && with > without*2 {
