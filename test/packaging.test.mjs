@@ -18,7 +18,11 @@ const cfg = read(".goreleaser.yaml");
 test("the Linux packages depend on rclone", () => {
   const nfpms = cfg.slice(cfg.indexOf("\nnfpms:"), cfg.indexOf("\nbrews:"));
   assert.match(nfpms, /formats: \[deb, rpm\]/, "GoReleaser builds both Linux packages");
-  assert.match(nfpms, /^\s+dependencies:\n\s+- rclone$/m, "Depends: rclone is the one-command install");
+  assert.match(
+    nfpms,
+    /^\s+dependencies:\n\s+- rclone$/m,
+    "Depends: rclone is the one-command install",
+  );
 });
 
 test("the Homebrew formula depends on rclone", () => {
