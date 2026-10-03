@@ -408,26 +408,10 @@
       A branch is a server-side copy, not a metadata trick, so its cost is a
       real copy of every byte — and the number to give is the measured one, not
       the one in the docs' promise.
-    source: docs/build-spec.md, "Against Space, feature by feature"; step 7
+    source: docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/(copy|copies)/i.test(output)"
-
-- description: two agents writing the same file
-  metadata:
-    hard: true
-  vars:
-    task: >
-      Two of my agents are told to edit the same file at the same time. What
-      stops the second one silently wiping the first one's work?
-    why_hard: >
-      It is a race with no winner by default, so the answer is a guard on the
-      write that the docs name once, in a different section, for the hosted
-      connector — not in the branch documentation at all.
-    source: docs/build-spec.md, "Sandbox platforms (build step 11)"
-  assert:
-    - type: javascript
-      value: "/cannot delete|cannot remove|does not say|not in the documentation/i.test(output)"
 
 - description: a branch key cannot reach my other files
   metadata:
@@ -440,7 +424,7 @@
       The prefix is a hidden path inside the account's own folder, so a person
       has to know the layout (`u/<id>/.branches/<name>/`) before the answer is
       more than "its own folder".
-    source: docs/build-spec.md, "Keys and safety"
+    source: docs-site/agents.md, "Branch keys"
   assert:
     - type: javascript
       value: "/branch/i.test(output) && /cannot delete|cannot remove|delete/i.test(output)"
