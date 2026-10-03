@@ -428,11 +428,10 @@ func TestRunMountRefusesDriveLetterOffWindows(t *testing.T) {
 	}
 }
 
-// TestWindowsMountProof is the drive#153 done-when proof: it mounts the
-// stand-in storage at the product's own first-free drive letter, writes a file
-// through that letter, reads it back, then unmounts and proves the login task
-// and the letter are gone. It runs on windows-latest (the CI job installs
-// WinFsp first); every other platform skips with the reason.
+// TestWindowsTaskUserPrefersTheSessionDomain is the drive#368 user the login
+// task's trigger names: USERDOMAIN and USERNAME are the session's own answer,
+// and the process token is the fallback when they are missing. An empty answer
+// would put a UserId the task XML cannot import.
 func TestWindowsTaskUserPrefersTheSessionDomain(t *testing.T) {
 	t.Setenv("USERDOMAIN", "DESKTOP")
 	t.Setenv("USERNAME", "test")
@@ -457,6 +456,11 @@ func TestWindowsTaskUserPrefersTheSessionDomain(t *testing.T) {
 	}
 }
 
+// TestWindowsMountProof is the drive#153 done-when proof: it mounts the
+// stand-in storage at the product's own first-free drive letter, writes a file
+// through that letter, reads it back, then unmounts and proves the login task
+// and the letter are gone. It runs on windows-latest (the CI job installs
+// WinFsp first); every other platform skips with the reason.
 func TestWindowsMountProof(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("the drive-letter mount proof runs on windows-latest (rclone + WinFsp)")
