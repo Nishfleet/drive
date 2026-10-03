@@ -45,7 +45,9 @@ export function containerEngine() {
  * The port the stand-in bound. `--address :0` asks the kernel for one, and
  * MinIO logs the address it listens on, so the number comes from the server
  * that owns the listener rather than a reserve-then-reuse guess (drive#295). A
- * caller-pinned `port` is returned as-is.
+ * caller-pinned `port` is returned as-is. The line is MinIO's own `API:` banner,
+ * which lists every interface it bound, and the WebUI banner follows it on the
+ * next line with its own port, so the port comes from the `API:` line only.
  * @param {string} engine @param {string} name @param {number} port
  * @returns {Promise<number>}
  */
@@ -56,13 +58,15 @@ async function boundPort(engine, name, port) {
   const deadline = Date.now() + 30_000;
   for (;;) {
     const logs = spawnSync(engine, ["logs", name], { encoding: "utf8" });
-    const logged = /API:[^\n]*http:\/\/127\.0\.0\.1:(\d+)/.exec(`${logs.stdout}${logs.stderr}`);
+    const logged = /API:[^\n]*https?:\/\/(?:127\.0\.0\.1|0\.0\.0\.0):(\d+)/.exec(
+      `${logs.stdout}${logs.stderr}`,
+    );
     if (logged) {
       return Number(logged[1]);
     }
     if (Date.now() > deadline) {
       throw new Error(
-        `the stand-in ${name} logged no address in 30s:\n${logs.stdout}${logs.stderr}`,
+        `the stand-in ${name} logged no "API:" address on 127.0.0.1 or 0.0.0.0 in 30s:\n${logs.stdout}${logs.stderr}`,
       );
     }
     await sleep(250);

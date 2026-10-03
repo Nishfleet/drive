@@ -100,7 +100,7 @@ const sha256 = (text) => createHash("sha256").update(text).digest("hex");
  * The receiver binds an ephemeral port itself (`listen(0)` then
  * `server.address()` reads the number back), so no listener is reserved and
  * released before the real bind (drive#295); `DRIVE_STANDIN_WEBHOOK_URL` still
- * pins a fixed address.
+ * pins a fixed address, and is handed on exactly as given.
  * @param {string|null} configuredUrl
  */
 async function startEventReceiver(configuredUrl) {
@@ -138,7 +138,10 @@ async function startEventReceiver(configuredUrl) {
   const address = server.address();
   assert.ok(address !== null && typeof address !== "string", "the event receiver has a TCP port");
   return {
-    url: `http://${address.address}:${address.port}/v1/events`,
+    // A configured address is handed on as given: only the ephemeral one is
+    // built, because `address.address` is `::1` or `::` for an IPv6 or wildcard
+    // bind, and neither is a URL a container can be pointed at.
+    url: configuredUrl ?? `http://127.0.0.1:${address.port}/v1/events`,
     answers,
     stop: () => new Promise((resolve) => server.close(resolve)),
   };
@@ -231,23 +234,22 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
         "so this value cannot be the stand-in's root credential (the tests3 rclone pair is shorter than that).",
     );
   }
-  const standin =
-    CONFIGURED_ENDPOINT !== null
-      ? { endpoint: CONFIGURED_ENDPOINT }
-      : await startMinioStandin(
-          {
-            name: `drive-standin-${process.pid}`,
-            environment: {
-              MINIO_ROOT_USER: ROOT_ACCESS_KEY,
-              MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
-              [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
-              [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
-              [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
-            },
-            port: PORT,
+  const standin = CONFIGURED_ENDPOINT
+    ? { endpoint: CONFIGURED_ENDPOINT }
+    : await startMinioStandin(
+        {
+          name: `drive-standin-${process.pid}`,
+          environment: {
+            MINIO_ROOT_USER: ROOT_ACCESS_KEY,
+            MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
+            [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
+            [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
+            [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
           },
-          t,
-        );
+          port: PORT,
+        },
+        t,
+      );
   if (standin === null) {
     t.diagnostic(
       "no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT, so there is no stand-in to prove against",

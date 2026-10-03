@@ -198,28 +198,27 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   const receiver = await startEventReceiver(db);
   t.after(() => receiver.stop());
 
-  const standin =
-    CONFIGURED_ENDPOINT !== null
-      ? { endpoint: CONFIGURED_ENDPOINT }
-      : await startMinioStandin(
-          {
-            name: `drive-meter-standin-${process.pid}`,
-            environment: {
-              MINIO_ROOT_USER: ROOT_ACCESS_KEY,
-              MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
-              [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
-              [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
-              // The webhook target's own token: MinIO sends it as the whole
-              // Authorization header, which is exactly what this route cannot
-              // accept (it wants `Bearer <token>` in x-drive-event-token), so the
-              // delivery arrives refused and the receipts below are the proof of
-              // that.
-              [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
-            },
-            port: PORT,
+  const standin = CONFIGURED_ENDPOINT
+    ? { endpoint: CONFIGURED_ENDPOINT }
+    : await startMinioStandin(
+        {
+          name: `drive-meter-standin-${process.pid}`,
+          environment: {
+            MINIO_ROOT_USER: ROOT_ACCESS_KEY,
+            MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
+            [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
+            [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
+            // The webhook target's own token: MinIO sends it as the whole
+            // Authorization header, which is exactly what this route cannot
+            // accept (it wants `Bearer <token>` in x-drive-event-token), so the
+            // delivery arrives refused and the receipts below are the proof of
+            // that.
+            [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
           },
-          t,
-        );
+          port: PORT,
+        },
+        t,
+      );
   if (standin === null) {
     t.diagnostic("no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT");
     return t.skip("no container engine for the S3 stand-in");
