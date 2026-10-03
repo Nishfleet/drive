@@ -8,7 +8,9 @@
 // so a swap that ran on one Worker instance is the row the next instance
 // sees. The storage-side revoke / swap is still the vendor's key API (#173);
 // until then a minted session expires on its own and the row here is what
-// makes the api's own storage API refuse a write immediately.
+// makes the api's own storage API refuse a write immediately. Drive#173 (2026-10-03)
+// measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
+// is the whole of the withdrawal there.
 
 import { BILLING_CONFIG } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
