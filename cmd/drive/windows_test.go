@@ -261,17 +261,37 @@ func TestWindowsLoginItemIsATaskNotAFile(t *testing.T) {
 }
 
 func TestMountedDirUsesTheDriveLetter(t *testing.T) {
-	// On a host without a Z: volume the letter is not mounted. This is the
-	// Windows branch of MountedDir, asked without a Windows machine.
-	on, err := MountedDir("windows", "Z:")
-	if err != nil {
-		t.Fatalf("MountedDir(windows, Z:) error: %v", err)
+	// The Windows mount point is a drive letter, and a stat must hit the volume
+	// root (`D:\\`), not the drive-relative `D:` — the latter resolves against
+	// the process's per-drive current directory and would answer for any volume
+	// that exists, not for a Drive mount specifically. That normalization now
+	// lives in windowsVolumeMounted/Root, so MountedDir and the root helper must
+	// answer identically for every spelling of the same letter.
+	for _, spell := range []string{"Z:", "Z:\\", "z:", "z:\\"} {
+		got, err := MountedDir("windows", spell)
+		if err != nil {
+			t.Fatalf("MountedDir(windows, %q) error: %v", spell, err)
+		}
+		if got != windowsVolumeMounted("Z:") {
+			t.Errorf("MountedDir(windows, %q) = %v, want %v (the volume-root normalization)", spell, got, windowsVolumeMounted("Z:"))
+		}
 	}
-	if on {
-		t.Skip("this host actually has a Z: volume")
+	if windowsVolumeRoot("Z:") != `Z:\` || windowsVolumeRoot("Z:\\") != `Z:\` {
+		t.Errorf("windowsVolumeRoot must normalize to the bare root Z:\\")
 	}
-	if on != windowsVolumeMounted("Z:") {
-		t.Error("MountedDir(windows) and windowsVolumeMounted disagree")
+}
+
+func TestWindowsMountedDriveLettersScansTheRange(t *testing.T) {
+	// The stale-mount scan must report a volume that os.Stat of its root sees,
+	// and never invent a free letter as if it were mounted. This only reads
+	// real volumes, so it lives on Windows.
+	if runtime.GOOS != "windows" {
+		t.Skip("windowsMountedDriveLetters reads real volumes")
+	}
+	for _, l := range windowsMountedDriveLetters() {
+		if !windowsVolumeMounted(l) {
+			t.Errorf("windowsMountedDriveLetters reported %s, but its root does not stat", l)
+		}
 	}
 }
 

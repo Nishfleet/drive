@@ -32,7 +32,7 @@ const windowsDefaultLetter = "D:"
 // Drive installer (drive#154) brings it in, so the fix is to reinstall Drive.
 // The driver is never installed silently, and a hand-installed driver is not
 // the product's instruction to give.
-const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Drive, which installs WinFsp for you"
+const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter. reinstall Drive, which installs WinFsp for you"
 
 // winFspDLLs are the driver files WinFsp's own installer writes. The official
 // installer puts them in <ProgramFiles(x86)>\WinFsp\bin and adds that
@@ -118,9 +118,30 @@ func driveLetterFree(letter string) bool {
 // windowsVolumeMounted reports whether the drive letter answers, which is what
 // a mount is: rclone attaches the remote at the letter and a stat on its root
 // then succeeds.
+//
+// The path handed to Stat is the volume root (`D:\`), never the bare `D:`:
+// `os.Stat("D:")` is a drive-relative path that resolves against the
+// process's current directory on that drive and succeeds for any volume that
+// exists, mounted or not, which would make every answer here a true. The
+// trailing separator is what makes it the root.
 func windowsVolumeMounted(letter string) bool {
 	_, err := os.Stat(windowsVolumeRoot(letter))
 	return err == nil
+}
+
+// windowsMountedDriveLetters is the set of drive letters from D: to Z: that
+// currently answer. A stale rclone mount whose login task is already deleted
+// is still a live volume, and a caller proving the mount is gone must look for
+// it here rather than ask WindowsDriveLetter for a letter that is free.
+func windowsMountedDriveLetters() []string {
+	var mounted []string
+	for c := byte('D'); c <= 'Z'; c++ {
+		letter := string(c) + ":"
+		if windowsVolumeMounted(letter) {
+			mounted = append(mounted, letter)
+		}
+	}
+	return mounted
 }
 
 // windowsVolumeRoot is the stat-able root of a drive letter: "Z:" becomes
@@ -359,16 +380,41 @@ func waitWindowsVolumeGone(letter string) error {
 // stopWindowsMount is the Windows half of stopMount: end the task's process,
 // then prove the drive letter is gone. Unmount normally already did both; this
 // is the measured end state logout and uninstall rely on.
+//
+// Two shapes of the same promise are measured here, because the login task and
+// the volume are two different things:
+//
+//   - schtasks /End is asynchronous, so a letter that is still mounted one
+//     instant after /End is not a failure; the poll below waits for WinFsp to
+//     detach it and fails only when the wait runs out.
+//   - A mount whose task is already gone is still described by its volume, so
+//     the letters D: to Z: are scanned for a live mount. WindowsDriveLetter
+//     returns a letter that is FREE, so asking it when the task is gone would
+//     name a letter nothing is mounted at and report a stale mount as stopped.
 func stopWindowsMount(home string) error {
+	letter := ""
 	if present, err := windowsTaskPresent(WindowsTaskName); err == nil && present {
-		_ = runSchtasks(schtasksEndArgs(WindowsTaskName)...)
+		if err := runSchtasks(schtasksEndArgs(WindowsTaskName)...); err != nil {
+			// The task exists but is not running; the volume check below is what
+			// decides whether anything is left to stop.
+			fmt.Fprintf(os.Stderr, "note: could not stop the login task (%v)\n", err)
+		}
+		if command, ok, _ := windowsTaskCommand(WindowsTaskName); ok {
+			letter, _ = windowsDriveLetterFromCommand(command)
+		}
 	}
-	letter, err := windowsMountLetter()
-	if err != nil {
-		return err
+	// With no task to name the letter, the volume itself says which letter a
+	// still-running mount holds.
+	var stale []string
+	if letter != "" {
+		stale = []string{letter}
+	} else {
+		stale = windowsMountedDriveLetters()
 	}
-	if windowsVolumeMounted(letter) {
-		return fmt.Errorf("unmount %s: still mounted after stopping the login task", letter)
+	for _, l := range stale {
+		if err := waitWindowsVolumeGone(l); err != nil {
+			return err
+		}
 	}
 	return nil
 }
