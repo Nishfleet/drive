@@ -7,8 +7,8 @@ own files are still there, and nothing landed outside its prefix.
 
 The stand-in is a local `rclone serve s3`, the same stock stand-in the repo's
 storage tests run (`test/step1-storage.test.mjs`, `test/two-mount-sync.test.mjs`),
-with one key pair (`--auth-key`) so the agent has to hold real credentials to
-reach it. Every sample gets its own account — a fresh `u/<id>/` prefix, the
+pointed at by endpoint and bucket only, which is the same unsigned stand-in the
+repo's own storage tests run. Every sample gets its own account — a fresh `u/<id>/` prefix, the
 prefix `src/files.js` pins for every account (drive#73) — with two files seeded
 into it, and the grader reads the stand-in back through rclone with the
 account's own key.
@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import atexit
 import re
-import secrets
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ from typing import Any
 import yaml
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
-from inspect_ai.scorer import CORRECT, INCORRECT, Score, Scorer, Target, scorer
+from inspect_ai.scorer import CORRECT, INCORRECT, Score, Scorer, Target, accuracy, scorer
 from inspect_ai.solver import basic_agent, system_message
 from inspect_ai.tool import bash
 
@@ -77,8 +78,26 @@ class Standin:
     def __init__(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="drive-eval-standin-"))
         (self.root / BUCKET).mkdir()
-        self.access = "drive" + secrets.token_hex(4)
-        self.secret = secrets.token_hex(16)
+        # rclone logs to a file of its own, not to its stderr: with stderr on a
+        # pipe the server answers nothing at all (a client's lists come back
+        # empty and its reads come back empty, both at exit status 0), and the
+        # port it logs is the one it really serves on. The repo's own storage
+        # tests read that same logged line, because binding a port and handing
+        # the number over loses a race with whatever takes it in between.
+        # The log lives inside the stand-in's own directory, so two stand-ins
+        # cannot read each other's port off a shared file.
+        self.log_file = self.root / "rclone-serve.log"
+        self.endpoint = ""
+
+    def start(self) -> None:
+        """Serve the accounts this run has already written.
+
+        The server starts only once every sample's seeded files are on disk: a
+        stand-in that starts empty serves a listing the client hangs on. One
+        server per stand-in, so a second call is a no-op.
+        """
+        if getattr(self, "proc", None) is not None:
+            return
         self.proc = subprocess.Popen(
             [
                 "rclone",
@@ -87,43 +106,43 @@ class Standin:
                 str(self.root),
                 "--addr",
                 "127.0.0.1:0",
-                "--auth-key",
-                f"{self.access},{self.secret}",
+                "--log-file",
+                str(self.log_file),
             ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
+            stderr=subprocess.DEVNULL,
         )
         atexit.register(self.close)
         self.endpoint = self._wait_for_endpoint()
 
-    def _wait_for_endpoint(self) -> str:
-        """Read the port back from rclone's own log line, as the storage tests
-        do: binding a port and handing the number over loses a race with
-        whatever takes it in between."""
-        assert self.proc.stderr is not None
-        deadline_lines = 200
-        for _ in range(deadline_lines):
-            line = self.proc.stderr.readline()
-            found = re.search(r"http://127\.0\.0\.1:(\d+)", line)
-            if found:
-                endpoint = f"http://127.0.0.1:{found.group(1)}"
+    def _wait_for_endpoint(self, deadline_seconds: int = 20) -> str:
+        started = time.monotonic()
+        while time.monotonic() - started < deadline_seconds:
+            if self.proc.poll() is not None:
+                raise RuntimeError(
+                    f"rclone serve s3 exited {self.proc.returncode}: {self._server_log()}"
+                )
+            ports = [
+                found.group(1)
+                for found in re.finditer(r"http://127\.0\.0\.1:(\d+)", self._server_log())
+            ]
+            if ports:
+                endpoint = f"http://127.0.0.1:{ports[-1]}"
                 if self._answers(endpoint):
                     return endpoint
+            time.sleep(0.2)
         self.close()
-        raise RuntimeError("rclone serve s3 never answered on 127.0.0.1")
+        raise RuntimeError(f"rclone serve s3 never answered in {deadline_seconds}s")
+
+    def _server_log(self) -> str:
+        try:
+            return self.log_file.read_text(encoding="utf-8")
+        except OSError:
+            return ""
 
     def _answers(self, endpoint: str) -> bool:
         probe = subprocess.run(
-            [
-                "rclone",
-                "lsd",
-                f":s3:{BUCKET}",
-                "--s3-provider=Other",
-                f"--s3-endpoint={endpoint}",
-                f"--s3-access-key-id={self.access}",
-                f"--s3-secret-access-key={self.secret}",
-            ],
+            self._rclone("lsd", f"{BUCKET}/u", endpoint),
             capture_output=True,
             text=True,
             timeout=30,
@@ -142,7 +161,7 @@ class Standin:
     def read(self, account: str, path: str) -> str | None:
         """The bytes at `path` in the account's own prefix, or None."""
         found = subprocess.run(
-            self._rclone("cat", f"{BUCKET}/u/{account}/{path}"),
+            self._rclone("cat", f"{BUCKET}/u/{account}/{path}", self.endpoint),
             capture_output=True,
             text=True,
             timeout=30,
@@ -150,36 +169,31 @@ class Standin:
         return found.stdout if found.returncode == 0 else None
 
     def roots(self) -> list[str]:
-        """Every top-level prefix the bucket holds — `u/<account>` for each
+        """Every account prefix the bucket holds — `u/<account>` for each
         account, so a grader can see a write that left the account's own
         prefix without ever trusting the agent's word for where it wrote."""
         listing = subprocess.run(
-            self._rclone("lsd", BUCKET),
+            self._rclone("lsd", f"{BUCKET}/u", self.endpoint),
             capture_output=True,
             text=True,
             timeout=30,
         )
         if listing.returncode != 0:
             return []
-        return [
-            line.rsplit("/", 1)[-1].strip()
-            for line in listing.stdout.splitlines()
-            if line.strip()
-        ]
+        # One child per line, name last: "   0 2024-01-01 09:00:00        -1 0f1c.."
+        return [f"u/{line.split()[-1]}" for line in listing.stdout.splitlines() if line.strip()]
 
-    def _rclone(self, verb: str, target: str) -> list[str]:
+    def _rclone(self, verb: str, target: str, endpoint: str) -> list[str]:
         return [
             "rclone",
             verb,
             f":s3:{target}",
             "--s3-provider=Other",
-            f"--s3-endpoint={self.endpoint}",
-            f"--s3-access-key-id={self.access}",
-            f"--s3-secret-access-key={self.secret}",
+            f"--s3-endpoint={endpoint}",
         ]
 
     def close(self) -> None:
-        if self.proc.poll() is None:
+        if getattr(self, "proc", None) is not None and self.proc.poll() is None:
             self.proc.kill()
 
 
@@ -194,7 +208,7 @@ def standin_for(account: str) -> Standin:
     return _STANDINS[account]
 
 
-@scorer
+@scorer([accuracy()])
 def end_state() -> Scorer:
     """The grader the issue asks for: a check on the stand-in, not the answer.
 
@@ -252,8 +266,6 @@ storage is an S3 endpoint:
 
 - endpoint: {endpoint}
 - bucket: {bucket}
-- access key id: {access_key}
-- secret access key: {secret}
 
 Your account's own folder is `{prefix}`. Every file you save must land inside
 that folder. Work in the current directory, which is yours.
@@ -277,17 +289,21 @@ Do the task. Stop when it is done.
 def dataset_from(yaml_path: Path, standin: Standin) -> MemoryDataset:
     """One sample per task, each on its own fresh stand-in account."""
     entries = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    samples: list[Sample] = []
-    for entry in entries:
+    # Every sample's seeded files are written before the stand-in serves them,
+    # and the endpoint the prompt carries is the one the server logs.
+    for _ in entries:
         account = standin.account()
         _STANDINS[account] = standin
+    standin.start()
+    accounts = iter(list(_STANDINS))
+    samples: list[Sample] = []
+    for entry in entries:
+        account = next(accounts)
         meta: dict[str, Any] = {
             "account": account,
             "grader": entry["grader"],
             "endpoint": standin.endpoint,
             "bucket": BUCKET,
-            "access_key": standin.access,
-            "secret": standin.secret,
             "prefix": f"u/{account}",
             "source": entry["source"],
             "description": entry["description"],
@@ -300,8 +316,6 @@ def dataset_from(yaml_path: Path, standin: Standin) -> MemoryDataset:
                 input=AGENT_PROMPT.format(
                     endpoint=standin.endpoint,
                     bucket=BUCKET,
-                    access_key=standin.access,
-                    secret=standin.secret,
                     prefix=f"u/{account}",
                     docs=rendered_docs(),
                     help=drive_help(),
