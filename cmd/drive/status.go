@@ -61,12 +61,17 @@ func runStatus(args []string) error {
 	fmt.Printf("drive: %s\n", state)
 	mountDir := DefaultMountDir(home)
 	if goos == "windows" {
-		letter, err := windowsMountLetter()
-		if err != nil {
-			return err
+		// The mount point is a drive letter. MountedDir is asked with the volume
+		// root (windowsVolumeRoot: "D:\\") — the bare "D:" is drive-relative and
+		// reads the per-drive current directory, which would lie about the queue.
+		if !on {
+			fmt.Printf("drive letter: not mounted\n")
+		} else if letter, err := windowsMountLetter(); err == nil {
+			mountDir = windowsVolumeRoot(letter)
+			fmt.Printf("drive letter: %s\n", letter)
+		} else {
+			fmt.Printf("drive letter: unmounted (a new mount would use %s)\n", windowsDefaultLetter)
 		}
-		mountDir = letter
-		fmt.Printf("drive letter: %s\n", letter)
 	} else {
 		fmt.Printf("mount dir: %s\n", mountDir)
 	}
@@ -93,7 +98,7 @@ func runStatus(args []string) error {
 	}
 	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
 		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
+	} else if on && n > 0 {
 		fmt.Printf("entries: %d\n", n)
 	}
 	// The upload queue is read from the cache directory the mount was started
