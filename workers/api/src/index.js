@@ -375,9 +375,13 @@ export async function dispatch(request, ctx, table = routes) {
 // the same methods, so no route changes.
 /** @type {ReturnType<typeof createMemoryStore>|undefined} */
 let keyStore;
-/** The database the cached key store was built for, so a later request with a
- * bound DB does not keep a memory sign-in store from the first request. */
-/** @type {D1Database|undefined} */
+/**
+ * The database the cached key store was built for, so a later request with a
+ * bound DB does not keep a memory sign-in store from the first request.
+ * @type {ApiEnv["DRIVE_DB"]|undefined}
+ */
+let keyStoreDb;
+
 /**
  * The reseller API base iDrive e2 publishes for access keys
  * (https://www.idrive.com/s3-storage-e2/reseller-api, drive#371). A deployment
@@ -385,13 +389,6 @@ let keyStore;
  * the S3 endpoint.
  */
 const IDRIVE_RESELLER_API = "https://api.idrivee2.com/api/reseller/v1";
-
-/**
- * The database the current store was built on, so an isolate that is re-used
- * for a different binding rebuilds it rather than answering from the old one.
- * @type {ApiEnv["DRIVE_DB"]|undefined}
- */
-let keyStoreDb;
 
 /**
  * The storage configuration a deployment carries, or null when it carries
