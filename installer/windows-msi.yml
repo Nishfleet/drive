@@ -72,15 +72,16 @@ jobs:
         shell: pwsh
         run: |
           dotnet tool install --global wix --version 4.0.1
-          dotnet tool install --global wix.taskscheduler --version 4.0.1 2>$null
           Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
 
-      # The Util extension is what the Environment (PATH) element and
-      # WixQuietExec64 live in; it is a NuGet package the extension cache holds.
+      # The Util extension is what the Environment (PATH) element and the
+      # WixQuietExec64 custom action live in. wix extension add puts it in the
+      # extension cache that `wix build` reads, which is how -ext finds it.
       - name: Restore the WiX Util extension
         shell: pwsh
         run: |
-          wix extension add WixToolset.Util.wixext/4.0.1
+          wix extension add -g WixToolset.Util.wixext/4.0.1
+          wix extension list
 
       - name: Build drive.exe for Windows
         shell: pwsh
