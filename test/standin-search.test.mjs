@@ -288,9 +288,15 @@ async function seedDrive(dir, bucket) {
  */
 async function seedRealDrive(store) {
   const before = await store.list("/");
-  if (before.length > 0) {
+  // Folders are not files here: an S3 prefix outlives the object that wrote it,
+  // so a drive this proof already ran on lists its own 20 empty folders again
+  // and would refuse itself. What must be empty is the objects under the
+  // account's prefix, because the count the test asserts (`built.indexed ===
+  // FILES`) is the proof's own.
+  const files = before.filter((entry) => entry.kind !== "folder");
+  if (files.length > 0) {
     throw new Error(
-      `the real bucket already holds ${before.length} folder(s) under this account's prefix; empty it before running the proof`,
+      `the real bucket already holds ${files.length} file(s) under this account's prefix; empty it before running the proof`,
     );
   }
   for (let f = 0; f < FOLDERS; f++) {
