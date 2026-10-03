@@ -64,9 +64,44 @@ const BEACON_SRC = "https://static.cloudflareinsights.com/beacon.min.js";
 // output from an earlier build. A page that already carries one has it removed
 // before the new tag goes in, so a re-build with a different token replaces the
 // old token instead of sending the site's page views to a token nobody reads
-// any more.
+// any more. The host is Cloudflare's static insights host and the match is on
+// the script under it, not on one file name: Cloudflare has changed the file
+// name of the beacon, and a page that still carries the old one must not end up
+// with two beacons.
 const EXISTING_BEACON =
-  /[ \t]*<script\b[^>]*\bsrc=["']https:\/\/static\.cloudflareinsights\.com\/beacon\.min\.js["'][^>]*>\s*<\/script>\r?\n?/g;
+  /[ \t]*<script\b[^>]*\bsrc=["'][^"']*static\.cloudflareinsights\.com\/[^"']*["'][^>]*>\s*<\/script>\r?\n?/g;
+
+/**
+ * Every Cloudflare beacon tag a document carries, whichever way it is quoted or
+ * wrapped, counting the whole element so a reader counts what a browser loads.
+ * One definition, used by the build's self-check below and by
+ * test/web-analytics.test.mjs, so the two cannot disagree about what a beacon is.
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function beaconTagsIn(html) {
+  return html.match(/<script\b[^>]*static\.cloudflareinsights\.com\/[^>]*><\/script>/g) ?? [];
+}
+
+/**
+ * A page that carries exactly one beacon tag, or an error naming the page. This
+ * is the build's own gate on the injection: it runs on the bytes the build wrote
+ * to the output directory, so a page that ends up with two beacons (a strip that
+ * missed an old one) or with none fails the build instead of shipping a page that
+ * measures nothing, or measures twice.
+ * @param {string} html the built page's HTML
+ * @param {string} page the page's file name, for the error message
+ * @returns {string} the same HTML
+ */
+export function assertSingleBeacon(html, page) {
+  const count = beaconTagsIn(html).length;
+  if (count !== 1) {
+    throw new Error(
+      `${page} carries ${count} Cloudflare Web Analytics beacon tags after the build, want exactly 1. Fix the page or ${BEACON_TOKEN_SETTING} and build again.`,
+    );
+  }
+  return html;
+}
 
 // The shape of the token the dashboard shows: 32 hex characters. A setting that
 // is set to anything else fails the build rather than shipping a beacon that

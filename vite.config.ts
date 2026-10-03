@@ -2,7 +2,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
-import { BEACON_PAGES, BEACON_TOKEN_SETTING, beaconToken, withBeacon } from "./src/analytics.js";
+import {
+  assertSingleBeacon,
+  BEACON_PAGES,
+  BEACON_TOKEN_SETTING,
+  beaconToken,
+  withBeacon,
+} from "./src/analytics.js";
 import { FIRST_RUN_STEPS, INSTALL_COMMAND } from "./src/status.js";
 import apiWorker from "./workers/api/cloudflare.config.ts";
 
@@ -87,6 +93,11 @@ function webAnalyticsBeacon(): Plugin {
       return true;
     },
     writeBundle() {
+      // An empty directory would make every readFileSync below throw ENOENT with a
+      // path that says nothing about why it is wrong, so it is named here.
+      if (assetsDir === "") {
+        throw new Error("drive-web-analytics-beacon found no client build output directory");
+      }
       // Read once, before the loop: a mis-set token fails the build before any
       // file is touched, so a failed build leaves no half-instrumented output.
       const token = beaconToken(process.env[BEACON_TOKEN_SETTING]);
@@ -96,6 +107,9 @@ function webAnalyticsBeacon(): Plugin {
         const html = readFileSync(file, "utf8");
         const withTag = withBeacon(html, token);
         if (withTag !== html) writeFileSync(file, withTag);
+        // The gate on the bytes as written, not on the bytes as computed: the
+        // file on disk is what ships, so the file on disk is what is checked.
+        assertSingleBeacon(readFileSync(file, "utf8"), page);
       }
     },
   };

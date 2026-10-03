@@ -6,22 +6,25 @@
 // the site's own pages, not as a snippet: every case walks the six pages
 // drive#246 names, in the form they ship from.
 //
-// It also pins the three things that would make the beacon quietly wrong. The
+// It also pins the four things that would make the beacon quietly wrong. The
 // page list, so a page that moves or is added cannot lose its beacon without
 // this failing. The Lighthouse third-party budget, which the beacon is the
 // reason for (lighthouserc.json has no comment syntax, so the reason is
-// recorded here and in src/analytics.js and asserted below). And the wiring in
+// recorded here and in src/analytics.js and asserted below). The wiring in
 // vite.config.ts, so a build that stopped calling withBeacon() fails here
 // rather than shipping six pages with no measurement while the dashboard reads
-// as configured.
+// as configured. And the count of beacon tags, from the same reader the build's
+// own self-check uses, so the two agree on what a beacon is.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  assertSingleBeacon,
   BEACON_PAGES,
   BEACON_TOKEN_SETTING,
   beaconTag,
+  beaconTagsIn,
   beaconToken,
   withBeacon,
 } from "../src/analytics.js";
@@ -35,22 +38,21 @@ const OTHER_TOKEN = "fedcba9876543210fedcba9876543210";
 /**
  * The six pages as they ship, read from the file each ships from: the five
  * public/ assets and get-started.html, the built Vite entry at the repo root
- * (drive#70, which src/seo.js records as the `root` page).
+ * (drive#70, which src/seo.js records as the `root` page). Each file must
+ * exist: the build walks this list, so a page named here and missing on disk is
+ * a build failure, not a page quietly left without a beacon.
  * @returns {Array<[string, string]>}
  */
 function shippedPages() {
   return BEACON_PAGES.map((page) => {
     const fromRoot = page === "get-started.html";
-    return /** @type {[string, string]} */ ([page, read(fromRoot ? page : `public/${page}`)]);
+    const url = fromRoot
+      ? new URL(`../${page}`, import.meta.url)
+      : new URL(`../public/${page}`, import.meta.url);
+    assert.ok(existsSync(url), `${page} must exist where the build reads it from`);
+    return /** @type {[string, string]} */ ([page, readFileSync(url, "utf8")]);
   });
 }
-
-// Every beacon tag in a document, whichever way it is quoted or wrapped, so a
-// count of 0 or 2 is what a reader would see rather than what one spelling of
-// the tag matches. The whole element, opening tag through `</script>`, so the
-// strip below can put the page back the way it shipped.
-/** @param {string} html */
-const beaconTagsIn = (html) => html.match(/<script\b[^>]*beacon\.min\.js[^>]*><\/script>/g) ?? [];
 
 test("the six pages the issue names are the six the list holds", () => {
   assert.deepEqual(
@@ -145,10 +147,31 @@ test("the build reads the token from the setting the issue names", () => {
 
 test("the build is wired to the beacon, so a dropped plugin fails here", () => {
   const config = read("vite.config.ts");
+  assert.match(config, /assertSingleBeacon\(/, "the build gates what it wrote, not just the input");
   assert.match(config, /from "\.\/src\/analytics\.js"/);
   assert.match(config, /webAnalyticsBeacon\(\)/, "vite.config.ts must register the beacon plugin");
   assert.match(config, /process\.env\[BEACON_TOKEN_SETTING\]/, "the token comes from the setting");
   assert.match(config, /BEACON_PAGES/, "the plugin walks the page list, not a copy of it");
+});
+
+test("the build's self-check passes on one beacon and fails on zero or two", () => {
+  // assertSingleBeacon is the gate the build runs on its own output, so this file
+  // proves the gate catches what a page count alone does not: a page the walk
+  // wrote nothing to (0), and a page that ended up with the paste test's shape
+  // and a new tag (2). Both are failures in the shipped page, not in the code.
+  const [name, html] = shippedPages()[0];
+  const built = withBeacon(html, beaconToken(TOKEN));
+  assert.equal(assertSingleBeacon(built, name), built, "one beacon passes the build's gate");
+  assert.throws(
+    () => assertSingleBeacon(html, name),
+    new RegExp(name),
+    "no beacon fails the build",
+  );
+  assert.throws(
+    () => assertSingleBeacon(`${built}\n${beaconTag(built === html ? TOKEN : OTHER_TOKEN)}`, name),
+    new RegExp(`${name} carries 2`),
+    "two beacons fail the build, so a paste the strip missed cannot ship",
+  );
 });
 
 test("the Lighthouse budget leaves room for the beacon and nothing more", () => {
