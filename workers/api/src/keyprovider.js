@@ -127,6 +127,31 @@ export function mintTtlSeconds(kind, providerExpiresIn) {
   return Math.min(providerExpiresIn, ceiling);
 }
 
+/**
+ * The seconds a renewal may add to a row, and the ceiling on every renewal
+ * that row will ever get (drive issue #106).
+ *
+ * A provider that names a session lifetime of its own keeps it: a credential
+ * whose session dies in 15 minutes must not be renewed into an hour, because
+ * the hour would be a claim the provider does not stand behind. So the row
+ * carries the lifetime the mint actually gave it — the kind's hour as a
+ * ceiling, the provider's own session when that is shorter — and every
+ * renewal is measured from that. A row written before the column existed
+ * carries nothing, and the kind's hour is then the ceiling: an old row is not
+ * handed a longer life than a new one.
+ *
+ * @param {{kind?: string, ttlSeconds?: number|null}} device the row being renewed
+ * @param {number} ceiling the kind's own lifetime
+ * @returns {number}
+ */
+export function renewTtlSeconds(device, ceiling) {
+  const row = /** @type {{ttlSeconds?: number|null}} */ (device).ttlSeconds;
+  if (typeof row === "number" && Number.isFinite(row) && row > 0) {
+    return Math.min(row, ceiling);
+  }
+  return ceiling;
+}
+
 /** @typedef {"read_only"|"read_write"} TeamRole */
 
 /** @type {ReadonlyArray<TeamRole>} */

@@ -329,8 +329,20 @@ func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
 	if err := c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, &renewed); err != nil {
 		return RenewedKey{}, err
 	}
-	if renewed.KeyID == "" {
-		return RenewedKey{}, errors.New("the api Worker sent no key; run `drive init` again in a moment")
+	// The answer is checked against the question, because a 200 with the wrong
+	// body would otherwise be stored as this key's expiry: a body that names
+	// another key, a kind that is not a machine credential, or a row with no
+	// hour on it is refused here rather than written to disk. The Worker owns
+	// this row, so anything else about the answer is its own business, not
+	// something the CLI second-guesses.
+	if renewed.KeyID != keyID || renewed.Kind != "agent" {
+		return RenewedKey{}, errors.New("the api Worker answered about a different key; run `drive init` again in a moment")
+	}
+	if renewed.ExpiresAt == nil {
+		return RenewedKey{}, errors.New("the api Worker sent no expiry for the key; run `drive init` again in a moment")
+	}
+	if *renewed.ExpiresAt <= time.Now().Unix() {
+		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
 	}
 	return renewed, nil
 }

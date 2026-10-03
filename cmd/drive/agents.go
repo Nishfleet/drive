@@ -287,8 +287,10 @@ func mintToolKey(env Env, t Tool) error {
 	if err != nil {
 		// A renewal that fails is reported, not swallowed: the key on disk is
 		// the one the tool is using, and a tool about to be left with a key
-		// whose hour has run out is a thing a person has to be told about.
-		return fmt.Errorf("renew the %s key: %w", t.Name, err)
+		// whose hour has run out is a thing a person has to be told about. The
+		// words are the one table's, so this reads like every other failure
+		// the CLI prints.
+		return failDetail("key-renew-failed", err, t.Name)
 	}
 	// Only the window moves, so only the expiry is written back: the pair the
 	// tool holds is the one it had.

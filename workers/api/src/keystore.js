@@ -35,6 +35,7 @@ import {
   KEY_KINDS,
   keyTtlSeconds,
   mintTtlSeconds,
+  renewTtlSeconds,
   scopeFor,
   teamScopeFor,
 } from "./keyprovider.js";
@@ -153,6 +154,10 @@ export function createMemoryStore(options = {}) {
       capabilities: [...scope.capabilities],
       createdAt: nowSeconds(now()),
       expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
+      // The lifetime the mint actually gave, so every renewal of this row is
+      // measured from the same number and a provider session shorter than the
+      // hour cannot be renewed into an hour.
+      ttlSeconds: ttl,
       lastSeenAt: null,
       revokedAt: null,
     };
@@ -518,6 +523,11 @@ export function createMemoryStore(options = {}) {
  * @property {number|null} [expiresAt] the epoch second this credential stops
  *   working at, or null when the kind never expires (a person's own device
  *   key). Absent and null are the same claim.
+ * @property {number|null} [ttlSeconds] the lifetime the mint actually gave
+ *   this credential, which a provider session shorter than the kind's hour
+ *   decides. Absent or null means the row predates the column, and the kind's
+ *   own hour is then the ceiling. A renewal is measured from here, so a
+ *   provider's shorter session is never renewed past its own end.
  * @property {string[]|null} [cappedFrom] the capabilities the cap took, when it did
  */
 
@@ -537,9 +547,11 @@ export function createMemoryStore(options = {}) {
  *     cancelled agent cannot have its hour restarted by a request that
  *     arrived first.
  *
- * The window length comes from the row's own kind, so a renewal can never
- * hand out a longer life than the mint gave, and a row's capabilities are not
- * touched here at all — renewing is about time, never about powers.
+ * The window length is the lifetime this row's own mint gave it, with the
+ * kind's hour as the ceiling (keyprovider.js `renewTtlSeconds`), so a
+ * renewal can never hand out a longer life than the mint did — a provider
+ * session of 15 minutes is not renewed into an hour. A row's capabilities are
+ * not touched here at all — renewing is about time, never about powers.
  *
  * A renewal also never shortens the window the row already carries. Two
  * requests can read the same row and renew in either order, and a write that
@@ -552,11 +564,11 @@ export function createMemoryStore(options = {}) {
  * @returns {Device} the row with its expiry moved to `at + ttl`
  */
 export function renewKeyWindow(device, at) {
-  const ttl = keyTtlSeconds(device.kind);
-  if (ttl === null || device.revokedAt !== null) {
+  const ceiling = keyTtlSeconds(device.kind);
+  if (ceiling === null || device.revokedAt !== null) {
     return device;
   }
-  const next = at + ttl;
+  const next = at + renewTtlSeconds(device, ceiling);
   const held = device.expiresAt;
   const expiresAt = held === undefined || held === null ? next : Math.max(next, held);
   return { ...device, expiresAt };

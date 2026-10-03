@@ -81,6 +81,10 @@ function deviceFromRow(row) {
     // written before drive#106 is null too, so an existing row keeps the life
     // it had rather than being handed an expiry it was never minted with.
     expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),
+    // Null is a row written before drive#106's second column existed, so the
+    // kind's hour is the ceiling on every renewal of it.
+    ttlSeconds:
+      r.ttl_seconds === null || r.ttl_seconds === undefined ? null : Number(r.ttl_seconds),
     lastSeenAt:
       r.last_seen_at === null || r.last_seen_at === undefined ? null : Number(r.last_seen_at),
     revokedAt: r.revoked_at === null || r.revoked_at === undefined ? null : Number(r.revoked_at),
@@ -115,6 +119,43 @@ function digestsEqual(left, right) {
  * @param {D1Database} db
  * @param {{now?: () => number, keyProvider?: {mint: (scope: KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
  */
+/**
+ * Move one row's window forward: the later of the expiry this call computed and
+ * the expiry the row already holds.
+ *
+ * This is the one statement that renews an hour, and the comparison is in the
+ * SQL, not only in the JavaScript, because the JavaScript can only compare
+ * against the row *this call read*. Two requests can read the same row and
+ * write in either order, so a request that read first and writes second would
+ * otherwise pull a restarted hour back to the value it read — the row must
+ * keep the later expiry for the bound to hold under a race, and this is where
+ * that is decided. `tests/integration/agent-key-ttl-d1.test.mjs` runs this
+ * exact statement with a stale value to prove it.
+ *
+ * @param {import("@cloudflare/workers-types").D1Database} db
+ * @param {{id: string}} device
+ * @param {number|null} expiresAt the window this call computed, or null for a
+ *   kind that never expires (its row keeps the null it has)
+ * @param {number} lastSeenAt
+ * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
+ *   caller proves a write landed
+ */
+export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
+  return run(
+    db,
+    `UPDATE devices SET last_seen_at = ?1,
+       expires_at = CASE
+         WHEN ?2 IS NULL THEN devices.expires_at
+         WHEN devices.expires_at IS NULL OR devices.expires_at < ?2 THEN ?2
+         ELSE devices.expires_at
+       END
+      WHERE id = ?3 AND revoked_at IS NULL`,
+    lastSeenAt,
+    expiresAt,
+    device.id,
+  );
+}
+
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
@@ -131,8 +172,8 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `INSERT INTO devices (
          id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
-         prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
        ON CONFLICT(id) DO UPDATE SET
          account_id = excluded.account_id,
          name = excluded.name,
@@ -144,7 +185,8 @@ export function createD1DeviceStore(db, options = {}) {
          capped_from = excluded.capped_from,
          last_seen_at = excluded.last_seen_at,
          revoked_at = excluded.revoked_at,
-         expires_at = excluded.expires_at`,
+         expires_at = excluded.expires_at,
+         ttl_seconds = excluded.ttl_seconds`,
       device.id,
       device.accountId,
       device.name,
@@ -160,6 +202,11 @@ export function createD1DeviceStore(db, options = {}) {
       // Null is written as null, not as 0: a key that never expires is a
       // different claim from one that expired at the epoch.
       device.expiresAt ?? null,
+      // The lifetime the mint gave, or null on a row written before the column
+      // existed. Null there means "the kind's own hour is the ceiling", which is
+      // what an old row is held to: it is never handed a longer life than a new
+      // one.
+      device.ttlSeconds ?? null,
     );
   }
 
@@ -303,22 +350,13 @@ export function createD1DeviceStore(db, options = {}) {
         return null;
       }
       // The renewal is written through the case, so a row whose kind never
-      // expires (null) keeps its null rather than being handed one. The window
-      // itself comes from the one renewal rule (keystore.js
-      // `renewKeyWindow`), which never shortens the window the row already
-      // carries, so two requests renewing in either order leave the later
-      // hour on the row. The `revoked_at IS NULL` guard repeats the read
+      // expires (null) keeps its null rather than being handed one, and the
+      // row keeps the later of the two expiries, so a request that read the
+      // row first and writes second cannot pull the hour back to the value it
+      // read (`renewKeyRow`). The `revoked_at IS NULL` guard repeats the read
       // above: a row revoked between the two statements is not renewed by
       // this one.
-      await run(
-        db,
-        `UPDATE devices SET last_seen_at = ?1,
-           expires_at = CASE WHEN ?2 IS NULL THEN devices.expires_at ELSE ?2 END
-          WHERE id = ?3 AND revoked_at IS NULL`,
-        seen,
-        renewed.expiresAt ?? null,
-        device.id,
-      );
+      await renewKeyRow(db, device, renewed.expiresAt ?? null, seen);
       return { ...device, lastSeenAt: seen, expiresAt: renewed.expiresAt ?? null };
     },
 
@@ -380,15 +418,10 @@ export function createD1DeviceStore(db, options = {}) {
       // `revoked_at IS NULL` repeats the read above, and the row count is what
       // proves it landed: a key revoked between the two statements is not
       // renewed by this one, so the answer says revoked rather than renewed.
-      const changed = await run(
-        db,
-        `UPDATE devices SET last_seen_at = ?1,
-           expires_at = CASE WHEN ?2 IS NULL THEN devices.expires_at ELSE ?2 END
-          WHERE id = ?3 AND revoked_at IS NULL`,
-        at,
-        renewed.expiresAt ?? null,
-        device.id,
-      );
+      // The row keeps the later of the two expiries, the same rule
+      // `authenticate` writes, so a slow request cannot pull a restarted hour
+      // back to the value it read before the restart.
+      const changed = await renewKeyRow(db, device, renewed.expiresAt ?? null, at);
       if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
         return { error: "revoked" };
       }

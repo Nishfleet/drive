@@ -430,6 +430,13 @@ test("the renewal rule: a live row's hour restarts, a revoked row's does not, a 
     renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
     at + AGENT_KEY_TTL_SECONDS,
   );
+  // The provider's own session is the row's lifetime, so a renewal adds that
+  // and not the hour: a 15-minute session must not be renewed into 60 minutes.
+  assert.equal(renewKeyWindow({ ...agent, ttlSeconds: 900 }, at).expiresAt, at + 900);
+  // The mint writes the lifetime it gave, so what the mint and the renewal
+  // agree on is the number on the row.
+  assert.equal(renewKeyWindow(agent, at).ttlSeconds, undefined);
+  assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS);
   assert.equal(renewKeyWindow({ ...agent, kind: "device", expiresAt: null }, at).expiresAt, null);
 });
 

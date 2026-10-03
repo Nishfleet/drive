@@ -7,6 +7,7 @@ import {
   KEY_TTL_SECONDS,
   keyTtlSeconds,
   mintTtlSeconds,
+  renewTtlSeconds,
   scopeFor,
 } from "../src/keyprovider.js";
 
@@ -188,5 +189,30 @@ test("every machine kind is capped at the hour, so no config widens it", () => {
   for (const kind of KEY_KINDS.filter((k) => k !== "device")) {
     assert.equal(mintTtlSeconds(kind, 43200), 3600, `${kind} is capped at the hour`);
     assert.equal(mintTtlSeconds(kind, 60), 60, `${kind} may still be shorter`);
+  }
+});
+
+test("a renewal never outlasts the lifetime the mint gave the row", () => {
+  // A provider session of 15 minutes is renewed by 15 minutes, not by the
+  // hour: the renewal must not claim a life the provider does not stand behind.
+  assert.equal(renewTtlSeconds({ ttlSeconds: 900 }, AGENT_KEY_TTL_SECONDS), 900);
+  // The kind's hour is the ceiling, so a row that somehow carries a longer
+  // lifetime is still renewed by the hour and no more.
+  assert.equal(renewTtlSeconds({ ttlSeconds: 43200 }, AGENT_KEY_TTL_SECONDS), 3600);
+  // A row written before the column existed carries nothing, and the hour is
+  // then the ceiling: an old row is never handed a longer life than a new one.
+  assert.equal(renewTtlSeconds({}, AGENT_KEY_TTL_SECONDS), 3600);
+  assert.equal(renewTtlSeconds({ ttlSeconds: null }, AGENT_KEY_TTL_SECONDS), 3600);
+  assert.equal(renewTtlSeconds({ ttlSeconds: 0 }, AGENT_KEY_TTL_SECONDS), 3600);
+  assert.equal(renewTtlSeconds({ ttlSeconds: Number.NaN }, AGENT_KEY_TTL_SECONDS), 3600);
+  // The mint and the renewal agree, which is the claim that matters: what the
+  // row was minted with is exactly what a renewal adds.
+  for (const provider of [null, 60, 900, 3600, 43200]) {
+    const minted = mintTtlSeconds("agent", provider);
+    assert.equal(
+      renewTtlSeconds({ ttlSeconds: minted }, AGENT_KEY_TTL_SECONDS),
+      minted,
+      `provider session ${String(provider)}: the renewal matches the mint`,
+    );
   }
 });

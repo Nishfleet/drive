@@ -31,6 +31,9 @@ type fakeAPI struct {
 	lastPath     string
 	rejectMints  bool
 	rejectRenews bool
+	// renewBody, when set, is what the renew route answers instead of the
+	// row's own: the wrong-row answers a test needs to refuse.
+	renewBody map[string]any
 }
 
 func newFakeAPI() *fakeAPI {
@@ -123,6 +126,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		at := time.Now().Add(agentKeyTTL + renewAnswerOffset).Unix()
 		key.ExpiresAt = &at
 		f.keys[id] = key
+		if f.renewBody != nil {
+			writeTestJSON(w, 200, f.renewBody)
+			return
+		}
 		writeTestJSON(w, 200, map[string]any{
 			"keyId":        key.KeyID,
 			"name":         strings.TrimPrefix(id, "key_"),
@@ -725,7 +732,101 @@ func TestARenewalThatIsRefusedIsReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refused renewal must be reported, not swallowed")
 	}
-	if !strings.Contains(err.Error(), "renew the cursor key") {
-		t.Fatalf("the failure reads %q, and must name the tool and the renew", err)
+	// The words are the one message table's, so this reads like every other
+	// failure the CLI prints, and the next step is an exact command.
+	if !strings.Contains(err.Error(), "The cursor key's hour could not be restarted") {
+		t.Fatalf("the failure reads %q, and must name the tool and what failed", err)
+	}
+	if !strings.Contains(err.Error(), "drive init") {
+		t.Fatalf("the failure reads %q, and must end on the command that fixes it", err)
+	}
+	if err.Error() != failDetail("key-renew-failed", nil, "cursor").Error() {
+		t.Fatalf("the failure is %q, and must be the table's own entry", err)
+	}
+}
+
+// TestARenewalAnswerAboutAnotherKeyIsRefused: a 200 is not proof the Worker
+// answered the question it was asked. An answer naming another key, a kind that
+// is not a machine credential, or a row with no hour on it is refused, so a
+// broken answer can never be written to disk as this tool's expiry.
+func TestARenewalAnswerAboutAnotherKeyIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{
+			name: "another key",
+			body: map[string]any{"keyId": "key_other", "kind": "agent", "expiresAt": time.Now().Add(time.Hour).Unix()},
+			want: "a different key",
+		},
+		{
+			name: "a kind that is not a machine credential",
+			body: map[string]any{"keyId": "key_cursor", "kind": "device", "expiresAt": time.Now().Add(time.Hour).Unix()},
+			want: "a different key",
+		},
+		{
+			name: "no hour at all",
+			body: map[string]any{"keyId": "key_cursor", "kind": "agent", "expiresAt": nil},
+			want: "no expiry",
+		},
+		{
+			name: "an hour that has already run out",
+			body: map[string]any{"keyId": "key_cursor", "kind": "agent", "expiresAt": time.Now().Add(-time.Minute).Unix()},
+			want: "already passed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			api := newFakeAPI()
+			// A key on disk whose hour is nearly out, so the next command asks
+			// to renew it, and the Worker answers with the wrong row.
+			api.keys["key_cursor"] = MintedKey{KeyID: "key_cursor", AccessKeyID: "ak_cursor", Secret: "sk_cursor", Capabilities: []string{"list", "read", "write"}}
+			api.renewBody = tc.body
+			server := httptest.NewServer(api)
+			defer server.Close()
+			client, _ := NewAPIClient(server.URL, "dtok")
+			env := Env{Home: home, Minter: ToolMinter{Client: client, Home: home}}.withDefaults()
+			cursor, _ := toolByName("cursor")
+			if err := mintToolKey(env, cursor); err != nil {
+				t.Fatal(err)
+			}
+			almost := time.Now().Add(time.Minute).Unix()
+			key, err := agentKeyFor(home, "cursor")
+			if err != nil || key == nil {
+				t.Fatalf("cursor has no key: %v (%v)", key, err)
+			}
+			key.ExpiresAt = &almost
+			if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
+				t.Fatal(err)
+			}
+
+			// The client says why: the reason is what DRIVE_DEBUG shows, and it
+			// has to be the reason the check refused the answer for.
+			if _, err := client.RenewKey("key_cursor"); err == nil {
+				t.Fatal("a wrong renewal answer must be refused by the client")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("the failure reads %q, and must say %q", err, tc.want)
+			}
+
+			// And the tool that asked for it is told, in the one table's words,
+			// rather than storing the answer.
+			if err = mintToolKey(env, cursor); err == nil {
+				t.Fatal("a wrong renewal answer must be refused, not stored")
+			}
+			if !strings.Contains(err.Error(), "The cursor key's hour could not be restarted") {
+				t.Fatalf("the failure reads %q, and must be the table's own entry", err)
+			}
+			// And the key on disk is exactly what it was: a wrong answer never
+			// becomes somebody's stored expiry.
+			after, err := agentKeyFor(home, "cursor")
+			if err != nil || after == nil {
+				t.Fatalf("cursor's key is gone: %v (%v)", after, err)
+			}
+			if after.ExpiresAt == nil || *after.ExpiresAt != almost {
+				t.Fatalf("the stored expiry is %v, want the %d it had before", after.ExpiresAt, almost)
+			}
+		})
 	}
 }

@@ -26,7 +26,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sha256Hex } from "../../workers/api/src/db.js";
-import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createD1DeviceStore, renewKeyRow } from "../../workers/api/src/devices.js";
 import { AGENT_KEY_TTL_SECONDS } from "../../workers/api/src/keyprovider.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
@@ -335,4 +335,86 @@ test("a device key row written before the column stays expired-free and still wo
     /** @type {unknown} */ (await storeOver(db, clock).listKeys(account))
   );
   assert.equal(listed.find((key) => key.keyId === "key_old")?.expiresAt, null);
+});
+
+test("a request that read the row first cannot pull a restarted hour back, in the row itself", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_stale", name: "Stale write drive" };
+  const minted = await store.mintKey(account, { kind: "agent", name: "claude" });
+
+  // The slow request, holding what the row said when it read it: the mint's
+  // own expiry, computed before anything renewed the row.
+  const stale = /** @type {{id: string, expiresAt: number}} */ (minted);
+  assert.equal(stale.expiresAt, clock.now() / 1000 + AGENT_KEY_TTL_SECONDS);
+
+  // A later request restarts the hour and the row moves an hour further out.
+  clock.advance(600);
+  const restarted = await store.renewKey(account, minted.keyId);
+  assert.ok(!("error" in restarted), "the key is renewed");
+  const ahead = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at;
+  assert.ok(ahead > stale.expiresAt, "the restart moved the row out");
+
+  // The slow request now writes the value it read. Before this test the rule
+  // lived only in the JavaScript: each store compared against the row it had
+  // read, which cannot see the write that landed in between, so the stale
+  // write shortened the row it was supposed to keep. This is the statement the
+  // store itself renews with, run with the value that request read before the
+  // restart landed. The row keeps the later hour, so the window a restarted
+  // key was given survives the race.
+  await renewKeyRow(db, { id: minted.keyId }, stale.expiresAt, clock.now() / 1000);
+  const afterRace = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at;
+  assert.equal(afterRace, ahead, "the row still holds the later hour");
+});
+
+test("a provider session shorter than the hour is the lifetime every renewal measures from", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  // A provider whose own session is 15 minutes: the credential is valid for
+  // that long at the storage end, so the api cannot claim an hour for it and
+  // cannot renew it into one.
+  const store = createMemoryStore({
+    now: clock.now,
+    keyProvider: {
+      mint: async (scope) => ({
+        accessKeyId: `ak_${scope.prefix}`,
+        secret: "sk_provider",
+        sessionToken: null,
+        expiresIn: 900,
+      }),
+      revoke: async () => {},
+      swapToReadOnly: async () => {
+        throw new Error("not used here");
+      },
+    },
+    deviceStore: createD1DeviceStore(db, { now: clock.now }),
+  });
+  const account = { id: "acct_provider", name: "Provider drive" };
+  const minted = await store.mintKey(account, { kind: "agent", name: "claude" });
+  const now = clock.now() / 1000;
+  assert.equal(minted.expiresAt, now + 900, "the mint gives the provider's own session");
+  assert.equal(rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).ttl_seconds, 900);
+
+  // A second instance, so the row is read from D1 and the renewal is the one
+  // the deployment would make.
+  const second = storeOver(db, clock);
+  clock.advance(600);
+  const renewed = await second.renewKey(account, minted.keyId);
+  assert.ok(!("error" in renewed), "the key is renewed");
+  if ("error" in renewed) {
+    return;
+  }
+  assert.equal(
+    renewed.device.expiresAt,
+    now + 600 + 900,
+    "the renewal adds 15 minutes, not the hour",
+  );
+  // And the credential dies with the provider's session, not an hour later.
+  clock.advance(900);
+  assert.equal(
+    await second.authenticate(minted.accessKeyId, minted.secret),
+    null,
+    "the credential is refused when the provider's own session has run out",
+  );
 });
