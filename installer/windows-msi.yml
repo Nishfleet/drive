@@ -23,12 +23,13 @@
 #   5. `winget validate` passes on the manifest beside this file;
 #   6. a silent uninstall leaves no binary, no PATH entry and no task.
 #
-# Every msiexec call writes its own verbose log (/l*v) beside the sources, and
+# And every msiexec call writes its own verbose log (/l*v) beside the sources,
 # the job uploads those logs when a step fails. A silent install has no
 # window to read, so a red run's only other evidence is the exit code the step
 # throws ("the Drive MSI exited 1603"), which names no file, no custom action
 # and no condition. /l*v is the installer's own account of what it did, and it
 # is the only way the cause of a silent failure gets named (drive#369).
+#
 # The builds are UNSIGNED. A signing certificate costs money (Azure Trusted
 # Signing is about $10 a month), so nothing here publishes: this job runs on
 # pull requests and on main, and output artefacts stay inside the run. Signing

@@ -256,15 +256,49 @@ test("the job proves both routes: the MSI with msiexec /qn, and the bundle winge
   // is the exit code — and now the log itself (drive#369).
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',/);
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',/,
+    "the Drive MSI is installed silently with msiexec /qn, arguments as an array",
+  );
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',/);
-  asserts("installer/windows-msi.yml", /'\/l\*v'/);
-  asserts("installer/windows-msi.yml", /installer\\winfsp-install\.log/);
-  asserts("installer/windows-msi.yml", /installer\\install\.log/);
-  asserts("installer/windows-msi.yml", /installer\\uninstall\.log/);
-  asserts("installer/windows-msi.yml", /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList/);
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',/,
+    "and uninstalled the same silent way",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*'\/l\*v'/,
+    "every msiexec call writes its own verbose Windows Installer log (/l*v) (drive#369)",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\install\.log/,
+    "the Drive install names its log, install.log, and uploads it on failure",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\winfsp-install\.log/,
+    "the WinFsp install names its log",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',[^\n]*installer\\uninstall\.log/,
+    "and the uninstall names its log",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7\.0\.1/,
+    "the log is uploaded as an artifact, pinned to the pinned byte hash",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /if: failure\(\)/,
+    "and the upload is gated on failure, so a green run uploads nothing",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList/,
+    "the bundle route starts the stock drive-setup.exe",
+  );
   assert.ok(
     WORKFLOW.indexOf("the route winget install takes") > 0,
     "the bundle route must be labelled as the winget route, so the two are not confused",
