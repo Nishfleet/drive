@@ -11,8 +11,9 @@
 // cmd/drive/mount.go (VFSArgs plus the config and cache-dir paths), so the
 // agent reads and writes through the same mounted folder a person's apps use.
 // Set DRIVE_STANDIN_ENDPOINT and friends and the identical code runs against
-// real iDrive e2 with no change: that is issue #173's account, and the numbers
-// it produces are the ones the page should then carry.
+// the real iDrive e2 account with no change; the drive#173 run did exactly
+// that, and it is why the iDrive figures are not the ones this page carries
+// (docs/build-spec.md: iDrive e2 does not make the primary seat).
 //
 //   DRIVE_STANDIN_ENDPOINT / _BUCKET / _PREFIX / _ACCESS_KEY / _SECRET_KEY
 //   DRIVE_STANDIN_VIDEO_GB   video size (default 5; the issue says multi-GB)

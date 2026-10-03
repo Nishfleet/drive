@@ -5,8 +5,11 @@ measured by the Go benchmarks in `cmd/drive/bench_test.go`, and a row here
 with no matching `h.report` call fails `test/benchmarks.test.mjs`.
 
 Stand-in numbers on the same machine are not publishable. Linux figures below
-stay `not yet measured` until a run against real storage (issue #173: iDrive
-e2, once the `idrive` rclone remote exists on this host). Mac figures stay
+stay `not yet measured` until a run against real storage. The real account is
+iDrive e2 (the `idrive` rclone remote on this host), but drive#173 measured it
+out of the primary seat on 2026-10-03 (its STS cannot scope a key to a prefix),
+so the run happens on whichever provider the primary seat moves to — the
+follow-up issue filed with drive#173 carries that. Mac figures stay
 `not yet measured` until they are run on a Mac; they are never estimated.
 
 How to repeat, once real storage is configured. Credentials come from the VPS
@@ -14,7 +17,7 @@ credential store as environment variables, never from the command line (they
 would land in shell history and in `ps`):
 
 ```
-DRIVE_BENCH_ENDPOINT=https://s3.<region>.idrivee2.com \
+DRIVE_BENCH_ENDPOINT=https://s3.<region>.<provider host> \
 DRIVE_BENCH_REGION=<region> DRIVE_BENCH_LINK_MBPS=<measured> \
 go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
 ```
@@ -38,7 +41,8 @@ they are not in this table; they wait for the same real-storage run
 ## Linux VPS
 
 Host: netcup VPS, Linux. Region, link speed and commit: not yet measured
-(no real storage on this host; issue #173). Date of this table: 2026-10-02.
+(no real-storage run on this host; the provider the run happens on is the
+follow-up to drive#173). Date of this table: 2026-10-02.
 
 Every Linux row except `video-start-at-*` is timed through the mounted drive.
 The `video-start-at-*` rows use stock rclone `--bwlimit`, which is the tool

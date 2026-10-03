@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-03
 
+- The three build step 1 storage questions are now measured against the real iDrive
+  e2 account (bucket `drive-prod`, region `eu-west-3`), and every setting was read
+  back from that bucket: versioning on, a one-day hidden-version rule, SSE-S3. A key
+  cannot be scoped to one folder there — the endpoint refuses `AssumeRole` — so
+  iDrive e2 is not our storage, and the seat moves to Backblaze B2.
 - `drive branch` mints a branch key scoped to `u/<account>/.branches/<name>/`
   with no delete, stores it 0600, and prints the prefix plus the two env var
   names an agent tool would run on — never the secret, never on the command
