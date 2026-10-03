@@ -97,7 +97,7 @@ function makeD1() {
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
+   * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
     // D1 binds a numbered placeholder by its NUMBER; node:sqlite binds the

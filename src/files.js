@@ -1245,7 +1245,7 @@ async function sourceSize(fetchImpl, urlFor, from) {
  * @param {string} xml
  * @param {string} prefix the storage prefix the listing was for
  * @param {string} path the drive path the listing was for
- * @returns {Array<{name: string, path: string, kind: string, size?: number, modified?: number|null, contentType?: string}>}
+ * @returns {Array<{name: string, path: string, kind: string, size?: number, modified?: number|null, contentType?: string, etag?: string|null}>}
  */
 export function parseListObjects(xml, prefix, path) {
   if (typeof xml !== "string") {
