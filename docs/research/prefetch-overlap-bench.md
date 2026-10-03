@@ -50,13 +50,16 @@ value changes, and no row moves between the Linux table and the follow-up note
 | Storage | Read during prefetch | Read with prefetch off | Where |
 |---|---|---|---|
 | real (iDrive e2, eu-west-3) | 218.692 ms | 63.907 ms | drive#382, the failing run named in the issue |
-| loopback stand-in (this host, rclone v1.75.1) | 6.872 ms | 5.839 ms | `unshare -Urm go test ./cmd/drive -run '^$' -bench BenchmarkReadDuringPrefetch -benchtime=1x -v`, 2026-10-04 |
+| real (iDrive e2, eu-west-3), this branch | 194.272 ms | 61.806 ms | `unshare -Urm go test ./cmd/drive -run '^$' -bench BenchmarkReadDuringPrefetch -benchtime=1x -v` against `drive-prod`, 2026-10-04; PASS with `gate=stand-in-only` |
+| loopback stand-in (this host, rclone v1.75.1) | 13.878 ms | 9.809 ms | same command, no `DRIVE_BENCH_ENDPOINT`, 2026-10-04; PASS |
 
-The real-storage pair is 3.4x and 155 ms apart, so it fails both halves of the
-assertion. The stand-in pair is 1.18x and 1.03 ms apart, so it holds with a wide
-margin: on the stand-in the only difference between the two reads is the overlap
-itself, which is what the assertion guards. Two further stand-in runs on the same
-host measured 13.6/7.6 ms and 10.7/7.5 ms, so the margin is stable.
+The issue's real-storage pair is 3.4x and 155 ms apart, so it fails both halves of
+the assertion. This branch's real pair is 3.14x and 132 ms apart, so it would fail
+the same assertion; the gate is what makes that run green. The stand-in pair is
+1.41x and 4.07 ms apart, so it holds: on the stand-in the only difference between
+the two reads is the overlap itself, which is what the assertion guards. Earlier
+stand-in runs on the same host measured 6.872/5.839 ms, 13.6/7.6 ms and 10.7/7.5 ms,
+so the margin is stable.
 
 ### Negative control (the gate is what changes the outcome)
 
@@ -85,9 +88,10 @@ is not in the committed code.
 
 An earlier attempt (commit 31b38f7, branch `claim/issue-382`) warmed the mount's
 read path with a third file before the two measured reads. It changed nothing
-measurable on the stand-in (6.872/5.839 ms without it, 9.083/7.233 ms with it),
-and its effect on real storage is not measurable from this host, so it was dropped
-rather than shipped as an unverified fix.
+measurable on the stand-in (6.872/5.839 ms without it, 9.083/7.233 ms with it).
+The real-account run above (194 ms against 62 ms, no warm-up) still fails both
+halves of the assertion, so this branch ships the gate rather than an unproven
+warm-up.
 
 ## What a run now prints
 
@@ -95,13 +99,15 @@ Both storages print the two figures, each line naming its storage and the region
 the run was pointed at:
 
 ```
-prefetch-bench metric=user-read-during-prefetch value=0.006872 unit=s storage=stand-in region=eu-west-3
-prefetch-bench metric=user-read-prefetch-off value=0.005839 unit=s storage=stand-in region=eu-west-3
+prefetch-bench metric=user-read-during-prefetch value=0.013878 unit=s storage=stand-in region=unmeasured
+prefetch-bench metric=user-read-prefetch-off value=0.009809 unit=s storage=stand-in region=unmeasured
 ```
 
 Real storage adds one line, names no assertion, and passes:
 
 ```
+prefetch-bench metric=user-read-during-prefetch value=0.194272 unit=s storage=real region=eu-west-3
+prefetch-bench metric=user-read-prefetch-off value=0.061806 unit=s storage=real region=eu-west-3
 prefetch-bench metric=user-read-during-prefetch-overlap gate=stand-in-only storage=real region=eu-west-3 note=measured not asserted
 ```
 
@@ -113,8 +119,8 @@ case this bench exists to catch.
 
 ## What was not run
 
-No real-storage run happened from this host: no iDrive e2 credentials are in the
-VPS credential store for a worker seat, and `docs/benchmarks.md` already records
-that the real-account run happens on the provider the primary seat moves to (the
-follow-up to drive#173). The 218 ms / 64 ms pair above is the failing run's own
-output, quoted from the issue.
+The published Linux table in `docs/benchmarks.md` was not filled: this bench is
+not a published row, and issue #242 still owns those figures. The real-account
+run above used the `idrive` rclone remote on this host (bucket `drive-prod`,
+region `eu-west-3`, prefix `u/bench-382`) and is the issue's first finish-line
+bullet, not a published speed.
