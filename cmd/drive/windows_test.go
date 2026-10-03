@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,13 +170,13 @@ func TestWindowsQuoteArgFollowsTheWindowsRules(t *testing.T) {
 }
 
 func TestSchtasksArgumentVectors(t *testing.T) {
-	command := `C:\rclone\rclone.exe mount drive:b/u/1 Z:`
+	xmlPath := `C:\Users\test\.config\drive\login-task.xml`
 	for _, tc := range []struct {
 		name string
 		got  []string
 		want []string
 	}{
-		{"create", schtasksCreateArgs(WindowsTaskName, command), []string{"/Create", "/F", "/SC", "ONLOGON", "/TN", WindowsTaskName, "/TR", command}},
+		{"create", schtasksCreateXMLArgs(WindowsTaskName, xmlPath), []string{"/Create", "/F", "/TN", WindowsTaskName, "/XML", xmlPath}},
 		{"run", schtasksRunArgs(WindowsTaskName), []string{"/Run", "/TN", WindowsTaskName}},
 		{"end", schtasksEndArgs(WindowsTaskName), []string{"/End", "/TN", WindowsTaskName}},
 		{"delete", schtasksDeleteArgs(WindowsTaskName), []string{"/Delete", "/F", "/TN", WindowsTaskName}},
@@ -185,15 +186,109 @@ func TestSchtasksArgumentVectors(t *testing.T) {
 			t.Errorf("%s args = %v, want %v", tc.name, tc.got, tc.want)
 		}
 	}
-	// /Create must set a logon trigger and overwrite, so `drive mount` is safe
-	// to run again (the issue: "a stock Task Scheduler task (schtasks /Create
-	// /SC ONLOGON)").
-	create := strings.Join(schtasksCreateArgs(WindowsTaskName, command), " ")
-	if !strings.Contains(create, "/SC ONLOGON") {
-		t.Errorf("create args must say /SC ONLOGON: %s", create)
-	}
+	// /Create must overwrite, so `drive mount` is safe to run again. The
+	// logon trigger and the command travel in the task XML (drive#368): /TR
+	// holds 261 characters and the task's command line is longer than that.
+	create := strings.Join(schtasksCreateXMLArgs(WindowsTaskName, xmlPath), " ")
 	if !strings.Contains(create, "/F") {
 		t.Errorf("create args must overwrite an existing task: %s", create)
+	}
+	if !strings.Contains(create, "/XML") {
+		t.Errorf("create args must register the task from its XML: %s", create)
+	}
+	if strings.Contains(create, "/TR") {
+		t.Errorf("create args must never carry /TR again: /TR holds 261 characters and the task's command line is longer: %s", create)
+	}
+}
+
+func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
+	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p.MountDir = "Z:"
+	body, err := windowsTaskXML(p, `DESKTOP\test`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc taskXML
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("the task XML does not parse: %v\n%s", err, body)
+	}
+	// The envelope schtasks validates on import: a declaration, the Task
+	// Scheduler 2.0 namespace and a version it knows.
+	if !strings.HasPrefix(body, xml.Header) {
+		t.Errorf("the task XML must start with the declaration, got:\n%.40s", body)
+	}
+	if doc.XMLNS != "http://schemas.microsoft.com/windows/2004/02/mit/task" {
+		t.Errorf("task XMLNS = %q, want the Task Scheduler 2.0 namespace", doc.XMLNS)
+	}
+	if doc.Version != "1.2" {
+		t.Errorf("task XML version = %q, want 1.2", doc.Version)
+	}
+	if doc.Actions.Exec.Command != `C:\rclone\rclone.exe` {
+		t.Errorf("Exec Command = %q, want the rclone path", doc.Actions.Exec.Command)
+	}
+	for _, want := range []string{"mount", "drive:drive-standin/u/1234", "Z:", "--config", "rclone.conf", "--vfs-cache-mode full"} {
+		if !strings.Contains(doc.Actions.Exec.Arguments, want) {
+			t.Errorf("Exec Arguments missing %q:\n%s", want, doc.Actions.Exec.Arguments)
+		}
+	}
+	// The logon trigger is what /SC ONLOGON set, scoped to the user who ran
+	// `drive mount`, and the mount runs in the logged-on session.
+	if !doc.Triggers.LogonTrigger.Enabled {
+		t.Error("the logon trigger must be enabled: it is what /SC ONLOGON did")
+	}
+	if doc.Triggers.LogonTrigger.UserId != `DESKTOP\test` {
+		t.Errorf("LogonTrigger UserId = %q, want the user who mounted", doc.Triggers.LogonTrigger.UserId)
+	}
+	if doc.Principals.Principal.LogonType != "InteractiveToken" {
+		t.Errorf("LogonType = %q, want InteractiveToken: the mount runs in the logged-on session", doc.Principals.Principal.LogonType)
+	}
+	// The mount runs until `drive unmount`, not until the scheduler's
+	// 72-hour default ends it.
+	if doc.Settings.ExecutionTimeLimit != "PT0S" {
+		t.Errorf("ExecutionTimeLimit = %q, want PT0S (no time limit): a mount killed by the default is a drive that vanishes after 3 days", doc.Settings.ExecutionTimeLimit)
+	}
+	// "Task To Run" is what `schtasks /Query` renders from Command and
+	// Arguments, and it is where the stop path finds the drive letter.
+	toRun := doc.Actions.Exec.Command + " " + doc.Actions.Exec.Arguments
+	if letter, ok := windowsDriveLetterFromCommand(toRun); !ok || letter != "Z:" {
+		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want Z:", toRun, letter, ok)
+	}
+}
+
+// TestWindowsTaskXMLStaysInsideSchtasksLimits is the drive#368 guard: every
+// string the registration hands schtasks must fit the channel that carries
+// it. The task-to-run string used to go through /TR, which holds 261
+// characters, and the task's command line outgrew that — so the create goes
+// through the XML now, and this test fails if anything drifts back over a
+// limit: the /XML path argument and the Exec Command are path strings on the
+// same 261-character rule, the Exec Arguments answer to the Task Scheduler
+// API's 32 K ceiling, and a /TR in the create vector is the old failure back
+// again.
+func TestWindowsTaskXMLStaysInsideSchtasksLimits(t *testing.T) {
+	p := BuildMountPlan("windows", `C:\Users\test`, `C:\rclone\rclone.exe`, testStorage())
+	p.MountDir = "Z:"
+	xmlPath := windowsTaskXMLPath(p)
+	if len(xmlPath) > 261 {
+		t.Errorf("the /XML path is %d characters, over the 261 a schtasks path argument holds: %s", len(xmlPath), xmlPath)
+	}
+	body, err := windowsTaskXML(p, `DESKTOP\test`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc taskXML
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("the task XML does not parse: %v\n%s", err, body)
+	}
+	if len(doc.Actions.Exec.Command) > 261 {
+		t.Errorf("the Exec Command is %d characters, over the 261 the task-to-run path is held to: %s", len(doc.Actions.Exec.Command), doc.Actions.Exec.Command)
+	}
+	if len(doc.Actions.Exec.Arguments) > 32767 {
+		t.Errorf("the Exec Arguments are %d characters, over the 32 K the Task Scheduler API holds them to: %s", len(doc.Actions.Exec.Arguments), doc.Actions.Exec.Arguments)
+	}
+	for _, arg := range schtasksCreateXMLArgs(WindowsTaskName, xmlPath) {
+		if arg == "/TR" {
+			t.Error("the create vector carries /TR: /TR holds 261 characters and the task's command line is longer; register the task from its XML")
+		}
 	}
 }
 
