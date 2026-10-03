@@ -1026,3 +1026,111 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(code)
 }
+
+// TestCacheCapHoldsThroughAReadPastIt is the finish line for #112: on a real
+// mount against the storage stand-in, with the person's own limit on the mount
+// (--vfs-cache-max-size, read back off the running mount's own options rather
+// than from this test's copy), reading more than the limit into the cache
+// leaves the cache at or under that limit. The mount also carries
+// --vfs-cache-min-free-space, the second half of the cap, and that is read back
+// the same way.
+//
+// Stand-in figures are a harness proof, never publishable (issue #242 owns the
+// real-storage run), which is why every line names it. The limit is small
+// (DRIVE_CACHE_CAP_TEST) so the proof runs in a worker's memory budget rather
+// than filling 20 GiB to show that 20 GiB is a cap.
+func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stand-in proof skipped in -short mode")
+	}
+	root := t.TempDir()
+	cfg, _ := standinOn(t, root, "u/cachecap")
+	seedHome := filepath.Join(root, "seed-home")
+	seedEnv := standinEnv(t, seedHome, cfg)
+	const capSize = "24M"
+	// Six files of 6 MiB each: the full read asks for 36 MiB of a 24 MiB cap,
+	// so the read only fits because rclone reclaims as it goes. A cap that
+	// did nothing would leave the cache at 36 MiB.
+	seedStandin(t, root, cfg, seedEnv, "one.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "two.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "three.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "four.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "five.bin", 6<<20)
+	seedStandin(t, root, cfg, seedEnv, "six.bin", 6<<20)
+
+	home := filepath.Join(root, "home")
+	mountDir := filepath.Join(home, "Drive")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCacheMax(t, home, capSize)
+	_ = standinEnv(t, home, cfg)
+	// This host already has a mount on the shipped 127.0.0.1:5572, so the
+	// proof binds its own loopback port. The client below reads that same
+	// address, or the stats call would talk to the other mount.
+	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
+	_, stop := startStandinMount(t, home, mountDir, cfg)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	c := newRCClient("rclone", RCAddr(), RemoteFor(cfg))
+	stats, err := c.stats(ctx)
+	if err != nil {
+		t.Fatalf("read the running mount's cache stats: %v", err)
+	}
+	wantCap, err := parseSizeSuffix(capSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Opt.CacheMaxSize != wantCap {
+		t.Fatalf("the mount's --vfs-cache-max-size is %d bytes, want the %d the person set", stats.Opt.CacheMaxSize, wantCap)
+	}
+	wantFloor, err := parseSizeSuffix(vfsCacheMinFreeSpaceValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Opt.CacheMinFreeSpace != wantFloor {
+		t.Errorf("the mount's --vfs-cache-min-free-space is %d bytes, want %d", stats.Opt.CacheMinFreeSpace, wantFloor)
+	}
+
+	// Read past the cap: each file is read in full, so the six together ask
+	// for 36 MiB against a 24 MiB cap.
+	for _, name := range []string{"one.bin", "two.bin", "three.bin", "four.bin", "five.bin", "six.bin"} {
+		if _, err := fillReadFile(filepath.Join(mountDir, name)); err != nil {
+			t.Fatalf("read %s through the mount: %v", name, err)
+		}
+	}
+	// rclone checks the cap on its cache poll, so the reclaim happens on that
+	// clock and not the instant a read finishes. Waiting for the mount to
+	// report a cache at or under the cap is waiting for rclone's own answer,
+	// not for a guess.
+	deadline := time.Now().Add(2 * time.Minute)
+	var used, capBytes int64
+	var files int
+	for {
+		used, files, err = CacheUse(DefaultCacheDir(home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		capBytes, err = liveCacheBytes(stats.DiskCache.Path, stats.DiskCache.BytesUsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if used <= wantCap {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the cache is %s, still over the %s cap, two minutes after the read", FormatBytes(used), capSize)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Logf("read 6 x 6 MiB through the mount with a %s cap: cache on disk %s in %d files (rclone's own count %s), storage=stand-in, repeat: go test ./cmd/drive -run TestCacheCapHoldsThroughAReadPastIt -v",
+		capSize, FormatBytes(used), files, FormatBytes(capBytes))
+	if used > wantCap {
+		t.Errorf("the cache is %s, over the %s cap it was given", FormatBytes(used), capSize)
+	}
+	if files == 0 {
+		t.Error("nothing landed in the cache, so the read never reached the mount's cache")
+	}
+}
