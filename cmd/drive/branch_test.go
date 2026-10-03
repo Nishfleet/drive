@@ -30,6 +30,7 @@ const branchMintSecret = "sk_branch_secret_must_not_print"
 type branchStandIn struct {
 	createConflict bool
 	failMint       bool
+	failGet        bool
 }
 
 func branchServer(t *testing.T) (*httptest.Server, *[]branchCall) {
@@ -63,6 +64,10 @@ func branchServerWith(t *testing.T, cfg branchStandIn) (*httptest.Server, *[]bra
 		case r.Method == "GET" && r.URL.Path == BRANCHES_PATH:
 			writeJSON(t, w, 200, `{"branches":[{"name":"work","sourcePrefix":"/Photos","state":"open","changed":3,"sourceChanged":1}]}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, BRANCHES_PATH+"/") && !strings.Contains(r.URL.Path[len(BRANCHES_PATH)+1:], "/"):
+			if cfg.failGet {
+				writeJSON(t, w, 500, `{"error":"The branch list could not be read."}`)
+				return
+			}
 			name := r.URL.Path[len(BRANCHES_PATH)+1:]
 			writeJSON(t, w, 200, `{"branch":{"name":"`+name+`","sourcePrefix":"/Photos","branchPrefix":"/.branches/`+name+`","state":"open","files":2},"diff":{"added":["new.txt"],"changed":["a.txt"],"removed":[],"sourceChanged":["a.txt"]}}`)
 		case r.Method == "POST" && r.URL.Path == BRANCHES_PATH+"/work/approve":
@@ -263,6 +268,50 @@ func TestRunBranchTellsThePersonToRetryWhenMintFails(t *testing.T) {
 	}
 	if stored != nil {
 		t.Errorf("stored a key after a failed mint: %+v", stored)
+	}
+}
+
+func TestRunBranchNamesAFailedLookupAfterAConflict(t *testing.T) {
+	server, _ := branchServerWith(t, branchStandIn{createConflict: true, failGet: true})
+	home := signedInHome(t)
+	err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"})
+	if err == nil {
+		t.Fatal("expected the GET failure")
+	}
+	if !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("err = %v, want the GET failure, not the 409", err)
+	}
+	if strings.Contains(err.Error(), "still open") {
+		t.Errorf("err = %v, leaked the original 409", err)
+	}
+}
+
+func TestRunBranchRevokesAStoredKeyThatIsNotABranchKey(t *testing.T) {
+	home := signedInHome(t)
+	if err := saveBranchKey(home, "work", MintedKey{
+		KeyID:        "key_old",
+		AccessKeyID:  "ak_old",
+		Secret:       "sk_old",
+		Prefix:       "u/acct-1/",
+		Capabilities: []string{"list", "read", "write", "delete"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, requests := branchServerWith(t, branchStandIn{createConflict: true})
+	_ = captureStdout(t, func() {
+		if err := runBranch([]string{"--api", server.URL, "--home", home, "--name", "work", "/Photos"}); err != nil {
+			t.Fatalf("runBranch: %v", err)
+		}
+	})
+	if callWith(*requests, "DELETE", keysPath+"/key_old") == nil {
+		t.Errorf("did not revoke the unusable stored key: %v", *requests)
+	}
+	stored, err := branchKeyFor(home, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || stored.KeyID != "key_work" {
+		t.Errorf("stored = %+v, want the newly minted key", stored)
 	}
 }
 

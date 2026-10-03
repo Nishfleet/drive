@@ -171,7 +171,7 @@ func runBranch(args []string) error {
 		recovered = true
 		var existing branchDiffAnswer
 		if getErr := client.do("GET", branchPathFor(branchName), nil, &existing); getErr != nil {
-			return err
+			return getErr
 		}
 		answer.Branch = existing.Branch
 	}
@@ -208,6 +208,11 @@ func ensureBranchKey(home string, client *APIClient, name string, recovered bool
 			key := MintedKey(*existing)
 			if err := checkBranchKey(name, key); err == nil {
 				return key, nil
+			}
+			if existing.KeyID != "" {
+				if err := client.RevokeKey(existing.KeyID); err != nil && !isAPIStatus(err, "404") {
+					return MintedKey{}, err
+				}
 			}
 		}
 	}
@@ -265,7 +270,9 @@ func printBranchKey(key MintedKey) {
 }
 
 // dropBranchKey revokes the stored branch key on the server and forgets the
-// local copy. Approve and discard call this after the branch is closed. A
+// local copy. Approve and discard pass the branch name the person typed
+// (`drive approve <branch>` / `drive discard <branch>`), which is the same
+// name `drive branch --name` stored the key under — not the folder path. A
 // missing local key is not an error: an older CLI created the branch with no
 // key. A 404 from revoke means the key is already gone.
 func dropBranchKey(home, name string, client *APIClient) error {
