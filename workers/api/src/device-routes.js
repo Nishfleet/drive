@@ -56,27 +56,30 @@ import { bearerToken, errorResponse, json } from "./http.js";
 // and a poll mints a device token, so an unbounded loop from one connection is
 // both a token factory and a guessing lane for the short user code.
 //
-// The bindings belong to the deployment. This repo deploys the site Worker
-// (cloudflare.config.ts) but not the api Worker — it has no config file here
-// — so the two names below cannot be declared in this tree. Wherever the api
-// Worker's config lands it must declare both, with the per-IP ceiling above
-// the CLI's own poll rate: a device code is polled every
-// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/keystore.js), i.e. 12
-// requests a minute from one well-behaved CLI, so the per-IP limit has to sit
-// well above that (the sign-in binding's 10/min would lock a polling CLI out)
-// while the global one bounds the token factory. With no binding on env these
-// two routes fail closed — the same closed door src/email-send.js shows with
-// EMAIL_SEND_TOKEN unset and src/signin.js shows with no mailer: an
-// unrate-limited public route is the case the binding exists to prevent, so a
-// deployment that has not declared it does not run the flow.
+// The bindings belong to the deployment, and this repo now declares them:
+// workers/api/cloudflare.config.ts is the api Worker's deploy config
+// (drive#168), and test/deploy-api-worker.test.mjs gates that both names are
+// declared there, each on its own namespace, with the per-IP ceiling above the
+// CLI's own poll rate — a device code is polled every
+// DEVICE_CODE_INTERVAL_SECONDS (5s, workers/api/src/device-signin.js), i.e. 12
+// requests a minute from one well-behaved CLI, which the sign-in binding's
+// 10/min would lock out of the flow it is already in. With no binding on env
+// these two routes fail closed: an unrate-limited public route is the case the
+// binding exists to prevent, so a deployment that has not declared it does not
+// run the flow (the same closed door src/signin.js shows with no mailer).
 //
 // One shape note: the refusal is JSON ({"error": ...}), the api Worker's
 // answer everywhere (docs/api.md), including on POST /v1/device/approve, whose
 // page is HTML. A person over the limit sees the JSON words rather than the
 // page's error shell; the rate limit is a machine-scale bound, so the machine
 // answer is the honest one.
-const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
-const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
+//
+// Both names are exported so the deploy config's test reads them from here
+// rather than from a second copy: a rename changes that gate with it.
+/** The per-IP edge limit the device routes run behind. */
+export const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
+/** The account-wide edge limit, which bounds the token factory. */
+export const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
 
 /**
  * The limiter refusal a device route answers with, or null when the request is
