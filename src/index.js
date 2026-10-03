@@ -8,6 +8,14 @@ import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import {
+  CLOSE_CANCEL_ENDPOINT,
+  CLOSE_ENDPOINT,
+  handleCloseCancelRequest,
+  handleCloseRequest,
+  handleCloseStatusRequest,
+  runAccountCloseCron,
+} from "./account-close.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import {
@@ -159,6 +167,26 @@ let filesStore;
  */
 function devStorage(env) {
   return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+}
+
+/**
+ * The close handlers' dependencies, or null when this deployment has no
+ * customer database. A missing database is a 503 from the route, not an
+ * in-memory close that would vanish on the next isolate.
+ * @param {Env} env
+ */
+function closeDepsFor(env) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+  return {
+    devices: createD1DeviceStore(env.DRIVE_DB),
+    store: storeFor(env),
+    email: env.EMAIL,
+    mailFrom: secrets.MAIL_FROM ?? "",
+    now: () => Date.now(),
+  };
 }
 
 /**
@@ -432,6 +460,8 @@ export function createApp() {
   // (curl, the Go CLI) is not a browser, so it passes this check and the
   // account gate is what holds it.
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
+  app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
+  app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -572,6 +602,31 @@ export function createApp() {
     const db = c.env.DRIVE_DB;
     const store = db ? createD1DeviceStore(db) : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
+  });
+
+  // Account close (drive#235): confirm by typing email, keys revoked at once,
+  // files after 30 days. The GET feeds the usage page; both POSTs are the
+  // same gate as every other account write.
+  app.get(CLOSE_ENDPOINT, async (c) => {
+    const deps = closeDepsFor(c.env);
+    if (!deps) {
+      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+    }
+    return handleCloseStatusRequest(c.req.raw, c.get("account"), deps);
+  });
+  app.post(CLOSE_ENDPOINT, async (c) => {
+    const deps = closeDepsFor(c.env);
+    if (!deps) {
+      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+    }
+    return handleCloseRequest(c.req.raw, c.get("account"), deps);
+  });
+  app.post(CLOSE_CANCEL_ENDPOINT, async (c) => {
+    const deps = closeDepsFor(c.env);
+    if (!deps) {
+      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+    }
+    return handleCloseCancelRequest(c.req.raw, c.get("account"), deps);
   });
 
   // Share links and upload requests (issue #19). The share/request roots are
@@ -804,6 +859,17 @@ export default {
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      if (!env.DRIVE_DB) {
+        throw new Error("account close cron needs the customer database");
+      }
+      const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+      await runAccountCloseCron({
+        devices: createD1DeviceStore(env.DRIVE_DB),
+        store: storeFor(env),
+        email: env.EMAIL,
+        mailFrom: secrets.MAIL_FROM ?? "",
+        now: event.scheduledTime,
+      });
       return;
     }
     // The snapshot backfill's trip (drive issue #321): every open branch that

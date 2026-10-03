@@ -38,6 +38,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
+  // Close-account grace stamps (drive issue #235). Nullable expand of
+  // accounts: closed_at, reminder_sent_at, purged_at.
+  "drive/0016_account_close.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */

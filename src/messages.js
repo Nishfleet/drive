@@ -206,6 +206,23 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That did not work.",
     next: "Try again in a moment.",
   }),
+  // Close account (drive#235): the person confirms by typing their email.
+  "close-confirm-email": Object.freeze({
+    what: "Closing your account needs you to type your email.",
+    next: "Type the email on this account and try again.",
+  }),
+  "close-email-mismatch": Object.freeze({
+    what: "That email does not match this account.",
+    next: "Type the email on this account to confirm.",
+  }),
+  "close-not-closed": Object.freeze({
+    what: "This account is not waiting to close.",
+    next: "There is nothing to cancel.",
+  }),
+  "close-already-purged": Object.freeze({
+    what: "The files from this account have already been deleted.",
+    next: "The 30-day window has ended, so closing cannot be cancelled.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the

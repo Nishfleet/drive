@@ -8,6 +8,12 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-04
+
+- Closing an account revokes every key at once, keeps files for 30 days, emails
+  on day 0 and day 25, and lets the person cancel until then by typing their
+  email on the usage page.
+
 ## 2026-10-03
 
 - The three build step 1 storage questions are now measured against the real iDrive

@@ -14,7 +14,7 @@
 
 import { BILLING_CONFIG } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -246,6 +246,180 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * @param {unknown} row
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, purgedAt: number|null}|null}
+   */
+  function closeStateFromRow(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+    const r = /** @type {Record<string, unknown>} */ (row);
+    if (typeof r.id !== "string" || r.id === "") {
+      return null;
+    }
+    return {
+      id: r.id,
+      email: typeof r.email === "string" ? r.email : "",
+      state: typeof r.state === "string" ? r.state : "active",
+      closedAt: r.closed_at === null || r.closed_at === undefined ? null : Number(r.closed_at),
+      reminderSentAt:
+        r.reminder_sent_at === null || r.reminder_sent_at === undefined
+          ? null
+          : Number(r.reminder_sent_at),
+      purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+    };
+  }
+
+  /**
+   * @param {string} accountId
+   */
+  async function getCloseState(accountId) {
+    return closeStateFromRow(
+      await first(
+        db,
+        "SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts WHERE id = ?1",
+        accountId,
+      ),
+    );
+  }
+
+  /**
+   * @param {string} accountId
+   */
+  async function revokeAllKeys(accountId) {
+    const at = nowSeconds(now());
+    const result = await run(
+      db,
+      "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    return Number(/** @type {{meta?: {changes?: number}}} */ (result).meta?.changes ?? 0);
+  }
+
+  /**
+   * Close the account: `state` becomes `closed`, `closed_at` is stamped once,
+   * and every live key is revoked. A second close keeps the original stamp so
+   * the 30-day window cannot be restarted by retrying.
+   * @param {{id: string, email?: string}} account
+   * @param {number} atSeconds
+   */
+  async function closeAccountRow(account, atSeconds) {
+    const existing = await getCloseState(account.id);
+    if (existing !== null && existing.state === "closed" && existing.closedAt !== null) {
+      await revokeAllKeys(account.id);
+      return { ...existing, alreadyClosed: true };
+    }
+    const email = account.email ?? existing?.email ?? "";
+    await run(
+      db,
+      `INSERT INTO accounts (id, email, created_at, state, closed_at)
+       VALUES (?1, ?2, ?3, 'closed', ?3)
+       ON CONFLICT(id) DO UPDATE SET
+         state = 'closed',
+         email = CASE WHEN excluded.email = '' THEN accounts.email ELSE excluded.email END,
+         closed_at = CASE
+           WHEN accounts.state = 'closed' AND accounts.closed_at IS NOT NULL
+           THEN accounts.closed_at
+           ELSE excluded.closed_at
+         END`,
+      account.id,
+      email,
+      atSeconds,
+    );
+    await revokeAllKeys(account.id);
+    const written = await getCloseState(account.id);
+    if (written === null) {
+      throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
+    }
+    return { ...written, alreadyClosed: false };
+  }
+
+  /**
+   * @param {string} accountId
+   */
+  async function cancelClose(accountId) {
+    const existing = await getCloseState(accountId);
+    if (existing === null || existing.state !== "closed" || existing.closedAt === null) {
+      throw new TypeError("close-not-closed");
+    }
+    if (existing.purgedAt !== null) {
+      throw new TypeError("close-already-purged");
+    }
+    await run(
+      db,
+      `UPDATE accounts
+         SET state = 'active', closed_at = NULL, reminder_sent_at = NULL
+       WHERE id = ?1`,
+      accountId,
+    );
+    const written = await getCloseState(accountId);
+    if (written === null) {
+      throw new Error(`cancelClose left no accounts row for ${accountId}`);
+    }
+    return written;
+  }
+
+  /**
+   * @param {number} atSeconds
+   */
+  async function listDueReminder(atSeconds) {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND reminder_sent_at IS NULL
+           AND purged_at IS NULL
+           AND closed_at <= ?1`,
+      atSeconds,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * @param {number} atSeconds
+   */
+  async function listDuePurge(atSeconds) {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND purged_at IS NULL
+           AND closed_at <= ?1`,
+      atSeconds,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markReminderSent(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET reminder_sent_at = ?1 WHERE id = ?2 AND reminder_sent_at IS NULL",
+      atSeconds,
+      accountId,
+    );
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markPurged(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      atSeconds,
+      accountId,
+    );
+  }
+
+  /**
    * Stand-in credential when no storage provider is configured: the api's
    * own storage API is what verifies it, so the pair never has to exist
    * outside this Worker.
@@ -474,6 +648,14 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     setAccountState,
+    getCloseState,
+    revokeAllKeys,
+    closeAccount: closeAccountRow,
+    cancelClose,
+    listDueReminder,
+    listDuePurge,
+    markReminderSent,
+    markPurged,
 
     /**
      * A KeyProvider bound to one account, so `mint(scope)` can persist the
