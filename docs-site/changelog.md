@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-03
 
+- `drive status` says what is waiting to upload and why: a cut-off upload
+  resumes from rclone's VFS cache, a full cache disk fails with the table's
+  disk-full words and loses nothing already saved, and a killed mount still
+  shows the waiting files until they go up.
 - `drive update` and `drive version`: an update replaces the installed CLI
   with the latest released version by the same `go install` command a person
   installs with, and `drive version` prints the version the binary was built

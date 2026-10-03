@@ -196,6 +196,12 @@ export const UPLOAD_LABEL = Object.freeze({
   pausedOne: "1 file waiting",
   pausedMany: "{files} files waiting",
   pausedLine: "Paused: {waiting} ({left} left)",
+  // Why a queued file has not gone up yet (drive issue #107). `drive status`
+  // prints these; the page carries the same fragments so the two copies cannot
+  // drift. Disk-full uses FAILURE_MESSAGES["disk-cache-full"] instead.
+  waitingWhy: "They are waiting to upload.",
+  waitingUnmounted: "They are waiting because the drive is not mounted.",
+  waitingUnmountedNext: "They will upload when the drive is mounted again.",
 });
 
 /**

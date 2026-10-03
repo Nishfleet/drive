@@ -218,6 +218,23 @@ type Stats struct {
 	Transferring   []Transfer `json:"transferring"`
 }
 
+// cacheOutOfSpace asks the running mount whether the VFS cache disk is full.
+// The answer is rclone's own vfs/stats diskCache.outOfSpace (the same block
+// the fill loop reads in fill_run.go), so `drive status` does not invent a
+// second full-disk detector. fs is omitted when empty: vfs/stats defaults to
+// the mounted VFS, which is what status is asking about.
+func (c *rcClient) cacheOutOfSpace(ctx context.Context) (bool, error) {
+	var s vfsStats
+	params := map[string]string{}
+	if c.fs != "" {
+		params["fs"] = c.fs
+	}
+	if err := c.call(ctx, "vfs/stats", params, &s); err != nil {
+		return false, err
+	}
+	return s.DiskCache.OutOfSpace, nil
+}
+
 // ReadStats asks the mount for its transfer totals and the file in flight.
 func (c *rcClient) ReadStats(ctx context.Context) (Stats, error) {
 	var s Stats

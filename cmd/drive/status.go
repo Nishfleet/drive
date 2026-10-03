@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -116,6 +117,9 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("uploads: %s\n", UploadLabel(queue))
+	if why := queueWhy(on, cacheIsFull(home, on), Paused(home), queue); why != "" {
+		fmt.Println(why)
+	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
 		fmt.Print(lines)
 	} else if reason != "" {
@@ -341,6 +345,14 @@ func PendingUploads(cacheDir string) (Pending, error) {
 		}
 		var meta VFSMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
+			// A crash can leave rclone's meta file half-written (drive issue
+			// #107). That file is not a queue entry yet, and must not hide
+			// the files that did parse. Complete junk is still an error, so
+			// "up to date" cannot come from a cache we cannot read.
+			trimmed := bytes.TrimSpace(data)
+			if len(trimmed) == 0 || (trimmed[0] == '{' && !json.Valid(data)) {
+				return nil
+			}
 			return fmt.Errorf("parse vfs metadata %s: %w", path, err)
 		}
 		if !meta.Dirty {
@@ -348,6 +360,7 @@ func PendingUploads(cacheDir string) (Pending, error) {
 		}
 		q.Files++
 		q.Bytes += meta.Size
+		q.Names = append(q.Names, filepath.Base(path))
 		return nil
 	})
 	if err != nil {
@@ -361,6 +374,10 @@ func PendingUploads(cacheDir string) (Pending, error) {
 type Pending struct {
 	Files int
 	Bytes int64
+	// Names are the dirty files' names, so `drive status` can say what is
+	// waiting when the mount is down and rclone's vfs/queue cannot answer
+	// (drive issue #107, the crash case).
+	Names []string
 }
 
 // UPLOAD_WORDS are the words `drive status` uses for the queue, kept next to
@@ -374,7 +391,59 @@ const (
 	upToDateLabel  = "Up to date"
 	uploadingLabel = "Uploading %d file"
 	uploadingMany  = "Uploading %d files"
+	// waitingToUploadWhy is the reason `drive status` prints when files are
+	// queued and the mount is up: rclone's VFS cache will send them. The
+	// unmounted pair is the crash case (drive issue #107): the files are
+	// still in the cache, and they go up when the drive is mounted again.
+	waitingToUploadWhy   = "They are waiting to upload."
+	waitingUnmountedWhy  = "They are waiting because the drive is not mounted."
+	waitingUnmountedNext = "They will upload when the drive is mounted again."
+	diskCacheFullWhat    = "The local cache is full, so new saves can't upload."
+	diskCacheFullNext    = "Free up disk space on this device and try the save again."
 )
+
+// queueWhy is the line after the uploads count: what is waiting and why
+// (drive issue #107). An empty queue with space left is a complete state and
+// prints nothing extra. A full cache is a failure even with nothing queued,
+// because that is the save that just bounced. Pause is issue #100's words on
+// the transfers line, so this function stays silent while paused unless the
+// cache is also full.
+func queueWhy(on, outOfSpace, paused bool, q Pending) string {
+	if outOfSpace {
+		return diskCacheFullWhat + " " + diskCacheFullNext
+	}
+	if paused || q.Files == 0 {
+		return ""
+	}
+	if !on {
+		var b strings.Builder
+		for _, name := range q.Names {
+			fmt.Fprintf(&b, "  %s\n", uploadFileName(name))
+		}
+		fmt.Fprintf(&b, "%s %s", waitingUnmountedWhy, waitingUnmountedNext)
+		return b.String()
+	}
+	return waitingToUploadWhy
+}
+
+// cacheIsFull is whether the VFS cache disk cannot take another save. The
+// mount's own answer is rclone rc vfs/stats diskCache.outOfSpace (rclone.org
+// mount, the field the fill loop already reads). When the mount is down, or
+// that call cannot answer, the cache directory's free space is the same
+// question asked of the kernel.
+func cacheIsFull(home string, on bool) bool {
+	if on {
+		c, err := mountRCClient()
+		if err == nil {
+			ctx, cancel := rcCtx()
+			defer cancel()
+			if full, err := c.cacheOutOfSpace(ctx); err == nil && full {
+				return true
+			}
+		}
+	}
+	return cacheDiskHasNoSpace(DefaultCacheDir(home))
+}
 
 // UploadLabel renders the queue line. Zero files is a complete state, not an
 // error and not a division by zero: the answer is that nothing is waiting.
