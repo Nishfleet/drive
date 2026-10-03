@@ -828,7 +828,7 @@ function recordedDemos() {
   );
   assert.ok(
     commitProbe.error === undefined && commitProbe.status === 0,
-    `the record's commit ${commitRow[1]} is not a commit in this repository`,
+    `the record's commit ${commitRow[1]} is not a commit in this repository: name the commit on main, because squash merges drop branch commits`,
   );
   const dateRow = text.match(/^- \*\*Date:\*\* (\d{4}-\d\d-\d\d)$/m);
   assert.ok(dateRow, "docs/demos.md names the date the demos ran");
