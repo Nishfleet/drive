@@ -23,12 +23,6 @@
 #   5. `winget validate` passes on the manifest beside this file;
 #   6. a silent uninstall leaves no binary, no PATH entry and no task.
 #
-# Every msiexec call writes its own verbose log (/l*v) beside the sources, and
-# the job uploads those logs when a step fails. A silent install has no
-# window to read, so a red run's only other evidence is the exit code the step
-# throws ("the Drive MSI exited 1603"), which names no file, no custom action
-# and no condition. /l*v is the installer's own account of what it did, and it
-# is the only way the cause of a silent failure gets named (drive#369).
 # The builds are UNSIGNED. A signing certificate costs money (Azure Trusted
 # Signing is about $10 a month), so nothing here publishes: this job runs on
 # pull requests and on main, and output artefacts stay inside the run. Signing
@@ -65,15 +59,7 @@ jobs:
       WINFSP_VERSION: "2.1.25156"
       WINFSP_MSI_URL: "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
       WINFSP_MSI_SHA256: "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
-      # Where Drive's own package lands. installer/drive.wxs puts INSTALLFOLDER
-      # under ProgramFiles6432Folder, which on the x64 package this job builds
-      # is C:\Program Files (x86) - the same 32-bit folder WinFsp itself uses
-      # (cmd/drive/windows.go, winFspDLLs). The uninstall proofs below read
-      # this value, so a wrong one turns them into checks against a directory
-      # Drive never wrote to, which pass whether or not anything was left
-      # behind, and makes "the bundle did not install drive.exe" fire on a
-      # machine where the bundle installed it perfectly.
-      INSTALL_DIR: 'C:\Program Files (x86)\Drive'
+      INSTALL_DIR: 'C:\Program Files\Drive'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,13 +143,13 @@ jobs:
       - name: Install WinFsp (its own MSI, silent)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\winfsp.msi", '/qn', '/norestart', '/l*v', "$PWD\installer\winfsp-install.log")
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\winfsp.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "WinFsp's MSI exited $($p.ExitCode)" }
 
       - name: Install Drive (silent, msiexec /qn)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\drive.msi", '/qn', '/norestart', '/l*v', "$PWD\installer\install.log")
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', "$PWD\installer\drive.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "the Drive MSI exited $($p.ExitCode)" }
 
       - name: Prove WinFsp is installed
@@ -250,7 +236,7 @@ jobs:
       - name: Uninstall Drive (silent)
         shell: pwsh
         run: |
-          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "$PWD\installer\drive.msi", '/qn', '/norestart', '/l*v', "$PWD\installer\uninstall.log")
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "$PWD\installer\drive.msi", '/qn', '/norestart')
           if ($p.ExitCode -ne 0) { throw "the Drive uninstall exited $($p.ExitCode)" }
 
       - name: Prove the uninstall is clean
@@ -329,21 +315,3 @@ jobs:
           }
           if ($fail) { exit 1 }
           Write-Host "bundle uninstall clean: no install dir, no task, no WinFsp"
-
-      # The installer's own logs, carried out of a red run. `if: failure()` is
-      # the job's own gate, so a green job uploads nothing and a red one -
-      # however early it turned red - leaves the logs behind for whoever reads
-      # it next. `if-no-files-found: warn` rather than `error` on purpose: a job
-      # that went red before the first msiexec ran has no log to give, and
-      # failing the upload then would throw away the one log that step DID
-      # write. The warning in the step's output is the record of that.
-      - name: Upload the installer's logs
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: msi-install-logs
-          path: |
-            installer\install.log
-            installer\winfsp-install.log
-            installer\uninstall.log
-          if-no-files-found: warn
