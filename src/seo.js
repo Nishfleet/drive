@@ -61,13 +61,6 @@ export const SITE = Object.freeze({
   llmsPath: "/llms.txt",
 });
 
-// Every public HTML page, and whether a crawler should index it. The order is
-// the sitemap order. usage.html is one person's own month, and the first-run,
-// Web Files, upload-request and sign-in pages are per-device or per-person
-// surfaces: each declares <meta name="robots" content="noindex"> and stays
-// out of the sitemap. test/seo.test.mjs walks this list, so a new page has to
-// be added here and given its own title, description and canonical rather than
-// inheriting this page's.
 /**
  * One shipped HTML page. `root` names the pages that ship as built Vite
  * entries from the repo root rather than as verbatim assets copied out of
@@ -75,6 +68,13 @@ export const SITE = Object.freeze({
  * @typedef {{ path: string, indexable: boolean, root?: boolean }} Page
  */
 
+// Every public HTML page, and whether a crawler should index it. The order is
+// the sitemap order. usage.html is one person's own month, and the first-run,
+// Web Files, upload-request and sign-in pages are per-device or per-person
+// surfaces: each declares <meta name="robots" content="noindex"> and stays
+// out of the sitemap. test/seo.test.mjs walks this list, so a new page has to
+// be added here and given its own title, description and canonical rather than
+// inheriting this page's.
 /** @type {readonly Page[]} */
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
@@ -117,6 +117,7 @@ export const PAGES = Object.freeze([
 // is the source, and the walk in the test checks it against the tree, so a page
 // that moves between the two sources, or a flag that is wrong, fails CI instead
 // of being tolerated by a second list kept beside it.
+/** @type {readonly string[]} */
 export const ROOT_PAGES = Object.freeze(
   PAGES.filter((page) => page.root).map((page) => page.path.replace(/^\//, "")),
 );

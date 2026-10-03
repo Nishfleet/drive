@@ -100,13 +100,24 @@ test("every page in PAGES ships from the source its flag names", () => {
   // to the repo root as a built Vite entry (issue #70), and PAGES went on
   // describing it as a public/ asset while the reading code branched around
   // that. This checks the flag against the tree, so a page registered against a
-  // source that does not carry it fails rather than being tolerated.
+  // source that does not carry it fails rather than being tolerated, AND it
+  // checks the opposite source does not also carry a stale copy, because a
+  // page that ships twice is the same drift.
   for (const page of PAGES) {
     const name = fileFor(page);
-    assert.ok(
-      existsSync(fileUrl(name)),
-      `${page.path} is registered in PAGES as a ${page.root ? "built Vite entry at the repo root" : "public/ asset"}, but ${page.root ? name : `public/${name}`} does not exist: move the page, or fix the flag, and keep the one PAGES list honest`,
-    );
+    const inPublic = existsSync(new URL(name, publicDir));
+    const inRoot = existsSync(new URL(name, rootDir));
+    if (page.root) {
+      assert.ok(inRoot,
+        `${page.path} is registered as a built Vite entry at the repo root, but ${name} does not exist there`);
+      assert.ok(!inPublic,
+        `${page.path} is registered as a built Vite entry at the repo root, so public/${name} must not also exist: a page that ships twice is drift`);
+    } else {
+      assert.ok(inPublic,
+        `${page.path} is registered as a public/ asset, but public/${name} does not exist`);
+      assert.ok(!inRoot,
+        `${page.path} is registered as a public/ asset, so ${name} must not also exist at the repo root: a page that ships twice is drift`);
+    }
   }
 });
 
