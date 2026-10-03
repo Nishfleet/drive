@@ -54,11 +54,12 @@ const moduleProxyBase = "https://proxy.golang.org"
 // hold the terminal.
 const updateTimeout = 30 * time.Second
 
-// updateOptions is everything one `drive update` run needs. The zero value is
-// the production shape: the module proxy at moduleProxyBase, `go` from PATH in
-// this process's environment, this process's version, stdout and stderr. The
-// fields a test sets are the same values production reads; none of them
-// changes which code runs.
+// updateOptions is everything one `drive update` run needs. Every default
+// lives in updateDrive, so the zero value runs the production path: the
+// module proxy at moduleProxyBase, `go` from PATH in this process's
+// environment, this process's version, stdout and stderr. The fields a test
+// sets are the same values production reads; none of them changes which code
+// runs.
 type updateOptions struct {
 	// proxyBase is the module proxy the released version is read from.
 	proxyBase string
@@ -115,6 +116,15 @@ func updateDrive(o updateOptions) error {
 	if proxyBase == "" {
 		proxyBase = moduleProxyBase
 	}
+	// A caller that leaves out and err unset gets the console, not a nil
+	// writer, so the zero value is the production path rather than a panic.
+	out, errw := o.out, o.err
+	if out == nil {
+		out = os.Stdout
+	}
+	if errw == nil {
+		errw = os.Stderr
+	}
 	latest, err := latestModuleVersion(proxyBase)
 	if err != nil {
 		return err
@@ -124,29 +134,29 @@ func updateDrive(o updateOptions) error {
 		from = versionText()
 	}
 	if from == latest {
-		fmt.Fprintf(o.out, "drive is up to date (%s)\n", from)
+		fmt.Fprintf(out, "drive is up to date (%s)\n", from)
 		return nil
 	}
 	if o.checkOnly {
-		fmt.Fprintf(o.out, "a newer drive is available: %s (this machine runs %s)\n", latest, from)
+		fmt.Fprintf(out, "a newer drive is available: %s (this machine runs %s)\n", latest, from)
 		return nil
 	}
-	goBin, err := ResolveGo(o.goBin)
+	goBin, err := resolveGo(o.goBin)
 	if err != nil {
 		return err
 	}
-	if err := installLatestRelease(goBin, o.goEnv, o.dir, o.out, o.err); err != nil {
+	if err := installLatestRelease(goBin, o.goEnv, o.dir, out, errw); err != nil {
 		return err
 	}
 	installed, err := installedDrivePath(goBin, o.goEnv)
 	if err != nil {
 		return err
 	}
-	to, err := BinaryVersionAt(installed)
+	to, err := binaryVersionAt(installed)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(o.out, "updated drive %s -> %s (%s)\n", from, to, installed)
+	fmt.Fprintf(out, "updated drive %s -> %s (%s)\n", from, to, installed)
 	return nil
 }
 
@@ -278,11 +288,11 @@ func moduleVersion(info *debug.BuildInfo) string {
 	return v
 }
 
-// BinaryVersionAt reads the version the drive binary at path reports, the way
+// binaryVersionAt reads the version the drive binary at path reports, the way
 // `go version -m` does. `drive update` reads the binary it just installed
 // rather than assuming the install worked: the version on disk is the one this
 // command is answerable for, and it is the one `drive version` will print.
-func BinaryVersionAt(path string) (string, error) {
+func binaryVersionAt(path string) (string, error) {
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read the build information of %s: %w", path, err)
@@ -293,10 +303,10 @@ func BinaryVersionAt(path string) (string, error) {
 	return version, nil
 }
 
-// ResolveGo resolves the Go toolchain `drive update` drives, the way
+// resolveGo resolves the Go toolchain `drive update` drives, the way
 // ResolveRclone resolves the rclone binary `drive mount` drives: a --go path
 // or DRIVE_GO first, then `go` from PATH.
-func ResolveGo(goBin string) (string, error) {
+func resolveGo(goBin string) (string, error) {
 	if goBin == "" {
 		goBin = os.Getenv("DRIVE_GO")
 	}

@@ -220,7 +220,7 @@ func TestUpdateInstallsTheLatestRelease(t *testing.T) {
 	if _, err := os.Stat(bin); err != nil {
 		t.Fatalf("the update did not install a binary at %s: %v", bin, err)
 	}
-	v, err := BinaryVersionAt(bin)
+	v, err := binaryVersionAt(bin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +261,23 @@ func TestUpdateCheckOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(envValue(t, env, "GOBIN"), "drive")); !os.IsNotExist(err) {
 		t.Fatal("--check must not install a binary")
+	}
+}
+
+// A caller that leaves the writers out of updateOptions gets the console,
+// not a panic: the zero value is the production path, not a nil dereference.
+// Only --check runs here, so nothing is installed while the defaults apply.
+func TestUpdateDefaultsTheWriters(t *testing.T) {
+	zipPath := makeProxyZip(t)
+	proxyURL, cleanup := localProxy(t, zipPath)
+	defer cleanup()
+	if err := updateDrive(updateOptions{
+		proxyBase: proxyURL,
+		goEnv:     updateTestEnv(t, proxyURL),
+		dir:       t.TempDir(),
+		checkOnly: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -306,11 +323,12 @@ func TestUpdateFailsWhenGoIsMissing(t *testing.T) {
 	zipPath := makeProxyZip(t)
 	proxyURL, cleanup := localProxy(t, zipPath)
 	defer cleanup()
-	env := append(updateTestEnv(t, proxyURL), "PATH=/usr/bin:/bin")
-	// ResolveGo reads this process's PATH, the way the real command does.
-	restore := os.Getenv("PATH")
+	env := updateTestEnv(t, proxyURL)
+	// Two paths serve two purposes here: t.Setenv sets the PATH this
+	// process's exec.LookPath reads, which is what resolveGo consults, and
+	// env is the environment any child the install would start would get
+	// (this test never reaches the install).
 	t.Setenv("PATH", "/usr/bin:/bin")
-	t.Cleanup(func() { _ = os.Setenv("PATH", restore) })
 	out := new(strings.Builder)
 	err := updateDrive(updateOptions{
 		proxyBase: proxyURL,
@@ -350,7 +368,7 @@ func TestDriveVersionFallbackForACheckoutBuild(t *testing.T) {
 	if raw, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, raw)
 	}
-	v, err := BinaryVersionAt(bin)
+	v, err := binaryVersionAt(bin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +384,7 @@ func TestDriveVersionReportsTheWorkingTreeVersion(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
 	}
-	v, err := BinaryVersionAt(driveBin(t))
+	v, err := binaryVersionAt(driveBin(t))
 	if err != nil {
 		t.Fatal(err)
 	}
