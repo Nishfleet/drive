@@ -135,12 +135,13 @@ and enforced by a storage endpoint is the STS work in `workers/api/src/s3-keys.j
 and its real-vendor proof is #173. That is the one part of "the key is scoped"
 this stand-in cannot carry, and it is why the check above is a prefix check.
 
-**Warning: a model under test gets the eval host's own shell.** `sandbox="local"
-` (the default) lets it read the host's environment, repository and any
-credentials on it, and reach the stand-in's directory. Run it on a machine
-where that is acceptable and free of secrets, or move the suite to an Inspect
-compose sandbox (`DRIVE_EVAL_SANDBOX=compose`, the isolation upgrade this slice
-leaves open).
+**Warning: a model under test gets the eval host's own shell.**
+`sandbox="local"` (the default) lets it read the host's environment, repository
+and any credentials on it, and reach the stand-in's directory. Run it on a
+machine where that is acceptable and free of secrets, or move the suite to an
+Inspect compose sandbox (`DRIVE_EVAL_SANDBOX=compose`, the isolation upgrade
+this slice leaves open).
+
 ## What is not done yet
 
 The end-state suite runs its tasks on a storage stand-in the agent reaches with

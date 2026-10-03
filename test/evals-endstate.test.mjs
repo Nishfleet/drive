@@ -72,23 +72,26 @@ test("every task names a grader the module defines, and the bytes it must find",
   for (const entry of entries) {
     const description = entry.split("\n")[0].trim();
     assert.ok(description.length > 0, "every task has a description");
-    assert.match(entry, /\n  task: /, `${description}: has a task`);
-    assert.match(entry, /\n  source: /, `${description}: names its source`);
-    const grader = entry.match(/\n  grader: (\w+)/)?.[1];
+    assert.match(entry, /\n {2}task: /, `${description}: has a task`);
+    assert.match(entry, /\n {2}source: /, `${description}: names its source`);
+    const grader = entry.match(/\n {2}grader: (\w+)/)?.[1];
     assert.ok(grader, `${description}: names its grader`);
     assert.ok(graders.has(grader), `${description}: grader ${grader} is one the module defines`);
     if (grader === "save_file") {
-      assert.match(entry, /\n  target_path: /, `${description}: names the path it grades`);
-      assert.match(entry, /\n  target_bytes: /, `${description}: names the bytes it grades`);
+      assert.match(entry, /\n {2}target_path: /, `${description}: names the path it grades`);
+      assert.match(entry, /\n {2}target_bytes: /, `${description}: names the bytes it grades`);
     }
-    if (/\n  why_hard: /.test(entry)) {
+    if (/\n {2}why_hard: /.test(entry)) {
       assert.ok(
         entry.indexOf("why_hard") < entry.indexOf("task:"),
         `${description}: says why a person finds it hard`,
       );
     }
   }
-  assert.ok(/\n  grader: unchanged/.test(tasks), "one task's graded fact is that nothing changed");
+  assert.ok(
+    /\n {2}grader: unchanged/.test(tasks),
+    "one task's graded fact is that nothing changed",
+  );
 });
 
 test("the graded facts are the account's files, and the seed is the module's", () => {
@@ -123,8 +126,16 @@ test("the grader reads a real inventory and fails closed when it cannot", () => 
   assert.match(source, /--files-only/, "the listing holds objects, not folders");
   assert.ok(!source.includes("roots("), "the lsd-on-u check is gone");
   // A call that fails or hangs returns None, and the grader fails closed.
-  assert.match(source, /except \(subprocess\.TimeoutExpired, OSError\)/, "a dead stand-in is caught");
-  assert.match(source, /the stand-in's listing failed/, "a failed listing is a failure, not a pass");
+  assert.match(
+    source,
+    /except \(subprocess\.TimeoutExpired, OSError\)/,
+    "a dead stand-in is caught",
+  );
+  assert.match(
+    source,
+    /the stand-in's listing failed/,
+    "a failed listing is a failure, not a pass",
+  );
   // A correct save writes a new key inside the account's own prefix; that is
   // allowed, and only a key outside it is an escape.
   assert.match(source, /key\.startswith\(own\)/, "the account's own prefix is allowed");
@@ -145,10 +156,7 @@ test("the agent's prompt carries the same docs and help the reading suite carrie
     read("test/evals.test.mjs").includes("drive-help.txt"),
     "the snapshot the reading suite gates is the same file",
   );
-  const prompt = source.slice(
-    source.indexOf("AGENT_PROMPT"),
-    source.indexOf("def dataset_from"),
-  );
+  const prompt = source.slice(source.indexOf("AGENT_PROMPT"), source.indexOf("def dataset_from"));
   for (const leaked of ["grader", "why_hard", "target_bytes", "END_STATE", "scorer"]) {
     assert.ok(!prompt.includes(leaked), `the prompt must not leak ${leaked} into the agent`);
   }
