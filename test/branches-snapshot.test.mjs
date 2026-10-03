@@ -295,6 +295,54 @@ test("a row written before the migration still diffs and approves from its colum
   assert.equal(object ? await new Response(object.body).text() : null, "edited");
 });
 
+test("a row written before the migration is listed correctly beside a row in the namespace", async () => {
+  // The mixed case, and the one `listBranches` can get wrong. A deployment
+  // that has migrated has BOTH kinds of open branch: rows made before the
+  // migration (JSON in the column, no pointer) and rows made after (JSON in the
+  // namespace). The list must resolve each through its own source, and must not
+  // read the column for a row that has a pointer.
+  //
+  // The drift is built so the two sources give DIFFERENT numbers, because a
+  // count that is the same either way proves nothing: a branch whose copy has
+  // one file added and one file changed reports 2 against the real snapshot,
+  // and 3 against an empty one (every file in the copy is then "added"). A
+  // list that read the column for a migrated row, or that resolved an old row
+  // against an empty map, lands on the wrong one.
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
+  await store.write("/Photos/b.txt", new Blob(["b"]).stream(), "text/plain");
+  // The old row, written the way the pre-migration code wrote it.
+  await createBranch(db, null, store, ACCOUNT, { folder: "/Photos", name: "old" });
+  // The new row, written with the namespace.
+  const snapshots = createKvSnapshotStore(createTestKv());
+  await createBranch(db, snapshots, store, ACCOUNT, { folder: "/Photos", name: "new" });
+  // Both branches' copies drift the same way: b.txt edited in the copy, and a
+  // c.txt that is only in the copy.
+  for (const branch of ["old", "new"]) {
+    await store.write(`/.branches/${branch}/b.txt`, new Blob(["edited"]).stream(), "text/plain");
+    await store.write(`/.branches/${branch}/c.txt`, new Blob(["c"]).stream(), "text/plain");
+  }
+
+  const listed = await listBranches(db, snapshots, store, ACCOUNT);
+  const old = listed.find((branch) => branch.name === "old");
+  const fresh = listed.find((branch) => branch.name === "new");
+  assert.equal(old?.changed, 2, "the pre-migration row diffs from its column: 1 added, 1 changed");
+  assert.equal(fresh?.changed, 2, "the migrated row diffs from the namespace: 1 added, 1 changed");
+  assert.equal(old?.snapshotKey, "", "the old row has no pointer");
+  assert.notEqual(fresh?.snapshotKey, "", "the new row has one");
+  // Neither answer carries a snapshot: the read-path half of drive#252 is that
+  // the list body is pointers, whether the JSON is in the column or the
+  // namespace.
+  for (const branch of listed) {
+    assert.deepEqual(
+      Object.keys(/** @type {{snapshot: Record<string, unknown>}} */ (branch).snapshot),
+      [],
+      "one answer is not N snapshots",
+    );
+  }
+});
+
 test("a branch of a folder under the row limit is still stored whole", async () => {
   // The other side of the measurement: the boundary is the file count, not the
   // branch's byte size, so an 8,800-file branch (~1,005 KiB) is written and

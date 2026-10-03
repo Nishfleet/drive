@@ -753,18 +753,33 @@ export async function listBranches(db, snapshots, store, account) {
     )
     .bind(account.id)
     .all();
+  const rows = result?.results ?? [];
+  // The legacy inline snapshots, and only those: a row written before migration
+  // 0012 carries its JSON in `branches.snapshot` and has no `snapshot_key`, and
+  // it has to keep diffing correctly, so its column is read here. The query is
+  // for `snapshot_key = ''` alone, so a row that HAS moved to the namespace
+  // contributes nothing: the list is not N snapshots, it is N pointers plus
+  // the pre-migration rows, and every pre-migration row was already inside the
+  // old 1 MiB row limit or it was refused at branch time.
+  const legacy = await db
+    .prepare("SELECT name, snapshot FROM branches WHERE account_id = ?1 AND snapshot_key = ''")
+    .bind(account.id)
+    .all();
+  /** @type {Map<string, unknown>} */
+  const inline = new Map();
+  for (const row of legacy?.results ?? []) {
+    inline.set(String(row.name), row.snapshot);
+  }
   const branches = [];
-  for (const row of result?.results ?? []) {
-    // No `snapshot` column is selected: an account's branch list must not pull
-    // every branch's snapshot into one answer, which is the read-path half of
-    // drive#252. The empty map here is the row's honest state — the row holds
-    // a pointer, not the JSON — and the count below resolves the one snapshot
-    // this branch needs, through the same reader every other diff uses.
+  for (const row of rows) {
+    // The empty map here is the row's honest state — the row holds a pointer,
+    // not the JSON — and the count below resolves the one snapshot this branch
+    // needs, through the same reader every other diff uses.
     const branch = toBranch(row, {});
     let changed = 0;
     let sourceChanged = 0;
     if (branch.state === "open") {
-      const snapshot = await readSnapshot(snapshots, branch.snapshotKey, row.snapshot);
+      const snapshot = await readSnapshot(snapshots, branch.snapshotKey, inline.get(branch.name));
       const diff = await diffBranch(store, { ...branch, snapshot });
       changed = diff.added.length + diff.changed.length + diff.removed.length;
       sourceChanged = diff.sourceChanged.length;
