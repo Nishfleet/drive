@@ -84,6 +84,7 @@ const EVERY_ROWS = [
   "disk use",
   "minimum macOS",
   "pause and resume an upload",
+  "Windows install and mount",
 ];
 
 // Space's own published add-on, the figure the two derived price rows are

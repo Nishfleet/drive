@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    The Windows installer bundle for Drive (drive issue #154).
+
+    What this bundle is for: `winget install Drive` installs one thing, and a
+    person who runs it never types a command by hand. winget's WinFsp
+    dependency (`Dependencies: PackageDependencies: WinFsp.WinFsp`, in the
+    winget manifests beside this file) covers the winget route; this bundle
+    covers the same machine when the installer is downloaded directly.
+
+    What it chains:
+      1. WinFsp's own official signed MSI, downloaded from WinFsp's own GitHub
+         release at build time (see the URL below, pinned to a release tag).
+         Nothing of WinFsp's is vendored or copied into this repository.
+      2. The Drive MSI (installer/drive.wxs), built by the same CI job.
+
+    WinFsp's licence, and why this route is compliant: WinFsp is GPLv3 with a
+    FLOSS exception. The exception's own text permits distributing WinFsp
+    "in combination with" a FLOSS application under a GPL-compatible licence.
+    Drive is GPLv3-compatible (GPLv3), so the FLOSS exception applies to this
+    chain and no commercial licence is needed. No commercial licence is bought
+    here, so nothing in this repository spends money. The second WinFsp licence
+    (a paid commercial one, for closed-source products) is the route we do NOT
+    use, because Drive's source is open under GPLv3.
+
+    Burn is WiX's own bundle engine and part of the same toolchain the MSI is
+    built with, so this is one stock toolchain, not a second one.
+  -->
+  <Bundle
+    Name="Drive Setup"
+    Manufacturer="Nishfleet"
+    Version="1.0.0"
+    UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567891"
+    Compressed="yes">
+
+    <Chain>
+      <!--
+        WinFsp: the driver that turns an rclone mount into a Windows drive
+        letter. Downloaded by the workflow from WinFsp's own release, never
+        vendored, and installed with Windows Installer's own silent switch.
+
+        Compressed="no" keeps WinFsp's MSI as a payload that the bundle
+        downloads at install time rather than embedding a second vendor's
+        binary in ours: this repository carries the URL, not the file.
+      -->
+      <MsiPackage
+        Id="WinFsp"
+        SourceFile="winfsp.msi"
+        DownloadUrl="https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
+        Vital="yes"
+        Permanent="no"
+        Compressed="no" />
+
+      <!-- Drive itself. The MSI is built beside it by the same CI job from
+           installer/drive.wxs. -->
+      <MsiPackage Id="Drive" SourceFile="drive.msi" Vital="yes" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

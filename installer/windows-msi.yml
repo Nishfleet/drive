@@ -1,0 +1,245 @@
+# Windows: build the MSI, install it silently, and prove the drive letter
+# (drive issue #154, the finish line of "we do EVERYTHING how pro devs do it").
+#
+# THIS FILE IS NOT IN .github/workflows/ ON PURPOSE. The agent worker's App
+# token has Contents/PRs/Issues write and no Workflows write, so a push that
+# touches .github/workflows/ is rejected by GitHub with:
+#
+#   ! [remote rejected] ... refusing to allow a GitHub App to create or
+#     update workflow `.github/workflows/...` without `workflows` permission
+#
+# That is the same wall drive#245 (Lighthouse) and drive#291 (the #153
+# windows-latest job) recorded. Someone with Workflows write moves this file to
+# .github/workflows/windows-msi.yml unchanged, or grants the App that
+# permission. The YAML below is written to be dropped in as-is.
+#
+# What it proves, in order:
+#   1. the MSI and the Burn bundle build with the stock WiX v4 toolchain;
+#   2. a per-machine install of WinFsp's own MSI plus Drive's MSI is silent;
+#   3. WinFsp's driver is on the machine, drive.exe and rclone.exe are on PATH,
+#      and the login task from drive#153 exists;
+#   4. the installed product mounts at a drive letter, a write through the
+#      letter reads back, and unmount takes the letter down;
+#   5. `winget validate` passes on the manifest beside this file;
+#   6. a silent uninstall leaves no binary, no PATH entry and no task.
+#
+# The builds are UNSIGNED. A signing certificate costs money (Azure Trusted
+# Signing is about $10 a month), so nothing here publishes: this job runs on
+# pull requests and on main, and output artefacts stay inside the run. Signing
+# and the winget PR to microsoft/winget-pkgs are Nish's call (drive#154).
+
+name: Windows MSI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      GO_VERSION: "1.24"
+      RCLONE_VERSION: "v1.75.0"
+      # WinFsp's own release, pinned to a tag. The MSI is downloaded from
+      # WinFsp's own GitHub release at build time and never vendored.
+      WINFSP_VERSION: "2.1.25156"
+      WINFSP_MSI_URL: "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
+      INSTALL_DIR: 'C:\Program Files\Drive'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # WiX v4 is the MSI toolchain (installer/drive.wxs). It is a .NET tool,
+      # installed through the stock dotnet tool installer, so there is no
+      # hand-written build step of ours anywhere in this chain.
+      - name: Install the WiX toolchain
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.1
+          dotnet tool install --global wix.taskscheduler --version 4.0.1 2>$null
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
+
+      # The Util extension is what the Environment (PATH) element and
+      # WixQuietExec64 live in; it is a NuGet package the extension cache holds.
+      - name: Restore the WiX Util extension
+        shell: pwsh
+        run: |
+          wix extension add WixToolset.Util.wixext/4.0.1
+
+      - name: Build drive.exe for Windows
+        shell: pwsh
+        run: go build -o installer\drive.exe ./cmd/drive
+
+      - name: Download rclone (the vendor's own Windows build)
+        shell: pwsh
+        run: |
+          curl.exe -sSO "https://downloads.rclone.org/rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip"
+          Expand-Archive -Path "rclone-${{ env.RCLONE_VERSION }}-windows-amd64.zip" -DestinationPath rclone -Force
+          $exe = Join-Path "rclone\rclone-${{ env.RCLONE_VERSION }}-windows-amd64" "rclone.exe"
+          if (-not (Test-Path $exe)) { throw "rclone.exe was not in the vendor's zip" }
+          Copy-Item $exe installer\rclone.exe
+          & $exe.FullName version
+
+      - name: Download WinFsp's own MSI
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ env.WINFSP_MSI_URL }}" -OutFile installer\winfsp.msi
+          if (-not (Test-Path installer\winfsp.msi)) { throw "WinFsp's MSI did not download" }
+
+      - name: Build the Drive MSI
+        shell: pwsh
+        run: |
+          wix build installer\drive.wxs -o installer\drive.msi `
+            -ext WixToolset.Util.wixext `
+            -arch x64
+          if (-not (Test-Path installer\drive.msi)) { throw "the MSI did not build" }
+          Write-Host "drive.msi: $((Get-Item installer\drive.msi).Length) bytes"
+
+      - name: Build the Drive Setup bundle (Drive + WinFsp)
+        shell: pwsh
+        run: |
+          wix build installer\bundle.wxs -o installer\drive-setup.exe -arch x64
+          if (-not (Test-Path installer\drive-setup.exe)) { throw "the bundle did not build" }
+          Write-Host "drive-setup.exe: $((Get-Item installer\drive-setup.exe).Length) bytes"
+
+      # ---------- silent install, in the order a person's machine gets it
+
+      - name: Install WinFsp (its own MSI, silent)
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/i`, "$PWD\installer\winfsp.msi", `/qn`, `/norestart`
+          if ($p.ExitCode -ne 0) { throw "WinFsp's MSI exited $($p.ExitCode)" }
+
+      - name: Install Drive (silent, msiexec /qn)
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/i`, "$PWD\installer\drive.msi", `/qn`, `/norestart`
+          if ($p.ExitCode -ne 0) { throw "the Drive MSI exited $($p.ExitCode)" }
+
+      - name: Prove WinFsp is installed
+        shell: pwsh
+        run: |
+          $bin = Join-Path ${env:ProgramFiles(x86)} "WinFsp\bin"
+          $dll = Join-Path $bin "winfsp-x64.dll"
+          if (-not (Test-Path $dll)) { throw "WinFsp did not install its driver at $dll" }
+          Write-Host "WinFsp driver: $dll"
+
+      - name: Prove drive.exe and rclone.exe are on PATH
+        shell: pwsh
+        run: |
+          $drive = (Get-Command drive.exe -ErrorAction SilentlyContinue).Source
+          $rclone = (Get-Command rclone.exe -ErrorAction SilentlyContinue).Source
+          if (-not $drive) { throw "drive.exe is not on PATH"; exit 1 }
+          if (-not $rclone) { throw "rclone.exe is not on PATH"; exit 1 }
+          Write-Host "drive.exe: $drive"
+          Write-Host "rclone.exe: $rclone"
+
+      - name: Prove the login task from drive#153 exists
+        shell: pwsh
+        run: |
+          $task = Get-ScheduledTask -TaskName "drive-mount" -ErrorAction SilentlyContinue
+          if (-not $task) { throw "the login task drive-mount does not exist"; exit 1 }
+          Write-Host "task: $($task.TaskName), state $($task.State)"
+
+      - name: Prove the installed product mounts, writes and reads back
+        shell: pwsh
+        run: |
+          # The stock stand-in the Go proof uses: rclone serve s3 on a local
+          # folder. Same toolchain, same proof shape as TestStandinMountProof.
+          $data = Join-Path $env:RUNNER_TEMP "standin-data"
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $serve = Start-Process rclone.exe -PassThru -ArgumentList `
+            "serve", "s3", $data, "--auth-key", "MSIACCESSKEY,msisecret",
+            "--addr", "127.0.0.1:39181", "--log-level", "INFO"
+          Start-Sleep -Seconds 5
+          try {
+            $home = "C:\Users\runneradmin"
+            $env:DRIVE_S3_ACCESS_KEY_ID = "MSIACCESSKEY"
+            $env:DRIVE_S3_SECRET_ACCESS_KEY = "msisecret"
+            $out = & drive.exe mount --home $home --endpoint http://127.0.0.1:39181 `
+              --bucket drive-standin --prefix u/msi-test
+            Write-Host "mount: $out"
+            if ($LASTEXITCODE -ne 0) { throw "drive mount exited $LASTEXITCODE" }
+
+            $status = & drive.exe status --home $home
+            Write-Host "status: $status"
+            $letter = ($status | Select-String -Pattern "drive letter: ([A-Za-z]:)").Matches[0].Groups[1].Value
+            if (-not $letter) { throw "no drive letter in drive status output"; exit 1 }
+            Write-Host "mounted at $letter"
+
+            $path = Join-Path (Join-Path $letter "\") "written-through.txt"
+            Set-Content -Path $path -Value "written through the drive letter" -NoNewline
+            Start-Sleep -Seconds 8
+            $read = Get-Content -Path $path -Raw
+            if ($read -ne "written through the drive letter") {
+              throw "read back '$read', want 'written through the drive letter'"
+            }
+            Write-Host "write/read back: $read"
+
+            & drive.exe unmount --home $home
+            if ($LASTEXITCODE -ne 0) { throw "drive unmount exited $LASTEXITCODE"; exit 1 }
+            Start-Sleep -Seconds 3
+            if (Test-Path $path) { throw "$letter is still mounted after unmount"; exit 1 }
+            Write-Host "unmounted: $letter is gone"
+          }
+          finally {
+            Stop-Process -Id $serve.Id -Force
+          }
+
+      # ---------- the winget manifest
+
+      - name: The winget manifest passes winget validate
+        shell: pwsh
+        run: |
+          winget validate "installer\winget\manifests\Nishfleet\Nishfleet.Drive\1.0.0"
+          if ($LASTEXITCODE -ne 0) { throw "winget validate failed"; exit 1 }
+          Write-Host "winget validate: passed"
+
+      # ---------- silent uninstall, and a clean machine afterwards
+
+      - name: Uninstall Drive (silent)
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList `/x`, "$PWD\installer\drive.msi", `/qn`, `/norestart`
+          if ($p.ExitCode -ne 0) { throw "the Drive uninstall exited $($p.ExitCode)" }
+
+      - name: Prove the uninstall is clean
+        shell: pwsh
+        run: |
+          $fail = $false
+          if (Test-Path "${{ env.INSTALL_DIR }}") {
+            Write-Host "left behind: ${{ env.INSTALL_DIR }}"; $fail = $true
+          }
+          $task = Get-ScheduledTask -TaskName "drive-mount" -ErrorAction SilentlyContinue
+          if ($task) { Write-Host "left behind: the drive-mount task"; $fail = $true }
+          $path = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+          if ($path -split ';' -contains "${{ env.INSTALL_DIR }}") {
+            Write-Host "left behind: the machine PATH entry"; $fail = $true
+          }
+          if ($fail) { exit 1 }
+          Write-Host "uninstall clean: no install dir, no task, no PATH entry"
+
+      - name: Prove WinFsp survived Drive's uninstall
+        shell: pwsh
+        run: |
+          $dll = Join-Path ${env:ProgramFiles(x86)} "WinFsp\bin\winfsp-x64.dll"
+          if (-not (Test-Path $dll)) {
+            throw "WinFsp went with Drive, but WinFsp is its own package"
+          }
+          Write-Host "WinFsp is still installed: $dll"
