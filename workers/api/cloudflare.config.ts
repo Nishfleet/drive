@@ -49,10 +49,10 @@ export default defineWorker({
     // index.js reads it as env.DRIVE_DB), and Better Auth's own user and
     // session tables live on it too (src/auth.js, migrations/drive/
     // 0005_better_auth.sql), so an approve resolves one account across both
-    // Workers. Same name and same id as the site Worker's DRIVE_DB. The
-    // accounts store #161 asked for is that same user table: Better Auth's
-    // instance is on this database (#181), so a session in one Worker is the
-    // same account in the other and there is no fourth binding to declare.
+    // Workers. Same name and same id as the site Worker's DRIVE_DB: the
+    // accounts store #161 asked for is that same user table — Better Auth's
+    // instance is on this database (#181) — so a session in one Worker is the
+    // same account in the other, and there is no second binding to declare.
     DRIVE_DB: bindings.d1({
       name: "drive-data",
       id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
@@ -88,12 +88,18 @@ export default defineWorker({
       namespace: "1007",
       simple: { limit: 600, period: 60 },
     }),
-    // Cloudflare Email Sending (drive#33): the sign-in link the device
-    // approval page mails goes through the same provider the site Worker's
-    // mail does (src/auth.js `sendLink`, src/email-send.js). No options: the
-    // binding is restricted by the domains onboarded for sending, so nothing
-    // here pins a brand domain before drive has one.
-    EMAIL: bindings.sendEmail(),
+    // No mailer is declared, and none is needed: no route this Worker mounts
+    // sends mail. The device flow starts with a code the CLI shows
+    // (POST /v1/device/code) and ends with the person approving it on
+    // /v1/device/approve, which the account gate holds behind a session the
+    // site Worker's own /api/signin mints — that route, and the sign-in link
+    // it sends through the site Worker's EMAIL binding, is the only place a
+    // drive mail leaves. Better Auth's instance over this database does read a
+    // mailer (src/auth.js `sendSigninLink`), but it is reached only through an
+    // auth endpoint, and this Worker mounts none, so the binding would be one
+    // no code reads: a name waiting to drift from the code that never calls it.
+    // When a route that mails lands here, it declares its mailer with it.
+    //
     // The three values this Worker reads from env that are not declared, for
     // the same reason the site Worker does not declare them
     // (cloudflare.config.ts): a declared secret is required at deploy, so the
