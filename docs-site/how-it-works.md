@@ -32,10 +32,35 @@ changes it, and `drive cache --clear` empties it without touching a file still
 waiting to upload. `drive status` shows the same cache use. Files you keep
 offline stay on this computer, are never evicted, and count toward that limit.
 
+## Keeping a folder on this computer
+
+If you are going somewhere with no network, tell the drive to keep the folder
+here first:
+
+```sh
+drive offline <path>      # keep this file or folder on the computer
+drive offline --list      # what is kept here now
+drive online <path>       # stop keeping it here; with no path, all of it
+```
+
+`drive status` says what is kept offline. What is kept here is a copy on this
+machine's disk, so it is the one thing that a wiped laptop can lose.
+
+## Stopping the uploads for a while
+
+```sh
+drive pause       # stop the bytes leaving this computer; survives a restart
+drive resume      # let them leave again
+```
+
+Pausing holds new saves on this computer and sends nothing. Files already on
+the drive keep working, because reads come the other way.
+
 ## Versions
 
-Version history is not in version 1. See [Limits](/limits) for what is not in
-version 1.
+Version history is not in version 1. Saving a file again replaces it, and no
+command lists the versions that were there before. See
+[Limits](/limits) for what is not in version 1.
 
 ## Restore
 

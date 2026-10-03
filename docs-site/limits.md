@@ -24,6 +24,8 @@ would rather you read it here than find out in week three.
   Linux.
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
+- **No version history.** Save a file again and the file is replaced; no command
+  lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Windows installs with an MSI, not a command.** Windows gets the
   same mount as Mac and Linux, on a drive letter, with WinFsp as the driver
@@ -31,14 +33,18 @@ would rather you read it here than find out in week three.
   stock WiX toolchain and WinFsp arrives through its own package dependency,
   never a vendored copy. Builds are unsigned until a signing certificate is
   bought, so no published release exists yet (#154).
-- **No second person on the account.** One account, your devices, your agents.
+- **No second person on the account.** There is one account, your devices and
+  your agents, so sharing a folder with a colleague is not a version 1 thing.
+  When someone leaves there is no access of theirs to take away: revoke that
+  machine's key with `drive logout` on the machine itself, and turn its links
+  off with `drive share --revoke <t>`.
 
 ## Where we are slower than the alternatives
 
 - **First open of a large file.** A file streams on demand, so a 5 GB video
   starts before the whole file has arrived, but the first open on a slow
-  connection will stutter. A drive that holds local copies of the files you
-  keep offline is faster to reopen.
+  connection will stutter. `drive offline <path>` keeps a folder on this
+  computer instead, which is what a rival's local copy already does.
 - **Rename and move are not free.** A folder move is a copy and a delete on
   plain object storage. It does not copy the bytes through your machine, but
   it is still not an instant rename, and a big move takes time.
@@ -54,9 +60,9 @@ would rather you read it here than find out in week three.
 
 ## Where we are better
 
-- **A cap you set.** Set a spending cap and the drive goes read-only at it:
-  nothing is deleted, and the bill stops there. The default cap is
-  {{DEFAULT_CAP}}.
+- **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
+  drive goes read-only at it: nothing is deleted, and the bill stops there.
+  The default cap is {{DEFAULT_CAP}}.
 - **The bill ceiling.** The metered cost is cut off at a flat
   {{CEILING_FLOOR}} until the drive passes 1.5 TB, then {{CEILING_PER_TB}} for
   each TB after, so a full drive cannot surprise you.
