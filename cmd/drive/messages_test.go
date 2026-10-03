@@ -236,6 +236,21 @@ func TestRenderMountState(t *testing.T) {
 	}
 }
 
+func TestFailDetailUnknownKindDoesNotPanic(t *testing.T) {
+	err := failDetail("not-a-kind", fmt.Errorf("underlying"))
+	var f *failure
+	if !errors.As(err, &f) {
+		t.Fatalf("got %T, want a table failure", err)
+	}
+	if f.Kind != "unexpected" {
+		t.Errorf("kind = %q, want unexpected so the person still gets a next step", f.Kind)
+	}
+	got := printedFailure(err)
+	if !strings.Contains(got, "next:") {
+		t.Errorf("unknown kind printed with no next step:\n%s", got)
+	}
+}
+
 func TestLimitStatusLines(t *testing.T) {
 	block := "a\nb\nc\nd\n"
 	got := limitStatusLines(block, 3)

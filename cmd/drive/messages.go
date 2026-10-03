@@ -219,9 +219,20 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
 		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in src/messages.js: a silent default would
-		// hide exactly the entry the message table exists for.
-		panic(fmt.Sprintf("no message table entry for %q; add it to messageTable in cmd/drive/messages.go", kind))
+		// failureMessage throws in src/messages.js. The CLI still has to print
+		// a next step rather than crash, so it falls back to unexpected and
+		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
+		missing := fmt.Errorf("no message table entry for %q", kind)
+		if detail != nil {
+			missing = fmt.Errorf("no message table entry for %q: %w", kind, detail)
+		}
+		fallback := messageTable["unexpected"]
+		return &failure{
+			Kind:   "unexpected",
+			What:   fallback[0],
+			Next:   fallback[1],
+			detail: missing,
+		}
 	}
 	return &failure{Kind: kind, What: fill(entry[0], args), Next: fill(entry[1], args), detail: detail}
 }
@@ -239,7 +250,7 @@ func fill(template string, args []string) string {
 }
 
 // debugDetail reports whether the underlying error may be shown.
-func debugDetail() bool { return os.Getenv("DRIVE_DEBUG") != "" }
+func debugDetail() bool { return os.Getenv("DRIVE_DEBUG") == "1" }
 
 // printFailure writes err to w the way main shows it: what happened, then the
 // next step. A failure's underlying detail is shown only with DRIVE_DEBUG=1;
