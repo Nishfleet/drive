@@ -190,12 +190,14 @@ export function renderDocs(outDir = RENDERED_DIR) {
 // `node src/render-docs.js` is what `npm run docs:render` runs, so the docs
 // build has one entry point and no script file of its own. The help snapshot
 // does NOT ride it: `docs:render` runs inside `npm test` before the tests, so
-// writing the committed snapshot here let the snapshot gate compare the build's
-// output with itself, and a stale snapshot passed CI (drive#332). `--sync-help`
-// is the one command that writes the snapshot the eval reads.
+// writing the committed snapshot here let the gate compare the build's output
+// with itself, and a stale snapshot passed CI (drive#332). `--sync-help` is the
+// one command that writes the snapshot (only the snapshot; rendering the pages
+// is a build step, not a sync), so CLI drift in main.go fails the build.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  renderDocs();
   if (process.argv.includes("--sync-help")) {
     renderHelpSnapshot();
+  } else {
+    renderDocs();
   }
 }

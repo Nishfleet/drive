@@ -8,8 +8,9 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,7 @@ import { fileURLToPath } from "node:url";
 // wrote the snapshot there made this gate compare the render's output with
 // itself, and a stale committed snapshot passed CI while the step dirtied a
 // clean main (drive#332).
-import { cliUsageText } from "../src/render-docs.js";
+import { cliUsageText, renderDocs } from "../src/render-docs.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -391,6 +392,26 @@ test("drive --help snapshot still matches the shipped CLI", () => {
   const m = cliUsageText().trim();
   const snapshot = read("evals/agents/context/drive-help.txt").trim();
   assert.equal(snapshot, m, "help text drift would break the context; run npm run eval:sync-help");
+});
+
+test("docs:render never writes the committed CLI-help snapshot", () => {
+  // The snapshot is committed and the gate above checks it, so only
+  // `npm run eval:sync-help` may write it. docs:render runs inside npm test
+  // before these gates; if it touched the snapshot, the gate would compare the
+  // render's own output with itself and a stale snapshot would pass CI
+  // (drive#332). This pins the render path out of the committed file's way.
+  const snapshot = read("evals/agents/context/drive-help.txt");
+  const tmpDir = mkdtempSync(join(os.tmpdir(), "drive-render-"));
+  try {
+    renderDocs(tmpDir);
+    assert.equal(
+      read("evals/agents/context/drive-help.txt"),
+      snapshot,
+      "renderDocs must not rewrite the committed snapshot; use npm run eval:sync-help",
+    );
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("package.json wires the one command and the stock tool", () => {
