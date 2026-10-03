@@ -218,7 +218,7 @@ We write only the product's own logic (sign-up, key minting, metering, billing g
 | Linux drive | `rclone mount` with the same cache settings | Config written by the CLI |
 | Free downloads | rclone's `--b2-download-url` pointed at a Cloudflare-proxied hostname; B2 to Cloudflare traffic is free under Backblaze's partner program | A Worker on that hostname that counts bytes per user |
 | Agent tools | Each tool's own MCP registration (`claude mcp add`, `codex mcp add`, Cursor's `mcp.json`, Gemini and Kiro config), the stock MCP filesystem server pointed at the mounted drive, and a short skill file per tool | The CLI steps that call those commands |
-| Metering | B2 Event Notifications on file create and hide, sent to a Cloudflare Worker, stored in Cloudflare D1 | Worker that turns events into GB-seconds per user, with a 1-hour minimum per file |
+| Metering | B2 Event Notifications on file create and hide, sent to a Cloudflare Worker, stored in Cloudflare D1 | Worker that turns events into GB-seconds per user, with a 1-hour minimum per file; one exception (drive #104, decided 2026-10-03): a version that stopped at the instant a same-size version took its place books no second minimum, because those bytes never left the drive |
 | Billing | Dodo usage-based billing meters (Dodo charges $1 per million events) | Send each user's usage to Dodo hourly, apply the $1 credit and the cap |
 | Branches | rclone server-side copy inside B2 (no download) | `drive branch`, `drive approve`, `drive discard` |
 | Backup copy | `rclone sync` from B2 to a Hetzner Storage Box, nightly | One scheduled job; name the runner at go time |

@@ -143,7 +143,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 ## How the money is worked out
 
 - Each file version is billed from `created_at` until `hidden_at` (when it's replaced or deleted). Old versions are free to the user: B2 keeps them 1 day and Hetzner keeps them 30, and we absorb that cost.
-- GB-minutes = size in GB × whole minutes stored, with at least 60 minutes per version (the 1-hour minimum).
+- GB-minutes = size in GB × whole minutes stored, with at least 60 minutes per version (the 1-hour minimum). One exception (drive #104): a version that stopped at the instant a same-size version took its place does not book a second minimum. A folder move is a copy then a delete, so the retired version's bytes never left the drive and the successor bills them from that instant. The minimum is booked once per holding, by the version that ends it.
 - Monthly cost = total GB-minutes ÷ 43,800 (minutes in an average month) × 2¢.
 - Downloads: bytes counted by the dl Worker. Anything above 3x the average stored GB that month is billed at 1¢/GB.
 - The free $1 comes off each month. Without a card, writes stop at $1 of usage (the account's cap is $1 until a card is added).
