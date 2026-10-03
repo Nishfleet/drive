@@ -50,7 +50,7 @@ func Uninstall(goos, home string) error {
 	// nothing to prefetch from. A missing item is not an error, so
 	// uninstall is safe on a machine that was never mounted.
 	var removed error
-	for _, path := range []string{LoginItemPath(goos, home), PrefetchLoginItemPath(goos, home)} {
+	for _, path := range LoginItemFiles(goos, home) {
 		if err := removeIfPresent(path); err != nil {
 			removed = errors.Join(removed, err)
 		}
