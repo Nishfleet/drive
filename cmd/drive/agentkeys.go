@@ -59,14 +59,20 @@ func needsRenew(key *agentKey, now time.Time) bool {
 	return !time.Unix(*key.ExpiresAt, 0).After(now.Add(agentKeyRenewMargin))
 }
 
-// expiryLabel renders a stored key's expiry for a person to read: the instant
-// the api Worker stops accepting the credential, or the plain statement that
-// there is none. It is the mint's answer rather than a countdown, because the
-// api Worker renews the window on every request and a countdown would read as
-// something the CLI tracks.
+// expiryLabel renders a stored key's expiry for a person to read. Two claims
+// and no third:
+//
+//   - an expiry is an instant the api Worker stops accepting the credential
+//     at. It is the mint's answer rather than a countdown, because the api
+//     Worker renews the window on every request and a countdown would read as
+//     something the CLI tracks.
+//   - no expiry is a key this file holds from before the hour (the previous
+//     CLI stored none), and what is true of it is what is true of every other
+//     agent key: the api Worker renews the window while something uses the
+//     key. "no expiry" would be a promise the api no longer keeps.
 func expiryLabel(expiresAt *int64) string {
 	if expiresAt == nil {
-		return "no expiry"
+		return "renews while this tool uses it"
 	}
 	return "expires " + time.Unix(*expiresAt, 0).Local().Format("2006-01-02 15:04")
 }

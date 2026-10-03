@@ -262,6 +262,44 @@ test("a renewal never shortens the window the row already carries", async () => 
   assert.equal(result.renewed, false, "and the answer does not claim a window it did not move");
 });
 
+test("the cap swap keeps the hour the key already had, and takes no powers back it never had", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_cap", name: "Cap drive" };
+  const minted = await store.mintKey(account, { kind: "agent", name: "claude" });
+
+  // The key is in use, so its window has moved out past the mint's. The
+  // request goes through a second instance, whose local map is empty and
+  // therefore reads and renews the row in D1 — the same shape a Worker
+  // isolate that did not mint the key has.
+  const second = storeOver(db, clock);
+  clock.advance(AGENT_KEY_TTL_SECONDS / 2);
+  assert.ok(await second.authenticate(minted.accessKeyId, minted.secret));
+  const renewed = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId).expires_at;
+  assert.ok(renewed > minted.expiresAt, "the request moved the window out");
+
+  // The cap swaps it to read-only on the same row and the same id, so the
+  // key a person sees listed is the one that was there before. The write that
+  // lands carries the window the swap just computed, never the one the row
+  // was minted with: a read-only key that dies early is a key the mount
+  // cannot use.
+  const provider = createD1DeviceStore(db, { now: clock.now }).keyProviderFor(account.id);
+  const swapped = await provider.swapToReadOnly(minted.keyId);
+  assert.equal(swapped.keyId, minted.keyId, "the swap keeps the key id");
+  const after = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
+  assert.deepEqual(JSON.parse(String(after.capabilities)), ["list", "read"]);
+  assert.deepEqual(JSON.parse(String(after.capped_from)), ["list", "read", "write"]);
+  assert.equal(after.expires_at, swapped.expiresAt, "the row holds the window the swap wrote");
+  assert.ok(after.expires_at >= renewed, "and it is not shorter than the one it replaced");
+  assert.equal(swapped.expiresAt, clock.now() / 1000 + AGENT_KEY_TTL_SECONDS);
+
+  assert.ok(
+    !JSON.parse(String(after.capabilities)).includes("delete"),
+    "and the short-lived credential still cannot delete",
+  );
+});
+
 test("a device key row written before the column stays expired-free and still works", async () => {
   const { sqlite, db } = makeMeteredDB();
   const clock = fixedClock();

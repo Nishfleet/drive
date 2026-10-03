@@ -510,11 +510,87 @@ func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
 	at := time.Date(2026, 10, 2, 13, 4, 0, 0, time.UTC)
 	seconds := at.Unix()
 	want := "expires " + at.Local().Format("2006-01-02 15:04")
-	if got := expiryLabel(nil); got != "no expiry" {
+	// A key this file holds from before the hour carries no expiry, and what
+	// the api Worker renews it on is what the display says. "no expiry" would
+	// be a promise the api no longer keeps.
+	if got := expiryLabel(nil); got != "renews while this tool uses it" {
 		t.Fatalf("a key with no expiry reads %q", got)
 	}
 	if got := expiryLabel(&seconds); got != want {
 		t.Fatalf("an expiry reads %q, want %q", got, want)
+	}
+}
+
+// TestInitShowsTheExpiryTheToolHolds is the wiring behind that label: a
+// person runs `drive init` and the line they read is the one the api Worker
+// answers with, never the mint's value the CLI already had.
+func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
+	home := t.TempDir()
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	client, _ := NewAPIClient(server.URL, "dtok")
+	env := Env{
+		Home:     home,
+		Runner:   &recordingRunner{},
+		LookPath: func(name string) (string, error) { return "/fake/" + name, nil },
+		Minter:   ToolMinter{Client: client, Home: home},
+	}.withDefaults()
+	if err := initAgents(env); err != nil {
+		t.Fatal(err)
+	}
+	key, err := agentKeyFor(home, "cursor")
+	if err != nil || key == nil {
+		t.Fatalf("cursor has no key: %v (%v)", key, err)
+	}
+	if key.ExpiresAt == nil {
+		t.Fatal("a key minted with the hour must carry it")
+	}
+
+	// A key stored before the hour holds no expiry, and the line says what the
+	// api Worker renews it on. "no expiry" would be a promise the api no longer
+	// keeps, so this is the branch a person with an older key reads.
+	key.ExpiresAt = nil
+	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
+		t.Fatal(err)
+	}
+	legacy := captureStdout(t, func() {
+		if err := initAgents(env); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(legacy, "renews while this tool uses it") {
+		t.Fatalf("the connected line does not say what renews the key:\n%s", legacy)
+	}
+	if len(api.renewedIDs) != 0 {
+		t.Fatalf("renewed %v, want no renewal for a key with no expiry on disk", api.renewedIDs)
+	}
+
+	// A key minted with an hour reads as that hour's instant, and a renew moves
+	// it, so the same line carries the Worker's own answer.
+	almost := time.Now().Add(time.Minute).Unix()
+	key.ExpiresAt = &almost
+	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := initAgents(env); err != nil {
+		t.Fatal(err)
+	}
+	answered := api.keys["key_cursor"].ExpiresAt
+	if answered == nil {
+		t.Fatal("the fake Worker sent no expiry with the renewal")
+	}
+	want := "expires " + time.Unix(*answered, 0).Local().Format("2006-01-02 15:04")
+	renewed := captureStdout(t, func() {
+		if err := initAgents(env); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(renewed, want) {
+		t.Fatalf("the connected line must carry %q:\n%s", want, renewed)
+	}
+	if strings.Contains(renewed, "renews while this tool uses it") {
+		t.Fatalf("a key with an hour reads as though it has none:\n%s", renewed)
 	}
 }
 
