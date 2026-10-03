@@ -43,17 +43,23 @@ macOS, with Homebrew:
 brew install nishfleet/tap/drive
 ```
 
-One command installs the drive CLI and rclone together. The release that
-publishes these packages runs on a `v*` tag (`.goreleaser.yaml`), and until the
-first release you can build the same package from the source with
-`goreleaser release --snapshot --clean` and install the file it writes under
-`dist/`, or install from the source with
+One command installs the drive CLI and rclone together. The mount needs
+rclone 1.68.0 or newer, and `drive init` refuses an older one and prints the
+fix, so on a release whose archive rclone is older than that install rclone
+from [rclone.org/downloads](https://rclone.org/downloads/) first — Ubuntu
+24.04's archive rclone is 1.60.1, below the floor, and Fedora 43's is 1.74.3,
+above it. The release that publishes these packages runs on a `v*` tag
+(`.goreleaser.yaml`), and until the first release you can build the same
+package from the source with `goreleaser release --snapshot --clean` and install
+the file it writes under `dist/`, or install from the source with
 `go install github.com/Nishfleet/drive/cmd/drive@latest`.
 
-On Windows, the MSI installer does it: it puts `drive.exe` and rclone on your
-PATH, brings WinFsp in through WinFsp's own package dependency, and registers
-the logon task. Until a signed release exists there is nothing public to
-download yet, and `winget install Nishfleet.Drive` comes with that release.
+On Windows the install path is separate from the packages above: the MSI
+installer, built with the WiX toolchain rather than this GoReleaser release, puts
+`drive.exe` and rclone on your PATH, brings WinFsp in through WinFsp's own
+package dependency, and registers the logon task. Windows and macOS packages
+are built, not published yet — until a signed release exists there is nothing
+public to download, and `winget install Nishfleet.Drive` comes with that release.
 
 When a new version ships, one command moves you to it:
 

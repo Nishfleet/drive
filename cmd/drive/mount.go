@@ -514,11 +514,17 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			return err
 		}
 	} else if err := startLinuxLoginItem(); err != nil {
-		// A clean container and a first-run sandbox often have no systemd
-		// user bus (drive#105). The login item is already on disk for the
-		// next login; start rclone in this session so the same command still
-		// ends with a mounted drive.
-		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in this session. The login item is at %s\n", err, itemPath)
+		// A clean container and a first-run sandbox often have no systemd user
+		// bus (drive#105): systemctl is missing, or it cannot reach the user
+		// manager. Only that falls back to a detached rclone, because there is
+		// no systemd to start the unit at login. A systemd host whose unit
+		// fails to start (a bad unit, a full disk) is a named error, not a
+		// fallback: a detached rclone there plus the unit still enabled would
+		// mount a second rclone at the next login.
+		if !systemdUserSessionAbsent(err) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in the background. The login item is at %s\n", err, itemPath)
 		if err := startLinuxMountDetached(p); err != nil {
 			return err
 		}
@@ -538,7 +544,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 
 // startLinuxLoginItem enables and restarts the systemd user unit this command
 // just wrote. A missing user bus is a named error so the caller can start the
-// mount in this session instead of reporting success with nothing mounted.
+// mount in the background instead of reporting success with nothing mounted.
 func startLinuxLoginItem() error {
 	for _, action := range mountSystemctlActions() {
 		args := []string{"--user", action}
@@ -550,6 +556,29 @@ func startLinuxLoginItem() error {
 		}
 	}
 	return nil
+}
+
+// systemdUserSessionAbsent reports whether a startLinuxLoginItem error means
+// there is no systemd user manager to start the login item with: systemctl is
+// not installed, or it cannot reach the user bus. Every other systemctl
+// failure (a unit that will not start, a full disk, a permission) is a real
+// error the caller must see, not a reason to leave a detached mount behind.
+func systemdUserSessionAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, absent := range []string{
+		"executable file not found", // systemctl is not installed
+		"Failed to connect to bus", // no user bus, no D-Bus session
+		"not been booted with systemd", // no systemd user manager
+		"XDG_RUNTIME_DIR not set", // no user session to attach to
+	} {
+		if strings.Contains(msg, absent) {
+			return true
+		}
+	}
+	return false
 }
 
 // startLinuxMountDetached starts rclone in its own session so `drive init` can
@@ -811,7 +840,11 @@ func Unmount(goos, home string) error {
 		if stopErr := stopMount(goos, home); stopErr != nil {
 			return fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr)
 		}
-		return nil
+		// The mount is down but the login item could not be disabled, and only
+		// uninstall and logout delete its file afterwards: a bare `drive
+		// unmount` would otherwise report success while the unit starts again
+		// at the next login. The error names the disable that failed.
+		return fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
 	}
 	return nil
 }
