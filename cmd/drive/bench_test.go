@@ -90,6 +90,40 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
+// extraMountEnv is the environment for a second `drive mount` next to the
+// shared harness. The first mount already binds the shipped remote-control
+// address (127.0.0.1:5572), so a second mount with that same address dies
+// before it is up ("address already in use") and the bench skips as if FUSE
+// were missing. A free loopback port is the product's own DRIVE_RC_ADDR
+// override.
+func extraMountEnv(tb testing.TB, cfg StorageConfig) []string {
+	return append(os.Environ(),
+		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
+		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_PREFETCH=0",
+		"DRIVE_RC_ADDR=127.0.0.1:"+freePort(tb),
+	)
+}
+
+func TestExtraMountEnvUsesAFreeRCPort(t *testing.T) {
+	env := extraMountEnv(t, testStorage())
+	addr := ""
+	for _, item := range env {
+		if strings.HasPrefix(item, "DRIVE_RC_ADDR=") {
+			addr = strings.TrimPrefix(item, "DRIVE_RC_ADDR=")
+		}
+	}
+	if addr == "" {
+		t.Fatal("extra mount env must set DRIVE_RC_ADDR")
+	}
+	if addr == loopbackRCAddr {
+		t.Fatalf("extra mount RC %q must not reuse the shipped address %s", addr, loopbackRCAddr)
+	}
+	if !IsLoopbackAddr(addr) {
+		t.Fatalf("extra mount RC %q must be loopback", addr)
+	}
+}
+
 // benchStandin is a loopback S3 server plus the drive mount on it: the setup
 // every benchmark in this file shares, brought up once for the whole -bench
 // run and torn down by TestMain.
@@ -573,11 +607,7 @@ func BenchmarkInstallToMounted(b *testing.B) {
 	}
 	mount := exec.Command(bin, "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("mount with the installed binary: %v", err)
@@ -626,11 +656,7 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 	}
 	mount := exec.Command(driveBin(b), "mount", "--home", homeB, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("mount the second device: %v", err)
@@ -742,11 +768,7 @@ func BenchmarkMountReady(b *testing.B) {
 	start := time.Now()
 	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatalf("start the mount: %v", err)
@@ -776,6 +798,11 @@ func BenchmarkMountReady(b *testing.B) {
 func BenchmarkCLIColdStart(b *testing.B) {
 	bin := driveBin(b)
 	h := &benchStandin{}
+	if benchH != nil {
+		h.real = benchH.real
+	} else if os.Getenv("DRIVE_BENCH_ENDPOINT") != "" {
+		h.real = true
+	}
 	start := time.Now()
 	cmd := exec.Command(bin, "version")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -841,11 +868,7 @@ func BenchmarkPrefetchMountReady(b *testing.B) {
 	start := time.Now()
 	mount := exec.Command(driveBin(b), "mount", "--home", home, "--endpoint", h.cfg.Endpoint,
 		"--bucket", h.cfg.Bucket, "--prefix", h.cfg.Prefix, "--foreground")
-	mount.Env = append(os.Environ(),
-		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
-		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		"DRIVE_PREFETCH=0",
-	)
+	mount.Env = extraMountEnv(b, h.cfg)
 	mount.Stdout, mount.Stderr = os.Stdout, os.Stderr
 	if err := mount.Start(); err != nil {
 		b.Fatal(err)
