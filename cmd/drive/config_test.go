@@ -59,7 +59,7 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
 	if _, err := LoadStorageConfig("", "", "", "", "", ""); err == nil {
 		t.Fatal("expected an error when no storage config is given")
-	} else if !strings.Contains(err.Error(), "missing storage config") {
+	} else if !strings.Contains(err.Error(), "missing its storage settings") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
@@ -505,9 +505,18 @@ func TestMountDryRunNeverPrintsAKey(t *testing.T) {
 	const access, secret = "DRYRUNACCESSKEY", "dryrun-secret-value"
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", access)
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
+	// The rclone on this machine is the one the mount would really use, and a
+	// dry run refuses it exactly as a real mount would if it were below
+	// MinRcloneVersion. CI installs the current build, so that refusal is
+	// refused by the refusal, not by the absence of an rclone: the dry run must
+	// still render the config, so it is pointed at a stand-in that answers
+	// `version` with the floor version, and the keys stay the ones the test
+	// set.
+	rclone := writeFakeRclone(t, "rclone v"+MinRcloneVersion+"\n- os/version: test\n")
 	out, err := exec.Command(driveBin(t), "mount",
 		"--endpoint", "http://127.0.0.1:1", "--bucket", "drive-dry-run",
-		"--prefix", "u/dryrun", "--home", t.TempDir(), "--dry-run").CombinedOutput()
+		"--prefix", "u/dryrun", "--home", t.TempDir(), "--dry-run",
+		"--rclone", rclone).CombinedOutput()
 	if err != nil {
 		t.Fatalf("dry run failed: %v\n%s", err, out)
 	}

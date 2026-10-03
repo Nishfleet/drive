@@ -54,7 +54,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Command | What it does |
 |---|---|
 | `drive init` | Sign in (opens the browser for a device code), make the drive folder (`~/Drive`), start the mount, find installed agent tools and connect each one. Safe to run again. |
-| `drive status` | Mounted or not, files waiting to upload, this month's cost so far, cap |
+| `drive status` | Mounted or not, files waiting to upload and why, this month's cost so far, cap |
 | `drive usage` | Stored GB now, GB-months so far, downloads used out of the free 3x, cost so far |
 | `drive cap <dollars>` | Change the spending cap |
 | `drive history <file>` | List saved versions: today's from B2, older ones (one per day, up to 30 days) from Hetzner |
@@ -68,6 +68,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
 | `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
+| `drive uninstall` | Stop the mount and remove the login item that starts it at the next login. The files in the drive folder, the key and the config are kept — `drive logout` is the command that revokes the key and deletes the config. |
 
 ## Screens (v1)
 
@@ -142,7 +143,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 ## How the money is worked out
 
 - Each file version is billed from `created_at` until `hidden_at` (when it's replaced or deleted). Old versions are free to the user: B2 keeps them 1 day and Hetzner keeps them 30, and we absorb that cost.
-- GB-minutes = size in GB × whole minutes stored, with at least 60 minutes per version (the 1-hour minimum).
+- GB-minutes = size in GB × whole minutes stored, with at least 60 minutes per version (the 1-hour minimum). One exception (drive #104): a version that stopped at the instant a same-size version took its place does not book a second minimum. A folder move is a copy then a delete, so the retired version's bytes never left the drive and the successor bills them from that instant. The minimum is booked once per holding, by the version that ends it.
 - Monthly cost = total GB-minutes ÷ 43,800 (minutes in an average month) × 2¢.
 - Downloads: bytes counted by the dl Worker. Anything above 3x the average stored GB that month is billed at 1¢/GB.
 - The free $1 comes off each month. Without a card, writes stop at $1 of usage (the account's cap is $1 until a card is added).
@@ -155,6 +156,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
 - A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
+- An agent key, an s3 key and a branch key carry an hour, and no longer (issue #106). The api Worker renews the window on every request that proves the key is still held by something using it, so a connected tool never notices, and revoking the key stops renewal at once. What the hour is, stated exactly: an idle timeout. A key that nothing is using dies an hour after its last request, so one hour is the longest a leaked or copied credential stays useful on its own, and a holder who keeps using the key keeps it alive — the leak is bounded by your revocation, and the idle bound is what a copy outlives. A person's own device key is not given an expiry, and their device sign-in is unchanged. The renew route is behind the account gate, so a leaked storage key, which holds no device token, cannot restart its own hour.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
@@ -201,17 +203,78 @@ Steps 1 to 4 can run with no billing at all, as a private test for Nish's own fi
 
 ## Build step 1: the storage answers (the stand-in, 2026-10-01)
 
-Step 1 asks three questions of the storage provider before anything is built on it. Two of them are answered here against a stock S3-compatible stand-in, so the build is not blocked on a vendor account (Nish's direction, 2026-09-29: "do not wait for iDrive and never ask for its keys"); the third needs a real month and moves to #173 with the vendor's own answers, which #173 also reads off iDrive e2 as a configuration change.
+Step 1 asks three questions of the storage provider before anything is built on it. Two of them are answered here against a stock S3-compatible stand-in, so the build is not blocked on a vendor account (Nish's direction, 2026-09-29: "do not wait for iDrive and never ask for its keys"); the third needs a real month and moves to #173 with the vendor's own answers. #173 ran against the real account on 2026-10-03 and all three answers are now measured: see [the real account](#build-step-1-on-the-real-idrive-e2-account-2026-10-03-drive173) below.
 
 | Question | Answer on the stand-in | Where it was measured |
 |---|---|---|
 | Can a key be limited to one folder (prefix)? | **Yes.** The api Worker mints a key with an STS `AssumeRole` session policy whose only object resource is `arn:aws:s3:::<bucket>/u/<account-id>/*`. A key for one account is refused (`403 AccessDenied`) listing, reading and writing another account's folder, and an agent key is refused a delete. | `test/step1-storage.test.mjs`, "an agent key cannot list, read or write another account's folder" and "a delete leaves a hidden version…" |
 | Are there event notifications for a file saved, hidden and deleted? | **Yes.** Bucket notifications fire `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`; a delete on the versioned bucket arrives as `s3:ObjectRemoved:DeleteMarkerCreated` — the hidden event — and the file stays as a non-current version. | `test/step1-storage.test.mjs`, "a saved file produces an event that reaches the api Worker" |
-| Is a month billed on average or peak storage? | **Not answerable without a month on the real provider.** It needs a billing period, not a stand-in. | moves to #173 |
+| Is a month billed on average or peak storage? | **Not answerable without a month on the real provider.** It needs a billing period, not a stand-in. | measured on the real account, 2026-10-03: [Build step 1 on the real iDrive e2 account](#build-step-1-on-the-real-idrive-e2-account-2026-10-03-drive173) |
 
-What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitnami package, started by the test setup — the same `test/step1-storage.test.mjs` runs in CI's `verify` job (`npm test`) and on a developer's machine, and the setup is the only thing that decides which. MinIO's own downloads and Docker Hub images were withdrawn and its repository is archived, so the pinned last release is the stock server that has all three of versioning, lifecycle rules and bucket notifications. iDrive e2 replaces it by setting `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET` and the master credential (`STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), with no code change.
+What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitnami package, started by the test setup — the same `test/step1-storage.test.mjs` runs in CI's `verify` job (`npm test`) and on a developer's machine, and the setup is the only thing that decides which. MinIO's own downloads and Docker Hub images were withdrawn and its repository is archived, so the pinned last release is the stock server that has all three of versioning, lifecycle rules and bucket notifications. iDrive e2 replaces it by setting `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET` and the master credential (`STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), with no code change — except that iDrive's STS has no `AssumeRole`, so the mint in the row above cannot run on it at all (see [the real account](#build-step-1-on-the-real-idrive-e2-account-2026-10-03-drive173) below).
 
-The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01), so SSE-B2 is set on the real bucket with the vendor in #173, where the rest of that bucket's configuration lands too.
+The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01). iDrive e2 takes the stock call: `AES256` was set on the real bucket and read back, so it is the table in the next section, not a missing vendor step.
+
+## Build step 1 on the real iDrive e2 account (2026-10-03, drive#173)
+
+The real account is the one behind the `idrive` rclone remote on this host (Nish saved it 2026-10-03 17:26Z): endpoint `https://s3.eu-west-3.idrivee2.com`, region `eu-west-3`, bucket `drive-prod`, and the master credential read from the VPS credential store (`~/.config/rclone/rclone.conf`, section `[idrive]`) as environment variables. The credential never enters this repo, a commit, a PR body or a log line. The bucket was created and configured through the same `workers/api/src/s3.js` the api Worker runs, and every setting below is read back from the bucket by `readBucketConfig`, not taken from a PUT's status:
+
+| Bucket setting | Read back from `drive-prod` |
+|---|---|
+| Versioning | `Enabled` |
+| Hidden-version lifecycle | `NoncurrentDays` `1`, `ExpiredObjectDeleteMarker` `true` |
+| Server-side encryption | `SSEAlgorithm` `AES256` |
+| Event notifications | none: `notificationArn` `""`, `notificationEvents` `[]` |
+
+### Question 1: can a key be limited to one folder (prefix)? **No.**
+
+The api Worker's own `POST /v1/keys` route, run against the real account, mints nothing:
+
+```
+mint device: status=400 {"error":"mint a scoped storage key failed with AccessDenied (HTTP 403): Generating temporary credentials not allowed for this request."}
+mint agent:  status=400 {"error":"mint a scoped storage key failed with AccessDenied (HTTP 403): Generating temporary credentials not allowed for this request."}
+```
+
+Why, read off the endpoint's own STS (`Action=` in a form body, SigV4 with the master credential):
+
+- `AssumeRole` → `403 AccessDenied`, with a session policy and without one. The vendor's STS FAQ lists `GetSessionToken` as the whole of it.
+- `GetFederationToken` → `400 InvalidParameterValue: Unsupported action GetFederationToken`.
+- `GetSessionToken` → `200`, and the credential it returns inherits the master key. That is the vendor's own wording: "temporary credentials that inherit permissions from your IDrive® e2 access keys".
+
+So the nearest thing iDrive offers to a minted key is account-wide. Measured with a `GetSessionToken` credential, the three calls the stand-in refuses with `403 AccessDenied` all answer `200`: list `?prefix=u/acct-not-ours/`, `GET u/acct-not-ours/theirs.txt` (the body reads back), and `PUT u/acct-not-ours/theirs.txt`. The endpoint does not enforce the scope, so a key's scope on iDrive is a promise the api Worker makes rather than one storage refuses to break.
+
+iDrive's own access-key model cannot carry the scope either: a console key is limited to chosen buckets (specific or all), a permission level (Read and write, Read only, Upload only) and an expiry — never to a prefix. The design's `u/<account-id>/` prefix has nothing to bind to.
+
+### Question 2: are there event notifications for a file saved, hidden and deleted? **Yes — but the destination is the console's, not the bucket API's.**
+
+- `GET /drive-prod?notification` answers `<NotificationConfiguration><IsAWSConfig>false</IsAWSConfig></NotificationConfiguration>`; `readBucketConfig` reads no ARN and no events.
+- `PUT /drive-prod?notification` is refused for every destination shape tried: MinIO's `arn:minio:sqs::drive:webhook`, and a well-formed `arn:aws:sqs:eu-west-3:000000000000:drive-events`, both `400 InvalidArgument: A specified destination ARN does not exist or is not well-formed.` Nothing is stored either way.
+- That is why `node --test test/step1-storage.test.mjs` with `DRIVE_STANDIN_*` pointed at iDrive dies inside `provisionBucket` (`S3Error: set the bucket event notifications failed with InvalidArgument (HTTP 400)`) before any sub-proof runs. A real-account run has to configure the bucket first and then run the proofs without the notification step, which is what the run below did.
+
+The vendor's own path: a destination is registered in the e2 console (Settings → Event Notifications → Add Destination), and the only two kinds are an AWS SQS or SNS ARN — which needs an AWS credential and a Fetch ARN — and a webhook (Target URL, Signing Secret, batch size, extra headers, Test Rule). A bucket is then bound under Buckets → bucket → Event Notifications, with optional prefix and suffix filters and three event groups: Object Creation, Object Removal, Object Lifecycle.
+
+What is **not** proven on iDrive: a saved file arriving at the Worker as an event. The delivery leg needs a destination registered in the console, which needs Nish's login, and a public URL, which needs the api Worker deployed (#342). What *is* proven is the intake: the Worker's own `POST /v1/events`, handed the event shape the vendor's docs describe and the real version id of the real save, answers `202 {"received":1,...}` and logs
+
+```
+[api] storage event s3:ObjectCreated:Put drive-prod/u/<account-id>/report.txt version=<the id the real save returned> at=2026-10-03T17:49:02.392Z
+```
+
+### Question 3: is a month billed on average or peak storage? **Neither: one figure per billing cycle, plus a 30-day storage minimum.**
+
+The vendor's own words (idrive.com/e2, Pricing FAQ): "IDrive® e2 calculates the service charge based on the amount of total storage used during the billing cycle." The pricing page says the same with "active storage". A pay-as-you-go account is billed at the end of each 30-day cycle, and an "interim prorated charge" can land mid-cycle when usage rises sharply. So there is one storage figure per cycle, not a sample average and not a peak of daily readings.
+
+The part that matters to the meter is the minimum: "IDrive® e2 enforces a minimum storage duration of 30 days", and an object deleted before day 30 "will be charged for the remaining days up to the 30th day as if the object was still stored" — the vendor calls that *Deleted Storage*, against *Active Storage* for what exists.
+
+- A 1-day hidden-version rule caps retention, not cost. A delete inside the cycle reduces nothing on the bill: iDrive charges the deleted object's bytes to day 30. Step 5's reconciler reads a day's GB-minutes from `usage_minutes` and the provider's own bytes for the same account, and on this shape those two are not the same number for any day that carried deletes — so the gap has to be modelled, not read as drift. That is #364, because what the customer is billed for a delete is Nish's call.
+- $5 per TB-month on the Veeam/MSP/Reseller plan ($6 pay-as-you-go), charged per TB, and under 1 TB is still charged the whole 1 TB. Downloads are free up to 3x the stored volume, then $10/TB (about $0.01 per GB). Ingress, deletion and API requests are free.
+
+### What passed on the real bucket, and the verdict
+
+Step 1's done-when has two halves. The hidden-version half passes on iDrive, measured on the real bucket: save `report.txt` (version `bfe496a6-ddd8-45a6-8288-364e6317ce09`), `DELETE` it (delete marker `ce7bdd7e-4c05-4a44-b024-ba152ee8b4bc`), and the version listing shows the marker as `latest=true deleteMarker=true size=0` with the save behind it as `latest=false deleteMarker=false size=36`; `GET ?versionId=<hidden version>` answers `200` with MD5 `ac955fc7aef49e7cda604ecabfa66d16`, the MD5 of the bytes saved.
+
+The other half — a key that cannot read another account's folder — fails, and it is the question step 1 asks first. So **iDrive e2 is not primary storage**, and step 1's own rule ("if any fails, use B2") sends the build to Backblaze B2. The bucket there and the mint on it are #363; what a delete inside a billing cycle costs the customer is #364, which is Nish's call and not this section's.
+
+What #173 leaves behind in code: nothing. Every difference between the stand-in and the real account was configuration — endpoint, region, bucket, credential, and the bucket settings in the table above. What this change does is replace every line that deferred to this issue ("#173 checks the real vendor", "lands with iDrive e2 (issue #173)", "iDrive e2 replaces it") with the measurement: `workers/api/src/s3-keys.js`, `workers/api/src/s3.js`, `workers/api/src/index.js`, `workers/api/src/devices.js`, the two test headers, `docs/api.md`, `docs/benchmarks.md`, `docs/spec.md` and this section.
 
 ## Build step 5: the meter against a stock S3 stand-in (2026-10-02)
 

@@ -126,13 +126,14 @@ function keyRow(kind, owner) {
 /** @param {boolean|undefined} value */
 const yesNo = (value) => (value ? "yes" : "no");
 
-/** The two keys a person meets, as a Markdown table. */
+/** The keys a person meets, as a Markdown table. */
 export const KEY_TABLE = Object.freeze(
   [
     "| Key | Belongs to | Can read | Can write | Can delete |",
     "| --- | --- | --- | --- | --- |",
     keyRow("device", "your machine"),
     keyRow("agent", "one agent tool"),
+    keyRow("branch", "an agent in a branch"),
   ].join("\n"),
 );
 
@@ -199,6 +200,17 @@ export const FAQ = Object.freeze([
       "The drive also carries a spending cap: at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
   }),
+  Object.freeze({
+    question: "Will this fill my disk?",
+    scoreboard: ["disk use"],
+    answer: [
+      "Your disk never fills up; the cache is capped at a size you choose.",
+      "What is on disk is the parts of files you have already opened, held in a cache of at most {{CACHE_LIMIT}}, and the drive always keeps at least {{CACHE_FLOOR}} of your disk free.",
+      "`drive cache` shows the disk in use and the limit; `drive cache --max <size>` changes it; `drive cache --clear` empties it without touching a file still waiting to upload.",
+      "`drive status` shows the same cache use.",
+      "Files you keep offline with `drive offline` stay on this computer, are never evicted, and count toward that limit.",
+    ].join(" "),
+  }),
 ]);
 
 /**
@@ -253,6 +265,13 @@ export function faqMarkdown(scoreboardText) {
  * which this module will not open — it is plain data and pure functions).
  * @param {Record<string, string>} [extra]
  */
+// The cache limit and floor are the shipped defaults from cmd/drive/config.go,
+// and test/docs.test.mjs asserts they still match the Go source.
+const CACHE_LIMIT = "20G";
+const CACHE_FLOOR = "1G";
+const CACHE_COMMANDS =
+  "`drive cache` shows the disk in use and the limit, `drive cache --max <size>` changes it, `drive cache --clear` empties it";
+
 export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
@@ -262,6 +281,9 @@ export function markerValues(extra = {}) {
     CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
     CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
+    CACHE_LIMIT,
+    CACHE_FLOOR,
+    CACHE_COMMANDS,
     FREE_DOWNLOAD_MULTIPLE: String(BILLING_CONFIG.freeDownloadMultiplier),
     DOWNLOAD_RATE: `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`,
     AGENT_TOOLS: AGENT_TOOLS.join(", "),

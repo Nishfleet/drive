@@ -69,13 +69,10 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	}
 	pending, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
-		return err
+		return failDetail("queue-unreadable", err, DefaultCacheDir(home))
 	}
 	if pending.Files > 0 && !force {
-		return fmt.Errorf(
-			"%d file(s) waiting to upload (%d bytes) are still in the cache; "+
-				"start the mount and let them finish, or run `drive logout --force` to discard them",
-			pending.Files, pending.Bytes)
+		return failf("uploads-stuck", fmt.Sprint(pending.Files), fmt.Sprint(pending.Bytes))
 	}
 	// Stop the mount before the key goes, so nothing is mid-upload when the
 	// config it reads disappears. Unmount stops the login item; stopMount then
@@ -87,16 +84,19 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// is measured, not the exit code: only a still-mounted drive fails.
 	stopErr := Unmount(goos, home)
 	if err := stopMount(goos, home); err != nil {
+		mountDir := DefaultMountDir(home)
 		if stopErr != nil {
-			return fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err)
+			return failDetail("unmount-failed",
+				fmt.Errorf("could not disable the login item (%v), and the mount did not come down: %w", stopErr, err),
+				mountDir)
 		}
-		return err
+		return failDetail("unmount-failed", err, mountDir)
 	}
 	if stopErr != nil {
 		// The mount is down and the login item is about to be deleted, so the
 		// only thing the disable error could have been protecting (a login
 		// item restarting the drive) is already handled. Note it and continue.
-		fmt.Fprintf(os.Stderr, "note: could not disable the login item (%v); it is deleted below, so the drive will not start at the next login\n", stopErr)
+		fmt.Fprintf(os.Stderr, "note: the login item could not be disabled; it is deleted below, so the drive will not start at the next login\n")
 	}
 	// The server is asked while the config still holds the key. A missing
 	// config is no key at all, and a receipt from an earlier run that could
@@ -157,7 +157,7 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// with the key already dead on the server. The error is still returned, so
 	// nothing is hidden — it just no longer buys a leftover.
 	var removed error
-	for _, path := range []string{LoginItemPath(goos, home), DefaultConfigDir(home)} {
+	for _, path := range append(LoginItemFiles(goos, home), DefaultConfigDir(home)) {
 		if err := removeIfPresent(path); err != nil {
 			removed = errors.Join(removed, err)
 		}
@@ -170,9 +170,9 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	// Prove the key is gone rather than trust the unlink: the acceptance is
 	// "keeps nothing secret on disk", so a leftover config is a failure.
 	if _, err := os.Stat(RcloneConfigPath(home)); err == nil {
-		return errors.Join(removed, fmt.Errorf("logout left %s behind", RcloneConfigPath(home)))
+		return failf("logout-leftover", RcloneConfigPath(home))
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return errors.Join(removed, fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
+		return failDetail("unexpected", fmt.Errorf("stat %s: %w", RcloneConfigPath(home), err))
 	}
 	// What the person is told is decided by what is left live, not by this run's
 	// own revoke. The record is folded forward after the config is gone — so the
@@ -211,13 +211,13 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	case revokeFailed != nil:
 		// This device's own key is live and still has its secret on this
 		// machine, so this is the acceptance sentence of issue #75.
-		return fmt.Errorf("%s (%w)", revokeWarning, revokeFailed)
+		return failDetail("key-still-live", revokeFailed)
 	case len(live) > 0:
 		// Nothing this run held is live, but the record says something is: a
 		// key from an earlier logout, or one this run could not name. The
 		// success line would be a lie about the whole of it, so the live-key
 		// sentence is what reaches the person instead.
-		return errors.New(revokePendingWarning)
+		return fail("key-still-live-elsewhere")
 	}
 	if removed != nil {
 		// Nothing is live and nothing secret is on disk any more, so this is
@@ -291,6 +291,9 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 // attached, and "the mount stopped" is this command's promise, not a hope.
 // fusermount is the stock FUSE unmount on Linux; macOS unmounts with umount.
 func stopMount(goos, home string) error {
+	if goos == "windows" {
+		return stopWindowsMount(home)
+	}
 	on, err := Mounted(goos, home)
 	if err != nil {
 		return err
@@ -352,7 +355,7 @@ func expectUnmounted(goos, home string) error {
 		return err
 	}
 	if on {
-		return fmt.Errorf("unmount %s: still mounted after fusermount", DefaultMountDir(home))
+		return failf("unmount-failed", DefaultMountDir(home))
 	}
 	return nil
 }
@@ -361,7 +364,7 @@ func expectUnmounted(goos, home string) error {
 // success it is (logout is safe to run twice).
 func removeIfPresent(path string) error {
 	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove %s: %w", path, err)
+		return failDetail("unexpected", fmt.Errorf("remove %s: %w", path, err))
 	}
 	return nil
 }

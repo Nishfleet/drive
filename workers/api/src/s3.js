@@ -193,8 +193,10 @@ export function createS3Client(config) {
  * Server-side encryption is NOT set here. It is the provider's own bucket
  * setting (SSE-B2 in the spec), not a property the stand-in can host: a stock
  * S3 server refuses SSE-S3 without a KMS (measured 2026-10-01 against the
- * pinned stand-in: 501 "KMS is not configured"). It is configured with the
- * vendor on the real bucket in #173, with no code change here.
+ * pinned stand-in: 501 "KMS is not configured"). On a provider that takes it
+ * the whole setting is one PUT with the vendor (iDrive e2 answered `AES256`,
+ * set and read back on the real bucket 2026-10-03, drive#173); SSE-B2 is the
+ * spec's plan for the primary.
  * @param {ReturnType<typeof createS3Client>} client
  * @param {{bucket: string, notificationQueueArn?: string, hiddenVersionDays?: number}} config
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null}>}

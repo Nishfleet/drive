@@ -25,8 +25,12 @@ import {
   USAGE_HISTORY_DAYS,
   usageSummary,
 } from "../src/billing.js";
+import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
+import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
+import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -310,6 +314,52 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
   );
 });
 
+test("the upload line rides the usage answer beside capLine", async () => {
+  // The second surface of drive issue #308. The line is assembled once, by
+  // uploadProgress() from UPLOAD_LABEL in src/status.js, so the usage page
+  // renders the same words `drive status` and the first-run page print and
+  // carries no second copy of a word or a byte formatter. It is null while the
+  // Worker has no device store to read a queue from.
+  const body = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  ).json();
+  assert.deepEqual(Object.keys(body).sort(), [
+    "billCents",
+    "billUsd",
+    "cap",
+    "capLine",
+    "ceilingUsd",
+    "downloads",
+    "gbMonths",
+    "labels",
+    "meteredUsd",
+    "saved",
+    "storedDaily",
+    "storedGb",
+    "uploadLine",
+  ]);
+  assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
+
+  // A queue handed in is checked by uploadProgress(), which throws on a value
+  // that is not a queue, so a broken report fails the read rather than printing
+  // a plausible line about bytes nobody counted.
+  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const reported = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    queue,
+  ).json();
+  assert.equal(reported.uploadLine, uploadProgress(queue).label);
+  assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.throws(
+    () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
+    TypeError,
+    "a payload that is not a queue is refused, never rendered as a default",
+  );
+});
+
 test("the shipped page carries every label from src/usage.js verbatim", () => {
   // The page cannot import the module, so these are the strings it must carry.
   // Drifting copy fails here instead of shipping a page that disagrees with the
@@ -478,7 +528,11 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.dataset\.state = "unreachable";/);
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
-  assert.match(page, /if \(document\.hidden\) \{\n {4}return;/);
+  // The page's poll short-circuits when its tab is backgrounded, returning on
+  // the hidden line; the four-space indent is not the contract, the early
+  // return is. Reflowing must not break the gate (drive#183), so match the
+  // shape with tolerant whitespace instead of pinning four spaces.
+  assert.match(page, /if \(document\.hidden\) \{\s*return\s*;/);
 });
 
 test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
@@ -491,4 +545,101 @@ test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
   assert.match(page, /function saySignedOut\(message\)/);
   assert.match(page, /statusEl\.dataset\.state = "signed-out";/);
   assert.doesNotMatch(page, /You are not signed in to your drive/);
+});
+
+test("the upload-progress line is the endpoint's words, rendered and nothing else", () => {
+  // Drive issue #308, the second surface. The line arrives finished in the
+  // payload (`uploadLine`, beside `capLine`), so this page sets a string and
+  // carries no word of its own beyond the section heading and the hint: a
+  // second copy of "Uploading 3 files" or a second byte formatter is exactly
+  // the drift the gates above exist to catch. Hidden when there is no queue.
+  assert.match(page, /<section aria-labelledby="uploads-heading">/);
+  assert.match(page, /<h2 id="uploads-heading">Uploads<\/h2>/);
+  assert.match(page, /<p class="upload-line" id="upload-line" hidden><\/p>/);
+  assert.match(
+    page,
+    /<p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file\.<\/p>/,
+  );
+  assert.ok(page.includes(USAGE_LABELS.uploads), "the heading is the module's word");
+  assert.ok(page.includes(USAGE_LABELS.uploadsHint), "the hint is the module's word");
+  // The payload check: a value that is neither null nor a string is a payload
+  // this page cannot render, so it takes the unreachable state rather than
+  // printing "null" where a line belongs.
+  assert.match(page, /summary\.uploadLine !== null && typeof summary\.uploadLine !== "string"/);
+  // The wiring: set the module's sentence, and hide the line when there is no
+  // queue to report.
+  assert.match(
+    page,
+    /uploadLineEl\.textContent = summary\.uploadLine === null \? "" : summary\.uploadLine;/,
+  );
+  assert.match(page, /uploadLineEl\.hidden = summary\.uploadLine === null;/);
+  // No byte arithmetic and no word table of its own: the page never formats a
+  // size for this line, and never spells the fragments it renders.
+  const script = page.slice(page.indexOf("<script>"));
+  assert.doesNotMatch(script, /formatBytes|UPLOAD_LABEL|uploadProgress/);
+  assert.doesNotMatch(script, /Uploading \{|of \{|\{percent\}/);
+});
+
+test("the usage page shows the queue a device reported, through the Worker's own route", async () => {
+  // Drive issue #318 on the second surface, through the route rather than the
+  // handler: a device reports its queue to the api Worker, and the usage page's
+  // poll reads the same row and renders it into `uploadLine`. The line is the
+  // one word table's (src/status.js UPLOAD_LABEL), so the page, the first-run
+  // page and `drive status` all say the same sentence about the same queue.
+  const made = createTestAuth();
+  const { cookie, account: signedInAccount } = await signIn(made, "usage@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1QueueStore(made.db);
+  const read = () =>
+    workerFetch(new Request("https://drive.test/api/usage", { headers: { cookie } }), env);
+
+  // No device has reported: the line is null and the page hides it, the honest
+  // answer for an account whose no device has signed in yet (drive issue #308).
+  const before = await (await read()).json();
+  assert.equal(before.uploadLine, null, "an account with no report has no upload line");
+
+  // One device reports its queue; the usage read carries the same finished
+  // line the first-run page draws from the same numbers.
+  const queue = { files: 3, uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, paused: false };
+  assert.equal((await store.record(signedInAccount.id, queue)).stored, true);
+  const after = await (await read()).json();
+  assert.equal(
+    after.uploadLine,
+    uploadProgress(queue).label,
+    "the line is not the word table's own",
+  );
+  assert.equal(after.uploadLine, uploadLine(queue), "the two pages render the same sentence");
+  assert.ok(
+    after.uploadLine.includes("Uploading 3 files"),
+    `line ${after.uploadLine} is not the queue's own`,
+  );
+  // The money on the answer is untouched by the queue: they are two fields.
+  assert.equal(typeof after.capLine, "string");
+  assert.equal(after.billUsd, 0, "the empty month is still the empty month");
+
+  // A paused queue renders the paused line, so the page never shows bytes that
+  // are not leaving as "Uploading".
+  await made.db
+    .prepare("UPDATE device_queues SET paused = 1 WHERE account_id = ?")
+    .bind(signedInAccount.id)
+    .run();
+  const paused = await (await read()).json();
+  assert.ok(
+    paused.uploadLine.startsWith(UPLOAD_LABEL.paused),
+    `paused line ${paused.uploadLine} does not lead with the paused word`,
+  );
+  assert.equal(paused.uploadLine, uploadProgress({ ...queue, paused: true }).label);
+
+  // A report the freshness window has passed reads as no queue rather than as a
+  // stale line, so the page hides the line instead of freezing a number.
+  await made.db
+    .prepare("UPDATE device_queues SET reported_at = ? WHERE account_id = ?")
+    .bind(Math.floor(Date.now() / 1000) - QUEUE_FRESHNESS_SECONDS - 1, signedInAccount.id)
+    .run();
+  assert.equal((await (await read()).json()).uploadLine, null, "a stale report still shows a line");
 });

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -13,8 +14,8 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
-  drive init [flags]                    find installed agent tools and connect each to the drive
-  drive agents [flags]                  list agent tools and whether the drive is connected
+  drive init [flags]      mount the drive, start it at login, and connect your agent tools
+  drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
   drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
   drive search <words> [flags]          find files by name, from the drive index
@@ -25,19 +26,36 @@ Usage:
   drive discard <branch> [flags]        throw a branch away; the original is untouched
   drive mount [flags]      write the rclone config and login item, start the mount
   drive unmount [flags]    stop the mount and the login item
-  drive status [flags]     the mount, the upload queue, and this month's cost
+  drive offline <path>...  keep a file or folder on this computer (also --list)
+  drive online [path]...   let the disk go again; with no argument, all of it
+  drive uninstall [flags]  stop the mount, remove the login item, keep the files
+  drive status [flags]     is it working, what is waiting, how much am I spending
+  drive pause [flags]      stop the bytes leaving the device; survives a restart
+  drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
+  drive cache              show the disk the mount's cache uses and its limit
+  drive cache --max 5G     change that limit
+  drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
   drive share <file>       make a link anyone can open, logged out (issue #19)
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
   drive export [flags]     write this account's data to a file (or stdout)
+  drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Update flags:
+  --check   say whether a newer release exists, install nothing
+  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
+
+Every failure prints what happened and the exact next step (drive#117).
+DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
+the mount's own log.
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
@@ -53,16 +71,32 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --drive-letter  Windows: the drive letter to mount (first free letter from D:)
   --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --rc-addr     loopback address the mount's remote control binds (env
+                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+  --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
+                default the hostname)
   --foreground  run rclone in this process instead of the login item
   --dry-run     print what would be written, write nothing
+
+Mount flags work on drive init too: init mounts the drive first, then
+connects the agent tools, so one command takes a machine from nothing to a
+mounted drive.
+
+Init flags:
+  --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
 
 Link flags (share, request):
   --api         api Worker base URL (env DRIVE_API_URL)
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
+
+Cache flags:
+  --max     the cache limit, a size like 5G or 500M (default 20G)
+  --clear   empty the cache now; uploads waiting and files kept offline stay
 
 Export flags:
   --out   file to write the export to; stdout when it is not given
@@ -77,7 +111,13 @@ Logout flags:
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
 `
-const version = "0.1.0"
+
+// version is the fallback when the toolchain records no module version
+// in this binary (a checkout build: go build, go run, go test). A binary
+// installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
+// carries that tag in its build information, and `drive version`
+// prints that instead (cmd/drive/update.go versionText).
+var version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -106,10 +146,22 @@ func main() {
 		err = runMount(os.Args[2:])
 	case "unmount":
 		err = runUnmount(os.Args[2:])
+	case "offline":
+		err = runOffline(os.Args[2:])
+	case "online":
+		err = runOnline(os.Args[2:])
+	case "uninstall":
+		err = runUninstall(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "pause":
+		err = runPause(os.Args[2:])
+	case "resume":
+		err = runResume(os.Args[2:])
 	case "cap":
 		err = runCap(os.Args[2:])
+	case "cache":
+		err = runCache(os.Args[2:])
 	case "share":
 		err = runShare(os.Args[2:])
 	case "request":
@@ -118,10 +170,12 @@ func main() {
 		err = runLogout(os.Args[2:])
 	case "export":
 		err = runExport(os.Args[2:])
+	case "update":
+		err = runUpdate(os.Args[2:])
 	case "prefetch":
 		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		fmt.Println(versionText())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -139,8 +193,9 @@ func main() {
 		if errors.Is(err, errFlagParse) {
 			os.Exit(2)
 		}
-		fmt.Fprintln(os.Stderr, "drive:", err)
-		os.Exit(1)
+		// Every failure a person reads goes through the message table:
+		// what happened, then the exact next step (drive#117).
+		os.Exit(printFailure(os.Stderr, err))
 	}
 }
 
@@ -160,37 +215,67 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	return c
 }
 
-func runMount(args []string) error {
-	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
-	var refusedSecret string
-	var endpoint, bucket, prefix, region, downloadURL string
-	var secretStdin, foreground, dryRun bool
-	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
-	fs.StringVar(&bucket, "bucket", "", "storage bucket")
-	fs.StringVar(&prefix, "prefix", "", "key prefix this device mounts")
-	fs.StringVar(&region, "region", "", "S3 region name")
+// `drive init` registers the same flags (drive#105: init checks rclone, starts
+// the mount at login and connects the agent tools in one command), so the
+// storage values a machine needs are accepted in one place and parsed one way,
+// and a new mount setting cannot reach one command and miss the other.
+type mountFlags struct {
+	endpoint, bucket, prefix, region string
+	downloadURL                      string
+	device, rcAddr, driveLetter      string
+	// refusedSecret holds the removed --secret-key value. It is never read or
+	// printed: the value exists only so the flag package parses the command
+	// line correctly, and its presence is the thing that is refused.
+	refusedSecret string
+	secretStdin   bool
+	foreground    bool
+	dryRun        bool
+	common        *commonFlags
+}
+
+// addStorageFlags registers the storage settings on fs and returns them. The dl
+// Worker (drive issue #58) is one of them: absent, the mount reads from the
+// endpoint and counts nothing; set, every read streams through the dl Worker so
+// the account's download bytes are counted (docs/build-spec.md "The pieces",
+// items 2 and 4). `drive mount` and `drive init` both register exactly this
+// set; only `drive mount` adds the run-shape flags below, because `drive init`
+// never runs a foreground or dry-run mount.
+func addStorageFlags(fs *flag.FlagSet) *mountFlags {
+	m := &mountFlags{}
+	fs.StringVar(&m.endpoint, "endpoint", "", "S3 endpoint URL")
+	fs.StringVar(&m.bucket, "bucket", "", "storage bucket")
+	fs.StringVar(&m.prefix, "prefix", "", "key prefix this device mounts")
+	fs.StringVar(&m.region, "region", "", "S3 region name")
 	// The old secret flag is registered only so the flag package consumes it
 	// correctly and can report whether it was passed; the value lands in a
 	// variable that is never read or printed, and any use is refused with the
 	// ways that are safe. A value like --bucket secret-key=x is a bucket, not
 	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
 	// is, and nothing after the first `--` reaches it.
-	fs.StringVar(&refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
-	fs.BoolVar(&secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
-	// The dl Worker (drive issue #58). Absent, the mount reads from the
-	// endpoint and counts nothing; set, every read streams through the dl
-	// Worker so the account's download bytes are counted (docs/build-spec.md
-	// "The pieces", items 2 and 4).
-	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
-	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
-	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
-	common := addCommonFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		return errFlagParse
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
-	}
+	fs.StringVar(&m.refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
+	fs.BoolVar(&m.secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
+	fs.StringVar(&m.downloadURL, "download-url", "", "dl Worker to stream reads through")
+	// The device name is what a conflict copy is called (issue #30): a
+	// person's two devices need to be told apart by name, so the flag is
+	// here rather than only in the environment, and the plan sanitizes
+	// whatever it carries into a filename both platforms accept.
+	fs.StringVar(&m.device, "device", "", "name for this device in a conflict copy")
+	// rclone's remote control is how the background fill, the conflict
+	// guard and `drive status` all reach the one mount. Two mounts on the
+	// same host (the two-machine proof, issue #30) cannot both bind one
+	// loopback address, so the address is a flag and an environment
+	// variable with a constant default; a non-loopback value is refused.
+	fs.StringVar(&m.rcAddr, "rc-addr", "", "loopback address the mount's remote control binds")
+	fs.StringVar(&m.driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
+	m.common = addCommonFlags(fs)
+	return m
+}
+
+// resolve turns the parsed mount settings into the rclone binary path and the
+// storage config. It is the one place `drive mount` and `drive init` both come
+// to before they mount, so the secret's safe sources and the config validation
+// behave the same on both commands.
+func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	refused := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "secret-key" {
@@ -202,24 +287,72 @@ func runMount(args []string) error {
 		// refused — the shell history and ps already hold it — so the refusal
 		// cannot unsay that. It says so, and it says to replace the key, because
 		// a value that has been through argv is a value that has been exposed.
-		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
+		return "", StorageConfig{}, fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(m.common.home)))
+	}
+	// A drive letter is a Windows mount point. On Mac and Linux the mount is a
+	// folder, so the flag is refused there rather than silently ignored, which
+	// would leave a person believing their mount went somewhere it did not.
+	if m.driveLetter != "" && CurrentGOOS() != "windows" {
+		return "", StorageConfig{}, errors.New("--drive-letter is only for Windows; on Mac and Linux the drive mounts at the drive folder")
 	}
 	// The secret's sources are the config file this CLI wrote (mode 0600), the
-	// environment, or stdin (--secret-key-stdin). None of them is argv, which is
-	// world-readable in ps for the life of the process.
-	secretKey, err := ReadSecretKey(RcloneConfigPath(common.home), secretStdin, os.Stdin)
+	// environment, or stdin (--secret-key-stdin). None of them is argv, which
+	// is world-readable in ps for the life of the process.
+	secretKey, err := ReadSecretKey(RcloneConfigPath(m.common.home), m.secretStdin, os.Stdin)
+	if err != nil {
+		return "", StorageConfig{}, err
+	}
+	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey)
+	if err != nil {
+		return "", StorageConfig{}, err
+	}
+	rclone, err := ResolveRclone(m.common.rclone)
+	if err != nil {
+		return "", StorageConfig{}, err
+	}
+	// DRIVE_DEVICE is read here, beside the flag, so both sources of the
+	// device name live in one place; Mount sanitizes whatever it is given.
+	if strings.TrimSpace(m.device) != "" {
+		_ = os.Setenv(deviceEnvName, m.device)
+	}
+	if strings.TrimSpace(m.rcAddr) != "" {
+		// A remote-control address that is not loopback is refused here
+		// rather than silently replaced by the shipped one: rclone's
+		// remote control is unauthenticated by design, so a value that
+		// would bind it off this machine is a named failure at the
+		// operator's own command. The background login item still
+		// falls back, because it is not a command and cannot answer.
+		if !IsLoopbackAddr(m.rcAddr) {
+			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
+				"is unauthenticated, so it binds %s only", m.rcAddr, RCAddr())
+		}
+		_ = os.Setenv(rcAddrEnvName, m.rcAddr)
+	}
+	return rclone, c, nil
+}
+
+func runMount(args []string) error {
+	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
+	m := addStorageFlags(fs)
+	fs.BoolVar(&m.foreground, "foreground", false, "run rclone in this process")
+	fs.BoolVar(&m.dryRun, "dry-run", false, "print what would be written, write nothing")
+	if err := fs.Parse(args); err != nil {
+		return errFlagParse
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	rclone, c, err := m.resolve(fs)
 	if err != nil {
 		return err
 	}
-	c, err := LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey)
-	if err != nil {
+	// rclone's version is checked before anything is written, so a machine
+	// whose rclone is too old hears it here, at the command that was run,
+	// with the command that fixes it (drive#105).
+	if err := CheckRclone(CurrentGOOS(), rclone); err != nil {
 		return err
 	}
-	rclone, err := ResolveRclone(common.rclone)
-	if err != nil {
-		return err
-	}
-	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
+	return Mount(CurrentGOOS(), m.common.home, rclone, c, m.foreground, m.dryRun, m.driveLetter)
 }
 
 func runUnmount(args []string) error {

@@ -67,7 +67,7 @@ import { failureMessage } from "./messages.js";
 // disagree. What is added here is operational: the B2 fallback slope, the
 // default cap, and the download allowance.
 import { PRICE } from "./pricing.js";
-import { formatBytes, unauthorizedResponse } from "./status.js";
+import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
 
 // Minutes in an average month (the spec's divisor): 43,800, which is
 // 30.4166 days. The number is build-spec.md's own ("total GB-minutes ÷
@@ -659,10 +659,21 @@ const USAGE_HEADERS = Object.freeze({
  * against it now. Any other method is a 405 with the one allowed method named,
  * like the other endpoints — after the gate, so an anonymous request is told
  * only that it is not signed in, never which methods exist.
+ *
+ * `uploadLine` rides on the answer beside `capLine` (drive issue #308): the
+ * live upload-progress line the usage page shows, the same words `drive status`
+ * and the first-run page print. It is assembled here by `uploadProgress()` from
+ * `UPLOAD_LABEL` in src/status.js, the one word table and the one byte
+ * formatter, so the page sets a finished string and carries no second copy of
+ * either. It is null when there is no queue to report — the queue is rclone's,
+ * on the Mac, and the Worker has no device store yet — and a payload that is
+ * not a queue is refused rather than rendered, so the line can never be a
+ * default the drive did not ask for.
  * @param {Request} request
  * @param {{id: string, name: string, capUsd?: number}|null} account the signed-in account, or null when signed out
+ * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
-export function handleUsageRequest(request, account) {
+export function handleUsageRequest(request, account, upload = null) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {
@@ -694,6 +705,14 @@ export function handleUsageRequest(request, account) {
   // summary is money (numbers only, which is what the usage page's chart and
   // the invoice read), and building the line here is what lets the Go CLI print
   // the Worker's words instead of carrying its own copy of them.
-  const body = { ...empty, capLine: capLine(empty.cap) };
+  //
+  // The upload line rides beside it for the same reason (drive issue #308): the
+  // page renders a string the Worker assembled from the one word table, so no
+  // surface ships a second spelling of "Uploading 3 files" or a second byte
+  // formatter. A queue is checked on the way in by uploadProgress(), which
+  // throws on a value that is not a queue, so a broken report fails the read
+  // rather than printing a plausible line about bytes nobody counted.
+  const uploadLine = upload === null ? null : uploadProgress(upload).label;
+  const body = { ...empty, capLine: capLine(empty.cap), uploadLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }

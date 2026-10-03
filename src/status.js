@@ -178,27 +178,52 @@ export function syncStatus(device, now = Date.now()) {
 
 // The upload-progress line, as a table of fragments so the page can carry the
 // same words it cannot import (`drive status` prints the assembled line).
+// `paused` and `resumed` are the two states `drive pause` and `drive resume`
+// name, printed by the status line and by the CLI's own command output; the Go
+// CLI mirrors this table (cmd/drive/pause.go) and
+// TestStatusWordsMatchThePageWords joins the two copies.
 export const UPLOAD_LABEL = Object.freeze({
   upToDate: "Up to date",
   oneFile: "Uploading 1 file",
   manyFiles: "Uploading {files} files",
   noCount: "Uploading",
   progress: "{uploaded} of {total} ({percent}%)",
+  // A paused queue is not a moving one. Its line names the state first and
+  // then what is still waiting, so a person reads "Paused" and not
+  // "Uploading" for bytes that are not leaving.
+  paused: "Paused",
+  resumed: "Resumed",
+  pausedOne: "1 file waiting",
+  pausedMany: "{files} files waiting",
+  pausedLine: "Paused: {waiting} ({left} left)",
+  // Why a queued file has not gone up yet (drive issue #107). `drive status`
+  // prints these; the page carries the same fragments so the two copies cannot
+  // drift. Disk-full uses FAILURE_MESSAGES["disk-cache-full"] instead.
+  waitingWhy: "They are waiting to upload.",
+  waitingUnmounted: "They are waiting because the drive is not mounted.",
+  waitingUnmountedNext: "They will upload when the drive is mounted again.",
 });
 
 /**
  * Upload progress for `drive status` and the page's activity line: how much of
  * the queue has gone up. Zero total means nothing is waiting, which is a
  * complete state ("Up to date"), not an error and not a division by zero.
+ *
+ * A `paused` upload is the same arithmetic in a stopped state (drive issue
+ * #100): the label leads with the pause word and the bytes still to send, so a
+ * paused drive never reads as an uploading one. An explicit `paused: false`
+ * behaves like an absent flag, so a caller that always sets the field does not
+ * pause its own queue.
  * @param {unknown} upload
  */
 export function uploadProgress(upload) {
   if (typeof upload !== "object" || upload === null) {
     throw new TypeError(`uploadProgress needs an upload object, got ${String(upload)}`);
   }
-  const fields = /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown}} */ (
-    upload
-  );
+  const fields =
+    /** @type {{uploadedBytes?: unknown, totalBytes?: unknown, files?: unknown, paused?: unknown}} */ (
+      upload
+    );
   const uploaded = fields.uploadedBytes;
   const total = fields.totalBytes;
   if (typeof uploaded !== "number" || !Number.isFinite(uploaded) || uploaded < 0) {
@@ -219,6 +244,23 @@ export function uploadProgress(upload) {
   // that null rather than on a missing field.
   const count = fields.files;
   const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
+  // The pause is the same arithmetic in a stopped state, read off the payload
+  // the same defensive way: only a literal true pauses, so `paused: false` and
+  // an absent flag both leave the uploading line alone.
+  if (fields.paused === true) {
+    const left = formatBytes(total - uploaded);
+    const waiting =
+      files === null
+        ? null
+        : files === 1
+          ? UPLOAD_LABEL.pausedOne
+          : UPLOAD_LABEL.pausedMany.replace("{files}", String(files));
+    const label =
+      waiting === null
+        ? `${UPLOAD_LABEL.paused}: ${left} left`
+        : UPLOAD_LABEL.pausedLine.replace("{waiting}", waiting).replace("{left}", left);
+    return { percent, label };
+  }
   const head =
     files === null
       ? UPLOAD_LABEL.noCount
@@ -284,6 +326,18 @@ export function unauthorizedResponse() {
  * signed in, so a signed-in account gets `waiting` with an empty device list —
  * the same shape the real store returns for a signed-in account with no
  * devices yet.
+ *
+ * `upload` is the live rclone upload queue, in the one shape `uploadProgress()`
+ * and the first-run page's `uploadLine()` read:
+ * `{uploadedBytes, totalBytes, files?, paused?}`. It is null when there is no
+ * queue to report. The queue is rclone's, on the Mac, so the Worker can only
+ * report one once the device store lands: an account with no signed-in device
+ * has nothing waiting, and null is that answer rather than an invented zero
+ * that would read as a live queue of no bytes. The field ships with the payload
+ * now (drive issue #308) so both pages read one shape, and it is an argument
+ * to the handler rather than a value written here, so the store that fills it
+ * is one line at the call site and the payload shape does not change when it
+ * lands.
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401
@@ -292,8 +346,9 @@ export function unauthorizedResponse() {
  * (drive issue #73).
  * @param {Request} request
  * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
+ * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
-export function handleFirstRunStatusRequest(request, account) {
+export function handleFirstRunStatusRequest(request, account, upload = null) {
   // The gate comes before the method check, so an anonymous request is told
   // only that it is not signed in and never which methods this route has.
   if (!account) {
@@ -305,7 +360,12 @@ export function handleFirstRunStatusRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  return new Response(JSON.stringify({ state: "waiting", devices: [] }), {
+  // `upload` is the raw queue, not a finished line: this endpoint feeds the
+  // first-run page's renderer, which calls uploadLine() on it (drive issue
+  // #100). The value is the shape uploadProgress() accepts, and the renderer's
+  // own guard turns a payload it cannot draw into its unreachable state, so no
+  // second check is written here.
+  return new Response(JSON.stringify({ state: "waiting", devices: [], upload }), {
     status: 200,
     headers: STATUS_HEADERS,
   });

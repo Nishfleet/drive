@@ -184,6 +184,17 @@ h2 {
   font-size: 15px;
 }
 
+/* ---- The upload-progress line ---------------------------------------- */
+
+/* The live line is the endpoint's own string (src/billing.js
+   handleUsageRequest), so it is styled like the other numbers and formats
+   nothing here. */
+.upload-line {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(18px, 2.6vw, 22px);
+}
+
 /* ---- The cap slider --------------------------------------------------- */
 
 .cap {
@@ -313,6 +324,18 @@ h2 {
         <p class="hint" id="downloads-hint">Free up to 3× the month's average stored size</p>
       </section>
 
+      <!-- The upload-progress line (drive issue #308): the same live words
+           `drive status` and the first-run page show, assembled by the Worker
+           from the one word table in src/status.js, so this page carries no
+           second copy of a word and formats no bytes of its own. It is hidden
+           when there is no queue to report, because a drive with nothing
+           waiting has no progress line to show. -->
+      <section aria-labelledby="uploads-heading">
+        <h2 id="uploads-heading">Uploads</h2>
+        <p class="upload-line" id="upload-line" hidden></p>
+        <p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file.</p>
+      </section>
+
       <section aria-labelledby="cap-heading">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
@@ -370,6 +393,7 @@ const storedNowEl = document.getElementById("stored-now");
 const gbMonthsEl = document.getElementById("gb-months");
 const costEl = document.getElementById("cost");
 const downloadsEl = document.getElementById("downloads-line");
+const uploadLineEl = document.getElementById("upload-line");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
 
@@ -480,7 +504,12 @@ function render(summary) {
     (summary.saved !== null &&
       (typeof summary.saved !== "object" ||
         summary.saved === null ||
-        typeof summary.saved.copy !== "string"))
+        typeof summary.saved.copy !== "string")) ||
+    // The upload-progress line is null when nothing is waiting and a finished
+    // sentence when something is. A value that is neither is a payload this
+    // page cannot render, so it takes the unreachable state rather than
+    // printing "null" or "undefined" where a line belongs.
+    (summary.uploadLine !== null && typeof summary.uploadLine !== "string")
   ) {
     sayUnreachable();
     return;
@@ -501,6 +530,10 @@ function render(summary) {
   gbMonthsEl.textContent = labels.gbMonths;
   costEl.textContent = labels.cost;
   downloadsEl.textContent = labels.downloads;
+  // The upload-progress line is the Worker's own words, so the page sets what
+  // it was sent and hides the line when there is no queue to report.
+  uploadLineEl.textContent = summary.uploadLine === null ? "" : summary.uploadLine;
+  uploadLineEl.hidden = summary.uploadLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
   // month's ceiling or the cap, whichever is larger, in whole dollars. It is a

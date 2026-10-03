@@ -8,12 +8,15 @@
 // so a swap that ran on one Worker instance is the row the next instance
 // sees. The storage-side revoke / swap is still the vendor's key API (#173);
 // until then a minted session expires on its own and the row here is what
-// makes the api's own storage API refuse a write immediately.
+// makes the api's own storage API refuse a write immediately. Drive#173 (2026-10-03)
+// measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
+// is the whole of the withdrawal there.
 
 import { BILLING_CONFIG } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { publicDevice } from "./keystore.js";
+import { mintTtlSeconds } from "./keyprovider.js";
+import { publicDevice, renewKeyWindow } from "./keystore.js";
 
 /**
  * @typedef {import("./keystore.js").Device} Device
@@ -76,6 +79,14 @@ function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
+    // Null is a key that never expires (a person's own device key); a column
+    // written before drive#106 is null too, so an existing row keeps the life
+    // it had rather than being handed an expiry it was never minted with.
+    expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),
+    // Null is a row written before drive#106's second column existed, so the
+    // kind's hour is the ceiling on every renewal of it.
+    ttlSeconds:
+      r.ttl_seconds === null || r.ttl_seconds === undefined ? null : Number(r.ttl_seconds),
     lastSeenAt:
       r.last_seen_at === null || r.last_seen_at === undefined ? null : Number(r.last_seen_at),
     revokedAt: r.revoked_at === null || r.revoked_at === undefined ? null : Number(r.revoked_at),
@@ -110,6 +121,47 @@ function digestsEqual(left, right) {
  * @param {D1Database} db
  * @param {{now?: () => number, keyProvider?: {mint: (scope: KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
  */
+/**
+ * Move one row's window forward: the later of the expiry this call computed and
+ * the expiry the row already holds.
+ *
+ * This is the one statement that renews an hour, and the comparison is in the
+ * SQL, not only in the JavaScript, because the JavaScript can only compare
+ * against the row *this call read*. Two requests can read the same row and
+ * write in either order, so a request that read first and writes second would
+ * otherwise pull a restarted hour back to the value it read — the row must
+ * keep the later expiry for the bound to hold under a race, and this is where
+ * that is decided. `tests/integration/agent-key-ttl-d1.test.mjs` runs this
+ * exact statement with a stale value to prove it.
+ *
+ * @param {D1Database} db
+ * @param {{id: string}} device
+ * @param {number|null} expiresAt the window this call computed, or null for a
+ *   kind that never expires (its row keeps the null it has)
+ * @param {number} lastSeenAt
+ * @returns {Promise<unknown>} the run result, whose `meta.changes` is how the
+ *   caller proves a write landed
+ */
+export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
+  return run(
+    db,
+    `UPDATE devices SET last_seen_at = ?1,
+       expires_at = CASE
+         WHEN ?2 IS NULL THEN devices.expires_at
+         WHEN devices.expires_at IS NULL OR devices.expires_at < ?2 THEN ?2
+         ELSE devices.expires_at
+       END
+      WHERE id = ?3 AND revoked_at IS NULL`,
+    lastSeenAt,
+    expiresAt,
+    device.id,
+  );
+}
+
+/**
+ * @param {D1Database} db
+ * @param {{now?: () => number, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ */
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
@@ -126,8 +178,8 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `INSERT INTO devices (
          id, account_id, name, kind, b2_key_id, secret_hash, capabilities,
-         prefix, capped_from, created_at, last_seen_at, revoked_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         prefix, capped_from, created_at, last_seen_at, revoked_at, expires_at, ttl_seconds
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
        ON CONFLICT(id) DO UPDATE SET
          account_id = excluded.account_id,
          name = excluded.name,
@@ -138,7 +190,9 @@ export function createD1DeviceStore(db, options = {}) {
          prefix = excluded.prefix,
          capped_from = excluded.capped_from,
          last_seen_at = excluded.last_seen_at,
-         revoked_at = excluded.revoked_at`,
+         revoked_at = excluded.revoked_at,
+         expires_at = excluded.expires_at,
+         ttl_seconds = excluded.ttl_seconds`,
       device.id,
       device.accountId,
       device.name,
@@ -151,6 +205,14 @@ export function createD1DeviceStore(db, options = {}) {
       device.createdAt,
       device.lastSeenAt,
       device.revokedAt,
+      // Null is written as null, not as 0: a key that never expires is a
+      // different claim from one that expired at the epoch.
+      device.expiresAt ?? null,
+      // The lifetime the mint gave, or null on a row written before the column
+      // existed. Null there means "the kind's own hour is the ceiling", which is
+      // what an old row is held to: it is never handed a longer life than a new
+      // one.
+      device.ttlSeconds ?? null,
     );
   }
 
@@ -252,6 +314,23 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * The row a storage key authenticates, or null. A revoked key, a wrong
+     * secret and a credential past its hour are all null: the caller learns
+     * only that the key does not work, never which half was wrong.
+     *
+     * A request that does authenticate renews the window in the same statement
+     * that stamps `last_seen_at` — the one write this path already made —
+     * through the one renewal rule in keystore.js `renewKeyWindow`, so a
+     * connected tool keeps working without a person re-running anything, and
+     * a revoked row (which the WHERE clause already excludes) is never
+     * renewed. Two claims the read has to make, in order: a credential past
+     * its hour is refused with no write at all, and a machine row that was
+     * written before the column existed (drive#106's migration is
+     * expand-only, so its `expires_at` is NULL) is handed an hour by that
+     * first request rather than being let through immortal — a NULL on
+     * `agent`, `s3` or `branch` means "no hour was minted with this one",
+     * not "this one lasts forever". Only a `device` row has no hour, and
+     * `renewKeyWindow` hands it back untouched.
      * @param {string} accessKeyId
      * @param {string} secret
      * @returns {Promise<Device|null>}
@@ -270,8 +349,21 @@ export function createD1DeviceStore(db, options = {}) {
         return null;
       }
       const seen = nowSeconds(now());
-      await run(db, "UPDATE devices SET last_seen_at = ?1 WHERE id = ?2", seen, device.id);
-      return { ...device, lastSeenAt: seen };
+      const renewed = renewKeyWindow(device, seen);
+      if (device.expiresAt !== undefined && device.expiresAt !== null && seen >= device.expiresAt) {
+        // Past the hour and nothing renewed it: the credential is dead, so the
+        // row is not touched and no window is restarted.
+        return null;
+      }
+      // The renewal is written through the case, so a row whose kind never
+      // expires (null) keeps its null rather than being handed one, and the
+      // row keeps the later of the two expiries, so a request that read the
+      // row first and writes second cannot pull the hour back to the value it
+      // read (`renewKeyRow`). The `revoked_at IS NULL` guard repeats the read
+      // above: a row revoked between the two statements is not renewed by
+      // this one.
+      await renewKeyRow(db, device, renewed.expiresAt ?? null, seen);
+      return { ...device, lastSeenAt: seen, expiresAt: renewed.expiresAt ?? null };
     },
 
     /**
@@ -294,6 +386,57 @@ export function createD1DeviceStore(db, options = {}) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
       }
       return { revoked: true };
+    },
+
+    /**
+     * Restart the hour on one of the account's own keys (drive issue #106).
+     * The one renewal rule is keystore.js `renewKeyWindow`, so this store and
+     * the in-memory stand-in renew by the same amount and by the same refusal
+     * set: another account's key is "not found", a revoked key is refused and
+     * left exactly as it was, and a kind that never expires is handed back
+     * unchanged. No request field is read, so the powers on the row cannot be
+     * widened by a call that is only about time.
+     *
+     * An expired key can be renewed: the credential is dead, but the row is
+     * not cancelled and the caller is the signed-in device, so this is the
+     * one route by which a tool that sat idle for an hour comes back.
+     * @param {{id: string}} account
+     * @param {string} keyId
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
+     */
+    async renewKey(account, keyId) {
+      const row = await first(
+        db,
+        "SELECT * FROM devices WHERE id = ?1 AND account_id = ?2",
+        keyId,
+        account.id,
+      );
+      const device = deviceFromRow(row);
+      if (device === null) {
+        return { error: "not-found" };
+      }
+      if (device.revokedAt !== null) {
+        return { error: "revoked" };
+      }
+      const at = nowSeconds(now());
+      const renewed = renewKeyWindow(device, at);
+      const before = device.expiresAt ?? null;
+      // `revoked_at IS NULL` repeats the read above, and the row count is what
+      // proves it landed: a key revoked between the two statements is not
+      // renewed by this one, so the answer says revoked rather than renewed.
+      // The row keeps the later of the two expiries, the same rule
+      // `authenticate` writes, so a slow request cannot pull a restarted hour
+      // back to the value it read before the restart.
+      const changed = await renewKeyRow(db, device, renewed.expiresAt ?? null, at);
+      if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
+        return { error: "revoked" };
+      }
+      return {
+        renewed: renewed.expiresAt !== before,
+        // The stamp this call just wrote, not the row as it was read: the
+        // answer a caller shows has to be the answer the store holds.
+        device: publicDevice({ ...renewed, lastSeenAt: at }),
+      };
     },
 
     /**
@@ -409,16 +552,23 @@ export function createD1DeviceStore(db, options = {}) {
             ),
           );
           const credential = await mintCredential(scope);
+          // The hour the minted credential lives. A key this account already
+          // holds on the same prefix (the one being swapped) names the kind, so
+          // a swap keeps the lifetime the key had; with no sibling the kind is
+          // an agent key, which is what a cap swap replaces.
+          const kind = sibling?.kind ?? "agent";
+          const ttl = mintTtlSeconds(kind, credential.expiresIn);
           const device = {
             id: newId("key"),
             accountId,
             name: sibling?.name ?? "cap",
-            kind: sibling?.kind ?? "agent",
+            kind,
             accessKeyId: credential.accessKeyId,
             secretHash: await sha256Hex(credential.secret),
             prefix: scope.prefix,
             capabilities: [...scope.capabilities],
             createdAt: nowSeconds(now()),
+            expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
             lastSeenAt: null,
             revokedAt: null,
           };
@@ -429,6 +579,7 @@ export function createD1DeviceStore(db, options = {}) {
             secret: credential.secret,
             sessionToken: credential.sessionToken,
             expiresIn: credential.expiresIn,
+            expiresAt: device.expiresAt,
           };
         },
 
@@ -472,12 +623,19 @@ export function createD1DeviceStore(db, options = {}) {
             prefix: device.prefix,
             capabilities: READ_ONLY_CAPABILITIES,
           });
+          // The swap keeps the row's own lifetime and its own id: the hour
+          // restarts on the new credential, and the key a person sees listed
+          // is the one that was there before. Nothing about the swap widens
+          // the window — `cappedFrom` records the powers it took, and the
+          // capabilities become READ_ONLY_CAPABILITIES, never more.
+          const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
           const updated = {
             ...device,
             accessKeyId: credential.accessKeyId,
             secretHash: await sha256Hex(credential.secret),
             cappedFrom: [...device.capabilities],
             capabilities: [...READ_ONLY_CAPABILITIES],
+            expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
           };
           await put(updated);
           return {
@@ -486,6 +644,7 @@ export function createD1DeviceStore(db, options = {}) {
             secret: credential.secret,
             sessionToken: credential.sessionToken,
             expiresIn: credential.expiresIn,
+            expiresAt: updated.expiresAt,
           };
         },
       };

@@ -69,6 +69,9 @@ func TestPendingUploadsCountsOnlyDirtyMetaFiles(t *testing.T) {
 	if q.Bytes != 8388608 {
 		t.Errorf("bytes = %d, want 8388608 (the queued file's Size)", q.Bytes)
 	}
+	if len(q.Names) != 1 || q.Names[0] != "queued.bin" {
+		t.Errorf("names = %v, want the dirty file's name so status can print it when the mount is down", q.Names)
+	}
 }
 
 func TestPendingUploadsIsZeroForAnEmptyQueue(t *testing.T) {
@@ -76,7 +79,7 @@ func TestPendingUploadsIsZeroForAnEmptyQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q != (Pending{}) {
+	if q.Files != 0 || q.Bytes != 0 || len(q.Names) != 0 {
 		t.Errorf("got %+v, want the zero queue for a cache that was never used", q)
 	}
 }
@@ -88,6 +91,19 @@ func TestPendingUploadsFailsOnUnreadableMeta(t *testing.T) {
 	// date": the difference is a person's belief that their work is safe.
 	if _, err := PendingUploads(cache); err == nil {
 		t.Fatal("got no error for unparseable vfs metadata, want one")
+	}
+}
+
+func TestPendingUploadsSkipsTruncatedMetaFromACrash(t *testing.T) {
+	cache := t.TempDir()
+	writeMeta(t, cache, "queued.bin", queuedMeta)
+	writeMeta(t, cache, "half-written", `{"Dirty": true, "Size":`)
+	q, err := PendingUploads(cache)
+	if err != nil {
+		t.Fatalf("truncated meta after a crash must not hide the rest of the queue: %v", err)
+	}
+	if q.Files != 1 || (len(q.Names) > 0 && q.Names[0] != "queued.bin") {
+		t.Errorf("got %+v, want only the complete dirty file", q)
 	}
 }
 
@@ -184,7 +200,7 @@ func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 		base string
 		want string
 	}{
-		{"unconfigured", "", "no api Worker configured"},
+		{"unconfigured", "", "No drive api is configured"},
 		{"bad url", "ftp://drive.example", "must be http or https"},
 		{"no host", "https://", "no host"},
 	}
@@ -211,8 +227,11 @@ func TestReadCostLineNamesAnUnreachableService(t *testing.T) {
 	}))
 	defer srv.Close()
 	reason := readCostLine(srv.URL, "")
-	if !strings.Contains(reason, "500") {
-		t.Errorf("reason %q, want the failing status named", reason)
+	if want := fail("api-down").Error(); reason != want {
+		t.Errorf("reason %q, want %q", reason, want)
+	}
+	if strings.Contains(reason, "500") || strings.Contains(reason, "nope") {
+		t.Errorf("reason %q carries raw error text; it must not", reason)
 	}
 }
 
@@ -229,6 +248,66 @@ func TestParseAPIBaseTrimsTheTrailingSlash(t *testing.T) {
 func TestParseAPIBaseRejectsAValueThatWouldBreakTheLine(t *testing.T) {
 	if _, err := parseAPIBase("https://drive.example\nGET /elsewhere"); err == nil {
 		t.Fatal("got no error for a newline in the api Worker URL, want one")
+	}
+}
+
+func TestQueueWhySaysWhatIsWaitingAndWhy(t *testing.T) {
+	waiting := Pending{Files: 1, Bytes: 1024, Names: []string{"cut-off.bin"}}
+	got := queueWhy(false, false, false, waiting)
+	if !strings.Contains(got, "cut-off.bin") {
+		t.Errorf("unmounted = %q, want the waiting file named", got)
+	}
+	if !strings.Contains(got, waitingUnmountedWhy) || !strings.Contains(got, waitingUnmountedNext) {
+		t.Errorf("unmounted = %q, want the not-mounted reason", got)
+	}
+	if got := queueWhy(true, false, false, waiting); got != waitingToUploadWhy {
+		t.Errorf("mounted = %q, want %q", got, waitingToUploadWhy)
+	}
+	if got := queueWhy(true, true, false, Pending{}); !strings.Contains(got, diskCacheFullWhat) || !strings.Contains(got, diskCacheFullNext) {
+		t.Errorf("full cache = %q, want the disk-cache-full words", got)
+	}
+	if got := queueWhy(true, false, true, waiting); got != "" {
+		t.Errorf("paused = %q, want empty so pause (issue #100) is not duplicated", got)
+	}
+	if got := queueWhy(true, false, false, Pending{}); got != "" {
+		t.Errorf("empty = %q, want nothing extra", got)
+	}
+}
+
+func TestQueueWhyWordsMatchTheSources(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("..", "..", "src", "status.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(page)
+	for _, want := range []string{waitingToUploadWhy, waitingUnmountedWhy, waitingUnmountedNext} {
+		if !strings.Contains(html, want) {
+			t.Errorf("src/status.js no longer carries %q", want)
+		}
+	}
+	messages, err := os.ReadFile(filepath.Join("..", "..", "src", "messages.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(messages)
+	if !strings.Contains(text, diskCacheFullWhat) || !strings.Contains(text, diskCacheFullNext) {
+		t.Errorf("src/messages.js no longer carries the disk-cache-full words; the CLI must print the table")
+	}
+}
+
+func TestCacheIsFullReadsRcloneOutOfSpace(t *testing.T) {
+	home := t.TempDir()
+	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "vfs/stats") {
+			_, _ = w.Write([]byte(`{"diskCache":{"outOfSpace":true}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
+	t.Setenv("DRIVE_RCLONE", c.binary)
+	t.Setenv("DRIVE_RC_ADDR", c.addr)
+	if !cacheIsFull(home, true) {
+		t.Fatal("cacheIsFull = false, want true when rclone vfs/stats says outOfSpace")
 	}
 }
 

@@ -1,0 +1,7 @@
+# Run artefacts, the held-out split and the Python venv never live in the repository.
+results/
+heldout/
+*.holdout.yaml
+.venv/
+__pycache__/
+logs/

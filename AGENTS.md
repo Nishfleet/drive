@@ -2,7 +2,7 @@
 
 A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.
 
-- The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). The vault copy under `02 Projects/spacefs-clone/spec/` is the source; update both together.
+- The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/spacefs-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
 - Every build step's finish line is proven on real files and real accounts, cited by path, id or timestamp. A green test alone is not done.
 - Stock tools only (rclone, the storage provider's versioning, lifecycle rules and scoped keys, Cloudflare Workers, D1 and Cron Triggers, Dodo, the MCP filesystem server). Hand-write only the product's own logic: the `drive` CLI, the api and dl Workers, the meter, and the web pages.
 - No money is spent without Nish. Free tiers and free trials only; if a signup asks for a card, stop and mark the issue `agent-blocked` with that reason.
@@ -22,6 +22,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - promptfoo (the agent eval, `evals/agents/`) is its own npm project, pinned there and not in the root `package.json`. Install it with `npm ci --prefix evals/agents` and check the version with `evals/agents/node_modules/.bin/promptfoo --version` (about 160 MB). Do not run `npx` or `npm exec` for it: that downloads the whole package each time and fills a runner's 3 GiB memory limit (drive#257).
 - `npm test` is the full gate: types, lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
 - `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
+- The Cloudflare Web Analytics beacon is a build-time setting, not a Worker secret: `DRIVE_CF_BEACON_TOKEN` (the dashboard's 32-hex token) puts one deferred script in the six pages' `<head>` while `npm run build` emits them, and an unset setting leaves those pages byte for byte as they ship (`src/analytics.js`, `test/web-analytics.test.mjs`). It is a variable, not a secret: the token is in every visitor's HTML.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
 
 ## Known Worker secrets

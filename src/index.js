@@ -6,11 +6,19 @@ import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { bearerToken } from "../workers/api/src/http.js";
+import { bearerToken, errorResponse } from "../workers/api/src/http.js";
+import { createD1QueueStore } from "../workers/api/src/queues.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import {
+  BRANCHES_ENDPOINT,
+  backfillBranchSnapshots,
+  createKvSnapshotStore,
+  handleBranchesRequest,
+  SNAPSHOT_BACKFILL_SCHEDULE,
+} from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
+import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -22,6 +30,7 @@ import {
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
+  HOUR_MS,
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
@@ -48,6 +57,7 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -152,6 +162,50 @@ function devStorage(env) {
 }
 
 /**
+ * The api Worker's service binding, read off this Worker's own env as the
+ * optional value it is until the api Worker is deployed (drive#156/#341,
+ * #342). It is read here rather than declared in cloudflare.config.ts for the
+ * same reason devStorage's two vars are: a declared binding is required at
+ * deploy, and Cloudflare fails this Worker's own deploy against a service
+ * binding whose target Worker does not exist
+ * (https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#deployment
+ * — "the target Worker must be deployed first, before Worker A. Otherwise,
+ * when you attempt to deploy Worker A, deployment will fail"). So the
+ * binding is declared when the deploy step ships drive-api beside this
+ * Worker, and until then the /v1/* family answers its closed door instead of
+ * pretending to be routed.
+ * @param {Env} env
+ * @returns {Env & {API?: Fetcher}}
+ */
+function apiBinding(env) {
+  return /** @type {Env & {API?: Fetcher}} */ (env);
+}
+
+/**
+ * The forward to the api Worker over the service binding, shared by the two
+ * routes this Worker forwards: the /v1/* family and the one /api/* route
+ * registered ahead of the account gate. The request goes over unchanged —
+ * method, path, query, headers and body — and the api Worker's own dispatcher
+ * answers it with its own gate, its own edge limits and its own words.
+ * Nothing either family serves is re-implemented on this side.
+ *
+ * A deployment with no binding is the closed door, not an open one: the api
+ * Worker is a separate deployable that no deploy has shipped yet (its deploy
+ * step is the one line the worker App's token cannot push), and a declared
+ * binding to a Worker that does not exist fails this Worker's own deploy. So
+ * until drive-api is deployed and the binding is declared, both routes say so
+ * in the message table's words rather than falling through to the asset layer
+ * and serving a 404 page to a CLI mid sign-in.
+ * @param {DriveContext} c
+ * @returns {Response | Promise<Response>}
+ */
+function forwardToApi(c) {
+  const api = apiBinding(c.env).API;
+  if (!api) return errorResponse(503, failureMessage("unexpected"));
+  return api.fetch(c.req.raw);
+}
+
+/**
  * @param {Env} env
  * @returns {import("./files.js").FileStore}
  */
@@ -186,6 +240,49 @@ function storeFor(env) {
  */
 function linksFor(env) {
   return createD1LinkStore(env.DRIVE_DB);
+}
+
+// The branch snapshot store (drive issue #252), built per request from the
+// BRANCH_SNAPSHOTS binding the same way linksFor builds its link store: a thin
+// object over the binding, so there is nothing to hold on the isolate and no
+// stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
+// 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
+// which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
+// and the row holds a pointer to it instead. It is optional, not required: a
+// deployment with no namespace still branches, and its snapshots stay in the
+// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
+// binding is not on the health check's required list either. `null` is the
+// answer a missing binding gets, and every reader treats it as "use the row".
+/**
+ * @param {Env} env
+ * @returns {import("./branches.js").SnapshotStore|null}
+ */
+function snapshotsFor(env) {
+  const kv = env.BRANCH_SNAPSHOTS;
+  return kv ? createKvSnapshotStore(kv) : null;
+}
+
+// The live upload queue a device on this account reported (drive issue #318),
+// read from the same row the api Worker's report route writes. Built per
+// request from the binding, like linksFor: a report a mount just sent is the
+// row the next poll reads, on whichever instance the poll lands. The
+// freshness window is inside the store's read (workers/api/src/queues.js
+// `latest`), so the first-run page and the usage page cannot disagree about
+// whether a report is live, and a device that has not reported for a while
+// reads as no queue to report — the same honest null #308 answers — rather
+// than as a stale one. No database means nothing has reported and there is
+// nothing to read: null, the same answer as an account whose no device has
+// signed in yet.
+/**
+ * @param {Env} env
+ * @param {{id: string}} account
+ * @returns {Promise<import("../workers/api/src/queues.js").UploadQueue|null>}
+ */
+async function liveQueueFor(env, account) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  return createD1QueueStore(env.DRIVE_DB).latest(account.id);
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
@@ -310,6 +407,18 @@ export function createApp() {
   // Strict-Transport-Security, and the rest Hono ships) on every response.
   app.use("*", secureHeaders());
 
+  // The api Worker's one route in this Worker's own namespace, registered
+  // ahead of the account gate so the gate never answers it (drive#354). The
+  // api registry declares POST /api/keys/revoke outside its /v1 family
+  // (workers/api/src/routes.js, the walk's one exception) because `drive
+  // logout` posts it with the storage key the rclone config holds: the key
+  // itself is the credential, so there is no session to gate on. It is the
+  // one deliberate hole in the deny-by-default gate below — a wrong key is
+  // the api Worker's own 401, a right one its 204, and no account route is
+  // reachable through it — and test/account-gate.test.mjs pins that it is the
+  // only such route.
+  app.all("/api/keys/revoke", forwardToApi);
+
   // Deny-by-default account gate on /api/*. Public routes are declared in
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
@@ -324,13 +433,36 @@ export function createApp() {
   // account gate is what holds it.
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
 
+  // --------------------------------------------------- the second family (/v1/*)
+  // The api Worker's family on the one host that answers the CLI's one base
+  // (drive#156/#341: `drive agents` posts /v1/keys to the same APIBase
+  // `drive search` posts /api/search to, cmd/drive/api.go). This Worker is the
+  // one that answers that address, so /v1/* is forwarded here rather than
+  // served here.
+  //
+  // The prefix is the api registry's own (workers/api/src/routes.js
+  // API_PREFIX, the value every path in that registry starts with), spelled
+  // here the way every route path on this app is spelled, and
+  // cloudflare.config.ts carries the same list in runWorkerFirst, which is
+  // what routes a /v1/* request to this route instead of the asset layer.
+  // test/deploy-assets.test.mjs pins this route, the config's list and the
+  // registry against that one constant.
+  app.all("/v1/*", forwardToApi);
+
   // ---------------------------------------------------------- account routes
   // Each method is registered on its own (rather than with app.all) so Hono's
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
   // header; the gate above already answered an anonymous caller 401.
 
-  // The first-run page's live flip (issue #32, #45).
-  app.get(STATUS_ENDPOINT, (c) => handleFirstRunStatusRequest(c.req.raw, c.get("account")));
+  // The first-run page's live flip (issue #32, #45). The third argument is
+  // the queue a device on this account reported, read from the row the api
+  // Worker's report route wrote (drive issue #318): #308 made it an argument
+  // to the handler, and the read is the one line that fills it.
+  app.get(STATUS_ENDPOINT, async (c) => {
+    const account = c.get("account");
+    const upload = account ? await liveQueueFor(c.env, account) : null;
+    return handleFirstRunStatusRequest(c.req.raw, account, upload);
+  });
 
   // Search reads only the D1 file index (issue #18), behind the account gate.
   // The write half of the same module keeps the index current by wrapping the
@@ -356,12 +488,38 @@ export function createApp() {
   app.get(`${FILES_ENDPOINT}/*`, filesHandler);
   app.post(`${FILES_ENDPOINT}/*`, filesHandler);
 
+  // The optional notes starter (drive issue #15). A GET describes the template
+  // and writes nothing; a POST with `action: "create"` fills in the starter's
+  // own files, and only the ones that are missing. Same store handling as the
+  // files lane: the handler scopes the store to the account it is handed, and
+  // no withIndex, so a starter's files are not search rows a person never
+  // asked to index. Off by default is enforced by the gate and the method
+  // together: nothing in the Worker calls the create for a person, and the
+  // only route that runs it is a POST behind the account gate.
+  /** @param {DriveContext} c */
+  const starterHandler = (c) => {
+    const account = c.get("account");
+    return handleStarterRequest(
+      c.req.raw,
+      account ? scopeStore(storeFor(c.env), account) : null,
+      account,
+    );
+  };
+  app.get(STARTER_ENDPOINT, starterHandler);
+  app.post(STARTER_ENDPOINT, starterHandler);
+
   // Branches (build step 7, drive#8): the folder copy, the diff, approve and
   // discard. The store is handed in unscoped (the handler scopes it) and
   // without withIndex, so a branch's own copies never land in the search index.
   /** @param {DriveContext} c */
   const branchesHandler = (c) =>
-    handleBranchesRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleBranchesRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
   app.get(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
@@ -372,7 +530,13 @@ export function createApp() {
   // as the branches route above.
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
-    handleRewindRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleRewindRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
   app.get(`${REWIND_ENDPOINT}/*`, rewindHandler);
@@ -387,7 +551,18 @@ export function createApp() {
     if (c.env.DRIVE_DB) {
       capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
     }
-    return handleUsageRequest(c.req.raw, { ...account, capUsd });
+    // The third argument is the live rclone upload queue, reported by the
+    // account's device over its device token and stored in DRIVE_DB
+    // (workers/api/src/queues.js, drive issue #318). It is null when no
+    // device has reported recently, which is the honest answer for an account
+    // whose no device has signed in yet or whose mount is gone (drive issue
+    // #308), so the usage page hides the line rather than showing a stale
+    // one.
+    return handleUsageRequest(
+      c.req.raw,
+      { ...account, capUsd },
+      await liveQueueFor(c.env, account),
+    );
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
@@ -479,8 +654,9 @@ export function createApp() {
 }
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
-// and the usage page; only /api/* reaches this Worker (see runWorkerFirst in
-// cloudflare.config.ts). Anything that does reach it and is not an API falls
+// and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
+// Worker (see runWorkerFirst in cloudflare.config.ts). Anything that does reach
+// it and is not an API falls
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
 /**
@@ -491,7 +667,7 @@ export default {
     return createApp().fetch(request, env);
   },
 
-  // Three Cron Triggers share this one handler, and the platform's cron string
+  // Four Cron Triggers share this one handler, and the platform's cron string
   // tells them apart, so no trigger spends another's work:
   //   - The meter's hourly rollup (issue #6): roll every closed UTC hour that
   //     has not been rolled yet into usage_minutes, oldest first
@@ -520,6 +696,15 @@ export default {
   //     drive has never served has nothing to rebuild, and no invented
   //     identity is indexed. Each account's rows are rebuilt from its own
   //     prefix (scopeStore), the same scoping a request path gets.
+  //   - The snapshot backfill (build step 7's contract, drive issue #321):
+  //     `backfillBranchSnapshots` moves the open pre-namespace rows' JSON out
+  //     of the legacy `branches.snapshot` column into BRANCH_SNAPSHOTS, under
+  //     each row's own `snapshotKey`, and sets the row's pointer and byte
+  //     length. It skips a closed branch and leaves the column in place, and
+  //     it is awaited so a failed sweep is a failed trigger Cloudflare
+  //     retries. The schedule is imported from the module that owns the sweep
+  //     (src/branches.js), pinned by test/branches.test.mjs the way
+  //     src/meter.js's METER_CRON is by test/meter.test.mjs.
   /**
    * @param {ScheduledController} event
    * @param {Env} env
@@ -536,7 +721,80 @@ export default {
     if (event.cron === METER_CRON) {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
-      await runMeterCron(env.METER_DB, event.scheduledTime);
+      const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      const hours = [];
+      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
+        hours.push(hour);
+      }
+      // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
+      // A missing key skips rather than failing the rollup; a failed ingest
+      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
+      // the unit tests can record the request without reaching the network.
+      // DODO_BASE_URL overrides the test host (drive issue #323, owner comment
+      // 2026-10-03T06:35Z); it defaults to test.dodopayments.com when unset.
+      const dodo =
+        /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
+          env
+        );
+      const pushed = await pushBillingHours(env.METER_DB, hours, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        baseUrl: dodo.DODO_BASE_URL,
+        now: event.scheduledTime,
+      });
+      // The report on the skip (drive issue #334). pushBillingHours returns
+      // {pushed: 0} for a missing key on purpose, and that silence is the bug
+      // this names: a deploy whose key was never set, or was set on the wrong
+      // Worker, rolls metered hours and bills nobody while /api/health stays
+      // green, because health deliberately does not look at secrets.
+      //
+      // It runs on the cron, beside the skip, and reaches a person reading
+      // Worker logs (/api/health cannot: a billing-config gap is not an outage,
+      // and health's contract is one failure at a time, not a second opinion).
+      // It runs after the push is awaited, and deliberately not under a try:
+      // a push that throws on purpose (Cloudflare retries the rollup) also
+      // ends this run, so the report is suppressed for that cycle and speaks
+      // on the next one. That is fine because a throwing push is itself the
+      // loud event; the report answers the silent path only.
+      //
+      // Guarded on purpose. The push above may throw - Cloudflare retries the
+      // rollup, because an unpushed hour should be retried. The report must
+      // not: a detector that fails the work it is reporting on is worse than
+      // no detector, because a transient D1 error, a schema change or a bad
+      // trigger time would then retry a rollup that already billed everyone
+      // correctly. Every failure path in billingPushGap is logged and dropped.
+      const gap = await billingPushGap(env.METER_DB, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        now: event.scheduledTime,
+      }).catch((error) => {
+        console.error(
+          "billing: the gap report failed, so it says nothing about this run",
+          error instanceof Error ? error.message : String(error),
+        );
+        return null;
+      });
+      if (gap && gap.hours > 0) {
+        // Value-free: hours, the oldest one, and which of the two causes the
+        // issue names. Never the key, never an account id.
+        console.error(
+          "billing: metered hours reached nobody",
+          gap.missingKey
+            ? "DODO_PAYMENTS_API_KEY is not set on this Worker, so the push skipped"
+            : "DODO_PAYMENTS_API_KEY is set but hours are still unpushed; check the key is the right one for this Worker",
+          `hours=${gap.hours}`,
+          `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
+        );
+      } else if (gap && pushed.pushed > 0) {
+        // The healthy counter-case, so the absence of the line above is
+        // meaningful: a person tailing logs can tell "nothing wrong" from
+        // "the report stopped running". `gap` is non-null here, so the gap
+        // was measured and came back zero; a report that failed prints its own
+        // line above and must not be followed by an all-clear. console.log,
+        // not console.error - error level is for actionable failures, and
+        // training an operator to ignore the error channel is how the next gap
+        // goes unseen.
+        console.log(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
+      }
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
@@ -546,6 +804,23 @@ export default {
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      return;
+    }
+    // The snapshot backfill's trip (drive issue #321): every open branch that
+    // predates the namespace keeps its JSON in the legacy `branches.snapshot`
+    // column, and this sweep moves each into BRANCH_SNAPSHOTS under its own
+    // key and sets the row's pointer and byte length — the step before the
+    // column can be dropped. Awaited, so a failed sweep is a failed trigger
+    // Cloudflare retries: the rows it did not reach are the next night's work,
+    // and the sweep is idempotent, so a repeat is free. The schedule is the
+    // only way a backfill starts, exactly like the reindex above: no web
+    // route walks every open branch a drive ever made.
+    if (event.cron === SNAPSHOT_BACKFILL_SCHEDULE) {
+      const snapshots = snapshotsFor(env);
+      if (!snapshots) {
+        throw new Error("the snapshot backfill needs the BRANCH_SNAPSHOTS namespace");
+      }
+      await backfillBranchSnapshots(env.DRIVE_DB, snapshots);
       return;
     }
     context.waitUntil(

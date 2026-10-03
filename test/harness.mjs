@@ -29,6 +29,15 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0009_upload_request_caps.sql",
   "drive/0010_accounts_devices.sql",
   "drive/0011_rate_limit.sql",
+  "drive/0012_branch_snapshot_kv.sql",
+  // The live upload-queue report a device posts over its device token
+  // (drive issue #318). A queue row is a customer row like any other, so a
+  // test that reads one reads it from the real schema.
+  "drive/0014_device_queues.sql",
+  // Each branch row's own id, so a name can be closed more than once
+  // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
+  // state) primary key, and after 0012's snapshot pointer columns.
+  "drive/0015_branch_row_id.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
@@ -63,11 +72,39 @@ function sqliteValue(value) {
  * node:sqlite only accepts anonymous `?`; the product SQL in src/search.js is
  * numbered because D1 is. One rewrite, used by every test adapter that speaks
  * SQLite, so a second bind path cannot drift.
+ *
+ * The rewrite ALONE is not enough, and this is the trap: after `?N` becomes
+ * `?`, node:sqlite binds by APPEARANCE, while D1 binds by NUMBER. A statement
+ * whose placeholders are written out of order (`SET b = ?3 … WHERE a = ?1`)
+ * — the shape `src/branches.js saveSnapshot` uses — silently bound the wrong
+ * value here, and a test passed against a row the Worker would never write.
+ * `sqliteBoundValues` expands the caller's values to one per appearance, in
+ * appearance order, so a numbered statement binds by number and a reused index
+ * fills every slot it owns. This is the same rule, and the same reason, as
+ * test/d1-sqlite.mjs `expandBoundValues`; it is called next to
+ * `sqlitePlaceholders` everywhere a D1 statement is run.
  * @param {string} sql
  * @returns {string}
  */
 export function sqlitePlaceholders(sql) {
   return sql.replace(/\?\d+/g, "?");
+}
+
+/**
+ * The bound values for a statement whose SQL `sqlitePlaceholders` has been
+ * rewritten: one value per placeholder APPEARANCE, each the value the
+ * placeholder's own number names. A statement with no numbered placeholder
+ * keeps the caller's values untouched, so an anonymous-`?` statement is not
+ * reordered by this.
+ * @param {string} sql the ORIGINAL sql, with its `?N` placeholders
+ * @param {unknown[]} bound the values the caller bound, in D1 index order
+ * @returns {unknown[]}
+ */
+export function sqliteBoundValues(sql, bound) {
+  if (!/\?\d/.test(sql)) {
+    return bound;
+  }
+  return [...sql.matchAll(/\?(\d+)/g)].map((match) => bound[Number(match[1]) - 1]);
 }
 
 /**
@@ -86,7 +123,7 @@ export function sqlitePlaceholders(sql) {
  */
 function runOne(sqlite, sql, params) {
   const statement = sqlite.prepare(sqlitePlaceholders(sql));
-  const bound = params.map(sqliteValue);
+  const bound = sqliteBoundValues(sql, params).map(sqliteValue);
   const results = statement.all(...bound);
   return {
     results,
@@ -144,7 +181,7 @@ export function createTestD1(options = {}) {
       return runOne(sqlite, sql, params);
     },
     async first() {
-      const bound = params.map(sqliteValue);
+      const bound = sqliteBoundValues(sql, params).map(sqliteValue);
       const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
       return row === undefined ? null : row;
     },
@@ -247,4 +284,50 @@ export async function signIn(made, email) {
     cookie,
     account: { id: found.user.id, name: found.user.name, email: found.user.email },
   };
+}
+
+/**
+ * A KV namespace stand-in (drive issue #252): the branch snapshot store the
+ * Worker binds, as a plain Map behind the two methods `createKvSnapshotStore`
+ * calls. It is the same seam the production binding is, so a test that proves
+ * a branch's snapshot lands in KV lands it through the code the Worker runs.
+ *
+ * The Map is handed back, so a test can read a value back with plain
+ * `values.get(key)` off the store rather than through the module — the same
+ * "read the row with the engine, not the adapter" rule
+ * test/integration/share-links-d1.test.mjs follows. `get` answers null for a
+ * key that is not there, which is what the real namespace does and what
+ * `readSnapshot` has to handle.
+ *
+ * @param {Map<string, string>} [values] the store, shared by a test that wants
+ *   a second instance to read what the first wrote (the deploy-survival claim)
+ * @returns {KVNamespace & {values: Map<string, string>}}
+ */
+export function createTestKv(values = new Map()) {
+  return /** @type {KVNamespace & {values: Map<string, string>}} */ (
+    /** @type {unknown} */ ({
+      values,
+      /** @param {string} key */
+      async get(key) {
+        return values.has(key) ? /** @type {string} */ (values.get(key)) : null;
+      },
+      /**
+       * @param {string} key
+       * @param {string} value
+       */
+      async put(key, value) {
+        values.set(key, value);
+      },
+      /** @param {string} key */
+      async delete(key) {
+        values.delete(key);
+      },
+      /** @param {{prefix?: string}} [options] */
+      async list(options = {}) {
+        const prefix = options.prefix ?? "";
+        const keys = [...values.keys()].filter((key) => key.startsWith(prefix));
+        return { keys: keys.map((name) => ({ name })), list_complete: true, cursor: "" };
+      },
+    })
+  );
 }

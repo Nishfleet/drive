@@ -1,4 +1,5 @@
 import { bindings, defineConfig, triggers } from "cf/config";
+import { SNAPSHOT_BACKFILL_SCHEDULE } from "./src/branches.js";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
 import { METER_CRON, METER_RECONCILE_SCHEDULE } from "./src/meter.js";
 import { REINDEX_SCHEDULE } from "./src/search.js";
@@ -27,24 +28,42 @@ export default defineConfig({
       // share link served by the Worker (src/share.js
       // handleShareFileRequest); the rest of the site is still straight from
       // the asset layer.
-      runWorkerFirst: ["/api/*", "/s/*"],
+      //
+      // /v1/* is the api Worker's family, on this same host (drive#156/#341,
+      // #342): the CLI posts it to the one APIBase it posts /api/* to, so the
+      // Worker that answers that address has to be the one that receives it.
+      // It forwards the request over a service binding (src/index.js) rather
+      // than serving it, so the api Worker's own gate, limits and words answer
+      // it. The binding itself is not declared here yet: Cloudflare fails this
+      // Worker's deploy against a service binding whose target Worker does not
+      // exist, and the api Worker is a separate deployable that no deploy ships
+      // until its deploy step lands, so until then /v1/* is the closed door
+      // src/index.js answers rather than a family that pretends to be routed.
+      runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Three Cron Triggers: the meter's hourly rollup (drive issue #6), the
-    // meter's nightly reconciler (drive issue #59), and the file index's
-    // nightly reconciler (drive issue #18). `scheduled` in src/index.js tells
-    // them apart by the cron string the platform hands it, so no trigger
-    // spends another's work. The reindex schedule is the only way a rebuild
-    // starts, so no web request can spend the walk (the safety review: reindex
-    // is not a public route); 03:00 UTC is the spec's quiet hour, before the
-    // meter's first hourly run. The meter's reconciler runs at 04:00 UTC, an
-    // hour later, so the two nightly walks do not share a trip. All three
-    // schedules are the constants the modules that own them export, so a
-    // changed schedule cannot drift from the trigger that runs it.
+    // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // meter's nightly reconciler (drive issue #59), the file index's
+    // nightly reconciler (drive issue #18), and the branch snapshot backfill
+    // (drive issue #321). `scheduled` in src/index.js tells them apart by the
+    // cron string the platform hands it, so no trigger spends another's work.
+    // The reindex schedule is the only way a rebuild starts, so no web request
+    // can spend the walk (the safety review: reindex is not a public route);
+    // the backfill is the only way a snapshot moves out of the legacy
+    // `branches.snapshot` column, so no web request can spend a sweep of every
+    // open branch (the same rule). 03:00 UTC is the spec's quiet hour, before
+    // the meter's first hourly run; the meter's reconciler runs at 04:00 UTC,
+    // an hour later, so the two nightly walks do not share a trip; the
+    // backfill runs at 05:00 UTC, so a third nightly walk joins them with an
+    // hour of its own — a sweep that shared a trip with the reindex would
+    // spend both on one Cron Trigger's wall. All four schedules are the
+    // constants the modules that own them export, so a changed schedule cannot
+    // drift from the trigger that runs it.
     triggers: [
       triggers.scheduled({ schedule: METER_CRON }),
       triggers.scheduled({ schedule: METER_RECONCILE_SCHEDULE }),
       triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
+      triggers.scheduled({ schedule: SNAPSHOT_BACKFILL_SCHEDULE }),
     ],
     env: {
       ASSETS: bindings.assets(),
@@ -76,6 +95,27 @@ export default defineConfig({
       METER_DB: bindings.d1({
         name: "drive-data",
         id: "0f636b57-4a2e-482a-bf40-8aa315e2403e",
+      }),
+      // The branch snapshot store (drive issue #252, the phase 2 of #157). A
+      // branch records one `{size, etag, modified}` entry per file it copied;
+      // that is ~117 bytes a file, so a 100,000-file branch is ~11 MiB of JSON
+      // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
+      // and why the snapshot now lives here instead. The `branches` row keeps
+      // a pointer to the key and the value's byte length
+      // (migrations/drive/0012_branch_snapshot_kv.sql), and
+      // src/branches.js readSnapshot prefers this namespace and falls back to
+      // the legacy column for a row written before the migration.
+      //
+      // Optional, not required: `snapshotsFor()` in src/index.js answers null
+      // for a deployment with no namespace, and every reader treats null as
+      // "use the row", so it is deliberately NOT on the health check's
+      // required-bindings list (src/health.js) — a binding that a small
+      // deployment legitimately lacks must not page a human. It is created
+      // once, out of band, because an unattended `cf deploy` does not
+      // provision a namespace (it prompts, and nothing answers):
+      //   cf kv namespaces create --title drive-branch-snapshots
+      BRANCH_SNAPSHOTS: bindings.kv({
+        id: "13f2292d4fdc448492c2a4603e1cc682",
       }),
       // The meter's event intake (drive issue #6) reads METER_EVENT_TOKEN
       // from a Worker secret. The secret binding declares the name so the

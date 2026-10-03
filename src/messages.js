@@ -57,6 +57,20 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That request did not carry a JSON object.",
     next: "Send the body as a JSON object and try again.",
   }),
+  // A starter request (drive issue #15) arrived carrying valid JSON but not
+  // the one action this endpoint takes, so it named nothing this route can
+  // do and nothing was written to the drive.
+  "starter-create-action": Object.freeze({
+    what: "That request did not ask to create the notes starter.",
+    next: 'Send the body as a JSON object with action set to "create".',
+  }),
+  // A starter request used a method the route does not take (drive issue #15;
+  // the gate-walk in test/account-gate.test.mjs probes the endpoint with GET
+  // and POST only, and the handler answers any other method directly).
+  "starter-method": Object.freeze({
+    what: "The starter answers a GET or a POST only.",
+    next: "POST to the starter with the create action.",
+  }),
   // An upload arrived with no file name, so there is no storage key to write it
   // under and nothing was stored.
   "upload-needs-name": Object.freeze({
@@ -134,6 +148,11 @@ export const FAILURE_MESSAGES = Object.freeze({
   "branch-not-found": Object.freeze({
     what: "That branch is not in the list.",
     next: "Run drive branches to see the branches you have.",
+  }),
+  // A URL with more segments than /api/branches/<name>/<action>.
+  "branch-path-unknown": Object.freeze({
+    what: "That is not a branch path.",
+    next: "Open the branch from the list.",
   }),
   // The file this call named is not in this account's drive, on the read,
   // preview, download and delete paths alike. The file may never have been

@@ -32,11 +32,44 @@ export function applyMigrations(sqlite) {
 // D1 numbered placeholders (`?1`) are bound by index; node:sqlite's
 // StatementSync.run(...values) only binds anonymous `?` and throws
 // SQLITE_RANGE ("column index out of range") on `?1` (measured node v24.5.0).
-// A numbered placeholder can also be reused (`?1` twice); expanding in
-// appearance order keeps that meaning. Production SQL stays numbered for D1.
+// Production SQL stays numbered for D1, so every numbered `?` is rewritten to
+// an anonymous one. A numbered placeholder can also be reused (`?1` twice), and
+// D1 still takes one value for it, bound by index. The rewritten SQL has one
+// `?` per appearance, so the values are expanded to one entry per appearance -
+// the value at that index - before node:sqlite binds them. expandBoundValues
+// does that for both bind paths (the D1 adapter's bindForNodeSqlite and the raw
+// handle in makeMeteredDB), so a reused or out-of-order index cannot bind one
+// way in the adapter and another on the handle the tests read rows back from.
 /** @param {string} sql */
 function anonymousPlaceholders(sql) {
   return sql.replace(/\?(\d+)/g, "?");
+}
+
+/** @param {string} sql */
+function usesNumberedPlaceholders(sql) {
+  return /\?\d/.test(sql);
+}
+
+/**
+ * One value per placeholder appearance, in appearance order, for the rewritten
+ * SQL: the n-th appearance of `?N` gets bound[N - 1]. An index the statement
+ * uses twice appears twice, so its one value fills both slots instead of the
+ * second slot reading NULL (drive #231). A statement with no numbered
+ * placeholder keeps the caller's values unchanged.
+ * @param {string} sql
+ * @param {any[]} bound
+ * @returns {any[]}
+ */
+function expandBoundValues(sql, bound) {
+  if (!usesNumberedPlaceholders(sql)) {
+    return bound;
+  }
+  /** @type {any[]} */
+  const positional = [];
+  for (const [, digits] of sql.matchAll(/\?(\d+)/g)) {
+    positional.push(bound[Number(digits) - 1]);
+  }
+  return positional;
 }
 
 /**
@@ -45,17 +78,13 @@ function anonymousPlaceholders(sql) {
  * @returns {{sql: string, bound: any[]}}
  */
 function bindForNodeSqlite(sql, bound) {
-  if (!/\?\d/.test(sql)) {
-    return { sql, bound };
-  }
-  /** @type {any[]} */
-  const positional = [];
-  const rewritten = sql.replace(/\?(\d+)/g, (_match, digits) => {
-    positional.push(bound[Number(digits) - 1]);
-    return "?";
-  });
-  return { sql: rewritten, bound: positional };
+  return { sql: anonymousPlaceholders(sql), bound: expandBoundValues(sql, bound) };
 }
+
+// The StatementSync methods that take bound values. The raw handle's wrapper
+// expands a numbered statement's values for exactly these, so `iterate` gets
+// the same binding `get`, `all` and `run` do.
+const BOUND_METHODS = ["get", "all", "run", "iterate"];
 
 /** @typedef {Record<string, any>} Row */
 /**
@@ -67,6 +96,7 @@ function bindForNodeSqlite(sql, bound) {
  *     get(...params: any[]): any,
  *     all(...params: any[]): any[],
  *     run(...params: any[]): {changes: number | bigint, lastInsertRowid: number | bigint},
+ *     iterate(...params: any[]): IterableIterator<any>,
  *   },
  * }} TestSqlite
  */
@@ -83,7 +113,7 @@ function bindForNodeSqlite(sql, bound) {
  */
 /**
  * @typedef {D1Database & {
- *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state", TableView>,
+ *   tables: Record<"file_versions" | "usage_minutes" | "events_seen" | "meter_rollup_state" | "billing_pushes" | "accounts", TableView>,
  *   insertVersion(version: {accountId?: string, fileId: string, path?: string, sizeBytes: number, createdAt: number, hiddenAt?: number | null}): void,
  * }} MeteredD1
  */
@@ -186,6 +216,8 @@ export function d1Over(sqlite, { onQuery } = {}) {
         usage_minutes: table("usage_minutes", (row) => `${row.account_id}|${row.hour}`),
         events_seen: table("events_seen", (row) => row.b2_event_id),
         meter_rollup_state: table("meter_rollup_state", (row) => row.id),
+        billing_pushes: table("billing_pushes", (row) => `${row.account_id}|${row.hour}`),
+        accounts: table("accounts", (row) => row.id),
       },
       // One version row written straight into the real schema, for the shapes an
       // event cannot express (a 0-byte version, an instant that is not a whole
@@ -278,9 +310,33 @@ function makeMeteredDB(onQuery) {
   applyMigrations(sqlite);
   // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
   // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
-  // expands them, and this wraps the raw handle the tests use directly.
+  // expands them, and this wraps the raw handle the tests use directly. The
+  // wrapper expands the bound values the same way bindForNodeSqlite does, so a
+  // reused index (`?1` twice) fills every slot it owns and an out-of-order
+  // index (`?2` before `?1`) still binds by index, not by appearance. The
+  // adapter is built over this same handle just below, and its own prepares
+  // reach the wrapper already anonymized (bindForNodeSqlite), so the guard
+  // returns the real statement and the adapter is never expanded twice.
   const originalPrepare = sqlite.prepare.bind(sqlite);
-  sqlite.prepare = (sql) => originalPrepare(anonymousPlaceholders(sql));
+  sqlite.prepare = (sql) => {
+    const statement = originalPrepare(anonymousPlaceholders(sql));
+    if (!usesNumberedPlaceholders(sql)) {
+      return statement;
+    }
+    return new Proxy(statement, {
+      get(target, property, receiver) {
+        const member = Reflect.get(target, property, receiver);
+        if (typeof member !== "function") {
+          return member;
+        }
+        if (typeof property === "string" && BOUND_METHODS.includes(property)) {
+          /** @param {any[]} values */
+          return (...values) => member.apply(target, expandBoundValues(sql, values));
+        }
+        return member.bind(target);
+      },
+    });
+  };
   const db = d1Over(sqlite, { onQuery });
   return { sqlite: /** @type {TestSqlite} */ (/** @type {unknown} */ (sqlite)), db };
 }

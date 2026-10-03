@@ -401,7 +401,7 @@ func TestHomeFlagIsAcceptedOnEitherSideOfTheToolName(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%v: expected an unknown-tool error", args)
 		}
-		if !strings.Contains(err.Error(), "not-a-tool") || !strings.Contains(err.Error(), "unknown tool") {
+		if !strings.Contains(err.Error(), "not-a-tool") || !strings.Contains(err.Error(), "no agent tool named") {
 			t.Fatalf("%v: got %v, want an unknown-tool error", args, err)
 		}
 	}

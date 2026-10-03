@@ -3,12 +3,14 @@ import { test } from "node:test";
 import { SESSION_TTL_SECONDS } from "../../../src/auth.js";
 import { CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
 import {
+  AGENT_KEY_TTL_SECONDS,
   authorizePath,
   canDelete,
   createMemoryStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  renewKeyWindow,
 } from "../src/keystore.js";
 
 // A clock the test owns, so a device code or token can be expired without sleeping.
@@ -128,7 +130,13 @@ test("an agent key never gets delete, and a branch key stays in its branch folde
 test("an unknown key kind is refused before any key is made", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const { account } = await signedInAccount(store);
-  await assert.rejects(() => store.mintKey(account, { kind: "root" }), /Unknown key kind/);
+  await assert.rejects(
+    () =>
+      store.mintKey(account, {
+        kind: /** @type {import("../src/keyprovider.js").KeyKind} */ ("root"),
+      }),
+    /Unknown key kind/,
+  );
   assert.equal((await store.listKeys(account)).length, 0);
 });
 
@@ -274,4 +282,199 @@ test("the sweep drops expired and revoked device tokens and leaves the live ones
   assert.equal(revoked.revoked, true);
   assert.equal(await store.sweepDeviceTokens(), 1, "the revoked live row went");
   assert.equal(await store.accountForDeviceToken(second.deviceToken), null);
+});
+
+// ---- the one-hour agent credential (drive issue #106) ----
+//
+// Space swaps a key for a one-hour scoped credential; ours lived until the
+// person revoked it, so a leaked agent key was a key that worked forever. The
+// three claims below are the issue's finish line, proved against the store the
+// api Worker runs: an expired credential is refused, a renewed one works, and
+// a revoked agent cannot renew. A person's own device sign-in is untouched.
+
+test("an agent key carries the hour, and a person's own device key never expires", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { account } = await signedInAccount(store);
+  const at = clock.now() / 1000;
+  const agent = await store.mintKey(account, { kind: "agent", name: "claude" });
+  assert.equal(agent.expiresAt, at + AGENT_KEY_TTL_SECONDS);
+  assert.ok(!agent.capabilities.includes("delete"), "the short-lived key still cannot delete");
+  const device = await store.mintKey(account, { kind: "device" });
+  assert.equal(device.expiresAt, null, "a device key is not given an expiry");
+  // The listing is what /v1/keys returns, so the hour a person reads is the
+  // hour the store enforces.
+  const listed = /** @type {Array<{keyId: string, expiresAt: number|null}>} */ (
+    /** @type {unknown} */ (await store.listKeys(account))
+  );
+  assert.equal(
+    listed.find((key) => key.keyId === agent.keyId)?.expiresAt,
+    at + AGENT_KEY_TTL_SECONDS,
+  );
+  assert.equal(listed.find((key) => key.keyId === device.keyId)?.expiresAt, null);
+});
+
+test("an expired agent credential is refused, one second before it still works", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { account } = await signedInAccount(store);
+  const key = await store.mintKey(account, { kind: "agent" });
+  const unused = await store.mintKey(account, { kind: "agent" });
+  clock.advance(AGENT_KEY_TTL_SECONDS - 1);
+  assert.ok(
+    await store.authenticate(key.accessKeyId, key.secret),
+    "still good one second before the hour",
+  );
+  // Two seconds later the unused key's hour has run out and nothing renewed
+  // it. The key that was used has an hour from the moment it was used, so the
+  // same instant is past its expiry too — which is what the next test covers.
+  clock.advance(2);
+  assert.equal(
+    await store.authenticate(unused.accessKeyId, unused.secret),
+    null,
+    "expired is null",
+  );
+  assert.equal(await store.authenticate(unused.accessKeyId, "sk_wrong"), null);
+  assert.equal(await store.authenticate("ak_unknown", unused.secret), null);
+});
+
+test("a used agent key is renewed, so a connected tool keeps working", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { account } = await signedInAccount(store);
+  const mintedAt = clock.now() / 1000;
+  const used = await store.mintKey(account, { kind: "agent" });
+  const unused = await store.mintKey(account, { kind: "agent" });
+  // Half an hour in, something using the key authenticates: the hour restarts
+  // from that moment, not from the mint. The row is renewed, not just this
+  // call's answer.
+  clock.advance(AGENT_KEY_TTL_SECONDS / 2);
+  const renewed = await store.authenticate(used.accessKeyId, used.secret);
+  assert.equal(renewed?.expiresAt, mintedAt + AGENT_KEY_TTL_SECONDS / 2 + AGENT_KEY_TTL_SECONDS);
+  const listed = /** @type {Array<{keyId: string, expiresAt: number|null}>} */ (
+    /** @type {unknown} */ (await store.listKeys(account))
+  );
+  assert.equal(
+    listed.find((key) => key.keyId === used.keyId)?.expiresAt,
+    mintedAt + AGENT_KEY_TTL_SECONDS / 2 + AGENT_KEY_TTL_SECONDS,
+  );
+  // Both keys were minted at the same instant, so this is the moment the
+  // unused one dies and the used one does not.
+  clock.advance(AGENT_KEY_TTL_SECONDS / 2 + 1);
+  assert.equal(
+    await store.authenticate(unused.accessKeyId, unused.secret),
+    null,
+    "a key nobody used expires",
+  );
+  assert.ok(
+    await store.authenticate(used.accessKeyId, used.secret),
+    "the key in use was renewed past the same instant",
+  );
+  assert.equal(
+    listed.find((key) => key.keyId === unused.keyId)?.expiresAt,
+    mintedAt + AGENT_KEY_TTL_SECONDS,
+    "the expired key's row keeps the hour it was minted with",
+  );
+});
+
+test("a revoked agent cannot renew, and its hour is not restarted", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { account } = await signedInAccount(store);
+  const key = await store.mintKey(account, { kind: "agent" });
+  const mintedExpiry = key.expiresAt;
+  // The agent is revoked while its credential still has an hour left. Every
+  // request after that is refused, so none of them can restart the hour.
+  store.revokeKey(account, key.keyId);
+  clock.advance(60);
+  assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
+  clock.advance(AGENT_KEY_TTL_SECONDS * 2);
+  assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
+  const listed = /** @type {Array<{keyId: string, expiresAt: number|null}>} */ (
+    /** @type {unknown} */ (await store.listKeys(account))
+  );
+  assert.equal(
+    listed.find((row) => row.keyId === key.keyId)?.expiresAt,
+    mintedExpiry,
+    "the refused requests left the expiry exactly as the mint wrote it",
+  );
+});
+
+test("a person's own device key is not renewed and not expired", async () => {
+  const clock = fixedClock();
+  const store = createMemoryStore({ now: clock.now });
+  const { account } = await signedInAccount(store);
+  const key = await store.mintKey(account, { kind: "device" });
+  clock.advance(AGENT_KEY_TTL_SECONDS * 24 * 30);
+  const device = await store.authenticate(key.accessKeyId, key.secret);
+  assert.ok(device, "a device key still works long past any agent key's hour");
+  assert.equal(device?.expiresAt, null, "and it was handed no expiry on the way through");
+});
+
+test("the renewal rule: a live row's hour restarts, a revoked row's does not, a device row's stays null", () => {
+  const at = 1_000_000;
+  // The row the store holds, written out rather than minted, so the rule can
+  // be handed a row in any state a migration or a race can leave it in. The
+  // cast is the one place a literal stands in for a stored row.
+  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+    id: "key_agent",
+    accountId: "a",
+    name: "claude",
+    kind: "agent",
+    accessKeyId: "ak",
+    secretHash: "00",
+    prefix: "u/a/",
+    capabilities: ["list", "read", "write"],
+    createdAt: at - 60,
+    lastSeenAt: null,
+    revokedAt: null,
+    expiresAt: at - 1,
+  });
+  assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS);
+  assert.equal(renewKeyWindow({ ...agent, revokedAt: at - 30 }, at).expiresAt, at - 1);
+  // A row written before drive#106 (or by a store that never set one) holds no
+  // expiry and is alive, so the renewal gives it the hour: the migration's
+  // expand-only column upgrades a row downward, never upward.
+  assert.equal(
+    renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
+    at + AGENT_KEY_TTL_SECONDS,
+  );
+  // The provider's own session is the row's lifetime, so a renewal adds that
+  // and not the hour: a 15-minute session must not be renewed into 60 minutes.
+  assert.equal(renewKeyWindow({ ...agent, ttlSeconds: 900 }, at).expiresAt, at + 900);
+  // The mint writes the lifetime it gave, so what the mint and the renewal
+  // agree on is the number on the row.
+  assert.equal(renewKeyWindow(agent, at).ttlSeconds, undefined);
+  assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS);
+  assert.equal(renewKeyWindow({ ...agent, kind: "device", expiresAt: null }, at).expiresAt, null);
+});
+
+test("the renewal rule never shortens a window the row already carries", () => {
+  const at = 1_000_000;
+  const agent = /** @type {import("../src/keystore.js").Device} */ ({
+    id: "key_agent",
+    accountId: "a",
+    name: "claude",
+    kind: "agent",
+    accessKeyId: "ak",
+    secretHash: "00",
+    prefix: "u/a/",
+    capabilities: ["list", "read", "write"],
+    createdAt: at - 60,
+    lastSeenAt: null,
+    revokedAt: null,
+    // A window already further out than the hour this request would give it:
+    // two requests can read the same row and renew in either order, and the
+    // one that lands second must not pull the hour back to the earlier value.
+    expiresAt: at + AGENT_KEY_TTL_SECONDS * 2,
+  });
+  assert.equal(renewKeyWindow(agent, at).expiresAt, at + AGENT_KEY_TTL_SECONDS * 2);
+  // The powers are still untouched: a renewal is about time.
+  assert.deepEqual(renewKeyWindow(agent, at).capabilities, agent.capabilities);
+  // And a row with no expiry is given the hour rather than a maximum against
+  // nothing.
+  assert.equal(
+    renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
+    at + AGENT_KEY_TTL_SECONDS,
+  );
 });

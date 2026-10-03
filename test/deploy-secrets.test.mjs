@@ -9,6 +9,10 @@
 // (https://github.com/cloudflare/cf/releases/tag/cf%401.0.0-beta.7), so the
 // pin is the whole guarantee.
 //
+// Live proof (drive#198): active deployment 9802c380 (2026-10-02T19:38:15Z)
+// serves version 66 (2026-10-02T19:38:14Z, triggered_by=version_upload), whose
+// bindings still carry DRIVE_TEST_SECRET_189 across the deploy. The pin works.
+//
 // A pin is a file that can be edited back down, and the failure mode is
 // invisible until the next push-to-main deploy silently drops a secret. So
 // this file is the gate: it fails on a pin below the version the design

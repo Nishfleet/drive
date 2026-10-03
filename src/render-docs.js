@@ -13,7 +13,7 @@
 // template or a stale string. Plain functions, so `node --test` runs this
 // directly.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { faqMarkdown, markerValues } from "./docs.js";
 import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
@@ -58,6 +58,50 @@ export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 // a number nobody has measured.
 const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
 const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
+
+// The agent eval's own reading stack (evals/agents, drive#222) carries the
+// CLI's help text next to the rendered pages, and that text is the CLI's
+// words: `cmd/drive/main.go`'s `usage` const. The snapshot is a committed file
+// that only `npm run eval:sync-help` writes. It used to ride `docs:render`,
+// and that made the gate compare the render's own fresh write to main.go: two
+// live values that agree by construction, so a stale committed snapshot passed
+// CI while `npm run docs:render` dirtied a clean main (drive#332). One command
+// of its own keeps the committed file the single input the eval reads and the
+// single artifact the gate checks, so a flag added to the CLI fails the build
+// instead of being rewritten just ahead of the check that looks for it.
+const MAIN_GO = fileURLToPath(new URL("../cmd/drive/main.go", import.meta.url));
+export const HELP_SNAPSHOT = fileURLToPath(
+  new URL("../evals/agents/context/drive-help.txt", import.meta.url),
+);
+
+/** The `usage` const's text, or an error that names the file nothing matched. */
+export function cliUsageText() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  // A Go raw string cannot hold a backtick, so the text between the
+  // const's opening backtick and the first closing one is the whole usage
+  // block. Anchor on the statement, not on what follows it: main now declares
+  // `var version` after the block, which a const-only anchor missed.
+  const match = src.match(/^const usage = `([^`]*)`/m);
+  if (!match) {
+    throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
+  }
+  return match[1].trim();
+}
+
+/**
+ * Write the eval's CLI-help snapshot from main.go, so the eval's context and
+ * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
+ * it directly, and the eval's own gate compares the committed file to the same
+ * text this writes.
+ * @param {string} [snapshotPath] defaults to evals/agents/context/drive-help.txt
+ * @returns {string} the text written
+ */
+export function renderHelpSnapshot(snapshotPath = HELP_SNAPSHOT) {
+  const text = `${cliUsageText()}\n`;
+  mkdirSync(dirname(snapshotPath), { recursive: true });
+  writeFileSync(snapshotPath, text);
+  return text;
+}
 
 /** The two published sections of docs/benchmarks.md, from the Linux heading. */
 function publishedBenchmarks() {
@@ -144,7 +188,16 @@ export function renderDocs(outDir = RENDERED_DIR) {
 }
 
 // `node src/render-docs.js` is what `npm run docs:render` runs, so the docs
-// build has one entry point and no script file of its own.
+// build has one entry point and no script file of its own. The help snapshot
+// does NOT ride it: `docs:render` runs inside `npm test` before the tests, so
+// writing the committed snapshot here let the gate compare the build's output
+// with itself, and a stale snapshot passed CI (drive#332). `--sync-help` is the
+// one command that writes the snapshot (only the snapshot; rendering the pages
+// is a build step, not a sync), so CLI drift in main.go fails the build.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  renderDocs();
+  if (process.argv.includes("--sync-help")) {
+    renderHelpSnapshot();
+  } else {
+    renderDocs();
+  }
 }

@@ -108,7 +108,7 @@ func TestRunCapRestartResolvesTheSecretBeforeItRestartsTheMount(t *testing.T) {
 	if err == nil {
 		t.Fatal("got nil error, want one from the restart's own work")
 	}
-	if !strings.HasPrefix(err.Error(), "restart the mount: missing storage config:") {
+	if !strings.HasPrefix(err.Error(), "restart the mount:") || !strings.Contains(err.Error(), "missing its storage settings") {
 		t.Errorf("got %q, want the restart's own missing-config sentence", err)
 	}
 }

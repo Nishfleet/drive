@@ -155,6 +155,18 @@ function fakeLimiter() {
 }
 
 /**
+ * The branch snapshot namespace as a healthy deploy binds it (drive issue
+ * #252): a `get` that answers null, which is what a read of a key nothing
+ * writes answers.
+ * @returns {{get: (key: string) => Promise<null>}}
+ */
+function fakeKv() {
+  return {
+    get: () => Promise.resolve(null),
+  };
+}
+
+/**
  * The bindings a healthy deploy has, by the names cloudflare.config.ts
  * declares. A test that wants an unhealthy Worker drops or breaks one of
  * these, so every test starts from the real shape.
@@ -172,6 +184,7 @@ const HEALTHY_ENV = () => ({
   SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
   REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+  BRANCH_SNAPSHOTS: fakeKv(),
 });
 
 const GET = (path = HEALTH_PATH) => new Request(`https://drive.test${path}`, { method: "GET" });
@@ -207,6 +220,7 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -226,6 +240,7 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env, { timeoutMs: 25 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -243,6 +258,7 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, failing: "ASSETS" });
@@ -259,6 +275,7 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -281,6 +298,7 @@ test("every bound D1 database is checked, not just the first", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env);
   assert.deepEqual(result, { ok: false, failing: "BILLING_DB" });
@@ -320,6 +338,7 @@ test("a binding that is not a database is never read as one", () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(
     d1Bindings(env).map((b) => b.name),
@@ -343,6 +362,7 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -365,6 +385,7 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(await checkHealth(env), { ok: true });
   assert.equal(assets.requests.length, 1, "the asset layer is checked once");
@@ -386,6 +407,7 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
   };
@@ -425,6 +447,7 @@ test("the failing body is the name and nothing else", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   });
   const body = await response.json();
   assert.deepEqual(Object.keys(body).sort(), ["failing", "ok"]);
@@ -432,58 +455,20 @@ test("the failing body is the name and nothing else", async () => {
   assert.equal(typeof body.failing, "string");
 });
 
-// --- public allow-list ----------------------------------------------------
-
-/**
- * The explicit public allow-list for this Worker's /api/* routes: the ones
- * that answer an anonymous request on purpose. It is a list, not a predicate,
- * so a route only becomes public by being written down here, and #73's
- * deny-by-default test can consume the same list when it lands. Anything not on
- * it must be gated on an account (or a deployment token, for the send route)
- * and must answer 401/403 to an anonymous caller, never 200.
- *
- * /api/health is public because the outside monitor (#36) holds no drive
- * account and an outage has to be observable to something that has none; the
- * route reads no account data, so being public exposes nothing.
- */
-const PUBLIC_API_ROUTES = Object.freeze(["/api/waitlist", HEALTH_PATH]);
+// --- public by design -----------------------------------------------------
 
 test("the endpoint needs no account, session or cookie", async () => {
-  // Public by design and on the deny-by-default test's public allow-list
-  // (#73): an outage monitor holds no drive account, and it must still get an
-  // answer. It reads no account data to give it that.
+  // /api/health is public because the outside monitor (#36) holds no drive
+  // account and an outage has to be observable to something that has none; the
+  // route reads no account data, so being public exposes nothing. The single
+  // public allow-list lives in test/account-gate.test.mjs (#73), which walks
+  // this route as public and is the one place a route becomes an exemption.
   const response = await handleHealthRequest(
     new Request(`https://drive.test${HEALTH_PATH}`),
     HEALTHY_ENV(),
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
-});
-
-test("the health route is on the explicit public allow-list", async () => {
-  // Issue #96 asks for the route to be on the deny-by-default test's public
-  // allow-list (#73). That test is not on main yet and its branch is in
-  // flight, so the list lives here until it lands; the assertion that matters
-  // is checked either way: a route on the list answers an anonymous request,
-  // and this one is on it.
-  assert.ok(
-    PUBLIC_API_ROUTES.includes(HEALTH_PATH),
-    `${HEALTH_PATH} must be on the public allow-list`,
-  );
-  const response = await handleHealthRequest(
-    new Request(`https://drive.test${HEALTH_PATH}`),
-    HEALTHY_ENV(),
-  );
-  assert.equal(response.status, 200);
-});
-
-test("an account route is not on the public allow-list", () => {
-  // The point of an explicit list: the account routes stay off it, so a
-  // future deny-by-default test reading this list cannot accidentally treat
-  // one of them as public.
-  for (const accountRoute of ["/api/first-run-status", "/api/files", "/api/usage", "/api/cap"]) {
-    assert.ok(!PUBLIC_API_ROUTES.includes(accountRoute), `${accountRoute} must not be public`);
-  }
 });
 
 test("the bound is a deadline shared by every dependency, not one per check", async () => {
@@ -514,6 +499,7 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const started = Date.now();
   const result = await checkHealth(env, { timeoutMs: 60 });
@@ -552,6 +538,7 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const result = await checkHealth(env, { timeoutMs: 20 });
   assert.deepEqual(result, { ok: false, failing: "WAITLIST_DB" });
@@ -622,6 +609,7 @@ test("the health check never spends a real caller's rate limit quota", async () 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
@@ -652,6 +640,7 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   await handleHealthRequest(GET(), env);
   await handleHealthRequest(GET(), env);
@@ -729,6 +718,7 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 503);
@@ -757,9 +747,90 @@ test("a limiter that denies the probe is still healthy", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
   };
   const response = await handleHealthRequest(GET(), env);
   assert.equal(response.status, 200);
+});
+
+// --- the branch snapshot namespace (drive issue #252) ---------------------
+
+test("a branch snapshot namespace that cannot be read is a 503 naming it", async () => {
+  // Every branch diff and every approve reads the namespace (src/branches.js
+  // readSnapshot), so a namespace that throws stops branches while every other
+  // route keeps answering 200. That is exactly the silent outage this
+  // endpoint exists to name, so the probe is a read and a read that throws
+  // must be the reported failure.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: {
+      get: () => Promise.reject(new Error("kv backend exploded: token=sk-secret")),
+    },
+  };
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), { ok: false, failing: "BRANCH_SNAPSHOTS" });
+  assert.ok(!body.includes("exploded"), "the raw error text never reaches the body");
+  assert.ok(!body.includes("sk-secret"), "no secret from the error reaches the body");
+});
+
+test("a namespace that answers null for the probe key is healthy", async () => {
+  // The probe reads a key nothing writes, so `null` is the healthy answer and
+  // the only thing it proves is that the namespace answers. Treating a null as
+  // unhealthy would be a false 503 on every poll, forever, because that is
+  // what an empty namespace reads back.
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: fakeKv(),
+  };
+  assert.equal((await handleHealthRequest(GET(), env)).status, 200);
+});
+
+test("the probe never reads a customer snapshot key", async () => {
+  // The probe key is not account-scoped, so it cannot collide with a branch's
+  // own key (snapshotKey in src/branches.js prefixes every real key with the
+  // account) and cannot read a customer's bytes. This pins the key the probe
+  // uses, because that is the whole privacy argument for probing a store that
+  // holds customer data.
+  /** @type {string[]} */
+  const reads = [];
+  const env = {
+    WAITLIST_DB: fakeD1("ok"),
+    METER_DB: fakeD1("ok"),
+    DRIVE_DB: fakeD1("ok"),
+    ASSETS: fakeAssets(),
+    WAITLIST_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_RATE_LIMITER: fakeLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
+    REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    BRANCH_SNAPSHOTS: {
+      /** @param {string} key */
+      get: (key) => {
+        reads.push(key);
+        return Promise.resolve(null);
+      },
+    },
+  };
+  await handleHealthRequest(GET(), env);
+  assert.deepEqual(reads, ["health-probe-branch-snapshots"], "one read, of the probe key only");
 });
 
 // --- the sign-in endpoint's two edge limits (drive issue #147) -------------

@@ -98,6 +98,13 @@ type Env struct {
 type KeyMinter interface {
 	MintKey(kind, name string) (MintedKey, error)
 	RevokeKey(keyID string) error
+	// RenewKey restarts the hour on a key this device already holds
+	// (POST /v1/keys/<keyId>/renew, issue #106). A tool idle for longer than an
+	// hour outlives its credential, so a drive command that finds one asks the
+	// Worker to restart the hour instead of leaving a dead key in the tool's
+	// entry. The answer is the restarted row, so the expiry the CLI shows and
+	// decides against is the Worker's own.
+	RenewKey(keyID string) (RenewedKey, error)
 }
 
 // agentKeyEnv is the one key an agent tool's MCP server runs on (build-spec.md
@@ -233,14 +240,15 @@ func tools() []Tool {
 	}
 }
 
-// toolByName returns the adapter for name, or an error naming what exists.
+// toolByName returns the adapter for name, or a table failure naming what
+// exists and how to see it.
 func toolByName(name string) (Tool, error) {
 	for _, t := range tools() {
 		if t.Name == name {
 			return t, nil
 		}
 	}
-	return Tool{}, fmt.Errorf("unknown tool %q (known: %s)", name, strings.Join(toolNames(), ", "))
+	return Tool{}, failf("unknown-tool", name, strings.Join(toolNames(), ", "))
 }
 
 func toolNames() []string {
@@ -336,7 +344,7 @@ func (t Tool) Connect(env Env) error {
 	// "Failed to connect" until the folder existed (seen on this host
 	// 2026-09-30). Create it before the tool is pointed at it.
 	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+		return failDetail("drive-folder", err, env.DriveDir)
 	}
 	// The skill note goes first. A note with no registration is recoverable
 	// (the next `drive init` finds the tool and registers it), while a tool

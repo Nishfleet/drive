@@ -30,6 +30,7 @@ import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
+import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
@@ -69,6 +70,12 @@ const workerFetch =
     /** @type {unknown} */ (worker.fetch)
   );
 const ctx = { waitUntil() {}, passThroughOnException() {} };
+
+/** The one route the site Worker forwards to the api Worker inside its own
+ * /api/* namespace, ahead of the gate (src/index.js, drive#354): the key the
+ * rclone config holds is the whole credential, so no session exists to gate
+ * on. It is the only path the walk below lets through. */
+const REVOKE_PATH = "/api/keys/revoke";
 
 // ------------------------------------------------------------------ the walk
 
@@ -115,8 +122,13 @@ const ACCOUNT_ROUTES = [
   // it reads, and the walk requires the same 401.
   `${REWIND_ENDPOINT}`,
   `${REWIND_ENDPOINT}/`,
+  // drive issue #15: the notes starter. The endpoint is behind
+  // the account gate like every route that writes files, so the
+  // walk requires it to answer 401 anonymously, and the walk
+  // classifies the path so a GET without an account is also 401.
+  `${STARTER_ENDPOINT}`,
+  `${STARTER_ENDPOINT}/`,
 ];
-
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
 // own token check must be what is tested rather than a crash on absent input:
@@ -223,6 +235,7 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
+        route.startsWith(STARTER_ENDPOINT) ||
         route.startsWith(SHARE_ENDPOINT) ||
         route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,
@@ -306,6 +319,99 @@ test("deny by default, walked from Hono's own route table: every registered non-
     const unauthorized = failureMessage("unauthorized");
     assert.deepEqual(await response.json(), { error: unauthorized });
   }
+});
+
+test("the one forwarded /api/* route frames the hole the deny-by-default gate leaves", async () => {
+  // Drive issue #354's choice: POST /api/keys/revoke is the api registry's own
+  // route (workers/api/src/routes.js), and it lives outside the registry's
+  // /v1 family because `drive logout` calls it with the key the rclone config
+  // holds — the key itself is the credential, so there is no session to gate
+  // on and the api Worker is the only thing that can judge it. src/index.js
+  // registers it ahead of the account gate and forwards it over the service
+  // binding, so the api Worker answers 204 for a live key and its own 401 for a
+  // dead one.
+  //
+  // This is the hole in a deny-by-default gate, so it is named here and it is
+  // the only one: the walk must still classify it (a route the site Worker
+  // forwards is neither public nor account, because the credential it wants is
+  // the caller's own key), the walk must skip it rather than answer 401, and
+  // the site must forward it unchanged with the Basic header still on the
+  // request. A second /api/* route forwarded past the gate fails the first
+  // two checks, so it cannot join this one quietly.
+  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const app = createApp();
+  const forwarded = app.routes.filter((r) => r.method === "ALL" && r.path === REVOKE_PATH);
+  assert.equal(
+    forwarded.length,
+    1,
+    `src/index.js must register the api Worker's own ${REVOKE_PATH} exactly once (drive#354)`,
+  );
+  assert.ok(
+    !exportedPublic.includes(REVOKE_PATH),
+    "the forwarded route is not a public route: the credential that answers it is the caller's own key",
+  );
+  assert.ok(
+    !ACCOUNT_ROUTES.includes(REVOKE_PATH),
+    "the forwarded route is not an account route: no session can authenticate to it",
+  );
+  // And it is registered before the gate, which is what makes the gate unable
+  // to answer it: Hono runs the first matching handler it finds, and the
+  // registration order below is that order.
+  const revoke = app.routes.findIndex((r) => r.path === REVOKE_PATH);
+  const gate = app.routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
+  assert.ok(
+    revoke !== -1 && gate !== -1 && revoke < gate,
+    "the forwarded route must be registered ahead of the /api/* gate (drive#354)",
+  );
+  // The walk above probes every registered non-public route, so it has to skip
+  // this one: what a caller with no key gets here is the api Worker's own
+  // 401, not the gate's.
+  const closed = await anonymous(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST" }),
+  );
+  assert.equal(closed.status, 503, "no binding means the api Worker is not reached");
+  assert.deepEqual(await closed.json(), { error: failureMessage("unexpected") });
+
+  // With a binding, the request the site forwards is the request the api
+  // Worker receives: the method, the path and the caller's own Basic
+  // credential are unchanged, and nothing on this side has to know what the
+  // key is. The api Worker answers this request itself — 401 with its own
+  // words for no key at all — which is the property the issue asks for.
+  /** @type {Request|null} */
+  let seen = null;
+  const forwardedRequest = await workerFetch(
+    new Request(`https://drive.test${REVOKE_PATH}`, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa("k_test:not-the-secret")}` },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("asset", { status: 200 }) },
+      DRIVE_DB: createTestD1(),
+      REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
+      REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      API: {
+        fetch: (/** @type {Request} */ request) => {
+          seen = request;
+          // The api Worker's own answer for a key it does not hold: its words,
+          // its status, and no account data of anyone's.
+          return Promise.resolve(
+            Response.json({ error: "This key was revoked or is not valid." }, { status: 401 }),
+          );
+        },
+      },
+    },
+    ctx,
+  );
+  assert.equal(forwardedRequest.status, 401, "the api Worker's own answer is the caller's answer");
+  assert.ok(seen, "the request must reach the binding");
+  const carried = /** @type {Request} */ (seen);
+  assert.equal(carried.method, "POST", "the method is not rewritten");
+  assert.equal(new URL(carried.url).pathname, REVOKE_PATH, "the path is not rewritten");
+  assert.equal(
+    carried.headers.get("authorization"),
+    `Basic ${btoa("k_test:not-the-secret")}`,
+    "the presented key reaches the api Worker that checks it",
+  );
 });
 
 test("a link token answers without an account, and never data", async () => {
@@ -843,13 +949,7 @@ test("upload, delete and restore refuse a cross-site request", async () => {
 // ---------------------------------------------------------------- the read
 
 test("the usage read is behind the same gate", async () => {
-  assert.equal(
-    handleUsageRequest(
-      new Request("https://drive.test/api/usage"),
-      /** @type {null} */ (/** @type {unknown} */ (undefined)),
-    ).status,
-    401,
-  );
+  assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 0);

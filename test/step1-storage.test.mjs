@@ -12,7 +12,13 @@
 // stock S3, so the endpoint, region, bucket and root credential are the whole
 // of the difference; pointing this at iDrive e2 or B2 uses the same code
 // (`DRIVE_STANDIN_ENDPOINT` + the credential variables), but a real account's
-// bucket is the vendor's to configure and that is #173's step, not this test's.
+// bucket has to be configured first. It was, on 2026-10-03 (drive#173), and
+// the real run then stops in `provisionBucket`: iDrive e2 refuses every
+// notification destination ARN (`400 InvalidArgument`), because its
+// destinations are registered in the vendor's console, not through the bucket
+// API. So a real-account proof runs against the bucket as configured, and the
+// notification half of the done-when is read off the vendor's console — the
+// measured answers are in docs/build-spec.md.
 //
 // Keys are minted the way the product mints them: through the api Worker's own
 // POST /v1/keys route, which hands the scope to the storage endpoint as an STS
@@ -24,23 +30,24 @@
 //                               signed call). Unset: start one here
 //                               (docker/podman) — the same code path in CI
 //                               (`npm test` runs this file) and on a laptop.
-//   DRIVE_STANDIN_PORT          port when this test starts it (default 8743,
-//                               where the VPS's `tests3` rclone remote points)
-//   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO below)
+//   DRIVE_STANDIN_PORT          fixed port for the container when this test
+//                               starts it; unset, the kernel picks one and the
+//                               port is read back from the server's log
+//   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO in
+//                               test/minio-standin.mjs)
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  root credential
 //   DRIVE_STANDIN_BUCKET        bucket (default drive-standin)
 //   DRIVE_STANDIN_REGION        region (default us-east-1)
-//   DRIVE_STANDIN_WEBHOOK_URL   where notifications are POSTed (default: a
-//                               free port on this host, path /v1/events)
+//   DRIVE_STANDIN_WEBHOOK_URL   where notifications are POSTed (default: the
+//                               receiver binds an ephemeral port and the URL
+//                               is read back, path /v1/events)
 //   DRIVE_STANDIN_EVENT_TOKEN   the shared token the bucket sends
 //   DRIVE_STANDIN_ENGINE        force docker or podman
 
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -55,16 +62,23 @@ import {
   readBucketConfig,
 } from "../workers/api/src/s3.js";
 import { createS3KeyProvider, policyForScope } from "../workers/api/src/s3-keys.js";
+import { startMinioStandin } from "./minio-standin.mjs";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
 // images were taken down at the end of 2025 and its GitHub repo is archived;
 // this image is the archived Bitnami package of that release, which is a stock
 // server with the three things step 1 needs (versioning, lifecycle rules and
-// bucket notifications). It is a stand-in: iDrive e2 replaces it in #173.
-const IMAGE = process.env.DRIVE_STANDIN_IMAGE ?? "bitnamilegacy/minio:2025.7.23-debian-12-r5";
+// bucket notifications). It is a stand-in: a real vendor's bucket is the
+// credential swap away, and drive#173 measured one (iDrive e2, 2026-10-03).
+// `test/minio-standin.mjs` pins it and starts it.
 const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-standin";
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
-const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 8743);
+// 0 asks the kernel for a free port; the stand-in logs the one it bound and
+// `startMinioStandin` reads it back. A number reserved by binding, closing and
+// handing it on can be taken before the real bind, which is the race a loaded
+// run lost (drive#295). DRIVE_STANDIN_PORT pins a fixed port for a caller that
+// needs one.
+const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 0);
 // The stand-in credential is generated fresh for every run, never a literal in
 // this file: a secret-looking string committed to the repo is a secret-shaped
 // thing for gitleaks to read, and this one only ever addresses this test's own
@@ -86,164 +100,17 @@ const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? randomBytes(24).toS
 /** @param {string} text */
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-/** @param {string} bin @param {string[]} args */
-function runs(bin, args) {
-  return spawnSync(bin, args, { stdio: "ignore" }).status === 0;
-}
-
-/** @returns {string|null} */
-function containerEngine() {
-  const forced = process.env.DRIVE_STANDIN_ENGINE;
-  if (forced) {
-    return runs(forced, ["info"]) ? forced : null;
-  }
-  for (const engine of ["docker", "podman"]) {
-    if (runs(engine, ["info"])) {
-      return engine;
-    }
-  }
-  return null;
-}
-
-/** @returns {Promise<number>} */
-async function freePort() {
-  const server = createNetServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
-  const address = server.address();
-  assert.ok(
-    address !== null && typeof address !== "string",
-    "the ephemeral listener has a TCP port",
-  );
-  const { port } = address;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
-/**
- * @param {string} endpoint
- * @param {number} seconds
- * @param {import("node:test").TestContext} [_t]
- */
-async function waitForHealth(endpoint, seconds, _t) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    try {
-      const response = await fetch(`${endpoint}/minio/health/live`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // still starting
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `the S3 stand-in at ${endpoint} never answered /minio/health/live within ${seconds}s`,
-      );
-    }
-    await sleep(500);
-  }
-}
-
-/**
- * Start the container when this test owns it, or attach to the one the caller
- * started. A caller's endpoint is never health-probed here: the first signed
- * S3 call below is the health check, so a non-Minio endpoint is not asked for
- * a MinIO-only route. The root credential and the notification endpoint reach
- * the container through the engine's own environment (`-e NAME` with no value)
- * rather than through argv, so no credential is ever on a command line.
- * @param {{webhookUrl: string}} config
- * @param {import("node:test").TestContext} t
- */
-async function startStandin(config, t) {
-  if (CONFIGURED_ENDPOINT) {
-    t.diagnostic(`attaching to the caller's stand-in at ${CONFIGURED_ENDPOINT}`);
-    return { endpoint: CONFIGURED_ENDPOINT };
-  }
-  if (ROOT_SECRET_KEY.length < 8) {
-    throw new Error(
-      `DRIVE_STANDIN_SECRET_KEY is ${ROOT_SECRET_KEY.length} characters; MinIO's minimum root password is 8, ` +
-        "so this value cannot be the stand-in's root credential (the tests3 rclone pair is shorter than that).",
-    );
-  }
-  const engine = containerEngine();
-  if (engine === null) {
-    return null;
-  }
-  const name = `drive-standin-${process.pid}`;
-  const volume = `${name}-data`;
-  spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-  spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
-  const child = spawn(
-    engine,
-    [
-      "run",
-      "-d",
-      "--name",
-      name,
-      "--user",
-      "0",
-      "--network",
-      "host",
-      "-e",
-      "MINIO_ROOT_USER",
-      "-e",
-      "MINIO_ROOT_PASSWORD",
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`,
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`,
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`,
-      "-v",
-      `${volume}:/data`,
-      IMAGE,
-      "server",
-      "/data",
-      "--address",
-      `:${PORT}`,
-    ],
-    {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: {
-        ...process.env,
-        MINIO_ROOT_USER: ROOT_ACCESS_KEY,
-        MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
-        [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
-        [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: config.webhookUrl,
-        [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
-      },
-    },
-  );
-  // Clean up the container and its volume even if the health check
-  // fails: a crashed stand-in should not leak resources on the
-  // runner, and a failure here is the failure to prove, not a pass.
-  t.after(() => {
-    spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-    spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
-  });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  const status = await new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  if (status !== 0) {
-    throw new Error(`\`${engine} run\` exited ${status}: ${stderr}`);
-  }
-  const endpoint = `http://127.0.0.1:${PORT}`;
-  await waitForHealth(endpoint, 60, t);
-  t.diagnostic(`started ${IMAGE} as ${name} on ${endpoint}, notifications to ${config.webhookUrl}`);
-  return { endpoint };
-}
-
 /**
  * The api Worker as the notification receiver: the storage server POSTs the
  * event to this listener, which hands it to the Worker's real dispatcher, so
  * what the proof exercises is the Worker's own route rather than a mock of it.
- * @param {URL} webhookUrl
+ * The receiver binds an ephemeral port itself (`listen(0)` then
+ * `server.address()` reads the number back), so no listener is reserved and
+ * released before the real bind (drive#295); `DRIVE_STANDIN_WEBHOOK_URL` still
+ * pins a fixed address, and is handed on exactly as given.
+ * @param {string|null} configuredUrl
  */
-async function startEventReceiver(webhookUrl) {
+async function startEventReceiver(configuredUrl) {
   /** @type {Array<{status: number, body: string}>} */
   const answers = [];
   const server = createServer((request, response) => {
@@ -269,10 +136,22 @@ async function startEventReceiver(webhookUrl) {
       response.end();
     });
   });
+  const url = configuredUrl === null ? null : new URL(configuredUrl);
   await new Promise((resolve) => {
-    server.listen(Number(webhookUrl.port), webhookUrl.hostname, () => resolve(undefined));
+    server.listen(url === null ? 0 : Number(url.port), url?.hostname ?? "127.0.0.1", () =>
+      resolve(undefined),
+    );
   });
-  return { answers, stop: () => new Promise((resolve) => server.close(resolve)) };
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string", "the event receiver has a TCP port");
+  return {
+    // A configured address is handed on as given: only the ephemeral one is
+    // built, because `address.address` is `::1` or `::` for an IPv6 or wildcard
+    // bind, and neither is a URL a container can be pointed at.
+    url: configuredUrl ?? `http://127.0.0.1:${address.port}/v1/events`,
+    answers,
+    stop: () => new Promise((resolve) => server.close(resolve)),
+  };
 }
 
 /**
@@ -351,13 +230,33 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
   }
 
-  const webhookUrl = new URL(
-    CONFIGURED_WEBHOOK ?? `http://127.0.0.1:${await freePort()}/v1/events`,
-  );
-  const receiver = await startEventReceiver(webhookUrl);
+  const receiver = await startEventReceiver(CONFIGURED_WEBHOOK);
   t.after(() => receiver.stop());
 
-  const standin = await startStandin({ webhookUrl: webhookUrl.toString() }, t);
+  if (CONFIGURED_ENDPOINT) {
+    t.diagnostic(`attaching to the caller's stand-in at ${CONFIGURED_ENDPOINT}`);
+  } else if (ROOT_SECRET_KEY.length < 8) {
+    throw new Error(
+      `DRIVE_STANDIN_SECRET_KEY is ${ROOT_SECRET_KEY.length} characters; MinIO's minimum root password is 8, ` +
+        "so this value cannot be the stand-in's root credential (the tests3 rclone pair is shorter than that).",
+    );
+  }
+  const standin = CONFIGURED_ENDPOINT
+    ? { endpoint: CONFIGURED_ENDPOINT }
+    : await startMinioStandin(
+        {
+          name: `drive-standin-${process.pid}`,
+          environment: {
+            MINIO_ROOT_USER: ROOT_ACCESS_KEY,
+            MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
+            [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
+            [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
+            [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
+          },
+          port: PORT,
+        },
+        t,
+      );
   if (standin === null) {
     t.diagnostic(
       "no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT, so there is no stand-in to prove against",

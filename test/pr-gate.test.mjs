@@ -27,6 +27,7 @@ import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 /** @param {string} path @returns {string} */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -91,7 +92,11 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   // The gates the lines rest on. The line-by-line pointer check above already
   // proves each exists; these prove the *gates* are still wired, so a line
   // cannot name a test that runs but no longer enforces anything.
-  assert.match(srcFile("index.js"), /export default \{\n {2}async fetch/);
+  // The default export is a Worker object literal whose first member is the
+  // async fetch handler; the indent width is not the contract, the member is.
+  // Reflowing this file must not break the gate (drive#183), so match the
+  // shape with tolerant whitespace instead of pinning two spaces.
+  assert.match(srcFile("index.js"), /export default \{\s{2,}async fetch/);
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["src/status.js", /export async function signedInAccount\(request, store\)/],
@@ -192,7 +197,10 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // account store land (issues #2 and #6), but it is behind the same gate as
   // every other account route (issue #73): the one gate, so a request that
   // cannot prove an account is a 401 rather than an empty month.
-  assert.match(srcFile("billing.js"), /export function handleUsageRequest\(request, account\)/);
+  assert.match(
+    srcFile("billing.js"),
+    /export function handleUsageRequest\(request, account, upload = null\)/,
+  );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);
   assert.equal(usage.status, 401, "the usage read is behind the account gate");
   assert.deepEqual(await usage.json(), {
@@ -228,6 +236,8 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   const objects = new Map();
   /** @type {string[]} */
   const seen = [];
+  /** @type {string[]} */
+  const listed = [];
   /** @type {typeof fetch} */
   const server = async (url, init = {}) => {
     const method = init.method || "GET";
@@ -243,13 +253,9 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
       return new Response(null, { status: 204 });
     }
     if (search.includes("list-type=2")) {
-      const prefix = new URLSearchParams(search).get("prefix");
-      const contents = [...objects.keys()]
-        .filter((name) => name.startsWith(prefix) && name !== prefix)
-        .map((name) => `<Contents><Key>${name}</Key><Size>1</Size></Contents>`)
-        .join("");
-      return new Response(`<?xml version="1.0"?><ListBucketResult>${contents}</ListBucketResult>`, {
-        status: 200,
+      return rcloneListResponse(objects, search, {
+        bucket: "drive",
+        onPrefix: (p) => listed.push(p),
       });
     }
     return objects.has(key)
@@ -329,6 +335,30 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
     "A's own bytes",
   );
   assert.deepEqual([...objects.keys()].sort(), ["u/a/photos/note.txt", "u/b/photos/note.txt"]);
+  // The drive root, the one listing the issue found empty: A's file at the
+  // root asks storage for `u/a/`, so the rows are the account's own. A second
+  // slash (`u/a//`) matches no key rclone stores, which is the empty drive the
+  // Web Files page showed against real storage.
+  assert.equal((await put(a, who("a", "A"), "/", "holiday.jpg", "A's own bytes")).status, 201);
+  /** @type {{rows: Array<{name: string}>}} */
+  const root = await (await get(a, who("a", "A"), "", "/")).json();
+  // The rows, not their order: rclone answers the folders it cut off before
+  // the keys inside the prefix, and the handler does not promise an order.
+  assert.deepEqual(root.rows.map((row) => row.name).sort(), ["holiday.jpg", "photos"]);
+  // The same bucket, the other account: the root listing is the account's own
+  // rows, and A's root file is not one of them.
+  /** @type {{rows: Array<{name: string}>}} */
+  const bRoot = await (await get(b, who("b", "B"), "", "/")).json();
+  assert.deepEqual(bRoot.rows.map((row) => row.name).sort(), ["photos"]);
+  // Every listing asked for the account's own prefix once, and no prefix has a
+  // second separator in it.
+  assert.ok(
+    listed.includes("u/a/") && listed.includes("u/b/"),
+    `both accounts listed their own root: ${JSON.stringify(listed)}`,
+  );
+  for (const prefix of listed) {
+    assert.ok(!prefix.includes("//"), `a listing prefix carries one separator: ${prefix}`);
+  }
   // Every request A made named A's prefix and no other account's.
   for (const request of seen) {
     const prefix = request.includes("u/a") ? "a" : request.includes("u/b") ? "b" : null;
