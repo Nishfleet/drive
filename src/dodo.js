@@ -45,9 +45,7 @@ export function billingEventId(accountId, hour) {
     throw new TypeError(`billingEventId needs an account id, got ${String(accountId)}`);
   }
   if (!Number.isSafeInteger(hour) || hour < 0) {
-    throw new TypeError(
-      `billingEventId needs an epoch millisecond UTC hour, got ${String(hour)}`,
-    );
+    throw new TypeError(`billingEventId needs an epoch millisecond UTC hour, got ${String(hour)}`);
   }
   return `drive:${accountId}:${hour}`;
 }
