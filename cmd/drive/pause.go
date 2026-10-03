@@ -17,9 +17,9 @@ import (
 //   - resume:  rc core/bwlimit rate=off. The same file finished at exactly
 //     157,286,400 bytes with transfers=1.
 //
-// The remote control is the one the mount already binds (mount.go VFSArgs,
-// loopback), through the one client in this CLI (rc.go extends the fill loop's
-// rcClient), so no second listener and no second rc path exist.
+// The remote control is the one the mount already binds (mount.go
+// `--rc-addr`, RCAddr()), through the one client in this CLI (rc.go extends
+// the fill loop's rcClient), so no second listener and no second rc path exist.
 //
 // No queue, no transfer bookkeeping and no scheduler is written here: rclone
 // already owns the queue (rc vfs/queue) and the rate, and `drive status` reads

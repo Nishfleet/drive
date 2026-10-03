@@ -299,9 +299,9 @@ func TestUploadFileNameWithholdsANameThatWouldBreakTheColumn(t *testing.T) {
 }
 
 // TestMountPlanCarriesTheRemoteControl proves a freshly written mount starts
-// rclone with its remote control bound to loopback (VFSArgs), so pause, resume
-// and the progress lines have a running mount to ask, and no second listener is
-// added.
+// rclone with its remote control bound to loopback (MountPlan.RCAddr), so pause,
+// resume and the progress lines have a running mount to ask, and no second
+// listener is added.
 func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	home := filepath.Join("home", "me")
 	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
@@ -315,6 +315,22 @@ func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	// carry a limit that was never asked for.
 	if strings.Contains(joined, "--bwlimit") {
 		t.Errorf("mount args %q carry a bwlimit for an unpaused drive", joined)
+	}
+}
+
+func TestPausedMountPlanKeepsTheOverriddenRCAddr(t *testing.T) {
+	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:5599")
+	home := t.TempDir()
+	if err := SetPaused(home); err != nil {
+		t.Fatal(err)
+	}
+	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
+	joined := strings.Join(plan.Args(), " ")
+	if !strings.Contains(joined, "127.0.0.1:5599") {
+		t.Errorf("paused mount args %q dropped the overridden rc address", joined)
+	}
+	if !strings.Contains(joined, "--bwlimit") || !strings.Contains(joined, pausedRate) {
+		t.Errorf("paused mount args %q dropped the paused rate", joined)
 	}
 }
 
@@ -407,8 +423,8 @@ func TestTransfersLineSaysPausedNotMountedAndRunning(t *testing.T) {
 	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(paused) = %q, want the Paused word", got)
 	}
-	if got := transfersLine(home, false); got != transfersNotMounted {
-		t.Errorf("transfersLine(paused but not mounted) = %q, want %q", got, transfersNotMounted)
+	if got := transfersLine(home, false); got != "transfers: "+pausedLabel {
+		t.Errorf("transfersLine(paused but not mounted) = %q, want the Paused word", got)
 	}
 	if err := ClearPaused(home); err != nil {
 		t.Fatal(err)
@@ -424,6 +440,30 @@ func TestTransfersLineNamesALimitedRateInsteadOfGuessing(t *testing.T) {
 	t.Setenv("DRIVE_RCLONE", filepath.Join(t.TempDir(), "no-such-rclone"))
 	if got := transfersLine(home, true); !strings.Contains(got, "unknown") {
 		t.Errorf("transfersLine(no rclone) = %q, want a named unknown", got)
+	}
+}
+
+func TestFormatRCProgressShowsNamePercentAndTotalLeft(t *testing.T) {
+	eta := 125.0
+	got := formatRCProgress(
+		[]QueueItem{
+			{Name: "shape.bin", Size: 10 * 1024 * 1024, Uploading: true},
+			{Name: "notes.txt", Size: 1024, Uploading: false},
+		},
+		Stats{
+			Transferring: []Transfer{
+				{Name: "shape.bin", Bytes: 5 * 1024 * 1024, Size: 10 * 1024 * 1024, Percentage: 50, Eta: &eta},
+			},
+		},
+	)
+	if !strings.Contains(got, "shape.bin") || !strings.Contains(got, "50%") || !strings.Contains(got, "2m 05s left") {
+		t.Errorf("in-flight line = %q, want name, percent and time left", got)
+	}
+	if !strings.Contains(got, "notes.txt") || !strings.Contains(got, "waiting") {
+		t.Errorf("queued line = %q, want the waiting file named", got)
+	}
+	if !strings.Contains(got, "bytes left: 5.0 MiB") {
+		t.Errorf("total = %q, want the bytes still to send", got)
 	}
 }
 

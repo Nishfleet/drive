@@ -14,9 +14,9 @@ import (
 // `drive pause`, `drive resume` and the per-file progress lines in
 // `drive status` (drive issue #100). Every question they ask is asked of the
 // running mount through rclone's own remote-control API (rclone.org/rc), over
-// the loopback address the mount already binds (fill_run.go loopbackRCAddr,
-// mounted by VFSArgs), so there is one rclone rc client in this CLI and one
-// address in the product.
+// the loopback address the mount already binds (mount.go RCAddr, the same
+// address the fill loop and the conflict guard use), so there is one rclone
+// rc client in this CLI and one address in the product.
 //
 // Measured on this host 2026-10-03 with rclone v1.75.1 against a
 // `rclone serve s3` stand-in:
@@ -66,12 +66,15 @@ const rcTimeout = 30 * time.Second
 // mountRCClient returns the remote-control client for this device's running
 // mount, or an error when the binary cannot be resolved. It is the same client
 // the background fill uses (fill_run.go newRCClient) on the same loopback
-// address VFSArgs binds, so `drive pause`, `drive resume` and the progress
-// lines in `drive status` ask the running mount rather than guessing, and the
-// product has one rc client and one rc address.
+// address MountPlan binds (RCAddr), so `drive pause`, `drive resume` and the
+// progress lines in `drive status` ask the running mount rather than guessing,
+// and the product has one rc client and one rc address.
 //
 // The methods used here (core/bwlimit, vfs/queue, core/stats) take no `fs`
-// argument, so no remote path is needed to address them.
+// argument, so no remote path is needed to address them. vfs/queue is the
+// same call the conflict guard already makes (conflict_guard.go queue); this
+// client omits `fs` when it has none, which is rclone's default for the
+// mounted VFS.
 //
 // A caller that only prints a line must not fail on a machine with no rclone
 // installed, so a resolve failure is reported by the caller's error, not by
@@ -81,7 +84,7 @@ func mountRCClient() (*rcClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rclone: %w", err)
 	}
-	return newRCClient(binary, loopbackRCAddr, ""), nil
+	return newRCClient(binary, RCAddr(), ""), nil
 }
 
 // rcCtx bounds one remote-control call. See rcTimeout.
@@ -128,17 +131,20 @@ type Queue struct {
 	Queue []QueueItem `json:"queue"`
 }
 
-// ReadQueue asks the mount what it is waiting to send. An absent queue key is
-// an empty queue, which is the true answer when nothing has been saved.
+// ReadQueue asks the mount what it is waiting to send. It is the conflict
+// guard's own vfs/queue call (rcClient.queue), returned in the shape the
+// status lines print. An absent queue key is an empty queue, which is the
+// true answer when nothing has been saved.
 func (c *rcClient) ReadQueue(ctx context.Context) (Queue, error) {
-	var q Queue
-	if err := c.call(ctx, "vfs/queue", nil, &q); err != nil {
+	entries, err := c.queue(ctx)
+	if err != nil {
 		return Queue{}, err
 	}
-	if q.Queue == nil {
-		q.Queue = []QueueItem{}
+	items := make([]QueueItem, len(entries))
+	for i, e := range entries {
+		items[i] = QueueItem{Name: e.Name, Size: e.Size, Uploading: e.Uploading}
 	}
-	return q, nil
+	return Queue{Queue: items}, nil
 }
 
 // Transfer is the file rclone is sending right now, as core/stats names it.

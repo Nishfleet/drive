@@ -176,21 +176,24 @@ func rcProgressLines(home string, on bool) (string, string) {
 	if err != nil {
 		return "", fmt.Sprintf("per file: unknown (%v)", err)
 	}
-	// The file in flight, by the name rclone uses in both answers, so the
-	// percentage from core/stats lands on the right queue entry.
+	return formatRCProgress(queue.Queue, stats), ""
+}
+
+// formatRCProgress is the per-file block `drive status` prints: each queued
+// file's name, size, percent and time left, then the bytes still to send.
+// It is a pure join of rclone's two answers so a unit test can pin the
+// columns without a live mount.
+func formatRCProgress(items []QueueItem, stats Stats) string {
 	inFlight := map[string]Transfer{}
 	for _, t := range stats.Transferring {
 		inFlight[t.Name] = t
 	}
 	var b strings.Builder
 	var left int64
-	for _, item := range queue.Queue {
+	for _, item := range items {
 		left += item.Size
 		progress := "waiting"
 		if t, ok := inFlight[item.Name]; ok {
-			// Bytes already up come off the total left: rclone counts the whole
-			// file in the queue until it finishes, and "left" means what is still
-			// to send.
 			left -= t.Bytes
 			progress = fmt.Sprintf("%d%%, %s left", t.Percentage, etaLabel(t.Eta))
 		} else if item.Uploading {
@@ -199,11 +202,8 @@ func rcProgressLines(home string, on bool) (string, string) {
 		fmt.Fprintf(&b, "  %s  %s  %s\n",
 			uploadFileName(item.Name), fileSizeLabel(item.Size), progress)
 	}
-	// A file rclone has finished since the queue was read is in the stats and
-	// not in the queue, so its bytes are not left to send: the queue is the only
-	// thing counted, and the stats only ever subtract from it.
 	fmt.Fprintf(&b, "bytes left: %s\n", fileSizeLabel(left))
-	return b.String(), ""
+	return b.String()
 }
 
 // sendingLabel is the word for the one file rclone says it is sending but has
@@ -262,11 +262,14 @@ func fileSizeLabel(bytes int64) string {
 // control the mount already binds) and the marker file otherwise, so a drive
 // that is paused but not mounted still says Paused rather than nothing.
 func transfersLine(home string, on bool) string {
-	if !on {
-		return transfersNotMounted
-	}
+	// The marker is the pause that survives a restart: ask it first, so a
+	// drive that is paused with the mount down still says Paused rather than
+	// "not mounted" over a stop the person just asked for.
 	if Paused(home) {
 		return "transfers: " + pausedLabel
+	}
+	if !on {
+		return transfersNotMounted
 	}
 	c, err := mountRCClient()
 	if err != nil {
