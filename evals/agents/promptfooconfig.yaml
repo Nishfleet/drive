@@ -1,0 +1,69 @@
+# The agent eval (drive issue #222): can an agent use drive from its own docs
+# and its own CLI?
+#
+# The suite is two things and nothing else:
+#
+#   1. a set of tasks, drawn from the docs' own examples and from this repo's
+#      own issue bodies, in `tasks/train.yaml`;
+#   2. a set of graders, one per task, that checks the end state of the
+#      answer.
+#
+# The tool is promptfoo and the reason is in the README. This config changes
+# shape only when a grader needs it to.
+#
+# The two providers are the fleet's own OpenAI-compatible proxy, so a run
+# spends no new money: worker-cheap is the cheaper model at default effort,
+# worker-capable is the stronger model. Three repeats are the variance check.
+
+description: "Can an AI agent use drive from its own docs and CLI? (drive issue #222)"
+
+prompts:
+  - file://prompts/agent.md
+
+providers:
+  - id: openai:chat:worker-cheap
+    label: "the agent under test"
+    config:
+      apiBaseUrl: http://127.0.0.1:4000/v1
+      apiKeyEnvar: OPENAI_API_KEY
+      temperature: 0
+      max_tokens: 32768
+      maxRetries: 2
+      extra_body:
+        reasoning_effort: low
+  - id: openai:chat:worker-capable
+    label: "a stronger model at a higher effort, for the scaling check"
+    config:
+      apiBaseUrl: http://127.0.0.1:4000/v1
+      apiKeyEnvar: OPENAI_API_KEY
+      temperature: 0
+      max_tokens: 32768
+      maxRetries: 2
+      extra_body:
+        reasoning_effort: high
+
+evaluateOptions:
+  maxConcurrency: 12
+  repeat: 3
+
+# Every test sees the same reading stack: drive's public docs, rendered by
+# `npm run docs:render` from docs-site/*.md, and the drive command's own help
+# text, which `test/evals.test.mjs` proves still matches cmd/drive/main.go.
+defaultTest:
+  options:
+    timeout: 120000
+    transform: "output.slice(-600)"
+  vars:
+    docs_index: file://../../docs-site/.rendered/index.md
+    docs_quickstart: file://../../docs-site/.rendered/quickstart.md
+    docs_how_it_works: file://../../docs-site/.rendered/how-it-works.md
+    docs_agents: file://../../docs-site/.rendered/agents.md
+    docs_pricing: file://../../docs-site/.rendered/pricing.md
+    docs_limits: file://../../docs-site/.rendered/limits.md
+    docs_security: file://../../docs-site/.rendered/security.md
+    docs_changelog: file://../../docs-site/.rendered/changelog.md
+    docs_faq: file://../../docs-site/.rendered/faq.md
+    docs_benchmarks: file://../../docs-site/.rendered/benchmarks.md
+    drive_help: file://context/drive-help.txt
+
+tests: file://tasks/train.yaml

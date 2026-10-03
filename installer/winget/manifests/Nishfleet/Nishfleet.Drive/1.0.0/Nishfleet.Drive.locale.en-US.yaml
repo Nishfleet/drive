@@ -1,0 +1,23 @@
+PackageIdentifier: Nishfleet.Drive
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Nishfleet
+PublisherUrl: https://github.com/Nishfleet
+PublisherSupportUrl: https://github.com/Nishfleet/drive/issues
+PrivacyUrl: https://github.com/Nishfleet/drive/blob/main/docs-site/security.md
+Author: Nishfleet
+PackageName: Drive
+PackageUrl: https://github.com/Nishfleet/drive
+License: GPL-3.0-only
+LicenseUrl: https://github.com/Nishfleet/drive/blob/main/LICENSE
+ShortDescription: A Finder drive for people and their agents, mounted with stock rclone.
+Description: Drive mounts your storage as a drive letter, so any app opens your files without a plugin. The installer puts drive.exe and rclone on your PATH, brings WinFsp in through its own package dependency, and starts the mount at logon with a Task Scheduler task.
+Moniker: drive
+Tags:
+  - drive
+  - filesystem
+  - rclone
+  - winfsp
+  - cloud-storage
+ReleaseNotesUrl: https://github.com/Nishfleet/drive/blob/main/docs-site/changelog.md
+ManifestType: defaultLocale

@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    The signed Windows installer for Drive (drive issue #154).
+
+    Why WiX and not go-msi: WiX is the toolchain Windows installers are built
+    with, it is the one the Stock tools rule in AGENTS.md keeps (stock tools
+    only), and its Burn bundle is what chains WinFsp's own official MSI from
+    WinFsp's own release instead of a vendored copy. go-msi builds a WiX v3
+    package under the hood, so it adds a Go-side generator between us and the
+    toolchain we already need for the bundle, and it cannot build a bundle.
+
+    What this package installs:
+      * drive.exe - the CLI from cmd/drive
+      * rclone.exe - the stock rclone the mount is built on (a binary, the
+        same one the Mac and Linux paths exec; rclone is not a Go module we
+        can link in, so the Windows build downloads the vendor's own .zip)
+      * both on the system PATH, so `drive` and `rclone` work at any prompt
+
+    What it does NOT install: WinFsp. WinFsp arrives automatically through the
+    winget manifest's `Dependencies: WinFsp.WinFsp` and through the Burn
+    bundle (installer/bundle.wxs), which chains the official WinFsp MSI
+    downloaded from WinFsp's own GitHub release. Nothing WinFsp's is vendored
+    or copied here.
+
+    The login task is the one issue #153 shipped: the Windows counterpart of
+    the launchd plist and the systemd unit. It is registered here from the MSI
+    so a person who installs Drive but never types a command still gets the
+    drive at logon, and it is removed on uninstall. The command it runs is
+    exactly `drive.exe mount`, the same command `drive mount` would run.
+  -->
+  <Package
+    Name="Drive"
+    Manufacturer="Nishfleet"
+    Version="1.0.0"
+    Scope="perMachine"
+    InstallerVersion="500"
+    Compressed="yes"
+    UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+
+    <SummaryInformation
+      Description="Drive: a Finder drive for people and their agents"
+      Keywords="drive, rclone, cloud, filesystem"
+      Codepage="1252" />
+
+    <!-- An installed Drive is upgraded in place, never side by side. -->
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of Drive is already installed."
+      Schedule="afterInstallInitialize" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="Main" Title="Drive" Level="1" AllowAdvertise="no">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="PathComponent" />
+      <ComponentRef Id="LoginTaskComponent" />
+    </Feature>
+
+    <!--
+      The login task. Both actions are the stock schtasks.exe the CLI itself
+      uses (cmd/drive/windows.go), run as a deferred elevated custom action:
+      the task is a per-machine object, so it needs the system's own privilege
+      and not the installing user's. WixQuietExec64 is the Util extension's
+      own quiet-exec custom action, so no installer code of ours runs at
+      install time and the tool's own output is in the log.
+    -->
+    <Property Id="LOGIN_TASK_NAME" Value="drive-mount" />
+    <!--
+      The login task. Both actions are the stock schtasks.exe the CLI itself
+      uses (cmd/drive/windows.go), run as a deferred elevated custom action:
+      the task is a per-machine object, so it needs the system's own privilege
+      and not the installing user's. WixQuietExec64 is the Util extension's
+      own quiet-exec custom action, so no installer code of ours runs at
+      install time and the tool's own output is in the log.
+
+      /RU and /IT matter. A deferred action runs as LocalSystem, and a logon
+      task with no /RU runs as the account that created it, so without them
+      the drive would mount as SYSTEM with SYSTEM's home and no person's
+      keys. /RU is the person who ran the installer and /IT runs the task only
+      in that person's interactive session, which is what `drive mount` does
+      when a person runs it themselves (drive#153's schtasks /Create /SC
+      ONLOGON).
+    -->
+    <SetProperty Id="DRIVE_LOGON_USER" Value="[LogonUser]" Sequence="execute" Before="CreateLoginTask" />
+    <SetProperty Id="CreateLoginTask" Value="&quot;[System64Folder]schtasks.exe&quot; /Create /F /SC ONLOGON /TN drive-mount /RU &quot;[DRIVE_LOGON_USER]&quot; /IT /TR &quot;&quot;[#drive.exe]&quot; mount&quot;" Sequence="execute" Before="CreateLoginTask" />
+    <SetProperty Id="DeleteLoginTask" Value="&quot;[System64Folder]schtasks.exe&quot; /Delete /F /TN drive-mount" Sequence="execute" Before="DeleteLoginTask" />
+    <CustomAction Id="CreateLoginTask" DllEntry="WixQuietExec64" Execute="deferred" Return="check" Impersonate="no" BinaryRef="Wix4UtilCA_X64" />
+    <CustomAction Id="DeleteLoginTask" DllEntry="WixQuietExec64" Execute="deferred" Return="check" Impersonate="no" BinaryRef="Wix4UtilCA_X64" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CreateLoginTask" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="DeleteLoginTask" Before="RemoveFiles" Condition="(REMOVE~=&quot;ALL&quot;) OR (Upgrade=1)" />
+    </InstallExecuteSequence>
+    <InstallUISequence>
+      <Custom Action="CreateLoginTask" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
+    </InstallUISequence>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Drive" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="DriveExe" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012">
+        <File Id="drive.exe" Source="drive.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="RcloneExe" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234">
+        <File Id="rclone.exe" Source="rclone.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- The install directory on the system PATH, so `drive` and `rclone`
+         answer at every prompt with no shell restart and no edit to a
+         profile file. Part="last" appends to the existing value rather than
+         replacing it. -->
+    <Component Id="PathComponent" Directory="INSTALLFOLDER" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345">
+      <Environment
+        Id="PathEnv"
+        Name="PATH"
+        Value="[INSTALLFOLDER]"
+        Action="set"
+        Part="last"
+        System="yes" />
+    </Component>
+
+    <!-- The task object itself, owned by this component so uninstalling Drive
+         removes it. The task is created and deleted by the custom actions
+         above; this component is the one Windows Installer tracks. -->
+    <Component Id="LoginTaskComponent" Directory="INSTALLFOLDER" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456">
+      <RegistryValue Root="HKLM" Key="Software\Nishfleet\Drive" Name="LoginTaskInstalled" Value="1" Type="integer" KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -36,7 +37,26 @@ type MountPlan struct {
 	// command line, the login item and `drive cache` report one number.
 	CacheMax string
 	LogPath  string
-	VFSArgs  []string
+	// Bwlimit is the rclone rate the mount starts with, "" for no limit
+	// (drive issue #100). PausedRate(home) fills it, so a mount started again
+	// after `drive pause` comes back already paused.
+	Bwlimit string
+	VFSArgs []string
+	// Device is this machine's name in a conflict copy's filename
+	// (issue #30). DRIVE_DEVICE when the operator sets it, else the
+	// hostname, sanitized so it is a filename everywhere the mount
+	// goes.
+	Device string
+	// RCAddr is the loopback address the mount's remote control binds.
+	// The background fill, the conflict guard and every operator
+	// reach the same one, so it is on the plan rather than a constant
+	// each of them keeps.
+	RCAddr string
+	// StagingDir is where the conflict guard keeps a save's bytes for
+	// the moments they could still be lost. It is inside this device's
+	// own drive folder, never inside the mount dir, so nothing staged
+	// is ever visible in the drive.
+	StagingDir string
 	// DownloadURL is the dl Worker (drive issue #58, build step 5), empty
 	// when none is configured. It is a mount argument, not a line in the
 	// rclone config the user owns: rclone streams every read through the
@@ -101,12 +121,6 @@ func VFSArgs(cacheMax string) []string {
 		// without a second index.
 		"--vfs-read-chunk-size-limit", vfsChunkSizeLimit(),
 		"--vfs-cache-max-age", vfsMaxAge(),
-		// The remote control is how the background fill reads the cache's
-		// live state and refreshes the directory (fill_run.go), and how
-		// `drive status` reports the cache. rclone's remote control is
-		// unauthenticated by design, so it binds to loopback only: 127.0.0.1,
-		// never :5572 on every interface.
-		"--rc", "--rc-addr", loopbackRCAddr, "--rc-no-auth",
 	}
 }
 
@@ -136,7 +150,9 @@ func RemoteFor(c StorageConfig) string {
 }
 
 // BuildMountPlan resolves the mount command for goos. It is the single place
-// that knows nfsmount is the macOS command and mount is the Linux one.
+// that knows nfsmount is the macOS command and mount is the Linux one, and
+// the single place the paused state is translated into rclone's command line
+// (drive issue #100).
 func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	// The limit the person chose, falling back to the shipped default. A
 	// unreadable or nonsense cache-max file is a named error, not a quiet
@@ -154,14 +170,102 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 		RcloneBin:   rcloneBin,
 		Subcommand:  sub,
 		Remote:      RemoteFor(c),
-		MountDir:    DefaultMountDir(home),
+		MountDir:    mountDirFor(goos, home),
 		ConfigPath:  RcloneConfigPath(home),
 		CacheDir:    DefaultCacheDir(home),
 		CacheMax:    cacheMax,
 		LogPath:     filepath.Join(DefaultConfigDir(home), "mount.log"),
 		VFSArgs:     VFSArgs(cacheMax),
+		Device:      DeviceName(),
+		RCAddr:      RCAddr(),
+		StagingDir:  ConflictStagingDir(home),
 		DownloadURL: c.DownloadURL,
+		// A pause that is in force when the mount is (re)started keeps being in
+		// force (drive issue #100): rclone's bandwidth limit lives in its own
+		// process, so without this line a restart would start sending bytes at
+		// full speed and the marker file would say Paused over bytes that are
+		// already leaving.
+		Bwlimit: PausedRate(home),
 	}
+}
+
+// deviceEnvName is the environment variable that carries the device name
+// (issue #30). The flag is the person's own command; the environment is
+// what the login item (launchd, systemd) carries forward.
+const deviceEnvName = "DRIVE_DEVICE"
+
+// DeviceName is the name this device carries in a conflict copy's
+// filename (issue #30). DRIVE_DEVICE wins so a person's machine can
+// answer to the name they chose ("studio", not "Johns-Macbook-Pro");
+// otherwise the hostname, sanitized. An unset DRIVE_DEVICE is the common
+// case and never an error: the hostname is a name.
+func DeviceName() string {
+	if set := strings.TrimSpace(os.Getenv(deviceEnvName)); set != "" {
+		if name := SanitizeDevice(set); name != "" {
+			return name
+		}
+	}
+	return DefaultDeviceName()
+}
+
+// ConflictStagingDir is where the conflict guard keeps a save's bytes
+// while it could still be lost. It is inside the device's own config
+// folder, so a staged copy is never visible in the drive and never
+// uploaded by anything but the guard's own conflict copy.
+func ConflictStagingDir(home string) string {
+	return filepath.Join(DefaultConfigDir(home), "conflict-staging")
+}
+
+// rcAddrEnvName is the environment variable that carries the remote
+// control's loopback address. Two mounts of the same drive on one host
+// (the two-machine proof, issue #30) cannot both bind one address, so the
+// address is overridable; the constant below is the shipped value and a
+// person's mount never sets either.
+const rcAddrEnvName = "DRIVE_RC_ADDR"
+
+// RCAddr is the loopback address the mount's remote control binds.
+// rclone's remote control is unauthenticated by design, so it binds to
+// loopback only and never to a wildcard: the background fill, the
+// conflict guard and `drive status` all reach this one address. A
+// DRIVE_RC_ADDR that is not a loopback address is refused and the shipped
+// address is used, because a wildcard bind would put an unauthenticated
+// control port on the network.
+func RCAddr() string {
+	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
+		if IsLoopbackAddr(set) {
+			return set
+		}
+		return loopbackRCAddr
+	}
+	return loopbackRCAddr
+}
+
+// IsLoopbackAddr reports whether addr is a loopback host:port. The remote
+// control is unauthenticated (rclone's own design), so anything that would
+// bind off the machine is refused rather than used.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "localhost.":
+		return true
+	}
+	return false
+}
+
+// mountDirFor is the mount point for goos: ~/Drive on Mac and Linux, and the
+// first drive-letter candidate on Windows, which Mount replaces with the first
+// free letter from D: up (WindowsDriveLetter).
+func mountDirFor(goos, home string) string {
+	if goos == "windows" {
+		return windowsDefaultLetter
+	}
+	return DefaultMountDir(home)
 }
 
 // Args is the full rclone argument vector, in the order the docs show.
@@ -177,6 +281,12 @@ func (p MountPlan) Args() []string {
 		"--cache-dir", p.CacheDir,
 		"--log-file", p.LogPath,
 		"--log-level", "INFO",
+		// The remote control is how the background fill reads the cache's
+		// live state and refreshes the directory (fill_run.go), how the
+		// conflict guard reads this device's own upload queue and the
+		// object's hash at a path (conflict_guard.go), and how `drive
+		// status` reports the cache. It is one address for all of them.
+		"--rc", "--rc-addr", p.RCAddr, "--rc-no-auth",
 	)
 	// The download host, when one is configured (issue #58). It is the S3
 	// provider's own flag --s3-download-url, the one rclone's docs list for
@@ -187,6 +297,17 @@ func (p MountPlan) Args() []string {
 	// a local stand-in.
 	if p.DownloadURL != "" {
 		args = append(args, "--s3-download-url", p.DownloadURL)
+	}
+	// The paused rate goes on rclone's own command line, so a mount that is
+	// started again after a `drive pause` comes back already paused. Measured
+	// on this host 2026-10-03 (rclone v1.75.1): --bwlimit "1KiB:off" started
+	// the mount with the same rate `core/bwlimit rate="1KiB:off"` sets, and
+	// RCLONE_BWLIMIT is not needed because the flag is already in the vector.
+	// The remote control that `drive pause` and `drive resume` use is the same
+	// loopback address this vector binds (`--rc-addr`, p.RCAddr), so those
+	// commands talk to this mount and no second listener is added.
+	if p.Bwlimit != "" {
+		args = append(args, "--bwlimit", p.Bwlimit)
 	}
 	return args
 }
@@ -273,29 +394,79 @@ func systemdEscapeArg(arg string) string {
 	return `"` + arg + `"`
 }
 
-// LoginItemPath is where the login item for goos is written.
+// LoginItemPath is where the login item for goos is written. Windows has no
+// login-item file: its item is a Task Scheduler task (WindowsTaskName),
+// registered with the OS, so the empty string is the honest answer for the
+// file-shaped callers.
 func LoginItemPath(goos, home string) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return LaunchdPlistPath(home)
+	case "windows":
+		return ""
+	default:
+		return SystemdUnitPath(home)
 	}
-	return SystemdUnitPath(home)
 }
 
 // LoginItem renders the login item for goos.
 func LoginItem(goos string, p MountPlan) string {
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		return LaunchdPlist(p)
+	case "windows":
+		return WindowsTaskCommandLine(p)
+	default:
+		return SystemdUnit(p)
 	}
-	return SystemdUnit(p)
+}
+
+// LoginItemPresent answers whether the login item for goos is registered. On
+// Windows that is the Task Scheduler task, not a file; on Mac and Linux it is
+// the item file.
+func LoginItemPresent(goos, home string) (bool, error) {
+	if goos == "windows" {
+		return windowsTaskPresent(WindowsTaskName)
+	}
+	path := LoginItemPath(goos, home)
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+}
+
+// LoginItemFiles are the on-disk login-item files for goos. Windows has none:
+// its login item is the Task Scheduler task, which Unmount removes through
+// schtasks, so the file-removal paths have nothing to unlink.
+func LoginItemFiles(goos, home string) []string {
+	if goos == "windows" {
+		return nil
+	}
+	return []string{LoginItemPath(goos, home), PrefetchLoginItemPath(goos, home)}
 }
 
 // Mount writes the rclone config and the login item, then starts the mount.
 // foreground runs rclone in this process (used by the proof and by debugging);
 // otherwise the login item starts it (launchd on macOS, systemd on Linux).
-func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool) error {
+func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun bool, driveLetter string) error {
 	p := BuildMountPlan(goos, home, rcloneBin, c)
 	if p.err != nil {
 		return p.err
+	}
+	// Windows is its own path: a drive letter, a WinFsp check and a Task
+	// Scheduler login task, and no prefetch sidecar (there is no Windows
+	// directory watcher). The letter is resolved here, where an error can be
+	// returned, and the plan carries it into the task's command line.
+	if goos == "windows" {
+		letter, err := WindowsDriveLetter(driveLetter, driveLetterFree)
+		if err != nil {
+			return err
+		}
+		p.MountDir = letter
+		return mountWindows(p, home, c, foreground, dryRun)
 	}
 	item := []byte(LoginItem(goos, p))
 	itemPath := LoginItemPath(goos, home)
@@ -313,6 +484,14 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		fmt.Printf("--- %s ---\n%s", prefetchPath, prefetchItem)
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
 		return nil
+	}
+	// The device name this mount answers to in a conflict copy. It is a
+	// filename, so it is sanitized whatever the operator typed or the
+	// hostname carries, and a refusal here is a named failure at the person's
+	// own command rather than a conflict file with an unreadable name.
+	if p.Device == "" {
+		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
+			"this mount can carry in a conflict filename")
 	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return fmt.Errorf("create mount dir %s: %w", p.MountDir, err)
@@ -387,16 +566,31 @@ func mountForeground(p MountPlan, home string) error {
 	// no file the fill keeps anywhere but rclone's capped VFS cache. It is
 	// started after rclone is up and stopped with the mount, and every pass it
 	// reports goes to the mount's log, so a fill problem is a named failure a
-	// person can read rather than a silent no-op.
+	// person can read rather than a silent no-op. It is also what keeps a file
+	// or folder the person chose to keep offline (#115) in the cache, by
+	// re-reading it on every pass so rclone's own eviction order takes from
+	// the rest of the drive first.
 	fillCtx, cancelFill := context.WithCancel(context.Background())
 	go func() {
 		// rclone's own remote control is not listening for the first moments
 		// of the mount, so the loop's first pass waits for the mount to appear
 		// (the same proof `drive mount` already makes) instead of racing it.
-		_, _ = Mounted(p.GOOS, home)
-		c := newRCClient(p.RcloneBin, loopbackRCAddr, p.Remote)
-		for err := range RunFillLoop(fillCtx, c, false, fillReader(p.MountDir)) {
+		_, _ = MountedDir(p.GOOS, p.MountDir)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		for err := range RunFillLoop(fillCtx, c, home, p.MountDir) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
+		}
+	}()
+	// The conflict guard (issue #30) runs in this process for as long as the
+	// mount does, on the same remote control: it watches this device's own
+	// upload queue, stages the bytes that could still be lost, and when another
+	// device's save lands it writes the conflict copy so both versions survive.
+	conflictCtx, cancelConflict := context.WithCancel(context.Background())
+	go func() {
+		_, _ = MountedDir(p.GOOS, p.MountDir)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.StagingDir, c) {
+			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
@@ -424,6 +618,7 @@ func mountForeground(p MountPlan, home string) error {
 	close(quit)
 	<-joined
 	cancelFill()
+	cancelConflict()
 	if runErr != nil {
 		return fmt.Errorf("rclone mount: %w", runErr)
 	}
@@ -452,11 +647,11 @@ func waitMounted(goos, home string) error {
 // mountWait bounds the wait for a freshly started mount to appear.
 const mountWait = 30 * time.Second
 
-// mountLogHint is where to look when the mount did not come up: launchd
-// writes the item's output to the log path from the plan; on Linux the user
-// journal owns a systemd unit's output.
+// mountLogHint is where to look when the mount did not come up: launchd and
+// the Windows login task write rclone's output to the log path from the plan;
+// on Linux the user journal owns a systemd unit's output.
 func mountLogHint(goos, home string) string {
-	if goos == "darwin" {
+	if goos == "darwin" || goos == "windows" {
 		return filepath.Join(DefaultConfigDir(home), "mount.log")
 	}
 	return "journalctl --user -u " + SystemdUnitName
@@ -538,12 +733,24 @@ func launchctlArgvLabel(label, action, target, itemPath string) []string {
 // uploads still waiting: nothing in this function deletes it, so a file
 // queued before the cap was reached is still there when writes resume.
 func RestartMount(goos, home, rcloneBin string, c StorageConfig) error {
+	// On Windows the drive letter is chosen at mount time; read it from the
+	// login task before Unmount removes it, so a restart keeps the same letter
+	// instead of moving the person's drive.
+	driveLetter := ""
+	if goos == "windows" {
+		if letter, err := windowsMountLetter(); err == nil {
+			driveLetter = letter
+		}
+	}
 	if err := Unmount(goos, home); err != nil {
 		return err
 	}
-	return Mount(goos, home, rcloneBin, c, false, false)
+	return Mount(goos, home, rcloneBin, c, false, false, driveLetter)
 }
 func Unmount(goos, home string) error {
+	if goos == "windows" {
+		return unmountWindows(home)
+	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
 		return err
 	}
@@ -565,8 +772,17 @@ func Unmount(goos, home string) error {
 
 // Mounted reports whether MountDir has a live mount. Linux asks the kernel
 // mount table through findmnt; macOS has no findmnt, so the BSD mount listing
-// is the platform's own answer and its mount-point field is what is compared.
+// is the platform's own answer and its mount-point field is what is compared;
+// Windows has neither, so the drive letter the login task names is the
+// question asked of the volume table, through os.Stat.
 func Mounted(goos, home string) (bool, error) {
+	if goos == "windows" {
+		letter, err := windowsMountLetter()
+		if err != nil {
+			return false, err
+		}
+		return windowsVolumeMounted(letter), nil
+	}
 	return MountedDir(goos, DefaultMountDir(home))
 }
 
@@ -575,21 +791,37 @@ func Mounted(goos, home string) (bool, error) {
 // on the same host) asks the same platform question. One switch, so a caller
 // cannot drift from what `drive mount` waits on.
 func MountedDir(goos, mountDir string) (bool, error) {
-	if goos == "darwin" {
-		out, err := exec.Command("mount").Output()
+	// A FUSE mount whose backing store has gone away can block findmnt the
+	// same way it blocks ReadDir (countEntries already bounds that). `drive
+	// status` and `drive pause` both ask Mounted, so a wedged mount must
+	// become a named timeout rather than a hung terminal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	switch goos {
+	case "darwin":
+		out, err := exec.CommandContext(ctx, "mount").Output()
 		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("mount: timed out")
+			}
 			return false, fmt.Errorf("mount: %w", err)
 		}
 		return bsdMountHasMountPoint(string(out), mountDir), nil
-	}
-	out, err := exec.Command("findmnt", "-n", "-M", mountDir).Output()
-	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
-			return false, nil
+	case "windows":
+		return windowsVolumeMounted(mountDir), nil
+	default:
+		out, err := exec.CommandContext(ctx, "findmnt", "-n", "-M", mountDir).Output()
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, fmt.Errorf("findmnt %s: timed out", mountDir)
+			}
+			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+				return false, nil
+			}
+			return false, fmt.Errorf("findmnt %s: %w", mountDir, err)
 		}
-		return false, fmt.Errorf("findmnt %s: %w", mountDir, err)
+		return strings.TrimSpace(string(out)) != "", nil
 	}
-	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // bsdMountHasMountPoint reports whether a `mount` listing mounts dir. A line
