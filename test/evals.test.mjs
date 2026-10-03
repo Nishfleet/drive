@@ -25,10 +25,41 @@ const root = join(__dirname, "..");
 const evals = join(root, "evals", "agents");
 const HOLDOUT_DEFAULT = "/home/nish/.local/share/drive/eval-holdout.yaml";
 
+/**
+ * The shapes js-yaml hands back, so `tsc --noEmit` (this repo's `pretest`)
+ * can check the gates instead of inferring `unknown` from `yaml.load`.
+ *
+ * @typedef {object} EvalGrader
+ * @property {string} type
+ * @property {string} [value]
+ * @property {string} [rubric]
+ * @property {string} [provider]
+ *
+ * @typedef {object} EvalTask
+ * @property {string} description
+ * @property {{ task: string, source: string, why_hard?: string }} vars
+ * @property {EvalGrader[]} assert
+ * @property {{ hard?: boolean }} [metadata]
+ *
+ * @typedef {object} EvalProvider
+ * @property {string} id
+ * @property {string} label
+ * @property {{ apiBaseUrl?: string }} [config]
+ *
+ * @typedef {object} EvalConfig
+ * @property {string} [description]
+ * @property {EvalProvider[]} [providers]
+ * @property {{ repeat?: number }} [evaluateOptions]
+ * @property {{ options?: { transform?: string }, vars?: Record<string, string> }} [defaultTest]
+ * @property {string} [tests]
+ */
+
+/** @param {string} p */
 function read(p) {
   return readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 }
 
+/** @param {string} rel @returns {unknown} */
 function loadYaml(rel) {
   // js-yaml is already in this install (VitePress). Load by path so we do
   // not depend on package exports, and CI does not need PyYAML.
@@ -36,6 +67,16 @@ function loadYaml(rel) {
   /** @type {{ load: (s: string) => unknown }} */
   const yaml = require(join(root, "node_modules", "js-yaml", "index.js"));
   return yaml.load(src);
+}
+
+/** @param {string} rel @returns {EvalTask[]} */
+function loadTasks(rel) {
+  return /** @type {EvalTask[]} */ (loadYaml(rel));
+}
+
+/** @param {string} rel @returns {EvalConfig} */
+function loadConfig(rel) {
+  return /** @type {EvalConfig} */ (loadYaml(rel));
 }
 
 function docsAndHelp() {
@@ -46,6 +87,13 @@ function docsAndHelp() {
   return `${pages.join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
 }
 
+/** @param {EvalGrader} a @returns {string} */
+function graderSource(a) {
+  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
+  return a.value;
+}
+
+/** @param {string} value @param {string} output */
 function gradeJavascript(value, output) {
   const fn = new Function("output", `"use strict"; return (${value});`);
   return fn(output);
@@ -56,7 +104,7 @@ const rendered = join(root, "docs-site", ".rendered");
 test("the suite is wired to the stock tool and the docs render", () => {
   assert.ok(existsSync(join(evals, "promptfooconfig.yaml")), "config exists");
   assert.ok(existsSync(join(rendered, "quickstart.md")), "docs rendered");
-  const cfg = loadYaml("evals/agents/promptfooconfig.yaml");
+  const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
   assert.ok(cfg.description, "config has a description");
   assert.ok(
     Array.isArray(cfg.providers) && cfg.providers.length >= 2,
@@ -86,7 +134,7 @@ test("the suite is wired to the stock tool and the docs render", () => {
 });
 
 test("train.yaml has 40-60 tasks, every hard one says why a person finds it hard", () => {
-  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
   assert.ok(Array.isArray(tasks), "tasks is a list");
   const n = tasks.length;
   assert.ok(n >= 40 && n <= 60, `task count ${n} is in the required 40-60`);
@@ -115,8 +163,8 @@ test("train.yaml has 40-60 tasks, every hard one says why a person finds it hard
 });
 
 test("programmatic graders only, and the judge lives on a different family", () => {
-  const tasks = loadYaml("evals/agents/tasks/train.yaml");
-  const cfg = loadYaml("evals/agents/promptfooconfig.yaml");
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
   for (const t of tasks) {
     for (const a of t.assert) {
       if (a.type === "llm-rubric") {
@@ -136,7 +184,7 @@ test("programmatic graders only, and the judge lives on a different family", () 
 });
 
 test("the same transcript graded twice agrees 100%", () => {
-  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const samples = [docsAndHelp(), "", "lorem ipsum"];
   let n = 0;
   let disagreements = 0;
@@ -144,8 +192,8 @@ test("the same transcript graded twice agrees 100%", () => {
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
       for (const sample of samples) {
-        const first = gradeJavascript(a.value, sample);
-        const second = gradeJavascript(a.value, sample);
+        const first = gradeJavascript(graderSource(a), sample);
+        const second = gradeJavascript(graderSource(a), sample);
         n += 1;
         if (first !== second) disagreements += 1;
       }
@@ -163,13 +211,13 @@ test("pasting the public docs and drive --help satisfies every train grader", ()
   // The agent only sees those two sources plus the task. A grader that fails
   // on them is asking for a fact the task cannot know, or a negative the docs trip.
   const context = docsAndHelp();
-  const tasks = loadYaml("evals/agents/tasks/train.yaml");
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const fails = [];
   for (const t of tasks) {
     const output = `${context}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(a.value, output)) fails.push(`${t.description}: ${a.value}`);
+      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy:\n${fails.join("\n")}`);
@@ -181,13 +229,13 @@ test("pasting the public docs and drive --help satisfies the held-out graders", 
     return;
   }
   const context = docsAndHelp();
-  const tasks = loadYaml(HOLDOUT_DEFAULT);
+  const tasks = loadTasks(HOLDOUT_DEFAULT);
   const fails = [];
   for (const t of tasks) {
     const output = `${context}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(a.value, output)) fails.push(`${t.description}: ${a.value}`);
+      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy holdout:\n${fails.join("\n")}`);
