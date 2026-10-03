@@ -242,6 +242,17 @@ func TestWindowsTaskXMLCarriesThePlan(t *testing.T) {
 	if doc.Principals.Principal.LogonType != "InteractiveToken" {
 		t.Errorf("LogonType = %q, want InteractiveToken: the mount runs in the logged-on session", doc.Principals.Principal.LogonType)
 	}
+	// The principal names the account the task runs as, and it is the same
+	// account the logon trigger fires for. Task Scheduler refuses an XML whose
+	// principal names no account, and a principal for a different account
+	// would have the mount run as someone other than the person mounting.
+	if doc.Principals.Principal.UserId != `DESKTOP\test` {
+		t.Errorf("Principal UserId = %q, want the user who mounted", doc.Principals.Principal.UserId)
+	}
+	if doc.Triggers.LogonTrigger.UserId != doc.Principals.Principal.UserId {
+		t.Errorf("the logon trigger fires for %q but the principal names %q: they must be one account",
+			doc.Triggers.LogonTrigger.UserId, doc.Principals.Principal.UserId)
+	}
 	// The mount runs until `drive unmount`, not until the scheduler's
 	// 72-hour default ends it.
 	if doc.Settings.ExecutionTimeLimit != "PT0S" {
@@ -289,6 +300,105 @@ func TestWindowsTaskXMLStaysInsideSchtasksLimits(t *testing.T) {
 		if arg == "/TR" {
 			t.Error("the create vector carries /TR: /TR holds 261 characters and the task's command line is longer; register the task from its XML")
 		}
+	}
+	// The principal must name an account, and the name is a UserId string on
+	// the same 261-character rule.
+	if doc.Principals.Principal.UserId == "" {
+		t.Error("the principal names no UserId: Task Scheduler refuses an XML whose principal has no account")
+	}
+	if len(doc.Principals.Principal.UserId) > 261 {
+		t.Errorf("the principal UserId is %d characters, over the 261 the field holds: %s",
+			len(doc.Principals.Principal.UserId), doc.Principals.Principal.UserId)
+	}
+}
+
+// TestWindowsSchtasksQuotedKeepsASpacedPathWhole is the dry run's create line:
+// `drive mount --dry-run` prints the schtasks command a person can paste, so
+// an argument that holds a space has to be quoted, or the paste breaks on the
+// first space and the task is never created.
+func TestWindowsSchtasksQuotedKeepsASpacedPathWhole(t *testing.T) {
+	// The path is written the way a Windows account spells it, spaces and all.
+	xmlPath := `C:\Users\Jane Doe\.config\drive\login-task.xml`
+	got := windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, xmlPath)...)
+	want := "schtasks /Create /F /TN " + WindowsTaskName + ` /XML "` + xmlPath + `"`
+	if got != want {
+		t.Errorf("windowsSchtasksQuoted() =\n%s\nwant\n%s", got, want)
+	}
+	// The plain path is printed as it is: quoting an argument with no space
+	// would make the line harder to read, not safer.
+	plain := windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, `C:\drive\login-task.xml`)...)
+	if strings.Contains(plain, `"`) {
+		t.Errorf("a path with no space should not be quoted: %s", plain)
+	}
+}
+
+// TestWindowsTaskXMLImportsIntoSchtasks is the drive#368 proof on Windows
+// itself: a task whose command line is far over the 261 characters /TR held
+// is registered through the stock `schtasks /Create /XML`, schtasks reads the
+// XML back as the task it stored, and the "Task To Run" it renders still
+// names the drive letter the stop path looks for. It runs on windows-latest,
+// where schtasks is on PATH; every other platform skips with the reason. The
+// end-to-end mount (TestWindowsMountProof) proves the task runs; this one is
+// the command-length case, which that proof's own short command never
+// reaches.
+func TestWindowsTaskXMLImportsIntoSchtasks(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the schtasks import proof runs on windows-latest, where schtasks is on PATH")
+	}
+	if testing.Short() {
+		t.Skip("schtasks import proof skipped in -short mode")
+	}
+	if _, err := exec.LookPath("schtasks"); err != nil {
+		t.Fatalf("schtasks is not on PATH, so the windows-latest job cannot register the task: %v", err)
+	}
+	home := t.TempDir()
+	c := testStorage()
+	c.Bucket = "bucket"
+	c.Prefix = "u/" + strings.Repeat("deep-folder-name/", 12) + "1234"
+	p := BuildMountPlan("windows", home, `C:\rclone\rclone.exe`, c)
+	p.MountDir = "Z:"
+	userName, err := windowsTaskUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := windowsTaskXML(p, userName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command line this would have handed /TR. The mount proof's own
+	// command is long enough on its own, and this prefix makes it longer
+	// still, so the case is not a near miss.
+	commandLine := WindowsTaskCommandLine(p)
+	if len(commandLine) <= 261 {
+		t.Fatalf("the command line is %d characters, under the 261 this test must be over: %s", len(commandLine), commandLine)
+	}
+	xmlPath := windowsTaskXMLPath(p)
+	if err := WriteFileAtomic(xmlPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Register the task the way `drive mount` does, then read it back with
+	// the tool's own query.
+	if err := runSchtasks(schtasksCreateXMLArgs("drive-mount-368-test", xmlPath)...); err != nil {
+		t.Fatalf("schtasks /Create /XML: %v\n%s", err, body)
+	}
+	t.Cleanup(func() { _ = runSchtasks(schtasksDeleteArgs("drive-mount-368-test")...) })
+	command, ok, err := windowsTaskCommand("drive-mount-368-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("schtasks /Query /V found no Task To Run, so the XML registered a task with no command")
+	}
+	// The command schtasks renders from Command and Arguments is the same one
+	// /TR used to carry, over the limit that broke it.
+	if len(command) <= 261 {
+		t.Errorf("Task To Run is %d characters, want the same command /TR could not hold: %s", len(command), command)
+	}
+	if letter, found := windowsDriveLetterFromCommand(command); !found || letter != "Z:" {
+		t.Errorf("windowsDriveLetterFromCommand(%q) = %q, %v, want Z:", command, letter, found)
+	}
+	if !strings.Contains(command, p.RcloneBin) {
+		t.Errorf("Task To Run is missing the rclone path:\n%s", command)
 	}
 }
 

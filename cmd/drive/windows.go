@@ -245,6 +245,7 @@ type taskTriggersXML struct {
 
 type taskPrincipalXML struct {
 	ID        string `xml:"id,attr"`
+	UserId    string `xml:"UserId"`
 	LogonType string `xml:"LogonType"`
 }
 
@@ -326,9 +327,14 @@ func windowsTaskXML(p MountPlan, userName string) (string, error) {
 			LogonTrigger: taskLogonTriggerXML{Enabled: true, UserId: userName},
 		},
 		Principals: taskPrincipalsXML{
+			// UserId is the account the task runs as, and it must be
+			// the same account the LogonTrigger fires for: Task
+			// Scheduler refuses an XML whose principal names no
+			// account, and InteractiveToken runs the mount in that
+			// user's logged-on session.
 			// InteractiveToken is how /SC ONLOGON ran: in the logged-on
 			// session, so the mount is visible on the user's desktop.
-			Principal: taskPrincipalXML{ID: "Author", LogonType: "InteractiveToken"},
+			Principal: taskPrincipalXML{ID: "Author", UserId: userName, LogonType: "InteractiveToken"},
 		},
 		Settings: taskSettingsXML{
 			// One mount per logon: a repeated start never stacks a second
@@ -399,6 +405,18 @@ func windowsTaskUser() (string, error) {
 		return "", fmt.Errorf("resolve the user the login task runs as: %w", err)
 	}
 	return u.Username, nil
+}
+
+// windowsSchtasksQuoted is one schtasks command line a reader can paste at a
+// prompt: every argument is quoted the way CreateProcess splits it, so a path
+// that holds a space (C:\Users\Jane Doe\...\login-task.xml) survives the
+// copy instead of reaching schtasks as three arguments.
+func windowsSchtasksQuoted(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, windowsQuoteArg(a))
+	}
+	return "schtasks " + strings.Join(quoted, " ")
 }
 
 func schtasksRunArgs(taskName string) []string    { return []string{"/Run", "/TN", taskName} }
@@ -520,7 +538,7 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- Task Scheduler task %s (XML: %s) ---\n%s\n", WindowsTaskName, taskXMLPath, commandLine)
 		fmt.Printf("--- task XML ---\n%s\n", taskXMLBody)
-		fmt.Printf("--- would run ---\nschtasks %s\n", strings.Join(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath), " "))
+		fmt.Printf("--- would run ---\n%s\n", windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath)...))
 		return nil
 	}
 	if err := WriteFileAtomic(p.ConfigPath, []byte(RcloneConfig(c)), 0o600); err != nil {
