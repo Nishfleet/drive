@@ -428,7 +428,7 @@ test("the hourly cron pushes the hour it just rolled", async () => {
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
 });
 
-test("the cron reports the skipped push in the log, and does not throw over it", async () => {
+test("the cron reports the skipped push in the log, and does not throw over it", async (t) => {
   // A deployment whose key was never set: the meter's rollup still runs, the
   // push still returns {pushed: 0}, and the detector beside it writes one
   // operator-facing line. The scheduled() call must resolve, because a throw
@@ -443,18 +443,15 @@ test("the cron reports the skipped push in the log, and does not throw over it",
     sizeBytes: BYTES_PER_GB,
     createdAt: midnight(),
   });
-  /** @type {unknown[][]} */
-  const logged = [];
-  const originalError = console.error;
-  console.error = (...args) => logged.push(args);
-  try {
-    await worker.scheduled(
-      { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-      { METER_DB: db }, // no DODO_PAYMENTS_API_KEY: the missing-key case
-    );
-  } finally {
-    console.error = originalError;
-  }
+  // t.mock.method, not a global console.error swap: the mock restores itself
+  // when the test ends, so a concurrency change cannot leak the patch into a
+  // neighbouring test the way a hand-rolled finally can if a test is cut.
+  const errorMock = t.mock.method(console, "error");
+  await worker.scheduled(
+    { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY: the missing-key case
+  );
+  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
   const line = logged.find((args) => String(args[0]).includes("metered hours reached nobody"));
   assert.ok(line, `the cron must log the skipped push, got ${JSON.stringify(logged)}`);
   const text = line.map(String).join(" ");
@@ -467,7 +464,7 @@ test("the cron reports the skipped push in the log, and does not throw over it",
   );
 });
 
-test("a broken gap report is caught, so it never fails the rollup it reports on", async () => {
+test("a broken gap report is caught, so it never fails the rollup it reports on", async (t) => {
   // The push above may throw on purpose - Cloudflare retries the rollup so an
   // unpushed hour gets another try. The detector must not: a report that fails
   // the work it is reporting on is worse than no report, because a transient
@@ -475,10 +472,12 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
   // correctly.
   //
   // So the whole scheduled() path runs, through the real wiring, over a db
-  // that answers every statement except the detector's: the gap query is the
-  // one that names billing_pushes inside a NOT EXISTS, which is what makes it
-  // the detector's rather than the push's. The push still succeeds, the cron
-  // still resolves, and the failure is logged instead of thrown.
+  // that answers every statement except the detector's. The stub matches the
+  // detector query's own first line (`SELECT DISTINCT u.hour AS hour`), not an
+  // alias like `FROM billing_pushes b` that the push's own statements could
+  // grow into: the match must fail exactly the detector and nothing else.
+  // The push still succeeds, the cron still resolves, and the failure is
+  // logged instead of thrown.
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   db.insertVersion({
@@ -492,7 +491,7 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     /** @type {unknown} */ ({
       /** @param {string} sql */
       prepare(sql) {
-        if (String(sql).includes("FROM billing_pushes b")) {
+        if (String(sql).includes("SELECT DISTINCT u.hour AS hour")) {
           throw new Error("D1 is unavailable");
         }
         return db.prepare(sql);
@@ -508,25 +507,20 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     })
   );
   const recorder = recordingFetch();
-  /** @type {unknown[][]} */
-  const logged = [];
-  const originalError = console.error;
-  const originalLog = console.log;
-  console.error = (...args) => logged.push(args);
-  console.log = () => {};
-  try {
-    await worker.scheduled(
-      { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-      {
-        METER_DB: failingDetectorDb,
-        DODO_PAYMENTS_API_KEY: KEY,
-        DODO_FETCH: recorder.fetch,
-      },
-    );
-  } finally {
-    console.error = originalError;
-    console.log = originalLog;
-  }
+  // Both console channels are mocked, so the healthy "push working" line and
+  // the failure line are captured without a global swap (see the first test's
+  // note). t.mock.method restores both when the test ends.
+  const errorMock = t.mock.method(console, "error");
+  t.mock.method(console, "log");
+  await worker.scheduled(
+    { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+    {
+      METER_DB: failingDetectorDb,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
+  );
+  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
   assert.equal(recorder.calls.length, 1, "the push itself still ran and reached Dodo");
   assert.equal(
     sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
@@ -538,6 +532,35 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
   const text = line.map(String).join(" ");
   assert.ok(text.includes("D1 is unavailable"), "naming why the report is silent");
   assert.equal(text.includes(KEY), false, "and never the key value");
+});
+
+test("a key that is set but wrong still names the gap, and says it is not the missing-key cause", async () => {
+  // The second cause the issue names: the secret is set, but on the wrong
+  // Worker (or revoked, or set only after a day of unpushed hours). The push
+  // then either fails loudly (a 401, pinned by the ingest-failure test above)
+  // or catches up only the hours it rolled, leaving older metered hours
+  // unpushed. `billingPushGap` sees that second shape as a measured gap with
+  // `missingKey: false`, which is the branch src/index.js renders as "the key
+  // is set but hours are still unpushed", because "the key is present" is
+  // exactly the state a person could otherwise read as healthy.
+  const day = await storedHours(10, 3);
+  const recorder = recordingFetch();
+  // Push only the newest hour, so two older hours remain unpushed while a key
+  // is present: a catch-up run that started late, or a key set mid-window.
+  await pushBillingHours(day.db, [day.from + 2 * HOUR_MS], {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: day.from + 3 * HOUR_MS,
+  });
+  const gap = await billingPushGap(day.db, { apiKey: KEY, now: day.from + 3 * HOUR_MS });
+  assert.equal(gap.hours, 2, "the two hours the last push could not reach are named");
+  assert.equal(
+    gap.missingKey,
+    false,
+    "the key is present, so the report must not blame a missing key",
+  );
+  const serialised = JSON.stringify(gap);
+  assert.equal(serialised.includes(KEY), false, "and the present key's value still never leaks");
 });
 
 // --- the detector for a push that was skipped (drive issue #334) ---------

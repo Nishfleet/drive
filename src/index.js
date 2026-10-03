@@ -641,6 +641,11 @@ export default {
       // It runs on the cron, beside the skip, and reaches a person reading
       // Worker logs (/api/health cannot: a billing-config gap is not an outage,
       // and health's contract is one failure at a time, not a second opinion).
+      // It runs after the push is awaited, and deliberately not under a try:
+      // a push that throws on purpose (Cloudflare retries the rollup) also
+      // ends this run, so the report is suppressed for that cycle and speaks
+      // on the next one. That is fine because a throwing push is itself the
+      // loud event; the report answers the silent path only.
       //
       // Guarded on purpose. The push above may throw - Cloudflare retries the
       // rollup, because an unpushed hour should be retried. The report must
@@ -669,12 +674,15 @@ export default {
           `hours=${gap.hours}`,
           `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
         );
-      } else if (pushed.pushed > 0) {
+      } else if (gap && pushed.pushed > 0) {
         // The healthy counter-case, so the absence of the line above is
         // meaningful: a person tailing logs can tell "nothing wrong" from
-        // "the report stopped running". console.log, not console.error - error
-        // level is for actionable failures, and training an operator to ignore
-        // the error channel is how the next gap goes unseen.
+        // "the report stopped running". `gap` is non-null here, so the gap
+        // was measured and came back zero; a report that failed prints its own
+        // line above and must not be followed by an all-clear. console.log,
+        // not console.error - error level is for actionable failures, and
+        // training an operator to ignore the error channel is how the next gap
+        // goes unseen.
         console.log(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
       }
       return;
