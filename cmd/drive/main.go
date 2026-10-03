@@ -54,6 +54,7 @@ Mount flags:
   --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
   --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
   --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --drive-letter  Windows: the drive letter to mount (first free letter from D:)
   --secret-key-stdin  read one line of the storage secret from stdin
   --home        home directory (default $HOME)
   --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
@@ -166,7 +167,7 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 func runMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ContinueOnError)
 	var refusedSecret string
-	var endpoint, bucket, prefix, region, downloadURL string
+	var endpoint, bucket, prefix, region, downloadURL, driveLetter string
 	var secretStdin, foreground, dryRun bool
 	fs.StringVar(&endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&bucket, "bucket", "", "storage bucket")
@@ -185,6 +186,7 @@ func runMount(args []string) error {
 	// Worker so the account's download bytes are counted (docs/build-spec.md
 	// "The pieces", items 2 and 4).
 	fs.StringVar(&downloadURL, "download-url", "", "dl Worker to stream reads through")
+	fs.StringVar(&driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
 	fs.BoolVar(&foreground, "foreground", false, "run rclone in this process")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written")
 	common := addCommonFlags(fs)
@@ -207,6 +209,12 @@ func runMount(args []string) error {
 		// a value that has been through argv is a value that has been exposed.
 		return fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(common.home)))
 	}
+	// A drive letter is a Windows mount point. On Mac and Linux the mount is a
+	// folder, so the flag is refused there rather than silently ignored, which
+	// would leave a person believing their mount went somewhere it did not.
+	if driveLetter != "" && CurrentGOOS() != "windows" {
+		return errors.New("--drive-letter is only for Windows; on Mac and Linux the drive mounts at the drive folder")
+	}
 	// The secret's sources are the config file this CLI wrote (mode 0600), the
 	// environment, or stdin (--secret-key-stdin). None of them is argv, which is
 	// world-readable in ps for the life of the process.
@@ -222,7 +230,7 @@ func runMount(args []string) error {
 	if err != nil {
 		return err
 	}
-	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun)
+	return Mount(CurrentGOOS(), common.home, rclone, c, foreground, dryRun, driveLetter)
 }
 
 func runUnmount(args []string) error {
