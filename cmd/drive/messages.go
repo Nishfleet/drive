@@ -204,6 +204,10 @@ var messageTable = map[string][2]string{
 		"{1} agent tool(s) could not be connected.",
 		"Fix the causes printed above, then run `drive agents connect <tool>` for each one.",
 	},
+	"key-renew-failed": {
+		"The {1} key's hour could not be restarted, so it may stop working when it runs out.",
+		"Run `drive init` again to sign the tool in with a fresh key.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.

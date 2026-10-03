@@ -29,14 +29,29 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
-import { CAPABILITIES_BY_KIND, KEY_KINDS, scopeFor, teamScopeFor } from "./keyprovider.js";
+import {
+  AGENT_KEY_TTL_SECONDS,
+  CAPABILITIES_BY_KIND,
+  KEY_KINDS,
+  keyTtlSeconds,
+  mintTtlSeconds,
+  renewTtlSeconds,
+  scopeFor,
+  teamScopeFor,
+} from "./keyprovider.js";
 import { createTeamStore } from "./teams.js";
 
-// Kept as keystore re-exports so the one place that named a device-code or
-// device-token window keeps naming it; the values live with the store that
-// enforces them (device-signin.js), which is the store the D1 deployment uses
-// and the only one left — the per-isolate Maps #122 built them over are gone.
-export { DEVICE_CODE_INTERVAL_SECONDS, DEVICE_CODE_TTL_SECONDS, DEVICE_TOKEN_TTL_SECONDS };
+// Kept as keystore re-exports so the one place that named a device-code,
+// device-token or agent-credential window keeps naming it; the values live with
+// the store that enforces them (device-signin.js and keyprovider.js), which
+// are the stores the D1 deployment uses and the only ones left — the
+// per-isolate Maps #122 built them over are gone.
+export {
+  AGENT_KEY_TTL_SECONDS,
+  DEVICE_CODE_INTERVAL_SECONDS,
+  DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_TTL_SECONDS,
+};
 
 /**
  * Constant-time string comparison for two equal-length hex digests. A plain
@@ -73,7 +88,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -96,7 +111,7 @@ export function createMemoryStore(options = {}) {
    * second way to mint one cannot drift.
    * @param {{id: string}} account
    * @param {import("./keyprovider.js").KeyScope} scope
-   * @param {string} kind the kind the capabilities came from, for the row
+   * @param {import("./keyprovider.js").KeyKind} kind the kind the capabilities came from, for the row
    * @param {string} name
    */
   async function mintScopedKey(account, scope, kind, name) {
@@ -121,17 +136,28 @@ export function createMemoryStore(options = {}) {
         expiresIn: minted.expiresIn ?? null,
       };
     }
+    // The hour. The kind's own lifetime is the ceiling, and a provider session
+    // that names a shorter one wins: a session that dies in 15 minutes must
+    // not be stretched by bookkeeping that outlives it. `null` is a key that
+    // never expires, and only a person's own device is one
+    // (keyprovider.js KEY_TTL_SECONDS).
+    const ttl = mintTtlSeconds(kind, credential.expiresIn);
     /** @type {Device} */
     const device = {
       id: keyId,
       accountId: account.id,
       name,
-      kind: /** @type {any} */ (kind),
+      kind,
       accessKeyId: credential.accessKeyId,
       secretHash: await sha256Hex(credential.secret),
       prefix: scope.prefix,
       capabilities: [...scope.capabilities],
       createdAt: nowSeconds(now()),
+      expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
+      // The lifetime the mint actually gave, so every renewal of this row is
+      // measured from the same number and a provider session shorter than the
+      // hour cannot be renewed into an hour.
+      ttlSeconds: ttl,
       lastSeenAt: null,
       revokedAt: null,
     };
@@ -146,6 +172,7 @@ export function createMemoryStore(options = {}) {
       secret: credential.secret,
       sessionToken: credential.sessionToken,
       expiresIn: credential.expiresIn,
+      expiresAt: device.expiresAt,
       prefix: device.prefix,
       capabilities: device.capabilities,
     };
@@ -248,7 +275,7 @@ export function createMemoryStore(options = {}) {
      * table (keyprovider.js), so an agent key can never carry `delete`. An
      * explicit `scope` overrides the kind's default (used for team keys).
      * @param {{id: string}} account
-     * @param {{kind?: string, name?: string, scope?: import("./keyprovider.js").KeyScope}} [request]
+     * @param {{kind?: import("./keyprovider.js").KeyKind, name?: string, scope?: import("./keyprovider.js").KeyScope}} [request]
      */
     async mintKey(account, request = {}) {
       const kind = request.kind ?? "agent";
@@ -258,8 +285,8 @@ export function createMemoryStore(options = {}) {
       const scope =
         request.scope ??
         (kind === "branch"
-          ? scopeFor(/** @type {any} */ (kind), account.id, { name: request.name })
-          : scopeFor(/** @type {any} */ (kind), account.id));
+          ? scopeFor(kind, account.id, { name: request.name })
+          : scopeFor(kind, account.id));
       return mintScopedKey(account, scope, kind, request.name ?? kind);
     },
 
@@ -298,9 +325,58 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * Restart the hour on one of the account's own keys (drive issue #106).
+     *
+     * This is the renewal a caller makes on purpose: the signed-in device
+     * (the account gate) asks for a key's hour to be restarted, which is how
+     * a tool that has been idle for an hour — and whose credential therefore
+     * died unused — comes back without a person minting a new key. The
+     * credential itself does not change, so the tool's own MCP entry keeps
+     * working; only the server-side window moves.
+     *
+     * What it will not do is as fixed as what it will: a key that is not this
+     * account's is "not found", a revoked key is refused and its expiry is
+     * left exactly as it was (a cancelled agent can never be renewed by
+     * anything), and a kind that never expires is handed back untouched. The
+     * new window comes from the row's own kind through the one renewal rule
+     * (`renewKeyWindow`), so a renewal cannot lengthen a key's life beyond
+     * what its mint was given, and it reads no request field at all — the
+     * powers on the row are not something a renew can touch.
+     * @param {{id: string}} account
+     * @param {string} keyId
+     * @returns {Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}
+     */
+    async renewKey(account, keyId) {
+      if (deviceStore?.renewKey) {
+        return deviceStore.renewKey(account, keyId);
+      }
+      const device = devices.get(keyId);
+      if (device === undefined || device.accountId !== account.id) {
+        return { error: "not-found" };
+      }
+      if (device.revokedAt !== null) {
+        return { error: "revoked" };
+      }
+      const at = nowSeconds(now());
+      device.lastSeenAt = at;
+      const before = device.expiresAt ?? null;
+      device.expiresAt = renewKeyWindow(device, at).expiresAt;
+      return { renewed: device.expiresAt !== before, device: publicDevice(device) };
+    },
+
+    /**
      * The device a storage key authenticates, or a named refusal. A revoked
-     * key and a wrong secret are both `null`: the caller learns only that the
-     * key does not work, never which half was wrong.
+     * key, a wrong secret and a credential past its hour are all `null`: the
+     * caller learns only that the key does not work, never which half was
+     * wrong. That is the same answer a made-up key gets, so a dead credential
+     * cannot be told apart from a guess.
+     *
+     * A credential that works is renewed here, on the one request that proves
+     * the key is still held by something using it: the hour restarts, so a
+     * tool that is connected keeps working without a person re-running
+     * anything. A key whose row is revoked never reaches the renewal — the
+     * revocation is checked first, so revoking an agent stops renewal at once
+     * and the credential it held dies inside the hour it had left.
      * @param {string} accessKeyId
      * @param {string} secret
      */
@@ -308,11 +384,18 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        if (digestsEqual(device.secretHash, await sha256Hex(secret))) {
-          device.lastSeenAt = nowSeconds(now());
-          return device;
+        if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+          return null;
         }
-        return null;
+        const at = nowSeconds(now());
+        // Absent and null both mean "this kind never expires" (a person's own
+        // device key), so both are checked rather than one being assumed.
+        if (device.expiresAt !== undefined && device.expiresAt !== null && at >= device.expiresAt) {
+          return null;
+        }
+        device.lastSeenAt = at;
+        device.expiresAt = renewKeyWindow(device, at).expiresAt;
+        return device;
       }
       if (deviceStore?.authenticate) {
         return deviceStore.authenticate(accessKeyId, secret);
@@ -437,8 +520,59 @@ export function createMemoryStore(options = {}) {
  * @property {number} createdAt
  * @property {number|null} lastSeenAt
  * @property {number|null} revokedAt
+ * @property {number|null} [expiresAt] the epoch second this credential stops
+ *   working at, or null when the kind never expires (a person's own device
+ *   key). Absent and null are the same claim.
+ * @property {number|null} [ttlSeconds] the lifetime the mint actually gave
+ *   this credential, which a provider session shorter than the kind's hour
+ *   decides. Absent or null means the row predates the column, and the kind's
+ *   own hour is then the ceiling. A renewal is measured from here, so a
+ *   provider's shorter session is never renewed past its own end.
  * @property {string[]|null} [cappedFrom] the capabilities the cap took, when it did
  */
+
+/**
+ * The hour, restarted: the expiry a live credential carries after a request at
+ * `at`. This is the one renewal rule, written once so the in-memory stand-in
+ * (keystore.js `authenticate`) and the D1 store (devices.js `authenticate`)
+ * cannot renew by two different amounts, and a test can name it.
+ *
+ * Two cases do not renew, and both are deliberate:
+ *
+ *   - A kind with no lifetime (`KEY_TTL_SECONDS[kind] === null`) has nothing
+ *     to renew, so the row is handed back untouched. A person's own device
+ *     key must not grow an expiry because a request came in.
+ *   - A revoked row is never renewed. Revocation is checked before this runs
+ *     in both stores, so this is the second gate, not the only one: a
+ *     cancelled agent cannot have its hour restarted by a request that
+ *     arrived first.
+ *
+ * The window length is the lifetime this row's own mint gave it, with the
+ * kind's hour as the ceiling (keyprovider.js `renewTtlSeconds`), so a
+ * renewal can never hand out a longer life than the mint did — a provider
+ * session of 15 minutes is not renewed into an hour. A row's capabilities are
+ * not touched here at all — renewing is about time, never about powers.
+ *
+ * A renewal also never shortens the window the row already carries. Two
+ * requests can read the same row and renew in either order, and a write that
+ * lands second must not pull the hour back to the earlier one's value: a key
+ * that is something is using is the one thing this must not cut short. The
+ * rule is written once here rather than in each store's SQL, so the answer a
+ * store returns and the row it wrote are the same claim.
+ * @param {Device} device
+ * @param {number} at epoch seconds, the injected clock's now
+ * @returns {Device} the row with its expiry moved to `at + ttl`
+ */
+export function renewKeyWindow(device, at) {
+  const ceiling = keyTtlSeconds(device.kind);
+  if (ceiling === null || device.revokedAt !== null) {
+    return device;
+  }
+  const next = at + renewTtlSeconds(device, ceiling);
+  const held = device.expiresAt;
+  const expiresAt = held === undefined || held === null ? next : Math.max(next, held);
+  return { ...device, expiresAt };
+}
 
 /**
  * A device row with nothing secret in it: what /v1/keys returns.
@@ -454,6 +588,7 @@ export function publicDevice(device) {
     createdAt: device.createdAt,
     lastSeenAt: device.lastSeenAt,
     revokedAt: device.revokedAt,
+    expiresAt: device.expiresAt ?? null,
   };
 }
 

@@ -49,13 +49,17 @@ type DeviceCode struct {
 }
 
 // MintedKey is POST /v1/keys' answer. Secret is in this response and nowhere
-// else: the api Worker keeps only a hash, so this is the one read.
+// else: the api Worker keeps only a hash, so this is the one read. ExpiresAt
+// is the epoch second an agent's credential stops working at, and it is nil for
+// a kind that never expires (a person's own device key, issue #106). It is a
+// pointer so an absent field and a key with no expiry stay distinguishable.
 type MintedKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
 	Secret       string   `json:"secret"`
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
+	ExpiresAt    *int64   `json:"expiresAt"`
 }
 
 // Account is the account a device token belongs to.
@@ -286,6 +290,61 @@ func (c *APIClient) MintKey(kind, name string) (MintedKey, error) {
 // deleted after this returns nil.
 func (c *APIClient) RevokeKey(keyID string) error {
 	return c.do(http.MethodDelete, keysPath+"/"+url.PathEscape(keyID), nil, nil)
+}
+
+// RenewedKey is POST /v1/keys/<keyId>/renew's answer: the key's public
+// row after the restart. It carries no secret, because a restart changes
+// nothing about the credential — only the server-side window moves, so the
+// tool's own MCP entry still holds the pair that now works again.
+type RenewedKey struct {
+	KeyID        string   `json:"keyId"`
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	Capabilities []string `json:"capabilities"`
+	// ExpiresAt is the epoch second the api Worker stops accepting the
+	// credential after this restart, or nil for a kind that never expires.
+	ExpiresAt *int64 `json:"expiresAt"`
+}
+
+// RenewKey restarts the hour on one of this device's keys (POST
+// /v1/keys/<keyId>/renew, issue #106).
+//
+// An agent key is minted with an hour and the api Worker renews it on every
+// request that proves the tool is still using it, so a connected tool never
+// notices. A tool that sat idle for longer than its hour outlives its
+// credential, though: nothing used the key, so nothing renewed it, and its
+// next request is refused. This call is the way back, and it is the device's
+// own signed-in token that asks — a leaked storage key holds no device token,
+// so it cannot restart its own hour.
+//
+// The credential is not replaced, so the tool's own MCP entry keeps working.
+// What it does replace is the expiry the CLI shows and decides against, and
+// that is why the answer comes back rather than being dropped: a stored
+// expiry left at the mint's value would keep reading as "an hour from when
+// the key was made", which is both wrong to show and a reason to renew again
+// on the very next command. 409 means the key is revoked, which is the state
+// `drive agents revoke` reaches on purpose.
+func (c *APIClient) RenewKey(keyID string) (RenewedKey, error) {
+	var renewed RenewedKey
+	if err := c.do(http.MethodPost, keysPath+"/"+url.PathEscape(keyID)+"/renew", nil, &renewed); err != nil {
+		return RenewedKey{}, err
+	}
+	// The answer is checked against the question, because a 200 with the wrong
+	// body would otherwise be stored as this key's expiry: a body that names
+	// another key, a kind that is not a machine credential, or a row with no
+	// hour on it is refused here rather than written to disk. The Worker owns
+	// this row, so anything else about the answer is its own business, not
+	// something the CLI second-guesses.
+	if renewed.KeyID != keyID || renewed.Kind != "agent" {
+		return RenewedKey{}, errors.New("the api Worker answered about a different key; run `drive init` again in a moment")
+	}
+	if renewed.ExpiresAt == nil {
+		return RenewedKey{}, errors.New("the api Worker sent no expiry for the key; run `drive init` again in a moment")
+	}
+	if *renewed.ExpiresAt <= time.Now().Unix() {
+		return RenewedKey{}, errors.New("the api Worker sent an expiry that has already passed; run `drive init` again in a moment")
+	}
+	return renewed, nil
 }
 
 // RevokeDeviceToken revokes this device's own signed-in token (DELETE
