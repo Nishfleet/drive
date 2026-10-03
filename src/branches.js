@@ -662,6 +662,17 @@ export async function createBranch(db, snapshots, store, account, request, now =
   } catch (error) {
     return { error: errorText(error), status: 400 };
   }
+  // Whose key branched this folder (issue #13's third comment: "we already mint
+  // one key per agent, so record the key on each change"). A branch a person
+  // made in the app carries no key, which is recorded as the empty string the
+  // column DEFAULTs to — "changed by a person", not a missing value. The
+  // caller cannot name another account's key: the key id is recorded as a label
+  // for the activity list, and every read of this row is scoped by account_id
+  // in the query itself, never by the value of this column.
+  const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
+  if (!snapshots) {
+    return { error: failureMessage("storage-down"), status: 500 };
+  }
   const kind = await folderState(store, folderPath);
   if (kind === "file") {
     return { error: "That is a file, not a folder. Branch a folder.", status: 400 };
@@ -675,17 +686,6 @@ export async function createBranch(db, snapshots, store, account, request, now =
   }
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
-  // Whose key branched this folder (issue #13's third comment: "we already mint
-  // one key per agent, so record the key on each change"). A branch a person
-  // made in the app carries no key, which is recorded as the empty string the
-  // column DEFAULTs to — "changed by a person", not a missing value. The
-  // caller cannot name another account's key: the key id is recorded as a label
-  // for the activity list, and every read of this row is scoped by account_id
-  // in the query itself, never by the value of this column.
-  const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
-  if (!snapshots) {
-    return { error: failureMessage("storage-down"), status: 500 };
-  }
   // Claim the name before touching the store. The partial unique index on
   // (account_id, name) where state = 'open' then makes this the one create
   // that may copy into the prefix: two creates of a name in the same moment
