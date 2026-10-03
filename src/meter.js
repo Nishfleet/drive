@@ -355,6 +355,9 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   // issue #104): a version that stopped at the instant a same-size version
   // began books no minimum of its own. The list is the same version set the
   // SQL reads the table for, so the reference and the statement agree.
+  // otherIndex !== index is the SQL's s.b2_file_id <> v.b2_file_id for a
+  // well-formed list, where each row appears once: a different entry is a
+  // different row, and rows are keyed by the account and b2_file_id pair.
   const continued = new Set(
     versions.filter((version, index) => {
       if (version.hiddenAt === null || version.hiddenAt === undefined) {
