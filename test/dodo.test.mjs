@@ -19,7 +19,7 @@ import {
   DODO_TEST_INGEST_URL,
   pushBillingHours,
 } from "../src/dodo.js";
-import worker from "../src/index.js";
+import workerModule from "../src/index.js";
 import {
   BYTES_PER_GB,
   METER_CRON,
@@ -29,17 +29,43 @@ import {
 } from "../src/meter.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
+// The Worker entrypoint as this file drives it: `scheduled` is optional on the
+// runtime's handler type and takes an execution context this test has no use
+// for, so the one call made here is typed as made (the same cast
+// test/meter.test.mjs makes).
+const worker = /** @type {{scheduled(event: unknown, env?: unknown): Promise<unknown>}} */ (
+  /** @type {unknown} */ (workerModule)
+);
+
 const HOUR_MS = 60 * MINUTE_MS;
 const ACCOUNT = "abc123";
 const CUSTOMER = "cus_test_abc123";
 const KEY = "test_dodo_key_not_a_secret";
 
+// One event as the ingest endpoint receives it, so a test can read the
+// numbers back off the request without `any`: the payload is JSON.parse output
+// (unknown), and this says what the push put in it.
+//
+// `timestamp` is declared but not supplied by the push: Dodo's Time Validation
+// refuses a timestamp older than 1h, so a catch-up hour omits it and the event
+// defaults to now, and the "omit timestamp" assertion reads it as the
+// undefined it arrives as.
+/**
+ * @typedef {{
+ *   event_id: string,
+ *   customer_id: string,
+ *   event_name: string,
+ *   timestamp: unknown,
+ *   metadata: Record<string, unknown>,
+ * }} IngestEvent
+ */
+
 /**
  * @param {{status?: number, body?: unknown}} [opts]
- * @returns {{calls: Array<{url: string, method: string, authorization: string, payload: {events: Array<Record<string, unknown>>}}>, fetch: typeof fetch}}
+ * @returns {{calls: Array<{url: string, method: string, authorization: string, payload: {events: IngestEvent[]}}>, fetch: typeof fetch}}
  */
 function recordingFetch(opts = {}) {
-  /** @type {Array<{url: string, method: string, authorization: string, payload: {events: Array<Record<string, unknown>>}}>} */
+  /** @type {Array<{url: string, method: string, authorization: string, payload: {events: IngestEvent[]}}>} */
   const calls = [];
   return {
     calls,

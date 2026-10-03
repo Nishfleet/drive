@@ -98,14 +98,14 @@ test("a push writes a row the schema can round-trip, and a retry does not duplic
     .run();
   await recordUsage(db, ACCOUNT, midnight(), 60, BYTES_PER_GB, midnight() + HOUR_MS);
   /** @type {typeof fetch} */
-  const fetch = async () =>
+  const fetchImpl = async () =>
     new Response(JSON.stringify({ ingested_count: 1 }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
   await pushBillingHours(db, [midnight()], {
     apiKey: "test_key",
-    fetch,
+    fetch: fetchImpl,
     now: midnight() + HOUR_MS,
   });
   const row = sqlite
