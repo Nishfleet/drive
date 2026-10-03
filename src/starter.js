@@ -23,8 +23,10 @@
 // from src/pricing.js (PRICE), the single price source, so a re-priced product
 // moves this page and the pricing page together.
 import { agentCannotDeleteSentence } from "./docs.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { validatePath } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { PRICE } from "./pricing.js";
 
 // The page itself is public/starter.html, served by the asset layer's HTML
 // handling (/starter serves /starter.html, the same way /get-started serves
@@ -139,6 +141,12 @@ export const STARTER_COPY = Object.freeze({
   intro:
     "A ready-made notes folder: a vault your notes app can open, a starter inbox and daily note, and one note your agent reads when it works with you.",
   noCard: "No card asked.",
+  // The price module's line, so the starter page and the pricing page cannot
+  // state two different free-credit sentences. The page is a static asset and
+  // cannot import this module, so test/starter.test.mjs reads the page and
+  // fails CI when the line drifts from PRICE, the way test/signin.test.mjs
+  // does for the sign-in screen.
+  freeLine: PRICE.freeLine,
   button: "Create the notes starter",
   working: "Creating…",
   // What a create answers, in the same `what`/`next` shape.
@@ -338,6 +346,16 @@ export async function handleStarterRequest(request, store, account) {
 
   if (request.method !== "POST") {
     return json({ error: failureMessage("starter-method") }, 405);
+  }
+
+  // The cross-site rule every state-changing route here carries (src/share.js,
+  // src/files.js): a browser POST from another origin is refused, because the
+  // cookie the account gate reads is a browser credential and a forged form
+  // would otherwise create the starter for a signed-in reader. A caller with
+  // no Origin (curl, the Go CLI) is not a browser and passes, exactly as those
+  // routes do.
+  if (!isSameOriginRequest(request)) {
+    return json({ error: "The notes starter is only created from your drive page." }, 403);
   }
 
   let body;

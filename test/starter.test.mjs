@@ -22,6 +22,8 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createMemoryStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { PRICE } from "../src/pricing.js";
+import { softwareApplicationLd } from "../src/seo.js";
 import {
   createStarter,
   handleStarterRequest,
@@ -302,6 +304,29 @@ test("the handler refuses unknown methods", async () => {
     account,
   );
   assert.equal(response.status, 405);
+});
+
+test("a create from another origin is refused, the way every write route refuses it", async () => {
+  // The account gate reads a browser cookie, so a cross-site form POST to this
+  // route would otherwise create the starter for a signed-in reader. The
+  // handler carries the same isSameOriginRequest check src/share.js and
+  // src/files.js do. A caller with no Origin (curl, the Go CLI) is not a
+  // browser and is untouched, which the create tests above already prove.
+  const { scopeStore } = await import("../src/files.js");
+  /** @type {Record<string, string>} */
+  const written = {};
+  const store = scopeStore(emptyStore(written), account);
+  const response = await handleStarterRequest(
+    new Request(`https://drive.test${STARTER_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body: JSON.stringify({ action: "create" }),
+    }),
+    store,
+    account,
+  );
+  assert.equal(response.status, 403, "a cross-site create answers 403");
+  assert.deepEqual(Object.keys(written), [], "nothing is written for a cross-site create");
 });
 
 // ------------------------------------------------------------ the real drive
@@ -672,16 +697,19 @@ test("the page has a canonical Open Graph and JSON-LD card", () => {
   );
 });
 
-test("the page's JSON-LD price mirrors the pricing page's ceiling", () => {
-  const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
-  const starterMatch = page.match(/"price":\s*"([^"]+)"/);
-  const pricingMatch = pricingPage.match(/"price":\s*"([^"]+)"/);
-  assert.ok(starterMatch, "starter has a price in JSON-LD");
-  assert.ok(pricingMatch, "pricing page has a price in JSON-LD");
-  assert.equal(
-    starterMatch[1],
-    pricingMatch[1],
-    "starter price is the pricing page's ceiling price",
+test("the page's price copy is the one price module's, not a second copy", () => {
+  // The page is a static asset with no import, so the module's own line is
+  // written into it. Every figure comes from src/pricing.js (PRICE), the one
+  // price source: the free line below, and the JSON-LD card the seo config
+  // builds. Comparing the page to src/seo.js rather than to another page is
+  // what catches a re-priced product: page-to-page would go stale together.
+  assert.ok(page.includes(PRICE.freeLine), "the page carries the price module's own free line");
+  const block = page.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+  assert.ok(block, "the page carries a JSON-LD block");
+  assert.deepStrictEqual(
+    JSON.parse(block[1]),
+    softwareApplicationLd(),
+    "the page's JSON-LD is src/seo.js's, price and all",
   );
 });
 

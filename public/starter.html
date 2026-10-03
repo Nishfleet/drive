@@ -369,34 +369,48 @@ function setStatus(state, what, next) {
 // `what` so the words are the table's own.
 function pairOf(sentence) {
   const at = sentence.indexOf(". ");
-  return [sentence.slice(0, at + 1), sentence.slice(at + 2)];
+  // A sentence with no second half is shown whole rather than truncated at a
+  // missing separator: the first paragraph carries the words, the second is
+  // empty, and a future one-sentence message cannot be silently corrupted.
+  return at === -1 ? [sentence, ""] : [sentence.slice(0, at + 1), sentence.slice(at + 2)];
 }
 
-// The endpoint is behind the account gate, so a signed-out reader is answered
-// 401. That is the honest signal that the page shows the sign-in line instead
-// of a button: nothing here decides anything the gate has not already decided.
+// The endpoint is behind the account gate, so it answers 401 to a signed-out
+// reader. That 401 is the honest signal to show the sign-in line; any other
+// failure is not, so a signed-in person hitting a template outage is shown the
+// table's own words rather than told to sign in again. Nothing here decides
+// anything the gate has not already decided.
 fetch(STARTER_ENDPOINT)
   .then((response) => {
-    if (!response.ok) throw new Error(`status: ${response.status}`);
-    return response.json();
-  })
-  .then((payload) => {
-    if (Array.isArray(payload.files)) {
-      // The shipped list is the module's, and the endpoint's list replaces it
-      // so the page always shows what a create actually writes. Replace, not
-      // append: the static list is the same four paths.
-      filesList.replaceChildren();
-      for (const path of payload.files) {
-        const item = document.createElement("li");
-        item.textContent = path;
-        filesList.append(item);
-      }
+    if (response.status === 401) {
+      // Signed out: keep the sign-in line, hide the button.
+      gate.hidden = false;
+      return;
     }
-    gate.hidden = true;
-    actions.hidden = false;
+    if (!response.ok) throw new Error(`status: ${response.status}`);
+    return response.json().then((payload) => {
+      if (Array.isArray(payload.files)) {
+        // The shipped list is the module's, and the endpoint's list replaces it
+        // so the page always shows what a create actually writes. Replace, not
+        // append: the static list is the same four paths.
+        filesList.replaceChildren();
+        for (const path of payload.files) {
+          const item = document.createElement("li");
+          item.textContent = path;
+          filesList.append(item);
+        }
+      }
+      gate.hidden = true;
+      actions.hidden = false;
+    });
   })
-  .catch(() => {
-    gate.hidden = false;
+  .catch((error) => {
+    // A 500, a network failure, or an unreadable reply: not a sign-in problem,
+    // so the sign-in line goes away and the describe's own fallback pair shows.
+    console.error("starter: describe failed", error);
+    gate.hidden = true;
+    actions.hidden = true;
+    setStatus("error", ...pairOf(UNEXPECTED_MESSAGE));
   });
 
 button.addEventListener("click", async () => {
@@ -429,7 +443,17 @@ button.addEventListener("click", async () => {
       return;
     }
     if (response.ok && payload.ok) {
-      setStatus("done", payload.what, payload.next);
+      // The reply's own words, with the table's fallback when an ok reply ever
+      // omits them, so a server bug cannot render "undefined" to a person.
+      setStatus(
+        "done",
+        typeof payload.what === "string" && payload.what.length > 0
+          ? payload.what
+          : UNEXPECTED_MESSAGE,
+        typeof payload.next === "string" && payload.next.length > 0
+          ? payload.next
+          : pairOf(UNEXPECTED_MESSAGE)[1],
+      );
       return;
     }
     // What happened is the endpoint's own refusal when it sent one; the one

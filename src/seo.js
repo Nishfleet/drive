@@ -73,7 +73,10 @@ export const PAGES = Object.freeze([
   // The notes starter (drive issue #15). It is the one public page that is an
   // optional, off-by-default starting point rather than the product's own
   // surface, and the crowd it is for finds it by search, so it is indexable and
-  // in the sitemap. Its price line is PRICE's, like every other page's.
+  // in the sitemap. Its JSON-LD card is src/seo.js's softwareApplicationLd(),
+  // built from PRICE, and test/starter.test.mjs asserts the page against that
+  // function, so a re-priced product moves the card and the page's own free
+  // line together.
   Object.freeze({ path: "/starter.html", indexable: true }),
   Object.freeze({ path: "/get-started.html", indexable: false }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
