@@ -45,28 +45,32 @@ export const SAVED_COPY = Object.freeze({
  * Capped month: saving = metered - bill. Uncapped month: saving = ceiling -
  * bill. drive#39 fixed both baselines; the caller passes the three numbers it
  * already has, so this stays a pure comparison rather than a second bill.
- * @param {{meteredUsd: number, billUsd: number, ceilingUsd: number, capped: boolean}} month
+ * @param {unknown} month
  * @returns {string | null}
  */
 export function savedLine(month) {
   if (typeof month !== "object" || month === null) {
     throw new TypeError(`savedLine needs a month object, got ${String(month)}`);
   }
-  const { meteredUsd, billUsd, ceilingUsd, capped } = month;
+  const fields =
+    /** @type {{meteredUsd?: unknown, billUsd?: unknown, ceilingUsd?: unknown, capped?: unknown}} */ (
+      month
+    );
+  const { meteredUsd, billUsd, ceilingUsd, capped } = fields;
   // Required, and a real boolean: the flag picks the saving's baseline, so a
   // truthy string would silently move a customer's receipt from one sentence
   // to another.
   if (typeof capped !== "boolean") {
     throw new TypeError(`capped must be true or false, got ${String(capped)}`);
   }
-  for (const [name, value] of [
-    ["meteredUsd", meteredUsd],
-    ["billUsd", billUsd],
-    ["ceilingUsd", ceilingUsd],
-  ]) {
-    if (!Number.isFinite(value) || value < 0) {
-      throw new TypeError(`${name} must be 0 or more, got ${value}`);
-    }
+  if (typeof meteredUsd !== "number" || !Number.isFinite(meteredUsd) || meteredUsd < 0) {
+    throw new TypeError(`meteredUsd must be 0 or more, got ${meteredUsd}`);
+  }
+  if (typeof billUsd !== "number" || !Number.isFinite(billUsd) || billUsd < 0) {
+    throw new TypeError(`billUsd must be 0 or more, got ${billUsd}`);
+  }
+  if (typeof ceilingUsd !== "number" || !Number.isFinite(ceilingUsd) || ceilingUsd < 0) {
+    throw new TypeError(`ceilingUsd must be 0 or more, got ${ceilingUsd}`);
   }
   const saved = capped ? meteredUsd - billUsd : ceilingUsd - billUsd;
   if (saved <= 0) {
@@ -82,6 +86,10 @@ export function savedLine(month) {
 // shows "$12" next to a bill that says "$12.00". The output contains only
 // digits, a dot and a leading $ -- no HTML-special characters -- so it can
 // be embedded directly into the text and HTML parts without escaping.
+/**
+ * @param {number} value
+ * @returns {string}
+ */
 function usd(value) {
   return `$${value.toFixed(2)}`;
 }
@@ -91,9 +99,14 @@ const SIGN_OFF = "-- Drive";
 
 // Money that must be present: a missing amount is a bug in the caller, not a
 // $0 that hides it (issue rule: never swallow an error).
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {number}
+ */
 function requireMoney(value, name) {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`${name} must be a number of dollars, got ${value}`);
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${name} must be a number of dollars, got ${String(value)}`);
   }
   return value;
 }
@@ -101,7 +114,12 @@ function requireMoney(value, name) {
 // ---------------------------------------------------------------------------
 // 1) Welcome -- sent after sign-up. No per-account data is needed.
 // ---------------------------------------------------------------------------
-export function welcomeTemplate() {
+/**
+ * @param {Record<string, unknown>} [_data] unused: the welcome email has no
+ *   numbers, and the uniform call shape is what lets renderEmail dispatch
+ *   without a per-kind branch.
+ */
+export function welcomeTemplate(_data) {
   const subject = "Your drive is ready";
   const lines = [
     "Welcome to Drive.",
@@ -130,7 +148,12 @@ export function welcomeTemplate() {
 // ---------------------------------------------------------------------------
 // 2) Cap warning -- 80% of the spending cap reached. { capUsd }
 // ---------------------------------------------------------------------------
-export function capWarningTemplate({ capUsd } = {}) {
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function capWarningTemplate(data = {}) {
+  const { capUsd } = data;
   const cap = requireMoney(capUsd, "capUsd");
   const percent = 80;
   const subject = `You've used ${percent}% of your spending cap`;
@@ -152,7 +175,12 @@ export function capWarningTemplate({ capUsd } = {}) {
 // ---------------------------------------------------------------------------
 // 3) Read-only reached -- the cap has been hit. { capUsd }
 // ---------------------------------------------------------------------------
-export function readOnlyTemplate({ capUsd } = {}) {
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function readOnlyTemplate(data = {}) {
+  const { capUsd } = data;
   const cap = requireMoney(capUsd, "capUsd");
   const subject = "Your drive is read-only at your spending cap";
   const lines = [
@@ -173,7 +201,12 @@ export function readOnlyTemplate({ capUsd } = {}) {
 // ---------------------------------------------------------------------------
 // 4) Payment failed -- a charge did not go through. { amountUsd }
 // ---------------------------------------------------------------------------
-export function paymentFailedTemplate({ amountUsd } = {}) {
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function paymentFailedTemplate(data = {}) {
+  const { amountUsd } = data;
   const amount = requireMoney(amountUsd, "amountUsd");
   const subject = "Your last payment did not go through";
   const lines = [
@@ -195,14 +228,22 @@ export function paymentFailedTemplate({ amountUsd } = {}) {
 // 5) Monthly receipt -- this month's bill and, when there is one, the saved
 //    line. { billUsd, meteredUsd, ceilingUsd, capped }
 // ---------------------------------------------------------------------------
-export function monthlyReceiptTemplate({
-  billUsd,
-  meteredUsd,
-  ceilingUsd,
-  capped,
-} = {}) {
+/**
+ * @param {Record<string, unknown>} [data]
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
+export function monthlyReceiptTemplate(data = {}) {
+  const { billUsd, meteredUsd, ceilingUsd, capped } = data;
   const bill = requireMoney(billUsd, "billUsd");
-  const saved = savedLine({ meteredUsd, billUsd: bill, ceilingUsd, capped });
+  // savedLine()'s own check is the one that refuses a missing or non-boolean
+  // `capped`, so it is passed through as read rather than defaulted here: a
+  // receipt that guessed the baseline would state the wrong saving.
+  const saved = savedLine({
+    meteredUsd: requireMoney(meteredUsd, "meteredUsd"),
+    billUsd: bill,
+    ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
+    capped,
+  });
   const subject = `Your Drive receipt: ${usd(bill)} this month`;
   const lines = [
     `Your Drive bill for this month is ${usd(bill)}.`,
@@ -223,6 +264,10 @@ export function monthlyReceiptTemplate({
 // ---------------------------------------------------------------------------
 // Shared tail: sign-off, text/HTML assembly, and the shape every send reads.
 // ---------------------------------------------------------------------------
+/**
+ * @param {{subject: string, lines: string[], html_lines: string[], saved?: string|null}} parts
+ * @returns {{subject: string, text: string, html: string, saved: string|null}}
+ */
 function finish({ subject, lines, html_lines, saved = null }) {
   const text = [...lines, "", SIGN_OFF, ""].join("\n");
   const htmlLines = ["<!doctype html>", '<html lang="en">', "<body>"];
@@ -242,6 +287,9 @@ export const EMAIL_KINDS = Object.freeze([
   "monthly-receipt",
 ]);
 
+/**
+ * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
+ */
 const TEMPLATES = Object.freeze({
   welcome: welcomeTemplate,
   "cap-warning": capWarningTemplate,
@@ -255,12 +303,14 @@ const TEMPLATES = Object.freeze({
  * silently sending the wrong message. Object.hasOwn, not a plain lookup: an
  * inherited name such as "constructor" must stay unknown, or it renders
  * nothing and the send goes out with empty parts.
- * @param {string} kind
- * @param {object} data
+ * @param {unknown} kind
+ * @param {Record<string, unknown>} [data]
  */
 export function renderEmail(kind, data = {}) {
   if (typeof kind !== "string" || !Object.hasOwn(TEMPLATES, kind)) {
     throw new Error(`Unknown email kind "${String(kind)}"`);
   }
-  return TEMPLATES[kind](data);
+  // Object.hasOwn just proved the key is a template name, so the index is one
+  // of TEMPLATES' own keys rather than an arbitrary string.
+  return TEMPLATES[/** @type {keyof typeof TEMPLATES} */ (kind)](data);
 }

@@ -12,21 +12,35 @@
 //    endpoint or its poll interval drifts from src/usage.js — the same gate
 //    test/status.test.mjs runs for the first-run page and
 //    test/pricing-copy.test.mjs for the price.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "../src/index.js";
+import { test } from "node:test";
 import {
   BILLING_CONFIG,
+  gbMonths,
+  handleUsageRequest,
   SAVED_COPY,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
-  gbMonths,
-  handleUsageRequest,
   usageSummary,
 } from "../src/billing.js";
-import { USAGE_LABELS, USAGE_PATH, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
-import { FAILURE_MESSAGES } from "../src/messages.js";
+import { uploadLine } from "../src/get-started.js";
+import worker from "../src/index.js";
+import { uploadProgress } from "../src/status.js";
+import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+
+/** The ExportedHandler type makes fetch optional and declares the runtime's
+ * three arguments. Tests drive the Worker directly, so one wrapper supplies
+ * the no-op execution context the platform would and keeps those facts out
+ * of every call site; `worker.fetch` is optional and carries the runtime's
+ * strict Request generic, which a `new Request(...)` literal cannot express.
+ * @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>}
+ */
+const workerFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
 // The signed-in account the handler tests run as, until the sign-in flow lands
@@ -34,16 +48,17 @@ const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf
 const account = Object.freeze({ id: "1", name: "Your drive" });
 // The first-run page is a Vite entry at the repo root (issue #70), not a
 // verbatim asset in public/, so its shell is read from there.
-const getStartedPage = readFileSync(
-  new URL("../get-started.html", import.meta.url),
-  "utf8",
-);
+const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
 const MINUTES_PER_MONTH = 43800;
 
 /** A whole month of a fixed size, with the month's daily history behind it. */
+/**
+ * @param {number} storedGb
+ * @param {Record<string, unknown>} [overrides]
+ */
 function month(storedGb, overrides = {}) {
   const days = [];
   for (let index = USAGE_HISTORY_DAYS; index > 0; index -= 1) {
@@ -180,7 +195,7 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
   );
   assert.throws(() => usageSummary({ ...base, storedDaily: [null] }), TypeError);
   const missing = { ...base };
-  delete missing.storedGb;
+  delete (/** @type {{storedGb?: number}} */ (missing).storedGb);
   assert.throws(() => usageSummary(missing), /usage\.storedGb/);
 });
 
@@ -188,18 +203,14 @@ test("both saved sentences come from the one table in src/billing.js", () => {
   // The capped month: 2 TB held all month meters $40 against a $16 ceiling,
   // so the line is the cap's own sentence.
   const capped = month(2000);
+  assert.ok(capped.saved);
   assert.equal(capped.saved.usd, 24);
-  assert.equal(
-    capped.saved.copy,
-    SAVED_COPY.capped.replace("{amount}", "$24.00"),
-  );
+  assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$24.00"));
   // The uncapped month: the ceiling is what a flat plan would have cost.
   const uncapped = month(300);
+  assert.ok(uncapped.saved);
   assert.equal(uncapped.saved.usd, 6);
-  assert.equal(
-    uncapped.saved.copy,
-    SAVED_COPY.uncapped.replace("{amount}", "$6.00"),
-  );
+  assert.equal(uncapped.saved.copy, SAVED_COPY.uncapped.replace("{amount}", "$6.00"));
   // No real saving means no line at all: the page hides it and the CLI prints
   // the four lines without it.
   assert.equal(month(600).saved, null);
@@ -235,6 +246,7 @@ test("the usage lines refuse anything but a summary, never printing NaN", () => 
   // summary: it used to print "Stored GB now: undefined", which the test name
   // above promises can never happen. Each key is named when it is missing.
   for (const key of ["storedNow", "gbMonths", "downloads", "cost"]) {
+    /** @type {Record<string, string>} */
     const labels = { storedNow: "400 GB", gbMonths: "400.00", downloads: "0 B", cost: "$8.00" };
     delete labels[key];
     assert.throws(
@@ -253,10 +265,7 @@ test("GB-months are the meter over the spec's 43,800-minute month", () => {
 });
 
 test("the usage endpoint answers the empty month with the page's shape", async () => {
-  const response = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -292,17 +301,60 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     // flow yet no request can prove an account, so the Worker's read shows
     // nobody's money (issue #73). The signed-in shape is pinned in
     // test/account-gate.test.mjs.
-    const anonymous = await worker.fetch(new Request(`https://drive.test${path}`), env);
+    const anonymous = await workerFetch(new Request(`https://drive.test${path}`), env);
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
-  const handler = handleUsageRequest(
-    new Request("https://drive.test/api/usage"),
-    account,
-  );
+  const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
   assert.equal((await handler.json()).billUsd, 0);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
     "the page must read the endpoint the Worker routes",
+  );
+});
+
+test("the upload line rides the usage answer beside capLine", async () => {
+  // The second surface of drive issue #308. The line is assembled once, by
+  // uploadProgress() from UPLOAD_LABEL in src/status.js, so the usage page
+  // renders the same words `drive status` and the first-run page print and
+  // carries no second copy of a word or a byte formatter. It is null while the
+  // Worker has no device store to read a queue from.
+  const body = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  ).json();
+  assert.deepEqual(Object.keys(body).sort(), [
+    "billCents",
+    "billUsd",
+    "cap",
+    "capLine",
+    "ceilingUsd",
+    "downloads",
+    "gbMonths",
+    "labels",
+    "meteredUsd",
+    "saved",
+    "storedDaily",
+    "storedGb",
+    "uploadLine",
+  ]);
+  assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
+
+  // A queue handed in is checked by uploadProgress(), which throws on a value
+  // that is not a queue, so a broken report fails the read rather than printing
+  // a plausible line about bytes nobody counted.
+  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const reported = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    queue,
+  ).json();
+  assert.equal(reported.uploadLine, uploadProgress(queue).label);
+  assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.throws(
+    () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
+    TypeError,
+    "a payload that is not a queue is refused, never rendered as a default",
   );
 });
 
@@ -316,10 +368,7 @@ test("the shipped page carries every label from src/usage.js verbatim", () => {
       continue;
     }
     for (const line of Object.values(value)) {
-      assert.ok(
-        page.includes(line),
-        `the page must carry ${name}: "${line}"`,
-      );
+      assert.ok(page.includes(line), `the page must carry ${name}: "${line}"`);
     }
   }
   for (const sentence of Object.values(SAVED_COPY)) {
@@ -344,13 +393,7 @@ test("no money and no size is worked out on the page", () => {
   // check reads the page's script, so a style rule's -0.02em letter-spacing is
   // not mistaken for the metered rate.
   const script = page.slice(page.indexOf("<script>"));
-  for (const banned of [
-    "0.02",
-    "43800",
-    "MINUTES_PER_MONTH",
-    "rateUsdPerGbMonth",
-    "formatUsd",
-  ]) {
+  for (const banned of ["0.02", "43800", "MINUTES_PER_MONTH", "rateUsdPerGbMonth", "formatUsd"]) {
     assert.equal(
       script.includes(banned),
       false,
@@ -358,7 +401,9 @@ test("no money and no size is worked out on the page", () => {
     );
   }
   // Nothing on the page states a rate or a per-unit price either.
-  const visible = page.replace(page.slice(page.indexOf("<script>")), "").replace(/<style>[\s\S]*?<\/style>/, "");
+  const visible = page
+    .replace(page.slice(page.indexOf("<script>")), "")
+    .replace(/<style>[\s\S]*?<\/style>/, "");
   assert.doesNotMatch(visible, /¢/);
   assert.doesNotMatch(visible, /per GB/i);
   // The chart scales a size to a viewBox unit, and nothing else.
@@ -447,11 +492,18 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
 
 test("the pages' mastheads read as one navigation", () => {
   // The review found the headers disagreeing. The two mastheads that carry a
-  // nav (usage and get-started) list Your files, Pricing, Get started, Usage
-  // in that order (the Web Files link leads since #48 merged), and each marks
-  // itself. The pricing page's masthead is its wordmark alone — its links are
-  // its footer nav, which is issue #11's and is checked below.
-  const nav = ['<a href="/files"', '<a href="/"', '<a href="/get-started"', '<a href="/usage"'];
+  // nav (usage and get-started) list Your files, Pricing, Get started, Usage,
+  // Sign in in that order (the Web Files link leads since #48 merged, and Sign
+  // in closes it since drive#10), and each marks itself. The pricing page's
+  // masthead is its wordmark alone — its links are its footer nav, which is
+  // issue #11's and is checked below.
+  const nav = [
+    '<a href="/files"',
+    '<a href="/"',
+    '<a href="/get-started"',
+    '<a href="/usage"',
+    '<a href="/signin"',
+  ];
   for (const masthead of [page, getStartedPage]) {
     const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
     assert.deepEqual(
@@ -474,7 +526,11 @@ test("a read that fails says so and leaves the numbers alone", () => {
   assert.match(page, /statusEl\.dataset\.state = "unreachable";/);
   assert.match(page, /statusEl\.hidden = false;/);
   assert.match(page, /if \(summary\.saved === null\)/);
-  assert.match(page, /if \(document\.hidden\) \{\n    return;/);
+  // The page's poll short-circuits when its tab is backgrounded, returning on
+  // the hidden line; the four-space indent is not the contract, the early
+  // return is. Reflowing must not break the gate (drive#183), so match the
+  // shape with tolerant whitespace instead of pinning four spaces.
+  assert.match(page, /if \(document\.hidden\) \{\s*return\s*;/);
 });
 
 test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
@@ -487,4 +543,37 @@ test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
   assert.match(page, /function saySignedOut\(message\)/);
   assert.match(page, /statusEl\.dataset\.state = "signed-out";/);
   assert.doesNotMatch(page, /You are not signed in to your drive/);
+});
+
+test("the upload-progress line is the endpoint's words, rendered and nothing else", () => {
+  // Drive issue #308, the second surface. The line arrives finished in the
+  // payload (`uploadLine`, beside `capLine`), so this page sets a string and
+  // carries no word of its own beyond the section heading and the hint: a
+  // second copy of "Uploading 3 files" or a second byte formatter is exactly
+  // the drift the gates above exist to catch. Hidden when there is no queue.
+  assert.match(page, /<section aria-labelledby="uploads-heading">/);
+  assert.match(page, /<h2 id="uploads-heading">Uploads<\/h2>/);
+  assert.match(page, /<p class="upload-line" id="upload-line" hidden><\/p>/);
+  assert.match(
+    page,
+    /<p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file\.<\/p>/,
+  );
+  assert.ok(page.includes(USAGE_LABELS.uploads), "the heading is the module's word");
+  assert.ok(page.includes(USAGE_LABELS.uploadsHint), "the hint is the module's word");
+  // The payload check: a value that is neither null nor a string is a payload
+  // this page cannot render, so it takes the unreachable state rather than
+  // printing "null" where a line belongs.
+  assert.match(page, /summary\.uploadLine !== null && typeof summary\.uploadLine !== "string"/);
+  // The wiring: set the module's sentence, and hide the line when there is no
+  // queue to report.
+  assert.match(
+    page,
+    /uploadLineEl\.textContent = summary\.uploadLine === null \? "" : summary\.uploadLine;/,
+  );
+  assert.match(page, /uploadLineEl\.hidden = summary\.uploadLine === null;/);
+  // No byte arithmetic and no word table of its own: the page never formats a
+  // size for this line, and never spells the fragments it renders.
+  const script = page.slice(page.indexOf("<script>"));
+  assert.doesNotMatch(script, /formatBytes|UPLOAD_LABEL|uploadProgress/);
+  assert.doesNotMatch(script, /Uploading \{|of \{|\{percent\}/);
 });

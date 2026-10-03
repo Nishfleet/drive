@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { errorResponse, json, readJsonObject } from "../src/http.js";
 
 // drive#77 finding 5: http.js had no test at all. These pin the error shape
@@ -39,15 +39,18 @@ test("readJsonObject returns the body of a JSON object", async () => {
 test("readJsonObject refuses a body that is not JSON at all", async () => {
   const req = new Request("https://x.test/", { method: "POST", body: "kind=agent" });
   const result = await readJsonObject(req);
-  assert.ok(result.error, "a non-JSON body is refused with a sentence");
-  assert.equal(result.body, undefined);
+  // `readJsonObject` answers a union; `"error" in result` is its discriminator,
+  // and the error arm is what these assertions are about.
+  assert.ok("error" in result, "a non-JSON body is refused with a sentence");
+  assert.equal(/** @type {{body?: undefined}} */ (result).body, undefined);
 });
 
 test("readJsonObject refuses JSON that is not an object", async () => {
   for (const body of ["null", "[]", '"a string"', "42"]) {
     const req = new Request("https://x.test/", { method: "POST", body });
     const result = await readJsonObject(req);
+    assert.ok("error" in result, `${body} is not an object`);
     assert.equal(result.error, "Send a JSON object.", `${body} is not an object`);
-    assert.equal(result.body, undefined);
+    assert.equal(/** @type {{body?: undefined}} */ (result).body, undefined);
   }
 });

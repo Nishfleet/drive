@@ -1,0 +1,88 @@
+drive - a Finder drive for people and their agents
+
+Usage:
+  drive init [flags]                    find installed agent tools and connect each to the drive
+  drive agents [flags]                  list agent tools and whether the drive is connected
+  drive agents connect <tool> [flags]   connect one agent tool to the drive
+  drive agents revoke <tool> [flags]    disconnect one agent tool from the drive
+  drive search <words> [flags]          find files by name, from the drive index
+  drive branch <folder> [flags]         copy a folder into a branch an agent works in
+  drive branches [flags]                list branches and how many files changed
+  drive diff <branch> [flags]           files added, changed or removed in a branch
+  drive approve <branch> [flags]        copy a branch's changes back into the original
+  drive discard <branch> [flags]        throw a branch away; the original is untouched
+  drive mount [flags]      write the rclone config and login item, start the mount
+  drive unmount [flags]    stop the mount and the login item
+  drive offline <path>...  keep a file or folder on this computer (also --list)
+  drive online [path]...   let the disk go again; with no argument, all of it
+  drive uninstall [flags]  stop the mount, remove the login item, keep the files
+  drive status [flags]     the mount, the cache, the upload queue, what is kept offline, and this month's cost
+  drive pause [flags]      stop the bytes leaving the device; survives a restart
+  drive resume [flags]     start the bytes leaving the device again
+  drive cap <dollars>      change the spending cap
+  drive cache              show the disk the mount's cache uses and its limit
+  drive cache --max 5G     change that limit
+  drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
+  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive request <folder>   make a page anyone can drop files onto
+  drive share --list       list this account's links (also on drive request)
+  drive share --revoke <t> turn one link off (also on drive request)
+  drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
+  drive export [flags]     write this account's data to a file (or stdout)
+  drive update [flags]     replace this binary with the latest release
+  drive version            print the version
+
+Update flags:
+  --check   say whether a newer release exists, install nothing
+  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
+
+Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
+stock MCP filesystem server over the drive folder, using the tool's own
+mcp add command or its JSON config file.
+
+Search flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --limit  how many results to print (default 50, max 200)
+
+Branch flags:
+  --api    drive api base URL (env DRIVE_API_URL)
+  --name   branch name (the folder's own name unless given)
+
+Mount flags:
+  --endpoint    S3 endpoint URL (env DRIVE_S3_ENDPOINT)
+  --bucket      storage bucket (env DRIVE_S3_BUCKET)
+  --prefix      key prefix this device mounts (env DRIVE_S3_PREFIX)
+  --region      S3 region name (env DRIVE_S3_REGION, default us-east-1)
+  --download-url dl Worker to stream reads through (env DRIVE_DOWNLOAD_URL)
+  --drive-letter  Windows: the drive letter to mount (first free letter from D:)
+  --secret-key-stdin  read one line of the storage secret from stdin
+  --home        home directory (default $HOME)
+  --rclone      path to the rclone binary (env DRIVE_RCLONE, default rclone)
+  --rc-addr     loopback address the mount's remote control binds (env
+                DRIVE_RC_ADDR, default 127.0.0.1:5572)
+  --device      name this device is called in a conflict copy (env DRIVE_DEVICE,
+                default the hostname)
+  --foreground  run rclone in this process instead of the login item
+  --dry-run     print what would be written, write nothing
+
+Link flags (share, request):
+  --api         api Worker base URL (env DRIVE_API_URL)
+  --list        list this account's links instead of minting one
+  --revoke      revoke the link with this token (a full link URL also works)
+
+Cache flags:
+  --max     the cache limit, a size like 5G or 500M (default 20G)
+  --clear   empty the cache now; uploads waiting and files kept offline stay
+
+Export flags:
+  --out   file to write the export to; stdout when it is not given
+
+The access key id is read from the environment (DRIVE_S3_ACCESS_KEY_ID), never a flag.
+The storage secret is read from the config file (mode 0600), DRIVE_S3_SECRET_ACCESS_KEY,
+or --secret-key-stdin. --secret-key is refused.
+
+Logout flags:
+  --api         api Worker base URL (env DRIVE_API_URL), the key-revoke endpoint
+  --force       discard files waiting to upload instead of refusing to logout
+  --forget-pending  clear the failed-revoke record, after you have revoked the
+               key on the devices page in the web app

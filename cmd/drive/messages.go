@@ -90,6 +90,10 @@ var messageTable = map[string][2]string{
 		"Your drive is read-only because it reached its spending cap; nothing was deleted.",
 		"Raise the cap on the usage page to start writing again.",
 	},
+	"disk-cache-full": {
+		"The local cache is full, so new saves can't upload.",
+		"Free up disk space on this device and try the save again.",
+	},
 	"unexpected": {
 		"That did not work.",
 		"Try again in a moment; if it fails again, run `drive status` and keep its output.",
@@ -171,6 +175,14 @@ var messageTable = map[string][2]string{
 	"uploads-stuck": {
 		"{1} file(s) are still waiting to upload ({2} bytes).",
 		"Start the mount and let them finish, or run `drive logout --force` to discard them.",
+	},
+	"key-still-live": {
+		"signed out here; the key is still live, run drive logout again when online",
+		"Run `drive logout` again when you are online, with `--api <url>` or DRIVE_API_URL set.",
+	},
+	"key-still-live-elsewhere": {
+		"signed out here; a key from an earlier logout is still live and this device no longer has it; revoke it from the devices page in the web app, then run drive logout --forget-pending",
+		"Revoke it from the devices page in the web app, then run `drive logout --forget-pending`.",
 	},
 	"queue-unreadable": {
 		"The upload queue could not be read ({1}).",

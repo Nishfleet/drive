@@ -13,7 +13,7 @@
 // template or a stale string. Plain functions, so `node --test` runs this
 // directly.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { faqMarkdown, markerValues } from "./docs.js";
 import { DOC_PAGES as SEO_DOC_PAGES } from "./seo.js";
@@ -57,10 +57,65 @@ export const RENDERED_DIR = join(DOCS_DIR, ".rendered");
 // whose row is not a measured win fails here, at the build, instead of shipping
 // a number nobody has measured.
 const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.url));
+const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
 
-/** The markers that need a file read: today, just the FAQ's own Markdown. */
+// The agent eval's own reading stack (evals/agents, drive#222) carries the
+// CLI's help text next to the rendered pages, and that text is the CLI's
+// words: `cmd/drive/main.go`'s `usage` const. It used to be a pasted snapshot,
+// and main's Windows work added a mount flag (2026-10-03) that left it stale,
+// which is exactly the drift this render pass removes: writing it here means
+// `npm run docs:render` regenerates it, so a flag added to the CLI cannot
+// leave the eval asking about flags the help no longer shows.
+const MAIN_GO = fileURLToPath(new URL("../cmd/drive/main.go", import.meta.url));
+export const HELP_SNAPSHOT = fileURLToPath(
+  new URL("../evals/agents/context/drive-help.txt", import.meta.url),
+);
+
+/** The `usage` const's text, or an error that names the file nothing matched. */
+export function cliUsageText() {
+  const src = readFileSync(MAIN_GO, "utf8");
+  // A Go raw string cannot hold a backtick, so the text between the
+  // const's opening backtick and the first closing one is the whole usage
+  // block. Anchor on the statement, not on what follows it: main now declares
+  // `var version` after the block, which a const-only anchor missed.
+  const match = src.match(/^const usage = `([^`]*)`/m);
+  if (!match) {
+    throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
+  }
+  return match[1].trim();
+}
+
+/**
+ * Write the eval's CLI-help snapshot from main.go, so the eval's context and
+ * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
+ * it directly, and the eval's own gate keeps reading the file it wrote.
+ * @param {string} [snapshotPath] defaults to evals/agents/context/drive-help.txt
+ * @returns {string} the text written
+ */
+export function renderHelpSnapshot(snapshotPath = HELP_SNAPSHOT) {
+  const text = `${cliUsageText()}\n`;
+  mkdirSync(dirname(snapshotPath), { recursive: true });
+  writeFileSync(snapshotPath, text);
+  return text;
+}
+
+/** The two published sections of docs/benchmarks.md, from the Linux heading. */
+function publishedBenchmarks() {
+  const text = readFileSync(BENCHMARKS, "utf8");
+  const start = text.indexOf("## Linux VPS");
+  const end = text.indexOf("<!-- end published -->");
+  if (start < 0) {
+    throw new Error("docs/benchmarks.md has no Linux VPS section to publish");
+  }
+  if (end < start) {
+    throw new Error("docs/benchmarks.md has no end-published marker after the Linux section");
+  }
+  return text.slice(start, end).trim();
+}
+
+/** The markers that need a file read: the FAQ and the Benchmarks table. */
 function fileMarkers() {
-  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")) };
+  return { FAQ: faqMarkdown(readFileSync(SCOREBOARD, "utf8")), BENCHMARKS: publishedBenchmarks() };
 }
 
 // A marker's value may itself carry markers: the FAQ's answers are Markdown
@@ -85,9 +140,7 @@ const MAX_MARKER_ROUNDS = 10;
 export function applyMarkers(source, values = markerValues(), used = new Set()) {
   let text = source;
   for (let round = 0; ; round += 1) {
-    const names = [
-      ...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1])),
-    ];
+    const names = [...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))];
     if (names.length === 0) {
       return text;
     }
@@ -98,9 +151,7 @@ export function applyMarkers(source, values = markerValues(), used = new Set()) 
     }
     for (const name of names) {
       if (!(name in values)) {
-        throw new Error(
-          `docs page uses {{${name}}}, which src/docs.js does not define`,
-        );
+        throw new Error(`docs page uses {{${name}}}, which src/docs.js does not define`);
       }
       used.add(name);
     }
@@ -127,15 +178,15 @@ export function renderDocs(outDir = RENDERED_DIR) {
   // render fails rather than shipping quietly.
   const unused = Object.keys(values).filter((name) => !used.has(name));
   if (unused.length > 0) {
-    throw new Error(
-      `src/docs.js defines markers no page uses: ${unused.join(", ")}`,
-    );
+    throw new Error(`src/docs.js defines markers no page uses: ${unused.join(", ")}`);
   }
   return DOC_PAGES;
 }
 
 // `node src/render-docs.js` is what `npm run docs:render` runs, so the docs
-// build has one entry point and no script file of its own.
+// build has one entry point and no script file of its own. The help snapshot
+// rides the same entry point: one command renders the docs the eval reads.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   renderDocs();
+  renderHelpSnapshot();
 }

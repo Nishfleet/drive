@@ -21,12 +21,14 @@
 // off: what the customer actually pays. The issue named src/pricing.js; that
 // module still holds the superseded per-TB caps and is issue #23's to fix, so
 // the scoreboard reads the one billing function AGENTS.md's money gate names.
-import { test } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { test } from "node:test";
 import { monthBillCents } from "../src/billing.js";
 
 const MINUTES_PER_MONTH = 43800;
+/** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const scoreboard = read("docs/scoreboard.md");
 
@@ -47,6 +49,7 @@ const tableRows = () =>
     .filter((cells) => cells[0] !== "Metric" && !/^-+$/.test(cells[0]));
 
 /** The single row whose metric is exactly `metric`. */
+/** @param {string} metric */
 const row = (metric) => {
   const found = tableRows().filter((cells) => cells[0] === metric);
   assert.equal(found.length, 1, `exactly one row for "${metric}"`);
@@ -78,9 +81,11 @@ const EVERY_ROWS = [
   "agent features: undo",
   "agent features: spending cap",
   "agent features: branches with review",
+  "agents finish real tasks from the docs",
   "disk use",
   "minimum macOS",
   "pause and resume an upload",
+  "Windows install and mount",
 ];
 
 // Space's own published add-on, the figure the two derived price rows are
@@ -108,6 +113,7 @@ test("the table carries exactly its own rows, each with five columns", () => {
 });
 
 test("the price rows are computed from monthBillCents, not typed", () => {
+  /** @type {Array<[string, number]>} */
   const cases = [
     ["price at 100 GB", 100],
     ["price at 500 GB", 500],
@@ -135,14 +141,16 @@ test("the price rows are computed from monthBillCents, not typed", () => {
   }
   // Space's two derived rows show the add-on they are worked out from, so a
   // reader can check the arithmetic rather than take it.
-  for (const [metric, tb] of [
+  for (const [metric, tb] of /** @type {Array<[string, number]>} */ ([
     ["price at 2 TB", 2],
     ["price at 5 TB", 5],
-  ]) {
-    const derived = SPACE_PLAN_1TB_USD + (tb * SPACE_EXTRA_500GB_PER_TB - 2) * SPACE_EXTRA_500GB_USD;
+  ])) {
+    const derived =
+      SPACE_PLAN_1TB_USD + (tb * SPACE_EXTRA_500GB_PER_TB - 2) * SPACE_EXTRA_500GB_USD;
     const spaceCell = row(metric)[1];
     assert.ok(
-      spaceCell.includes(`$${derived}`) && spaceCell.includes(`$${SPACE_EXTRA_500GB_USD} per extra 500 GB`),
+      spaceCell.includes(`$${derived}`) &&
+        spaceCell.includes(`$${SPACE_EXTRA_500GB_USD} per extra 500 GB`),
       `${metric}: the Space cell must state $${derived} and the $${SPACE_EXTRA_500GB_USD} per extra 500 GB it is worked out from`,
     );
   }

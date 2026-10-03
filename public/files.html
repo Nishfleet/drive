@@ -6,72 +6,25 @@
   <title>Drive — your files</title>
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
   <style>
-/* Web Files page (drive issue #31): the palette and type of the pricing and
-   first-run pages, so the product reads as one thing. Mobile first: every
-   action is a 44px tap target, the list is one column at 360px, and the viewer
-   fills the screen on a phone. System font stacks only: no web font files, so
+/* Web Files page (drive issue #31). The palette, the reset and the page chrome
+   come from the shared site stylesheet (drive #71); what is left here is this
+   page's mobile-first shell and its own tap target. Mobile first: every action
+   is a 44px tap target, the list is one column at 360px, and the viewer fills
+   the screen on a phone. System font stacks only: no web font files, so
    nothing blocks first paint. */
 
 :root {
-  --paper: #faf6ee;
-  --paper-raised: #fffdf8;
-  --ink: #21201c;
-  --ink-soft: #56514a;
-  --ink-faint: #6f6a5f;
-  --rule: #ddd5c5;
-  --accent: #1f3a5f;
-  --accent-soft: #e6ecf3;
-  --good: #1d5c3a;
-  --bad: #8a2b2b;
-  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
-    "Times New Roman", serif;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
   --tap: 44px;
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  -webkit-text-size-adjust: 100%;
-}
-
 body {
-  margin: 0;
   min-height: 100dvh;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  font-size: 17px;
-  line-height: 1.55;
-  overflow-wrap: break-word;
-}
-
-.skip-link {
-  position: absolute;
-  left: -9999px;
 }
 
 .skip-link:focus {
-  left: 8px;
-  top: 8px;
   z-index: 30;
-  padding: 8px 12px;
-  background: var(--ink);
-  color: var(--paper);
-  text-decoration: none;
-}
-
-:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .topbar {
@@ -88,10 +41,7 @@ body {
 }
 
 .wordmark {
-  font-family: var(--serif);
   font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 .account {
@@ -168,7 +118,6 @@ body {
 main {
   padding: 0 clamp(14px, 4vw, 40px) 96px;
   max-width: 900px;
-  margin: 0 auto;
 }
 
 .page-line {
@@ -205,6 +154,40 @@ main {
   padding: 0;
   list-style: none;
   border-top: 1px solid var(--rule);
+  /* One row is reserved, always (drive#225): the shell is removed the moment
+     rows land, and without this the list would collapse under whatever the
+     read actually returned and the page would jump by the shell's height. */
+  min-height: calc(var(--tap) + 12px);
+}
+
+/* The file-list shell (drive#225): one row, in the HTML, so the page is
+   usable before any script runs and so the first listing does not move the
+   page. It is exactly the box a row is — the same --tap minimum, the same
+   6px padding — so replacing it with rows shifts nothing, and so the list's
+   reserved height is already taken while the read is out. */
+.row.is-shell {
+  height: calc(var(--tap) + 12px);
+  cursor: progress;
+}
+
+.row.is-shell .icon,
+.row.is-shell .name,
+.row.is-shell .sub {
+  background: var(--accent-soft);
+  color: var(--accent-soft);
+  border-radius: 3px;
+}
+
+.row.is-shell .name {
+  min-width: 12ch;
+}
+
+.row.is-shell .sub {
+  min-width: 20ch;
+}
+
+.row.is-shell .actions {
+  visibility: hidden;
 }
 
 .row {
@@ -246,12 +229,14 @@ main {
   background: none;
   border: 0;
   cursor: pointer;
+  text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.row .name:hover {
+.row .name:hover,
+.row .name:focus-visible {
   color: var(--accent);
   text-decoration: underline;
 }
@@ -447,6 +432,10 @@ dialog.viewer::backdrop {
   }
 }
 
+/* Drive#92: the one place the reduced-motion reset reaches a rule that would
+   otherwise win on specificity, so it is spelled with !important on purpose.
+   public/index.html has the same block, with the same comment, and
+   biome.json turns noImportantStyles off for the two of them. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -454,6 +443,30 @@ dialog.viewer::backdrop {
   }
 }
   </style>
+  <!-- drive#225: the browser's own prefetch cache, warmed before a click. A
+       folder's listing is the one request this page repeats, so the rule asks
+       the browser to fetch a folder row's listing when the pointer rests on it
+       (or a finger touches it) rather than when the click lands. It is a stock
+       browser feature: no library, no request of ours, and a browser without
+       the API ignores the block entirely. `eagerness: "moderate"` is what makes
+       it hover- and touch-triggered rather than fetch-on-parse, and a listing
+       is a signed-in GET answered with `no-store`, so the browser's prefetch
+       cache is the only thing that can win the time back. -->
+  <script type="speculationrules">
+  {
+    "prefetch": [
+      {
+        "source": "document",
+        "where": {
+          "href_matches": "/api/files?path=",
+          "selector_matches": "#file-list [data-listing]"
+        },
+        "eagerness": "moderate",
+        "requires": ["anonymous-client-ip-when-cross-origin"]
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
@@ -474,7 +487,17 @@ dialog.viewer::backdrop {
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
 
-    <ul class="list" id="file-list" aria-labelledby="file-list-heading"></ul>
+    <ul class="list" id="file-list" aria-labelledby="file-list-heading">
+      <!-- The file-list shell (drive#225). The rows arrive from /api/files, so
+           one row of the same height as a real one sits here in the HTML: the
+           page is usable before any script runs, and the listing landing moves
+           nothing. renderRows empties this list on its first render. -->
+      <li class="row is-shell" id="file-list-shell" aria-hidden="true">
+        <span class="icon"></span>
+        <div class="meta"><span class="name">Loading</span><p class="sub">Your files</p></div>
+        <div class="actions"><span></span></div>
+      </li>
+    </ul>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
@@ -496,7 +519,7 @@ dialog.viewer::backdrop {
   <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
     <div class="viewer-head">
       <h2 class="title" id="viewer-title">File</h2>
-      <a id="viewer-download" href="#" download>Download</a>
+      <a id="viewer-download" href="/api/files/download" download>Download</a>
       <button type="button" id="viewer-close">Close</button>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
@@ -513,7 +536,11 @@ const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
 const RESTORE_ENDPOINT = "/api/files/restore";
-const RECENTLY_DELETED_DAYS = 30;
+// The window is src/files.js's number and nothing in this script reads it:
+// test/files.test.mjs reads it out of this line so the page cannot drift
+// from the module. The underscore says the reader is the test, not the
+// script, so a linter leaves the line alone (drive#92).
+const _RECENTLY_DELETED_DAYS = 30;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 
 // The page's copy for a preview, one entry per kind src/files.js names. A kind
@@ -666,7 +693,7 @@ function crumbsForParts(parts) {
     sep.textContent = "/";
     sep.setAttribute("aria-hidden", "true");
     crumbs.append(sep);
-    walked += "/" + part;
+    walked += `/${part}`;
     if (index === parts.length - 1) {
       const here = document.createElement("span");
       here.className = "here";
@@ -710,12 +737,21 @@ function rowFor(row) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  const name = document.createElement("button");
-  name.type = "button";
-  name.className = "name";
+  // A folder's name is a navigation, so it is a link (drive#225): the href is
+  // the listing itself, which is what lets the speculation rules block above
+  // prefetch it on hover, and which is what a person without JavaScript
+  // follows straight to the folder's listing. The click handler stops the
+  // navigation so the page still swaps the list in place.
+  const listing = `${FILES_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+  const name = document.createElement("a");
+  name.href = listing;
+  if (row.kind === "folder") {
+    name.dataset.listing = "";
+  }
   name.textContent = row.name;
-  name.addEventListener("click", () => {
+  name.addEventListener("click", (event) => {
     if (row.kind === "folder") {
+      event.preventDefault();
       path = row.path;
       view = "folder";
       setTab();
@@ -746,7 +782,7 @@ function rowFor(row) {
     actions.append(open);
   } else {
     const download = document.createElement("a");
-    download.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    download.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
     download.download = row.name;
     download.textContent = "Download";
     actions.append(download);
@@ -780,7 +816,7 @@ function trashRowFor(row) {
   name.textContent = row.name;
   name.addEventListener("click", () => {
     viewerTitle.textContent = row.name;
-    viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+    viewerDownload.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
     showBody(noPreview("This file is in Recently deleted. Restore it to preview it."));
     viewer.showModal();
   });
@@ -844,13 +880,13 @@ function noPreview(message) {
 
 function openViewer(row) {
   viewerTitle.textContent = row.name;
-  viewerDownload.href = DOWNLOAD_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  viewerDownload.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (!isPreviewable(row.kind)) {
     showBody(noPreview(PREVIEW_COPY.file.fallback));
     viewer.showModal();
     return;
   }
-  const src = PREVIEW_ENDPOINT + "?path=" + encodeURIComponent(row.path);
+  const src = `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "image") {
     const img = document.createElement("img");
     img.src = src;
@@ -904,8 +940,8 @@ async function refresh(keepStatus) {
   }
   const url =
     view === "deleted"
-      ? FILES_ENDPOINT + "?view=deleted"
-      : FILES_ENDPOINT + "?path=" + encodeURIComponent(path);
+      ? `${FILES_ENDPOINT}?view=deleted`
+      : `${FILES_ENDPOINT}?path=${encodeURIComponent(path)}`;
   try {
     const payload = await api(url);
     showSignedIn();
@@ -930,12 +966,15 @@ async function uploadFiles(files) {
   let uploaded = 0;
   try {
     for (const file of files) {
-      const url =
-        UPLOAD_ENDPOINT +
-        "?path=" +
-        encodeURIComponent(path) +
-        "&name=" +
-        encodeURIComponent(file.name);
+      // The name goes over the wire as the browser knows it, and what to store
+      // is the Worker's one decision: src/files.js's safeFileName trims it,
+      // turns a slash, a backslash or a control character into a dash, and
+      // refuses a name left empty. The page has no second copy of that rule to
+      // drift (drive#92), and test/files.test.mjs is the gate that watches both
+      // sides of it.
+      const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
+        file.name,
+      )}`;
       const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": file.type || "application/octet-stream" },
@@ -959,7 +998,7 @@ async function uploadFiles(files) {
     if (error.signedOut) {
       reportFailure(error);
     } else {
-      say(uploaded > 0 ? uploaded + " uploaded. " + error.message : error.message, "error");
+      say(uploaded > 0 ? `${uploaded} uploaded. ${error.message}` : error.message, "error");
     }
   } finally {
     uploadButton.disabled = signedOut.hidden === false;

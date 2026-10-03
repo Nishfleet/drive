@@ -1,5 +1,7 @@
 # SpaceFS clone: build spec
 
+> **Status note (2026-10-02):** this is the historical build plan. The code and the open issues are the source of truth, and where they differ the code wins. Shipped work is listed in `docs-site/changelog.md`.
+
 Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the build plan in `spec.md` into what each part does, the commands and screens, the data model, and the steps in detail. `spec.md` still holds the why: prices, rivals and the pressure test.
 
 **Status: building since 2026-09-29** (Nish: "lets go then"). Issues #2 to #15 in this repo; spending money (storage accounts, Storage Box) still needs Nish.
@@ -39,7 +41,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 ```
 
 1. **drive CLI** (on the user's machine). One binary. Signs in, writes the rclone config, starts the mount as a login item, registers agent tools, runs branch commands. Language: Go, because rclone is Go and the CLI ships as one file; it calls the installed `rclone` binary rather than embedding it.
-2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --b2-download-url https://dl.<domain>`, and both with `--dir-cache-time 5s`: S3 sends no change notifications, so without it the other machine waits out rclone's 5-minute directory cache before it sees a save (measured 2026-09-30 against a local S3 stand-in with two mounts: 5.0 s with the flag, still absent after 60 s without it, so the counterfactual is measured, not assumed). Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
+2. **The mount.** Stock rclone. Mac: `rclone nfsmount` (uses macOS's built-in NFS, so no macFUSE). Linux: `rclone mount`. Both with `--vfs-cache-mode full --vfs-write-back 5s --vfs-cache-max-size 20G --vfs-read-ahead 128k --b2-download-url https://dl.<domain>`, and both with `--dir-cache-time 5s`: S3 sends no change notifications, so without it the other machine waits out rclone's 5-minute directory cache before it sees a save (measured 2026-09-30 against a local S3 stand-in with two mounts: 5.0 s with the flag, still absent after 60 s without it, so the counterfactual is measured, not assumed). `--vfs-read-ahead 128k` is the stock extra disk read-ahead with cache-mode full (issue #227). `--vfs-refresh` is not passed: rclone would walk the whole tree at mount start, which is the wrong trigger for "prefetch the next folder" and delays mount-ready. Child listings after a folder is listed have no rclone flag, so `drive prefetch` (a second login item, Nice 19) does only that leftover work. Kept running by launchd (Mac) or a systemd user unit (Linux), both written by the CLI.
 3. **api Worker** (Cloudflare Workers + D1). Accounts, device sign-in, key minting, spending cap, branch bookkeeping, the web pages. Holds the B2 master key as a Worker secret; nothing else does.
 4. **dl Worker** (Cloudflare Workers). Sits on the download hostname. Streams B2 reads through Cloudflare (B2 to Cloudflare egress is free) and adds the bytes to the user's download counter, found from the `/u/<id>/` path.
 5. **Meter** (Worker Cron Trigger, hourly). Turns file events into GB-minutes per user, pushes usage to Dodo, and flips accounts to read-only at their cap. The schedule's reason: Dodo needs periodic usage reports.
@@ -52,7 +54,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Command | What it does |
 |---|---|
 | `drive init` | Sign in (opens the browser for a device code), make the drive folder (`~/Drive`), start the mount, find installed agent tools and connect each one. Safe to run again. |
-| `drive status` | Mounted or not, files waiting to upload, this month's cost so far, cap |
+| `drive status` | Mounted or not, files waiting to upload and why, this month's cost so far, cap |
 | `drive usage` | Stored GB now, GB-months so far, downloads used out of the free 3x, cost so far |
 | `drive cap <dollars>` | Change the spending cap |
 | `drive history <file>` | List saved versions: today's from B2, older ones (one per day, up to 30 days) from Hetzner |
@@ -65,7 +67,8 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | `drive approve <branch>` | Copy the branch's changes back. Stops and lists files if the original changed since branching |
 | `drive discard <branch>` | Delete the branch (kept in old versions for 30 days, then gone) |
 | `drive unmount` / `drive mount` | Stop or start the drive |
-| `drive logout` | Unmount, delete this device's key and local config |
+| `drive logout` | Unmount, revoke this device's key on the server (the api Worker's `/api/keys/revoke`, key in HTTP Basic auth), then delete the key and local config. A revoke that fails still deletes the local copy and exits non-zero: "signed out here; the key is still live". |
+| `drive uninstall` | Stop the mount and remove the login item that starts it at the next login. The files in the drive folder, the key and the config are kept — `drive logout` is the command that revokes the key and deletes the config. |
 
 ## Screens (v1)
 
@@ -73,7 +76,7 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 
 | Screen | What's on it |
 |---|---|
-| Sign in | Email one-time code, or Google or GitHub. No card asked |
+| Sign in | Email one-time link, or Google or GitHub. No card asked |
 | Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
 | Usage | One "you saved" line, whose copy varies by month type (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
@@ -95,6 +98,10 @@ Pricing page: the headline is the rate, "2¢ per GB, billed by the minute", with
 | Kiro | Entry in `~/.kiro/settings/mcp.json` |
 
 Agents that run on a server rather than the laptop get an S3 key instead (`drive agents connect s3`): an endpoint, key id and secret, limited in the same way.
+
+The storage secret is never read from a command line, where it would sit in the shell history and in `ps` for every user on the machine. `drive mount` reads it from the drive config file (`~/.config/drive/rclone.conf`, mode 0600), from `DRIVE_S3_SECRET_ACCESS_KEY`, or from stdin with `--secret-key-stdin`. The `--secret-key` flag is refused with an error naming these three ways.
+
+When a revoke fails, `drive logout` records the access key id of the key it could not turn off (never the secret) and every later `logout` keeps reporting that a key is live until that exact key is revoked. So signing in again with a new key, then logging out and revoking the new key, still reports the older key — the exit code is non-zero while any recorded key is still live, never a clean sign-out.
 
 Each tool also gets a short skill note: where the drive is, that deletes can be undone, and to use `drive branch` before large edits. Exact command syntax is checked against each tool's current docs in build step 4.
 
@@ -129,6 +136,8 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 | `usage_minutes` | account_id, hour, gb_minutes_live, download_bytes | Rolled up hourly |
 | `billing_pushes` | account_id, hour, dodo_event_id, amount_units, pushed_at | Stops double-charging if a push retries |
 | `branches` | id, account_id, name, source_prefix, branch_prefix, created_at, snapshot (JSON path to size and modified time), state (`open` / `approved` / `discarded`) | The snapshot finds clashes at approve time |
+| `teams` | id, owner_account_id, name, created_at | One shared drive; its prefix is `t/<id>/` (issue #20) |
+| `team_members` | id, team_id, account_id, email, role (`read_only` / `read_write`), state (`invited` / `active` / `removed`), invited_at, joined_at, revoked_at | `account_id` is empty until an email invite binds to a signed-in account; a removed row is kept, not deleted |
 | `events_seen` | b2_event_id, received_at | Drops duplicate B2 events |
 
 ## How the money is worked out
@@ -146,6 +155,7 @@ Read the FUSE cell for boat.dev, E2B and InstaCloud in the first real sandbox on
 - A device key is limited to `/u/<id>/`, with capabilities `listFiles, readFiles, writeFiles, deleteFiles` (people can really delete; the file stays hidden 1 day in B2 because the drive uses rclone's default hide-not-delete, then sits in Hetzner's old-versions folder for 30 days).
 - An agent key has the same prefix, without `deleteFiles`.
 - A branch key is limited to `/u/<id>/.branches/<name>/`, without `deleteFiles`.
+- A team key is limited to `/t/<teamId>/` (issue #20), with `read_only` members holding list and read and `read_write` members holding write as well. No team role holds `deleteFiles`. Removing a member revokes their team keys at once, so the key stops working on the next request.
 - At the spending cap, the api Worker deletes each write-capable key and mints read-only ones. The mount picks up the new key at its next start, and the CLI restarts the mount. Uploads waiting in the cache stay on disk until the cap is raised.
 - Account closing: all keys revoked at once; files deleted after 30 days, with an email at day 0 and day 25.
 
@@ -162,9 +172,9 @@ Nish, 2026-09-29: "gotta build it better than spacefs tho, at least match it". S
 | "Search 10x faster than Spotlight" | Nothing yet | **Gap** | Issue 18 |
 | Public file links and upload requests | Nothing yet | **Gap** | Issue 19 |
 | Every change is a version, nothing lost | Every save kept 1 day, then one a day for 30 days | **Gap** (Space keeps every version) | Step 8; keeping every version longer costs storage, so this is a deliberate trade |
-| Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead |
+| Fork a whole drive instantly "without copying a byte" | Branches by server-side copy (fast, but it copies) | **Gap** on huge folders | Step 7: measure a 10 GB branch; if it's slow, copy on first write instead. Measured 2026-10-02 (issue 157): a 6 GB file is one multipart copy (5 GiB is CopyObject's single-copy ceiling, so bigger files are `CreateMultipartUpload` + `UploadPartCopy` + `CompleteMultipartUpload`), 384 parts of 16 MiB, 81 s against a local MinIO and the same whole-object checksum at the branch path. The remaining limit is the per-file snapshot: 8,800 files fit one D1 row, 10,000 do not (issue 252 moves it out of the row) |
 | Agents read and write the same files | Same, plus one-command setup for Claude, Codex, Gemini, Cursor and Kiro, sandbox connectors, agent undo and per-agent spending caps | **Beat** | Steps 4, 11; issue 13 |
-| Teams: pooled storage, whole-drive sharing, member access | Nothing yet | **Gap** (company tier, "Talk to us") | Issue 20 |
+| Teams: pooled storage, whole-drive sharing, member access | One team drive shared by several accounts, a role per member, removal that kills the key | Match | Issue 20: `t/<teamId>/` keys, `TEAM_ROLE_CAPABILITIES` (`workers/api/src/keyprovider.js`), `workers/api/src/teams.js` |
 | SSO, audit, private cloud (Enterprise) | Not planned | Gap, fine for now | Later |
 | $15 a month for 1 TB, full price even when part-full | 2¢ per GB by the minute; the monthly bill never passes max($12, $8 × peak TB) — $16 at 2 TB, $40 at 5 TB (Space charges $15 + $12 flat per extra TB, even when part-full) | **Beat** | Step 6 |
 
@@ -176,7 +186,7 @@ Every step is one issue, built by a queue worker and checked by a different mode
 
 | # | Step | What gets built | Done when |
 |---|---|---|---|
-| 1 | Storage and keys | First, on iDrive e2's free 1 TB, check three things: keys limited to one folder, save and delete notifications, and average-not-peak monthly billing. If all pass, iDrive is primary and everything below uses its S3 API; if any fails, use B2. Then: B2 bucket with versioning, SSE-B2, 1-day lifecycle rule for hidden versions, event rule to the api Worker. Key minting in the api Worker. | An agent key's delete leaves a hidden version, `drive restore` brings it back, and the agent key can't read another user's folder. |
+| 1 | Storage and keys | First, on iDrive e2's free 1 TB, check three things: keys limited to one folder, save and delete notifications, and average-not-peak monthly billing. If all pass, iDrive is primary and everything below uses its S3 API; if any fails, use B2. Then: B2 bucket with versioning, SSE-B2, 1-day lifecycle rule for hidden versions, event rule to the api Worker. Key minting in the api Worker. The two answers a stock S3 stand-in can give, the one that needs a real month, and why the vendor's own answers come with #173, are in the section below. | An agent key's delete leaves a hidden version, `drive restore` brings it back, and the agent key can't read another user's folder. |
 | 2 | Drive on one Mac | CLI writes the rclone config and a launchd login item; `rclone nfsmount` with the cache flags. | A 5 GB video starts playing before it has downloaded, and a file saved then followed by a reboot comes back intact. |
 | 3 | Linux and two machines | systemd user unit for `rclone mount`. | A save on the Mac shows up on the Linux box, and a save on Linux shows up on the Mac. |
 | 4 | `drive init` and agents | Device sign-in, agent detection, MCP registration for all five tools, skill notes. | On a clean Mac, one `drive init` and then a fresh Claude Code session lists and edits a file in the drive, and the same works in Codex. |
@@ -189,6 +199,84 @@ Every step is one issue, built by a queue worker and checked by a different mode
 | 10 | Swift File Provider app (later) | Native Finder drive to replace `rclone nfsmount` on Mac. | It passes steps 2 to 4 unchanged. |
 
 Steps 1 to 4 can run with no billing at all, as a private test for Nish's own files. Steps 5 and 6 have to be finished before anyone else is charged.
+
+## Build step 1: the storage answers (the stand-in, 2026-10-01)
+
+Step 1 asks three questions of the storage provider before anything is built on it. Two of them are answered here against a stock S3-compatible stand-in, so the build is not blocked on a vendor account (Nish's direction, 2026-09-29: "do not wait for iDrive and never ask for its keys"); the third needs a real month and moves to #173 with the vendor's own answers, which #173 also reads off iDrive e2 as a configuration change.
+
+| Question | Answer on the stand-in | Where it was measured |
+|---|---|---|
+| Can a key be limited to one folder (prefix)? | **Yes.** The api Worker mints a key with an STS `AssumeRole` session policy whose only object resource is `arn:aws:s3:::<bucket>/u/<account-id>/*`. A key for one account is refused (`403 AccessDenied`) listing, reading and writing another account's folder, and an agent key is refused a delete. | `test/step1-storage.test.mjs`, "an agent key cannot list, read or write another account's folder" and "a delete leaves a hidden version…" |
+| Are there event notifications for a file saved, hidden and deleted? | **Yes.** Bucket notifications fire `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`; a delete on the versioned bucket arrives as `s3:ObjectRemoved:DeleteMarkerCreated` — the hidden event — and the file stays as a non-current version. | `test/step1-storage.test.mjs`, "a saved file produces an event that reaches the api Worker" |
+| Is a month billed on average or peak storage? | **Not answerable without a month on the real provider.** It needs a billing period, not a stand-in. | moves to #173 |
+
+What the stand-in is: the last MinIO release (2025-07-23), in the archived Bitnami package, started by the test setup — the same `test/step1-storage.test.mjs` runs in CI's `verify` job (`npm test`) and on a developer's machine, and the setup is the only thing that decides which. MinIO's own downloads and Docker Hub images were withdrawn and its repository is archived, so the pinned last release is the stock server that has all three of versioning, lifecycle rules and bucket notifications. iDrive e2 replaces it by setting `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_BUCKET` and the master credential (`STORAGE_MASTER_ACCESS_KEY_ID`, `STORAGE_MASTER_SECRET_ACCESS_KEY`), with no code change.
+
+The bucket: versioning on, a lifecycle rule that keeps a non-current ("hidden") version for one day and clears an abandoned delete marker, and bucket notifications pointed at the Worker's `POST /v1/events`. The answers above are read back from the bucket, not taken from the PUT's status. Server-side encryption is the one part of the bucket the stand-in does not carry: a stock S3 server refuses SSE-S3 with "KMS is not configured" (measured 2026-10-01), so SSE-B2 is set on the real bucket with the vendor in #173, where the rest of that bucket's configuration lands too.
+
+## Build step 5: the meter against a stock S3 stand-in (2026-10-02)
+
+Build step 5's done-when is one number from each of two sources that share
+nothing: a full day's GB-minutes from `usage_minutes`, and the storage
+provider's own report of the same account's bytes. `test/step5-meter-standin.test.mjs`
+runs it end to end against the same pinned stand-in build step 1 uses (the
+last MinIO release), in CI's `verify` job and on a developer's machine, with
+the endpoint, region, bucket and credentials read from `DRIVE_STANDIN_*` so
+iDrive e2 is the same build with different values. It replaces the
+`rclone serve s3` on a local folder this issue's text names, because rclone's
+S3 server has no versioning and no event rules at all: it cannot produce a
+hidden version, a delete marker or a notification, so the issue's own second
+bullet is unanswerable without a server that has them. rclone serve s3 is
+still the stand-in for the proofs that need no versioning
+(`test/standin-search.test.mjs`, `test/two-mount-sync.test.mjs`).
+
+What one run proves, with the real records it ran on (2026-10-02,
+`node --test test/step5-meter-standin.test.mjs`, account
+`acct_35f83f85a74ab6b1650a2c24eab6c3b9`):
+
+- **A real file uploaded, replaced and read back through the stand-in.** A
+  40 MB save (version `7c1cf71e-6d35-4fe3-9765-3e24a93f4d96`), an 8 MB edit
+  over it (version `830568a0-86c2-40d1-b9b7-70d19bf3e5e3`, which hides the
+  first), a 6 MB photo in a subfolder (version `679fc287-706e-403f-8b07-c19541a17d0f`)
+  and its delete (delete-marker version `011d015c-decf-4168-b603-818a4829f127`),
+  each call signed with the account's own scoped key from the api Worker's
+  `POST /v1/keys`.
+- **The provider's own event rule, pointed at the Worker.** Four webhook
+  deliveries, each accepted (202), each carrying `Authorization: Bearer <the
+  rule's token>` and no `x-drive-event-token`, and each landing as a version
+  row without any replay.
+- **The provider's own report.** `ListObjectVersions` on the account's
+  prefix: 6 000 000 bytes hidden at the marker, 8 000 000 live, 40 000 000
+  hidden when the edit began.
+- **The day.** `2026-10-01T07:00Z` to `2026-10-02T07:00Z`, 24 closed UTC
+  hours, the hourly trigger fired once per hour with its own
+  `scheduledTime` (`runMeterCron`, the Cron Trigger's own function):
+  **3.04 GB-minutes metered, 3.04 GB-minutes from the provider's own report,
+  drift 0.0000%** (the bar is 1%).
+
+Two things the run tells, both now the code's shape:
+
+1. **The bucket sends a bearer token, not a header of its own.** Measured
+   against the pinned stand-in on 2026-10-02: MinIO's notify webhook puts
+   `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` in `Authorization` and has no
+   variable to set a header of its own, so a rule configured the vendor's own
+   way arrives with no `x-drive-event-token`. `POST /api/storage-events`
+   therefore accepts the same secret from either header
+   (`bearerToken`, src/meter.js); the endpoint is still closed — a missing or
+   wrong token is still the 401 it always was, and the proof shows it.
+2. **A provider's event never says what it replaced.** The edit's
+   `ObjectCreated:Put` carries no hide for the version it replaced, and a
+   delete's marker is a version of its own, so the meter learns a hide from
+   the provider's own version listing through the nightly reconciler (#59).
+   The run above reports `hidden=2 marked=1` before the day is rolled.
+
+Both delivery shapes are read by one mapping: an S3 `Records` envelope, a
+bare list of records, and the single record a bucket bubbles to a
+record-endpoint ARN all go through `notificationRecord` (src/meter.js), which
+takes the provider's own field names (`key`, `size`, `versionId`, `eventTime`,
+`eventName`) and hands `validateEvent` the intake's. A record the mapping does
+not recognise is passed through unchanged, so a malformed record in a batch
+still fails as itself and the good records beside it are stored.
 
 ## How we know it is up (the outage alert)
 
@@ -207,7 +295,7 @@ North star "Reliable" (Nish, 2026-09-30): we hear about an outage before custome
 
 - **B2 delete events.** I confirmed the "file created" event names in Backblaze's API docs on 2026-09-29. I did not confirm the names for hidden and deleted files. The nightly reconciler covers this either way; step 5 checks it.
 - **B2 key limit.** One key per device, agent and branch could mean thousands of keys. Backblaze's key limit was not checked; check it before step 1.
-- **Cloudflare terms for a download proxy.** Serving large files through a Worker has to fit Cloudflare's current terms; check before step 5.
+- **Cloudflare terms for a download proxy.** Checked 2026-09-30, before building the dl Worker (step 5). The answer: streaming reads through a Worker is allowed on the self-serve plan, with two things to hold to. (1) **Response size is not limited by Cloudflare.** The Workers limits page says "Cloudflare does not enforce response body size limits"; the 100 MB figure is the *request* body cap on Free and Pro, so it applies to uploads and not to a download proxy. A CDN cache limit (512 MB Free/Pro, 5 GB Enterprise) applies only if a response is cached, which a per-account download is not. (2) **The old non-HTML clause is gone.** The Self-Serve Subscription Agreement (last updated 2025-09-12, read 2026-09-30) no longer carries the "video or a disproportionate amount of non-HTML content" restriction; it has no "non-HTML" or "disproportionate" language at all, and customer content is covered by 2.5 with acceptable use by 2.7. The one real constraint is CPU time, not bandwidth: streaming a body costs almost no CPU (waiting on the origin does not count), but the Workers Free plan allows 10 ms of CPU per request, so the dl Worker must pass the body through with `response.body`, never buffer or transform it, and its CPU use has to be measured against that ceiling. If it does not fit, the paid Workers plan is $5/month - money, so Nish's call. Cloudflare can change its terms, so re-check before launch.
 - **Mount while read-only.** It is unverified whether rclone keeps waiting uploads safely when its key is swapped for a read-only one. Step 6 proves it.
 - **Missed nights.** If the backup timer misses a night, that night's old versions are lost and the purge skips a folder. The timer's failure must alert (unit failure is already watched on the VPS).
 - **Business tier** (SSO, SOC 2, pooled bill): after v1, not specced here.

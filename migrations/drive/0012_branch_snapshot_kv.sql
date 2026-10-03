@@ -1,0 +1,41 @@
+-- Phase 2 of branch snapshots (drive issue #252, following #157's phase 1).
+-- The snapshot moves out of the `branches` row into a KV namespace
+-- (`BRANCH_SNAPSHOTS`), so a branch of tens of thousands of files lands
+-- instead of being refused.
+--
+-- Why this is the row limit and not the branch size: the snapshot is one
+-- `{size, etag, modified}` entry per file and nothing else, and phase 1
+-- measured it against D1's 1 MiB row limit (test/branches-snapshot.test.mjs
+-- pins the numbers): a 100,000-file branch is ~11 MiB, twelve row-limits,
+-- while a 10 GB branch of one file is one entry. The boundary is the file
+-- count, and the only fix for a file-count limit is a store that is not a
+-- row.
+--
+-- Two additive columns, and nothing else. This is the expansion phase of the
+-- fleet's expand/contract rule:
+--
+--   * `snapshot_key` is the KV key the snapshot now lives at, or '' on a row
+--     written before this file. It is bound by `account_id` and the branch
+--     name the same way every read of this table is, and the code that builds
+--     it puts the account id in a full segment (`u/<id>/…`) so an id that is
+--     a prefix of another (`1` and `10`) cannot reach across — the same rule
+--     the file store applies to storage keys (src/files.js accountPrefix).
+--   * `snapshot_bytes` is the length of that JSON, so a caller can see how big
+--     a branch is without reading the value, and so a row that points at a key
+--     the KV namespace does not hold is visible as a 0 against a non-empty
+--     row rather than as a branch that diffs against nothing.
+--
+-- Both carry a DEFAULT, and neither drops, renames or retypes the existing
+-- `snapshot` column: that column stays exactly where it is and is still
+-- written, so the previous version of the code (which reads only
+-- `branches.snapshot`) keeps working on a row this version wrote, and a
+-- rollback is a code rollback with no data change. `branches.snapshot` is
+-- dropped in a later phase, once nothing reads it; D1 has no down-migrations,
+-- so every file here is one-way.
+--
+-- A snapshot is per account, so the key is namespaced by account, not by
+-- account_id column only: `snapshot_key` is built in code
+-- (src/branches.js snapshotKey), never from a request, so a caller cannot
+-- name another account's key.
+ALTER TABLE branches ADD COLUMN snapshot_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE branches ADD COLUMN snapshot_bytes INTEGER NOT NULL DEFAULT 0;

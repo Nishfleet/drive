@@ -1,0 +1,11 @@
+{
+  "name": "drive-agent-eval",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The agent eval's own npm project (drive#222, drive#257). promptfoo is pinned here, not in the root package.json, because its tree is about 3.6 GB on disk and a warm `npm ci` of it peaks near 4 GB of memory.",
+  "type": "module",
+  "devDependencies": {
+    "@libsql/linux-x64-gnu": "0.5.29",
+    "promptfoo": "0.123.1"
+  }
+}

@@ -22,8 +22,8 @@ import {
   GB_PER_TB,
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
-  monthlyCeilingUsd,
   monthlyBillForStoredTb,
+  monthlyCeilingUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { SITE } from "./seo.js";
@@ -69,7 +69,10 @@ export const BILL_EXAMPLES = Object.freeze(
 );
 
 /** A dollar figure, as the invoice prints it: whole dollars without cents,
- * anything else with two decimals. */
+ * anything else with two decimals.
+ * @param {number} amount
+ * @returns {string}
+ */
 function dollars(amount) {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
 }
@@ -83,9 +86,7 @@ export const BILL_TABLE = Object.freeze(
   [
     "| Stored, kept all month | The meter | The ceiling | Your bill |",
     "| --- | --- | --- | --- |",
-    ...BILL_EXAMPLES.map(
-      (e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`,
-    ),
+    ...BILL_EXAMPLES.map((e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`),
   ].join("\n"),
 );
 
@@ -110,11 +111,19 @@ export function agentCannotDeleteSentence() {
  * @param {keyof typeof KEY_POWERS} kind
  * @param {string} owner the person this key belongs to, in plain words
  */
+/**
+ * @param {string} kind
+ * @param {string} owner
+ * @returns {string}
+ */
 function keyRow(kind, owner) {
-  const powers = KEY_POWERS[kind];
+  // The four kinds are this module's own table, and keyRow is called with
+  // those four literals below, so the index is a key the table holds.
+  const powers = KEY_POWERS[/** @type {keyof typeof KEY_POWERS} */ (kind)];
   return `| ${kind} | ${owner} | ${yesNo(powers.canRead)} | ${yesNo(powers.canWrite)} | ${yesNo(powers.canDelete)} |`;
 }
 
+/** @param {boolean|undefined} value */
 const yesNo = (value) => (value ? "yes" : "no");
 
 /** The two keys a person meets, as a Markdown table. */
@@ -190,6 +199,17 @@ export const FAQ = Object.freeze([
       "The drive also carries a spending cap: at the cap the drive goes read-only, nothing is deleted, and the bill stops there.",
     ].join(" "),
   }),
+  Object.freeze({
+    question: "Will this fill my disk?",
+    scoreboard: ["disk use"],
+    answer: [
+      "Your disk never fills up; the cache is capped at a size you choose.",
+      "What is on disk is the parts of files you have already opened, held in a cache of at most {{CACHE_LIMIT}}, and the drive always keeps at least {{CACHE_FLOOR}} of your disk free.",
+      "`drive cache` shows the disk in use and the limit; `drive cache --max <size>` changes it; `drive cache --clear` empties it without touching a file still waiting to upload.",
+      "`drive status` shows the same cache use.",
+      "Files you keep offline with `drive offline` stay on this computer, are never evicted, and count toward that limit.",
+    ].join(" "),
+  }),
 ]);
 
 /**
@@ -202,9 +222,7 @@ export const FAQ = Object.freeze([
  * @param {string} metric the row's first cell, exactly as the table spells it
  */
 export function scoreboardVerdict(scoreboardText, metric) {
-  const row = scoreboardText
-    .split("\n")
-    .find((line) => line.startsWith(`| ${metric} |`));
+  const row = scoreboardText.split("\n").find((line) => line.startsWith(`| ${metric} |`));
   if (!row) {
     throw new Error(`docs/scoreboard.md has no row for "${metric}"`);
   }
@@ -246,6 +264,13 @@ export function faqMarkdown(scoreboardText) {
  * which this module will not open — it is plain data and pure functions).
  * @param {Record<string, string>} [extra]
  */
+// The cache limit and floor are the shipped defaults from cmd/drive/config.go,
+// and test/docs.test.mjs asserts they still match the Go source.
+const CACHE_LIMIT = "20G";
+const CACHE_FLOOR = "1G";
+const CACHE_COMMANDS =
+  "`drive cache` shows the disk in use and the limit, `drive cache --max <size>` changes it, `drive cache --clear` empties it";
+
 export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
@@ -255,6 +280,9 @@ export function markerValues(extra = {}) {
     CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
     CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
+    CACHE_LIMIT,
+    CACHE_FLOOR,
+    CACHE_COMMANDS,
     FREE_DOWNLOAD_MULTIPLE: String(BILLING_CONFIG.freeDownloadMultiplier),
     DOWNLOAD_RATE: `${Math.round(BILLING_CONFIG.downloadRateUsdPerGb * 100)}¢ per GB`,
     AGENT_TOOLS: AGENT_TOOLS.join(", "),

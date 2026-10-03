@@ -1,42 +1,65 @@
 // Thin helpers over D1 so route code reads as SQL plus intent. Every value is
 // bound, never interpolated.
+//
+// The type is Cloudflare's own `D1Database` (the ambient type `cf workers types`
+// generates from cloudflare.config.ts), not a hand-written copy of the subset
+// these helpers touch: a copy drifted once already — its braces were unbalanced
+// and `tsc` could not parse the file at all (drive#174). The tests still hand
+// these helpers a stand-in; the test tree is outside the type check (drive#162),
+// and a stand-in only has to speak the interface at runtime.
 
 /**
- * The slice of Cloudflare's D1 database these helpers touch. Declared here
- * (rather than as the ambient D1Database global) so the module type-checks and
- * runs under plain node, where the tests stand it in with the same shape.
- * @typedef {{prepare: (sql: string) => {bind: (...params: unknown[]) => {first: () => Promise<unknown>, all: () => Promise<{results: unknown[]}>, run: () => Promise<unknown>}}}} D1Like
- */
-
-/**
- * @param {D1Like} db
+ * @param {D1Database} db
  * @param {string} sql
  * @param {...unknown} params
  * @returns {Promise<unknown>}
  */
 export function first(db, sql, ...params) {
-  return db.prepare(sql).bind(...params).first();
+  return db
+    .prepare(sql)
+    .bind(...params)
+    .first();
 }
 
 /**
- * @param {D1Like} db
+ * @param {D1Database} db
  * @param {string} sql
  * @param {...unknown} params
  * @returns {Promise<unknown[]>}
  */
 export async function all(db, sql, ...params) {
-  const result = await db.prepare(sql).bind(...params).all();
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
+    .all();
   return result.results;
 }
 
 /**
- * @param {D1Like} db
+ * @param {D1Database} db
  * @param {string} sql
  * @param {...unknown} params
  * @returns {Promise<unknown>}
  */
 export function run(db, sql, ...params) {
-  return db.prepare(sql).bind(...params).run();
+  return db
+    .prepare(sql)
+    .bind(...params)
+    .run();
+}
+
+/**
+ * Statements that must all land or none. D1 runs a `batch()` in one
+ * transaction: a statement that fails rolls the whole set back, so a caller
+ * never has to choose between writing a row and marking a row consumed — a
+ * half-written pair is the shape a lost sign-in or a double token comes from.
+ * The results come back in the order the statements were given.
+ * @param {D1Database} db
+ * @param {Array<{sql: string, params?: unknown[]}>} statements
+ * @returns {Promise<unknown[]>}
+ */
+export function batch(db, statements) {
+  return db.batch(statements.map(({ sql, params = [] }) => db.prepare(sql).bind(...params)));
 }
 
 /** Seconds since the epoch: the one clock format in the api tables. */
@@ -67,9 +90,6 @@ export function newId(prefix) {
  * @param {string} text
  */
 export async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(text),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return toHex(new Uint8Array(digest));
 }

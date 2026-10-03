@@ -159,13 +159,13 @@ func initAgents(env Env, apiBase ...string) error {
 		// other tools go on, and the failed tool keeps the entry it had.
 		if t.KeyEnv != "" && env.Minter != nil {
 			if err := mintToolKey(env, t); err != nil {
-				fmt.Printf("  %-8s failed: %v\n", t.Name, err)
+				printToolFailure(t.Name, err)
 				failed++
 				continue
 			}
 		}
 		if err := t.Connect(env); err != nil {
-			fmt.Printf("  %-8s failed: %v\n", t.Name, err)
+			printToolFailure(t.Name, err)
 			failed++
 			continue
 		}
@@ -184,11 +184,6 @@ func initAgents(env Env, apiBase ...string) error {
 		}
 		connected++
 	}
-	for _, t := range all {
-		if on, _ := t.Installed(env); !on {
-			fmt.Printf("  %-8s not installed\n", t.Name)
-		}
-	}
 	if connected == 0 && failed == 0 {
 		fmt.Println("no agent tools found; install one and run `drive init` again")
 	}
@@ -197,6 +192,17 @@ func initAgents(env Env, apiBase ...string) error {
 	}
 	printFirstRunNext(os.Stdout, CurrentGOOS(), env.Home, env.DriveDir)
 	return nil
+}
+
+// printToolFailure prints one agent-tool failure the same way main prints
+// every other failure: what happened and the exact next step, never a raw
+// rclone or storage error (drive#117).
+func printToolFailure(name string, err error) {
+	var f *failure
+	if !errors.As(err, &f) {
+		f = failDetail("unexpected", err)
+	}
+	fmt.Printf("  %-8s failed: %s\n", name, f.Error())
 }
 
 // printFirstRunNext ends the first run on one clear line (drive#117): where

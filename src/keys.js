@@ -13,13 +13,7 @@ import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 // (cmd/drive/tools.go); the docs cannot import Go, so the list is declared
 // once here in the order the CLI prints it, and test/docs.test.mjs pins the two
 // lists to each other, so adding a tool in Go without the docs fails CI.
-export const AGENT_TOOLS = Object.freeze([
-  "claude",
-  "codex",
-  "gemini",
-  "cursor",
-  "kiro",
-]);
+export const AGENT_TOOLS = Object.freeze(["claude", "codex", "gemini", "cursor", "kiro"]);
 
 /** @typedef {{canRead: boolean, canWrite: boolean, canDelete: boolean, capabilities: ReadonlyArray<string>}} Powers */
 

@@ -8,6 +8,49 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-03
+
+- `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
+  disk is rclone's own VFS cache, capped at 20G with 1G of free space always
+  kept, and a size you choose. `drive status` shows the same use. Files waiting
+  to upload and files kept offline survive `--clear` and count toward the
+  limit.
+
+- `drive offline` and `drive online`: keep a file or folder on this computer
+  so it opens with no internet, and `drive status` lists what is kept and how
+  much disk it uses. New files in a kept folder stay kept. The copy lives in
+  rclone's own cache; filling the cache does not drop it.
+
+- `drive status` says what is waiting to upload and why: a cut-off upload
+  resumes from rclone's VFS cache, a full cache disk fails with the table's
+  disk-full words and loses nothing already saved, and a killed mount still
+  shows the waiting files until they go up.
+- `drive update` and `drive version`: an update replaces the installed CLI
+  with the latest released version by the same `go install` command a person
+  installs with, and `drive version` prints the version the binary was built
+  and installed at, so an update is visible.
+- Windows gets the same `drive mount` the Mac and Linux have had: `rclone
+  mount` with WinFsp as the driver, mounted at the first free drive letter from
+  D: up, started at login by a stock Task Scheduler task (no helper scripts),
+  with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
+  branch. A missing WinFsp is an error that points at reinstalling Drive.
+- `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
+  detach the letter, and find a stale mount by reading the letters the running
+  rclone processes hold, so a letter rclone is still holding is never reported
+  as stopped.
+- Windows installs from an MSI built with the stock WiX toolchain: it puts
+  `drive.exe` and rclone on PATH, brings WinFsp in through WinFsp's own
+  package dependency (never a vendored copy), registers the logon task, and
+  uninstalls to a clean machine. The builds are unsigned and pre-release, so
+  there is nothing to install from a public release yet.
+
+- The Benchmarks page: every speed scenario the suite measures, next to the
+  published rival figure for the same case, with losses labelled losses. Linux
+  and Mac numbers that have not been run yet say so; nothing here is estimated.
+- The share card is now rendered from a committed source page, and its price is
+  gated against the one price config, so a re-priced product moves the card
+  with the page instead of leaving a stale picture behind.
+
 ## 2026-09-30
 
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.
@@ -29,7 +72,7 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  Limits, Security and this changelog, each also served as Markdown.
+  Limits, Benchmarks, Security and this changelog, each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.
 

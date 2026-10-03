@@ -49,7 +49,7 @@ const (
 
 // skillDescription is the frontmatter description the Agent Skills loaders use
 // to decide when the skill is relevant. It must be a single YAML line.
-const skillDescription = "Read and write the user's drive folder through the drive MCP server. Use when the user asks about files in their drive, or to list, read, or edit drive files."
+const skillDescription = "Read, write and search the user's drive folder through the drive MCP server. Use when the user asks about files in their drive, or to list, search, read, or edit drive files."
 
 // skillHeader is the fixed opening of the drive's skill file. The four
 // SKILL.md loaders require YAML frontmatter at the very start with name and
@@ -95,10 +95,17 @@ func (t Tool) SkillPath(env Env) (string, bool) {
 	return fn(env.Home), true
 }
 
-// skillBody is the drive's block: where the drive is, that deletes can be
-// undone, and to branch before large edits (docs/build-spec.md, "Agent
-// tools"). A session outside the drive folder learns the drive exists here; a
-// session inside it learns the same from the in-folder note.
+// skillBody is the drive's block: where the drive is, that there is a search,
+// that deletes can be undone, and to branch before large edits
+// (docs/build-spec.md, "Agent tools"; issue #18 added the search lines). A
+// session outside the drive folder learns the drive exists here; a session
+// inside it learns the same from the in-folder note.
+//
+// Two ways to search, named as they are: the stock server's own `search_files`
+// tool finds a name in the drive folder, and `drive search <words>` answers
+// from the D1 file index without walking the folder. They are different
+// mechanisms and the note does not pretend otherwise; the index is the fast
+// one the 10x-Spotlight claim is measured on.
 func skillBody(driveDir string) string {
 	return "# The user's drive\n\n" +
 		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
@@ -106,6 +113,11 @@ func skillBody(driveDir string) string {
 		"server over that folder) reads and writes it. The server is allowed\n" +
 		"to serve the session's working directory, so to work on drive files,\n" +
 		"start the session in `" + driveDir + "`.\n\n" +
+		"- To find a file by name, use the `search_files` MCP tool. For the\n" +
+		"  fast, index-backed search, run `drive search <words>` in a terminal:\n" +
+		"  it answers from the drive's file index and does not walk the folder.\n" +
+		"- The folder is not fully on the computer: the parts an app has opened\n" +
+		"  sit in a capped cache, and `drive cache --max 5G` sizes it.\n" +
 		"- Deletes are recoverable: `drive restore <file>` brings a file back.\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve`\n" +
 		"  when the changes are ready to copy back.\n"

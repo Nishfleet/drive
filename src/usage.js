@@ -51,6 +51,14 @@ export const USAGE_LABELS = Object.freeze({
     what: "No storage history yet.",
     next: "It fills in from the drive's first day on the meter.",
   }),
+  // The upload-progress line's section (drive issue #308). The line itself is
+  // not a word here: /api/usage carries it finished, assembled by
+  // uploadProgress() from UPLOAD_LABEL in src/status.js — the one table
+  // `drive status` and the first-run page also read — so the page renders
+  // another module's sentence and holds no second copy of it. What this page
+  // owns is the heading above the line and the reason the line moves at all.
+  uploads: "Uploads",
+  uploadsHint: "Saves upload a few seconds after you close the file.",
   // A read that could not reach the Worker. The page keeps the numbers it had
   // and says the service was unreachable, rather than printing zeros over them.
   unreachable: Object.freeze({
@@ -61,7 +69,10 @@ export const USAGE_LABELS = Object.freeze({
 
 // The summary labels the four `drive usage` lines print, in print order. They
 // are checked one by one, so a summary that is missing one is refused with the
-// field named rather than rendered as "undefined".
+// field named rather than rendered as "undefined". The keys are the summary's
+// own label names, so the check below indexes the labels with a key they
+// actually hold rather than with an arbitrary string.
+/** @type {ReadonlyArray<keyof ReturnType<typeof import("./billing.js").usageSummary>["labels"]>} */
 const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "cost"]);
 
 /**
@@ -71,32 +82,29 @@ const LINE_LABEL_KEYS = Object.freeze(["storedNow", "gbMonths", "downloads", "co
  * disagree about a number. The Go CLI lands with build steps 2 and 4 (issues
  * #3, #5); these lines are its contract, pinned by test/usage.test.mjs so the
  * command can be wired without re-deciding the output.
- * @param {ReturnType<import("./billing.js").usageSummary>} summary
+ * @param {unknown} summary
  * @returns {readonly string[]}
  */
 export function usageLines(summary) {
-  if (
-    typeof summary !== "object" ||
-    summary === null ||
-    typeof summary.labels !== "object" ||
-    summary.labels === null
-  ) {
+  if (typeof summary !== "object" || summary === null) {
     throw new TypeError(`usageLines needs a usageSummary() result, got ${String(summary)}`);
   }
-  // Each label the four lines print is checked, so a payload missing one fails
-  // here with the field named instead of printing "undefined" or "NaN" in a
-  // terminal the person is trying to read.
+  const payload = /** @type {{labels?: unknown}} */ (summary);
+  if (typeof payload.labels !== "object" || payload.labels === null) {
+    throw new TypeError(`usageLines needs a usageSummary() result, got ${String(summary)}`);
+  }
+  const labels = /** @type {Record<string, unknown>} */ (payload.labels);
   for (const key of LINE_LABEL_KEYS) {
-    if (typeof summary.labels[key] !== "string") {
+    if (typeof labels[key] !== "string") {
       throw new TypeError(
-        `usageLines needs summary.labels.${key} as a string, got ${String(summary.labels[key])}`,
+        `usageLines needs summary.labels.${key} as a string, got ${String(labels[key])}`,
       );
     }
   }
   return Object.freeze([
-    `${USAGE_LABELS.storedNow}: ${summary.labels.storedNow}`,
-    `${USAGE_LABELS.gbMonths}: ${summary.labels.gbMonths}`,
-    `${USAGE_LABELS.downloads}: ${summary.labels.downloads}`,
-    `${USAGE_LABELS.cost}: ${summary.labels.cost}`,
+    `${USAGE_LABELS.storedNow}: ${labels.storedNow}`,
+    `${USAGE_LABELS.gbMonths}: ${labels.gbMonths}`,
+    `${USAGE_LABELS.downloads}: ${labels.downloads}`,
+    `${USAGE_LABELS.cost}: ${labels.cost}`,
   ]);
 }
