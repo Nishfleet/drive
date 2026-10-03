@@ -103,7 +103,7 @@ export default defineConfig({
       // runtime knows to inject it; a missing secret produces a warning at
       // dev/deploy, and the handler fails closed with 503 until it is set.
       // Set it once, the same way the email token is set (it persists across
-      // deploys) -- see the note below both secret bindings for the two ways
+      // deploys) -- see the note above both secret bindings for the two ways
       // to do that without the value ever sitting in argv.
       // (--type is required: cf refuses the update without it. #189: the
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
