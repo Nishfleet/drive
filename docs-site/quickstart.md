@@ -34,6 +34,16 @@ PATH, brings WinFsp in through WinFsp's own package dependency, and registers
 the logon task. Until a signed release exists there is nothing public to
 download yet, and `winget install Nishfleet.Drive` comes with that release.
 
+When a new version ships, one command moves you to it:
+
+```sh
+drive update
+```
+
+It runs the same `go install` from a new shell, so it leaves the old binary in
+place until the new one is built, and your Drive folder and mount keep working
+throughout. `drive version` says which version you are on.
+
 ## 2. Point it at your storage
 
 Your invite comes with the endpoint, bucket and prefix for your own folder, and
@@ -77,6 +87,17 @@ drive status
 Storage is metered from the moment the mount starts, and {{FREE_USD}} of it is
 free every month. [Pricing and your bill](/pricing) has the ceiling and four
 worked sizes.
+
+## 6. Keep it current
+
+```sh
+drive update
+```
+
+`drive update` reads the newest released version, installs it with the same
+`go install` command this page started with, and prints the version the
+installed binary now reports. `drive update --check` says whether a newer
+version exists and changes nothing.
 
 ## Next
 

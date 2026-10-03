@@ -10,6 +10,11 @@
     <priority>1.0</priority>
   </url>
   <url>
+    <loc>https://drive-pricing.nishant345.workers.dev/starter.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://drive-pricing.nishant345.workers.dev/docs/quickstart</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
