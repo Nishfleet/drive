@@ -37,10 +37,15 @@ leaves it in place. Deleting needs a person.
 ## Branch keys
 
 `drive branch <folder>` creates a server-side copy of that folder for an agent
-to work in. The agent gets a **branch key** limited to the branch's own prefix:
+to work in. The branch takes the folder's name, or `--name <n>`. The agent gets a
+**branch key** limited to the branch's own prefix:
 `u/<your-id>/.branches/<branch-name>/`. It can read and write inside that
 branch, but it cannot delete — the same rule as a regular agent key. A branch
 key cannot reach your other files or other branches.
+
+Since a branch is a full copy, it counts against your storage until you
+discard or approve it. Measured branch times for large folders are on the
+Benchmarks page.
 
 When you are done, `drive approve <branch>` copies the branch's changes back
 to the original folder. If the original changed since you branched, `approve`
