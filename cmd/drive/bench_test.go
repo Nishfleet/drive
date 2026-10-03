@@ -928,6 +928,22 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
 	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
 	// contend with the mount's own FUSE traffic.
+	//
+	// The warm-up read below is what let the same assertion run green on real
+	// storage (drive#382: it failed there and passed on the stand-in). The
+	// first read of a file through the mount pays for the connection, TLS and
+	// read-ahead setup, and that cost is the mount's, not the overlap's, so the
+	// bench must not time it. Before the warm-up the bench timed that first read
+	// as "during prefetch" and a warm read as "prefetch off", and reported the
+	// mount's own warm-up as slowdown. The stand-in passed because the same
+	// warm-up there costs under a millisecond. The warm-up reads its own 1 MiB
+	// file, so the two measured files stay cold and both are the same kind of
+	// read.
+	//
+	// The assertion is unchanged. On a read under 20 ms the flat slack is the
+	// binding term. On a read over 20 ms `without*2` is, because the slack can
+	// never reach twice the control: what fails is a read more than twice as
+	// slow as its own control.
 	h := benchSetup(b)
 	local := filepath.Join(h.root, "fixtures", "busy")
 	if err := os.MkdirAll(local, 0o755); err != nil {
@@ -938,6 +954,9 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 		if err := os.WriteFile(p, bytes.Repeat([]byte("p"), 64<<10), 0o644); err != nil {
 			b.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "warm.bin"), bytes.Repeat([]byte("w"), 1<<20), 0o644); err != nil {
+		b.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(local, "user-a.bin"), bytes.Repeat([]byte("u"), 1<<20), 0o644); err != nil {
 		b.Fatal(err)
@@ -950,6 +969,12 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	}
 	time.Sleep(6 * time.Second)
 	busy := filepath.Join(h.mountDir, "busy")
+	// Warm the mount's read path once, before either measured read. The mount
+	// caches a folder for --dir-cache-time (5s), so the 6 s above also expired
+	// the folder cache, and this read is the one that fills it.
+	if _, err := os.ReadFile(filepath.Join(busy, "warm.bin")); err != nil {
+		b.Fatalf("warm the mount read path: %v", err)
+	}
 	// One prefetch pass in the background, the way the sidecar runs after a
 	// listing — not a spin loop, which would not be how production schedules
 	// work. userBusy is what inotify sets on a user file open, so the pass
