@@ -605,10 +605,13 @@ export default {
       // A missing key skips rather than failing the rollup; a failed ingest
       // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
       // the unit tests can record the request without reaching the network.
-      const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch}} */ (env);
+      // DODO_BASE_URL overrides the test host (drive issue #323, owner comment
+      // 2026-10-03T06:35Z); it defaults to test.dodopayments.com when unset.
+      const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (env);
       await pushBillingHours(env.METER_DB, hours, {
         apiKey: dodo.DODO_PAYMENTS_API_KEY,
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        baseUrl: dodo.DODO_BASE_URL,
         now: event.scheduledTime,
       });
       return;

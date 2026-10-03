@@ -16,6 +16,8 @@ import { monthBillCents } from "../src/billing.js";
 import {
   billingEventId,
   DODO_EVENT_NAME,
+  DODO_INGEST_PATH,
+  DODO_TEST_BASE_URL,
   DODO_TEST_INGEST_URL,
   pushBillingHours,
 } from "../src/dodo.js";
@@ -136,6 +138,39 @@ test("the ingest URL is Dodo test mode, never live", () => {
     false,
     "the module must not name the live host",
   );
+});
+
+test("the ingest URL is composed from a configurable base, defaulting to test mode", async () => {
+  const day = await storedHours(10, 1);
+  const recorder = recordingFetch();
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: day.from + HOUR_MS,
+  });
+  assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);
+  assert.equal(
+    recorder.calls[0].url,
+    `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`,
+    "the default is the test host composed from the exported base and path",
+  );
+});
+
+test("a baseUrl option overrides the test host without hardcoding live", async () => {
+  const day = await storedHours(10, 1);
+  const recorder = recordingFetch();
+  const liveHost = "https://live.dodopayments.com";
+  await pushBillingHours(day.db, day.hours, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    baseUrl: liveHost,
+    now: day.from + HOUR_MS,
+  });
+  assert.equal(recorder.calls[0].url, `${liveHost}${DODO_INGEST_PATH}`);
+  // The source itself must never carry the live host — only env can set it
+  // (drive issue #323, owner comment 2026-10-03T06:35Z).
+  const src = readFileSync(new URL("../src/dodo.js", import.meta.url), "utf8");
+  assert.equal(src.includes("live.dodopayments.com"), false, "the module must not name the live host");
 });
 
 test("the event id is the account and hour, so a retry is the same id", () => {

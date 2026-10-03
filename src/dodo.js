@@ -7,9 +7,9 @@
 // never the raw meter — and the event's metadata carries the invoice's three
 // dollar lines, including "Free credit −$1.00".
 //
-// Live mode is not reachable from this module: the host is the test server
-// Dodo's own docs name, and there is no option that points anywhere else.
-// Switching to live is Nish's call. No card is taken here.
+// Live mode is not reachable from this module by default: the host is the
+// test server Dodo's own docs name, and switching to live is a single env
+// var (DODO_BASE_URL) that Nish sets. No card is taken here.
 //
 // Catch-up hours omit `timestamp`. Dodo's ingest docs (test.dodopayments.com
 // /events/ingest, "Time Validation"): a timestamp older than 1 hour is
@@ -25,7 +25,15 @@
 import { monthBillCents } from "./billing.js";
 import { hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
-export const DODO_TEST_INGEST_URL = "https://test.dodopayments.com/events/ingest";
+// The Dodo ingest endpoint is built from a base URL and a path, so
+// the host is configurable (the test host vs the live host) rather
+// than hard-coded (drive issue #323, owner comment 2026-10-03T06:35Z).
+// The default stays the test server Dodo's own docs name; switching
+// to live is Nish's call, and the env var (DODO_BASE_URL, read in
+// src/index.js) is the only switch. No card is taken here.
+export const DODO_TEST_BASE_URL = "https://test.dodopayments.com";
+export const DODO_INGEST_PATH = "/events/ingest";
+export const DODO_TEST_INGEST_URL = `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`;
 export const DODO_EVENT_NAME = "drive.usage";
 
 const INGEST_BATCH = 1000;
@@ -53,6 +61,7 @@ export function billingEventId(accountId, hour) {
 /**
  * @typedef {{
  *   apiKey?: string,
+ *   baseUrl?: string,
  *   fetch?: typeof fetch,
  *   now?: number|Date|string,
  * }} PushOptions
@@ -78,6 +87,14 @@ export async function pushBillingHours(db, hours, options = {}) {
   if (apiKey.length === 0) {
     return { pushed: 0 };
   }
+  // The Dodo ingest host is configurable (test.dodopayments.com vs live),
+  // so live billing can be switched on without a code change (drive issue
+  // #323, owner comment 2026-10-03T06:35Z). The default stays the test server;
+  // the only switch is env.DODO_BASE_URL, read in src/index.js.
+  const baseUrl = typeof options.baseUrl === "string" && options.baseUrl !== ""
+    ? options.baseUrl
+    : DODO_TEST_BASE_URL;
+  const ingestUrl = `${baseUrl}${DODO_INGEST_PATH}`;
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new TypeError("pushBillingHours needs fetch");
@@ -162,6 +179,7 @@ export async function pushBillingHours(db, hours, options = {}) {
     const batch = pending.slice(offset, offset + INGEST_BATCH);
     await ingestEvents(
       fetchImpl,
+      ingestUrl,
       apiKey,
       batch.map((item) => item.event),
     );
@@ -305,11 +323,12 @@ async function customersForHour(db, hour) {
 
 /**
  * @param {typeof fetch} fetchImpl
+ * @param {string} ingestUrl
  * @param {string} apiKey
  * @param {Array<Record<string, unknown>>} events
  */
-async function ingestEvents(fetchImpl, apiKey, events) {
-  const response = await fetchImpl(DODO_TEST_INGEST_URL, {
+async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
+  const response = await fetchImpl(ingestUrl, {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
