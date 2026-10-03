@@ -10,6 +10,12 @@ the live site.
 
 ## 2026-10-03
 
+- One command installs the drive CLI and rclone together: the Linux `.deb` and
+  `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
+  and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
+  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  removes that login item.
+
 - `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
   disk is rclone's own VFS cache, capped at 20G with 1G of free space always
   kept, and a size you choose. `drive status` shows the same use. Files waiting

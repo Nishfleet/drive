@@ -468,6 +468,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
     "go install github.com/Nishfleet/drive/cmd/drive@latest",
+    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
+    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
+    "brew install nishfleet/tap/drive",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",
