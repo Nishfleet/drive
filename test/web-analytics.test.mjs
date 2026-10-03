@@ -124,11 +124,66 @@ test("a page that already carries a beacon has it replaced, not doubled", () => 
   );
 });
 
+test("a beacon tag in any hand-written shape is counted, so two cannot ship", () => {
+  // The dashboard snippet is one shape of beacon tag, not the only one: Cloudflare
+  // has renamed the file, and a person formatting HTML by hand can leave a space
+  // before the closing >. A reader that counts only one spelling is how a page
+  // ships two beacons and reports its page views twice. Each shape below is
+  // stripped and replaced, and the count after the build is one.
+  const shapes = [
+    String.raw`<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "${OTHER_TOKEN}"}'></script>`,
+    String.raw`<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "${OTHER_TOKEN}"}'></script >`,
+    String.raw`<script defer src="https://static.cloudflareinsights.com/rum/site/${OTHER_TOKEN}.js"></script>`,
+    String.raw`<script
+    defer
+    src="https://static.cloudflareinsights.com/beacon.min.js"
+    data-cf-beacon='{"token": "${OTHER_TOKEN}"}'
+  ></script>`,
+  ];
+  for (const shape of shapes) {
+    const html = read("public/signin.html").replace("</head>", `\n  ${shape}\n</head>`);
+    assert.equal(beaconTagsIn(html).length, 1, "the pasted shape must be recognised as a beacon");
+    const built = withBeacon(html, beaconToken(TOKEN));
+    assert.equal(beaconTagsIn(built).length, 1, `one beacon must ship for: ${shape.slice(0, 40)}`);
+    assert.equal(assertSingleBeacon(built, "signin.html"), built);
+    assert.ok(!built.includes(OTHER_TOKEN), "the old token is replaced, not added to");
+    assert.ok(built.includes(TOKEN), "the setting's token is the one that ships");
+  }
+});
+
+test("a foreign analytics script is not the beacon and does not fail the build", () => {
+  // A page can carry a script from somewhere else. It is not a Cloudflare beacon,
+  // so the build neither strips it nor counts it: the gate is one *beacon*, and
+  // the site owns which other scripts it runs.
+  const foreign =
+    '<script defer src="https://example.com/analytics/rum.js" data-site="1"></script>';
+  const html = read("public/signin.html").replace("</head>", `  ${foreign}\n</head>`);
+  const built = withBeacon(html, beaconToken(TOKEN));
+  assert.equal(beaconTagsIn(built).length, 1, "the foreign script is not a beacon");
+  assert.ok(built.includes(foreign), "the foreign script is left where the page put it");
+});
+
 test("a page with no </head> fails the build instead of shipping no beacon", () => {
   assert.throws(
     () => withBeacon("<html><body>no head here</body></html>", beaconToken(TOKEN)),
     /<\/head>/,
   );
+});
+
+test("the tag is safe to build from any caller: the shape check travels with it", () => {
+  // withBeacon and beaconTag are exported, and a caller can reach them without
+  // going through beaconToken. The shape check lives in beaconTag itself, so a
+  // token that is not the dashboard's shape fails there rather than becoming a
+  // tag that carries it into a JSON attribute unescaped.
+  for (const bad of ["not-a-token", "'; document.write(pwned); //", TOKEN.slice(0, 31)]) {
+    assert.throws(
+      () => beaconTag(bad),
+      new RegExp(BEACON_TOKEN_SETTING),
+      `${bad} must not become a tag`,
+    );
+    assert.throws(() => withBeacon("<html><head></head></html>", bad), /<\/head>|expected 32/);
+  }
+  assert.equal(beaconTag(""), "");
 });
 
 test("a mis-set token fails the build and names the setting", () => {

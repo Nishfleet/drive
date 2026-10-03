@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
 import {
@@ -90,6 +90,13 @@ function webAnalyticsBeacon(): Plugin {
     applyToEnvironment(environment) {
       if (environment.name !== "client") return false;
       assetsDir = environment.config.build.outDir;
+      // A relative value would join page names onto the wrong tree, and
+      // readFileSync would then fail on a path that looks plausible.
+      if (assetsDir !== "" && !isAbsolute(assetsDir)) {
+        throw new Error(
+          `drive-web-analytics-beacon: the client output directory is not absolute: ${assetsDir}`,
+        );
+      }
       return true;
     },
     writeBundle() {

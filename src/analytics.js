@@ -68,8 +68,14 @@ const BEACON_SRC = "https://static.cloudflareinsights.com/beacon.min.js";
 // the script under it, not on one file name: Cloudflare has changed the file
 // name of the beacon, and a page that still carries the old one must not end up
 // with two beacons.
+//
+// Both patterns tolerate whitespace before the closing `>`. HTML allows it, so a
+// hand-formatted snippet can carry it, and a tag the strip does not recognise
+// and the reader does not count is exactly the page that would ship two beacons
+// and report its page views twice.
 const EXISTING_BEACON =
-  /[ \t]*<script\b[^>]*\bsrc=["'][^"']*static\.cloudflareinsights\.com\/[^"']*["'][^>]*>\s*<\/script>\r?\n?/g;
+  /[ \t]*<script\b[^>]*\bsrc=["'][^"']*static\.cloudflareinsights\.com\/[^"']*["'][^>]*\s*>\s*<\/script\s*>\r?\n?/g;
+const ANY_BEACON = /<script\b[^>]*static\.cloudflareinsights\.com\/[^>]*\s*>\s*<\/script\s*>/g;
 
 /**
  * Every Cloudflare beacon tag a document carries, whichever way it is quoted or
@@ -80,15 +86,19 @@ const EXISTING_BEACON =
  * @returns {string[]}
  */
 export function beaconTagsIn(html) {
-  return html.match(/<script\b[^>]*static\.cloudflareinsights\.com\/[^>]*><\/script>/g) ?? [];
+  return html.match(ANY_BEACON) ?? [];
 }
 
 /**
  * A page that carries exactly one beacon tag, or an error naming the page. This
- * is the build's own gate on the injection: it runs on the bytes the build wrote
- * to the output directory, so a page that ends up with two beacons (a strip that
- * missed an old one) or with none fails the build instead of shipping a page that
- * measures nothing, or measures twice.
+ * is the build's own gate on the pages it just wrote out: a page that ends up
+ * with two beacons (a strip that missed an old one) or with none fails the build
+ * instead of shipping a page that measures nothing, or measures twice.
+ *
+ * It runs on the token-set path, where the beacon is meant to be there. The
+ * switched-off path ships the pages untouched and carries no beacon at all, and
+ * the check above (not this one) is what would fail a build that tried to render
+ * a token it was not given.
  * @param {string} html the built page's HTML
  * @param {string} page the page's file name, for the error message
  * @returns {string} the same HTML
@@ -139,8 +149,12 @@ export function beaconToken(setting) {
  * @returns {string}
  */
 export function beaconTag(token) {
-  if (token === "") return "";
-  return `<script defer src="${BEACON_SRC}" data-cf-beacon='{"token": "${token}"}'></script>\n`;
+  // The shape check is here rather than in the caller's promise, so a token this
+  // module did not validate cannot become a tag: the tag interpolates straight
+  // into a JSON attribute, and a token holding a quote would break out of it.
+  const shape = beaconToken(token);
+  if (shape === "") return "";
+  return `<script defer src="${BEACON_SRC}" data-cf-beacon='{"token": "${shape}"}'></script>\n`;
 }
 
 /**
@@ -159,11 +173,13 @@ export function beaconTag(token) {
 export function withBeacon(html, token) {
   const tag = beaconTag(token);
   if (tag === "") return html;
-  const head = html.indexOf("</head>");
-  if (head === -1) {
-    throw new Error("the page has no </head>, so there is nowhere to put the Web Analytics beacon");
-  }
+  // The old beacon comes out first, and the head is found in what is left, so the
+  // insertion point cannot move under the strip and a page whose stripped
+  // section ate the head fails the check below instead of being spliced shut.
   const withoutOld = html.replace(EXISTING_BEACON, "");
   const close = withoutOld.indexOf("</head>");
+  if (close === -1) {
+    throw new Error("the page has no </head>, so there is nowhere to put the Web Analytics beacon");
+  }
   return `${withoutOld.slice(0, close)}${tag}${withoutOld.slice(close)}`;
 }
