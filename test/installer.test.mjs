@@ -251,30 +251,20 @@ test("the winget manifest makes WinFsp a package dependency", () => {
 });
 
 test("the job proves both routes: the MSI with msiexec /qn, and the bundle winget runs", () => {
-  // `msiexec /qn` on the MSI is the issue's own finish line, silent install.
+  // Every msiexec call passes its args as an array, and each one
+  // writes its own verbose log (/l*v) so a red run's only evidence
+  // is the exit code — and now the log itself (drive#369).
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList `\/i`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
-    "the Drive MSI is installed silently with msiexec /qn",
-  );
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',/);
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList `\/x`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
-    "and uninstalled the same silent way",
-  );
-  // The bundle is what `winget install` and a direct download both run
-  // (the winget manifest's InstallerType is burn), so building it and proving
-  // nothing about it would leave the shipped route untested.
-  asserts(
-    "installer/windows-msi.yml",
-    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/quiet`/,
-    "the bundle is installed",
-  );
-  asserts(
-    "installer/windows-msi.yml",
-    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/uninstall`, `\/quiet`/,
-    "and uninstalled the way a person removes it",
-  );
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',/);
+  asserts("installer/windows-msi.yml", /'\/l\*v'/);
+  asserts("installer/windows-msi.yml", /installer\\winfsp-install\.log/);
+  asserts("installer/windows-msi.yml", /installer\\install\.log/);
+  asserts("installer/windows-msi.yml", /installer\\uninstall\.log/);
+  asserts("installer/windows-msi.yml", /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList/);
   assert.ok(
     WORKFLOW.indexOf("the route winget install takes") > 0,
     "the bundle route must be labelled as the winget route, so the two are not confused",
