@@ -558,6 +558,10 @@ func (e *conflictTestError) Error() string { return e.what }
 
 // TestMatchHashSumPicksTheRightEntry proves the hash is taken for the entry
 // named, not the first line of a multi-path reply.
+// TestMatchHashSum proves the hash is taken for the path that was asked
+// for, whether or not that path has spaces in it: a conflict name is
+// "report (conflict, mac).txt", and a reply parsed by words would return
+// the hash of a different file.
 func TestMatchHashSum(t *testing.T) {
 	lines := []string{
 		"aaa  report (conflict, mac).txt",
@@ -569,6 +573,19 @@ func TestMatchHashSum(t *testing.T) {
 	}
 	if got != "bbb" {
 		t.Errorf("matchHashSum = %q, want bbb", got)
+	}
+	// A name with spaces is matched as a whole name.
+	got, err = matchHashSum(lines, "report (conflict, mac).txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "aaa" {
+		t.Errorf("matchHashSum for the conflict name = %q, want aaa", got)
+	}
+	// The single-entry reply is the base name's own, which is how a backend
+	// that answers with the file it was asked about reads.
+	if got, err := matchHashSum([]string{"ccc  report.txt"}, "report.txt"); err != nil || got != "ccc" {
+		t.Errorf("matchHashSum(single) = (%q, %v), want (ccc, nil)", got, err)
 	}
 	if _, err := matchHashSum(lines, "missing.txt"); err == nil {
 		t.Error("matchHashSum accepted a path it cannot find")

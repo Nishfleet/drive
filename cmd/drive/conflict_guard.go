@@ -512,27 +512,45 @@ func (c *rcClient) remoteHash(ctx context.Context, name string) (string, error) 
 // taking the first line.
 func matchHashSum(lines []string, name string) (string, error) {
 	base := remoteBase(name)
-	// The remote that was asked for is matched first, so two files
-	// that share a base name in different folders cannot trade
-	// hashes. The base name is the fallback for a backend that
-	// answers with the name its fs was asked for, and only when
-	// there is exactly one entry: a reply carrying other paths is
-	// not answered by guessing which one was meant.
+	var fallback string
 	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		hash, path, ok := splitHashLine(line)
+		if !ok {
 			continue
 		}
-		if fields[1] == name {
-			return fields[0], nil
+		// The remote that was asked for is matched first, so two files
+		// that share a base name in different folders cannot trade
+		// hashes. The base name is the fallback for a backend that
+		// answers with the name its fs was asked for, and only when it
+		// is the only entry: a reply carrying other paths is not
+		// answered by guessing which one was meant.
+		if path == name {
+			return hash, nil
+		}
+		if path == base && fallback == "" {
+			fallback = hash
 		}
 	}
-	if len(lines) == 1 {
-		if fields := strings.Fields(lines[0]); len(fields) >= 2 && fields[1] == base {
-			return fields[0], nil
-		}
+	if fallback != "" && len(lines) == 1 {
+		return fallback, nil
 	}
 	return "", fmt.Errorf("no md5 for %q in %v", name, lines)
+}
+
+// splitHashLine splits one hashsum reply line into its hash and its path.
+// The hash is the first field and the path is the rest of the line, because
+// a path may contain spaces: "report (conflict, mac).txt" is one name, not
+// the word after the hash.
+func splitHashLine(line string) (hash, path string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return "", "", false
+	}
+	i := strings.IndexAny(trimmed, " \t")
+	if i <= 0 {
+		return "", "", false
+	}
+	return trimmed[:i], strings.TrimSpace(trimmed[i+1:]), true
 }
 
 // remoteBase is the last segment of a '/'-separated remote path.
