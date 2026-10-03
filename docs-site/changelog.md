@@ -8,11 +8,24 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
-## 2026-10-02
+## 2026-10-03
+
+- Windows gets the same `drive mount` the Mac and Linux have had: `rclone
+  mount` with WinFsp as the driver, mounted at the first free drive letter from
+  D: up, started at login by a stock Task Scheduler task (no helper scripts),
+  with `drive unmount`/`logout`/`status`/`uninstall` and unit tests for every
+  branch. A missing WinFsp is an error that points at reinstalling Drive.
+- `drive unmount`, `logout` and `uninstall` on Windows now wait for WinFsp to
+  detach the letter, and find a stale mount by reading the letters the running
+  rclone processes hold, so a letter rclone is still holding is never reported
+  as stopped.
 
 - The Benchmarks page: every speed scenario the suite measures, next to the
   published rival figure for the same case, with losses labelled losses. Linux
   and Mac numbers that have not been run yet say so; nothing here is estimated.
+- The share card is now rendered from a committed source page, and its price is
+  gated against the one price config, so a re-priced product moves the card
+  with the page instead of leaving a stale picture behind.
 
 ## 2026-09-30
 

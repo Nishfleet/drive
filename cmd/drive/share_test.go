@@ -230,17 +230,56 @@ func TestAFailureWithNoReadableBodyIsStillNamed(t *testing.T) {
 }
 
 // A person holds a full link, not a token: the argument is reduced to the
-// token the endpoint takes, for both link shapes.
+// token the endpoint takes, for both link shapes, with a trailing slash or a
+// query string after it. Anything that does not reduce to the Worker's token
+// shape is refused here, not sent to the api.
 func TestTokenFromArgAcceptsALinkOrAToken(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{shareToken, shareToken},
 		{"  " + shareToken + "  ", shareToken},
 		{"https://drive.test/s/" + shareToken, shareToken},
 		{"https://drive.test/s/" + shareToken + "/", shareToken},
-		{"https://drive.test/upload.html?k=BBBBBBBBBBBBBBBBBBBBBB", "BBBBBBBBBBBBBBBBBBBBBB"},
+		{"https://drive.test/s/" + shareToken + "/?x=1", shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken, shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken + "&utm_source=mail", shareToken},
+		// A URL fragment is not part of the token either.
+		{"https://drive.test/s/" + shareToken + "#top", shareToken},
+		{"https://drive.test/upload.html?k=" + shareToken + "#frag", shareToken},
 	} {
-		if got := tokenFromArg(tc.in); got != tc.want {
+		got, err := tokenFromArg(tc.in)
+		if err != nil {
+			t.Errorf("tokenFromArg(%q) failed: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
 			t.Errorf("tokenFromArg(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
+	for _, in := range []string{
+		"",
+		"k=short",
+		// The #205 example: the old extraction kept "/?x=1" as if it were
+		// part of the token, and this paste reached RevokeShare/RevokeRequest.
+		"https://drive.test/s/AAAAA/?x=1",
+		"https://drive.test/s/AAAA/?x=1",
+		// A "k=" inside a path segment is not the query parameter.
+		"https://drive.test/disk=" + shareToken,
+		"https://drive.test/k=evil",
+		"../etc/passwd",
+		"../" + shareToken,
+	} {
+		got, err := tokenFromArg(in)
+		if err == nil {
+			t.Errorf("tokenFromArg(%q) = %q, want an error", in, got)
+			continue
+		}
+		// The refusal names the shape a person must paste, not a bare
+		// "invalid".
+		if !strings.Contains(err.Error(), "22") {
+			t.Errorf("tokenFromArg(%q) error %q does not name the token shape", in, err)
 		}
 	}
 }

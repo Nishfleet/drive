@@ -20,7 +20,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { SIGNIN_LINK_PATH } from "../src/auth.js";
+import { createAuth, SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
@@ -35,7 +35,7 @@ import {
   SIGNIN_STEPS,
   signinClosedBody,
 } from "../src/signin.js";
-import { createTestAuth, signIn, TEST_BASE_URL } from "./harness.mjs";
+import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -576,6 +576,205 @@ test("sign-out through the route revokes the session the cookie names", async ()
     made.env,
   );
   assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
+});
+
+// --------------------------------------------------------- per-IP rate limit
+
+test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
+  // Better Auth's rate limiter stores its counter in the customer D1 (drive
+  // issue #200), keyed by IP plus path. Three sends from one address succeed;
+  // the fourth is refused. A different address is unaffected.
+  const made = dispatchEnv();
+  const env = made.env;
+
+  // The first three sends from one IP land. Each one carries a different
+  // x-forwarded-for: that header is not the key (src/auth.js consults only
+  // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
+  for (let i = 0; i < 3; i++) {
+    const response = await workerFetch(
+      post(
+        { step: "start", method: "email", email: `user${i}@example.com` },
+        {
+          headers: {
+            origin: TEST_BASE_URL,
+            "cf-connecting-ip": "192.0.2.1",
+            "x-forwarded-for": `198.51.100.${i}`,
+          },
+        },
+      ),
+      env,
+    );
+    assert.equal(response.status, 202, `send ${i + 1} from one IP should succeed`);
+    assert.equal(made.sent.length, i + 1, `send ${i + 1} should mail a link`);
+  }
+
+  // The fourth send from the same IP is refused: the ceiling is hit, and no
+  // link leaves after it — even with yet another x-forwarded-for.
+  const refused = await workerFetch(
+    post(
+      { step: "start", method: "email", email: "over@the.ceil.ing" },
+      {
+        headers: {
+          origin: TEST_BASE_URL,
+          "cf-connecting-ip": "192.0.2.1",
+          "x-forwarded-for": "203.0.113.9",
+        },
+      },
+    ),
+    env,
+  );
+  assert.equal(refused.status, 429, "the fourth send from one IP is refused");
+  assert.deepEqual(await refused.json(), { error: failureMessage("rate-limited") });
+  assert.equal(made.sent.length, 3, "no link leaves after the ceiling");
+
+  // A different IP is not under the first address's ceiling.
+  const other = await workerFetch(
+    post(
+      { step: "start", method: "email", email: "other@example.com" },
+      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.2" } },
+    ),
+    env,
+  );
+  assert.equal(other.status, 202, "a different IP is not rate-limited");
+});
+
+test("a rate-limited send is still refused by a fresh isolate over the same D1", async () => {
+  // The counter lives in D1, not in a Worker instance, so a new isolate — a
+  // fresh auth built from the same database — still sees it and still refuses.
+  const made = dispatchEnv();
+  const env = made.env;
+
+  // Drive the ceiling home from one address.
+  for (let i = 0; i < 3; i++) {
+    await workerFetch(
+      post(
+        { step: "start", method: "email", email: `user${i}@example.com` },
+        { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.1" } },
+      ),
+      env,
+    );
+  }
+
+  // The "restart": a brand-new Better Auth instance over the same database,
+  // as a new Worker isolate would build. It never shares the old instance's
+  // objects — only the D1 table they both read and write.
+  const restartedSent = [];
+  const restarted = createAuth({
+    database: made.db,
+    secret: TEST_SECRET,
+    baseURL: TEST_BASE_URL,
+    sendLink: async (link) => {
+      restartedSent.push(link);
+    },
+  });
+
+  // The same address still trips the ceiling, because the counter was written
+  // to D1 by the first instance.
+  const stillLimited = await restarted.handler(
+    new Request(`${TEST_BASE_URL}/api/auth/sign-in/magic-link`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        "cf-connecting-ip": "192.0.2.1",
+      },
+      body: JSON.stringify({ email: "still@limited.example" }),
+    }),
+  );
+  assert.equal(stillLimited.status, 429, "a fresh isolate over the same D1 still refuses");
+  // The refusal is proved by the status above; this checks the restart's own
+  // mailer is what would have sent, so a 429 that quietly mailed through another
+  // instance's captured list could not pass. Driven first through the restart
+  // with an IP that is under no ceiling: it does send, so the 0 after it is
+  // the ceiling's doing and not a stub that never fires.
+  const underCeiling = await restarted.handler(
+    new Request(`${TEST_BASE_URL}/api/auth/sign-in/magic-link`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        "cf-connecting-ip": "192.0.2.77",
+      },
+      body: JSON.stringify({ email: "fresh@instance.example" }),
+    }),
+  );
+  assert.equal(underCeiling.status, 200, "a fresh isolate over the same D1 does send");
+  assert.equal(restartedSent.length, 1, "the fresh isolate's own mailer is wired");
+});
+
+test("the send writes a counter row to the rateLimit table, and reads it back", async () => {
+  // The D1 migration's write and read paths, proved against the shipped schema
+  // (test/harness.mjs applies 0011_rate_limit.sql onto the real SQL engine).
+  // The ceiling tests above prove the behaviour; this proves the counter lives
+  // in the table the migration creates, so `storage: "database"` is what is
+  // bounding the send and not some other store the library happens to keep.
+  const made = dispatchEnv();
+  const env = made.env;
+
+  const rows = async () =>
+    (await made.db.prepare('select key, count, lastRequest from "rateLimit" order by key').all())
+      .results;
+
+  assert.deepEqual(await rows(), [], "the table starts empty");
+
+  for (let i = 0; i < 2; i++) {
+    await workerFetch(
+      post(
+        { step: "start", method: "email", email: `stored${i}@example.com` },
+        { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.55" } },
+      ),
+      env,
+    );
+  }
+
+  // One row, keyed by the address and the route, with the count the two sends
+  // made. A second address is a second row: the key is IP plus path.
+  const stored = await rows();
+  assert.equal(stored.length, 1, "one caller is one row");
+  assert.equal(
+    stored[0].key,
+    "192.0.2.55|/sign-in/magic-link",
+    "the key is the caller and the route",
+  );
+  assert.equal(stored[0].count, 2, "the row counts the sends that landed");
+  assert.ok(Number(stored[0].lastRequest) > 0, "the row carries its last-request time");
+
+  // A different address writes its own row, so the ceiling is per caller and
+  // not one shared count.
+  await workerFetch(
+    post(
+      { step: "start", method: "email", email: "other@stored.example" },
+      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.56" } },
+    ),
+    env,
+  );
+  assert.equal((await rows()).length, 2, "a second caller is a second row");
+});
+
+test("an address the library refuses is a 400, not a closed door", async () => {
+  // The start step's own shape check (readStart) is the first line of this
+  // defence and the library's validator is the second. `a..b@c.com` passes
+  // readStart's deliberate loose shape (a local part, an @ and a domain with a
+  // dot — drive's own words: "the link that comes back is the real proof") and
+  // is still not an address the library will mail, so this send reaches
+  // auth.handler and comes back 400.
+  //
+  // That 400 must stay a 400. Closed as an outage, a caller who mistyped would
+  // be told sign-in is temporarily closed, which is the one thing they cannot
+  // act on (drive#200 in-run review).
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post(
+      { step: "start", method: "email", email: "a..b@example.com" },
+      { headers: { origin: TEST_BASE_URL, "cf-connecting-ip": "192.0.2.88" } },
+    ),
+    made.env,
+  );
+  assert.equal(response.status, 400, "a refused address is the caller's to fix");
+  assert.deepEqual(await response.json(), {
+    error: "Enter an email address we can send the link to.",
+  });
+  assert.equal(made.sent.length, 0, "nothing is mailed for an address that cannot be");
 });
 
 // --------------------------------------------------------- the shipped page

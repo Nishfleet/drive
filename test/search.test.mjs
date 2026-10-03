@@ -383,6 +383,10 @@ test("reconcileIndex indexes every live file, nested, and skips the trash", asyn
   const built = await reconcileIndex(db, store, ACCOUNT);
   assert.equal(built.folders, 3, "root, /deep, /deep/er");
   assert.equal(built.indexed, 3, "the trashed copy is not indexed");
+  // A failure here is a thrown Error, not an `error` key: checking the key
+  // proves the walk reported, so a walk that reported a failure cannot read
+  // as a successful one.
+  assert.equal("error" in built, false, "the reconcile result carries no error key");
   const found = await searchDrive(db, ACCOUNT, "a.txt");
   assert.equal(found.error, undefined);
   assert.deepEqual(

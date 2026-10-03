@@ -32,10 +32,10 @@ Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
 {{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
 for.
 
-## Version history is included
+## Version history
 
-Every earlier version of every file, kept for a day, then one per day for 30
-days, and no extra charge. See [How it works](/how-it-works).
+Version history is not in version 1. See [Limits](/limits) for what is not in
+version 1.
 
 ## The bill worked out
 

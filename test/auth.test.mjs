@@ -42,13 +42,18 @@ const headers = () => new Headers({ origin: TEST_BASE_URL });
 
 test("the migration file is what Better Auth's own planner generates", async () => {
   // Better Auth's Kysely adapter compiles the tables its session query runs
-  // against. This pin makes a library upgrade that changes the schema fail
-  // here, at the migration, instead of at the first sign-in.
+  // against — including the rateLimit table when storage is "database"
+  // (drive issue #200). This pin makes a library upgrade that changes the
+  // schema fail here, at the migration, instead of at the first sign-in or
+  // rate-limited send.
   const instance = betterAuth({
     database: createTestD1({ migrations: [] }),
     secret: SECRET,
     baseURL: TEST_BASE_URL,
     emailAndPassword: { enabled: false },
+    // Mirrors the option in src/auth.js: the rate-limit counters are stored
+    // in D1, so the planner now emits the rateLimit table too.
+    rateLimit: { storage: "database" },
     plugins: [
       (await import("better-auth/plugins")).magicLink({
         sendMagicLink: async () => {},
@@ -59,10 +64,14 @@ test("the migration file is what Better Auth's own planner generates", async () 
     /** @type {Parameters<typeof getMigrations>[0]} */ (/** @type {unknown} */ (instance.options)),
   );
   const generated = await plan.compileMigrations();
-  const shipped = readFileSync(
-    new URL("../migrations/drive/0005_better_auth.sql", import.meta.url),
-    "utf8",
-  );
+  // The shipped migration is split across two files: 0005 holds the four
+  // core tables and 0011 holds the rateLimit table, because a deployed D1
+  // has already applied 0005 through 0010 and cannot re-run them.
+  // Concatenate them so the comparison is against the full set the
+  // planner emits.
+  const shipped = ["0005_better_auth.sql", "0011_rate_limit.sql"]
+    .map((name) => readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"))
+    .join("\n");
   assert.ok(plan.toBeCreated.length > 0, "the planner must have tables to create");
   // The planner returns statements separated by two newlines; the file carries
   // one statement per line. Compare statement sets rather than whitespace.

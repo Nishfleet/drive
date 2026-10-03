@@ -2,7 +2,7 @@
 
 A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.
 
-- The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). The vault copy under `02 Projects/spacefs-clone/spec/` is the source; update both together.
+- The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/spacefs-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
 - Every build step's finish line is proven on real files and real accounts, cited by path, id or timestamp. A green test alone is not done.
 - Stock tools only (rclone, the storage provider's versioning, lifecycle rules and scoped keys, Cloudflare Workers, D1 and Cron Triggers, Dodo, the MCP filesystem server). Hand-write only the product's own logic: the `drive` CLI, the api and dl Workers, the meter, and the web pages.
 - No money is spent without Nish. Free tiers and free trials only; if a signup asks for a card, stop and mark the issue `agent-blocked` with that reason.
@@ -19,6 +19,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 ## Set up and check fast
 
 - Run `npm ci` in a new checkout, and again after you merge `origin/main`. The packages are all in the root `package.json` (`workers/*` has none), so a stale `node_modules` fails with `Cannot find package 'validator'` or `'hono'`. This is not a bug in your change.
+- promptfoo (the agent eval, `evals/agents/`) is its own npm project, pinned there and not in the root `package.json`. Install it with `npm ci --prefix evals/agents` and check the version with `evals/agents/node_modules/.bin/promptfoo --version` (about 160 MB). Do not run `npx` or `npm exec` for it: that downloads the whole package each time and fills a runner's 3 GiB memory limit (drive#257).
 - `npm test` is the full gate: types, lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
 - `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
@@ -33,7 +34,7 @@ Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one
 
 Each line is a gate, not prose: the test or file after the dash is what enforces it. `test/pr-gate.test.mjs` fails when a line below names a file that is gone, and proves each gate against the same modules the Worker runs.
 
-A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`).
+A PR that changes a metric in the scoreboard (`docs/scoreboard.md`) updates that row with its own measurement, and the price rows still match the code (`test/scoreboard.test.mjs`). A PR that makes a speed row faster also lowers that row in `bench/baseline.json` (`test/speed-ratchet.test.mjs`).
 
 A PR that adds a `bindings.secret()` lists the secret's name in its body under 'Secrets to set' and stays draft until it is set on drive-pricing (`test/worker-secrets.test.mjs`).
 
