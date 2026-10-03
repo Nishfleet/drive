@@ -45,7 +45,9 @@ export function billingEventId(accountId, hour) {
     throw new TypeError(`billingEventId needs an account id, got ${String(accountId)}`);
   }
   if (!Number.isSafeInteger(hour) || hour < 0) {
-    throw new TypeError(`billingEventId needs a UTC hour in milliseconds, got ${String(hour)}`);
+    throw new TypeError(
+      `billingEventId needs an epoch millisecond UTC hour, got ${String(hour)}`,
+    );
   }
   return `drive:${accountId}:${hour}`;
 }
@@ -284,6 +286,11 @@ async function customersForHour(db, hour) {
     )
     .bind(hour)
     .all();
+  // The WHERE clause already excludes a NULL or empty dodo_customer_id, so
+  // this guard is the second line, not the first: it still fails loudly if a
+  // caller or a future query hands this a row the filter did not remove,
+  // because silently coercing a missing customer to the string "null" would
+  // send a real account to Dodo under an id that is not a Dodo customer.
   /** @type {Array<{accountId: string, customerId: string}>} */
   const rows = [];
   for (const row of result.results ?? []) {
