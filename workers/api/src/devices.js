@@ -12,8 +12,9 @@
 // measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
 // is the whole of the withdrawal there.
 
-import { BILLING_CONFIG } from "../../../src/billing.js";
+import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
+import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
@@ -113,14 +114,6 @@ function digestsEqual(left, right) {
   return diff === 0;
 }
 
-/**
- * The D1-backed device and cap store. Every method is a prepared statement
- * against `migrations/drive/0010_accounts_devices.sql`, so a key minted on
- * one Worker instance is the row the cap swap on the next instance reads.
- *
- * @param {D1Database} db
- * @param {{now?: () => number, keyProvider?: {mint: (scope: KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
- */
 /**
  * Move one row's window forward: the later of the expiry this call computed and
  * the expiry the row already holds.
@@ -477,12 +470,12 @@ export function createD1DeviceStore(db, options = {}) {
 
     /**
      * The account's month so far, in the shape usageSummary() reads, for the
-     * cap swap `drive cap` runs. The two numbers that decide the cap are both
-     * the meter's own: the month's GB-minutes is the sum of the rolled
-     * `usage_minutes` rows, and the month's peak is the MAX of their
-     * `stored_bytes` marks (src/meter.js monthUsageRollup owns the peak's
-     * rule; this reads the same column it does). One statement, so the two
-     * figures describe the same snapshot of the month.
+     * cap swap `drive cap` runs. The peak is the meter's own
+     * `monthUsageRollup` (one MAX, one conversion through `storedGb`), and
+     * the GB-minutes are the SUM of the rolled `usage_minutes` rows — the
+     * half `monthUsageRollup` deliberately does not own. Both windows use
+     * this store's `now()`, so a frozen clock in a test is the month that
+     * was seeded, not the wall clock.
      *
      * A month with no rolled rows reads 0/0, which is the $0 an empty month
      * bills and below every cap, so the swap does nothing on a drive that
@@ -492,13 +485,17 @@ export function createD1DeviceStore(db, options = {}) {
      * @param {{capUsd: number}} options
      */
     async monthUsage(accountId, options) {
-      const month = new Date();
-      const start = Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), 1);
-      const end = Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1);
+      const at = now();
+      const peak = await monthUsageRollup(db, accountId, at, at);
+      const start = monthStart(at);
+      const end = Date.UTC(
+        new Date(start).getUTCFullYear(),
+        new Date(start).getUTCMonth() + 1,
+        1,
+      );
       const row = await first(
         db,
-        `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
-                COALESCE(MAX(stored_bytes), 0) AS peak_bytes
+        `SELECT COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes
            FROM usage_minutes
           WHERE account_id = ?1 AND hour >= ?2 AND hour < ?3`,
         accountId,
@@ -506,18 +503,11 @@ export function createD1DeviceStore(db, options = {}) {
         end,
       );
       const gbMinutes = Number(row?.gb_minutes ?? 0);
-      const peakBytes = Number(row?.peak_bytes ?? 0);
       if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
         throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
       }
-      if (!Number.isSafeInteger(peakBytes) || peakBytes < 0) {
-        throw new TypeError(`usage_minutes.stored_bytes must be 0 or more, got ${peakBytes}`);
-      }
-      const peakGb = peakBytes / 1e9;
+      const peakGb = storedGb(peak.peakBytes);
       return {
-        // The storage the month is billed on, as usageSummary reads it: the
-        // month's GB-minutes and the peak in GB, and the peak doubled as
-        // storedGb because this read answers for the month, not one instant.
         gbMinutes,
         peakGb,
         storedGb: peakGb,

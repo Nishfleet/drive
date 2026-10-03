@@ -371,6 +371,8 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 			c.AccessKey = value
 		case "secret_access_key":
 			c.SecretKey = value
+		case "session_token":
+			c.SessionToken = value
 		case "endpoint":
 			c.Endpoint = value
 		case "region":
@@ -497,6 +499,12 @@ func firstNonEmpty(vals ...string) string {
 // (issue #241): the line is written only when the credential carries one,
 // because a deployment with permanent credentials has none and an empty value
 // would sign with an empty token.
+//
+// no_check_bucket is required for those same scoped keys. rclone's S3 backend
+// HeadBucket/CreateBucket-checks the bucket before a PutObject, including
+// when a remount drains the VFS cache. A drive key's session policy has
+// neither action (workers/api/src/s3-keys.js), so that check is 403 and the
+// queued file never goes up — which is the cap-raise path issue #241 proves.
 func RcloneConfig(c StorageConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s]\n", RcloneRemoteName)
@@ -509,6 +517,7 @@ func RcloneConfig(c StorageConfig) string {
 	}
 	fmt.Fprintf(&b, "endpoint = %s\n", c.Endpoint)
 	fmt.Fprintf(&b, "region = %s\n", c.Region)
+	b.WriteString("no_check_bucket = true\n")
 	return b.String()
 }
 

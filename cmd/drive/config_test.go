@@ -31,6 +31,7 @@ func TestRcloneConfigRendersS3Remote(t *testing.T) {
 		"endpoint = http://127.0.0.1:39181",
 		"region = us-east-1",
 		"access_key_id = DRIVETESTACCESSKEY",
+		"no_check_bucket = true",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rclone config missing %q:\n%s", want, got)
@@ -369,6 +370,17 @@ func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	}
 	if !strings.Contains(redacted, "session_token = <redacted>") {
 		t.Errorf("redacted config missing the redacted session token line:\n%s", redacted)
+	}
+	path := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := WriteFileAtomic(path, []byte(got), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseRcloneConfig(path)
+	if err != nil {
+		t.Fatalf("ParseRcloneConfig: %v", err)
+	}
+	if back.SessionToken != c.SessionToken {
+		t.Errorf("ParseRcloneConfig SessionToken = %q, want the token RcloneConfig wrote", back.SessionToken)
 	}
 }
 

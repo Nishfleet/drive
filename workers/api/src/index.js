@@ -10,7 +10,7 @@ import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
 import { createD1QueueStore } from "./queues.js";
 import { routes } from "./routes.js";
-import { createS3KeyProvider } from "./s3-keys.js";
+import { s3KeyProviderFromEnv } from "./s3-keys.js";
 import { createD1TeamStore } from "./teams.js";
 
 /**
@@ -396,49 +396,10 @@ let keyStoreDb;
  * vendor measured (iDrive e2, drive#173, 2026-10-03) has none over S3: there a
  * minted credential can only be left to expire.
  * @param {{[key: string]: unknown}} env
- * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ * @returns {ReturnType<typeof import("./s3-keys.js").s3KeyProviderFromEnv>}
  */
 function keyProviderFor(env) {
-  const names = [
-    "STORAGE_ENDPOINT",
-    "STORAGE_REGION",
-    "STORAGE_BUCKET",
-    "STORAGE_MASTER_ACCESS_KEY_ID",
-    "STORAGE_MASTER_SECRET_ACCESS_KEY",
-  ];
-  const values = names
-    .map((name) => env[name])
-    .filter((value) => typeof value === "string" && value.length > 0);
-  if (values.length === 0) {
-    return null;
-  }
-  if (values.length < names.length) {
-    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
-    const problem = new Error(
-      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
-    );
-    return {
-      mint() {
-        throw problem;
-      },
-      revoke() {
-        throw problem;
-      },
-      swapToReadOnly() {
-        throw problem;
-      },
-    };
-  }
-  return createS3KeyProvider({
-    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
-    region: /** @type {string} */ (env.STORAGE_REGION),
-    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
-    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
-    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
-    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
-      ? { roleArn: env.STORAGE_ROLE_ARN }
-      : {}),
-  });
+  return s3KeyProviderFromEnv(env);
 }
 
 /**
