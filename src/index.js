@@ -18,7 +18,7 @@ import {
   SNAPSHOT_BACKFILL_SCHEDULE,
 } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { pushBillingHours } from "./dodo.js";
+import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -663,12 +663,57 @@ export default {
         /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
           env
         );
-      await pushBillingHours(env.METER_DB, hours, {
+      const pushed = await pushBillingHours(env.METER_DB, hours, {
         apiKey: dodo.DODO_PAYMENTS_API_KEY,
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         baseUrl: dodo.DODO_BASE_URL,
         now: event.scheduledTime,
       });
+      // The report on the skip (drive issue #334). pushBillingHours returns
+      // {pushed: 0} for a missing key on purpose, and that silence is the bug
+      // this names: a deploy whose key was never set, or was set on the wrong
+      // Worker, rolls metered hours and bills nobody while /api/health stays
+      // green, because health deliberately does not look at secrets.
+      //
+      // It runs on the cron, beside the skip, and reaches a person reading
+      // Worker logs (/api/health cannot: a billing-config gap is not an outage,
+      // and health's contract is one failure at a time, not a second opinion).
+      //
+      // Guarded on purpose. The push above may throw - Cloudflare retries the
+      // rollup, because an unpushed hour should be retried. The report must
+      // not: a detector that fails the work it is reporting on is worse than
+      // no detector, because a transient D1 error, a schema change or a bad
+      // trigger time would then retry a rollup that already billed everyone
+      // correctly. Every failure path in billingPushGap is logged and dropped.
+      const gap = await billingPushGap(env.METER_DB, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        now: event.scheduledTime,
+      }).catch((error) => {
+        console.error(
+          "billing: the gap report failed, so it says nothing about this run",
+          error instanceof Error ? error.message : String(error),
+        );
+        return null;
+      });
+      if (gap && gap.hours > 0) {
+        // Value-free: hours, the oldest one, and which of the two causes the
+        // issue names. Never the key, never an account id.
+        console.error(
+          "billing: metered hours reached nobody",
+          gap.missingKey
+            ? "DODO_PAYMENTS_API_KEY is not set on this Worker, so the push skipped"
+            : "DODO_PAYMENTS_API_KEY is set but hours are still unpushed; check the key is the right one for this Worker",
+          `hours=${gap.hours}`,
+          `oldest=${new Date(gap.since ?? event.scheduledTime).toISOString()}`,
+        );
+      } else if (pushed.pushed > 0) {
+        // The healthy counter-case, so the absence of the line above is
+        // meaningful: a person tailing logs can tell "nothing wrong" from
+        // "the report stopped running". console.log, not console.error - error
+        // level is for actionable failures, and training an operator to ignore
+        // the error channel is how the next gap goes unseen.
+        console.log(`billing: push working, ${pushed.pushed} hour(s) ingested this run`);
+      }
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
