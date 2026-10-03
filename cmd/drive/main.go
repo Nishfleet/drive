@@ -29,7 +29,7 @@ Usage:
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
-  drive status [flags]     the mount, the cache, the upload queue, what is kept offline, and this month's cost
+  drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
   drive resume [flags]     start the bytes leaving the device again
   drive cap <dollars>      change the spending cap
@@ -52,6 +52,10 @@ Update flags:
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
 mcp add command or its JSON config file.
+
+Every failure prints what happened and the exact next step (drive#117).
+DRIVE_DEBUG=1 adds the underlying error detail, which is otherwise kept in
+the mount's own log.
 
 Search flags:
   --api    drive api base URL (env DRIVE_API_URL)
@@ -189,8 +193,9 @@ func main() {
 		if errors.Is(err, errFlagParse) {
 			os.Exit(2)
 		}
-		fmt.Fprintln(os.Stderr, "drive:", err)
-		os.Exit(1)
+		// Every failure a person reads goes through the message table:
+		// what happened, then the exact next step (drive#117).
+		os.Exit(printFailure(os.Stderr, err))
 	}
 }
 

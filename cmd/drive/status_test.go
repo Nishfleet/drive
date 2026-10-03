@@ -200,7 +200,7 @@ func TestReadCostLineNamesTheFailureInsteadOfGuessing(t *testing.T) {
 		base string
 		want string
 	}{
-		{"unconfigured", "", "no api Worker configured"},
+		{"unconfigured", "", "No drive api is configured"},
 		{"bad url", "ftp://drive.example", "must be http or https"},
 		{"no host", "https://", "no host"},
 	}
@@ -227,8 +227,11 @@ func TestReadCostLineNamesAnUnreachableService(t *testing.T) {
 	}))
 	defer srv.Close()
 	reason := readCostLine(srv.URL, "")
-	if !strings.Contains(reason, "500") {
-		t.Errorf("reason %q, want the failing status named", reason)
+	if want := fail("api-down").Error(); reason != want {
+		t.Errorf("reason %q, want %q", reason, want)
+	}
+	if strings.Contains(reason, "500") || strings.Contains(reason, "nope") {
+		t.Errorf("reason %q carries raw error text; it must not", reason)
 	}
 }
 

@@ -351,7 +351,7 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 	if err := waitMounted("windows", home); err != nil {
 		return err
 	}
-	fmt.Printf("Mounted at %s\n", p.MountDir)
+	printMountedLine(p.MountDir)
 	return nil
 }
 

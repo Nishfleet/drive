@@ -233,14 +233,15 @@ func tools() []Tool {
 	}
 }
 
-// toolByName returns the adapter for name, or an error naming what exists.
+// toolByName returns the adapter for name, or a table failure naming what
+// exists and how to see it.
 func toolByName(name string) (Tool, error) {
 	for _, t := range tools() {
 		if t.Name == name {
 			return t, nil
 		}
 	}
-	return Tool{}, fmt.Errorf("unknown tool %q (known: %s)", name, strings.Join(toolNames(), ", "))
+	return Tool{}, failf("unknown-tool", name, strings.Join(toolNames(), ", "))
 }
 
 func toolNames() []string {
@@ -336,7 +337,7 @@ func (t Tool) Connect(env Env) error {
 	// "Failed to connect" until the folder existed (seen on this host
 	// 2026-09-30). Create it before the tool is pointed at it.
 	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+		return failDetail("drive-folder", err, env.DriveDir)
 	}
 	// The skill note goes first. A note with no registration is recoverable
 	// (the next `drive init` finds the tool and registers it), while a tool

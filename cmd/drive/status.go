@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -41,8 +42,11 @@ const USAGE_PATH = "/api/usage"
 // status line into a hung terminal.
 const usageTimeout = 10 * time.Second
 
-// runStatus is `drive status`: the mount state, the upload queue and the
-// month's cost.
+// runStatus is `drive status`: is it working, what is waiting, how much am I
+// spending (drive#117). Three questions, under ten lines. The rclone config
+// path, the login item path and the raw entry count are debug detail, not
+// answers, so they are not printed. Pause, cache, offline and per-file
+// progress stay because they answer those three questions.
 func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -56,72 +60,27 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	state := "not mounted"
-	if on {
-		state = "mounted"
-	}
-	fmt.Printf("drive: %s\n", state)
 	mountDir := DefaultMountDir(home)
-	if goos == "windows" {
-		// The mount point is a drive letter. It is counted at the volume root
-		// (windowsVolumeRoot: "D:\\") — the bare "D:" is drive-relative and
-		// reads the per-drive current directory, which would answer about the
-		// wrong place entirely. An unmounted drive has nothing to list, so no
-		// letter is named and nothing is read.
-		if !on {
-			fmt.Printf("drive letter: not mounted\n")
-		} else if letter, err := windowsMountLetter(); err == nil {
+	if goos == "windows" && on {
+		if letter, err := windowsMountLetter(); err == nil {
 			mountDir = windowsVolumeRoot(letter)
-			fmt.Printf("drive letter: %s\n", letter)
-		} else {
-			// Mounted is what the volume check just proved. The letter could not
-			// be read back, so it is named as unknown, never as unmounted.
-			fmt.Printf("drive letter: mounted, but the letter could not be read (%v)\n", err)
 		}
-	} else {
-		fmt.Printf("mount dir: %s\n", mountDir)
 	}
-	fmt.Printf("rclone config: %s\n", RcloneConfigPath(home))
-	if goos == "windows" {
-		// The login item on Windows is the Task Scheduler task, so status
-		// names the task rather than a file that does not exist.
-		present, err := LoginItemPresent(goos, home)
-		switch {
-		case err != nil:
-			fmt.Printf("login task: %s (unreadable: %v)\n", WindowsTaskName, err)
-		case present:
-			fmt.Printf("login task: %s (present)\n", WindowsTaskName)
-		default:
-			fmt.Printf("login task: %s (absent)\n", WindowsTaskName)
-		}
-	} else {
-		loginItem := LoginItemPath(goos, home)
-		exists := "absent"
-		if _, err := os.Stat(loginItem); err == nil {
-			exists = "present"
-		}
-		fmt.Printf("login item: %s (%s)\n", loginItem, exists)
-	}
+	var readErr error
 	if on {
-		if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-			fmt.Printf("entries: (unreadable: %v)\n", err)
-		} else if n > 0 {
-			fmt.Printf("entries: %d\n", n)
-		}
+		_, readErr = countEntries(mountDir, 2*time.Second)
 	}
-	// The upload queue is read from the cache directory the mount was started
-	// with (`--cache-dir`, the same DefaultCacheDir), so it is the queue of
-	// this mount and not of some other drive.
+	renderMountState(os.Stdout, on, readErr, mountDir, goos, home)
 	queue, err := PendingUploads(DefaultCacheDir(home))
 	if err != nil {
-		return err
+		fmt.Printf("uploads: %s\n", failDetail("queue-unreadable", err, DefaultCacheDir(home)).Error())
+	} else {
+		label := UploadLabel(queue)
+		if queue.Bytes > 0 {
+			label += " (" + fileSizeLabel(queue.Bytes) + ")"
+		}
+		fmt.Printf("uploads: %s\n", label)
 	}
-	fmt.Printf("uploads: %s\n", UploadLabel(queue))
-	// The cache line (issue #112). It is the same walk and the same limit
-	// `drive cache` reports, so the number on this line and the number on the
-	// cache line cannot disagree: both come from CacheUse on the cache dir
-	// and ResolveCacheMax on the config dir. A cache that cannot be measured
-	// is said, not hidden - the same rule the cost line below holds to.
 	if reason := cacheStatusLine(home); reason != "" {
 		fmt.Printf("cache: unknown (%s)\n", reason)
 	}
@@ -129,20 +88,11 @@ func runStatus(args []string) error {
 		fmt.Println(why)
 	}
 	if lines, reason := rcProgressLines(home, on); lines != "" {
-		fmt.Print(lines)
+		fmt.Print(limitStatusLines(lines, 3))
 	} else if reason != "" {
 		fmt.Println(reason)
 	}
-	// Whether the bytes are leaving at all, in the one word the pages use
-	// (src/status.js UPLOAD_LABEL.paused). The answer is rclone's own: the rate
-	// in force, asked over the remote control the mount already binds, with
-	// the marker file beside it so a drive that is paused but not mounted
-	// still says Paused rather than nothing.
 	fmt.Println(transfersLine(home, on))
-	// What this computer is keeping on purpose (issue #115). The list is read
-	// from the one file `drive offline` writes, and the sizes from the mount, so
-	// this line is the same numbers `drive offline --list` prints and neither
-	// can drift from the other.
 	idx, err := LoadOffline(home)
 	if err != nil {
 		return err
@@ -174,6 +124,40 @@ func runStatus(args []string) error {
 	return nil
 }
 
+// renderMountState prints the mount's answer to "is it working": mounted and
+// answering, mounted but not answering, or not mounted with the exact start
+// command. It is a function so all three branches stay testable without a
+// real FUSE mount.
+func renderMountState(w io.Writer, on bool, readErr error, mountDir, goos, home string) {
+	switch {
+	case on && readErr == nil:
+		fmt.Fprintf(w, "drive: mounted at %s\n", mountDir)
+	case on:
+		silence := failDetail("folder-silent", readErr, (2 * time.Second).String(), mountLogHint(goos, home))
+		fmt.Fprintf(w, "drive: not responding at %s (%s)\n", mountDir, silence.What)
+		fmt.Fprintf(w, "  next: %s\n", silence.Next)
+	default:
+		fmt.Fprintf(w, "drive: not mounted\n")
+		fmt.Fprintf(w, "  next: run `drive mount` (see `drive mount --help` for its flags)\n")
+	}
+}
+
+// limitStatusLines keeps `drive status` under ten lines (drive#117) when a
+// long per-file queue would otherwise fill the screen. The first n lines stay;
+// the rest collapse into one "and more" line.
+func limitStatusLines(block string, n int) string {
+	lines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
+	if len(lines) <= n {
+		if strings.HasSuffix(block, "\n") {
+			return block
+		}
+		return block + "\n"
+	}
+	kept := append([]string(nil), lines[:n]...)
+	kept = append(kept, fmt.Sprintf("  ... and %d more", len(lines)-n))
+	return strings.Join(kept, "\n") + "\n"
+}
+
 // rcProgressLines renders the per-file progress `drive status` shows (drive
 // issue #100): each file waiting or in flight, its size, its percent and its
 // time left, then the total left. Every number is read from rclone's own rc
@@ -194,21 +178,17 @@ func rcProgressLines(home string, on bool) (string, string) {
 	}
 	c, err := mountRCClient()
 	if err != nil {
-		return "", fmt.Sprintf("per file: unknown (%v)", err)
+		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
 	ctx, cancel := rcCtx()
 	defer cancel()
 	queue, err := c.ReadQueue(ctx)
 	if err != nil {
-		// A mount that is up but whose remote control has not finished
-		// starting answers nothing; that is the same "unknown" a parse
-		// failure is, and both name their cause rather than printing an
-		// empty queue nobody can tell from a real one.
-		return "", fmt.Sprintf("per file: unknown (%v)", err)
+		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
 	stats, err := c.ReadStats(ctx)
 	if err != nil {
-		return "", fmt.Sprintf("per file: unknown (%v)", err)
+		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
 	return formatRCProgress(queue.Queue, stats), ""
 }
@@ -309,7 +289,7 @@ func transfersLine(home string, on bool) string {
 		if Paused(home) {
 			return "transfers: " + pausedLabel
 		}
-		return "transfers: unknown (" + err.Error() + ")"
+		return "transfers: unknown. Next: run `drive status` again in a moment."
 	}
 	ctx, cancel := rcCtx()
 	defer cancel()
@@ -318,7 +298,7 @@ func transfersLine(home string, on bool) string {
 		if Paused(home) {
 			return "transfers: " + pausedLabel
 		}
-		return "transfers: unknown (" + err.Error() + ")"
+		return "transfers: unknown. Next: run `drive status` again in a moment."
 	}
 	if rateIsPaused(limit.Rate) {
 		return "transfers: " + pausedLabel
@@ -512,7 +492,7 @@ type UsageSummary struct {
 // number is always a named failure rather than a quiet zero.
 func readCostLine(apiBase, token string) string {
 	if strings.TrimSpace(apiBase) == "" {
-		return "no api Worker configured; set --api or DRIVE_API_URL"
+		return fail("no-api").Error()
 	}
 	base, err := parseAPIBase(apiBase)
 	if err != nil {
@@ -520,7 +500,7 @@ func readCostLine(apiBase, token string) string {
 	}
 	req, err := http.NewRequest(http.MethodGet, base+USAGE_PATH, nil)
 	if err != nil {
-		return err.Error()
+		return failDetail("unexpected", err).Error()
 	}
 	if token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
@@ -528,19 +508,22 @@ func readCostLine(apiBase, token string) string {
 	client := &http.Client{Timeout: usageTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
+		return failDetail("offline", err).Error()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("GET %s: %s", base+USAGE_PATH, resp.Status)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fail("not-signed-in").Error()
+		}
+		return fail("api-down").Error()
 	}
 	var u UsageSummary
 	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
-		return fmt.Sprintf("GET %s: %v", base+USAGE_PATH, err)
+		return failDetail("api-answer", err).Error()
 	}
 	line := strings.TrimSpace(u.CapLine)
 	if line == "" {
-		return "the usage response had no capLine"
+		return fail("api-answer").Error()
 	}
 	fmt.Println(line)
 	return ""
