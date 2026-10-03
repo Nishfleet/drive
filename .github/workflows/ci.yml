@@ -38,6 +38,16 @@ jobs:
           unzip -q rclone-current-linux-amd64.zip
           sudo install -m 0755 rclone-*/rclone /usr/local/bin/rclone
           rclone version
+      # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
+      # as they actually ship. `npm run build` writes the same static-asset
+      # bundle the deploy uploads, so the numbers are the site's and not a
+      # development server's. LHCI then serves that directory locally and
+      # asserts every page against the budget: a page that gets worse fails
+      # this job, which is what makes a budget a ratchet rather than a note.
+      # Lowering a number in lighthouserc.json is how a speed win gets locked
+      # in; raising one needs a measurement in the PR body.
+      - run: npm run build
+      - run: npx lhci autorun
       - run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
