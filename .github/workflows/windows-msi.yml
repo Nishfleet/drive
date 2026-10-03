@@ -87,9 +87,13 @@ jobs:
       - name: Restore the WiX extensions
         shell: pwsh
         run: |
-          wix extension add -g WixToolset.Util.wixext/4.0.1
-          wix extension add -g WixToolset.Bal.wixext/4.0.1
-          wix extension list
+          wix --version
+          wix extension add -g WixToolset.Util.wixext/4.0.1 2>&1 | Write-Host
+          Write-Host "Util add exit: $LASTEXITCODE"
+          wix extension add -g WixToolset.Bal.wixext/4.0.1 2>&1 | Write-Host
+          Write-Host "Bal add exit: $LASTEXITCODE"
+          wix extension list -g 2>&1 | Write-Host
+          Write-Host "list exit: $LASTEXITCODE"
 
       - name: Build drive.exe for Windows
         shell: pwsh
