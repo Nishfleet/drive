@@ -8,6 +8,7 @@ import { createD1DeviceSigninStore } from "./device-signin.js";
 import { createD1DeviceStore } from "./devices.js";
 import { bearerToken, errorResponse } from "./http.js";
 import { createMemoryStore } from "./keystore.js";
+import { createD1QueueStore } from "./queues.js";
 import { routes } from "./routes.js";
 import { createS3KeyProvider } from "./s3-keys.js";
 import { createD1TeamStore } from "./teams.js";
@@ -28,7 +29,10 @@ import { createD1TeamStore } from "./teams.js";
  * instance (src/auth.js `authFor`), read through src/status.js
  * `signedInAccount` for the browser half of a device approval; a deployment
  * with no database, secret or address has no instance and stays signed out.
- * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL}} Ctx
+ * `queues` is the D1-backed upload-queue report store (queues.js), or null
+ * where no database is bound: the queue report route refuses rather than
+ * answering as though it had stored a row.
+ * @typedef {{env: object, db?: D1Database|null, store?: KeyStore|null, now: () => number, account?: {id: string, name: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null, params?: Record<string, string>, url?: URL, queues?: ReturnType<typeof import("./queues.js").createD1QueueStore>|null}} Ctx
  *
  * The per-request value Hono's context carries. `account` is resolved once by
  * the gate middleware and read from the context by every handler, so a handler
@@ -535,6 +539,11 @@ export default {
       // door `authFor` already documents: null, and every account route 401s.
       /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
       accounts: authFor(env),
+      // The queue report's row lives on the same database the key store
+      // and the team store live on, so a report written on one instance
+      // is the row the next one reads (drive#318). Without a database
+      // there is no row to write, and the route answers 503.
+      queues: env.DRIVE_DB ? createD1QueueStore(env.DRIVE_DB) : null,
       now: Date.now,
     });
   },

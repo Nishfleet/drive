@@ -30,6 +30,10 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0010_accounts_devices.sql",
   "drive/0011_rate_limit.sql",
   "drive/0012_branch_snapshot_kv.sql",
+  // The live upload-queue report a device posts over its device token
+  // (drive issue #318). A queue row is a customer row like any other, so a
+  // test that reads one reads it from the real schema.
+  "drive/0014_device_queues.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */

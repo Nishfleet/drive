@@ -7,6 +7,7 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken } from "../workers/api/src/http.js";
+import { createD1QueueStore } from "../workers/api/src/queues.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import {
@@ -217,6 +218,29 @@ function snapshotsFor(env) {
   return kv ? createKvSnapshotStore(kv) : null;
 }
 
+// The live upload queue a device on this account reported (drive issue #318),
+// read from the same row the api Worker's report route writes. Built per
+// request from the binding, like linksFor: a report a mount just sent is the
+// row the next poll reads, on whichever instance the poll lands. The
+// freshness window is inside the store's read (workers/api/src/queues.js
+// `latest`), so the first-run page and the usage page cannot disagree about
+// whether a report is live, and a device that has not reported for a while
+// reads as no queue to report — the same honest null #308 answers — rather
+// than as a stale one. No database means nothing has reported and there is
+// nothing to read: null, the same answer as an account whose no device has
+// signed in yet.
+/**
+ * @param {Env} env
+ * @param {{id: string}} account
+ * @returns {Promise<import("../workers/api/src/queues.js").UploadQueue|null>}
+ */
+async function liveQueueFor(env, account) {
+  if (!env.DRIVE_DB) {
+    return null;
+  }
+  return createD1QueueStore(env.DRIVE_DB).latest(account.id);
+}
+
 // The owner's spending-cap state for the public upload routes, read from the
 // same src/billing.js summary the usage page shows, and resolved per account so
 // the cap answered is always the one belonging to the account that minted the
@@ -358,8 +382,15 @@ export function createApp() {
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
   // header; the gate above already answered an anonymous caller 401.
 
-  // The first-run page's live flip (issue #32, #45).
-  app.get(STATUS_ENDPOINT, (c) => handleFirstRunStatusRequest(c.req.raw, c.get("account")));
+  // The first-run page's live flip (issue #32, #45). The third argument is
+  // the queue a device on this account reported, read from the row the api
+  // Worker's report route wrote (drive issue #318): #308 made it an argument
+  // to the handler, and the read is the one line that fills it.
+  app.get(STATUS_ENDPOINT, async (c) => {
+    const account = c.get("account");
+    const upload = account ? await liveQueueFor(c.env, account) : null;
+    return handleFirstRunStatusRequest(c.req.raw, account, upload);
+  });
 
   // Search reads only the D1 file index (issue #18), behind the account gate.
   // The write half of the same module keeps the index current by wrapping the
@@ -448,12 +479,18 @@ export function createApp() {
     if (c.env.DRIVE_DB) {
       capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
     }
-    // The third argument is the live rclone upload queue, which the Worker
-    // cannot know until the device store lands (build-spec.md data model
-    // `devices`): it is rclone's, on the Mac. Until then the endpoint answers
-    // the line as null and the usage page hides it, which is the honest answer
-    // for an account whose no device has signed in yet (drive issue #308).
-    return handleUsageRequest(c.req.raw, { ...account, capUsd }, null);
+    // The third argument is the live rclone upload queue, reported by the
+    // account's device over its device token and stored in DRIVE_DB
+    // (workers/api/src/queues.js, drive issue #318). It is null when no
+    // device has reported recently, which is the honest answer for an account
+    // whose no device has signed in yet or whose mount is gone (drive issue
+    // #308), so the usage page hides the line rather than showing a stale
+    // one.
+    return handleUsageRequest(
+      c.req.raw,
+      { ...account, capUsd },
+      await liveQueueFor(c.env, account),
+    );
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The

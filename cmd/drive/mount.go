@@ -666,6 +666,22 @@ func mountForeground(p MountPlan, home string) error {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
 	}()
+	// The live upload-queue report (drive issue #318) runs in this process for
+	// as long as the mount does, on the same remote control: it reads the
+	// queue rclone is holding (vfs/queue, core/stats, core/bwlimit) and reports
+	// it to the api Worker over the device token this device already holds, so
+	// the first-run and usage pages show the same numbers `drive status` prints.
+	// It is started after rclone is up and stopped with the mount, and every
+	// failed pass goes to the mount's log, so a report problem is a named
+	// failure rather than a silent no-op.
+	queueCtx, cancelQueue := context.WithCancel(context.Background())
+	go func() {
+		_, _ = MountedDir(p.GOOS, p.MountDir)
+		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		for err := range RunQueueReportLoop(queueCtx, c, home) {
+			fmt.Fprintf(os.Stderr, "drive: queue report: %v\n", err)
+		}
+	}()
 	// Forward the usual stop signals to rclone so the mount is taken down
 	// cleanly (rclone's own docs: SIGINT/SIGTERM unmount) instead of leaving a
 	// mount attached behind a dead CLI. quit ends the goroutine once rclone is
@@ -692,6 +708,7 @@ func mountForeground(p MountPlan, home string) error {
 	<-joined
 	cancelFill()
 	cancelConflict()
+	cancelQueue()
 	if runErr != nil {
 		// rclone's own words are in its log, never on the terminal: the person
 		// gets the table's what and the log path to read (drive#117).
