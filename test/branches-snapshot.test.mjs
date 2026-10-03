@@ -25,8 +25,9 @@
 //   * `this lands` — a branch whose snapshot is 12 row-limits big is created,
 //     listed, diffed and approved, and the row stays small while the value
 //     goes to the namespace;
-//   * a row written the old way (JSON in the column, no pointer) still diffs
-//     and approves, which is what makes a code rollback safe;
+//   * an empty pointer is not filled from that leftover column (drive#329):
+//     the reader has one source, the namespace, so a pre-namespace row reads
+//     empty until the backfill copies it out;
 //   * a failure that is not the row limit is still the generic failure, and a
 //     namespace that cannot be written is `storage-down` with the copy cleaned
 //     up, not a 201 for a half-made branch.
@@ -35,6 +36,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   approveBranch,
+  backfillBranchSnapshots,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -209,7 +211,7 @@ test("a 100,000-file branch lands: the value goes to the namespace and the row s
   );
   // The whole value is readable through the one reader every diff uses, and it
   // parses to all 100,000 entries — so a branch of that size is not refused.
-  const read = await readSnapshot(snapshots, row.snapshot_key, row.snapshot);
+  const read = await readSnapshot(snapshots, row.snapshot_key);
   assert.equal(Object.keys(read).length, 100000, "every entry is readable from the namespace");
   assert.deepEqual(read["Photos/album-000/img-000000.jpg"], entry(0));
 });
@@ -253,87 +255,105 @@ test("a branch whose snapshot is over the row limit is created, listed and diffe
   // And the full diff, for one branch, resolves the same value.
   const diff = await diffBranch(store, {
     ...huge,
-    snapshot: await readSnapshot(snapshots, huge.snapshotKey, huge.snapshot),
+    snapshot: await readSnapshot(snapshots, huge.snapshotKey),
   });
   assert.equal(diff.removed.length, 100000, "the 100,000 entries are all the copy is missing");
   assert.deepEqual(diff.added, ["img.jpg"], "and the copy's one file is not in the snapshot");
   assert.deepEqual(diff.changed, []);
 });
 
-test("a row written before the migration still diffs and approves from its column", async () => {
-  // The rollback claim. A row made before migration 0012 has its JSON in
-  // `branches.snapshot` and an empty `snapshot_key`, and the code falls back to
-  // the column, so an open branch a person is working in keeps working across
-  // the deploy and across a rollback. The branch is created with NO snapshot
-  // store at all, which is what a deployment with no namespace looks like, and
-  // it lands in the column exactly as it did before this change.
+test("an empty pointer is not filled from the leftover column", async () => {
+  // drive#329: the column is no longer a source. A pre-namespace row still
+  // holds its JSON there (the drop is the next phase), but `readSnapshot` does
+  // not consult it, so an empty pointer reads empty until the backfill copies
+  // the JSON into the namespace. After that, the same row diffs and approves
+  // from the pointer, which is the only path left.
   const db = createTestD1();
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
-  const created = await createBranch(db, null, store, ACCOUNT, { folder: "/Photos", name: "old" });
+  const created = await createBranch(db, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "old",
+  });
   assert.equal(/** @type {{state: string}} */ (created).state, "open");
-  const row = /** @type {{snapshot: string, snapshot_key: string}} */ (
-    await db
-      .prepare("SELECT snapshot, snapshot_key FROM branches WHERE account_id = ?1 AND name = ?2")
-      .bind(ACCOUNT.id, "old")
-      .first()
-  );
-  assert.equal(row.snapshot_key, "", "no namespace, no pointer");
-  assert.equal(
-    Object.keys(JSON.parse(row.snapshot)).length,
-    1,
-    "the JSON is in the column, as before",
-  );
-  // It diffs: an edit in the branch copy is seen.
+  const key = snapshotKey(ACCOUNT, "old");
+  const json = kv.values.get(key);
+  assert.equal(typeof json, "string");
+  // Strip the pointer so the row looks the way migration 0012 left it: JSON in
+  // the column, empty key. The copy on disk is real, so a fallback would still
+  // see the one-file change; the pointer-only reader must not.
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = ?3, snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "old", json)
+    .run();
   await store.write("/.branches/old/a.txt", new Blob(["edited"]).stream(), "text/plain");
-  const listed = await listBranches(db, null, store, ACCOUNT);
-  assert.equal(listed[0].changed, 1, "the column is the fallback, so the diff is still real");
-  // And it approves: the copy goes back into the original.
-  const approved = await approveBranch(db, null, store, ACCOUNT, "old");
+
+  assert.deepEqual(
+    await readSnapshot(snapshots, ""),
+    {},
+    "an empty pointer is empty, not the column",
+  );
+  const before = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(
+    before[0].changed,
+    1,
+    "the copy's one file counts as added because the snapshot did not come from the column",
+  );
+
+  const report = await backfillBranchSnapshots(db, snapshots);
+  assert.equal(report.moved, 1);
+  const after = await listBranches(db, snapshots, store, ACCOUNT);
+  assert.equal(after[0].changed, 1, "the pointer now resolves the real one-file change");
+  const approved = await approveBranch(db, snapshots, store, ACCOUNT, "old");
   assert.equal(/** @type {{state: string}} */ (approved).state, "approved");
   const object = await store.read("/Photos/a.txt");
   assert.equal(object ? await new Response(object.body).text() : null, "edited");
 });
 
-test("a row written before the migration is listed correctly beside a row in the namespace", async () => {
-  // The mixed case, and the one `listBranches` can get wrong. A deployment
-  // that has migrated has BOTH kinds of open branch: rows made before the
-  // migration (JSON in the column, no pointer) and rows made after (JSON in the
-  // namespace). The list must resolve each through its own source, and must not
-  // read the column for a row that has a pointer.
-  //
-  // The drift is built so the two sources give DIFFERENT numbers, because a
-  // count that is the same either way proves nothing: a branch whose copy has
-  // one file added and one file changed reports 2 against the real snapshot,
-  // and 3 against an empty one (every file in the copy is then "added"). A
-  // list that read the column for a migrated row, or that resolved an old row
-  // against an empty map, lands on the wrong one.
+test("listBranches never fills an empty pointer from the leftover column", async () => {
+  // The mixed case `listBranches` can get wrong: one open row with a pointer
+  // and one without, after the same copy drift. Against the real snapshot that
+  // is 1 added + 1 changed (count 2). Against an empty map every copy file is
+  // "added" (count 3). drive#329 has one source, so the empty-pointer row must
+  // land on 3 — if it landed on 2, the column was still being read.
   const db = createTestD1();
   const store = scopeStore(createMemoryStore(), ACCOUNT);
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   await store.write("/Photos/b.txt", new Blob(["b"]).stream(), "text/plain");
-  // The old row, written the way the pre-migration code wrote it.
-  await createBranch(db, null, store, ACCOUNT, { folder: "/Photos", name: "old" });
-  // The new row, written with the namespace.
   const snapshots = createKvSnapshotStore(createTestKv());
+  await createBranch(db, snapshots, store, ACCOUNT, { folder: "/Photos", name: "old" });
   await createBranch(db, snapshots, store, ACCOUNT, { folder: "/Photos", name: "new" });
-  // Both branches' copies drift the same way: b.txt edited in the copy, and a
-  // c.txt that is only in the copy.
   for (const branch of ["old", "new"]) {
     await store.write(`/.branches/${branch}/b.txt`, new Blob(["edited"]).stream(), "text/plain");
     await store.write(`/.branches/${branch}/c.txt`, new Blob(["c"]).stream(), "text/plain");
   }
+  const oldKey = snapshotKey(ACCOUNT, "old");
+  const json = await snapshots.get(oldKey);
+  assert.equal(typeof json, "string");
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = ?3, snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "old", json)
+    .run();
 
   const listed = await listBranches(db, snapshots, store, ACCOUNT);
   const old = listed.find((branch) => branch.name === "old");
   const fresh = listed.find((branch) => branch.name === "new");
-  assert.equal(old?.changed, 2, "the pre-migration row diffs from its column: 1 added, 1 changed");
-  assert.equal(fresh?.changed, 2, "the migrated row diffs from the namespace: 1 added, 1 changed");
-  assert.equal(old?.snapshotKey, "", "the old row has no pointer");
-  assert.notEqual(fresh?.snapshotKey, "", "the new row has one");
-  // Neither answer carries a snapshot: the read-path half of drive#252 is that
-  // the list body is pointers, whether the JSON is in the column or the
-  // namespace.
+  assert.equal(
+    old?.changed,
+    3,
+    "an empty pointer is not filled from the column: every copy file counts as added",
+  );
+  assert.equal(fresh?.changed, 2, "a pointer still diffs from the namespace: 1 added, 1 changed");
+  assert.equal(old?.snapshotKey, "", "the stripped row has no pointer");
+  assert.notEqual(fresh?.snapshotKey, "", "the namespaced row has one");
   for (const branch of listed) {
     assert.deepEqual(
       Object.keys(/** @type {{snapshot: Record<string, unknown>}} */ (branch).snapshot),
@@ -341,6 +361,12 @@ test("a row written before the migration is listed correctly beside a row in the
       "one answer is not N snapshots",
     );
   }
+
+  assert.equal((await backfillBranchSnapshots(db, snapshots)).moved, 1);
+  const restored = (await listBranches(db, snapshots, store, ACCOUNT)).find(
+    (branch) => branch.name === "old",
+  );
+  assert.equal(restored?.changed, 2, "after the sweep the same row diffs from the namespace");
 });
 
 test("a branch of a folder under the row limit is still stored whole", async () => {
@@ -381,7 +407,7 @@ test("a branch of a folder under the row limit is still stored whole", async () 
   );
   const big = branches.find((branch) => branch.name === "big");
   assert.ok(big, "the branch this test just wrote is there");
-  const read = await readSnapshot(snapshots, big.snapshotKey, big.snapshot);
+  const read = await readSnapshot(snapshots, big.snapshotKey);
   assert.equal(Object.keys(read).length, 8800, "the whole value is readable through the namespace");
 });
 

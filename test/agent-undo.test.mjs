@@ -460,6 +460,20 @@ test("the rewind route refuses an anonymous caller with no data at all", async (
   assert.equal(body.rewinds, undefined);
   // And the branch is untouched: an anonymous POST rewound nothing.
   assert.equal(await text(scopeStore(raw, ACCOUNT), "/.branches/fix/a.txt"), "agent rewrote a");
+
+  // drive#329: a missing namespace is a 503, not a rewind that reports nothing
+  // changed, because the snapshot has one source and the leftover column is
+  // not read.
+  const unbound = await handleRewindRequest(
+    new Request(`https://drive.test${REWIND_ENDPOINT}`, { method: "GET" }),
+    db,
+    null,
+    raw,
+    ACCOUNT,
+    () => AT,
+  );
+  assert.equal(unbound.status, 503);
+  assert.match(await unbound.text(), /can't reach storage/);
 });
 
 // The one branch row a test needs by name, through the same list the screen

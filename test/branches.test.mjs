@@ -309,7 +309,10 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   // The snapshot is the content fingerprint of the source files, and it lives
   // in the KV namespace, not in the row (drive issue #252): the row carries the
   // key and the value's byte length, and the value itself is the JSON read
-  // straight out of the namespace.
+  // straight out of the namespace. The `INSERT` names no snapshot column
+  // (drive issue #329), so what lands in it is the schema's own
+  // `DEFAULT '{}'` — a well-formed empty value for the previous version of the
+  // code to read on rollback, and a column the next phase can drop.
   const row = db.sqlite
     .prepare(
       "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches WHERE account_id = ? AND name = ?",
@@ -319,7 +322,7 @@ test("createBranch copies the folder server-side and snapshots it", async () => 
   assert.equal(
     row.snapshot,
     "{}",
-    "the row no longer carries the snapshot's JSON: that is the whole point of #252",
+    "the row carries no snapshot JSON, and the INSERT supplies no column: only the DEFAULT does",
   );
   assert.equal(
     row.snapshot_key,
@@ -486,7 +489,7 @@ test("diffBranch names added, changed and removed files, and the original's drif
   // the rewind preview make. This is the one-branch read the pointer is for.
   const diff = await diffBranch(scoped, {
     ...branch,
-    snapshot: await readSnapshot(snapshots, branch.snapshotKey, branch.snapshot),
+    snapshot: await readSnapshot(snapshots, branch.snapshotKey),
   });
   assert.deepEqual(diff.added, ["new.txt"]);
   assert.deepEqual(diff.changed, ["sub/b.txt"]);
@@ -582,8 +585,10 @@ test("a branch of another account is not found, ever", async () => {
 function insertLegacyBranch(db, row) {
   db.sqlite
     .prepare(
-      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-        "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+      sqlitePlaceholders(
+        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+          "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+      ),
     )
     .run(
       row.account,
@@ -608,8 +613,10 @@ function readLegacyRow(db, account, name, state) {
   return /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
     db.sqlite
       .prepare(
-        "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-          "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+        sqlitePlaceholders(
+          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+            "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+        ),
       )
       .get(account, name, state)
   );
@@ -636,14 +643,16 @@ test("the backfill moves an open pre-namespace row into the namespace", async ()
   });
   const snapshots = createKvSnapshotStore(kv);
 
-  // Before the sweep the open row's snapshot comes from the column alone, the
-  // read `readSnapshot` has always done for a row with no pointer.
+  // Before the sweep the open row's pointer is still empty, and with the column
+  // fallback gone (drive#329) the reader resolves it as empty — the sweep is
+  // what makes this row's snapshot reachable at all. The JSON itself is still
+  // sitting in the column, waiting to be copied out.
   const before = readLegacyRow(db, ACCOUNT.id, "old", "open");
-  assert.equal(before.snapshot_key, "");
+  assert.equal(before.snapshot_key, "", "no pointer until the sweep runs");
   assert.deepEqual(
-    await readSnapshot(snapshots, before.snapshot_key, before.snapshot),
-    legacy,
-    "the column is the only source before the sweep",
+    await readSnapshot(snapshots, before.snapshot_key),
+    {},
+    "an empty pointer reads empty now that the column is not consulted",
   );
 
   const report = await backfillBranchSnapshots(db, snapshots);
@@ -666,9 +675,9 @@ test("the backfill moves an open pre-namespace row into the namespace", async ()
   assert.equal(after.snapshot_bytes, Buffer.byteLength(JSON.stringify(legacy)));
   assert.equal(kv.values.get(after.snapshot_key), JSON.stringify(legacy));
   assert.deepEqual(
-    await readSnapshot(snapshots, after.snapshot_key, after.snapshot),
+    await readSnapshot(snapshots, after.snapshot_key),
     legacy,
-    "the pointer resolves the same snapshot the column did",
+    "the pointer resolves the snapshot the sweep copied into the namespace",
   );
   assert.equal(
     after.snapshot,
@@ -897,4 +906,17 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
     ACCOUNT,
   );
   assert.equal(notJson.status, 400);
+
+  // drive#329: the snapshot has one source, so a missing namespace is the same
+  // "a dependency the drive cannot serve without" answer a missing database is,
+  // not an empty branch list and not a branch written into the leftover column.
+  const unbound = await handleBranchesRequest(
+    request("GET", BRANCHES_ENDPOINT),
+    db,
+    null,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(unbound.status, 503);
+  assert.match(await unbound.text(), /can't reach storage/);
 });

@@ -43,7 +43,7 @@ import {
   snapshotKey,
 } from "../../src/branches.js";
 import { createMemoryStore, scopeStore } from "../../src/files.js";
-import { createTestD1, createTestKv } from "../harness.mjs";
+import { createTestD1, createTestKv, sqlitePlaceholders } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
 /** The instant the proof is taken, so the PR can cite it. */
@@ -243,7 +243,7 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   // one reader the route uses.
   const diff = await diffBranch(scoped, {
     ...huge,
-    snapshot: await readSnapshot(snapshots, huge.snapshotKey, huge.snapshot),
+    snapshot: await readSnapshot(snapshots, huge.snapshotKey),
   });
   assert.deepEqual(diff.added, [], "the branch copy matches the snapshot file for file");
   assert.deepEqual(diff.changed, []);
@@ -273,7 +273,7 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   );
   // The value the approve left is the same 100,000 entries (this store's copy
   // was a no-op, so nothing was applied and the snapshot is unchanged).
-  const after = await readSnapshot(snapshots, closed.snapshot_key, closed.snapshot);
+  const after = await readSnapshot(snapshots, closed.snapshot_key);
   assert.equal(Object.keys(after).length, FILES, "the approved branch's snapshot is still whole");
 
   // The proof, in one line for the PR body.
@@ -324,8 +324,10 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
   // The rows migration 0012 inherited, written with plain SQL: the JSON in the
   // column, the pointer at its '' default, the length at 0.
   const insert = db.sqlite.prepare(
-    "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-      "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+    sqlitePlaceholders(
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+        "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
+    ),
   );
   const createdAt = new Date(AT).toISOString();
   insert.run(ACCOUNT.id, "old", "/Photos", "/.branches/old", column, "open", createdAt);
@@ -337,18 +339,20 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
     /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
       db.sqlite
         .prepare(
-          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-            "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+          sqlitePlaceholders(
+            "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+              "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
+          ),
         )
         .get(ACCOUNT.id, name, state)
     );
 
-  // Before: the pointer is empty and the column is the only source — the read
-  // `readSnapshot` has always done for these rows.
+  // Before: the pointer is empty. drive#329 dropped the column fallback, so
+  // the reader resolves that as empty until the sweep copies the JSON out.
   const before = rowAt("old", "open");
   assert.equal(before.snapshot_key, "");
   assert.equal(before.snapshot_bytes, 0);
-  assert.deepEqual(await readSnapshot(snapshots, before.snapshot_key, before.snapshot), legacy);
+  assert.deepEqual(await readSnapshot(snapshots, before.snapshot_key), {});
 
   // The sweep: the open row moves, the closed rows do not.
   const report = await backfillBranchSnapshots(db, snapshots);
@@ -370,7 +374,7 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
   assert.equal(moved.snapshot, column);
   // The WRITE is real, and the READ resolves the same map through the pointer:
   // 8,000 entries, every one of them the fingerprint the column held.
-  const afterRead = await readSnapshot(snapshots, moved.snapshot_key, moved.snapshot);
+  const afterRead = await readSnapshot(snapshots, moved.snapshot_key);
   assert.equal(Object.keys(afterRead).length, LEGACY_FILES);
   assert.deepEqual(afterRead, legacy);
 

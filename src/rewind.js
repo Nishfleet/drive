@@ -143,7 +143,7 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
   const diff = open
     ? await diffBranch(store, {
         ...branch,
-        snapshot: await readSnapshot(snapshots, branch.snapshotKey, branch.snapshot),
+        snapshot: await readSnapshot(snapshots, branch.snapshotKey),
       })
     : null;
   const files = diff
@@ -180,7 +180,7 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
  * would not show and a branch of another account is "not found", never
  * "forbidden" — the same answer `drive branches` gives.
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
@@ -204,7 +204,7 @@ export async function rewindBranchRow(db, snapshots, store, account, name) {
  * from ever meaning two different things to the same branch.
  *
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
@@ -248,7 +248,9 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
  *
  * @param {Request} request
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot
+ *   store; a request with no namespace is a 503, because the legacy column a
+ *   branch could fall back to is gone (drive#329)
  * @param {import("./branches.js").FileStore|null} store a scoped store
  * @param {{id: string}|null} account
  * @param {() => number} now
@@ -266,6 +268,14 @@ export async function handleRewindRequest(
   }
   if (!db || !store) {
     return json({ error: failureMessage("unexpected") }, 503);
+  }
+  if (!snapshots) {
+    // A rewind names the files it would undo by diffing against the branch's
+    // snapshot, and that snapshot has exactly one source now, so a missing
+    // namespace is the "a dependency the drive cannot serve without" answer and
+    // not a rewind that reports nothing changed.
+    console.error?.("rewind: BRANCH_SNAPSHOTS is not bound");
+    return json({ error: failureMessage("storage-down") }, 503);
   }
   const url = new URL(request.url);
   const rest = url.pathname.slice(REWIND_ENDPOINT.length).replace(/\/$/, "");
