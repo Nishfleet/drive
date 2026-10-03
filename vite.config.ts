@@ -1,9 +1,25 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
 import { FIRST_RUN_STEPS, INSTALL_COMMAND } from "./src/status.js";
+import apiWorker from "./workers/api/cloudflare.config.ts";
 
 export default defineConfig({
-  plugins: [cloudflare(), staticFirstRunShell()],
+  plugins: [
+    cloudflare({
+      auxiliaryWorkers: [
+        // The api Worker (drive issue #168). Its deploy config is
+        // workers/api/cloudflare.config.ts, which the CLI's autoconfig never
+        // reaches (CONFIG_FILENAME is resolved against the Vite root, and the
+        // root's file is the site Worker's), so it is registered here as an
+        // auxiliary Worker: the stock way a second Worker joins the build
+        // output, and what makes the file a deploy config rather than dead
+        // text. The build emits it beside the site Worker in the Build
+        // Output, and a `cf deploy --worker drive-api` step ships it.
+        { config: apiWorker },
+      ],
+    }),
+    staticFirstRunShell(),
+  ],
   environments: {
     client: {
       build: {

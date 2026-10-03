@@ -405,8 +405,16 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 	return response, nil
 }
 
-// Credentials is what a signed-in device keeps on disk: where the api Worker
-// is and the device token it signs in with. 0600, because the token mints keys.
+// Credentials is what a signed-in device keeps on disk: the one api base this
+// device signed in to, and the device token it signs in with. 0600, because
+// the token mints keys.
+//
+// One host fronts both Worker families (drive#156): /api/* is the site
+// Worker (branches, search, files) and /v1/* is the api Worker (keys, device
+// sign-in). APIBase is that host. There is no second keysBase; MintKey and
+// the branch routes share this client. A deployment that splits the two
+// Workers still fronts them on this one base, the same contract `drive
+// agents` already uses for POST /v1/keys.
 type Credentials struct {
 	APIBase     string `json:"apiBase"`
 	DeviceToken string `json:"deviceToken"`

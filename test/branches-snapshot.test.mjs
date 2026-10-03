@@ -477,11 +477,14 @@ test("a namespace that cannot be written is storage-down, and the copy is cleane
   );
   const left = await store.list("/.branches/gone");
   assert.deepEqual(left, [], "the copy is cleaned up, so a retry does not find a stale branch");
-  const rows = await db.prepare("SELECT COUNT(*) AS n FROM branches").first();
+  const leftover = await db
+    .prepare("SELECT state FROM branches WHERE account_id = ?1 AND name = ?2")
+    .bind(ACCOUNT.id, "gone")
+    .first();
   assert.equal(
-    Number(/** @type {{n: number}} */ (rows).n),
-    0,
-    "no row is left for a branch that never landed",
+    leftover?.state,
+    "discarded",
+    "the claim is closed so a retry of the name is not a 409",
   );
 });
 

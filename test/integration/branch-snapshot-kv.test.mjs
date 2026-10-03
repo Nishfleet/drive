@@ -43,7 +43,7 @@ import {
   snapshotKey,
 } from "../../src/branches.js";
 import { createMemoryStore, scopeStore } from "../../src/files.js";
-import { createTestD1, createTestKv, sqlitePlaceholders } from "../harness.mjs";
+import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
 /** The instant the proof is taken, so the PR can cite it. */
@@ -324,10 +324,8 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
   // The rows migration 0012 inherited, written with plain SQL: the JSON in the
   // column, the pointer at its '' default, the length at 0.
   const insert = db.sqlite.prepare(
-    sqlitePlaceholders(
-      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-        "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
-    ),
+    "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+      "state, created_at, changed_by_key_id) VALUES (?,?,?,?,?,?,?,'a-key')",
   );
   const createdAt = new Date(AT).toISOString();
   insert.run(ACCOUNT.id, "old", "/Photos", "/.branches/old", column, "open", createdAt);
@@ -339,10 +337,8 @@ test("an open pre-namespace branch is backfilled into the namespace over the rea
     /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
       db.sqlite
         .prepare(
-          sqlitePlaceholders(
-            "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-              "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
-          ),
+          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+            "WHERE account_id = ? AND name = ? AND state = ?",
         )
         .get(ACCOUNT.id, name, state)
     );

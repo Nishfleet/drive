@@ -18,10 +18,12 @@ import {
   createKvSnapshotStore,
   diffBranch,
   discardBranch,
+  getBranch,
   handleBranchesRequest,
   listBranches,
   readSnapshot,
   relativePath,
+  removePrefixFiles,
   SNAPSHOT_BACKFILL_ROWS,
   SNAPSHOT_BACKFILL_SCHEDULE,
   sameFile,
@@ -29,6 +31,7 @@ import {
 } from "../src/branches.js";
 import { BRANCHES_FOLDER, createMemoryStore, scopeStore, withoutTrash } from "../src/files.js";
 import worker from "../src/index.js";
+import { failureMessage } from "../src/messages.js";
 import { createTestKv, sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
@@ -52,6 +55,7 @@ function makeD1() {
     "drive/0003_branches.sql",
     "drive/0004_agent_undo.sql",
     "drive/0012_branch_snapshot_kv.sql",
+    "drive/0015_branch_row_id.sql",
   ]) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
@@ -70,7 +74,7 @@ function makeD1() {
   /**
    * @param {string} sql
    * @param {unknown[]} [params]
-   * @returns {{results: Record<string, unknown>[], changes: number}}
+   * @returns {{results: Record<string, unknown>[], changes: number, lastRowId: number}}
    */
   const runOne = (sql, params = []) => {
     // D1 binds a numbered placeholder by its NUMBER; node:sqlite binds the
@@ -86,10 +90,15 @@ function makeD1() {
       return {
         results: /** @type {Record<string, unknown>[]} */ (sqlite.prepare(prepared).all(...values)),
         changes: 0,
+        lastRowId: 0,
       };
     }
     const info = sqlite.prepare(prepared).run(...values);
-    return { results: [], changes: Number(info.changes) };
+    return {
+      results: [],
+      changes: Number(info.changes),
+      lastRowId: Number(info.lastInsertRowid),
+    };
   };
   /** The SQL and parameters each prepared statement carries, so batch() can
    * run the statements the caller built and not re-derive them.
@@ -127,10 +136,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async all() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
         /**
@@ -138,10 +148,11 @@ function makeD1() {
          * @returns {Promise<D1Result<T>>}
          */
         async run() {
+          const out = runOne(sql, params);
           return /** @type {D1Result<T>} */ ({
-            results: /** @type {T[]} */ (runOne(sql, params).results),
+            results: /** @type {T[]} */ (out.results),
             success: /** @type {true} */ (true),
-            meta: meta(),
+            meta: { ...meta(), changes: out.changes, last_row_id: out.lastRowId },
           });
         },
       })
@@ -608,10 +619,8 @@ test("approve refuses an open row with no snapshot pointer before it copies", as
 function insertLegacyBranch(db, row) {
   db.sqlite
     .prepare(
-      sqlitePlaceholders(
-        "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-          "state, created_at, changed_by_key_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'a-key')",
-      ),
+      "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
+        "state, created_at, changed_by_key_id) VALUES (?,?,?,?,?,?,?,'a-key')",
     )
     .run(
       row.account,
@@ -636,10 +645,8 @@ function readLegacyRow(db, account, name, state) {
   return /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
     db.sqlite
       .prepare(
-        sqlitePlaceholders(
-          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-            "WHERE account_id = ?1 AND name = ?2 AND state = ?3",
-        ),
+        "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
+          "WHERE account_id = ? AND name = ? AND state = ?",
       )
       .get(account, name, state)
   );
@@ -843,6 +850,8 @@ test("the branch route lists, makes, diffs, approves and discards", async () => 
   );
   const listedBody = await listed.json();
   assert.equal(listedBody.branches.length, 1);
+  assert.equal("snapshot" in listedBody.branches[0], false);
+  assert.equal("id" in listedBody.branches[0], false);
 
   const scoped = scopeStore(raw, account);
   await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
@@ -942,4 +951,337 @@ test("the branch route refuses an anonymous caller, a bad method and a missing b
   );
   assert.equal(unbound.status, 503);
   assert.match(await unbound.text(), /can't reach storage/);
+});
+
+// --------------------------------------------------------------------- re-branch
+
+test("a name branched, approved, and branched again: the new branch is open and diff works", async () => {
+  const { scoped, db, snapshots } = await driven();
+
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
+  await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
+
+  const second = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(branch);
+  assert.equal(branch.state, "open");
+  assert.equal(branch.name, "work");
+
+  const diff = await diffBranch(scoped, branch);
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.changed, []);
+  assert.deepEqual(diff.removed, []);
+  assert.deepEqual(diff.sourceChanged, []);
+
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
+  const result = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in result));
+  assert.equal(result.state, "approved");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "agent edit");
+});
+
+test("a name branched, discarded, and branched again: the new branch is open and discarding works", async () => {
+  const { scoped, db, snapshots } = await driven();
+
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+
+  const second = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(second.error, undefined);
+  assert.equal(second.state, "open");
+  const branch = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(branch);
+  assert.equal(branch.state, "open");
+
+  await scoped.write(
+    `${BRANCHES_ROOT}/work/a.txt`,
+    new Blob(["agent edit"]).stream(),
+    "text/plain",
+  );
+  const result = await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.ok(!("error" in result));
+  assert.equal(result.state, "discarded");
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+});
+
+test("the route answers a closed branch with an empty diff and its state", async () => {
+  const { raw, db, snapshots } = await driven();
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  const approved = await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(approved.status, 200);
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+
+  const answer = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(answer.status, 200);
+  const openBody = await answer.json();
+  assert.equal(openBody.branch.name, "work");
+  assert.equal(openBody.branch.state, "open");
+  assert.deepEqual(openBody.diff, { added: [], changed: [], removed: [], sourceChanged: [] });
+
+  await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve`, {}),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  const closed = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work`),
+    db,
+    snapshots,
+    raw,
+    ACCOUNT,
+  );
+  assert.equal(closed.status, 200);
+  const closedBody = await closed.json();
+  assert.equal(closedBody.branch.state, "approved");
+  assert.deepEqual(closedBody.diff, { added: [], changed: [], removed: [], sourceChanged: [] });
+});
+
+test("the route rejects a third segment and answers 405 for GET on approve/discard", async () => {
+  const { raw, db, snapshots } = await driven();
+  const account = ACCOUNT;
+  await handleBranchesRequest(
+    request("POST", BRANCHES_ENDPOINT, { folder: "/Photos", name: "work" }),
+    db,
+    snapshots,
+    raw,
+    account,
+  );
+
+  const extra = await handleBranchesRequest(
+    request("POST", `${BRANCHES_ENDPOINT}/work/approve/extra`, {}),
+    db,
+    snapshots,
+    raw,
+    account,
+  );
+  assert.equal(extra.status, 404);
+  assert.deepEqual(await extra.json(), { error: failureMessage("branch-path-unknown") });
+
+  const getApprove = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/approve`),
+    db,
+    snapshots,
+    raw,
+    account,
+  );
+  assert.equal(getApprove.status, 405);
+  assert.equal(getApprove.headers.get("allow"), "POST");
+
+  const getDiscard = await handleBranchesRequest(
+    request("GET", `${BRANCHES_ENDPOINT}/work/discard`),
+    db,
+    snapshots,
+    raw,
+    account,
+  );
+  assert.equal(getDiscard.status, 405);
+  assert.equal(getDiscard.headers.get("allow"), "POST");
+});
+
+test("the branches table keys each branch by its own id, so a name can be closed twice", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const apply = (/** @type {string} */ name) => {
+    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  };
+  apply("drive/0002_file_index.sql");
+  apply("drive/0003_branches.sql");
+  sqlite
+    .prepare(
+      "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+        "VALUES ('acct-1','work','/Photos','/.branches/work','{}','approved','2026-01-01T00:00:00Z')",
+    )
+    .run();
+  apply("drive/0004_agent_undo.sql");
+  apply("drive/0012_branch_snapshot_kv.sql");
+  apply("drive/0015_branch_row_id.sql");
+  const columns = /** @type {{name: string, pk: number}[]} */ (
+    /** @type {unknown} */ (sqlite.prepare("PRAGMA table_info(branches)").all())
+  );
+  const pk = columns.filter((c) => c.pk > 0).map((c) => c.name);
+  assert.deepEqual(pk, ["id"], "the key is the row's own id, not the name and state");
+  const kept = sqlite
+    .prepare("SELECT name, state, source_prefix FROM branches WHERE account_id='acct-1'")
+    .get();
+  assert.equal(kept?.name, "work");
+  assert.equal(kept?.state, "approved");
+  sqlite
+    .prepare(
+      "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+        "VALUES ('acct-1','work','/Photos','/.branches/work','{}','approved','2026-01-02T00:00:00Z')",
+    )
+    .run();
+  const approved = sqlite
+    .prepare(
+      "SELECT COUNT(*) AS n FROM branches WHERE account_id='acct-1' AND name='work' AND state='approved'",
+    )
+    .get();
+  assert.equal(/** @type {{n: number}} */ (/** @type {unknown} */ (approved)).n, 2);
+  const open = sqlite.prepare(
+    "INSERT INTO branches (account_id,name,source_prefix,branch_prefix,snapshot,state,created_at) " +
+      "VALUES (?,?,'/Photos','/.branches/x','{}','open',?)",
+  );
+  open.run("acct-1", "work", "2026-01-03T00:00:00Z");
+  assert.throws(
+    () => open.run("acct-1", "work", "2026-01-04T00:00:00Z"),
+    /UNIQUE constraint failed/,
+    "two open branches of one name must still be refused",
+  );
+});
+
+test("a delayed write for a closed generation cannot move a newer open row", async () => {
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(first);
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const second = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(second);
+  assert.notEqual(second.id, first.id);
+  const stale = await db
+    .prepare("UPDATE branches SET state = 'approved' WHERE id = ?1 AND state = 'open'")
+    .bind(first.id)
+    .run();
+  assert.equal(stale.meta.changes, 0);
+  const still = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(still);
+  assert.equal(still.state, "open");
+  assert.equal(still.id, second.id);
+});
+
+test("approving a name whose branch was discarded is a 409, never a delete of the original", async () => {
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+  const result = await approveBranch(db, snapshots, scoped, ACCOUNT, "work");
+  assert.equal(failedStatus(result), 409);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  assert.equal(await readText(scoped, "/Photos/sub/b.txt"), "bb");
+});
+
+test("the prefix clear refuses anything that is not a folder under .branches", async () => {
+  const { scoped, db, snapshots } = await driven();
+  const refused = [
+    "/Photos",
+    "/",
+    "",
+    BRANCHES_ROOT,
+    "/.branches",
+    "/.branchesOther/work",
+    null,
+    undefined,
+  ];
+  for (const prefix of refused) {
+    await assert.rejects(
+      () => removePrefixFiles(scoped, /** @type {string} */ (prefix)),
+      /not a branch folder/,
+      `${JSON.stringify(prefix)} must be refused`,
+    );
+  }
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  assert.equal(await removePrefixFiles(scoped, `${BRANCHES_ROOT}/work`), 2);
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), null);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "the source is untouched");
+});
+
+test("the list carries one row per name: the newest generation", async () => {
+  const { scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(first);
+  db.sqlite.prepare("UPDATE branches SET state = 'approved' WHERE id = ?").run(first.id);
+  const second = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(second.state, "open");
+  const third = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "other",
+  });
+  assert.equal(third.state, "open");
+
+  const listed = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.deepEqual(
+    listed.map((branch) => branch.name),
+    ["other", "work"],
+  );
+  assert.equal(listed.find((branch) => branch.name === "work")?.state, "open");
+
+  await discardBranch(db, snapshots, scoped, ACCOUNT, "work");
+  const afterDiscard = await listBranches(db, snapshots, scoped, ACCOUNT);
+  assert.deepEqual(
+    afterDiscard.map((branch) => branch.name),
+    ["other", "work"],
+  );
+  assert.equal(afterDiscard.find((branch) => branch.name === "work")?.state, "discarded");
+});
+
+test("a create whose prefix clear fails closes its own claim row", async () => {
+  const { raw, scoped, db, snapshots } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const first = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(first);
+  db.sqlite.prepare("UPDATE branches SET state = 'approved' WHERE id = ?").run(first.id);
+
+  const broken = {
+    ...scopeStore(raw, ACCOUNT),
+    remove: async () => {
+      throw new Error("storage is down");
+    },
+  };
+  const result = await createBranch(db, snapshots, broken, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(result.error, failureMessage("storage-down"));
+  assert.equal(result.status, 500);
+  const claimed = await getBranch(db, snapshots, ACCOUNT, "work");
+  assert.ok(claimed);
+  assert.equal(claimed.state, "discarded");
+  const again = await createBranch(db, snapshots, scoped, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(again.state, "open");
 });

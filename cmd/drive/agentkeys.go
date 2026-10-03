@@ -87,16 +87,23 @@ func expiryLabel(expiresAt *int64) string {
 // loadAgentKeys reads every stored tool key. A missing file is an empty map:
 // no tool has been connected with a key yet.
 func loadAgentKeys(home string) (map[string]agentKey, error) {
-	data, err := os.ReadFile(AgentKeysPath(home))
+	return loadKeyMap(AgentKeysPath(home))
+}
+
+// loadKeyMap reads a 0600 JSON map of stored keys. A missing file is an empty
+// map, so a first mint and a first branch share the same "nothing here yet"
+// answer.
+func loadKeyMap(path string) (map[string]agentKey, error) {
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]agentKey{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", AgentKeysPath(home), err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	keys := map[string]agentKey{}
 	if err := json.Unmarshal(data, &keys); err != nil {
-		return nil, fmt.Errorf("%s is not valid JSON: %w", AgentKeysPath(home), err)
+		return nil, fmt.Errorf("%s is not valid JSON: %w", path, err)
 	}
 	return keys, nil
 }
@@ -141,10 +148,59 @@ func agentKeyFor(home, tool string) (*agentKey, error) {
 // rather than deleting the file, so a reader cannot mistake "gone" for "not
 // yet read".
 func writeAgentKeys(home string, keys map[string]agentKey) error {
+	return writeKeyMap(AgentKeysPath(home), keys)
+}
+
+func writeKeyMap(path string, keys map[string]agentKey) error {
 	data, err := json.MarshalIndent(keys, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode the agent keys: %w", err)
+		return fmt.Errorf("encode the keys: %w", err)
 	}
 	data = append(data, '\n')
-	return WriteFileAtomic(AgentKeysPath(home), data, 0o600)
+	return WriteFileAtomic(path, data, 0o600)
+}
+
+// BranchKeysPath is where the drive keeps each open branch's key. It is a
+// second file, not agent-keys.json, so a branch named after a tool cannot
+// overwrite that tool's key (drive#156). Same 0600 config directory.
+func BranchKeysPath(home string) string {
+	return DefaultConfigDir(home) + "/branch-keys.json"
+}
+
+func loadBranchKeys(home string) (map[string]agentKey, error) {
+	return loadKeyMap(BranchKeysPath(home))
+}
+
+// saveBranchKey stores one branch's key, keeping every other open branch's.
+func saveBranchKey(home, name string, key MintedKey) error {
+	keys, err := loadBranchKeys(home)
+	if err != nil {
+		return err
+	}
+	keys[name] = agentKey(key)
+	return writeKeyMap(BranchKeysPath(home), keys)
+}
+
+// removeBranchKey forgets one branch's key after approve or discard has
+// revoked it, or after a re-mint replaced it.
+func removeBranchKey(home, name string) error {
+	keys, err := loadBranchKeys(home)
+	if err != nil {
+		return err
+	}
+	delete(keys, name)
+	return writeKeyMap(BranchKeysPath(home), keys)
+}
+
+// branchKeyFor returns a branch's stored key, or nil when it has none.
+func branchKeyFor(home, name string) (*agentKey, error) {
+	keys, err := loadBranchKeys(home)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := keys[name]
+	if !ok {
+		return nil, nil
+	}
+	return &key, nil
 }
