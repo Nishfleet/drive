@@ -170,7 +170,11 @@ test("a baseUrl option overrides the test host without hardcoding live", async (
   // The source itself must never carry the live host — only env can set it
   // (drive issue #323, owner comment 2026-10-03T06:35Z).
   const src = readFileSync(new URL("../src/dodo.js", import.meta.url), "utf8");
-  assert.equal(src.includes("live.dodopayments.com"), false, "the module must not name the live host");
+  assert.equal(
+    src.includes("live.dodopayments.com"),
+    false,
+    "the module must not name the live host",
+  );
 });
 
 test("the event id is the account and hour, so a retry is the same id", () => {

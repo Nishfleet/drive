@@ -91,9 +91,10 @@ export async function pushBillingHours(db, hours, options = {}) {
   // so live billing can be switched on without a code change (drive issue
   // #323, owner comment 2026-10-03T06:35Z). The default stays the test server;
   // the only switch is env.DODO_BASE_URL, read in src/index.js.
-  const baseUrl = typeof options.baseUrl === "string" && options.baseUrl !== ""
-    ? options.baseUrl
-    : DODO_TEST_BASE_URL;
+  const baseUrl =
+    typeof options.baseUrl === "string" && options.baseUrl !== ""
+      ? options.baseUrl
+      : DODO_TEST_BASE_URL;
   const ingestUrl = `${baseUrl}${DODO_INGEST_PATH}`;
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
