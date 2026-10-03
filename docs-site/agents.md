@@ -36,11 +36,11 @@ drive approve <branch>    # copy the branch's changes back into the folder
 drive discard <branch>    # throw the branch away; the folder is untouched
 ```
 
-The branch lives under `.branches/<name>/` inside your own account folder. Its
-key is scoped to that one path and is a branch key, so it can list, read and
-write there and it cannot remove anything — the same rule every agent key
-follows. Your other files are outside its reach, and only you can approve the
-copy back.
+The agent works with its own branch key: a branch key is scoped to the
+branch's one path under `.branches/<name>/` in your account folder, so it can
+list, read and write there and cannot remove anything — the same rule every
+agent key follows. Your other files are outside its reach, and only you can
+approve the copy back.
 
 Stop a tool with `drive agents revoke <tool>`, using the tool's own name
 (`claude`, `codex`, `cursor`, `gemini` or `kiro`); the other tools stay
