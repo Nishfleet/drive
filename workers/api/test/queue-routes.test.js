@@ -83,7 +83,7 @@ function accountsFor(token, account) {
  * the CLI keeps, the way cmd/drive/report.go reads it.
  * @param {ReturnType<typeof createMemoryStore>} store
  * @param {ReturnType<typeof fixedClock>} clock
- * @param {import("../src/queues.js").ReturnType<typeof createD1QueueStore>|null} queues
+ * @param {ReturnType<typeof import("../src/queues.js").createD1QueueStore>|null} queues
  * @param {{id: string, name: string}} account
  * @returns {Promise<{token: string, sessionToken: string}>}
  */
@@ -191,6 +191,7 @@ test("the route is in the registry behind the account gate", async () => {
 test("a device's report is stored and read back as its own queue", async () => {
   const clock = fixedClock();
   const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
   const stored = await dispatch(postQueue(QUEUE, token), ctx);
   assert.equal(stored.status, 200, await stored.clone().text());
   const body = await stored.json();
@@ -205,6 +206,7 @@ test("a second report inside the interval is refused with retry-after", async ()
   // come back rather than being silently dropped.
   const clock = fixedClock();
   const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
   assert.equal((await dispatch(postQueue(QUEUE, token), ctx)).status, 200);
   clock.advance(2);
   const tooSoon = await dispatch(postQueue({ ...QUEUE, uploadedBytes: 900_000_000 }, token), ctx);
@@ -225,6 +227,8 @@ test("a report that is not a queue is a 400 naming the field", async () => {
   // bytes nobody counted, and every refusal names itself.
   const clock = fixedClock();
   const { ctx, token, queues } = await signedIn({ clock });
+  assert.ok(queues, "the test needs the queue store");
+  /** @type {Array<[Record<string, unknown>, RegExp]>} */
   const cases = [
     [{ ...QUEUE, files: -1 }, /files/],
     [{ ...QUEUE, files: 1.5 }, /files/],
@@ -263,6 +267,7 @@ test("a report needs the queue fields, not a default", () => {
   // is a queue nobody measured.
   assert.deepEqual(parseQueueReport(QUEUE), { report: QUEUE });
   for (const missing of ["files", "uploadedBytes", "totalBytes"]) {
+    /** @type {Record<string, unknown>} */
     const body = { ...QUEUE };
     delete body[missing];
     const parsed = parseQueueReport(body);
