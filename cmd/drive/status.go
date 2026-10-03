@@ -61,12 +61,21 @@ func runStatus(args []string) error {
 	fmt.Printf("drive: %s\n", state)
 	mountDir := DefaultMountDir(home)
 	if goos == "windows" {
-		letter, err := windowsMountLetter()
-		if err != nil {
-			return err
+		// The mount point is a drive letter. It is counted at the volume root
+		// (windowsVolumeRoot: "D:\\") — the bare "D:" is drive-relative and
+		// reads the per-drive current directory, which would answer about the
+		// wrong place entirely. An unmounted drive has nothing to list, so no
+		// letter is named and nothing is read.
+		if !on {
+			fmt.Printf("drive letter: not mounted\n")
+		} else if letter, err := windowsMountLetter(); err == nil {
+			mountDir = windowsVolumeRoot(letter)
+			fmt.Printf("drive letter: %s\n", letter)
+		} else {
+			// Mounted is what the volume check just proved. The letter could not
+			// be read back, so it is named as unknown, never as unmounted.
+			fmt.Printf("drive letter: mounted, but the letter could not be read (%v)\n", err)
 		}
-		mountDir = letter
-		fmt.Printf("drive letter: %s\n", letter)
 	} else {
 		fmt.Printf("mount dir: %s\n", mountDir)
 	}
@@ -91,10 +100,12 @@ func runStatus(args []string) error {
 		}
 		fmt.Printf("login item: %s (%s)\n", loginItem, exists)
 	}
-	if n, err := countEntries(mountDir, 2*time.Second); err != nil {
-		fmt.Printf("entries: (unreadable: %v)\n", err)
-	} else if n > 0 {
-		fmt.Printf("entries: %d\n", n)
+	if on {
+		if n, err := countEntries(mountDir, 2*time.Second); err != nil {
+			fmt.Printf("entries: (unreadable: %v)\n", err)
+		} else if n > 0 {
+			fmt.Printf("entries: %d\n", n)
+		}
 	}
 	// The upload queue is read from the cache directory the mount was started
 	// with (`--cache-dir`, the same DefaultCacheDir), so it is the queue of
