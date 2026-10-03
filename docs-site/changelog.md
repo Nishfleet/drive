@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-03
 
+- The Dodo billing push host is configurable via `DODO_BASE_URL` (env), defaulting
+  to `test.dodopayments.com`, so live billing can be switched on with one env var
+  instead of a code change. The source never names the live host; a misconfigured
+  URL is rejected at ingest time to keep the bearer token on an https
+  `dodopayments.com` host.
 - One command installs the drive CLI and rclone together: the Linux `.deb` and
   `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
   and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
