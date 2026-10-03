@@ -20,6 +20,7 @@ import {
   BILLING,
   DOC_PAGES,
   PAGES,
+  ROOT_PAGES,
   pageUrl,
   SITE,
   softwareApplicationLd,
@@ -35,19 +36,19 @@ const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 /** @param {number} usd */
 const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
 
-// The first-run page is a Vite entry at the repo root (issue #70): it is built
-// (its <script type="module"> is bundled) rather than copied verbatim out of
-// public/, so it ships from the root and the metadata tests read it there.
-// Every other page is still a verbatim public/ asset.
-const ROOT_PAGES = new Set(["get-started.html"]);
+// A page ships from one of two places (issue #70): the verbatim assets in
+// public/, and the built Vite entries at the repo root. Which one is the
+// question src/seo.js's PAGES answers per page, so ROOT_PAGES is read from
+// there instead of this file keeping a second list of its own. A flag that
+// calls a page a "public/ asset" while the build compiles it from the root is
+// exactly the drift this file exists to catch, and a test-local copy of that
+// fact is a second place to get it wrong.
 const rootDir = new URL("../", import.meta.url);
 /** @param {string} name */
-const pageUrlFor = (name) =>
-  ROOT_PAGES.has(name) ? new URL(name, rootDir) : new URL(name, publicDir);
+const fileUrl = (name) =>
+  ROOT_PAGES.includes(name) ? new URL(name, rootDir) : new URL(name, publicDir);
 /** @param {string} name */
-const readPage = (name) => readFileSync(pageUrlFor(name), "utf8");
-/** @param {string} name */
-const pageExists = (name) => existsSync(pageUrlFor(name));
+const readPage = (name) => readFileSync(fileUrl(name), "utf8");
 
 // Every shipped HTML page, from the config, not from the directory, so a page
 // that ships without being added to src/seo.js fails the first test below.
@@ -81,9 +82,10 @@ function link(page, rel) {
 test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
   // The site ships pages from two places (issue #70): the verbatim assets in
   // public/ and the built Vite entries at the repo root, so both are walked.
+  // ROOT_PAGES is src/seo.js's, so the walk and the list cannot disagree.
   const shipped = [
     ...readdirSync(publicDir).filter((name) => name.endsWith(".html")),
-    ...[...ROOT_PAGES].filter((name) => pageExists(name)),
+    ...ROOT_PAGES,
   ].sort();
   const registered = PAGES.map(fileFor).sort();
   assert.deepEqual(
@@ -91,6 +93,21 @@ test("every shipped HTML page is registered in PAGES (src/seo.js)", () => {
     registered,
     "a public page must be added to PAGES with its own indexable flag, so its metadata is filled in rather than inherited",
   );
+});
+
+test("every page in PAGES ships from the source its flag names", () => {
+  // The drift that needed a list of its own: get-started.html moved from public/
+  // to the repo root as a built Vite entry (issue #70), and PAGES went on
+  // describing it as a public/ asset while the reading code branched around
+  // that. This checks the flag against the tree, so a page registered against a
+  // source that does not carry it fails rather than being tolerated.
+  for (const page of PAGES) {
+    const name = fileFor(page);
+    assert.ok(
+      existsSync(fileUrl(name)),
+      `${page.path} is registered in PAGES as a ${page.root ? "built Vite entry at the repo root" : "public/ asset"}, but ${page.root ? name : `public/${name}`} does not exist: move the page, or fix the flag, and keep the one PAGES list honest`,
+    );
+  }
 });
 
 test("every public page has a unique title and meta description", () => {

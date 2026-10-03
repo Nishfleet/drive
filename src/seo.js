@@ -62,12 +62,20 @@ export const SITE = Object.freeze({
 });
 
 // Every public HTML page, and whether a crawler should index it. The order is
-// the sitemap order. get-started.html is a per-device first-run page a person
-// lands on from the CLI, and usage.html is one person's own month: both
-// declare <meta name="robots" content="noindex"> and stay out of the sitemap.
-// test/seo.test.mjs walks this list, so a new page has to be added here and
-// given its own title, description and canonical rather than inheriting this
-// page's.
+// the sitemap order. usage.html is one person's own month, and the first-run,
+// Web Files, upload-request and sign-in pages are per-device or per-person
+// surfaces: each declares <meta name="robots" content="noindex"> and stays
+// out of the sitemap. test/seo.test.mjs walks this list, so a new page has to
+// be added here and given its own title, description and canonical rather than
+// inheriting this page's.
+/**
+ * One shipped HTML page. `root` names the pages that ship as built Vite
+ * entries from the repo root rather than as verbatim assets copied out of
+ * public/ (drive issue #70). Every entry without it is a public/ asset.
+ * @typedef {{ path: string, indexable: boolean, root?: boolean }} Page
+ */
+
+/** @type {readonly Page[]} */
 export const PAGES = Object.freeze([
   Object.freeze({ path: "/", indexable: true }),
   // The notes starter (drive issue #15). It is the one public page that is an
@@ -75,7 +83,13 @@ export const PAGES = Object.freeze([
   // surface, and the crowd it is for finds it by search, so it is indexable and
   // in the sitemap. Its price line is PRICE's, like every other page's.
   Object.freeze({ path: "/starter.html", indexable: true }),
-  Object.freeze({ path: "/get-started.html", indexable: false }),
+  // The first-run page is a built Vite entry at the repo root, not a public/
+  // asset: issue #70 moved it there so cf build compiles the module behind it
+  // instead of shipping the page verbatim, and the `root` flag is what tells
+  // test/seo.test.mjs where to read it. It is still noindex and out of the
+  // sitemap, because it is the per-device screen a person lands on from the
+  // CLI rather than a page a crawler has any business on.
+  Object.freeze({ path: "/get-started.html", indexable: false, root: true }),
   // The Web Files page is one person's drive, so it is noindex: a crawler that
   // reached it would see an empty listing, never a public page (issue #31).
   Object.freeze({ path: "/files.html", indexable: false }),
@@ -96,6 +110,16 @@ export const PAGES = Object.freeze([
   // to be, and its copy is gated by test/og-card.test.mjs against PRICE.
   Object.freeze({ path: "/og-card.html", indexable: false }),
 ]);
+
+// The pages that ship as built Vite entries from the repo root, not as verbatim
+// assets out of public/ (drive issue #70), as the file names test/seo.test.mjs
+// reads. Derived from PAGES, so the root fact has one home: the flag on the page
+// is the source, and the walk in the test checks it against the tree, so a page
+// that moves between the two sources, or a flag that is wrong, fails CI instead
+// of being tolerated by a second list kept beside it.
+export const ROOT_PAGES = Object.freeze(
+  PAGES.filter((page) => page.root).map((page) => page.path.replace(/^\//, "")),
+);
 
 // The docs pages (drive issue #98), as the URLs a crawler reads. The docs are
 // built by VitePress from docs-site/, which owns their titles and their
