@@ -9,7 +9,7 @@ import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken } from "../workers/api/src/http.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
@@ -189,6 +189,26 @@ function storeFor(env) {
  */
 function linksFor(env) {
   return createD1LinkStore(env.DRIVE_DB);
+}
+
+// The branch snapshot store (drive issue #252), built per request from the
+// BRANCH_SNAPSHOTS binding the same way linksFor builds its link store: a thin
+// object over the binding, so there is nothing to hold on the isolate and no
+// stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
+// 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
+// which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
+// and the row holds a pointer to it instead. It is optional, not required: a
+// deployment with no namespace still branches, and its snapshots stay in the
+// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
+// binding is not on the health check's required list either. `null` is the
+// answer a missing binding gets, and every reader treats it as "use the row".
+/**
+ * @param {Env} env
+ * @returns {import("./branches.js").SnapshotStore|null}
+ */
+function snapshotsFor(env) {
+  const kv = env.BRANCH_SNAPSHOTS;
+  return kv ? createKvSnapshotStore(kv) : null;
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
@@ -384,7 +404,13 @@ export function createApp() {
   // without withIndex, so a branch's own copies never land in the search index.
   /** @param {DriveContext} c */
   const branchesHandler = (c) =>
-    handleBranchesRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleBranchesRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
   app.get(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
@@ -395,7 +421,13 @@ export function createApp() {
   // as the branches route above.
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
-    handleRewindRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleRewindRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
   app.get(`${REWIND_ENDPOINT}/*`, rewindHandler);
