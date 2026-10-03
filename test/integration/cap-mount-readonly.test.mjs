@@ -529,8 +529,14 @@ async function proof(t, workDir) {
     "one live key after the swap",
   );
   assert.deepEqual([...afterCap[0].capabilities], ["list", "read"], "and it is read-only");
+  // The row records the powers the cap took, so a raise can hand back exactly
+  // them. Asserted present first: an absent `cappedFrom` would mean the raise
+  // cannot restore `delete`, which is the bug this proof exists to catch, so
+  // spreading it blind (or defaulting it to []) would hide that case.
+  const cappedFrom = /** @type {{cappedFrom?: readonly string[]}} */ (afterCap[0]).cappedFrom;
+  assert.ok(cappedFrom, "the read-only row records the powers the cap took");
   assert.deepEqual(
-    [.../** @type {{cappedFrom?: readonly string[]}} */ (afterCap[0]).cappedFrom],
+    [...cappedFrom],
     ["list", "read", "write", "delete"],
     "with the powers it had recorded, so a raise can restore exactly them",
   );
