@@ -87,6 +87,30 @@ function docsAndHelp() {
   return `${pages.join("\n")}\n${read("evals/agents/context/drive-help.txt")}`;
 }
 
+/**
+ * The production transform: promptfooconfig.yaml slices the model output to
+ * its last 600 chars before any grader runs, so the eval scores the short
+ * visible reply, not a leading thinking dump. The scorer here applies the
+ * same slice, so a pass in this file means a pass in a run.
+ * @param {string} output
+ */
+function productionOutput(output) {
+  return output.slice(-600);
+}
+
+/**
+ * The raw check, with no transform. Only the two "the docs satisfy every
+ * grader" tests use this, and deliberately: they ask whether the context
+ * *contains* the fact a grader wants. The transform answers a different
+ * question — which part of a reply is scored — and applying it to a whole
+ * docs dump would grade the tail of the help text, not the docs.
+ * @param {string} value @param {string} output
+ */
+function gradeRaw(value, output) {
+  const fn = new Function("output", `"use strict"; return (${value});`);
+  return fn(output);
+}
+
 /** @param {EvalGrader} a @returns {string} */
 function graderSource(a) {
   if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
@@ -95,8 +119,7 @@ function graderSource(a) {
 
 /** @param {string} value @param {string} output */
 function gradeJavascript(value, output) {
-  const fn = new Function("output", `"use strict"; return (${value});`);
-  return fn(output);
+  return gradeRaw(value, productionOutput(output));
 }
 
 const rendered = join(root, "docs-site", ".rendered");
@@ -106,6 +129,11 @@ test("the suite is wired to the stock tool and the docs render", () => {
   assert.ok(existsSync(join(rendered, "quickstart.md")), "docs rendered");
   const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
   assert.ok(cfg.description, "config has a description");
+  assert.equal(
+    cfg.defaultTest?.options?.transform,
+    "output.slice(-600)",
+    "the transform the scorer in this file mirrors",
+  );
   assert.ok(
     Array.isArray(cfg.providers) && cfg.providers.length >= 2,
     "two providers, the scaling pair",
@@ -210,6 +238,8 @@ test("the same transcript graded twice agrees 100%", () => {
 test("pasting the public docs and drive --help satisfies every train grader", () => {
   // The agent only sees those two sources plus the task. A grader that fails
   // on them is asking for a fact the task cannot know, or a negative the docs trip.
+  // Graded without the transform: this asks whether the context contains the
+  // fact, which is a different question from which reply bytes are scored.
   const context = docsAndHelp();
   const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const fails = [];
@@ -217,28 +247,61 @@ test("pasting the public docs and drive --help satisfies every train grader", ()
     const output = `${context}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
+      if (!gradeRaw(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy:\n${fails.join("\n")}`);
 });
 
+test("no positive grader passes an empty or unrelated reply", () => {
+  // A grader that fires on a blank reply or on lorem ipsum is not scoring the
+  // task: it is scoring the docs it was written next to. This is the
+  // discrimination the docs-satisfy tests cannot prove on their own. A
+  // negative grader (`!/.../`) is skipped: it passes on a blank reply because
+  // that is what "this claim is absent" means.
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const vacuous = [];
+  for (const t of tasks) {
+    for (const a of t.assert) {
+      if (a.type !== "javascript") continue;
+      const src = graderSource(a).trim();
+      if (src.startsWith("!")) continue;
+      for (const sample of ["", "lorem ipsum dolor sit amet"]) {
+        if (gradeJavascript(src, sample)) vacuous.push(`${t.description}: passes "${sample}"`);
+      }
+    }
+  }
+  assert.equal(vacuous.length, 0, `graders that always pass:\n${vacuous.join("\n")}`);
+});
+
 test("pasting the public docs and drive --help satisfies the held-out graders", (t) => {
-  if (!existsSync(HOLDOUT_DEFAULT)) {
-    t.skip(`held-out file is not on this machine: ${HOLDOUT_DEFAULT}`);
+  const holdout = process.env.DRIVE_EVAL_HOLDOUT ?? HOLDOUT_DEFAULT;
+  if (!existsSync(holdout)) {
+    t.skip(`held-out file is not on this machine: ${holdout}`);
     return;
   }
   const context = docsAndHelp();
-  const tasks = loadTasks(HOLDOUT_DEFAULT);
+  const tasks = loadTasks(holdout);
   const fails = [];
   for (const t of tasks) {
     const output = `${context}\n${t.vars.task}`;
     for (const a of t.assert) {
       if (a.type !== "javascript") continue;
-      if (!gradeJavascript(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
+      if (!gradeRaw(graderSource(a), output)) fails.push(`${t.description}: ${a.value}`);
     }
   }
   assert.equal(fails.length, 0, `docs+help+task must satisfy holdout:\n${fails.join("\n")}`);
+});
+
+test("the held-out artefact guard fires on a real tracked path", () => {
+  // `git ls-files` prints repo-root-relative paths, so the guard must match
+  // the whole path, not its start. This runs the same filter over a synthetic
+  // tracked list to prove it fires.
+  const isArtifact = (/** @type {string} */ p) =>
+    p.includes("heldout") || p.endsWith(".holdout.yaml") || p.includes("/results/");
+  assert.ok(isArtifact("evals/agents/results/latest.json"), "a committed result is flagged");
+  assert.ok(isArtifact("evals/agents/heldout/test.yaml"), "a committed held-out file is flagged");
+  assert.ok(!isArtifact("evals/agents/tasks/train.yaml"), "the train split is not flagged");
 });
 
 test("held-out tasks and run artefacts are not in the repository", () => {
@@ -248,7 +311,7 @@ test("held-out tasks and run artefacts are not in the repository", () => {
     .split("\n")
     .filter(Boolean);
   const illegal = tracked.filter(
-    (p) => p.includes("heldout") || p.endsWith(".holdout.yaml") || p.startsWith("results/"),
+    (p) => p.includes("heldout") || p.endsWith(".holdout.yaml") || p.includes("/results/"),
   );
   assert.equal(
     illegal.length,
