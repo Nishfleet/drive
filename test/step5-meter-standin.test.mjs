@@ -29,7 +29,9 @@
 // test/two-mount-sync.test.mjs).
 //
 //   DRIVE_STANDIN_ENDPOINT      S3 endpoint; set: attach to it, start nothing
-//   DRIVE_STANDIN_PORT          port when this test starts one (default 8744)
+//   DRIVE_STANDIN_PORT          fixed port for the container when this test
+//                               starts one; unset, the kernel picks one and the
+//                               port is read back from the server's log
 //   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO)
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  root credential
 //   DRIVE_STANDIN_BUCKET        bucket (default drive-meter-standin)
@@ -42,7 +44,6 @@
 // this test's own throwaway container).
 
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { platform } from "node:os";
@@ -56,11 +57,16 @@ import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
+import { startMinioStandin } from "./minio-standin.mjs";
 
-const IMAGE = process.env.DRIVE_STANDIN_IMAGE ?? "bitnamilegacy/minio:2025.7.23-debian-12-r5";
 const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-meter-standin";
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
-const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 8744);
+// 0 asks the kernel for a free port; the stand-in logs the one it bound and
+// `startMinioStandin` reads it back. A number reserved by binding, closing and
+// handing it on can be taken before the real bind, which is the race a loaded
+// run lost (drive#295). DRIVE_STANDIN_PORT pins a fixed port for a caller that
+// needs one.
+const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 0);
 const ROOT_ACCESS_KEY =
   process.env.DRIVE_STANDIN_ACCESS_KEY ?? `drive-meter-${randomBytes(6).toString("hex")}`;
 const ROOT_SECRET_KEY = process.env.DRIVE_STANDIN_SECRET_KEY ?? randomBytes(24).toString("hex");
@@ -85,122 +91,6 @@ const MINIMUM_MINUTES_PER_VERSION = 60;
 const workerFetch = /** @type {(request: Request, env: unknown) => Promise<Response>} */ (
   /** @type {unknown} */ (worker.fetch)
 );
-
-/** @param {string} bin @param {string[]} args */
-function runs(bin, args) {
-  return spawnSync(bin, args, { stdio: "ignore" }).status === 0;
-}
-
-/** @returns {string|null} */
-function containerEngine() {
-  const forced = process.env.DRIVE_STANDIN_ENGINE;
-  if (forced) {
-    return runs(forced, ["info"]) ? forced : null;
-  }
-  for (const engine of ["docker", "podman"]) {
-    if (runs(engine, ["info"])) {
-      return engine;
-    }
-  }
-  return null;
-}
-
-/**
- * Start the stand-in when this test owns it, or attach to the caller's. The
- * root credential and the notification endpoint reach the container through the
- * engine's own environment (`-e NAME` with no value), so no credential is on
- * a command line.
- * @param {{webhookUrl: string}} config
- * @param {import("node:test").TestContext} t
- */
-async function startStandin(config, t) {
-  if (CONFIGURED_ENDPOINT) {
-    return { endpoint: CONFIGURED_ENDPOINT };
-  }
-  const engine = containerEngine();
-  if (engine === null) {
-    return null;
-  }
-  const name = `drive-meter-standin-${process.pid}`;
-  const volume = `${name}-data`;
-  spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-  spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
-  const child = spawn(
-    engine,
-    [
-      "run",
-      "-d",
-      "--name",
-      name,
-      "--user",
-      "0",
-      "--network",
-      "host",
-      "-e",
-      "MINIO_ROOT_USER",
-      "-e",
-      "MINIO_ROOT_PASSWORD",
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`,
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`,
-      "-e",
-      `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`,
-      "-v",
-      `${volume}:/data`,
-      IMAGE,
-      "server",
-      "/data",
-      "--address",
-      `:${PORT}`,
-    ],
-    {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: {
-        ...process.env,
-        MINIO_ROOT_USER: ROOT_ACCESS_KEY,
-        MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
-        [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
-        [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: config.webhookUrl,
-        // The webhook target's own token: MinIO sends it as the whole
-        // Authorization header, which is exactly what this route cannot accept
-        // (it wants `Bearer <token>` in x-drive-event-token), so the delivery
-        // arrives refused and the receipts below are the proof of that.
-        [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
-      },
-    },
-  );
-  t.after(() => {
-    spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-    spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
-  });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  const status = await new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  if (status !== 0) {
-    throw new Error(`\`${engine} run\` exited ${status}: ${stderr}`);
-  }
-  const endpoint = `http://127.0.0.1:${PORT}`;
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    try {
-      const response = await fetch(`${endpoint}/minio/health/live`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (response.ok) {
-        return { endpoint };
-      }
-    } catch {
-      // still starting
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`the S3 stand-in at ${endpoint} never became healthy`);
-    }
-    await sleep(500);
-  }
-}
 
 /**
  * The meter on the stand-in: the same HTTP the bucket's event rule posts to,
@@ -308,7 +198,27 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   const receiver = await startEventReceiver(db);
   t.after(() => receiver.stop());
 
-  const standin = await startStandin({ webhookUrl: receiver.url }, t);
+  const standin = CONFIGURED_ENDPOINT
+    ? { endpoint: CONFIGURED_ENDPOINT }
+    : await startMinioStandin(
+        {
+          name: `drive-meter-standin-${process.pid}`,
+          environment: {
+            MINIO_ROOT_USER: ROOT_ACCESS_KEY,
+            MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
+            [`MINIO_NOTIFY_WEBHOOK_ENABLE_${NOTIFICATION_NAME}`]: "on",
+            [`MINIO_NOTIFY_WEBHOOK_ENDPOINT_${NOTIFICATION_NAME}`]: receiver.url,
+            // The webhook target's own token: MinIO sends it as the whole
+            // Authorization header, which is exactly what this route cannot
+            // accept (it wants `Bearer <token>` in x-drive-event-token), so the
+            // delivery arrives refused and the receipts below are the proof of
+            // that.
+            [`MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_${NOTIFICATION_NAME}`]: EVENT_TOKEN,
+          },
+          port: PORT,
+        },
+        t,
+      );
   if (standin === null) {
     t.diagnostic("no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT");
     return t.skip("no container engine for the S3 stand-in");

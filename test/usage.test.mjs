@@ -25,7 +25,9 @@ import {
   USAGE_HISTORY_DAYS,
   usageSummary,
 } from "../src/billing.js";
+import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
+import { uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -310,6 +312,52 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
   );
 });
 
+test("the upload line rides the usage answer beside capLine", async () => {
+  // The second surface of drive issue #308. The line is assembled once, by
+  // uploadProgress() from UPLOAD_LABEL in src/status.js, so the usage page
+  // renders the same words `drive status` and the first-run page print and
+  // carries no second copy of a word or a byte formatter. It is null while the
+  // Worker has no device store to read a queue from.
+  const body = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+  ).json();
+  assert.deepEqual(Object.keys(body).sort(), [
+    "billCents",
+    "billUsd",
+    "cap",
+    "capLine",
+    "ceilingUsd",
+    "downloads",
+    "gbMonths",
+    "labels",
+    "meteredUsd",
+    "saved",
+    "storedDaily",
+    "storedGb",
+    "uploadLine",
+  ]);
+  assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
+
+  // A queue handed in is checked by uploadProgress(), which throws on a value
+  // that is not a queue, so a broken report fails the read rather than printing
+  // a plausible line about bytes nobody counted.
+  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const reported = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    queue,
+  ).json();
+  assert.equal(reported.uploadLine, uploadProgress(queue).label);
+  assert.equal(reported.uploadLine, uploadLine(queue));
+  assert.throws(
+    () => handleUsageRequest(new Request("https://drive.test/api/usage"), account, { files: 2 }),
+    TypeError,
+    "a payload that is not a queue is refused, never rendered as a default",
+  );
+});
+
 test("the shipped page carries every label from src/usage.js verbatim", () => {
   // The page cannot import the module, so these are the strings it must carry.
   // Drifting copy fails here instead of shipping a page that disagrees with the
@@ -495,4 +543,37 @@ test("a 401 read shows the sign-in words the 401 sent, not unreachable", () => {
   assert.match(page, /function saySignedOut\(message\)/);
   assert.match(page, /statusEl\.dataset\.state = "signed-out";/);
   assert.doesNotMatch(page, /You are not signed in to your drive/);
+});
+
+test("the upload-progress line is the endpoint's words, rendered and nothing else", () => {
+  // Drive issue #308, the second surface. The line arrives finished in the
+  // payload (`uploadLine`, beside `capLine`), so this page sets a string and
+  // carries no word of its own beyond the section heading and the hint: a
+  // second copy of "Uploading 3 files" or a second byte formatter is exactly
+  // the drift the gates above exist to catch. Hidden when there is no queue.
+  assert.match(page, /<section aria-labelledby="uploads-heading">/);
+  assert.match(page, /<h2 id="uploads-heading">Uploads<\/h2>/);
+  assert.match(page, /<p class="upload-line" id="upload-line" hidden><\/p>/);
+  assert.match(
+    page,
+    /<p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file\.<\/p>/,
+  );
+  assert.ok(page.includes(USAGE_LABELS.uploads), "the heading is the module's word");
+  assert.ok(page.includes(USAGE_LABELS.uploadsHint), "the hint is the module's word");
+  // The payload check: a value that is neither null nor a string is a payload
+  // this page cannot render, so it takes the unreachable state rather than
+  // printing "null" where a line belongs.
+  assert.match(page, /summary\.uploadLine !== null && typeof summary\.uploadLine !== "string"/);
+  // The wiring: set the module's sentence, and hide the line when there is no
+  // queue to report.
+  assert.match(
+    page,
+    /uploadLineEl\.textContent = summary\.uploadLine === null \? "" : summary\.uploadLine;/,
+  );
+  assert.match(page, /uploadLineEl\.hidden = summary\.uploadLine === null;/);
+  // No byte arithmetic and no word table of its own: the page never formats a
+  // size for this line, and never spells the fragments it renders.
+  const script = page.slice(page.indexOf("<script>"));
+  assert.doesNotMatch(script, /formatBytes|UPLOAD_LABEL|uploadProgress/);
+  assert.doesNotMatch(script, /Uploading \{|of \{|\{percent\}/);
 });

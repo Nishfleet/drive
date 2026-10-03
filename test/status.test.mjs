@@ -9,6 +9,10 @@
 //    read by calling the builders rather than by grepping a shipped HTML file
 //    for a sentence. The old drift tests are gone with the second copy of the
 //    words they policed.
+//
+// The usage page's upload-progress line (drive issue #308) is pinned in
+// test/usage.test.mjs, beside the rest of that page: GET /api/usage answers
+// with the line the same word table assembles.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -185,6 +189,50 @@ test("upload progress rejects nonsense instead of reporting it as done", () => {
   assert.throws(() => formatBytes(-1), TypeError);
 });
 
+// A paused queue is the same arithmetic stopped, and it must never read as an
+// uploading one (drive issue #100). The page renders this through uploadLine,
+// which is the same function `drive status` mirrors.
+test("a paused queue says Paused and what is left, not Uploading", () => {
+  assert.equal(
+    uploadProgress({
+      uploadedBytes: 300_000_000,
+      totalBytes: 1_200_000_000,
+      files: 3,
+      paused: true,
+    }).label,
+    "Paused: 3 files waiting (900 MB left)",
+  );
+  assert.equal(
+    uploadProgress({ uploadedBytes: 0, totalBytes: 60_000_000, files: 1, paused: true }).label,
+    "Paused: 1 file waiting (60 MB left)",
+  );
+  // A queue with no file count still says Paused and what is left.
+  assert.equal(
+    uploadProgress({ uploadedBytes: 10, totalBytes: 100, paused: true }).label,
+    "Paused: 90 B left",
+  );
+  // Paused with nothing queued is complete, not a division by zero and not a
+  // second word for the same state.
+  assert.deepEqual(uploadProgress({ uploadedBytes: 0, totalBytes: 0, paused: true }), {
+    percent: 100,
+    label: "Up to date",
+  });
+  // The page's line goes through the module's words, so the page shows the
+  // pause word (src/get-started.js uploadLine).
+  assert.match(
+    uploadLine({ uploadedBytes: 0, totalBytes: 1024, files: 1, paused: true }),
+    /^Paused/,
+  );
+  // A caller that always sets paused: false does not pause its own queue.
+  assert.equal(
+    uploadProgress({ uploadedBytes: 1, totalBytes: 2, files: 1, paused: false }).label,
+    "Uploading 1 file: 1 B of 2 B (50%)",
+  );
+  // The paused and resumed words live in the one table the CLI also mirrors.
+  assert.equal(UPLOAD_LABEL.paused, "Paused");
+  assert.equal(UPLOAD_LABEL.resumed, "Resumed");
+});
+
 test("bytes stay one short line at both ends of the scale", () => {
   assert.equal(formatBytes(0), "0 B");
   assert.equal(formatBytes(999), "999 B");
@@ -236,7 +284,7 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
     account,
   );
   assert.equal(signedIn.status, 200);
-  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [] });
+  assert.deepEqual(await signedIn.json(), { state: "waiting", devices: [], upload: null });
 
   // The account is a required argument: a call that forgets it is the 401, not
   // an open endpoint, so a future route cannot accidentally serve anonymous.
@@ -283,6 +331,36 @@ test("a request can only prove an account through a session Better Auth minted",
   );
 });
 
+test("the status payload carries the raw queue, the shape the page renders", async () => {
+  // Drive issue #308, the first surface. `upload` is the raw queue, not a
+  // finished line, because this endpoint feeds the first-run page's renderer,
+  // which calls uploadLine() on it (drive issue #100). Today the Worker has no
+  // device store, so no device has signed in and nothing is waiting: null is
+  // that answer rather than an invented zero-byte queue, and the field is in
+  // the payload rather than missing, so the renderer draws it the moment a
+  // queue exists. A queue handed in passes through in exactly the shape
+  // uploadProgress() accepts, and round-trips to the line the page shows.
+  const signedIn = handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    { id: "1", name: "Your drive" },
+  );
+  const body = await signedIn.json();
+  assert.deepEqual(Object.keys(body), ["state", "devices", "upload"]);
+  assert.equal(body.upload, null);
+
+  const queue = { uploadedBytes: 300_000_000, totalBytes: 1_200_000_000, files: 3 };
+  const carrying = await handleFirstRunStatusRequest(
+    new Request("https://drive.test/api/first-run-status"),
+    { id: "1", name: "Your drive" },
+    queue,
+  ).json();
+  assert.deepEqual(carrying.upload, queue);
+  assert.equal(uploadLine(carrying.upload), uploadProgress(queue).label);
+  // The page's renderer reads the field under that one name.
+  const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(source, /payload\.upload/);
+});
+
 test("the status endpoint names the one method it serves", () => {
   const response = handleFirstRunStatusRequest(
     new Request("https://drive.test/api/first-run-status", { method: "POST" }),
@@ -306,6 +384,30 @@ test("the Worker routes the page's poll to the status handler", async () => {
   // The waitlist route is untouched, and a stray path is still the asset 404.
   const asset = await workerFetch(new Request("https://drive.test/get-started"), env);
   assert.equal(asset.status, 200);
+});
+
+test("a signed-out person cannot describe or create the starter", async () => {
+  // The starter's own page is a public asset, so the route behind it is what
+  // protects the drive: the gate answers 401 for both methods, and the asset
+  // layer never runs. This is the anonymous-401 proof this route needs, and
+  // it walks Hono's real matcher rather than a factory per account-owning
+  // route, so a new route that skips the gate fails here.
+  const describe = await workerFetch(new Request("https://drive.test/api/starter"), {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+  });
+  assert.equal(describe.status, 401, "a signed-out describe answers 401");
+  assert.deepEqual(await describe.json(), { error: failureMessage("unauthorized") });
+
+  const create = await workerFetch(
+    new Request("https://drive.test/api/starter", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "create" }),
+    }),
+    { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } },
+  );
+  assert.equal(create.status, 401, "a signed-out create answers 401");
+  assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
 });
 
 test("the pricing page links to the first-run page", () => {

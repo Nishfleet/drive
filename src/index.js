@@ -9,8 +9,9 @@ import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken } from "../workers/api/src/http.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "./branches.js";
+import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
+import { pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -22,6 +23,7 @@ import {
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
+  HOUR_MS,
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
@@ -48,6 +50,7 @@ import {
   SHARE_LINK_PREFIX,
 } from "./share.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
   STATUS_ENDPOINT,
@@ -186,6 +189,26 @@ function storeFor(env) {
  */
 function linksFor(env) {
   return createD1LinkStore(env.DRIVE_DB);
+}
+
+// The branch snapshot store (drive issue #252), built per request from the
+// BRANCH_SNAPSHOTS binding the same way linksFor builds its link store: a thin
+// object over the binding, so there is nothing to hold on the isolate and no
+// stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
+// 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
+// which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
+// and the row holds a pointer to it instead. It is optional, not required: a
+// deployment with no namespace still branches, and its snapshots stay in the
+// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
+// binding is not on the health check's required list either. `null` is the
+// answer a missing binding gets, and every reader treats it as "use the row".
+/**
+ * @param {Env} env
+ * @returns {import("./branches.js").SnapshotStore|null}
+ */
+function snapshotsFor(env) {
+  const kv = env.BRANCH_SNAPSHOTS;
+  return kv ? createKvSnapshotStore(kv) : null;
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
@@ -356,12 +379,38 @@ export function createApp() {
   app.get(`${FILES_ENDPOINT}/*`, filesHandler);
   app.post(`${FILES_ENDPOINT}/*`, filesHandler);
 
+  // The optional notes starter (drive issue #15). A GET describes the template
+  // and writes nothing; a POST with `action: "create"` fills in the starter's
+  // own files, and only the ones that are missing. Same store handling as the
+  // files lane: the handler scopes the store to the account it is handed, and
+  // no withIndex, so a starter's files are not search rows a person never
+  // asked to index. Off by default is enforced by the gate and the method
+  // together: nothing in the Worker calls the create for a person, and the
+  // only route that runs it is a POST behind the account gate.
+  /** @param {DriveContext} c */
+  const starterHandler = (c) => {
+    const account = c.get("account");
+    return handleStarterRequest(
+      c.req.raw,
+      account ? scopeStore(storeFor(c.env), account) : null,
+      account,
+    );
+  };
+  app.get(STARTER_ENDPOINT, starterHandler);
+  app.post(STARTER_ENDPOINT, starterHandler);
+
   // Branches (build step 7, drive#8): the folder copy, the diff, approve and
   // discard. The store is handed in unscoped (the handler scopes it) and
   // without withIndex, so a branch's own copies never land in the search index.
   /** @param {DriveContext} c */
   const branchesHandler = (c) =>
-    handleBranchesRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleBranchesRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(BRANCHES_ENDPOINT, branchesHandler);
   app.post(BRANCHES_ENDPOINT, branchesHandler);
   app.get(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
@@ -372,7 +421,13 @@ export function createApp() {
   // as the branches route above.
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
-    handleRewindRequest(c.req.raw, c.env.DRIVE_DB, storeFor(c.env), c.get("account"));
+    handleRewindRequest(
+      c.req.raw,
+      c.env.DRIVE_DB,
+      snapshotsFor(c.env),
+      storeFor(c.env),
+      c.get("account"),
+    );
   app.get(REWIND_ENDPOINT, rewindHandler);
   app.post(REWIND_ENDPOINT, rewindHandler);
   app.get(`${REWIND_ENDPOINT}/*`, rewindHandler);
@@ -387,7 +442,12 @@ export function createApp() {
     if (c.env.DRIVE_DB) {
       capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
     }
-    return handleUsageRequest(c.req.raw, { ...account, capUsd });
+    // The third argument is the live rclone upload queue, which the Worker
+    // cannot know until the device store lands (build-spec.md data model
+    // `devices`): it is rclone's, on the Mac. Until then the endpoint answers
+    // the line as null and the usage page hides it, which is the honest answer
+    // for an account whose no device has signed in yet (drive issue #308).
+    return handleUsageRequest(c.req.raw, { ...account, capUsd }, null);
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
@@ -536,7 +596,21 @@ export default {
     if (event.cron === METER_CRON) {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
-      await runMeterCron(env.METER_DB, event.scheduledTime);
+      const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      const hours = [];
+      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
+        hours.push(hour);
+      }
+      // Test-mode Dodo ingest for the hours this run rolled (drive issue #51).
+      // A missing key skips rather than failing the rollup; a failed ingest
+      // throws so Cloudflare retries. fetch is injectable as DODO_FETCH so
+      // the unit tests can record the request without reaching the network.
+      const dodo = /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch}} */ (env);
+      await pushBillingHours(env.METER_DB, hours, {
+        apiKey: dodo.DODO_PAYMENTS_API_KEY,
+        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+        now: event.scheduledTime,
+      });
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that

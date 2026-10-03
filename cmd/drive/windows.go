@@ -32,6 +32,10 @@ const windowsDefaultLetter = "D:"
 // Drive installer (drive#154) brings it in, so the fix is to reinstall Drive.
 // The driver is never installed silently, and a hand-installed driver is not
 // the product's instruction to give.
+// winFspReinstall is what `drive mount` prints when WinFsp is missing. The
+// sentence keeps its semicolon: the no-semicolon rule is for replies and PR
+// text a person reads in a review, not for a failure string a user reads at a
+// terminal, where one sentence with a semicolon is the clearer instruction.
 const winFspReinstall = "WinFsp is not installed, so Windows cannot mount a drive letter; reinstall Drive, which installs WinFsp for you"
 
 // winFspDLLs are the driver files WinFsp's own installer writes. The official
@@ -118,9 +122,48 @@ func driveLetterFree(letter string) bool {
 // windowsVolumeMounted reports whether the drive letter answers, which is what
 // a mount is: rclone attaches the remote at the letter and a stat on its root
 // then succeeds.
+//
+// The path handed to Stat is the volume root (`D:\`), never the bare `D:`:
+// `os.Stat("D:")` is a drive-relative path that resolves against the
+// process's current directory on that drive and succeeds for any volume that
+// exists, mounted or not, which would make every answer here a true answer. The
+// trailing separator is what makes it the root.
 func windowsVolumeMounted(letter string) bool {
 	_, err := os.Stat(windowsVolumeRoot(letter))
 	return err == nil
+}
+
+// windowsRcloneMountLetters is the set of letters that an rclone process on
+// this machine mounts at, as reported by the running rclone processes. This is
+// the only identification of "a Drive mount" that the platform itself offers:
+// an every-volume stat cannot tell a WinFsp volume that Drive attached from a
+// USB stick, an optical drive or another FUSE/FAT volume that happened to land
+// on a letter between D: and Z:, and `tasklist`'s command line is where rclone
+// carries the mount point it was started with.
+//
+// The letters come from the same rclone command lines the login task's command
+// line is read from (windowsDriveLetterFromCommand), so both ends of the stop
+// path answer the same question: which letters is rclone holding?
+//
+// Returns an error rather than an empty list when the process list cannot be
+// read: an empty answer would report a stale mount as stopped, which is the
+// failure this whole function exists to prevent.
+func windowsRcloneMountLetters() ([]string, error) {
+	out, err := exec.Command("tasklist", "/fo", "csv", "/nh").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("tasklist: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	// A CSV field whose value contains a comma is quoted with its commas
+	// doubled ("Image Name","PID","...,"..."), which Go's encoding/csv cannot be
+	// told about, so the command line is matched inside each record with the
+	// existing letter reader instead of a CSV parse that would split on them.
+	var letters []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if letter, ok := windowsDriveLetterFromCommand(line); ok {
+			letters = append(letters, letter)
+		}
+	}
+	return letters, nil
 }
 
 // windowsVolumeRoot is the stat-able root of a drive letter: "Z:" becomes
@@ -359,16 +402,59 @@ func waitWindowsVolumeGone(letter string) error {
 // stopWindowsMount is the Windows half of stopMount: end the task's process,
 // then prove the drive letter is gone. Unmount normally already did both; this
 // is the measured end state logout and uninstall rely on.
+//
+// Three things are measured rather than assumed, because the login task, the
+// rclone process and the drive letter are three separate things:
+//
+//   - schtasks /End is asynchronous, so a letter that is still mounted one
+//     instant after /End is not a failure. The poll waits for WinFsp to detach
+//     it and fails only when the wait runs out.
+//   - A mount whose task is already gone is still held by an rclone process, so
+//     the running rclone processes are asked which letters they mount at
+//     (windowsRcloneMountLetters). Asking WindowsDriveLetter for a letter
+//     instead would name one that is FREE, which is the letter nothing is
+//     mounted at, and would report a stale mount as stopped.
+//   - A /End that could not be run at all (a permission failure) is the reason a
+//     letter stays mounted, so it is carried into the failure below instead of
+//     being printed and forgotten.
 func stopWindowsMount(home string) error {
+	// Every letter rclone is holding right now, read before the stop attempt
+	// and after it, so a mount that outlives /End is caught either way.
+	endErr := error(nil)
 	if present, err := windowsTaskPresent(WindowsTaskName); err == nil && present {
-		_ = runSchtasks(schtasksEndArgs(WindowsTaskName)...)
+		if err := runSchtasks(schtasksEndArgs(WindowsTaskName)...); err != nil {
+			// The task exists but is not running, or could not be ended. The
+			// volume check below is what decides whether anything is left, and
+			// the reason is carried there so the failure can name it.
+			endErr = err
+		}
 	}
-	letter, err := windowsMountLetter()
+	// With no task to end, the rclone processes are what hold the mount. The
+	// task's own command line is a second, cheaper source when it is there, so
+	// it is read first and the process list is the fallback that also covers a
+	// task-less stale mount.
+	letters := map[string]bool{}
+	if command, ok, _ := windowsTaskCommand(WindowsTaskName); ok {
+		if letter, found := windowsDriveLetterFromCommand(command); found {
+			letters[letter] = true
+		}
+	}
+	held, err := windowsRcloneMountLetters()
 	if err != nil {
-		return err
+		// The process list could not be read, so a stale rclone mount cannot be
+		// ruled out and the stop is not proved.
+		return fmt.Errorf("could not check the running rclone mounts: %w", err)
 	}
-	if windowsVolumeMounted(letter) {
-		return fmt.Errorf("unmount %s: still mounted after stopping the login task", letter)
+	for _, l := range held {
+		letters[l] = true
+	}
+	for l := range letters {
+		if err := waitWindowsVolumeGone(l); err != nil {
+			if endErr != nil {
+				return fmt.Errorf("%w (ending the login task also failed: %v)", err, endErr)
+			}
+			return err
+		}
 	}
 	return nil
 }

@@ -54,7 +54,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 | Command | What it does |
 |---|---|
 | `drive init` | Sign in (opens the browser for a device code), make the drive folder (`~/Drive`), start the mount, find installed agent tools and connect each one. Safe to run again. |
-| `drive status` | Mounted or not, files waiting to upload, this month's cost so far, cap |
+| `drive status` | Mounted or not, files waiting to upload and why, this month's cost so far, cap |
 | `drive usage` | Stored GB now, GB-months so far, downloads used out of the free 3x, cost so far |
 | `drive cap <dollars>` | Change the spending cap |
 | `drive history <file>` | List saved versions: today's from B2, older ones (one per day, up to 30 days) from Hetzner |

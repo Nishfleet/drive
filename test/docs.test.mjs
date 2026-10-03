@@ -15,10 +15,10 @@ import {
   monthBillCents,
   monthlyCeilingUsd,
 } from "../src/billing.js";
-import { FAQ, faqMarkdown, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
+import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
-import { SITE } from "../src/seo.js";
+import { PAGES, SITE } from "../src/seo.js";
 import { INSTALL_COMMAND } from "../src/status.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
@@ -93,6 +93,43 @@ test("a page may not use a marker src/docs.js does not define", () => {
     () => applyMarkers("{{NOT_A_MARKER}}"),
     /NOT_A_MARKER/,
     "an unknown marker must fail the render, not ship as a literal",
+  );
+});
+
+// The cache numbers (drive issue #112) are the shipped defaults in
+// cmd/drive/config.go, read here the way test/home-demos.test.mjs reads the
+// mount's flags: a page that says 20G while the CLI mounts with 6G is a page
+// that lies about the disk, so the two are one file apart and this is the gate
+// between them.
+test("the cache numbers on the pages are the ones the CLI mounts with", () => {
+  const go = readFileSync(new URL("../cmd/drive/config.go", import.meta.url), "utf8");
+  /** @param {string} name @returns {string} */
+  const goConst = (name) => {
+    const match = go.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`, ""));
+    assert.ok(match, `${name} must be a Go string constant in cmd/drive/config.go`);
+    return match[1];
+  };
+  const limit = goConst("vfsCacheMaxValue");
+  const floor = goConst("vfsCacheMinFreeSpaceValue");
+  for (const [file, name] of [
+    ["how-it-works.md", "how it works"],
+    ["limits.md", "limits"],
+  ]) {
+    const page = shipped(file);
+    assert.ok(page.includes(limit), `${name} page must state the ${limit} cache limit`);
+    assert.ok(page.includes(floor), `${name} page must state the ${floor} free-space floor`);
+  }
+  // And the marker the page uses renders from those constants, so the two
+  // cannot be checked against the page but disagree with each other.
+  assert.equal(
+    markerValues().CACHE_LIMIT,
+    limit,
+    "the CACHE_LIMIT marker must be the CLI's own limit",
+  );
+  assert.equal(
+    markerValues().CACHE_FLOOR,
+    floor,
+    "the CACHE_FLOOR marker must be the CLI's own floor",
   );
 });
 
@@ -186,6 +223,30 @@ test("the security page states the same key table, and what we cannot claim", ()
   assert.doesNotMatch(page, /SOC 2/i, "the security page must not claim a certification");
 });
 
+test("the security page answers whether writing resumes once the cap is raised", () => {
+  // The gap issue #303 names, from both directions. A train task of the agent
+  // eval (#222) was dropped because its answer is nowhere in the reading
+  // stack: docs-site/*.md and `drive --help` both said the drive goes read-only
+  // at the cap, and neither said what raising it does. The pages an agent
+  // reads were also the only place the answer could live, because the code that
+  // decides it (src/cap.js `capSwapPlan`, whose mount plan `drive cap` acts on)
+  // is not served. So the answer is one sentence on the page that already
+  // states the cap, and this pins it: an eval cannot grade an answer the
+  // reading stack does not carry, and a page that loses the sentence fails here
+  // rather than in the next run's score.
+  const page = shipped("security.md");
+  assert.match(
+    page,
+    /raise the cap and the drive starts writing again/i,
+    "the security page must say writing resumes once the cap is raised",
+  );
+  assert.match(
+    page,
+    /uploads that waited in the cache go up/i,
+    "the security page must say the uploads that waited are sent",
+  );
+});
+
 test("the limits page is honest: not open, no install script, and the CLI gaps named", () => {
   const page = shipped("limits.md");
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
@@ -201,14 +262,27 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   );
   // Commands the CLI does not have (cmd/drive/main.go's switch) must be on the
   // page as "not in the CLI", never shown as working. A test cannot read the Go
-  // switch, so this pins the two that the docs otherwise lean on.
-  for (const missing of ["restore", "branch"]) {
+  // switch, so this pins the one that the docs otherwise lean on. `branch` used
+  // to be on this list: cmd/drive/main.go now ships branch, branches, diff,
+  // approve and discard, and the agents page documents them (issue #306), so
+  // the gap line was removed and the page must not claim the gap anymore.
+  for (const missing of ["restore"]) {
     assert.match(
       page,
       new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
       `the limits page must say there is no ${missing} command yet`,
     );
   }
+  assert.doesNotMatch(
+    page,
+    /No branch or approve commands/,
+    "branch and approve ship today, so the limits page must not call them a gap",
+  );
+  assert.match(
+    page,
+    /`?drive (branch|approve)`?/,
+    "the limits page must speak of branch and approve as commands that exist",
+  );
 });
 
 test("the changelog opens today and every entry is a real line", () => {
@@ -218,6 +292,28 @@ test("the changelog opens today and every entry is a real line", () => {
     page.includes(dollars(BILLING_CONFIG.perTbUsd)),
     "the changelog must state the ceiling it recorded",
   );
+});
+
+test("the changelog's docs list names every page in DOC_PAGES order", () => {
+  // The changelog repeats the docs list in prose ("These docs: ..."), a second
+  // copy of src/seo.js DOC_PAGES. drive#282: Benchmarks was in DOC_PAGES, the
+  // sitemap and the built site, but not in this sentence, so an agent reading
+  // the changelog missed a shipped page. The gate reads that one sentence and
+  // requires every DOC_PAGES title, in the same order, so the next page added
+  // to DOC_PAGES fails here until the changelog names it.
+  const changelog = shipped("changelog.md");
+  const bullet = changelog.match(/[*-] These docs:([\s\S]*?)(?=\n[*-] |\n\n)/);
+  assert.ok(bullet, "the changelog must carry its 'These docs:' list");
+  const names = bullet[1].replace(/\s+/g, " ").toLowerCase();
+  let at = -1;
+  for (const page of DOC_PAGES) {
+    const found = names.indexOf(page.title.toLowerCase(), at + 1);
+    assert.ok(
+      found > at,
+      `the changelog's docs list must name ${page.title} after the page before it`,
+    );
+    at = found;
+  }
 });
 
 test("every FAQ answer rests on a scoreboard row that is a measured win", () => {
@@ -312,6 +408,90 @@ test("no [verify] line ships in any docs page", () => {
   }
 });
 
+test("no docs page claims a cross-machine sync time the scoreboard has not measured", () => {
+  // drive#275: how-it-works.md and public/llms.txt said a save reaches storage
+  // "a few seconds after you close the file" and appears on the other machines,
+  // while the scoreboard's "cross-machine sync time" row says not yet measured
+  // for two real machines (the row's own issue is #121) and the Benchmarks page
+  // opens by promising nothing is estimated. Same drift shape as #133, one row
+  // over. The wording is downgraded, and this gate keeps it downgraded: while
+  // the row is unmeasured, a page may not pair a cross-machine claim with a
+  // stated duration. The gate reads the row's verdict, so the day #121 lands a
+  // real measurement the pages may carry the figure again without editing this
+  // test. The drift sat across a line break, so each surface is folded to one
+  // line first, the way the shipped page reads.
+  const SYNC_ROW = "cross-machine sync time";
+  const SYNC_ISSUE = 121;
+  const VERDICTS = ["win", "lose", "not yet measured"];
+  const verdict = scoreboardVerdict(scoreboard, SYNC_ROW);
+  assert.ok(
+    VERDICTS.includes(verdict),
+    `docs/scoreboard.md's "${SYNC_ROW}" row carries verdict "${verdict}", which is not one this gate knows`,
+  );
+  if (verdict === "win") {
+    // The row is measured, so a figure on a page is a claim the scoreboard
+    // backs and this gate has nothing left to say about it.
+    return;
+  }
+  /** Fold a rendered page to one line, so a sentence hard-wrapped in the source
+   * is checked as the one sentence a reader sees. @param {string} text */
+  const fold = (text) => text.replace(/\r?\n/g, " ");
+  // Every surface a person or an agent reads: the nine docs pages, read as the
+  // build wrote them, and the site-wide llms.txt the pages are listed in.
+  /** @type {Array<[string, string]>} */
+  const surfaces = [
+    .../** @type {Array<[string, string]>} */ (
+      DOC_PAGES.map((page) => [page.file, fold(shipped(page.file))])
+    ),
+    ["public/llms.txt", fold(readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8"))],
+  ];
+  // A duration beside a save arriving on another machine, either order, held to
+  // one table cell or sentence by [^|]{0,160} (excludes markdown table pipes, so
+  // the Benchmarks table's own figures cannot chain across cells). "a few
+  // seconds", "within 5 s", "in seconds", "half a second", "a few minutes".
+  const machineMention =
+    /\b(?:other machines?|another machine|other computers?|another computer|other macs?|another mac|other devices?|another device|across machines|both machines)\b/i;
+  const duration =
+    /\b(?:a |an |about |around |in |within |under |over |after )?(?:few|couple(?: of)?|half an?|one|two|three|four|five|ten|\d[\d.]*)\s*(?:milliseconds?|ms|seconds?|secs?|minutes?|mins?)\b|\b(?:within|in|under|over|about|after)\s+(?:a |an )?(?:few|couple of|half an?|\d[\d.]*)?\s*(?:seconds?|minutes?|milliseconds?|ms)\b/i;
+  const timeThenMachine = new RegExp(
+    `(?:${duration.source})[^|]{0,160}?(?:${machineMention.source})`,
+    "i",
+  );
+  const machineThenTime = new RegExp(
+    `(?:${machineMention.source})[^|]{0,160}?(?:${duration.source})`,
+    "i",
+  );
+  for (const [name, text] of surfaces) {
+    assert.doesNotMatch(
+      text,
+      timeThenMachine,
+      `${name} states how long a save takes to cross to another machine, and the scoreboard's "${SYNC_ROW}" row is not yet measured (issue #${SYNC_ISSUE}: two real machines)`,
+    );
+    assert.doesNotMatch(
+      text,
+      machineThenTime,
+      `${name} states how long a save takes to cross to another machine, and the scoreboard's "${SYNC_ROW}" row is not yet measured (issue #${SYNC_ISSUE}: two real machines)`,
+    );
+  }
+  // And the two surfaces the drift was found on keep the honest sentence, so a
+  // reword that drops the "not yet measured" instead of the figure fails here.
+  const downgraded = /(?:a save|save) takes[^.;]{0,80}not yet measured/i;
+  const howItWorks = surfaces.find(([name]) => name === "how-it-works.md");
+  const rootLlms = surfaces.find(([name]) => name === "public/llms.txt");
+  assert.ok(howItWorks, "the how-it-works page must be one of the surfaces");
+  assert.ok(rootLlms, "the root llms.txt must be one of the surfaces");
+  assert.match(
+    howItWorks[1],
+    downgraded,
+    "how-it-works.md must say how long a save takes is not yet measured",
+  );
+  assert.match(
+    rootLlms[1],
+    downgraded,
+    "public/llms.txt must say how long a save takes is not yet measured",
+  );
+});
+
 test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   const llms = shipped("llms.txt");
   const full = shipped("llms-full.txt");
@@ -324,13 +504,19 @@ test("llms.txt links every page, and llms-full.txt holds all of them", () => {
   }
 });
 
-test("the sitemap lists the docs pages on the canonical origin, in order", () => {
+test("the sitemap lists the home page and the indexable pages, then every docs page, in order", () => {
   const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
   const locations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+  // The indexable pages come from src/seo.js PAGES rather than a typed path,
+  // so a page that moves there moves this expectation with it instead of the
+  // test and the sitemap drifting together.
   assert.deepEqual(
     locations,
-    [SITE.homePath, ...DOC_PAGES.map((page) => page.url)].map((path) => `${SITE.origin}${path}`),
-    "the sitemap must list the home page and every docs page, in order",
+    [
+      ...PAGES.filter((page) => page.indexable).map((page) => page.path),
+      ...DOC_PAGES.map((page) => page.url),
+    ].map((path) => `${SITE.origin}${path}`),
+    "the sitemap must list every indexable page and every docs page, in order",
   );
   // A docs URL in the sitemap that nothing serves is the drift the issue names:
   // a page that exists on disk and is not in the sitemap, or the reverse.
@@ -366,6 +552,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
     "go install github.com/Nishfleet/drive/cmd/drive@latest",
+    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
+    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
+    "brew install nishfleet/tap/drive",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",
