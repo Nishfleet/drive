@@ -326,6 +326,18 @@ export function unauthorizedResponse() {
  * signed in, so a signed-in account gets `waiting` with an empty device list —
  * the same shape the real store returns for a signed-in account with no
  * devices yet.
+ *
+ * `upload` is the live rclone upload queue, in the one shape `uploadProgress()`
+ * and the first-run page's `uploadLine()` read:
+ * `{uploadedBytes, totalBytes, files?, paused?}`. It is null when there is no
+ * queue to report. The queue is rclone's, on the Mac, so the Worker can only
+ * report one once the device store lands: an account with no signed-in device
+ * has nothing waiting, and null is that answer rather than an invented zero
+ * that would read as a live queue of no bytes. The field ships with the payload
+ * now (drive issue #308) so both pages read one shape, and it is an argument
+ * to the handler rather than a value written here, so the store that fills it
+ * is one line at the call site and the payload shape does not change when it
+ * lands.
  * The account is a required argument and never read from a request that
  * cannot prove one (issue #45, north star: Safe): `signedInAccount()` is null
  * for every caller until the sign-in flow lands, so the endpoint answers 401
@@ -334,8 +346,9 @@ export function unauthorizedResponse() {
  * (drive issue #73).
  * @param {Request} request
  * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
+ * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
-export function handleFirstRunStatusRequest(request, account) {
+export function handleFirstRunStatusRequest(request, account, upload = null) {
   // The gate comes before the method check, so an anonymous request is told
   // only that it is not signed in and never which methods this route has.
   if (!account) {
@@ -347,7 +360,12 @@ export function handleFirstRunStatusRequest(request, account) {
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  return new Response(JSON.stringify({ state: "waiting", devices: [] }), {
+  // `upload` is the raw queue, not a finished line: this endpoint feeds the
+  // first-run page's renderer, which calls uploadLine() on it (drive issue
+  // #100). The value is the shape uploadProgress() accepts, and the renderer's
+  // own guard turns a payload it cannot draw into its unreachable state, so no
+  // second check is written here.
+  return new Response(JSON.stringify({ state: "waiting", devices: [], upload }), {
     status: 200,
     headers: STATUS_HEADERS,
   });
