@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-03
 
+- One command installs the drive CLI and rclone together: the Linux `.deb` and
+  `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
+  and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
+  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  removes that login item.
 - `drive update` and `drive version`: an update replaces the installed CLI
   with the latest released version by the same `go install` command a person
   installs with, and `drive version` prints the version the binary was built

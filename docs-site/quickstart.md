@@ -113,10 +113,10 @@ worked sizes.
 drive update
 ```
 
-`drive update` reads the newest released version, installs it with the same
-`go install` command this page started with, and prints the version the
-installed binary now reports. `drive update --check` says whether a newer
-version exists and changes nothing.
+`drive update` reads the newest released version, installs it with
+`go install github.com/Nishfleet/drive/cmd/drive@latest`, and prints the
+version the installed binary now reports. `drive update --check` says whether a
+newer version exists and changes nothing.
 
 ## Next
 

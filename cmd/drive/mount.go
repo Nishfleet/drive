@@ -461,15 +461,14 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		if err := bootstrapLaunchd(itemPath); err != nil {
 			return err
 		}
-	} else {
-		for _, action := range mountSystemctlActions() {
-			args := []string{"--user", action}
-			if action != "daemon-reload" {
-				args = append(args, SystemdUnitName)
-			}
-			if err := exec.Command("systemctl", args...).Run(); err != nil {
-				return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
-			}
+	} else if err := startLinuxLoginItem(); err != nil {
+		// A clean container and a first-run sandbox often have no systemd
+		// user bus (drive#105). The login item is already on disk for the
+		// next login; start rclone in this session so the same command still
+		// ends with a mounted drive.
+		fmt.Fprintf(os.Stderr, "note: systemd user session is not available (%v); starting the mount in this session. The login item is at %s\n", err, itemPath)
+		if err := startLinuxMountDetached(p); err != nil {
+			return err
 		}
 	}
 	// Starting the login item is a request, not a promise: say the mount is up
@@ -479,9 +478,53 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return err
 	}
 	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
-		return fmt.Errorf("start prefetch: %w", err)
+		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
 	}
 	fmt.Printf("Mounted at %s\n", p.MountDir)
+	return nil
+}
+
+// startLinuxLoginItem enables and restarts the systemd user unit this command
+// just wrote. A missing user bus is a named error so the caller can start the
+// mount in this session instead of reporting success with nothing mounted.
+func startLinuxLoginItem() error {
+	for _, action := range mountSystemctlActions() {
+		args := []string{"--user", action}
+		if action != "daemon-reload" {
+			args = append(args, SystemdUnitName)
+		}
+		if err := exec.Command("systemctl", args...).Run(); err != nil {
+			return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+		}
+	}
+	return nil
+}
+
+// startLinuxMountDetached starts rclone in its own session so `drive init` can
+// finish and exit while the mount stays up. rclone's own --log-file is already
+// on the plan; stdout and stderr go there too so a container without journald
+// still has the log.
+func startLinuxMountDetached(p MountPlan) error {
+	rclonePath, err := exec.LookPath(p.RcloneBin)
+	if err != nil {
+		return fmt.Errorf("rclone binary %q not found: %w", p.RcloneBin, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p.LogPath), 0o755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	log, err := os.OpenFile(p.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open mount log %s: %w", p.LogPath, err)
+	}
+	defer log.Close()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(rclonePath, p.Args()...)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone mount: %w", err)
+	}
 	return nil
 }
 
@@ -697,7 +740,7 @@ func Unmount(goos, home string) error {
 		return unmountWindows(home)
 	}
 	if err := stopPrefetchLoginItem(goos, home); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "note: could not disable the prefetch login item (%v)\n", err)
 	}
 	itemPath := LoginItemPath(goos, home)
 	if _, err := os.Stat(itemPath); err != nil {
@@ -710,7 +753,10 @@ func Unmount(goos, home string) error {
 		return bootoutLaunchd(itemPath)
 	}
 	if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdUnitName).Run(); err != nil {
-		return fmt.Errorf("systemctl --user disable --now %s: %w", SystemdUnitName, err)
+		if stopErr := stopMount(goos, home); stopErr != nil {
+			return fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", SystemdUnitName, err, stopErr)
+		}
+		return nil
 	}
 	return nil
 }
