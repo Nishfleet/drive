@@ -163,6 +163,7 @@ test("resolveIngestUrl accepts a Dodo host and strips a trailing slash", () => {
 test("resolveIngestUrl refuses a key to a non-https or non-Dodo host", () => {
   assert.throws(() => resolveIngestUrl("http://test.dodopayments.com"), /must use https/);
   assert.throws(() => resolveIngestUrl("https://evil.example.com"), /dodopayments\.com/);
+  // @ts-expect-error a number is the wrong type on purpose: the guard is under test
   assert.throws(() => resolveIngestUrl(123), /must be a string/);
 });
 
