@@ -1780,6 +1780,114 @@ test("a move adds no billed bytes, and a move inside the file's first hour adds 
   );
 });
 
+test("a move whose successor event arrives late is corrected, not billed twice", async () => {
+  // The waiver's SQL is a NOT EXISTS, so it only holds once the successor row
+  // is in the table. A move whose *hide* lands but whose *create* has not been
+  // stored yet therefore books the retired version's minimum on the first
+  // roll. This drives that case through the shipping path: the event stream,
+  // the real rollup SQL, the nightly reconciler that discovers the missing
+  // create from the provider's own listing, and the watermark rewind that
+  // re-rolls the corrected hour. The bar is the one the move test above holds:
+  // the move adds no billed bytes, whether its events arrived in order or not.
+  const hours = 7;
+  const size = 10 * GB;
+  const oldPath = "/u/abc123/Notes/project/big.bin";
+  const newPath = "/u/abc123/Archive/project/big.bin";
+  const movedAt = midnight() + 30 * MINUTE_MS;
+
+  const db = makeMeteredDB().db;
+  // Both events land, the create first, as the storage server sends them.
+  await storeCreate(db, "abc123", { b2FileId: "v-old", path: oldPath, sizeBytes: size });
+  await storeCreate(db, "abc123", {
+    b2FileId: "v-new",
+    path: newPath,
+    sizeBytes: size,
+    createdAt: movedAt,
+  });
+  const hide = validateEvent({
+    eventId: "evt-abc123-hide-old",
+    keyName: "/u/abc123/",
+    path: oldPath,
+    b2FileId: "v-old",
+    action: "deleted",
+    hiddenAt: movedAt,
+    eventTimestamp: movedAt,
+  });
+  await recordEvent(db, hide, movedAt);
+
+  const inOrder = await bookedGbMinutes(db, hours);
+  assert.equal(
+    inOrder,
+    (size / GB) * 60 * hours,
+    "ten GB for seven hours, the move adding nothing",
+  );
+
+  // The same move again, but with the two events in the order that exposes the
+  // waiver's dependency on the successor row existing: the old key's hide lands
+  // and the hourly roll runs before the new key's create has been stored. The
+  // retired version is young (it stopped 30 minutes in), so that first roll
+  // books its 1-hour minimum with no successor to hand the bytes to.
+  const late = makeMeteredDB().db;
+  await storeCreate(late, "abc123", { b2FileId: "v-old", path: oldPath, sizeBytes: size });
+  await recordEvent(late, hide, movedAt);
+  await runMeterCron(late, midnight() + 60 * MINUTE_MS);
+  const retiredMinimum = late.tables.usage_minutes.get(`abc123|${midnight()}`).gb_minutes_live;
+  assert.equal(
+    retiredMinimum,
+    (size / GB) * MINIMUM_MINUTES_PER_VERSION,
+    "the first roll books the retired version's minimum before any successor exists",
+  );
+
+  // The new key's create now arrives - late, but not lost, which is the common
+  // case. The nightly reconciler walks the provider's listing, finds the
+  // successor the intake had not stored yet, inserts it, and rewinds the
+  // watermark to the hour the correction touches.
+  const store = providerStore({
+    "u/abc123/": [
+      {
+        b2FileId: "v-new",
+        path: "u/abc123/Archive/project/big.bin",
+        sizeBytes: size,
+        createdAt: movedAt,
+        hiddenAt: null,
+        deletedAt: null,
+      },
+    ],
+  });
+  const repaired = await reconcileMeter(late, store, midnight() + 7 * 60 * MINUTE_MS);
+  assert.equal(repaired.inserted, 1, "the successor create the intake had not stored");
+  assert.equal(repaired.hidden, 0, "the hide had already arrived");
+  assert.equal(
+    repaired.earliestAffectedHour,
+    midnight(),
+    "the successor began in the first hour, so the re-roll starts there",
+  );
+
+  // Re-rolled from the rewound watermark, the NOT EXISTS now finds the
+  // successor: the retired version books no minimum of its own, and the
+  // successor carries the 10 GB. The total over seven hours is the ten GB held
+  // for six full hours, exactly what the in-order move billed.
+  await bookedGbMinutes(late, 7);
+  const rows = await late
+    .prepare("SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1")
+    .bind("abc123")
+    .all();
+  const corrected = (rows.results || []).reduce(
+    (total, row) => total + Number(row.gb_minutes_live),
+    0,
+  );
+  assert.equal(
+    corrected,
+    inOrder,
+    "the late-arriving move bills exactly what the in-order move bills once corrected",
+  );
+  assert.equal(
+    db.tables.file_versions.get("abc123|v-new") !== undefined,
+    true,
+    "sanity: the in-order database did store the successor",
+  );
+});
+
 // --- The nightly reconciler (drive issue #59) --------------------------
 
 // A provider's own version listing, in the shape `reconcileMeter` reads. The

@@ -185,8 +185,8 @@ rclone size fm:fm-bucket --config /tmp/folder-moves-lab/rclone.conf   # 210 obje
 ```
 
 Every number above came from this block (run inside `unshare -Urm`, because the worker sandbox has no
-CAP_SYS_ADMIN; every `mv` is timed with `date +%s.%N` and the bytes are rclone's own accounting read
-from the mount's remote control).
+CAP_SYS_ADMIN; the loops time each `mv` with `date +%s.%N` and print one line per run, and the bytes
+are rclone's own accounting read from the mount's remote control). `bc` is what prints the mean.
 
 ```sh
 unshare -Urm bash -c '
@@ -204,8 +204,21 @@ MPID=$!
 for i in $(seq 1 100); do ls /tmp/folder-moves-lab/mnt >/dev/null 2>&1 && break; sleep 0.2; done
 sleep 6   # the mount caches a folder for --dir-cache-time (5s); this is setup, not the measurement
 du -sh /tmp/folder-moves-lab/cache
-mv /tmp/folder-moves-lab/mnt/rename-200 /tmp/folder-moves-lab/mnt/renamed-200   # time this mv
-mv /tmp/folder-moves-lab/mnt/big-10g /tmp/folder-moves-lab/mnt/moved-10g       # and this one
+# the measurement: R runs of each rename, each timed with date +%s.%N, the mean printed
+# at the end. Moving back and forth renames the same folder, so run 2..R is a real
+# repeat, not a re-upload of a fresh fixture.
+for r in $(seq 1 5); do
+  s=$(date +%s.%N); mv /tmp/folder-moves-lab/mnt/rename-200 /tmp/folder-moves-lab/mnt/renamed-200
+  e=$(date +%s.%N); echo "rename-200 run $r wall $(echo "$e - $s" | bc)"
+  s=$(date +%s.%N); mv /tmp/folder-moves-lab/mnt/renamed-200 /tmp/folder-moves-lab/mnt/rename-200
+  e=$(date +%s.%N); echo "  (moved back, $e - $s s, not counted)"
+done
+for r in $(seq 1 3); do
+  s=$(date +%s.%N); mv /tmp/folder-moves-lab/mnt/big-10g /tmp/folder-moves-lab/mnt/moved-10g
+  e=$(date +%s.%N); echo "move-10g run $r wall $(echo "$e - $s" | bc)"
+  s=$(date +%s.%N); mv /tmp/folder-moves-lab/mnt/moved-10g /tmp/folder-moves-lab/mnt/big-10g
+  e=$(date +%s.%N); echo "  (moved back, $e - $s s, not counted)"
+done
 du -sh /tmp/folder-moves-lab/cache
 rclone rc --rc-addr 127.0.0.1:39199 core/stats | grep -E "serverSideCopies|bytes|transfers"
 kill -TERM $MPID; fusermount3 -u /tmp/folder-moves-lab/mnt
