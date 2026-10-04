@@ -30,8 +30,8 @@
 // caller's own token from its own bearer header, so there is nothing for a
 // stranger to spend.
 
-import { isSameOriginRequest } from "../../../src/email-send.js";
 import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
+import { isSameOriginRequest } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { signedInAccount } from "../../../src/status.js";

@@ -48,7 +48,13 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { AFTER_SIGNIN_COOKIE, AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS, safeAfterSigninPath } from "./auth.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  AFTER_SIGNIN_PATH,
+  authFor,
+  SIGNIN_LINK_TTL_SECONDS,
+  safeAfterSigninPath,
+} from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -519,9 +525,7 @@ export async function handleSigninLinkVerify(request, env) {
   const extra = cookieHeaders(verified);
   const cookies = extra["set-cookie"] ?? [];
   const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
-  cookies.push(
-    `${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
-  );
+  cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
   return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
 }
 

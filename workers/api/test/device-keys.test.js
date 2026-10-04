@@ -820,7 +820,9 @@ test("a signed-out approve link goes to sign-in, never raw JSON (drive#459)", as
   const accounts = makeAccounts();
   const code = await store.requestDeviceCode({ name: "laptop" });
   const page = await dispatch(
-    new Request(`https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`),
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+    ),
     baseCtx(store, null, { accounts }),
   );
   assert.equal(page.status, 302, "signed out must redirect, not 401 JSON");

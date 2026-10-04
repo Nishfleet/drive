@@ -20,7 +20,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { AFTER_SIGNIN_COOKIE, createAuth, safeAfterSigninPath, SIGNIN_LINK_PATH } from "../src/auth.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  createAuth,
+  SIGNIN_LINK_PATH,
+  safeAfterSigninPath,
+} from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
