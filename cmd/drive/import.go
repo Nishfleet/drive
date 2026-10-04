@@ -79,7 +79,7 @@ func BuildImportPlan(goos, home, rcloneBin, source string, dryRun bool) (ImportP
 func runImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	common := addCommonFlags(fs)
-	dryRun := fs.Bool("dry-run", false, "print the rclone copy rclone would run, copy nothing")
+	dryRun := fs.Bool("dry-run", false, "print the copy rclone would run, copy nothing")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
