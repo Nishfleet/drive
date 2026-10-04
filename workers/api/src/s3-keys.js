@@ -88,11 +88,24 @@ const BUCKET_ACTIONS_BY_CAPABILITY = Object.freeze({
  * own prefix, and the listing actions on the bucket limited to that prefix.
  * Exported so the policy can be asserted on directly (build step 1) and read
  * in a review without running the provider.
+ *
+ * The bucket is an argument only so a caller that has already resolved it
+ * does not resolve it twice, and it must be the scope's own: a policy that
+ * names one bucket while the mint answers with another is a key scoped to
+ * somewhere the caller did not mean, so a scope that names a bucket and an
+ * argument that names a different one is refused rather than resolved in
+ * either direction. A scope that names no bucket still takes the argument,
+ * which is how the test asserts a policy against a bucket it built itself.
  * @param {KeyScope} scope
  * @param {string} bucket
  * @returns {{Version: string, Statement: Array<Record<string, unknown>>}}
  */
 export function policyForScope(scope, bucket) {
+  if (scope.bucket !== undefined && scope.bucket !== bucket) {
+    throw new TypeError(
+      `A key scope is scoped to the bucket it names, and this policy is for another: ${JSON.stringify(scope.bucket)} against ${JSON.stringify(bucket)}.`,
+    );
+  }
   if (!scope.prefix.endsWith("/")) {
     // A prefix without its trailing slash would make `u/a*` also match
     // `u/ab/…` — a cross-account widening. scopeFor() always ends the prefix

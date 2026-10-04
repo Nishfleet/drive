@@ -291,6 +291,20 @@ test("the policy the endpoint enforces comes from the one capabilities table", (
   assert.equal(JSON.stringify(agent).includes("s3:DeleteObject"), false);
 });
 
+test("a policy for one bucket is refused a scope that names another", () => {
+  // The bucket is the boundary, so a policy built for one bucket and answered
+  // with another would scope a key somewhere the caller did not mean. The
+  // refusal is here rather than a silent preference, so a caller that passes
+  // the wrong bucket finds out at the mint.
+  const scope = scopeFor("agent", "acct_a1");
+  assert.throws(() => policyForScope(scope, "drv-someone-else"), /scoped to the bucket it names/);
+  // The scope's own bucket is the one that builds, and a scope naming none
+  // still takes the caller's (the test above does exactly that).
+  const ownBucket = bucketForAccount("acct_a1");
+  assert.equal(scope.bucket, ownBucket);
+  assert.doesNotThrow(() => policyForScope(scope, ownBucket));
+});
+
 test("a longer session and a role ARN are the deployment's choice, not the bucket's", async () => {
   /** @type {StsCall[]} */
   const calls = [];

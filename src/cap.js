@@ -367,8 +367,20 @@ export async function applyCapSwap(plan, provider) {
     let minted;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
+        // The provider's own swap is handed the keyId alone and re-derives the
+        // scope from the row it is replacing (workers/api/src/devices.js
+        // `swapToReadOnly` mints in `bucketForKeyPrefix(accountId, prefix)`),
+        // so the bucket the row was scoped to reaches the replacement without
+        // this module having to pass it.
         minted = await keys.swapToReadOnly(swap.keyId);
       } else {
+        // Revoke first, mint second. This is the cap path, and the cap is the
+        // safety limit: if the mint then fails, the account is on the safe side
+        // of the cap with no write key rather than still over the cap with a
+        // live one. The api Worker retries the same plan, and a mount with no
+        // write key is recoverable where a spend over the cap is not. This is
+        // deliberate and pinned by "a provider failure is raised, never
+        // swallowed" in test/cap.test.mjs.
         await keys.revoke(swap.keyId);
         minted = await keys.mint(scope);
       }
