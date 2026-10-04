@@ -20,6 +20,14 @@
 //   DRIVE_STANDIN_ENDPOINT  S3 endpoint (default: a local rclone serve s3)
 //   DRIVE_STANDIN_BUCKET    bucket name (default: "bucket")
 //   DRIVE_STANDIN_SEARCH_FILES  files in the stand-in drive (default 100000)
+//   DRIVE_STANDIN_REGION    S3 region, with a real endpoint
+//   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  the credential a
+//                            real endpoint requires, the same two names
+//                            test/step1-storage.test.mjs uses. The shipped
+//                            store signs every request when all three are
+//                            given (aws4fetch, the signer the api Worker
+//                            already uses) and sends the local stand-in's
+//                            unsigned requests untouched when they are not.
 //
 // The search must not list the bucket, so the cost of doing it anyway is
 // measured on the same files and printed beside the search: that is the
@@ -265,17 +273,125 @@ async function seedDrive(dir, bucket) {
   }
 }
 
+/** Every object under one account's prefix, counted through the store. A listing
+ * of `/` with S3's delimiter answers folders as prefixes and hides the objects
+ * inside them, so it is a count of folders, not a count of files: the guard
+ * below would pass on a drive holding 100,000 files in its folders. The walk is
+ * cheap on a drive that is already empty -- one list call per folder found,
+ * and one call at all on a prefix with none -- and it is what makes the refusal
+ * mean "this account's prefix holds no files at all".
+ * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @returns {Promise<number>}
+ */
+async function countFilesUnderPrefix(store) {
+  const queue = ["/"];
+  let files = 0;
+  while (queue.length > 0) {
+    const folder = queue.shift();
+    if (folder === undefined) {
+      throw new Error("the folder walk queued a hole: shift on a non-empty queue returned nothing");
+    }
+    for (const entry of await store.list(folder)) {
+      if (entry.kind === "folder") {
+        queue.push(entry.path);
+      } else {
+        files += 1;
+      }
+    }
+  }
+  return files;
+}
+
+/** The same files written to a real bucket, through the shipped store, because
+ * a real account is not a folder the test may write into directly. Each file
+ * is an empty object under this account's own prefix, put in bounded batches so
+ * 100,000 of them do not open 100,000 sockets at once. Every name the proof
+ * searches for is written here, so the search measures the same corpus the
+ * stand-in seeds.
+ *
+ * The paths are pushed into `written` as each batch starts, before the writes
+ * land, so a seed that dies mid-batch still names every path it attempted.
+ * `clearRealDrive` then removes those paths (a 404 for a write that never
+ * landed is success). It cannot name a path it never pushed, which is why
+ * the push is first.
+ * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {string[]} written the paths this call writes, filled in as it goes
+ * @returns {Promise<void>}
+ */
+async function seedRealDrive(store, written) {
+  const before = await countFilesUnderPrefix(store);
+  if (before > 0) {
+    throw new Error(
+      `the real bucket already holds ${before} file(s) under u/${ACCOUNT.id}/; empty that prefix before running the proof. The proof will not delete files it did not seed.`,
+    );
+  }
+  for (let start = 0; start < FILES; start += 50) {
+    const batch = [];
+    const paths = [];
+    for (let i = start; i < Math.min(start + 50, FILES); i++) {
+      paths.push(filePath(i));
+      batch.push(store.write(filePath(i), "", "application/octet-stream"));
+    }
+    written.push(...paths);
+    await Promise.all(batch);
+  }
+}
+
+/** Every file the proof seeded, removed again, and nothing else: the list it
+ * removes is exactly what the seed wrote, so a file this account already held
+ * is never a candidate. A removal that fails is thrown rather than swallowed,
+ * because a proof that quietly left 100,000 objects behind in a customer's
+ * bucket is not a proof that can be re-run. The removals are batched like the
+ * seed, so the drive is left as it was found in the time the seed took.
+ * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
+ * @param {string[]} written the paths seedRealDrive wrote
+ * @returns {Promise<void>}
+ */
+async function clearRealDrive(store, written) {
+  for (let start = 0; start < written.length; start += 50) {
+    const batch = [];
+    for (let i = start; i < Math.min(start + 50, written.length); i++) {
+      batch.push(store.remove(written[i]));
+    }
+    await Promise.all(batch);
+  }
+}
+
 /** A local `rclone serve s3` on a fresh folder, or the configured endpoint when
- * the environment names real storage. */
+ * the environment names real storage. A real endpoint is configured with the
+ * same four variables `test/step1-storage.test.mjs` uses, and the store the
+ * proof builds is signed whenever they carry a credential. */
 /**
  * @param {import("node:test").TestContext} t
- * @returns {Promise<{endpoint: string, bucket: string, stop: () => Promise<void>}|null>}
+ * @returns {Promise<{endpoint: string, bucket: string, region?: string,
+ *   credentials?: {accessKeyId: string, secretAccessKey: string},
+ *   real: boolean, stop: () => Promise<void>}|null>}
  */
 async function startStorage(t) {
   if (process.env.DRIVE_STANDIN_ENDPOINT) {
+    // A real account holds real files, so the proof's own 100,000 are written
+    // to it under this account's prefix and every one is removed again in the
+    // test's `after`: the drive the search is measured over has to be that
+    // many files, and the account is a customer's to leave as it was found.
+    const credentials =
+      process.env.DRIVE_STANDIN_ACCESS_KEY && process.env.DRIVE_STANDIN_SECRET_KEY
+        ? {
+            accessKeyId: process.env.DRIVE_STANDIN_ACCESS_KEY,
+            secretAccessKey: process.env.DRIVE_STANDIN_SECRET_KEY,
+          }
+        : undefined;
+    const region = process.env.DRIVE_STANDIN_REGION;
+    if (Boolean(credentials) !== Boolean(region)) {
+      throw new Error(
+        "a real endpoint needs DRIVE_STANDIN_REGION with DRIVE_STANDIN_ACCESS_KEY and DRIVE_STANDIN_SECRET_KEY, or none of the three",
+      );
+    }
     return {
       endpoint: process.env.DRIVE_STANDIN_ENDPOINT,
       bucket: process.env.DRIVE_STANDIN_BUCKET ?? "bucket",
+      region,
+      credentials,
+      real: true,
       stop: async () => {},
     };
   }
@@ -288,9 +404,9 @@ async function startStorage(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   await seedDrive(dir, bucket);
   const port = await freePort();
-  // No --auth-key: the shipped S3 store sends unsigned requests (the scoped,
-  // signed adapter is issue #2), so an authenticated stand-in would refuse the
-  // very requests the proof measures.
+  // No --auth-key: the stand-in answers the unsigned requests the store sends
+  // when no credential is configured, and the signed store (the same code, with
+  // a region and a credential) is what answers a real endpoint.
   const server = spawn(rclone, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -317,13 +433,14 @@ async function startStorage(t) {
     if (Date.now() > deadline) throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
     await sleep(250);
   }
-  return { endpoint: `http://127.0.0.1:${port}`, bucket, stop: async () => {} };
+  return { endpoint: `http://127.0.0.1:${port}`, bucket, real: false, stop: async () => {} };
 }
 
 test("100,000 real files: the index search is under a second, the bucket walk it avoids is not", {
-  skip: rcloneRuns(process.env.DRIVE_STANDIN_RCLONE ?? "rclone")
-    ? false
-    : "rclone is not installed",
+  skip:
+    process.env.DRIVE_STANDIN_ENDPOINT || rcloneRuns(process.env.DRIVE_STANDIN_RCLONE ?? "rclone")
+      ? false
+      : "rclone is not installed",
 }, async (t) => {
   const storage = await startStorage(t);
   if (!storage) {
@@ -334,9 +451,28 @@ test("100,000 real files: the index search is under a second, the bucket walk it
   // The exact wiring src/index.js's scheduled handler uses: the S3 store,
   // scoped to one account, walked by the reconciler.
   const store = scopeStore(
-    createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }),
+    createS3Store({
+      endpoint: storage.endpoint,
+      bucket: storage.bucket,
+      region: storage.region,
+      credentials: storage.credentials,
+    }),
     ACCOUNT,
   );
+
+  // A real bucket is not a folder the test may fill, so its files are written
+  // through the same store the walk below uses, and taken out again whatever
+  // the outcome: the proof must not leave a customer's drive holding 100,000
+  // objects it did not find there.
+  if (storage.real) {
+    t.diagnostic(`seeding ${FILES} files into ${storage.bucket} on ${storage.endpoint}`);
+    // Registered before the first object is written: these are billed objects
+    // in a real account, not rows in a fixture, so a seed that dies half-way
+    // through must still take out what it wrote.
+    const written = /** @type {string[]} */ ([]);
+    t.after(() => clearRealDrive(store, written));
+    await seedRealDrive(store, written);
+  }
 
   // The nightly build, timed: this is the walk a search must not repeat.
   const built = await reconcileIndex(db, store, ACCOUNT);
@@ -366,6 +502,7 @@ test("100,000 real files: the index search is under a second, the bucket walk it
   const walk = await reconcileIndex(db, store, ACCOUNT);
   t.diagnostic(
     [
+      `storage: ${storage.real ? `${storage.endpoint}/${storage.bucket}` : "local rclone serve s3 stand-in"}`,
       `files: ${FILES}`,
       `index build (one full bucket walk): ${walk.tookMs.toFixed(0)}ms`,
       `search "invoice": ${common.tookMs.toFixed(1)}ms`,
@@ -380,7 +517,16 @@ test("100,000 real files: the index search is under a second, the bucket walk it
   // The write feed over real storage: a file saved is in the index at once,
   // and a file removed leaves it.
   const live = scopeStore(
-    withIndex(createS3Store({ endpoint: storage.endpoint, bucket: storage.bucket }), db, ACCOUNT),
+    withIndex(
+      createS3Store({
+        endpoint: storage.endpoint,
+        bucket: storage.bucket,
+        region: storage.region,
+        credentials: storage.credentials,
+      }),
+      db,
+      ACCOUNT,
+    ),
     ACCOUNT,
   );
   await live.write("/folder-0/standin-write.pdf", "written over the stand-in", "application/pdf");
