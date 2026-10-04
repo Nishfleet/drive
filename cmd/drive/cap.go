@@ -54,6 +54,11 @@ func runCap(args []string) error {
 		return errFlagParse
 	}
 	amount := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	// An empty argument list is all that is refused here. The amount itself
+	// goes to the Worker as typed, because parseCapUsd() is the one parser
+	// (src/cap.js): a Go copy of it would refuse an amount the Worker accepts
+	// — "$20" is one, the dollar sign is stripped there — and a fast-fail
+	// before the POST would answer a different question than the api does.
 	if amount == "" {
 		return fmt.Errorf("a spending cap is a dollar amount like 20 or 12.50. Run: drive cap 20")
 	}
