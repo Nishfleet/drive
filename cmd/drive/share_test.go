@@ -114,7 +114,7 @@ func TestMintSharePostsTheDrivePathAndPrintsTheWorkersLink(t *testing.T) {
 	srv := server.start(t)
 	defer srv.Close()
 
-	link, err := MintShare(srv.URL+SHARE_PATH, "/Photos/cat.jpg")
+	link, err := MintShare(srv.URL+SHARE_PATH, "", "/Photos/cat.jpg")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestMintRequestPostsTheFolderAndPrintsTheUploadPage(t *testing.T) {
 	srv := server.start(t)
 	defer srv.Close()
 
-	link, err := MintRequest(srv.URL+REQUEST_PATH, "/Dropbox")
+	link, err := MintRequest(srv.URL+REQUEST_PATH, "", "/Dropbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestRevokeSendsTheTokenAndReportsTheWorkersState(t *testing.T) {
 	srv := server.start(t)
 	defer srv.Close()
 
-	link, err := RevokeShare(srv.URL+SHARE_PATH, shareToken)
+	link, err := RevokeShare(srv.URL+SHARE_PATH, "", shareToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +180,14 @@ func TestListReadsBothKinds(t *testing.T) {
 	srv := server.start(t)
 	defer srv.Close()
 
-	shares, err := ListShares(srv.URL + SHARE_PATH)
+	shares, err := ListShares(srv.URL+SHARE_PATH, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(shares) != 1 || shares[0].Token != shareToken {
 		t.Fatalf("shares %+v, want the one the Worker returned", shares)
 	}
-	requests, err := ListRequests(srv.URL + REQUEST_PATH)
+	requests, err := ListRequests(srv.URL+REQUEST_PATH, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestAFailedCallCarriesTheWorkersMessage(t *testing.T) {
 	srv := server.start(t)
 	defer srv.Close()
 
-	_, err := MintShare(srv.URL+SHARE_PATH, "/Photos/cat.jpg")
+	_, err := MintShare(srv.URL+SHARE_PATH, "", "/Photos/cat.jpg")
 	if err == nil {
 		t.Fatal("minting a missing file succeeded")
 	}
@@ -220,7 +220,7 @@ func TestAFailureWithNoReadableBodyIsStillNamed(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := MintShare(srv.URL+SHARE_PATH, "/Photos/cat.jpg")
+	_, err := MintShare(srv.URL+SHARE_PATH, "", "/Photos/cat.jpg")
 	if err == nil {
 		t.Fatal("a 502 mint succeeded")
 	}
@@ -409,5 +409,35 @@ func TestRunShareRevokePrintsTheRevokedState(t *testing.T) {
 	}
 	if !strings.Contains(server.calls[0].body, shareToken) {
 		t.Errorf("body %q does not carry the token from the link", server.calls[0].body)
+	}
+}
+
+// The links routes sit behind the account gate, which takes the device token
+// as a Bearer: a mint, list or revoke that sends none is always a 401.
+func TestLinkCallsSendTheDeviceToken(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.Header.Get("authorization"))
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"share":{"token":"t","url":"https://x/s/t"},"shares":[],"requests":[],"request":{"token":"t"}}`))
+	}))
+	defer srv.Close()
+	if _, err := MintShare(srv.URL+SHARE_PATH, "dev-token", "/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListShares(srv.URL+SHARE_PATH, "dev-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RevokeShare(srv.URL+SHARE_PATH, "dev-token", "t"); err != nil {
+		t.Fatal(err)
+	}
+	want := "Bearer dev-token"
+	for _, got := range seen {
+		if !strings.HasSuffix(got, want) {
+			t.Fatalf("a link call went out as %q, want the Bearer device token", got)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("saw %d calls, want 3", len(seen))
 	}
 }

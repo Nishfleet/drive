@@ -24,7 +24,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 - Membership: $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.
   Join now and keep $5 a month for good. We need a card at sign-up because there is no free tier.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
-- Version history: not in version 1.
+- Version history is not in version 1.
 - No plan sizes and no fixed plans: you are billed for the GB you store, so a
   1 TB drive kept 60% full bills $12 a month ($12 of storage).
 
@@ -74,6 +74,8 @@ holds all nine in one file.
 ## Not yet
 
 The drive is not open yet. Sign-ups on the pricing page go to a waitlist.
+Sign-in on this site is for an invited account: the sign-in page sits beside
+the waitlist, so joining is the only step that reaches a new person.
 
 ## Links
 

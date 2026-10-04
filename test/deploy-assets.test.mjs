@@ -85,10 +85,13 @@ test("building the Worker builds the docs first, so the deploy ships them", () =
     "cf build",
     "the deploy builds the Worker with `npm run build`, and that is cf build",
   );
-  assert.equal(
+  // The Node version check may run first, but nothing may run instead of the
+  // docs build: drive#432 added the check ahead of the hook, and a hook that
+  // stopped at the version check would ship a Worker with no docs.
+  assert.match(
     pkg.scripts.prebuild,
-    "npm run docs:build",
-    "package.json needs a prebuild hook that runs `npm run docs:build`: cf build does not build the docs and public/docs/ is gitignored, so without the hook every deploy ships a Worker with no docs (drive#128)",
+    /^(npm run node:check && )?npm run docs:build$/,
+    "the prebuild hook must still call `npm run docs:build`, with only the Node version check allowed in front",
   );
   // And the hook has to be the whole docs build, not the render step alone: a
   // hook that only rendered would write docs-site/.rendered and no page.

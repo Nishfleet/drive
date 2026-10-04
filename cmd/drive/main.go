@@ -47,6 +47,15 @@ Usage:
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
 
+Install, one line per system, then run drive init:
+  macOS                   brew install drive
+  Linux, Debian or Ubuntu  sudo apt install drive
+  Linux, Fedora or RHEL    sudo dnf install drive
+
+Until those packages are published, the command builds from source with the Go
+toolchain, which is the same route drive update runs:
+  go install github.com/Nishfleet/drive/cmd/drive@latest
+
 Update flags:
   --check   say whether a newer release exists, install nothing
   --go      path to the go toolchain (env DRIVE_GO, default go from PATH)

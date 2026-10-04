@@ -77,6 +77,57 @@ const TERMS = Object.freeze([
   }),
 ]);
 
+// Internal names, and platform names, that a customer page must not show
+// (drive issue #428). "Nishfleet" is our own internal name and "launchd" is a
+// macOS tool: the pages customers read name the thing in plain words (a login
+// item, the command, the drive). These are not rival terms, so they do not
+// belong in TERMS above, but the rule is the same one and it is enforced in
+// the same place: public/, docs-site/, the get-started shell at the repo root,
+// and the module strings src/ renders from. The Go sources under cmd/ are a
+// developer surface and keep their identifiers (LaunchdLabel, the module path
+// in cmd/drive/update.go).
+const INTERNAL_TERMS = Object.freeze([
+  Object.freeze({ term: "Nishfleet", pattern: "nishfleet", flags: "gi" }),
+  Object.freeze({ term: "launchd", pattern: "launchd", flags: "gi" }),
+]);
+
+/** @param {string} path @param {string} text */
+function internalHitsIn(path, text) {
+  const hits = [];
+  for (const term of INTERNAL_TERMS) {
+    const re = new RegExp(term.pattern, term.flags);
+    for (const match of text.matchAll(re)) {
+      hits.push({ path, term: term.term, match: match[0] });
+    }
+  }
+  return hits;
+}
+
+/** The customer-facing trees, walked the same way scanTree walks them. */
+function scanCustomerPages() {
+  const hits = [];
+  for (const rel of walkFiles(join(root, "public"))) {
+    hits.push(...internalHitsIn(rel, stripMarkupComments(readFileSync(join(root, rel), "utf8"))));
+  }
+  for (const rel of walkFiles(join(root, "docs-site"))) {
+    hits.push(...internalHitsIn(rel, readFileSync(join(root, rel), "utf8")));
+  }
+  hits.push(
+    ...internalHitsIn(
+      "get-started.html",
+      stripMarkupComments(readFileSync(join(root, "get-started.html"), "utf8")),
+    ),
+  );
+  for (const rel of walkFiles(join(root, "src"))) {
+    if (!SRC_JS_EXT.has(extname(rel))) {
+      continue;
+    }
+    const strings = quotedStrings(readFileSync(join(root, rel), "utf8")).join("\n");
+    hits.push(...internalHitsIn(rel, strings));
+  }
+  return hits;
+}
+
 const TEXT_EXT = new Set([
   ".css",
   ".html",
@@ -387,6 +438,24 @@ test("an escaped backtick does not hide later copy", () => {
 
 test("the customer-facing tree has none of the listed terms", () => {
   const hits = scanTree();
+  assert.deepEqual(
+    hits,
+    [],
+    hits.map((hit) => `${hit.path}: ${hit.term} (${hit.match})`).join("\n"),
+  );
+});
+
+test("an internal name planted on a customer page fails the scan", () => {
+  for (const term of INTERNAL_TERMS) {
+    assert.ok(
+      internalHitsIn("page.md", `run ${term.term} to finish`).some((hit) => hit.term === term.term),
+      `planting ${term.term} on a customer page must fail`,
+    );
+  }
+});
+
+test("no customer-facing page names us or a macOS tool (drive issue #428)", () => {
+  const hits = scanCustomerPages();
   assert.deepEqual(
     hits,
     [],
