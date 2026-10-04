@@ -248,7 +248,9 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
   // `drive export` found against a hand-written stand-in on 2026-10-02.
   const versionSql =
     "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)";
-  sqlite.prepare(sqlitePlaceholders(versionSql)).run("acct-big", "v1", "/f000000.txt", 1, 1700000000000);
+  sqlite
+    .prepare(sqlitePlaceholders(versionSql))
+    .run("acct-big", "v1", "/f000000.txt", 1, 1700000000000);
 
   const first = await dispatch(
     new Request("https://api.test/v1/export", {

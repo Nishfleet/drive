@@ -857,7 +857,7 @@ quoteForm.addEventListener("submit", async (event) => {
   try {
     let response;
     try {
-      response = await fetch("/api/quote?tb=" + encodeURIComponent(quoteTb.value.trim()));
+      response = await fetch(`/api/quote?tb=${encodeURIComponent(quoteTb.value.trim())}`);
     } catch (networkError) {
       userMessage = OFFLINE_MESSAGE;
       throw networkError;
@@ -879,7 +879,7 @@ quoteForm.addEventListener("submit", async (event) => {
       return;
     }
     sayQuote(
-      "This month: " + payload.labels.bill + ". Flat-plan ceiling: " + payload.labels.ceiling + ".",
+      `This month: ${payload.labels.bill}. Flat-plan ceiling: ${payload.labels.ceiling}.`,
       "done",
     );
   } catch (error) {
