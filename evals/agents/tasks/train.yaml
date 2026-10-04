@@ -416,6 +416,24 @@
     - type: javascript
       value: "!/drive pin \\S+/.test(output)"
 
+- description: how to rotate storage keys
+  metadata:
+    hard: true
+  vars:
+    task: >
+      My storage key pair needs to be rotated. How do I rotate the access
+      key and secret key for the drive?
+    why_hard: >
+      The docs give the invite's key pair but never describe rotation. The
+      honest answer is to say the docs do not say — and every model that
+      invents a drive rotate-keys command is being helpful the wrong way round.
+    source: docs-site/quickstart.md, "2. Point it at your storage"
+  assert:
+    - type: javascript
+      value: "/key pair|access key|secret key|secret-key|invite comes with/i.test(output)"
+    - type: javascript
+      value: "!/drive rotate-keys|rotate key|--rotate/i.test(output)"
+
 - description: put a 10 GB branch in the sky without copying 10 GB twice
   metadata:
     hard: true

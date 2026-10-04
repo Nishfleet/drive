@@ -444,3 +444,71 @@ test("the scoreboard gate counts the agents row", () => {
   const sb = read("test/scoreboard.test.mjs");
   assert.ok(/agents finish real tasks from the docs/.test(sb), "EVERY_ROWS names the agents row");
 });
+
+test("dead-artefact guard: every file:// ref in promptfooconfig.yaml exists", () => {
+  // The eval config points at prompts, context files and the task split via
+  // file:// refs. If any target is missing the run would fail with a confusing
+  // error. This guard catches it at gate time with a clear message.
+  const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
+  const missing = [];
+  function check(ref, label) {
+    if (typeof ref !== "string" || !ref.startsWith("file://")) return;
+    const p = join(evals, ref.slice(7));
+    if (!existsSync(p)) missing.push(`${label}: ${ref} -> ${p}`);
+  }
+  check(cfg.prompts?.[0], "prompt");
+  for (const [k, v] of Object.entries(cfg.defaultTest?.vars ?? {})) check(v, `var ${k}`);
+  check(cfg.tests, "tests");
+  assert.equal(missing.length, 0, `missing files:
+${missing.join("\n")}`);
+});
+
+test("no positive grader passes an empty or generic answer", () => {
+  // A grader that fires on a blank reply or on lorem ipsum is not scoring the
+  // task: it is scoring the docs it was written next to. A negative grader
+  // (!/.../) passes on empty by design ("this claim is absent"), so we only
+  // check positive graders. A task that has only negative graders is vacuous —
+  // nothing can fail it — so every task must have at least one positive grader.
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const vacuous = [];
+  for (const t of tasks) {
+    const js = t.assert.filter((a) => a.type === "javascript");
+    const positives = js.filter((a) => !a.value.trim().startsWith("!"));
+    if (positives.length === 0) {
+      vacuous.push(`${t.description}: no positive grader (only negatives)`);
+      continue;
+    }
+    for (const a of positives) {
+      const src = a.value.trim();
+      for (const sample of ["", "lorem ipsum dolor sit amet"]) {
+        if (gradeJavascript({ ...a, value: src }, sample, { vars: {} })) {
+          vacuous.push(`${t.description}: passes "${sample}" (grader: ${src.slice(0, 80)})`);
+        }
+      }
+    }
+  }
+  assert.equal(vacuous.length, 0, `graders that always pass:
+${vacuous.join("\n")}`);
+});
+
+test("one unanswerable task: the docs cannot answer, grader expects honesty", () => {
+  // The train split contains one task whose answer is not in the docs or
+  // drive --help. Its grader requires the agent to say so rather than invent.
+  const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  const task = tasks.find((t) => t.description === "how to rotate storage keys");
+  assert.ok(task, "train.yaml has the unanswerable task 'how to rotate storage keys'");
+  assert.ok(task.vars?.why_hard, "unanswerable task says why it is hard");
+  const js = task.assert.filter((a) => a.type === "javascript");
+  assert.ok(js.length >= 1, "unanswerable task has a programmatic grader");
+  const context = { vars: {} };
+  // An invented answer must fail
+  for (const a of js) {
+    const src = a.value.trim();
+    const invented = "Use drive rotate-keys --old-key $OLD --new-key $NEW to rotate your storage keys.";
+    const honest = "The docs do not say how to rotate storage keys. The invite comes with a key pair and there is no rotation command in drive --help.";
+    const passHonest = gradeJavascript({ ...a, value: src }, honest, context);
+    const passInvented = gradeJavascript({ ...a, value: src }, invented, context);
+    assert.ok(passHonest, `honest answer must pass: ${src}`);
+    assert.ok(!passInvented, `invented answer must fail: ${src}`);
+  }
+});
