@@ -464,18 +464,18 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 // Workers still fronts them on this one base, the same contract `drive
 // agents` already uses for POST /v1/keys.
 type Credentials struct {
-	APIBase     string `json:"apiBase"`
-	DeviceToken string `json:"deviceToken"`
+	APIBase      string `json:"apiBase"`
+	DeviceToken  string `json:"deviceToken"`
 	AccountID    string `json:"accountId"`
 	AccountName  string `json:"accountName"`
 	AccountEmail string `json:"accountEmail,omitempty"`
-	Endpoint    string `json:"endpoint,omitempty"`
-	Bucket      string `json:"bucket,omitempty"`
-	Prefix      string `json:"prefix,omitempty"`
-	Region      string `json:"region,omitempty"`
-	DownloadURL string `json:"downloadUrl,omitempty"`
-	AccessKeyID string `json:"accessKeyId,omitempty"`
-	KeyID       string `json:"keyId,omitempty"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	Bucket       string `json:"bucket,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
+	Region       string `json:"region,omitempty"`
+	DownloadURL  string `json:"downloadUrl,omitempty"`
+	AccessKeyID  string `json:"accessKeyId,omitempty"`
+	KeyID        string `json:"keyId,omitempty"`
 }
 
 // CredentialsPath is the signed-in device's own file. It is next to the rclone
