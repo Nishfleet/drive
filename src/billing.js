@@ -489,7 +489,7 @@ export function monthBillCents(month) {
       usd: formatUsd(downloadCents / 100),
     }),
     Object.freeze({
-      label: "Membership",
+      label: founding ? "Founding membership" : "Membership",
       cents: membershipTopUpCents,
       usd: formatUsd(membershipTopUpCents / 100),
     }),

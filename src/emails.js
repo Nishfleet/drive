@@ -212,12 +212,12 @@ export function paymentFailedTemplate(data = {}) {
     "",
     "Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.",
     "",
-    "If the card is not fixed, storage past your free credit will stop and the drive will go read-only. Nothing is deleted.",
+    "If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.",
   ];
   const html_lines = [
     `<p>We could not charge ${usd(amount)}.</p>`,
     "<p>Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.</p>",
-    "<p>If the card is not fixed, storage past your free credit will stop and the drive will go read-only. Nothing is deleted.</p>",
+    "<p>If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });
 }

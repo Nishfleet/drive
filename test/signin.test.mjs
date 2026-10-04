@@ -93,12 +93,21 @@ function dispatchEnv() {
  * @param {unknown} body
  * @param {{url?: string, headers?: Record<string, string>}} [options]
  */
-const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) =>
-  new Request(url, {
+const post = (body, { url = `${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, headers = {} } = {}) => {
+  const payload =
+    typeof body === "string"
+      ? body
+      : JSON.stringify(
+          typeof body === "object" && body !== null && !Array.isArray(body)
+            ? { card: true, ...body }
+            : body,
+        );
+  return new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: payload,
   });
+};
 
 // The edge limits (drive issue #147): the stock binding's whole contract is
 // `limit({ key }) -> { success }`, the same fake test/waitlist.test.mjs drives.
@@ -218,6 +227,7 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
         step: "start",
         method: "email",
         email: "you@example.com",
+        card: "on",
       }),
     }),
     made.env,
@@ -226,6 +236,17 @@ test("the no-JavaScript form post is read as a form, not refused as JSON", async
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal("url" in payload, false, "the link leaves by email, never in the reply");
+});
+
+test("sign-up without a card is refused and mails nothing", async () => {
+  const made = dispatchEnv();
+  const response = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: false }),
+    made.env,
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -250,10 +271,10 @@ test("a body that is not JSON, or not an object, is a 400 and never a 202", asyn
 
 test("the three methods the spec's screen names are the three it accepts", () => {
   // docs/build-spec.md, "Screens": "Sign in | Email one-time link, or Google
-  // or GitHub. No card asked". This is the spec's own sentence, kept here as
-  // the line a change to the method list has to argue with.
+  // or GitHub. A card is needed at sign-up". This is the spec's own sentence,
+  // kept here as the line a change to the method list has to argue with.
   assert.ok(
-    spec.includes("Email one-time link, or Google or GitHub. No card asked"),
+    spec.includes("Email one-time link, or Google or GitHub. A card is needed at sign-up"),
     "the spec's sign-in screen sentence has changed; update this test and the copy",
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
@@ -795,7 +816,11 @@ test("the page carries every string from src/signin.js verbatim", () => {
   );
   // The page is a static asset, so the price line it shows is the price
   // module's; the test reads the module, so the two cannot drift.
-  assert.ok(page.includes(PRICE.freeLine), "the page must carry the price module's free line");
+  assert.ok(
+    page.includes(PRICE.membershipLine),
+    "the page must carry the price module's membership line",
+  );
+  assert.ok(page.includes(PRICE.foundingLine), "the page must carry the founding line");
 });
 
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
@@ -921,9 +946,10 @@ test("the page offers no provider the server cannot complete (drive#180)", async
   }
 });
 
-test("the page states the spec's two promises: no card, and the free dollar", () => {
-  assert.ok(page.includes(SIGNIN_COPY.noCard), "the page must say no card is asked");
-  assert.ok(page.includes(SIGNIN_COPY.freeLine), "the page must quote the free line");
+test("the page states the spec's two promises: a card at sign-up, and the membership", () => {
+  assert.ok(page.includes(SIGNIN_COPY.needCard), "the page must say why a card is needed");
+  assert.ok(page.includes(SIGNIN_COPY.membershipLine), "the page must quote the membership line");
+  assert.ok(page.includes(SIGNIN_COPY.foundingLine), "the page must quote the founding line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on
   // it too, not only on the pricing page.

@@ -1,7 +1,8 @@
 // The sign-in screen (build-spec.md "Screens": "Sign in | Email one-time
-// link, or Google or GitHub. No card asked") and the two endpoints it and the
-// emailed link reach. This is build step 9's sign-up half (drive#10); the
-// pricing half is the static page in public/index.html.
+// link, or Google or GitHub. A card is needed at sign-up") and the two
+// endpoints it and the emailed link reach. This is build step 9's sign-up
+// half (drive#10, card-at-sign-up drive#387); the pricing half is the static
+// page in public/index.html.
 //
 // The page is a static asset served from public/signin.html, so it cannot
 // import this module; test/signin.test.mjs reads the shipped page and fails CI
@@ -119,11 +120,10 @@ export const SIGNIN_COPY = Object.freeze({
   // and their buttons to SIGNIN_COPY, when SIGNIN_OFFERED_METHODS carries
   // them.
   lede: "One link by email.",
-  // The spec's own words for this screen: "No card asked".
-  noCard: "No card asked.",
-  // The price module's line, so the sign-in screen and the pricing page cannot
-  // state two different free-credit sentences.
-  freeLine: PRICE.freeLine,
+  // drive#387: a card at sign-up, and why, in plain words.
+  needCard: PRICE.needCard,
+  membershipLine: PRICE.membershipLine,
+  foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
   emailButton: "Email me a link",
@@ -143,7 +143,8 @@ export const SIGNIN_COPY = Object.freeze({
   // email is a link a browser follows. The step names are data the routes
   // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
-  signupNote: "New here? Signing in makes your drive, and $1 a month of storage is free.",
+  signupNote:
+    "New here? We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
 });
 
 /**
@@ -166,7 +167,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
  * sentence the route returns as a 400. The two steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown}
  *   | {step: "signout"}
  *   | {error: string}} SigninRequest
  */
@@ -197,9 +198,49 @@ export function readSigninRequest(body) {
 }
 
 /**
+ * Whether a posted field is a card-at-sign-up yes. The page's checkbox posts
+ * "on"; JSON posts true. Anything else is not a card.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function hasSignupCard(value) {
+  return value === true || value === "true" || value === "on" || value === "1";
+}
+
+/**
+ * Sign-up without a card is refused (drive#387). Returning the need-card
+ * sentence, or null when a card is present. No Dodo call: a missing key
+ * still charges nobody (#325).
+ * @param {unknown} card
+ * @returns {string|null}
+ */
+export function refuseSignupWithoutCard(card) {
+  return hasSignupCard(card) ? null : SIGNIN_COPY.needCard;
+}
+
+/**
+ * True when Better Auth already holds this address, so this start is sign-in
+ * rather than sign-up.
+ * @param {SigninEnv} env
+ * @param {string} email
+ * @returns {Promise<boolean>}
+ */
+async function emailHasUser(env, email) {
+  const db = env.DRIVE_DB;
+  if (db === undefined || db === null || typeof db !== "object" || !("prepare" in db)) {
+    return false;
+  }
+  const row = await /** @type {D1Database} */ (db)
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind(email)
+    .first();
+  return row !== null && row !== undefined;
+}
+
+/**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -216,7 +257,7 @@ function readStart(body) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: BAD_ADDRESS_MESSAGE };
   }
-  return { step: "start", method, email };
+  return { step: "start", method, email, card: body.card };
 }
 
 /**
@@ -335,6 +376,15 @@ export async function handleSigninRequest(request, env) {
   const email = read.email;
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
+  }
+  // A first-time address is sign-up: refuse it without a card (drive#387). A
+  // returning address is sign-in and already has an account. No Dodo call
+  // here, so an unset key still charges nobody (#325).
+  if (!(await emailHasUser(env, email))) {
+    const refused = refuseSignupWithoutCard(read.card);
+    if (refused !== null) {
+      return json({ error: refused }, 400);
+    }
   }
   try {
     // Hand the send to Better Auth's own handler so its rate limiter runs.

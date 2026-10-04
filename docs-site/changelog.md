@@ -10,6 +10,8 @@ the live site.
 
 ## 2026-10-04
 
+- Membership copy: $10 a month, storage use counts toward it, founding members
+  keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
   on day 0 and day 25, and lets the person cancel until then by typing their
   email on the usage page.
@@ -102,7 +104,8 @@ the live site.
 - The bill ceiling: the metered cost cut off at a flat {{CEILING_FLOOR}} until
   the drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB. This replaced the
   older per-TB caps.
-- The free {{FREE_USD}} comes off the month's total, and downloads over
+- The membership: storage use counts toward it, and a card is needed at
+  sign-up because there is no free tier. Downloads over
   {{FREE_DOWNLOAD_MULTIPLE}} times what you store are charged at
   {{DOWNLOAD_RATE}}.
 - The spending cap: at your cap the drive goes read-only and nothing is

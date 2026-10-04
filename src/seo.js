@@ -38,11 +38,11 @@ export const BILLING = Object.freeze({
   // names say plateau and slope so no reader takes them for per-TB caps.
   capFloorUsd: PRICE.capFloorUsd,
   capUsdPerTb: PRICE.capUsdPerTb,
-  freeMonthlyUsd: PRICE.freeMonthlyUsd,
   // Both sentences come from the one price source, so one edit moves the tags,
   // the JSON-LD and llms.txt together.
   ceiling: PRICE.ceiling,
-  freeLine: PRICE.freeLine,
+  membershipLine: PRICE.membershipLine,
+  foundingLine: PRICE.foundingLine,
   // The ceiling as arithmetic, for the offer description and llms.txt. Stated
   // in words as well as symbols because a crawler reads prose, not a formula.
   rule: PRICE.rule,

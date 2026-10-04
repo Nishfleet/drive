@@ -83,13 +83,14 @@ test("the headline is the rate, as the spec says", () => {
   }
 });
 
-test("the rate and the free line sit under the number", () => {
+test("the rate and the membership line sit under the number", () => {
   const headline = words.indexOf("per GB, billed by the minute");
   assert.ok(headline >= 0, "headline missing");
   const rate = words.indexOf(PRICE.ceilingLine);
-  const free = words.indexOf(PRICE.freeLine);
+  const membership = words.indexOf(PRICE.membershipLine);
   assert.ok(rate > headline, "the ceiling line must follow the number");
-  assert.ok(free > rate, "the free line must follow the ceiling line");
+  assert.ok(membership > rate, "the membership line must follow the ceiling line");
+  assert.ok(words.includes(PRICE.foundingLine), "the page must carry founding member pricing");
 });
 
 test("the bill ceiling headline is the spec's sentence, from config", () => {
@@ -316,12 +317,14 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   // source. This asserts each of them, from the config, on the shipped files.
   assert.equal(BILLING.ceiling, PRICE.ceiling, "seo.js must reuse the config's sentence");
   assert.equal(BILLING.rule, PRICE.rule);
-  assert.equal(BILLING.freeLine, PRICE.freeLine);
+  assert.equal(BILLING.membershipLine, PRICE.membershipLine);
+  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
   assert.equal(SITE.description.endsWith(PRICE.ceiling), true);
   // The page's own visible copy: the headline is the sentence's two lines.
   assert.ok(words.includes(PRICE.rateUnit));
   assert.ok(words.includes(PRICE.ceilingLine));
-  assert.ok(words.includes(PRICE.freeLine));
+  assert.ok(words.includes(PRICE.membershipLine));
+  assert.ok(words.includes(PRICE.foundingLine));
   // Every meta description, the Open Graph and Twitter cards, and the JSON-LD.
   const descriptionMetas = new Set([
     "name=description",

@@ -146,10 +146,7 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
     page.includes(dollars(BILLING_CONFIG.perTbUsd)),
     "the pricing page must state the per-TB ceiling",
   );
-  assert.ok(
-    page.includes(dollars(BILLING_CONFIG.freeMonthlyUsd)),
-    "the pricing page must state the free credit",
-  );
+  assert.ok(page.includes("$10 a month membership"), "the pricing page must state the membership");
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the pricing page must state the default cap",

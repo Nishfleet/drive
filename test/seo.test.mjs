@@ -279,7 +279,14 @@ test("llms.txt describes the drive and the current price rule", () => {
   assert.match(llms, /^# Drive$/m);
   assert.match(llms, /^> /m);
   assert.ok(llms.includes(BILLING.ceiling), "llms.txt must state the ceiling sentence from config");
-  assert.ok(llms.includes(BILLING.freeLine), "llms.txt must state the free line from config");
+  assert.ok(
+    llms.includes(BILLING.membershipLine),
+    "llms.txt must state the membership line from config",
+  );
+  assert.ok(
+    llms.includes(BILLING.foundingLine),
+    "llms.txt must state the founding line from config",
+  );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
   // The spec's own worked figures, so an answer engine cannot quote a number
   // the pricing page contradicts. Each is min(metered, max($12, $8 x TB))
@@ -343,7 +350,8 @@ test("the ceiling in the metadata is the spec's plateau, not per-TB caps", () =>
   assert.equal(BILLING.capFloorUsd, PRICE.capFloorUsd);
   assert.equal(BILLING.capUsdPerTb, PRICE.capUsdPerTb);
   assert.equal(BILLING.ceiling, PRICE.ceiling);
-  assert.equal(BILLING.freeLine, PRICE.freeLine);
+  assert.equal(BILLING.membershipLine, PRICE.membershipLine);
+  assert.equal(BILLING.foundingLine, PRICE.foundingLine);
   assert.equal(BILLING.rule, PRICE.rule);
   assert.match(
     BILLING.ceiling,

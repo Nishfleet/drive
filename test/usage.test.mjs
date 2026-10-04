@@ -387,6 +387,7 @@ test("the page's poll interval and its hidden saved line are the module's", () =
   // The saved line has no copy of its own: the endpoint sends the sentence.
   assert.match(page, /savedEl\.textContent = summary\.saved\.copy;/);
   assert.match(page, /savedEl\.hidden = true;/);
+  assert.match(page, /summary\.billCents\.lines/);
 });
 
 test("no money and no size is worked out on the page", () => {

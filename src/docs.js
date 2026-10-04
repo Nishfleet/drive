@@ -26,6 +26,7 @@ import {
   monthlyCeilingUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
+import { PRICE } from "./pricing.js";
 import { SITE } from "./seo.js";
 
 /**
@@ -181,7 +182,8 @@ export const FAQ = Object.freeze([
     answer: [
       "{{RATE}} a month, billed by the minute, for what you actually store.",
       "The bill is cut off at {{CEILING_FLOOR}} until your drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB after that.",
-      "{{FREE_USD}} a month is free, and no card is needed to start.",
+      "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
+      "Join now and keep $5 a month for good. We need a card at sign-up because there is no free tier.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
       `For comparison, ${RIVAL_1TB_LINE}`,
@@ -276,8 +278,8 @@ export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
-    FREE_USD: dollars(BILLING_CONFIG.freeMonthlyUsd),
-    FREE_GB: String(Math.floor(BILLING_CONFIG.freeMonthlyUsd / BILLING_CONFIG.rateUsdPerGbMonth)),
+    MEMBERSHIP: PRICE.membershipLine,
+    FOUNDING: PRICE.foundingLine,
     CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
     CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
