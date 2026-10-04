@@ -369,6 +369,39 @@ func (c *APIClient) RevokeDeviceToken() error {
 	return nil
 }
 
+// RevokeAllKeys signs the account out of every device at once (DELETE
+// /v1/keys). It is the account-wide half of logout: the route takes no body and
+// no key id, and revokes every live key and every live device token on the
+// account the Worker resolved from this very token, so there is nothing here a
+// caller could point at another account (drive#236).
+//
+// The same Authorization header is the whole credential, so the token this call
+// presents is one of the tokens the call revokes — including its own. The
+// answer therefore still gets out; the next request with that token is the 401
+// a signed-out device must get. That is why the account-wide revoke is the first
+// half of `drive logout --all` and the local sign-out is the second, and why
+// this call must not come after the device-token revoke: a token already dead
+// answers 401 here, which this method would read as "already signed out" and
+// skip the account behind it.
+//
+// A 401 is therefore NOT treated as success here, the way it is in
+// RevokeDeviceToken: there, a dead token IS the state wanted; here, a dead token
+// means every device on the account is still live and the person is being told
+// nothing happened. Any non-2xx is a real failure and is reported, so the local
+// half does not run over an account that is still signed in everywhere.
+func (c *APIClient) RevokeAllKeys() error {
+	resp, err := c.doRaw(http.MethodDelete, keysPath, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return &APIError{Method: "DELETE", Path: keysPath, Status: resp.Status, Body: string(raw)}
+	}
+	return nil
+}
+
 // doRaw is like do but returns the raw HTTP response without trying to
 // unmarshal a body. Used where the caller must handle specific status codes
 // (e.g. 401 meaning "already dead"). The Authorization header is set by the

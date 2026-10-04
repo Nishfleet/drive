@@ -88,7 +88,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -255,6 +255,21 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * Revoke every live device token on one account: the device-token half of
+     * "sign out of every device" (drive#236). Delegated here for the same
+     * reason `revokeDeviceToken` is: this object re-exposes the sign-in store's
+     * whole surface so it can stand in for it, and a method that is only on the
+     * store behind it would make it a store that is no longer the thing callers
+     * hold. The account comes from the gate, never from a request, exactly as in
+     * the single-token revoke.
+     * @param {{id: string}} account
+     * @returns {Promise<import("./device-signin.js").RevokeAllResult>}
+     */
+    revokeAllDeviceTokens(account) {
+      return signin.revokeAllDeviceTokens(account);
+    },
+
+    /**
      * The token rows that can no longer authenticate: expired or revoked. The
      * bearer lookup already refuses both, so dropping them is housekeeping and
      * never the security boundary — a store that never swept would refuse the
@@ -364,6 +379,40 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * Revoke every live key this account holds: the key half of "sign out of
+     * every device" (drive#34, slice drive#236). The account id is the whole
+     * filter, taken from the account gate rather than from the request, so one
+     * account cannot name another's rows here any more than it could with
+     * `revokeKey`.
+     *
+     * Idempotent and history-preserving, like every other revoke here: a row
+     * that is already revoked keeps the first timestamp, and only rows this
+     * call actually killed are counted, so a second call answers `0`.
+     *
+     * When a D1 device store is bound (the live Worker), that store is the
+     * source of truth: `authenticate` falls through to it after this isolate's
+     * map is already revoked, so a key this call turned off must die in both
+     * places. The count comes from the persisted statement; the map update
+     * keeps this isolate from handing a just-revoked key back on the next
+     * request.
+     * @param {{id: string}} account
+     * @returns {Promise<{revoked: number}>}
+     */
+    async revokeAllKeys(account) {
+      const persisted = deviceStore?.revokeAllKeys
+        ? await deviceStore.revokeAllKeys(account)
+        : null;
+      let revoked = 0;
+      for (const device of devices.values()) {
+        if (device.accountId === account.id && device.revokedAt === null) {
+          device.revokedAt = nowSeconds(now());
+          revoked++;
+        }
+      }
+      return persisted ?? { revoked };
+    },
+
+    /**
      * Restart the hour on one of the account's own keys (drive issue #106).
      *
      * This is the renewal a caller makes on purpose: the signed-in device
@@ -416,10 +465,39 @@ export function createMemoryStore(options = {}) {
      * anything. A key whose row is revoked never reaches the renewal — the
      * revocation is checked first, so revoking an agent stops renewal at once
      * and the credential it held dies inside the hour it had left.
+     *
+     * With a D1 store bound, that store answers for every key this isolate
+     * has not revoked (`revokeKey` and `renewKey` already delegate to it, for
+     * the same reason) and the rows held here are the stand-in for a
+     * deployment with no database. The per-agent cap (drive issue #171) is
+     * enforced in the D1 store's own authenticate, so a key minted by this
+     * isolate is capped on its next request in exactly the way a key minted by
+     * another one is: without the delegation the in-memory row would answer
+     * first and a cap could be routed around by using the isolate that minted
+     * the key.
+     *
+     * A revocation this isolate made is the one thing the map is asked
+     * BEFORE the store, and it is asked only that: a key whose row here is
+     * already revoked is refused without the store being consulted, so the
+     * revoke a request can no longer route around is the one this isolate
+     * itself performed. A row that is not revoked here falls straight through
+     * to the store, so nothing else about a live key is decided locally, and
+     * the cap above still reads the store. Without this the map's `revokedAt`
+     * is written by `revokeKey` and then never read, and a key killed on this
+     * isolate keeps working for as long as the store takes to hear about the
+     * revoke (drive#402).
      * @param {string} accessKeyId
      * @param {string} secret
      */
     async authenticate(accessKeyId, secret) {
+      const localId = byAccessKeyId.get(accessKeyId);
+      const local = localId === undefined ? undefined : devices.get(localId);
+      if (local !== undefined && local.revokedAt !== null) {
+        return null;
+      }
+      if (deviceStore?.authenticate) {
+        return deviceStore.authenticate(accessKeyId, secret);
+      }
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
@@ -435,9 +513,6 @@ export function createMemoryStore(options = {}) {
         device.lastSeenAt = at;
         device.expiresAt = renewKeyWindow(device, at).expiresAt;
         return device;
-      }
-      if (deviceStore?.authenticate) {
-        return deviceStore.authenticate(accessKeyId, secret);
       }
       return null;
     },
@@ -541,6 +616,15 @@ export function createMemoryStore(options = {}) {
      * route reads `store.teams` either way and neither path is special-cased.
      */
     teams: options.teams ?? createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
+
+    // The device sign-in store this key store delegates to, exposed because
+    // `DELETE /v1/keys` has to reach the account's device tokens as well as its
+    // keys and the dispatcher hands a route this one store (device-signin.js).
+    // Exposing it is not a second way in: every method here that touches a
+    // device token already forwards to this same object, so a caller that holds
+    // the key store holds the sign-in store it was built with and never a
+    // different one.
+    signin,
   };
 }
 

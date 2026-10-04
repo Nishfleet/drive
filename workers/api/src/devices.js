@@ -13,9 +13,10 @@
 // is the whole of the withdrawal there.
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
-import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
+import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
+import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForAccount, mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
@@ -284,6 +285,55 @@ export function createD1DeviceStore(db, options = {}) {
     await inner.revoke(accessKeyId);
   }
 
+  /**
+   * What an agent key may do right now, with the cap applied where it can be
+   * enforced (drive issue #171). This is the path that counts the requests and
+   * reads the month, and both real per-key paths call it: `authenticate`, which
+   * every request the storage API serves goes through, and `renewKey`, which
+   * is the tool's own hourly call. A route that checked the cap on its own
+   * would bound only the route that checked it; here the key store owns the
+   * key's powers, so a refusal cannot be routed around by using another
+   * endpoint.
+   *
+   * The row that comes back is the swapped one when the cap took the key: a
+   * read-only row, whose `capabilities` are the read-only set, so the caller's
+   * own write check (keystore.js `canWrite`) refuses the request that crossed
+   * the cap and still answers the reads on the same key.
+   *
+   * The swap is the account cap's swap (`agentCapPlan` over `capSwapPlan` in
+   * src/cap.js) on this store's own `keyProviderFor`, which revokes the old
+   * credential at the provider before it mints the read-only one, so the write
+   * power is gone at the vendor in the same request and not an hour later.
+   *
+   * A plan built from a "read_only" answer only ever takes powers away, and
+   * that is the only answer this applies: nothing here restores a key to write.
+   * A write key comes back from `POST /v1/keys` (`drive init`), the one route
+   * that hands a credential to a tool, because a restored credential minted
+   * here would be a secret nobody is holding.
+   * @param {Device} device
+   * @returns {Promise<{device: Device, capped: boolean}>}
+   */
+  async function enforceAgentCaps(device) {
+    const status = await agentCapGate(db, device, now());
+    if (status === null || status.state !== "read_only") {
+      return { device, capped: false };
+    }
+    const plan = agentCapPlan([capKeyRow(device)], status);
+    if (plan.swaps.length === 0) {
+      // Already where the cap put it: a second request on a capped key plans
+      // no swap, so the key is left exactly as the first one left it.
+      return { device, capped: true };
+    }
+    await applyCapSwap(plan, store.keyProviderFor(device.accountId));
+    // The row as it stands now, not the row this call read: the answer has to
+    // be the key the store holds, or the caller would write with powers that
+    // have already been withdrawn.
+    const swapped = deviceFromRow(
+      await first(db, "SELECT * FROM devices WHERE id = ?1 AND revoked_at IS NULL", device.id),
+    );
+    return { device: swapped ?? device, capped: true };
+  }
+
   const store = {
     put,
 
@@ -379,7 +429,16 @@ export function createD1DeviceStore(db, options = {}) {
       // above: a row revoked between the two statements is not renewed by
       // this one.
       await renewKeyRow(db, device, renewed.expiresAt ?? null, seen);
-      return { ...device, lastSeenAt: seen, expiresAt: renewed.expiresAt ?? null };
+      // The cap, counted and enforced on the request that proved the key is
+      // still held by something using it. A key the cap has taken is handed
+      // back read-only, so the write route refuses it (canWrite) while the
+      // reads on the same key keep working.
+      const capped = await enforceAgentCaps({
+        ...device,
+        lastSeenAt: seen,
+        expiresAt: renewed.expiresAt ?? null,
+      });
+      return capped.device;
     },
 
     /**
@@ -402,6 +461,39 @@ export function createD1DeviceStore(db, options = {}) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
       }
       return { revoked: true };
+    },
+
+    /**
+     * Revoke every live key one account holds: the key half of "sign out of
+     * every device" (drive#34, slice drive#236). One statement filtered on the
+     * account id the account gate resolved, so the store never reads a row it
+     * cannot name and there is no loop to leave half-done.
+     *
+     * Conditional on `revoked_at IS NULL`, so a key that is already dead keeps
+     * the first revoke's timestamp and `meta.changes` counts only the rows this
+     * call killed: an answer of `0` means every key on this account was already
+     * off, which is what makes the route's count something a person can read.
+     *
+     * The revoked rows are refused by the same `authenticate` the single-key
+     * revoke's rows are refused by, so there is no second path where a key this
+     * call turned off still works (drive#20 already relied on that for a
+     * removed member's key, which is why this is one statement and not a new
+     * rule). Nothing is deleted: the row stays, cancelled, so an export and the
+     * devices list can still name it, and the key it held is dead from the next
+     * request.
+     * @param {{id: string}} account
+     * @returns {Promise<{revoked: number}>}
+     */
+    async revokeAllKeys(account) {
+      const changed = await run(
+        db,
+        "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        nowSeconds(now()),
+        account.id,
+      );
+      return {
+        revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
+      };
     },
 
     /**
@@ -446,6 +538,15 @@ export function createD1DeviceStore(db, options = {}) {
       const changed = await renewKeyRow(db, device, renewed.expiresAt ?? null, at);
       if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
         return { error: "revoked" };
+      }
+      // The cap is enforced before the answer, on the same rows: a key at its
+      // ceiling is taken read-only here and the renewal is refused rather than
+      // handing a tool another hour of a credential the cap has withdrawn. The
+      // key row itself is not deleted or cancelled, so the person sees the key
+      // they had and `drive init` mints a new one beside it.
+      const capped = await enforceAgentCaps({ ...renewed, lastSeenAt: at });
+      if (capped.capped) {
+        return { error: "capped" };
       }
       return {
         renewed: renewed.expiresAt !== before,
