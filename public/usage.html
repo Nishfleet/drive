@@ -416,17 +416,12 @@ h2 {
         <p class="hint" id="close-purge-on" hidden></p>
         <p class="lede" id="close-closed-what" hidden>This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.</p>
         <p class="hint" id="close-closed-next" hidden>You can cancel until then. Type your email to cancel.</p>
+        <p class="hint" id="close-purged-next" hidden>Your files were deleted. This account stays closed.</p>
         <form class="close-form" id="close-form">
-          <label for="close-email">Type your email to confirm</label>
+          <label for="close-email" id="close-email-label">Type your email to confirm</label>
           <input type="email" id="close-email" name="email" autocomplete="email" required>
           <p class="error" id="close-error" hidden></p>
           <button type="submit" id="close-submit">Close account</button>
-        </form>
-        <form class="close-form" id="cancel-form" hidden>
-          <label for="cancel-email">Type your email to confirm</label>
-          <input type="email" id="cancel-email" name="email" autocomplete="email" required>
-          <p class="error" id="cancel-error" hidden></p>
-          <button type="submit" id="cancel-submit">Cancel closing</button>
         </form>
       </section>
     </div>
@@ -503,9 +498,22 @@ const closeClosedWhatEl = document.getElementById("close-closed-what");
 const closeClosedNextEl = document.getElementById("close-closed-next");
 const closePurgeOnEl = document.getElementById("close-purge-on");
 const closeFormEl = document.getElementById("close-form");
-const cancelFormEl = document.getElementById("cancel-form");
 const closeErrorEl = document.getElementById("close-error");
-const cancelErrorEl = document.getElementById("cancel-error");
+const closeEmailLabelEl = document.getElementById("close-email-label");
+const closeSubmitEl = document.getElementById("close-submit");
+const closePurgedNextEl = document.getElementById("close-purged-next");
+
+// The one box (drive#422): the close form and the cancel form were
+// two boxes that both asked for "Type your email to confirm", and
+// the cancel one stayed on the page after the 30 days were up.
+const CLOSE_BOX = {
+  confirm: { label: "Type your email to confirm", submit: "Close account" },
+  cancel: { label: "Type your email to cancel", submit: "Cancel closing" },
+};
+// Which action the one box posts to (drive#422): the close endpoint
+// while the account is open, the cancel endpoint while a close is
+// pending. renderClose() sets it from the account's state.
+let closeTarget = CLOSE_ENDPOINT;
 
 // The cap's note under the slider. It rests on the instruction above, and it
 // carries the words of a save that failed, the way the signed-out state
@@ -751,14 +759,28 @@ function showCloseError(el, message) {
 
 function renderClose(status) {
   const closed = status.state === "closed";
+  // A close is pending while the 30-day window is open: the
+  // account is closed and the nightly cron has not reached the
+  // purge. After the purge there is nothing left to close and
+  // nothing left to cancel, so the box is not on the page.
+  const pending = closed && (status.purgedAt === null || status.purgedAt === undefined);
+  // The one box posts to whichever action it now offers: the close
+  // endpoint while the account is open, the cancel endpoint while a
+  // close is pending.
+  closeTarget = pending ? CLOSE_CANCEL_ENDPOINT : CLOSE_ENDPOINT;
+  closeEmailLabelEl.textContent = pending ? CLOSE_BOX.cancel.label : CLOSE_BOX.confirm.label;
+  closeSubmitEl.textContent = pending ? CLOSE_BOX.cancel.submit : CLOSE_BOX.confirm.submit;
+  closeFormEl.hidden = closed && !pending;
   closeWhatEl.hidden = closed;
   closeNextEl.hidden = closed;
   closeClosedWhatEl.hidden = !closed;
-  closeClosedNextEl.hidden = !closed;
-  closeFormEl.hidden = closed;
-  cancelFormEl.hidden = !closed;
+  closeClosedNextEl.hidden = !pending;
+  closePurgedNextEl.hidden = pending || !closed;
+  showCloseError(closeErrorEl, "");
   if (closed && typeof status.purgeOn === "string") {
-    closePurgeOnEl.textContent = `Files are deleted on ${status.purgeOn}.`;
+    closePurgeOnEl.textContent = pending
+      ? `Files are deleted on ${status.purgeOn}.`
+      : `Files were deleted on ${status.purgeOn}.`;
     closePurgeOnEl.hidden = false;
   } else {
     closePurgeOnEl.hidden = true;
@@ -804,11 +826,7 @@ async function postClose(url, email, errorEl) {
 
 closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
-  postClose(CLOSE_ENDPOINT, document.getElementById("close-email").value, closeErrorEl);
-});
-cancelFormEl.addEventListener("submit", (event) => {
-  event.preventDefault();
-  postClose(CLOSE_CANCEL_ENDPOINT, document.getElementById("cancel-email").value, cancelErrorEl);
+  postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
 });
 capSlider.addEventListener("input", () => {
   // A chosen number is not a saved number: the button is there to make it one,

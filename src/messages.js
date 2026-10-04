@@ -203,6 +203,16 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Signing in is not open yet.",
     next: "Join the waitlist, and your first email will carry a sign-in link.",
   }),
+  // The sign-in link never left the site, so the person is waiting on an
+  // inbox that will stay empty: a deployment with no mailer (no EMAIL binding,
+  // or no sending domain in MAIL_FROM), a provider that refused the send, and
+  // a mailer that threw all reach it. The one thing to do is try again, and
+  // the waitlist is the door that stays open while we fix the setting
+  // (drive#431: the closed door's words told a person nothing had been sent).
+  "sign-in-email-failed": Object.freeze({
+    what: "Your sign-in email did not go out.",
+    next: "Try again in a moment, and join the waitlist if it keeps failing.",
+  }),
   // The branch's snapshot is larger than one database row holds (drive#157).
   // A branch of a folder with tens of thousands of files needs a snapshot per
   // file, and the database refuses a row that big, so the copy was made and

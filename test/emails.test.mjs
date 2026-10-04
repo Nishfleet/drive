@@ -262,7 +262,7 @@ function dataFor(kind) {
       return receiptData();
     case "account-closed":
     case "account-close-reminder":
-      return { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" };
+      return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
     default:
       throw new Error(`no test data for ${kind}`);
   }

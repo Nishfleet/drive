@@ -743,10 +743,19 @@ function rowFor(row) {
   // follows straight to the folder's listing. The click handler stops the
   // navigation so the page still swaps the list in place.
   const listing = `${FILES_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+  // A file's name is a link to the file itself, not to the folder listing it
+  // sits in: the preview URL for a kind the viewer opens in the page, and the
+  // download URL for every other file (drive#416). The listing URL is JSON, so
+  // a click that follows it — the handler below, or a browser with the script
+  // blocked — buys a page of raw JSON instead of the file.
   const name = document.createElement("a");
-  name.href = listing;
   if (row.kind === "folder") {
+    name.href = listing;
     name.dataset.listing = "";
+  } else {
+    name.href = isPreviewable(row.kind)
+      ? `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`
+      : `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   }
   name.textContent = row.name;
   name.addEventListener("click", (event) => {
@@ -756,9 +765,16 @@ function rowFor(row) {
       view = "folder";
       setTab();
       refresh();
-    } else {
+    } else if (isPreviewable(row.kind)) {
+      // The viewer already holds the preview, so the link's own navigation is
+      // stopped: leaving it to run takes the page off the listing and onto the
+      // preview URL (drive#416).
+      event.preventDefault();
       openViewer(row);
     }
+    // A kind with no viewer downloads, and the href above is the download URL:
+    // the click is left to do exactly that, so nothing has to be scripted for
+    // a person without JavaScript to get the file.
   });
   meta.append(name);
   const sub = document.createElement("p");

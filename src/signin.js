@@ -120,8 +120,16 @@ export const SIGNIN_COPY = Object.freeze({
   // and their buttons to SIGNIN_COPY, when SIGNIN_OFFERED_METHODS carries
   // them.
   lede: "One link by email.",
-  // drive#387: a card at sign-up, and why, in plain words.
+  // drive#387: a card at sign-up, and why, in plain words. The page says it
+  // once (drive#420), and needCard is also the server's own refusal, so a
+  // person who ticks the box without a card gets the same sentence the page
+  // already showed them once.
   needCard: PRICE.needCard,
+  // drive#420: what the tick box is labelled, in short. The box used to carry
+  // the whole needCard sentence, which put the same words on the page three
+  // times and read as a legal box; the reason lives once above the box and the
+  // label says only that the person understands it.
+  cardConsent: "I understand a card is required",
   membershipLine: PRICE.membershipLine,
   foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
@@ -143,8 +151,6 @@ export const SIGNIN_COPY = Object.freeze({
   // email is a link a browser follows. The step names are data the routes
   // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
-  signupNote:
-    "New here? We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
 });
 
 /**
@@ -154,6 +160,19 @@ export const SIGNIN_COPY = Object.freeze({
  */
 export function signinClosedBody() {
   return { error: failureMessage("sign-in-closed") };
+}
+
+/**
+ * The answer when the start step reached the mailer and the link never left.
+ * A deployment with no email setting, a mailer that threw and a token that
+ * could not be stored all get these words, because from the person's side they
+ * are the same fact: they are waiting on an email that is not coming
+ * (drive#431). Built from the message table like every other answer, so the
+ * words are the source side's and not this route's.
+ * @returns {{error: string}}
+ */
+export function signinEmailFailedBody() {
+  return { error: failureMessage("sign-in-email-failed") };
 }
 
 /**
@@ -415,18 +434,19 @@ export async function handleSigninRequest(request, env) {
     if (authResponse.status === 400) {
       return json({ error: BAD_ADDRESS_MESSAGE }, 400);
     }
-    // Any other non-200 is a real failure — a database error, a token that
-    // could not be stored, or a mailer that threw: the closed door, never a
-    // 202 for a link that never left.
+    // Any other non-200 is a real failure — a mailer that threw, a
+    // deployment with no email setting, a token that could not be stored: no
+    // link went out, so the answer says exactly that and never a 202 for an
+    // inbox that will stay empty (drive#431).
     if (authResponse.status !== 200) {
-      return json(signinClosedBody(), 503);
+      return json(signinEmailFailedBody(), 503);
     }
   } catch {
     // A rate-limit refusal arrives as the 429 Response handled above, never a
-    // throw. This catch is for anything else `auth.handler` lets escape — a torn
-    // D1 binding, a runtime fault — which is the closed door, never a 202 for a
-    // send that never landed.
-    return json(signinClosedBody(), 503);
+    // throw. This catch is for anything else `auth.handler` lets escape — a
+    // mailer with no way to send, a torn D1 binding, a runtime fault — which
+    // means no link went out, so the answer says so (drive#431).
+    return json(signinEmailFailedBody(), 503);
   }
   return json(
     { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
