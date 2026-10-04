@@ -540,6 +540,76 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
     "npm run check",
     "`npm test` checks the types first, through npm's pretest hook",
   );
+  // drive#392: the 1-second search bar is wall-clock. On the shared VPS
+  // runners it was timing the search while the rest of the suite (and the
+  // 100k-row setup) fought for the same cores. Skip those proofs on the
+  // first pass, then run them alone so the bar measures the SELECT.
+  assert.match(
+    pkg.scripts.test,
+    /--test-skip-pattern/,
+    "the first pass leaves the wall-clock search proofs for a later pass",
+  );
+  assert.match(
+    pkg.scripts.test,
+    /--test-concurrency=1/,
+    "the search speed proofs run with no parallel tests on the CPU",
+  );
+  assert.ok(
+    pkg.scripts.test.indexOf("--test-concurrency=1") >
+      pkg.scripts.test.indexOf("--test-skip-pattern"),
+    "the speed proofs run after the rest of the suite",
+  );
+  assert.match(
+    pkg.scripts.test,
+    /test\/search\.test\.mjs/,
+    "the in-memory 100k search proof still runs",
+  );
+  assert.match(
+    pkg.scripts.test,
+    /test\/standin-search\.test\.mjs/,
+    "the stand-in 100k search proof still runs",
+  );
+  const skipMatch = pkg.scripts.test.match(/--test-skip-pattern '([^']+)'/);
+  const nameMatch = pkg.scripts.test.match(/--test-name-pattern '([^']+)'/);
+  assert.ok(skipMatch, "the skip pattern is a quoted regex the suite can parse");
+  assert.ok(nameMatch, "the name pattern is a quoted regex the suite can parse");
+  assert.equal(
+    nameMatch[1],
+    skipMatch[1],
+    "the second pass runs the same proofs the first pass skipped",
+  );
+  const speedNameRe = new RegExp(skipMatch[1]);
+  const speedNames = [
+    ...read("test/search.test.mjs").matchAll(/^test\("([^"]+)"/gm),
+    ...read("test/standin-search.test.mjs").matchAll(/^test\("([^"]+)"/gm),
+  ]
+    .map((m) => m[1])
+    .filter((name) => speedNameRe.test(name));
+  assert.equal(
+    speedNames.length,
+    2,
+    `the skip pattern must match exactly the two search speed proofs, got ${JSON.stringify(speedNames)}`,
+  );
+  assert.match(
+    read(".github/workflows/ci.yml"),
+    /node-version:\s*"24"/,
+    "CI is on Node 24, which has --test-skip-pattern",
+  );
+  assert.match(
+    read("test/search.test.mjs"),
+    /SEARCH_BUDGET_MS = 1000/,
+    "the in-memory search bar stays 1 second",
+  );
+  assert.match(
+    read("test/search.test.mjs"),
+    /tookMs < SEARCH_BUDGET_MS/,
+    "the in-memory bar times searchDrive's SELECT, not setup",
+  );
+  assert.match(
+    read("test/standin-search.test.mjs"),
+    /BUDGET_MS = 1000/,
+    "the stand-in search bar stays 1 second",
+  );
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci, /^\s*-?\s*run:\s*npm test\s*$/m, "CI runs the same command the builder runs");
   // The command's own discovery is what makes it the suite: `node --test`

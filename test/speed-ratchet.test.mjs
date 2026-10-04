@@ -151,6 +151,9 @@ test("the verify job already runs npm test, which runs this file", () => {
   assert.match(ci, /run: npm test/);
   const pkg = JSON.parse(read("package.json"));
   assert.match(pkg.scripts.test, /node --test/);
+  // drive#392: the 100k search proofs run alone inside that same command,
+  // because the worker App cannot add a workflow step.
+  assert.match(pkg.scripts.test, /--test-concurrency=1/);
 });
 
 test("AGENTS.md tells a faster speed row to lower the baseline", () => {

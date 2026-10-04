@@ -251,29 +251,53 @@ test("the winget manifest makes WinFsp a package dependency", () => {
 });
 
 test("the job proves both routes: the MSI with msiexec /qn, and the bundle winget runs", () => {
-  // `msiexec /qn` on the MSI is the issue's own finish line, silent install.
+  // Every msiexec call passes its args as an array, and each one
+  // writes its own verbose log (/l*v) so a red run's only evidence
+  // is the exit code — and now the log itself (drive#369).
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList `\/i`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
-    "the Drive MSI is installed silently with msiexec /qn",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',/,
+    "the Drive MSI is installed silently with msiexec /qn, arguments as an array",
   );
   asserts(
     "installer/windows-msi.yml",
-    /msiexec\.exe[^\n]*-ArgumentList `\/x`, "\$PWD\\installer\\drive\.msi", `\/qn`/,
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',/,
     "and uninstalled the same silent way",
   );
-  // The bundle is what `winget install` and a direct download both run
-  // (the winget manifest's InstallerType is burn), so building it and proving
-  // nothing about it would leave the shipped route untested.
   asserts(
     "installer/windows-msi.yml",
-    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/quiet`/,
-    "the bundle is installed",
+    /msiexec\.exe[^\n]*'\/l\*v'/,
+    "every msiexec call writes its own verbose Windows Installer log (/l*v) (drive#369)",
   );
   asserts(
     "installer/windows-msi.yml",
-    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList `\/uninstall`, `\/quiet`/,
-    "and uninstalled the way a person removes it",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\install\.log/,
+    "the Drive install names its log, install.log, and uploads it on failure",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\winfsp-install\.log/,
+    "the WinFsp install names its log",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /msiexec\.exe[^\n]*-ArgumentList @\('\/x',[^\n]*installer\\uninstall\.log/,
+    "and the uninstall names its log",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7\.0\.1/,
+    "the log is uploaded as an artifact, pinned to the pinned byte hash",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /if: failure\(\)/,
+    "and the upload is gated on failure, so a green run uploads nothing",
+  );
+  asserts(
+    "installer/windows-msi.yml",
+    /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList/,
+    "the bundle route starts the stock drive-setup.exe",
   );
   assert.ok(
     WORKFLOW.indexOf("the route winget install takes") > 0,
