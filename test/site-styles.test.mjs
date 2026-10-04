@@ -152,13 +152,16 @@ function styleBlocks(html) {
 }
 
 /**
- * Every rule in a stylesheet, selector -> body. Comments are already stripped.
+ * Every rule in a stylesheet, selector -> body. Comments are stripped here, not
+ * by callers: a comment sitting straight before a rule otherwise joins the
+ * captured selector, and a page restating a shared rule would walk past this
+ * gate instead through it.
  * @param {string} css
  */
 function ruleBodies(css) {
   /** @type {Array<[string, string]>} */
   const rules = [];
-  for (const [, selectors, body] of css.matchAll(/([^}{]+)\{([^}]*)\}/g)) {
+  for (const [, selectors, body] of commentsRemoved(css).matchAll(/([^}{]+)\{([^}]*)\}/g)) {
     for (const part of selectors.split(",")) {
       const selector = part.trim().replace(/\s+/g, " ");
       if (selector) rules.push([selector, body]);
@@ -191,9 +194,21 @@ test("every page links the shared stylesheet first, then its own rules", () => {
 test("the shared header is declared once, in the shared stylesheet", () => {
   const css = readFileSync(SITE_CSS, "utf8");
   const inSiteCss = selectorsIn(css);
+  // Count by selector, so a rule restated twice in the shared file — a second
+  // .masthead { a hundred lines below it — fails here rather than reading as a
+  // declaration the gate already passed.
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const [, selectors] of commentsRemoved(css).matchAll(/([^}{]+)\{/g)) {
+    for (const part of selectors.split(",")) {
+      const selector = part.trim().replace(/\s+/g, " ");
+      if (selector) counts.set(selector, (counts.get(selector) ?? 0) + 1);
+    }
+  }
   for (const rule of CHROME_RULES) {
     const selector = rule.replace(/\s*\{$/, "");
     assert.ok(inSiteCss.has(selector), `public/site.css must declare ${rule}`);
+    assert.equal(counts.get(selector) ?? 0, 1, `public/site.css declares ${rule} exactly once`);
   }
 
   // Only the header selectors — the shared chrome — are in scope here.

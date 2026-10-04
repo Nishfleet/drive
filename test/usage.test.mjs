@@ -511,6 +511,12 @@ test("the pages' mastheads read as one navigation", () => {
     '<a href="/usage"',
     '<a href="/signin"',
   ];
+  // The link each page marks as the one the reader is on.
+  const CURRENT = new Map([
+    ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
+    ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
+    ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
+  ]);
   for (const [name, html] of [
     ["usage.html", page],
     ["get-started.html", getStartedPage],
@@ -529,6 +535,11 @@ test("the pages' mastheads read as one navigation", () => {
     );
     assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
     assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
+    // Each page marks itself, or the header reads as one long list of links
+    // with no indication of where the reader is.
+    const here = CURRENT.get(name);
+    assert.ok(here, `${name} has a current-page link of its own to check`);
+    assert.match(header, here, `${name} marks itself in the header with aria-current`);
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.
