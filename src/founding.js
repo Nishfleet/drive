@@ -197,8 +197,8 @@ export async function reserveFoundingSlot(db, accountId, options) {
 
 /**
  * Confirms the reserved slot at the first successful charge. A row that
- * already holds founding 0 or 1 is returned unchanged. Without a reservation
- * the account becomes paying but not founding.
+ * Confirming a released reservation writes founding=0: close-before-pay
+ * gave the slot back, so a later charge on the same row is not founding.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {{now?: number}} [options]

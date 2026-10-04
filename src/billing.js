@@ -63,6 +63,7 @@
 // reason: one place formats each number, so the usage page and `drive usage`
 // cannot print the same money two different ways.
 
+import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { failureMessage } from "./messages.js";
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the ceiling's floor and slope, and the free credit are
@@ -115,7 +116,7 @@ export const BILLING_CONFIG = Object.freeze({
   // move every default cap silently. The cap counts min(metered so far,
   // ceiling), not the raw meter, so the cap cannot pass what the invoice
   // will be.
-  defaultCapUsd: 20,
+  defaultCapUsd: DEFAULT_CAP_USD,
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
   downloadRateUsdPerGb: 0.01,

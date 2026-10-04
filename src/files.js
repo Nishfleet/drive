@@ -1865,6 +1865,9 @@ async function uploadRequest(request, url, store, account, options = {}) {
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
     const header = Number(request.headers.get("content-length") ?? "");
+    // A missing length is 0 while under the limit. At or past 1 TB it is 1
+    // byte so an upload with no length cannot sneak past the exact-limit
+    // edge (stored + 0 is not greater than the limit).
     const incomingBytes =
       Number.isInteger(header) && header > 0
         ? header

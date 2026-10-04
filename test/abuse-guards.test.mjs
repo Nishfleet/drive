@@ -138,6 +138,49 @@ test("the card-step hold remaps onto the user id when the magic-link is followed
   assert.equal(live.founding_reserved, 1);
 });
 
+test("the hold copies onto an accounts row the user id already has", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const fingerprint = "fp_merge";
+  const holdId = pendingCardAccountId("merge@example.com");
+  await claimCardFingerprint(db, {
+    accountId: holdId,
+    email: "merge@example.com",
+    fingerprint,
+    offerOpen: true,
+    now: NOW,
+  });
+  await insertAccount(db, "user_merge");
+  await attachPendingCardAccount(db, { email: "merge@example.com", accountId: "user_merge" });
+  assert.equal(sqlite.prepare("SELECT id FROM accounts WHERE id = ?").get(holdId), undefined);
+  const live = sqlite
+    .prepare("SELECT card_fingerprint, founding_reserved FROM accounts WHERE id = ?")
+    .get("user_merge");
+  assert.equal(live.card_fingerprint, fingerprint);
+  assert.equal(live.founding_reserved, 1);
+});
+
+test("the hold refuses to replace a different fingerprint already on the user", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const holdId = pendingCardAccountId("clash@example.com");
+  await claimCardFingerprint(db, {
+    accountId: holdId,
+    email: "clash@example.com",
+    fingerprint: "fp_hold",
+    offerOpen: true,
+    now: NOW,
+  });
+  await insertAccount(db, "user_clash", { fingerprint: "fp_other" });
+  await assert.rejects(
+    () => attachPendingCardAccount(db, { email: "clash@example.com", accountId: "user_clash" }),
+    /replace user_clash's fingerprint/,
+  );
+  assert.equal(
+    sqlite.prepare("SELECT card_fingerprint FROM accounts WHERE id = ?").get(holdId)
+      .card_fingerprint,
+    "fp_hold",
+  );
+});
+
 test("uploads past 1 TB are blocked until the first charge, and the message names support", () => {
   const atLimit = preChargeUploadBlocked({
     firstChargedAt: null,
