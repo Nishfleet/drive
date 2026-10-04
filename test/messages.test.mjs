@@ -9,7 +9,11 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BRANCHES_ENDPOINT, handleBranchesRequest } from "../src/branches.js";
+import {
+  BRANCHES_ENDPOINT,
+  createMemorySnapshotStore,
+  handleBranchesRequest,
+} from "../src/branches.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { readSigninRequest } from "../src/signin.js";
@@ -209,9 +213,9 @@ test("the branch route refuses a body that is not a JSON object in the table's w
       // The body is refused before the branches table is touched, so this only
       // has to be there for the route to get as far as reading the request.
       {},
-      // No snapshot store and no table: the body is refused before either is
-      // read, and this is the shape of a request with no account's data on it.
-      null,
+      // drive#329: a missing snapshot store is 503 before the body is read, so
+      // the json-object-needed path needs a store. The table is still unused.
+      createMemorySnapshotStore(),
       createMemoryStore(),
       account,
     );

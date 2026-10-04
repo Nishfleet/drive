@@ -15,6 +15,7 @@
 // behind the same four-method interface when #2 lands. createMemoryStore is the
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
+import { AwsClient } from "aws4fetch";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -864,23 +865,148 @@ export function createMemoryStore() {
 }
 
 /**
- * The stand-in storage the issue names: plain S3 over HTTP, pointed at
- * `rclone serve s3` on the build host. The four S3 calls the page needs are
- * the four store methods; the real scoped-key, signed-request adapter for
- * iDrive e2 / B2 lands with #2 behind this same FileStore interface. The keys
- * are exactly the paths the store is given — the account prefix is applied by
+ * The bytes of a request body a signer can hash, read from the four shapes
+ * `write` is called with (`ReadableStream` from an upload, a `Blob` from the
+ * starter template, a `Uint8Array` or a string from the CLI and the tests).
+ * SigV4 signs the payload hash, so a stream must be in hand before the request
+ * goes out; a body that is already bytes is passed through untouched.
+ *
+ * A signed write therefore reads the whole body. There is no size check here:
+ * the FileStore interface has no multipart PUT, and the callers already hold
+ * or bound those bytes (the upload handler from the incoming request, the
+ * proof from an empty object). Inventing a second cap would be a second
+ * number for the same body. Only a signed store reads a body this way: the
+ * unsigned stand-in sends the stream as it is, which is what `rclone serve s3`
+ * expects and what keeps the no-credential path free of a buffer it does not
+ * need.
+ * @param {BodyInit} body
+ * @returns {Promise<Uint8Array>}
+ */
+async function signableBody(body) {
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body);
+  }
+  if (body instanceof Uint8Array) {
+    return body;
+  }
+  if (typeof Blob !== "undefined" && body instanceof Blob) {
+    return new Uint8Array(await body.arrayBuffer());
+  }
+  if (typeof ReadableStream === "undefined" || !(body instanceof ReadableStream)) {
+    throw new TypeError(
+      `cannot send a body of type ${Object.prototype.toString.call(body)}: a signed write hashes the payload, and only a stream, bytes, a Blob or a string can be read as one`,
+    );
+  }
+  /** @type {ReadableStream<Uint8Array>} */
+  const stream = /** @type {any} */ (body);
+  const chunks = [];
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    chunks.push(value);
+  }
+  let total = 0;
+  for (const chunk of chunks) {
+    total += chunk.byteLength;
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/**
+ * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
+ * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
+ * when `credentials` and `region` are given. The four S3 calls the page needs
+ * are the four store methods; signing is `aws4fetch` (`AwsClient`), the same
+ * stock signer the api Worker signs its bucket calls with, so a real account
+ * speaks through the same FileStore interface as the stand-in. The keys are
+ * exactly the paths the store is given — the account prefix is applied by
  * scopeStore, which is the one place it is applied.
- * @param {{endpoint: string, bucket: string, fetchImpl?: typeof fetch}} config
+ *
+ * Without a credential the requests are unsigned, which is what the local
+ * stand-in answers; with one every request is signed, because a real endpoint
+ * answers an unsigned call with a redirect to its website, not with a listing.
+ * @param {{endpoint: string, bucket: string, fetchImpl?: typeof fetch, region?: string,
+ *   credentials?: {accessKeyId: string, secretAccessKey: string, sessionToken?: string}}} config
  * @returns {FileStore}
  */
 export function createS3Store(config) {
-  const { endpoint, bucket, fetchImpl = fetch } = config;
+  const { endpoint, bucket, region, credentials, fetchImpl = fetch } = config;
   if (!endpoint || !bucket) {
     throw new Error("createS3Store needs an endpoint and a bucket.");
   }
+  // One signer for the store, so every method below signs the same way and a
+  // half-signed store is not a shape this can be in. A credential without a
+  // region cannot be signed (the region is in the signature's scope), so that
+  // pair is refused here rather than answering with a SignatureDoesNotMatch
+  // the caller has to decode.
+  if (Boolean(credentials) !== Boolean(region)) {
+    throw new Error("createS3Store needs both a region and a credential, or neither.");
+  }
+  const aws = credentials
+    ? new AwsClient({
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
+        region,
+        service: "s3",
+        // No retry inside the signer, the same setting the api Worker's client
+        // uses (workers/api/src/s3.js): a retry that succeeds after a real
+        // refusal hides the refusal, and every caller above has its own named
+        // failure for a non-ok answer.
+        retries: 0,
+      })
+    : null;
   const base = `${String(endpoint).replace(/\/$/, "")}/${bucket}`;
   /** @param {string} path */
   const urlFor = (path) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  /**
+   * The one request path every method below uses, so a store is either fully
+   * signed or fully unsigned. A body is read into bytes first, because SigV4
+   * signs the payload hash and a stream cannot be hashed after it is sent.
+   * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
+   * uses, so a test can still inject fetch and a credentialed store never
+   * bypasses it through `aws.fetch`. Every caller below passes a string URL.
+   *
+   * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
+   */
+  const request =
+    aws === null
+      ? fetchImpl
+      : async (input, init = {}) => {
+          const opts = /** @type {any} */ ({ ...init });
+          if (opts.body === undefined) {
+            // GET, DELETE and CopyObject send no payload to hash.
+          } else if (opts.body === null) {
+            delete opts.body;
+          } else {
+            const bytes = await signableBody(opts.body);
+            // The body is sent exactly as it was signed: a Uint8Array is copied
+            // into a plain view, the same copy createS3Client makes, because
+            // sending anything other than the signed bytes is SignatureDoesNotMatch.
+            const body = new Uint8Array(bytes.byteLength);
+            body.set(bytes);
+            opts.body = body;
+          }
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : typeof Request !== "undefined" && input instanceof Request
+                  ? input.url
+                  : String(input);
+          const signed = await aws.sign(url, opts);
+          return fetchImpl(signed);
+        };
 
   return {
     /** @param {string} path */
@@ -902,7 +1028,7 @@ export function createS3Store(config) {
         const query =
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
-        const response = await fetchImpl(`${base}${query}`);
+        const response = await request(`${base}${query}`);
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -926,7 +1052,7 @@ export function createS3Store(config) {
       }
     },
     async read(path) {
-      const response = await fetchImpl(urlFor(path));
+      const response = await request(urlFor(path));
       if (response.status === 404) {
         return null;
       }
@@ -944,7 +1070,7 @@ export function createS3Store(config) {
       };
     },
     async write(path, body, contentType) {
-      const response = await fetchImpl(urlFor(path), {
+      const response = await request(urlFor(path), {
         method: "PUT",
         headers: { "content-type": contentType },
         body,
@@ -954,7 +1080,7 @@ export function createS3Store(config) {
       }
     },
     async remove(path) {
-      const response = await fetchImpl(urlFor(path), { method: "DELETE" });
+      const response = await request(urlFor(path), { method: "DELETE" });
       if (!response.ok && response.status !== 404) {
         throw new Error(`storage delete failed with ${response.status}`);
       }
@@ -973,7 +1099,7 @@ export function createS3Store(config) {
     async copy(from, to, size) {
       const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
-        await multipartCopy(fetchImpl, urlFor, source, to, size);
+        await multipartCopy(request, urlFor, source, to, size);
         return;
       }
       // S3's CopyObject can answer 200 with an <Error> body for a refused copy
@@ -981,7 +1107,7 @@ export function createS3Store(config) {
       // answer is read and checked rather than trusted on its status alone:
       // `drive branch` must never report success for a copy S3 refused.
       // Proven against `rclone serve s3`, 2026-10-01.
-      const response = await fetchImpl(urlFor(to), {
+      const response = await request(urlFor(to), {
         method: "PUT",
         headers: { "x-amz-copy-source": source },
       });
@@ -1001,13 +1127,7 @@ export function createS3Store(config) {
         (code === "InvalidRequest" &&
           /larger than the maximum|too large/i.test(tagValue(body, "Message")));
       if (oversize) {
-        await multipartCopy(
-          fetchImpl,
-          urlFor,
-          source,
-          to,
-          await sourceSize(fetchImpl, urlFor, from),
-        );
+        await multipartCopy(request, urlFor, source, to, await sourceSize(request, urlFor, from));
         return;
       }
       if (!response.ok) {
@@ -1051,7 +1171,7 @@ export function createS3Store(config) {
           `?versions&prefix=${encodeURIComponent(prefix)}` +
           (keyMarker === null ? "" : `&key-marker=${encodeURIComponent(keyMarker)}`) +
           (versionMarker === null ? "" : `&version-id-marker=${encodeURIComponent(versionMarker)}`);
-        const response = await fetchImpl(`${base}${query}`);
+        const response = await request(`${base}${query}`);
         if (!response.ok) {
           throw new Error(`storage version list failed with ${response.status}`);
         }
@@ -1108,7 +1228,8 @@ const COPY_MAX_PARTS = 10000;
  * parts of an unfinished multipart upload are still billed by every S3-shaped
  * provider, and a branch that failed must not leave a bill behind it.
  *
- * @param {typeof fetch} fetchImpl
+ * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl the store's one request path, signing when
+ * the store holds a credential
  * @param {(path: string) => string} urlFor
  * @param {string} source the `x-amz-copy-source` header value, `/<bucket>/<key>`
  * @param {string} to the destination storage key
@@ -1222,7 +1343,7 @@ function copyFailure(response, body) {
  * A source object's byte length, from the one call S3 answers it with. A size
  * that cannot be read is a named failure, not a zero: a multipart copy with no
  * ranges would upload no parts and report a copy that never moved a byte.
- * @param {typeof fetch} fetchImpl
+ * @param {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>} fetchImpl
  * @param {(path: string) => string} urlFor
  * @param {string} from
  * @returns {Promise<number>}

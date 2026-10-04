@@ -11,7 +11,7 @@ import { createIdriveKeyProvider } from "./idrive-keys.js";
 import { createMemoryStore } from "./keystore.js";
 import { createD1QueueStore } from "./queues.js";
 import { routes } from "./routes.js";
-import { createS3KeyProvider } from "./s3-keys.js";
+import { s3KeyProviderFromEnv } from "./s3-keys.js";
 import { createD1TeamStore } from "./teams.js";
 
 /**
@@ -422,89 +422,54 @@ const IDRIVE_RESELLER_API = "https://api.idrivee2.com/api/reseller/v1";
  * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
  * method.
  * @param {{[key: string]: unknown}} env
- * @returns {ReturnType<typeof createS3KeyProvider>|ReturnType<typeof createIdriveKeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ * @returns {ReturnType<typeof s3KeyProviderFromEnv>|ReturnType<typeof createIdriveKeyProvider>|null}
  */
 function keyProviderFor(env) {
-  const names = [
-    "STORAGE_ENDPOINT",
-    "STORAGE_REGION",
-    "STORAGE_BUCKET",
-    "STORAGE_MASTER_ACCESS_KEY_ID",
-    "STORAGE_MASTER_SECRET_ACCESS_KEY",
-  ];
-  const values = names
-    .map((name) => env[name])
-    .filter((value) => typeof value === "string" && value.length > 0);
-  if (values.length === 0) {
-    // The iDrive path carries the reseller API token and, when it provisions
-    // buckets, the S3 master credential the provisioning call needs
-    // (drive#371). The token alone mints against buckets that already exist.
-    const apiToken = env.IDRIVE_E2_API_TOKEN;
-    if (typeof apiToken !== "string" || apiToken === "") {
-      return null;
-    }
-    // The bucket a scope names is provisioned once, before the key limited to
-    // it is handed out (drive#371: one bucket per customer is the boundary,
-    // so the bucket has to exist before a key can name it). The provisioning
-    // call is an S3 call, so it needs the S3 master credential; a deployment
-    // that provisions its buckets elsewhere (the console, the reconciler)
-    // carries the reseller token alone and mints against buckets that are
-    // already there. The two are not mixed up: no credential means no
-    // provisioning, never a provisioning call with half a credential.
-    const s3AccessKeyId = env.IDRIVE_S3_ACCESS_KEY_ID;
-    const s3SecretAccessKey = env.IDRIVE_S3_SECRET_ACCESS_KEY;
-    const storageConfig =
-      typeof s3AccessKeyId === "string" &&
-      s3AccessKeyId !== "" &&
-      typeof s3SecretAccessKey === "string" &&
-      s3SecretAccessKey !== ""
-        ? {
-            endpoint:
-              typeof env.IDRIVE_S3_ENDPOINT === "string" && env.IDRIVE_S3_ENDPOINT !== ""
-                ? env.IDRIVE_S3_ENDPOINT
-                : "https://s3.eu-west-3.idrivee2.com",
-            region:
-              typeof env.IDRIVE_S3_REGION === "string" && env.IDRIVE_S3_REGION !== ""
-                ? env.IDRIVE_S3_REGION
-                : "eu-west-3",
-            credentials: { accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey },
-          }
-        : undefined;
-    return createIdriveKeyProvider({
-      apiEndpoint:
-        typeof env.IDRIVE_E2_API_ENDPOINT === "string" && env.IDRIVE_E2_API_ENDPOINT !== ""
-          ? env.IDRIVE_E2_API_ENDPOINT
-          : IDRIVE_RESELLER_API,
-      apiToken,
-      ...(storageConfig === undefined ? {} : { provisionBuckets: true, storage: storageConfig }),
-    });
+  const s3 = s3KeyProviderFromEnv(env);
+  if (s3 !== null) {
+    return s3;
   }
-  if (values.length < names.length) {
-    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
-    const problem = new Error(
-      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
-    );
-    return {
-      mint() {
-        throw problem;
-      },
-      revoke() {
-        throw problem;
-      },
-      swapToReadOnly() {
-        throw problem;
-      },
-    };
+  // The iDrive path carries the reseller API token and, when it provisions
+  // buckets, the S3 master credential the provisioning call needs
+  // (drive#371). The token alone mints against buckets that already exist.
+  const apiToken = env.IDRIVE_E2_API_TOKEN;
+  if (typeof apiToken !== "string" || apiToken === "") {
+    return null;
   }
-  return createS3KeyProvider({
-    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
-    region: /** @type {string} */ (env.STORAGE_REGION),
-    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
-    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
-    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
-    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
-      ? { roleArn: env.STORAGE_ROLE_ARN }
-      : {}),
+  // The bucket a scope names is provisioned once, before the key limited to
+  // it is handed out (drive#371: one bucket per customer is the boundary,
+  // so the bucket has to exist before a key can name it). The provisioning
+  // call is an S3 call, so it needs the S3 master credential; a deployment
+  // that provisions its buckets elsewhere (the console, the reconciler)
+  // carries the reseller token alone and mints against buckets that are
+  // already there. The two are not mixed up: no credential means no
+  // provisioning, never a provisioning call with half a credential.
+  const s3AccessKeyId = env.IDRIVE_S3_ACCESS_KEY_ID;
+  const s3SecretAccessKey = env.IDRIVE_S3_SECRET_ACCESS_KEY;
+  const storageConfig =
+    typeof s3AccessKeyId === "string" &&
+    s3AccessKeyId !== "" &&
+    typeof s3SecretAccessKey === "string" &&
+    s3SecretAccessKey !== ""
+      ? {
+          endpoint:
+            typeof env.IDRIVE_S3_ENDPOINT === "string" && env.IDRIVE_S3_ENDPOINT !== ""
+              ? env.IDRIVE_S3_ENDPOINT
+              : "https://s3.eu-west-3.idrivee2.com",
+          region:
+            typeof env.IDRIVE_S3_REGION === "string" && env.IDRIVE_S3_REGION !== ""
+              ? env.IDRIVE_S3_REGION
+              : "eu-west-3",
+          credentials: { accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey },
+        }
+      : undefined;
+  return createIdriveKeyProvider({
+    apiEndpoint:
+      typeof env.IDRIVE_E2_API_ENDPOINT === "string" && env.IDRIVE_E2_API_ENDPOINT !== ""
+        ? env.IDRIVE_E2_API_ENDPOINT
+        : IDRIVE_RESELLER_API,
+    apiToken,
+    ...(storageConfig === undefined ? {} : { provisionBuckets: true, storage: storageConfig }),
   });
 }
 

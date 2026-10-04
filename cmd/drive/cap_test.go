@@ -180,3 +180,190 @@ func TestRestartMountLeavesTheVFSCache(t *testing.T) {
 		t.Fatal("RestartMount must not delete the VFS cache")
 	}
 }
+
+// The swapped key is what the mount has to sign with, and the Worker is the
+// only thing that knows it: the credential is minted server-side (the api
+// holds the storage master credential) and never exists on the device until
+// the swap response carries it. So a restart has to prefer the answer's
+// credential over the secret this CLI already had, and write the session token
+// with it — a scoped key signs with all three or storage answers InvalidTokenId
+// (measured against the pinned MinIO, issue #241).
+func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		answer := CapAnswer{CapLine: "Cap $0.00 reached: read-only."}
+		reason := "cap-reached"
+		answer.Mount.Restart, answer.Mount.Reason = true, &reason
+		answer.Credential = &SwapCredential{
+			AccessKeyID:  "ro-access-key-id",
+			Secret:       "ro-secret",
+			SessionToken: "ro-session-token",
+		}
+		_ = json.NewEncoder(w).Encode(answer)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{
+		APIBase:     srv.URL,
+		DeviceToken: "dtok_test",
+		AccountID:   "acct-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pre-cap values the CLI already holds. They must NOT reach the config
+	// the mount reads after the swap.
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "stale-write-access-key")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "stale-write-secret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "stale-write-session-token")
+	t.Setenv("DRIVE_DOWNLOAD_URL", "")
+
+	// The error, if any, is the systemctl request this test environment cannot
+	// satisfy. The config file, not the error, is the proof.
+	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "0"})
+
+	got, err := os.ReadFile(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote the mount config: %v", err)
+	}
+	config := string(got)
+	for _, want := range []string{
+		"access_key_id = ro-access-key-id",
+		"secret_access_key = ro-secret",
+		"session_token = ro-session-token",
+		"no_check_bucket = true",
+	} {
+		if !strings.Contains(config, want) {
+			t.Errorf("mount config missing %q:\n%s", want, config)
+		}
+	}
+	if strings.Contains(config, "stale-write-secret") ||
+		strings.Contains(config, "stale-write-access-key") ||
+		strings.Contains(config, "stale-write-session-token") {
+		t.Errorf("mount config still carries the pre-cap key:\n%s", config)
+	}
+}
+
+// A raise mints a write credential with no session token when the deployment
+// uses permanent keys, and then no session_token line must be written at all:
+// an empty value would sign with an empty token.
+func TestRunCapRestartWritesNoSessionTokenWhenTheSwappedKeyHasNone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		answer := CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."}
+		reason := "cap-raised"
+		answer.Mount.Restart, answer.Mount.Reason = true, &reason
+		answer.Credential = &SwapCredential{AccessKeyID: "write-access-key", Secret: "write-secret"}
+		_ = json.NewEncoder(w).Encode(answer)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{
+		APIBase:     srv.URL,
+		DeviceToken: "dtok_test",
+		AccountID:   "acct-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "read-only-access-key")
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "read-only-secret")
+	t.Setenv("DRIVE_S3_SESSION_TOKEN", "read-only-session-token")
+	t.Setenv("DRIVE_DOWNLOAD_URL", "")
+
+	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "20"})
+
+	got, err := os.ReadFile(RcloneConfigPath(home))
+	if err != nil {
+		t.Fatalf("the restart never wrote the mount config: %v", err)
+	}
+	config := string(got)
+	if !strings.Contains(config, "secret_access_key = write-secret") {
+		t.Errorf("mount config does not carry the raised key:\n%s", config)
+	}
+	if strings.Contains(config, "session_token") {
+		t.Errorf("a key with no session token must add no session_token line:\n%s", config)
+	}
+	if strings.Contains(config, "no_check_bucket") {
+		t.Errorf("a permanent key can HeadBucket, so no_check_bucket must stay off:\n%s", config)
+	}
+}
+
+// The swapped access key and session token are server-supplied strings written
+// into rclone's INI. LoadStorageConfig already refuses a newline in the env
+// copies; the restart must refuse the swapped copies the same way, or a
+// newline injects an extra rclone option (issue #241 in-run review).
+func TestRunCapRestartRejectsASwappedCredentialThatWouldInjectAnOption(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cred SwapCredential
+		want string
+	}{
+		{
+			name: "newline in access key",
+			cred: SwapCredential{
+				AccessKeyID:  "ak\nno_check_certificate = true",
+				Secret:       "ro-secret",
+				SessionToken: "ro-session-token",
+			},
+			want: "access key",
+		},
+		{
+			name: "newline in session token",
+			cred: SwapCredential{
+				AccessKeyID:  "ro-access-key-id",
+				Secret:       "ro-secret",
+				SessionToken: "tok\nno_check_certificate = true",
+			},
+			want: "session token",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				answer := CapAnswer{CapLine: "Cap $0.00 reached: read-only."}
+				reason := "cap-reached"
+				answer.Mount.Restart, answer.Mount.Reason = true, &reason
+				cred := tc.cred
+				answer.Credential = &cred
+				_ = json.NewEncoder(w).Encode(answer)
+			}))
+			defer srv.Close()
+
+			home := t.TempDir()
+			if err := SaveCredentials(home, Credentials{
+				APIBase:     srv.URL,
+				DeviceToken: "dtok_test",
+				AccountID:   "acct-1",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
+			t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
+			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "stale-write-access-key")
+			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "stale-write-secret")
+			t.Setenv("DRIVE_S3_SESSION_TOKEN", "stale-write-session-token")
+			t.Setenv("DRIVE_DOWNLOAD_URL", "")
+
+			err := runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "0"})
+			if err == nil {
+				t.Fatal("got nil error, want the swapped credential refused")
+			}
+			if !strings.HasPrefix(err.Error(), "restart the mount:") {
+				t.Errorf("got %q, want the restart's own prefix", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("got %q, want it to name the %s", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "newline or NUL") {
+				t.Errorf("got %q, want invalid-config's reason", err)
+			}
+			if raw, readErr := os.ReadFile(RcloneConfigPath(home)); readErr == nil &&
+				strings.Contains(string(raw), "no_check_certificate") {
+				t.Errorf("the restart wrote the injected rclone option:\n%s", raw)
+			}
+		})
+	}
+}

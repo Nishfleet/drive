@@ -35,8 +35,8 @@
 // the whole month (Nish's cases). When the drive grew mid-month they differ,
 // and the ceiling must follow the peak, so the peak is passed in rather than
 // read back out of the meter. monthBillCents() takes two more — the download
-// bytes and the average stored size that sets their free 3x — and the config's
-// $1 credit is the last term.
+// bytes and the average stored size that sets their free 3x — plus the
+// membership floor and first-month discount from issue #352.
 //
 // The peak arrives as BYTES, because that is what the meter records (drive
 // issue #163): usage_minutes.stored_bytes is the account's stored bytes at the
@@ -145,6 +145,13 @@ export const B2_FALLBACK_CONFIG = Object.freeze({
 // to handleUsageRequest. Exported so index.js, the page and the tests cannot
 // each spell it their own way.
 export const USAGE_ENDPOINT = "/api/usage";
+
+// The public savings calculator (drive issue #14): a size in, this month's
+// bill and our own flat-plan ceiling out. Public on purpose — it quotes the
+// price, not an account — and monthBillCents() is the only arithmetic, so
+// the page cannot drift from the invoice.
+export const QUOTE_ENDPOINT = "/api/quote";
+const QUOTE_MAX_TB = 10000;
 
 // The stored-GB line chart's window (build-spec.md "Screens", Usage: "stored
 // GB (line chart, last 30 days)"). The summary keeps at most this many days,
@@ -352,6 +359,34 @@ export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
     storageUsd: bill.storageCents / 100,
     creditUsd: bill.creditCents / 100,
     billUsd: bill.totalCents / 100,
+  });
+}
+
+/**
+ * The public calculator's quote for a size held all month: the invoice's own
+ * bill (monthBillCents via monthlyBillForStoredTb) beside our flat-plan
+ * ceiling (monthlyCeilingUsd). Labels are formatted here so the static page
+ * never works out money of its own.
+ * @param {unknown} tb
+ * @param {BillingConfig} [config=BILLING_CONFIG]
+ */
+export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
+  const size = checked(tb, "tb");
+  if (size > QUOTE_MAX_TB) {
+    throw new TypeError(`tb must be ${QUOTE_MAX_TB} or less, got ${size}`);
+  }
+  const bill = monthlyBillForStoredTb(size, config);
+  const ceilingUsd = monthlyCeilingUsd(size * GB_PER_TB, config);
+  return Object.freeze({
+    tb: size,
+    storageUsd: bill.storageUsd,
+    creditUsd: bill.creditUsd,
+    billUsd: bill.billUsd,
+    ceilingUsd,
+    labels: Object.freeze({
+      bill: formatUsd(bill.billUsd),
+      ceiling: formatUsd(ceilingUsd),
+    }),
   });
 }
 
@@ -840,4 +875,57 @@ export function handleUsageRequest(request, account, upload = null) {
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
   const body = { ...empty, capLine: capLine(empty.cap), uploadLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
+}
+
+const QUOTE_HEADERS = Object.freeze({
+  "content-type": "application/json; charset=utf-8",
+  "cache-control": "no-store",
+});
+
+function quoteSizeError() {
+  return new Response(JSON.stringify({ error: failureMessage("quote-size") }), {
+    status: 400,
+    headers: QUOTE_HEADERS,
+  });
+}
+
+/**
+ * Handles GET /api/quote, the public savings calculator (drive issue #14).
+ * `tb` is a size in TB held all month; `gb` is the same size in GB. Exactly
+ * one of the two. The numbers are quoteForStoredTb(), which is monthBillCents
+ * plus the ceiling, so a later price edit moves the calculator with the
+ * invoice. Any other method is 405. A size the quote cannot use is 400 with
+ * the message table's quote-size words, never a stack.
+ * @param {Request} request
+ */
+export function handleQuoteRequest(request) {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed. GET this endpoint with tb or gb.", {
+      status: 405,
+      headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  const url = new URL(request.url);
+  const tbRaw = url.searchParams.get("tb");
+  const gbRaw = url.searchParams.get("gb");
+  let raw = null;
+  if (tbRaw !== null && gbRaw === null) {
+    raw = tbRaw;
+  } else if (gbRaw !== null && tbRaw === null) {
+    raw = gbRaw;
+  }
+  if (raw === null || raw.trim() === "") {
+    return quoteSizeError();
+  }
+  const parsed = Number(raw);
+  const tb = tbRaw !== null ? parsed : parsed / GB_PER_TB;
+  try {
+    const quote = quoteForStoredTb(tb);
+    return new Response(JSON.stringify(quote), { status: 200, headers: QUOTE_HEADERS });
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return quoteSizeError();
+    }
+    throw err;
+  }
 }

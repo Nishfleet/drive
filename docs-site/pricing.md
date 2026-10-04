@@ -50,6 +50,14 @@ The last column is the whole month, the free {{FREE_USD}} already taken off
 it. An empty drive bills nothing, and a drive kept under 50 GB bills nothing
 at all.
 
+## Savings calculator
+
+The pricing page has a public savings calculator: enter how many TB you keep
+all month, and it shows this month's bill beside our own flat-plan ceiling.
+The numbers come from the same function the invoice uses (`monthBillCents` via
+`GET /api/quote`). It does not name a rival or quote a rival's price. The
+headline on that page stays the rate, 2¢ per GB.
+
 ## Honest notes
 
 - There is no plan size. A drive is a drive: you are never moved to a bigger
