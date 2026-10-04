@@ -287,7 +287,13 @@ test("the cap swap keeps the hour the key already had, and takes no powers back 
   // was minted with: a read-only key that dies early is a key the mount
   // cannot use.
   const provider = createD1DeviceStore(db, { now: clock.now }).keyProviderFor(account.id);
-  const swapped = await provider.swapToReadOnly(minted.keyId);
+  // The D1 store mints the replacement itself and answers the swap, so its
+  // provider seam has no `swapToReadOnly` of its own to forget.
+  const swap = provider.swapToReadOnly;
+  if (typeof swap !== "function") {
+    throw new Error("the D1 store answers a cap swap, so its provider has one");
+  }
+  const swapped = await swap(minted.keyId);
   assert.equal(swapped.keyId, minted.keyId, "the swap keeps the key id");
   const after = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", minted.keyId);
   assert.deepEqual(JSON.parse(String(after.capabilities)), ["list", "read"]);
