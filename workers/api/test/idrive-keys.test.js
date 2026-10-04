@@ -76,8 +76,11 @@ function s3Stand(calls, answer) {
 }
 
 test("one bucket per customer, and the name is built once", () => {
-  assert.equal(bucketForAccount("acct_a1"), `${ACCOUNT_BUCKET_PREFIX}acct_a1`);
-  assert.equal(bucketForTeam("team_t1"), `${TEAM_BUCKET_PREFIX}team_t1`);
+  assert.equal(bucketForAccount("acct_a1"), `${ACCOUNT_BUCKET_PREFIX}acct-a1`);
+  assert.equal(bucketForTeam("team_t1"), `${TEAM_BUCKET_PREFIX}team-t1`);
+  // A sign-in id is mixed case; a bucket name cannot be (MinIO: InvalidBucketName).
+  assert.equal(bucketForAccount("v7Bp7HwejiE6XHOT"), "drv-v7bp7hwejie6xhot");
+  assert.match(bucketForAccount("v7Bp7HwejiE6XHOTv7Bp7HwejiE6XHOT"), /^[a-z0-9][a-z0-9-]{2,62}$/);
   // An id that would be refused as a prefix is refused as a bucket too, so the
   // boundary cannot be built from an id the rest of the api rejects.
   assert.throws(() => bucketForAccount("../x"), /account id/);
@@ -89,10 +92,10 @@ test("every scope names its own bucket", () => {
   // folder (iDrive e2, measured drive#173), and the prefix is still the layout
   // inside it, so a scope carries both and the two cannot name different
   // customers.
-  assert.equal(scopeFor("device", "acct_a1").bucket, "drv-acct_a1");
-  assert.equal(scopeFor("agent", "acct_a1").bucket, "drv-acct_a1");
-  assert.equal(scopeFor("branch", "acct_a1", { name: "x" }).bucket, "drv-acct_a1");
-  assert.equal(teamScopeFor("read_write", "team_t1").bucket, "drv-t-team_t1");
+  assert.equal(scopeFor("device", "acct_a1").bucket, "drv-acct-a1");
+  assert.equal(scopeFor("agent", "acct_a1").bucket, "drv-acct-a1");
+  assert.equal(scopeFor("branch", "acct_a1", { name: "x" }).bucket, "drv-acct-a1");
+  assert.equal(teamScopeFor("read_write", "team_t1").bucket, "drv-t-team-t1");
   assert.equal(teamScopeFor("read_write", "team_t1").prefix, "t/team_t1/");
 });
 

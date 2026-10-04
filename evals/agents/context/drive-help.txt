@@ -16,6 +16,7 @@ Usage:
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
+  drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
@@ -34,6 +35,15 @@ Usage:
   drive import <remote>    copy files from an rclone remote you already have
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Install, one line per system, then run drive login and drive init:
+  macOS                   brew install drive
+  Linux, Debian or Ubuntu  sudo apt install drive
+  Linux, Fedora or RHEL    sudo dnf install drive
+
+Until those packages are published, the command builds from source with the Go
+toolchain, which is the same route drive update runs:
+  go install github.com/Nishfleet/drive/cmd/drive@latest
 
 Update flags:
   --check   say whether a newer release exists, install nothing

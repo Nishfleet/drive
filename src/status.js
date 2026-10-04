@@ -17,14 +17,35 @@ import { failureMessage } from "./messages.js";
 // setup": `drive init` signs you in, mounts the drive and connects every agent
 // tool it finds. Kept here so the page, the CLI and the docs cannot disagree
 // about what the one command is.
-export const INSTALL_COMMAND = "brew install nishfleet/tap/drive";
-export const LOGIN_COMMAND = "drive login";
-export const FIRST_RUN_COMMAND = `${INSTALL_COMMAND}\n${LOGIN_COMMAND}`;
+export const INSTALL_COMMAND = "drive init";
 
-// What the page walks through, in order: install, log in, watch it flip.
+// The command that connects this machine to the account before `drive init`
+// runs: it opens the browser, mints the machine's key and writes the storage
+// settings, so init needs no pasted keys (drive issue #415).
+export const LOGIN_COMMAND = "drive login";
+
+// The two lines the Get started box shows, in the order they run: log in,
+// then set up. The install line for each system sits above the box
+// (INSTALL_LINES), so the box only carries the drive's own commands.
+export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
+
+// The one line that puts the command on a machine, one row per system, shown
+// above INSTALL_COMMAND so a new person sees what to paste before they are told
+// what to paste it into (drive issue #428). These are the same three lines the
+// Quickstart leads with, kept here so the page and the docs cannot disagree.
+// They name the package manager and nothing else: the tap, the module path and
+// the Windows installer name are the details the docs keep in their "Other
+// ways" section, and test/own-words.test.mjs fails a page that carries one.
+export const INSTALL_LINES = Object.freeze([
+  Object.freeze({ os: "macOS", line: "brew install drive" }),
+  Object.freeze({ os: "Linux, Debian or Ubuntu", line: "sudo apt install drive" }),
+  Object.freeze({ os: "Linux, Fedora or RHEL", line: "sudo dnf install drive" }),
+]);
+
+// What the page walks through, in order: log in, approve, watch it flip.
 export const FIRST_RUN_STEPS = Object.freeze([
   {
-    title: "Install and log in",
+    title: "Log in and set up",
     body: `Paste these two commands into the terminal on the Mac you want the drive on:\n${FIRST_RUN_COMMAND}`,
   },
   {

@@ -29,6 +29,7 @@ Usage:
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
+  drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
@@ -47,6 +48,15 @@ Usage:
   drive import <remote>    copy files from an rclone remote you already have
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
+
+Install, one line per system, then run drive login and drive init:
+  macOS                   brew install drive
+  Linux, Debian or Ubuntu  sudo apt install drive
+  Linux, Fedora or RHEL    sudo dnf install drive
+
+Until those packages are published, the command builds from source with the Go
+toolchain, which is the same route drive update runs:
+  go install github.com/Nishfleet/drive/cmd/drive@latest
 
 Update flags:
   --check   say whether a newer release exists, install nothing
@@ -126,6 +136,42 @@ Logout flags:
   --yes         answer yes to --all's confirm step
 `
 
+// commands is the drive's command table: one entry per subcommand, and the
+// one place a command exists. main dispatches through it, `drive --help`
+// (usage) documents every entry in it, and the agent notes (noteBody,
+// access.go; skillBody, skill.go) name only entries from it. The gate tests
+// in command_table_test.go hold the help text and the notes to this table,
+// so neither can drift from what actually runs (drive#461: both notes
+// advertised `drive restore`, which no step has shipped).
+var commands = map[string]func([]string) error{
+	"login":     runLogin,
+	"init":      runInit,
+	"agents":    runAgents,
+	"search":    runSearch,
+	"branch":    runBranch,
+	"branches":  runBranches,
+	"diff":      runDiff,
+	"approve":   runApprove,
+	"discard":   runDiscard,
+	"mount":     runMount,
+	"unmount":   runUnmount,
+	"offline":   runOffline,
+	"online":    runOnline,
+	"uninstall": runUninstall,
+	"status":    runStatus,
+	"pause":     runPause,
+	"resume":    runResume,
+	"cap":       runCap,
+	"cache":     runCache,
+	"share":     runShare,
+	"request":   runRequest,
+	"logout":    runLogout,
+	"export":    runExport,
+	"import":    runImport,
+	"update":    runUpdate,
+	"prefetch":  runPrefetch,
+}
+
 // version is the fallback when the toolchain records no module version
 // in this binary (a checkout build: go build, go run, go test). A binary
 // installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
@@ -140,65 +186,17 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
-	case "login":
-		err = runLogin(os.Args[2:])
-	case "init":
-		err = runInit(os.Args[2:])
-	case "agents":
-		err = runAgents(os.Args[2:])
-	case "search":
-		err = runSearch(os.Args[2:])
-	case "branch":
-		err = runBranch(os.Args[2:])
-	case "branches":
-		err = runBranches(os.Args[2:])
-	case "diff":
-		err = runDiff(os.Args[2:])
-	case "approve":
-		err = runApprove(os.Args[2:])
-	case "discard":
-		err = runDiscard(os.Args[2:])
-	case "mount":
-		err = runMount(os.Args[2:])
-	case "unmount":
-		err = runUnmount(os.Args[2:])
-	case "offline":
-		err = runOffline(os.Args[2:])
-	case "online":
-		err = runOnline(os.Args[2:])
-	case "uninstall":
-		err = runUninstall(os.Args[2:])
-	case "status":
-		err = runStatus(os.Args[2:])
-	case "pause":
-		err = runPause(os.Args[2:])
-	case "resume":
-		err = runResume(os.Args[2:])
-	case "cap":
-		err = runCap(os.Args[2:])
-	case "cache":
-		err = runCache(os.Args[2:])
-	case "share":
-		err = runShare(os.Args[2:])
-	case "request":
-		err = runRequest(os.Args[2:])
-	case "logout":
-		err = runLogout(os.Args[2:])
-	case "export":
-		err = runExport(os.Args[2:])
-	case "import":
-		err = runImport(os.Args[2:])
-	case "update":
-		err = runUpdate(os.Args[2:])
-	case "prefetch":
-		err = runPrefetch(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(versionText())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		run, ok := commands[os.Args[1]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
+			os.Exit(2)
+		}
+		err = run(os.Args[2:])
 	}
 	if err != nil {
 		// A FlagSet with ContinueOnError has already printed the parse error

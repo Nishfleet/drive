@@ -245,8 +245,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /go install github\.com\/Nishfleet\/drive\/cmd\/drive/,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
     "the limits page must give the install that works today",
+  );
+  assert.match(
+    page,
+    /drive --help/,
+    "the limits page must point at the command's own words for the exact route",
   );
   assert.match(
     page,
@@ -526,12 +531,15 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // own docs plus mdBook's, on 2026-09-30). The samples here are shell commands
   // that mount storage and connect agent tools, which a CI runner cannot do, so
   // the mechanical substitute is this: every `drive ...` sample is checked
-  // against the subcommand switch in cmd/drive/main.go, and the one sample that
+  // against the command table in cmd/drive/main.go (the one place a
+  // subcommand exists: the dispatch reads it, and Go-side gates hold the
+  // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
   const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const switchBody = mainGo.slice(mainGo.indexOf("switch os.Args[1]"), mainGo.indexOf("default:"));
-  const subcommands = new Set([...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]));
+  const tableStart = mainGo.indexOf("var commands = map[string]func([]string) error{");
+  const tableBody = mainGo.slice(tableStart, mainGo.indexOf("}", tableStart));
+  const subcommands = new Set([...tableBody.matchAll(/"([a-z]+)":/g)].map((m) => m[1]));
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
@@ -540,10 +548,10 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "go install github.com/Nishfleet/drive/cmd/drive@latest",
-    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
-    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
-    "brew install nishfleet/tap/drive",
+    "brew install drive",
+    "sudo apt install drive",
+    "sudo dnf install drive",
+    "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",

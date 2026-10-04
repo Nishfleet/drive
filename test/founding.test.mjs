@@ -175,7 +175,7 @@ test("pages, emails, messages and usage JSON do not leak the founding cap", asyn
       return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true };
     }
     if (kind === "account-closed" || kind === "account-close-reminder") {
-      return { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" };
+      return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
     }
     throw new Error(`no test data for ${kind}`);
   }

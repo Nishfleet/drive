@@ -13,6 +13,16 @@ the live site.
 - `drive login` connects the app to your account: it opens the browser, mints
   this machine's key, and writes the storage settings, so `drive init` needs
   no pasted keys. Get started shows the real install and login lines.
+- The notes `drive init` writes for agents no longer advertise `drive restore`,
+  a command that does not exist. The CLI now keeps one command table, and a
+  test holds both notes and `drive --help` to it, so neither can name a
+  command that does not run.
+- The usage page's spending cap is now a control and not a readout: move the
+  slider, choose Save cap, and the new cap is written through the same api
+  route `drive cap` writes. The page's confirmation is the api's own cap line,
+  and an error names what to do next in plain words instead of a command.
+- The home page's worked examples read as sentences: "about $1 of storage, and
+  you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
 - Membership copy: $10 a month, storage use counts toward it, founding members
   keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
@@ -45,7 +55,8 @@ the live site.
 - One command installs the drive CLI and rclone together: the Linux `.deb` and
   `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
   and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
-  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  the mount at login (a login item on macOS, a user unit on Linux, or a
+  Task Scheduler task on Windows). `drive uninstall`
   removes that login item.
 
 - `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on

@@ -113,6 +113,15 @@ export function isSameOriginRequest(request) {
   if (origin === null) {
     return true;
   }
+  // Every response carries `Referrer-Policy: no-referrer`, and a Chromium
+  // browser then sends `Origin: null` on a form POST to the page's own origin,
+  // so the approve button on the device page was refused as "not from the
+  // drive". `Sec-Fetch-Site` is set by the browser itself and a page cannot
+  // forge it: `same-origin` there says the request came from this origin, and
+  // a cross-site form carries `cross-site` and is still refused.
+  if (origin === "null") {
+    return request.headers.get("sec-fetch-site") === "same-origin";
+  }
   return origin === new URL(request.url).origin;
 }
 

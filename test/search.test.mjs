@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../src/files.js";
+import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import worker from "../src/index.js";
 import {
   DEFAULT_LIMIT,
@@ -459,6 +459,123 @@ test("withIndex passes the store through unchanged when there is no database", (
   );
 });
 
+test("a search shows a new upload's real size and date, not zero and nothing (drive#426)", async () => {
+  const db = makeD1();
+  const store = withIndex(createMemoryStore(), db, ACCOUNT);
+  // The upload the Files page posts, through the real composition: the
+  // handler scopes the store, and `withIndex` sits under that scope exactly as
+  // the Worker wires it (src/index.js `filesHandler`). The body is a request's
+  // own ReadableStream, so nothing about its length is known up front — the
+  // same upload a customer makes.
+  const before = Date.now();
+  const uploaded = await handleFilesRequest(
+    request(`${FILES_ENDPOINT}/upload?path=%2F&name=invoice.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "the-bytes",
+    }),
+    store,
+    ACCOUNT,
+  );
+  const after = Date.now();
+  assert.equal(uploaded.status, 201, "the upload landed");
+
+  // The size the file list carries for the same file, read back through the
+  // same scope the handler used.
+  const listed = await scopeStore(store, ACCOUNT).list("/");
+  assert.deepEqual(
+    listed.map((entry) => ({ name: entry.name, size: entry.size })),
+    [{ name: "invoice.txt", size: 9 }],
+    "the file list shows the size",
+  );
+
+  const found = await searchDrive(db, ACCOUNT, "invoice");
+  assert.equal(found.count, 1, "the upload is searchable at once");
+  assert.equal(found.results[0].path, "/invoice.txt");
+  assert.equal(found.results[0].sizeBytes, 9, "the search shows the size the list shows");
+  const modified = Date.parse(String(found.results[0].modifiedAt));
+  assert.ok(
+    modified >= before && modified <= after,
+    `the search shows the date the upload happened (${new Date(modified).toISOString()} inside ${new Date(before).toISOString()}..${new Date(after).toISOString()})`,
+  );
+});
+
+test("a write no byte count can be read from is refused, not stored as a size of 0 (drive#426)", async () => {
+  // The row a search reads holds the size the store writes, so a body nothing
+  // can measure is refused here rather than stored with a size of 0 and left
+  // for the nightly walk to correct. A valid `BodyInit` with no readable
+  // length is refused the same named way, because a size of 0 would be a lie.
+  for (const body of [/** @type {any} */ ({ not: "a body" }), new FormData()]) {
+    const db = makeD1();
+    const raw = createMemoryStore();
+    let wrote = 0;
+    const watched = {
+      ...raw,
+      /** @param {string} key
+       * @param {BodyInit} body
+       * @param {string} contentType */
+      write(key, body, contentType) {
+        wrote++;
+        return raw.write(key, body, contentType);
+      },
+    };
+    const store = withIndex(watched, db, ACCOUNT);
+    await assert.rejects(
+      store.write("u/1/no-size.txt", body, "text/plain"),
+      /a file index row needs a byte count/,
+      "the body is named in the failure",
+    );
+    assert.equal(wrote, 0, "no write reached the store");
+    const found = await searchDrive(db, ACCOUNT, "no-size");
+    assert.equal(found.count, 0, "no row was written for a body nothing can measure");
+  }
+});
+
+test("a store that stops reading the body writes no row, and says why (drive#426)", async () => {
+  // A byte count read off a stream is only a size once the stream has ended. A
+  // store that resolves a write without reading the body has stored fewer
+  // bytes than the row would claim, so the wrapper names that instead of
+  // indexing a count that stops mid-body.
+  const db = makeD1();
+  const raw = createMemoryStore();
+  const lazy = { ...raw, write: async () => {} };
+  const store = withIndex(lazy, db, ACCOUNT);
+  await assert.rejects(
+    store.write("u/1/half.txt", new Blob(["seven!"]).stream(), "text/plain"),
+    /after \d+ of its bytes, and an unfinished body has no size/,
+  );
+  const found = await searchDrive(db, ACCOUNT, "half");
+  assert.equal(found.count, 0, "no row for a body the store never finished reading");
+});
+
+test("a write counts every shape the store accepts, and a bodyless write is an empty object (drive#426)", async () => {
+  // One assertion per shape: the row carries the bytes the store wrote, from
+  // the length the body already knows (a string, bytes, an ArrayBuffer, a
+  // Blob) or the count read off the stream on the way through. A request with
+  // no body at all is an empty object, so an empty row, not a crash.
+  const shapes = [
+    ["a string", "seven!", 6],
+    ["bytes", new TextEncoder().encode("seven!"), 6],
+    ["an ArrayBuffer", new TextEncoder().encode("seven!").buffer, 6],
+    ["a Blob", new Blob(["seven!"]), 6],
+    ["a stream", new Blob(["seven!"]).stream(), 6],
+    ["no body at all", null, 0],
+  ];
+  for (const [shape, body, size] of /** @type {Array<[string, BodyInit|null, number]>} */ (
+    shapes
+  )) {
+    const db = makeD1();
+    const store = scopeStore(withIndex(createMemoryStore(), db, ACCOUNT), ACCOUNT);
+    const slug = shape.replace(/ /g, "-").replace(/\./g, "");
+    const path = `/${slug}.txt`;
+    await store.write(path, /** @type {BodyInit} */ (body), "text/plain");
+    const found = await searchDrive(db, ACCOUNT, slug);
+    assert.equal(found.count, 1, `${shape} is searchable at once`);
+    assert.equal(found.results[0].path, path);
+    assert.equal(found.results[0].sizeBytes, size, `${shape} carries its own bytes (${size})`);
+  }
+});
+
 // ------------------------------------------------------------------ timing
 
 // The issue's bar: 100,000 files, one search, under one second. The rows go
@@ -734,10 +851,16 @@ test("the deployed cron schedule is the one the module names", () => {
   // say nothing.
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *", "the reconciler's quiet-hour schedule");
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
-  assert.match(
-    config,
-    /triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\)/,
-    "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
+  // The config spells the schedule rather than importing it: an import here
+  // becomes a `server.fs.deny` entry in `cf dev` and crashes `npm run dev`
+  // (drive#432), so the trigger's string is read back out of the config and
+  // compared to this module's own export.
+  const declared = [...config.matchAll(/triggers\.scheduled\(\{ schedule: "([^"]+)" \}\)/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(
+    declared.includes(REINDEX_SCHEDULE),
+    `cloudflare.config.ts runs the reindex on ${REINDEX_SCHEDULE}; it declares ${declared.join(", ") || "no schedule"}`,
   );
 });
 
