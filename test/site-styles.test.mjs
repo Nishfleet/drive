@@ -87,6 +87,7 @@ const CHROME_OVERRIDES = new Map([
 const CHROME_RULES = [
   ".masthead {",
   ".masthead a {",
+  ".masthead button {",
   '.masthead a[aria-current="page"] {',
   ".tagline {",
   ".wordmark {",
