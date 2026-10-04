@@ -8,6 +8,7 @@ import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import {
   BILLING_CONFIG,
@@ -580,7 +581,9 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
-    const store = db ? createD1DeviceStore(db) : null;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });
 

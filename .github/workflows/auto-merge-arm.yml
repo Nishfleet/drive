@@ -34,7 +34,7 @@ name: Auto-merge arm
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize] # synchronize: a push re-arms a PR whose first arm failed (2026-10-04: 11 PRs sat unarmed after hosted jobs were refused)
 
 permissions: {}
 

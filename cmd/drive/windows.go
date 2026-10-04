@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -175,9 +178,12 @@ func windowsVolumeRoot(letter string) string {
 	return letter
 }
 
-// WindowsTaskCommandLine is the single command-line string schtasks stores for
-// the login task: the same rclone argument vector the launchd plist and the
-// systemd unit carry, as one string, because that is what /TR takes.
+// WindowsTaskCommandLine is the login task's command as one command-line
+// string: the same rclone argument vector the launchd plist and the systemd
+// unit carry, quoted the way CreateProcess splits it. The task itself stores
+// the plan as an Exec action's Command and Arguments (the XML, drive#368),
+// and `schtasks /Query` renders that pair back as one command line, so this
+// is the display form and the string the letter-finding reads.
 func WindowsTaskCommandLine(p MountPlan) string {
 	parts := append([]string{p.RcloneBin}, p.Args()...)
 	for i, a := range parts {
@@ -216,10 +222,201 @@ func windowsQuoteArg(arg string) string {
 	return b.String()
 }
 
-// schtasksCreateArgs is `schtasks /Create /SC ONLOGON` for the login task.
-// /F overwrites an existing task, so `drive mount` is safe to run again.
-func schtasksCreateArgs(taskName, commandLine string) []string {
-	return []string{"/Create", "/F", "/SC", "ONLOGON", "/TN", taskName, "/TR", commandLine}
+// The login task's Task Scheduler XML and its argument vector (drive#368).
+// The /TR flag `schtasks /Create` takes for the task to run holds 261
+// characters, and the task's command line is longer than that, so the create
+// goes through the task XML instead — the stock way to register a task whose
+// command outgrew /TR. The XML below is the subset of the Task Scheduler 2.0
+// schema (the format `schtasks /Create /XML` reads) this task sets, with the
+// fields in the schema's own order, which the import validates.
+
+type taskRegInfoXML struct {
+	Description string `xml:"Description"`
+}
+
+type taskLogonTriggerXML struct {
+	Enabled bool   `xml:"Enabled"`
+	UserId  string `xml:"UserId"`
+}
+
+type taskTriggersXML struct {
+	LogonTrigger taskLogonTriggerXML `xml:"LogonTrigger"`
+}
+
+type taskPrincipalXML struct {
+	ID        string `xml:"id,attr"`
+	UserId    string `xml:"UserId"`
+	LogonType string `xml:"LogonType"`
+}
+
+type taskPrincipalsXML struct {
+	Principal taskPrincipalXML `xml:"Principal"`
+}
+
+type taskIdleSettingsXML struct {
+	StopOnIdleEnd bool `xml:"StopOnIdleEnd"`
+	RestartOnIdle bool `xml:"RestartOnIdle"`
+}
+
+type taskSettingsXML struct {
+	MultipleInstancesPolicy    string              `xml:"MultipleInstancesPolicy"`
+	DisallowStartIfOnBatteries bool                `xml:"DisallowStartIfOnBatteries"`
+	StopIfGoingOnBatteries     bool                `xml:"StopIfGoingOnBatteries"`
+	AllowHardTerminate         bool                `xml:"AllowHardTerminate"`
+	StartWhenAvailable         bool                `xml:"StartWhenAvailable"`
+	RunOnlyIfNetworkAvailable  bool                `xml:"RunOnlyIfNetworkAvailable"`
+	IdleSettings               taskIdleSettingsXML `xml:"IdleSettings"`
+	AllowStartOnDemand         bool                `xml:"AllowStartOnDemand"`
+	Enabled                    bool                `xml:"Enabled"`
+	Hidden                     bool                `xml:"Hidden"`
+	RunOnlyIfIdle              bool                `xml:"RunOnlyIfIdle"`
+	WakeToRun                  bool                `xml:"WakeToRun"`
+	ExecutionTimeLimit         string              `xml:"ExecutionTimeLimit"`
+	Priority                   int                 `xml:"Priority"`
+}
+
+type taskExecXML struct {
+	Command   string `xml:"Command"`
+	Arguments string `xml:"Arguments"`
+}
+
+type taskActionsXML struct {
+	Context string      `xml:"Context,attr"`
+	Exec    taskExecXML `xml:"Exec"`
+}
+
+type taskXML struct {
+	XMLName          xml.Name          `xml:"Task"`
+	Version          string            `xml:"version,attr"`
+	XMLNS            string            `xml:"xmlns,attr"`
+	RegistrationInfo taskRegInfoXML    `xml:"RegistrationInfo"`
+	Triggers         taskTriggersXML   `xml:"Triggers"`
+	Principals       taskPrincipalsXML `xml:"Principals"`
+	Settings         taskSettingsXML   `xml:"Settings"`
+	Actions          taskActionsXML    `xml:"Actions"`
+}
+
+// windowsTaskXMLPath is where the login task's XML lives: beside the rclone
+// config, in the config directory the product already owns. schtasks reads
+// the file once at /Create; keeping it makes the next `drive mount` overwrite
+// (with /F) and the task debuggable.
+func windowsTaskXMLPath(p MountPlan) string {
+	return filepath.Join(filepath.Dir(p.ConfigPath), "login-task.xml")
+}
+
+// windowsTaskXML is the login task as Task Scheduler XML. The Exec action
+// carries the plan split the way Task Scheduler stores it: Command is the
+// rclone path, Arguments is the same quoted argument vector the /TR string
+// used to carry, so `schtasks /Query`'s "Task To Run" still reads as one
+// command line and every reader of it (the drive letter, the stop path) is
+// unchanged. userName is the login user the trigger fires for, in the
+// DOMAIN\user form Task Scheduler requires.
+func windowsTaskXML(p MountPlan, userName string) (string, error) {
+	quoted := make([]string, 0, len(p.Args()))
+	for _, a := range p.Args() {
+		quoted = append(quoted, windowsQuoteArg(a))
+	}
+	doc := taskXML{
+		Version: "1.2",
+		XMLNS:   "http://schemas.microsoft.com/windows/2004/02/mit/task",
+		RegistrationInfo: taskRegInfoXML{
+			Description: "Mounts the Drive at logon (created by drive).",
+		},
+		Triggers: taskTriggersXML{
+			// The trigger /SC ONLOGON used to set: start at this user's logon.
+			LogonTrigger: taskLogonTriggerXML{Enabled: true, UserId: userName},
+		},
+		Principals: taskPrincipalsXML{
+			// UserId is the account the task runs as, and it must be
+			// the same account the LogonTrigger fires for: Task
+			// Scheduler refuses an XML whose principal names no
+			// account, and InteractiveToken runs the mount in that
+			// user's logged-on session.
+			// InteractiveToken is how /SC ONLOGON ran: in the logged-on
+			// session, so the mount is visible on the user's desktop.
+			Principal: taskPrincipalXML{ID: "Author", UserId: userName, LogonType: "InteractiveToken"},
+		},
+		Settings: taskSettingsXML{
+			// One mount per logon: a repeated start never stacks a second
+			// rclone on the same letter.
+			MultipleInstancesPolicy: "IgnoreNew",
+			// A laptop on battery still gets its drive at logon, and a mount
+			// is not ended because the machine switched to battery.
+			DisallowStartIfOnBatteries: false,
+			StopIfGoingOnBatteries:     false,
+			AllowHardTerminate:         true,
+			StartWhenAvailable:         false,
+			RunOnlyIfNetworkAvailable:  false,
+			IdleSettings:               taskIdleSettingsXML{StopOnIdleEnd: false, RestartOnIdle: false},
+			AllowStartOnDemand:         true,
+			Enabled:                    true,
+			Hidden:                     false,
+			RunOnlyIfIdle:              false,
+			WakeToRun:                  false,
+			// PT0S is no time limit: the mount runs until `drive unmount`,
+			// not until the scheduler's 72-hour default ends it.
+			ExecutionTimeLimit: "PT0S",
+			Priority:           7,
+		},
+		Actions: taskActionsXML{
+			Context: "Author",
+			Exec: taskExecXML{
+				Command:   p.RcloneBin,
+				Arguments: strings.Join(quoted, " "),
+			},
+		},
+	}
+	var b bytes.Buffer
+	b.WriteString(xml.Header)
+	enc := xml.NewEncoder(&b)
+	enc.Indent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return "", fmt.Errorf("build the login task XML: %w", err)
+	}
+	if err := enc.Flush(); err != nil {
+		return "", fmt.Errorf("build the login task XML: %w", err)
+	}
+	return b.String(), nil
+}
+
+// schtasksCreateXMLArgs is `schtasks /Create` from the task XML. /F
+// overwrites an existing task, so `drive mount` is safe to run again. The XML
+// carries the logon trigger in place of the /SC ONLOGON flag and the command
+// in place of /TR, whose 261-character limit the task's command line
+// outgrew (drive#368).
+func schtasksCreateXMLArgs(taskName, xmlPath string) []string {
+	return []string{"/Create", "/F", "/TN", taskName, "/XML", xmlPath}
+}
+
+// windowsTaskUser is the user the login task starts for, in the DOMAIN\user
+// form the task XML's UserId requires. USERDOMAIN and USERNAME are exported
+// by every Windows session; os/user resolves the same account from the
+// process token when they are missing. On Entra ID (Azure AD) joined
+// machines the names can take the tenant's own form (AzureAD\user@tenant);
+// if Task Scheduler refuses that name at /Create, mount fails with the
+// schtasks output naming it, which is the machine's own answer to debug.
+func windowsTaskUser() (string, error) {
+	domain, name := os.Getenv("USERDOMAIN"), os.Getenv("USERNAME")
+	if domain != "" && name != "" {
+		return domain + `\` + name, nil
+	}
+	u, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("resolve the user the login task runs as: %w", err)
+	}
+	return u.Username, nil
+}
+
+// windowsSchtasksQuoted is one schtasks command line a reader can paste at a
+// prompt: every argument is quoted the way CreateProcess splits it, so a path
+// that holds a space (C:\Users\Jane Doe\...\login-task.xml) survives the
+// copy instead of reaching schtasks as three arguments.
+func windowsSchtasksQuoted(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, windowsQuoteArg(a))
+	}
+	return "schtasks " + strings.Join(quoted, " ")
 }
 
 func schtasksRunArgs(taskName string) []string    { return []string{"/Run", "/TN", taskName} }
@@ -328,10 +525,20 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 		return err
 	}
 	commandLine := WindowsTaskCommandLine(p)
+	taskXMLPath := windowsTaskXMLPath(p)
 	if dryRun {
+		userName, err := windowsTaskUser()
+		if err != nil {
+			return err
+		}
+		taskXMLBody, err := windowsTaskXML(p, userName)
+		if err != nil {
+			return err
+		}
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
-		fmt.Printf("--- Task Scheduler task %s ---\n%s\n", WindowsTaskName, commandLine)
-		fmt.Printf("--- would run ---\n%s\n", commandLine)
+		fmt.Printf("--- Task Scheduler task %s (XML: %s) ---\n%s\n", WindowsTaskName, taskXMLPath, commandLine)
+		fmt.Printf("--- task XML ---\n%s\n", taskXMLBody)
+		fmt.Printf("--- would run ---\n%s\n", windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath)...))
 		return nil
 	}
 	if err := WriteFileAtomic(p.ConfigPath, []byte(RcloneConfig(c)), 0o600); err != nil {
@@ -341,8 +548,21 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 		return mountForeground(p, home)
 	}
 	// Registering the task is the enable half, running it is the start half,
-	// the same two steps the Linux path takes with systemctl.
-	if err := runSchtasks(schtasksCreateArgs(WindowsTaskName, commandLine)...); err != nil {
+	// the same two steps the Linux path takes with systemctl. The task is
+	// registered from its XML, because its command line is over the 261
+	// characters the /TR flag holds (drive#368).
+	userName, err := windowsTaskUser()
+	if err != nil {
+		return err
+	}
+	taskXMLBody, err := windowsTaskXML(p, userName)
+	if err != nil {
+		return err
+	}
+	if err := WriteFileAtomic(taskXMLPath, []byte(taskXMLBody), 0o600); err != nil {
+		return err
+	}
+	if err := runSchtasks(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath)...); err != nil {
 		return fmt.Errorf("create the login task: %w", err)
 	}
 	if err := runSchtasks(schtasksRunArgs(WindowsTaskName)...); err != nil {

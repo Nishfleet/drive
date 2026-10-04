@@ -24,7 +24,7 @@ permissions:
 jobs:
   deploy:
     name: deploy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
     # A job with an environment gets a GitHub Deployment and deployment_status
     # events for free. No `url` while the site has no public address.
     environment:

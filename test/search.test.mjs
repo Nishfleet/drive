@@ -464,6 +464,12 @@ test("withIndex passes the store through unchanged when there is no database", (
 // The issue's bar: 100,000 files, one search, under one second. The rows go
 // in through the production statements and the search runs the production
 // statement, on the engine D1 runs (SQLite), migrations applied.
+//
+// The 1-second bar is searchDrive's tookMs: the SELECT only. Building the
+// 100k-row index is setup, logged as indexMs, and is not the bar. npm test
+// runs this proof alone after the rest of the suite so other tests do not
+// steal the CPU the bar is measuring (drive#392).
+const SEARCH_BUDGET_MS = 1000;
 test("100,000 files: a search returns in well under one second", async () => {
   const db = makeD1();
   const TOTAL = 100_000;
@@ -530,13 +536,19 @@ test("100,000 files: a search returns in well under one second", async () => {
   const timed = await searchDrive(db, ACCOUNT, "invoice", { now: () => performance.now() });
   assert.equal(timed.count, DEFAULT_LIMIT);
   assert.equal(timed.truncated, true);
-  assert.ok(timed.tookMs < 1000, `search took ${timed.tookMs.toFixed(1)}ms, budget 1000ms`);
+  assert.ok(
+    timed.tookMs < SEARCH_BUDGET_MS,
+    `search took ${timed.tookMs.toFixed(1)}ms, budget ${SEARCH_BUDGET_MS}ms`,
+  );
   const rare = await searchDrive(db, ACCOUNT, "file-099999", { now: () => performance.now() });
   assert.equal(rare.count, 1);
-  assert.ok(rare.tookMs < 1000, `rare search took ${rare.tookMs.toFixed(1)}ms, budget 1000ms`);
+  assert.ok(
+    rare.tookMs < SEARCH_BUDGET_MS,
+    `rare search took ${rare.tookMs.toFixed(1)}ms, budget ${SEARCH_BUDGET_MS}ms`,
+  );
   console.log(
     `# search-100k: index ${TOTAL} files in ${indexMs.toFixed(0)}ms; ` +
-      `"invoice" ${timed.tookMs.toFixed(1)}ms; "file-099999" ${rare.tookMs.toFixed(1)}ms (budget 1000ms)`,
+      `"invoice" ${timed.tookMs.toFixed(1)}ms; "file-099999" ${rare.tookMs.toFixed(1)}ms (budget ${SEARCH_BUDGET_MS}ms)`,
   );
 });
 
