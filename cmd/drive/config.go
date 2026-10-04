@@ -392,21 +392,49 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 // (mode 0600), environment, or stdin, and never a flag (issue #75). It fails
 // loudly when a required value is missing. Endpoint, bucket and keys are
 // config, not code: the same binary talks to the local stand-in or to iDrive e2.
-func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string) (StorageConfig, error) {
+// storageFromDisk is what `drive login` wrote: credentials hold the location,
+// rclone.conf holds the key pair. Empty when this machine has not logged in.
+func storageFromDisk(home string) StorageConfig {
+	var c StorageConfig
+	if creds, err := LoadCredentials(home); err == nil {
+		c.Endpoint = creds.Endpoint
+		c.Bucket = creds.Bucket
+		c.Prefix = creds.Prefix
+		c.Region = creds.Region
+		c.DownloadURL = creds.DownloadURL
+		c.AccessKey = creds.AccessKeyID
+	}
+	parsed, err := ParseRcloneConfig(RcloneConfigPath(home))
+	if err != nil {
+		return c
+	}
+	c.AccessKey = firstNonEmpty(c.AccessKey, parsed.AccessKey)
+	c.SecretKey = parsed.SecretKey
+	c.SessionToken = parsed.SessionToken
+	c.Endpoint = firstNonEmpty(c.Endpoint, parsed.Endpoint)
+	c.Region = firstNonEmpty(c.Region, parsed.Region)
+	return c
+}
+
+func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string, extra ...StorageConfig) (StorageConfig, error) {
+	var fromDisk StorageConfig
+	if len(extra) > 0 {
+		fromDisk = extra[0]
+	}
 	c := StorageConfig{
-		Endpoint:     firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
-		Bucket:       firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
-		Prefix:       firstNonEmpty(prefix, os.Getenv("DRIVE_S3_PREFIX")),
-		Region:       firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
-		AccessKey:    os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
-		SecretKey:    secretKey,
-		SessionToken: os.Getenv("DRIVE_S3_SESSION_TOKEN"),
+		Endpoint:     firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT"), fromDisk.Endpoint),
+		Bucket:       firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET"), fromDisk.Bucket),
+		Prefix:       firstNonEmpty(prefix, os.Getenv("DRIVE_S3_PREFIX"), fromDisk.Prefix),
+		Region:       firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), fromDisk.Region, "us-east-1"),
+		AccessKey:    firstNonEmpty(os.Getenv("DRIVE_S3_ACCESS_KEY_ID"), fromDisk.AccessKey),
+		SecretKey:    firstNonEmpty(secretKey, fromDisk.SecretKey),
+		SessionToken: firstNonEmpty(os.Getenv("DRIVE_S3_SESSION_TOKEN"), fromDisk.SessionToken),
 		// The download host is optional and has no default: with none set the
 		// mount reads straight from storage (the local stand-in case), and with
 		// one set rclone streams every read through the dl Worker, which counts
 		// the bytes into that account's download total (docs/build-spec.md
 		// "The pieces", items 2 and 4).
-		DownloadURL: firstNonEmpty(downloadURL, os.Getenv("DRIVE_DOWNLOAD_URL")),
+		DownloadURL: firstNonEmpty(downloadURL, os.Getenv("DRIVE_DOWNLOAD_URL"), fromDisk.DownloadURL),
 	}
 	var missing []string
 	if c.Endpoint == "" {

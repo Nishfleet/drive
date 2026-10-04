@@ -14,6 +14,7 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
+  drive login [flags]     connect this machine to your account and write its storage settings
   drive init [flags]      mount the drive, start it at login, and connect your agent tools
   drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
@@ -88,6 +89,9 @@ Mount flags work on drive init too: init mounts the drive first, then
 connects the agent tools, so one command takes a machine from nothing to a
 mounted drive.
 
+Login flags:
+  --api    drive api base URL (env DRIVE_API_URL, default the live site)
+
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
 
@@ -136,6 +140,8 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "login":
+		err = runLogin(os.Args[2:])
 	case "init":
 		err = runInit(os.Args[2:])
 	case "agents":
@@ -314,7 +320,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
-	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey)
+	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey, storageFromDisk(m.common.home))
 	if err != nil {
 		return "", StorageConfig{}, err
 	}

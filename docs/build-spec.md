@@ -53,6 +53,7 @@ Written 2026-09-29, on Nish's ask ("lets get to speccing?"). This turns the buil
 
 | Command | What it does |
 |---|---|
+| `drive login` | Open the browser to the device-approve page, poll the token, mint this machine's key, and write the storage settings. After this, `drive init` and `drive mount` need no pasted keys. |
 | `drive init` | Sign in (opens the browser for a device code), make the drive folder (`~/Drive`), start the mount, find installed agent tools and connect each one. Safe to run again. |
 | `drive status` | Mounted or not, files waiting to upload and why, this month's cost so far, cap |
 | `drive usage` | Stored GB now, GB-months so far, downloads used out of the free 3x, cost so far |

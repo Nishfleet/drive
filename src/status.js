@@ -17,15 +17,15 @@ import { failureMessage } from "./messages.js";
 // setup": `drive init` signs you in, mounts the drive and connects every agent
 // tool it finds. Kept here so the page, the CLI and the docs cannot disagree
 // about what the one command is.
-export const INSTALL_COMMAND = "drive init";
+export const INSTALL_COMMAND = "brew install nishfleet/tap/drive";
+export const LOGIN_COMMAND = "drive login";
+export const FIRST_RUN_COMMAND = `${INSTALL_COMMAND}\n${LOGIN_COMMAND}`;
 
-// What the page walks through, in order. The CLI is not shipped yet
-// (cmd/drive lands with build step 2), so the first two steps describe what
-// `drive init` does rather than a second install path.
+// What the page walks through, in order: install, log in, watch it flip.
 export const FIRST_RUN_STEPS = Object.freeze([
   {
-    title: "Run the command",
-    body: `Paste ${INSTALL_COMMAND} into the terminal on the Mac you want the drive on.`,
+    title: "Install and log in",
+    body: `Paste these two commands into the terminal on the Mac you want the drive on:\n${FIRST_RUN_COMMAND}`,
   },
   {
     title: "Sign in in the browser",
@@ -62,7 +62,7 @@ export const SYNCED_WINDOW_MS = 15 * 60 * 1000;
 export const CONNECTION_COPY = Object.freeze({
   waiting: {
     what: "Waiting for this Mac to sign in.",
-    next: `Run ${INSTALL_COMMAND} in your terminal. This page updates on its own.`,
+    next: `Run ${LOGIN_COMMAND} in your terminal. This page updates on its own.`,
   },
   connected: {
     what: "Connected. Your drive is mounted on this Mac.",
@@ -81,7 +81,7 @@ export const CONNECTION_COPY = Object.freeze({
 export const EMPTY_STATES = Object.freeze({
   devices: {
     what: "No other devices yet.",
-    next: "Run drive init on another Mac, then sign in.",
+    next: "Run drive login on another Mac, then sign in.",
   },
   activity: {
     what: "Nothing has synced yet.",

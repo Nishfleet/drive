@@ -71,23 +71,16 @@ It runs the same `go install` from a new shell, so it leaves the old binary in
 place until the new one is built, and your Drive folder and mount keep working
 throughout. `drive version` says which version you are on.
 
-## 2. Point it at your storage
-
-Your invite comes with the endpoint, bucket and prefix for your own folder, and
-a key pair. Put them in your shell environment, not on the command line, so the
-secret never lands in your shell history or in `ps`:
+## 2. Log in
 
 ```sh
-export DRIVE_S3_ENDPOINT=https://your-endpoint
-export DRIVE_S3_BUCKET=your-bucket
-export DRIVE_S3_PREFIX=your-folder
-export DRIVE_S3_ACCESS_KEY_ID=...
-export DRIVE_S3_SECRET_ACCESS_KEY=...
+drive login
 ```
 
-The first three say where your folder is. The last two are the key pair: the
-`DRIVE_S3_SECRET_ACCESS_KEY` one is never a flag (`--secret-key` is refused),
-and `drive mount --secret-key-stdin` reads it from stdin instead.
+`drive login` opens the browser to the device-approve page, waits until you
+approve this machine, mints its key, and writes the storage settings. You do
+not paste keys. After it finishes, `drive init` and `drive mount` work on this
+machine with no environment variables.
 
 ## 3. Mount it, at login and now
 
@@ -95,7 +88,7 @@ and `drive mount --secret-key-stdin` reads it from stdin instead.
 drive init
 ```
 
-`drive init` is the whole first run: it checks rclone is present and new
+`drive init` is the rest of the first run: it checks rclone is present and new
 enough, writes the login item that starts the mount at the next login (a
 launchd item on macOS, a systemd user unit on Linux, a Task Scheduler task on
 Windows), starts it now, and then looks for Claude, Codex, Gemini, Cursor and

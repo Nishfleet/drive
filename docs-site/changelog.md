@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-04
 
+- `drive login` connects the app to your account: it opens the browser, mints
+  this machine's key, and writes the storage settings, so `drive init` needs
+  no pasted keys. Get started shows the real install and login lines.
 - Membership copy: $10 a month, storage use counts toward it, founding members
   keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
