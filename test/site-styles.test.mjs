@@ -28,7 +28,7 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const PAGES = [
   ...readdirSync(PUBLIC_DIR)
     .filter((name) => name.endsWith(".html"))
-    .map((name) => /** @type {[string, URL]>} */ ([`public/${name}`, new URL(name, PUBLIC_DIR)])),
+    .map((name) => /** @type {Array<[string, URL]>} */ ([`public/${name}`, new URL(name, PUBLIC_DIR)])),
   ["get-started.html", new URL("../get-started.html", import.meta.url)],
 ];
 
@@ -72,7 +72,10 @@ const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
 const CHROME_OVERRIDES = new Map([
   [
     "public/files.html",
-    new Map([[".masthead", new Set(["margin", "padding", "border-bottom"])]])
+    new Map([
+      [".masthead", new Set(["margin", "padding", "border-bottom"])],
+      [".wordmark", new Set(["font-size"])],
+    ])
   ],
   [
     "public/signin.html",
