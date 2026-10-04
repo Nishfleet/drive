@@ -66,6 +66,10 @@
 //   - The email binding. Only the token-gated internal send route uses it
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
+//   - FOUNDING_OFFER_OPEN. It is a Worker var (inline text), not a reachable
+//     dependency: switching the founding offer is a config flip, and a string
+//     cannot be probed. A missing var is treated as open by src/founding.js,
+//     so it is not an outage.
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read

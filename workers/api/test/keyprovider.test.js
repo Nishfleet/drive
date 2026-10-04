@@ -37,6 +37,7 @@ test("key scopes follow the spec", () => {
   assert.deepEqual(scopeFor("device", "a1"), {
     prefix: "u/a1/",
     capabilities: ["list", "read", "write", "delete"],
+    bucket: "drv-a1",
   });
   assert.ok(!scopeFor("agent", "a1").capabilities.includes("delete"));
   assert.equal(scopeFor("s3", "a1").prefix, "u/a1/");
