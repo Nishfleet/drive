@@ -346,6 +346,7 @@ h2 {
             <dd id="cost"></dd>
           </div>
         </dl>
+        <dl class="readout" id="bill-lines" hidden></dl>
       </section>
 
       <section aria-labelledby="downloads-heading">
@@ -451,6 +452,7 @@ const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
 const gbMonthsEl = document.getElementById("gb-months");
 const costEl = document.getElementById("cost");
+const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
 const uploadLineEl = document.getElementById("upload-line");
 const capSlider = document.getElementById("cap-slider");
@@ -577,7 +579,10 @@ function render(summary) {
     // sentence when something is. A value that is neither is a payload this
     // page cannot render, so it takes the unreachable state rather than
     // printing "null" or "undefined" where a line belongs.
-    (summary.uploadLine !== null && typeof summary.uploadLine !== "string")
+    (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
+    typeof summary.billCents !== "object" ||
+    summary.billCents === null ||
+    !Array.isArray(summary.billCents.lines)
   ) {
     sayUnreachable();
     return;
@@ -597,6 +602,22 @@ function render(summary) {
   storedNowEl.textContent = labels.storedNow;
   gbMonthsEl.textContent = labels.gbMonths;
   costEl.textContent = labels.cost;
+  billLinesEl.replaceChildren();
+  for (const line of summary.billCents.lines) {
+    if (typeof line?.label !== "string" || typeof line?.usd !== "string") {
+      sayUnreachable();
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "pair";
+    const dt = document.createElement("dt");
+    dt.textContent = line.label;
+    const dd = document.createElement("dd");
+    dd.textContent = line.usd;
+    row.append(dt, dd);
+    billLinesEl.append(row);
+  }
+  billLinesEl.hidden = summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.

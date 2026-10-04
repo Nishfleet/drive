@@ -1,6 +1,6 @@
 ---
 title: Pricing and your bill
-description: The rate, the ceiling, the free $1, downloads, and the bill worked out for four sizes.
+description: The rate, the ceiling, the membership, downloads, and the bill worked out for four sizes.
 ---
 
 # Pricing and your bill
@@ -20,11 +20,11 @@ The default cap is {{DEFAULT_CAP}}, so a drive up to 1.5 TB cannot be cut off
 by default. Raise or lower it in your account, and at your cap the drive goes
 read-only: nothing is deleted and the bill stops there.
 
-## The free $1
+## The membership
 
-{{FREE_USD}} of storage is free every month, and no card is needed to start.
-That is {{FREE_GB}} GB a month — about 50 photos, or a season of video — and it
-comes off the bill first, never below zero.
+{{MEMBERSHIP}}
+{{FOUNDING}}
+We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
@@ -41,14 +41,12 @@ version 1.
 
 Storage is counted for the part of the month you kept it, so a drive that grew
 pays only for the days each file was there. The meter is the rate on that; the
-ceiling is the largest the drive got; your bill is the smaller of the two, and
-then the free {{FREE_USD}} comes off.
+ceiling is the largest the drive got; your bill is the membership or the
+smaller of the meter and the ceiling, whichever is larger.
 
 {{BILL_TABLE}}
 
-The last column is the whole month, the free {{FREE_USD}} already taken off
-it. An empty drive bills nothing, and a drive kept under 50 GB bills nothing
-at all.
+The last column is the whole month. An empty drive still bills the membership.
 
 ## Savings calculator
 
@@ -72,7 +70,7 @@ headline on that page stays the rate, 2¢ per GB.
 
 ## A bill that looks wrong, checked in order
 
-A per-minute bill with a ceiling and a free allowance can look wrong three
+A per-minute bill with a ceiling and a membership can look wrong three
 different ways, and only the first one is the bill:
 
 1. **The metered figure.** `drive status` shows this month's cost so far, and
@@ -80,9 +78,9 @@ different ways, and only the first one is the bill:
    numbers as the invoice.
 2. **The ceiling.** Your bill is the smaller of the metered cost and the
    ceiling, so a drive that grew pays for the days each file was there, never
-   more than the ceiling below.
-3. **The free {{FREE_USD}}.** It comes off the total, never below zero, so a
-   small drive can bill nothing at all.
+   more than the ceiling below, and never less than the membership.
+3. **The membership.** Storage use counts toward it. Go past it and you pay
+   by the minute for the rest.
 
 When those three agree with the invoice, [tell us](/faq) the month and the
 figure; the docs do not promise a refund, so nobody will read one here.

@@ -5,7 +5,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/spacefs-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
 - Every build step's finish line is proven on real files and real accounts, cited by path, id or timestamp. A green test alone is not done.
 - Stock tools only (rclone, the storage provider's versioning, lifecycle rules and scoped keys, Cloudflare Workers, D1 and Cron Triggers, Dodo, the MCP filesystem server). Hand-write only the product's own logic: the `drive` CLI, the api and dl Workers, the meter, and the web pages.
-- No money is spent without Nish. Free tiers and free trials only; if a signup asks for a card, stop and mark the issue `agent-blocked` with that reason.
+- No money is spent without Nish. Sign-up asks for a card and refuses an account without one (drive#387). No live charge runs while the Dodo key is unset (#325).
 - Secrets live in the VPS credential store, never in this repo.
 - The Mac is read-only for agents. Mac-only proofs (step 2) run on a GitHub macOS runner or are marked for Nish.
 

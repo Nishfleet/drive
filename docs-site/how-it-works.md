@@ -75,7 +75,7 @@ and cannot do.
 The meter counts every GB you keep, by the minute. At the end of the month the
 rate is {{RATE}} on the month's GB-months, and that number is cut off at the
 ceiling: a flat {{CEILING_FLOOR}} until the drive passes 1.5 TB, then
-{{CEILING_PER_TB}} a TB. Then {{FREE_USD}} comes off, and downloads are counted
+{{CEILING_PER_TB}} a TB. {{MEMBERSHIP}} Downloads are counted
 separately. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).
 

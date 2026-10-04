@@ -25,6 +25,7 @@
 import { agentCannotDeleteSentence } from "./docs.js";
 import { validatePath } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
+import { PRICE } from "./pricing.js";
 
 // The page itself is public/starter.html, served by the asset layer's HTML
 // handling (/starter serves /starter.html, the same way /get-started serves
@@ -138,7 +139,7 @@ export const STARTER_COPY = Object.freeze({
   ledeNext: "Create it only if you want it. Your drive is the same either way.",
   intro:
     "A ready-made notes folder: a vault your notes app can open, a starter inbox and daily note, and one note your agent reads when it works with you.",
-  noCard: "No card asked.",
+  noCard: PRICE.needCard,
   button: "Create the notes starter",
   working: "Creating…",
   // What a create answers, in the same `what`/`next` shape.

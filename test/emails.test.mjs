@@ -359,7 +359,7 @@ test("the receipt never shows a per-minute price", () => {
 
 test("the receipt never says unlimited, credit or credits", () => {
   // build-spec.md "Never do": confusing credit units and "unlimited" plans.
-  // The free $1 is shown as a dollar line or not at all.
+  // The receipt is the one mail a customer keeps and forwards to their accountant.
   const { subject, text, html } = monthlyReceiptTemplate(receiptData());
   for (const part of [subject, text, html].map((s) => s.toLowerCase())) {
     for (const banned of ["unlimited", "credit", "credits"]) {

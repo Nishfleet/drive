@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — sign in</title>
-  <meta name="description" content="Sign in to your drive: one link by email. No card asked.">
+  <meta name="description" content="Sign in to your drive: one link by email. We need a card at sign-up because there is no free tier.">
   <meta name="robots" content="noindex">
   <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
        table. The copy and the endpoints live in src/signin.js, the single
@@ -189,7 +189,9 @@ button:disabled {
   <main>
     <h1 id="signin-heading">Sign in</h1>
     <p class="lede">One link by email.</p>
-    <p class="free">No card asked. $1 free every month, no card needed</p>
+    <p class="free">$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</p>
+    <p class="free">Join now and keep $5 a month for good.</p>
+    <p class="free">We need a card at sign-up because there is no free tier. Storage use counts toward your membership.</p>
 
     <div class="card">
       <!-- Not Django: this is a static asset, and the route it posts to is not
@@ -201,6 +203,10 @@ button:disabled {
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
+        <label class="hint" for="card">
+          <input id="card" name="card" type="checkbox" value="on" required>
+          We need a card at sign-up because there is no free tier. Storage use counts toward your membership.
+        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
@@ -215,7 +221,7 @@ button:disabled {
   </main>
 
   <footer class="footer">
-    <p>New here? Signing in makes your drive, and $1 a month of storage is free.</p>
+    <p>New here? We need a card at sign-up because there is no free tier. Storage use counts toward your membership.</p>
     <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
 
@@ -239,6 +245,7 @@ const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
+const cardInput = document.getElementById("card");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 
@@ -279,7 +286,11 @@ async function start(method, email) {
     response = await fetch(SIGNIN_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(email === undefined ? { method } : { method, email }),
+      body: JSON.stringify(
+        email === undefined
+          ? { method }
+          : { method, email, card: cardInput !== null && cardInput.checked },
+      ),
     });
   } catch (networkError) {
     console.error("signin: request failed", networkError);

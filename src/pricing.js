@@ -7,9 +7,9 @@
 // them. The meta/llms gate test/seo.test.mjs does the same.
 //
 // Source of truth: docs/build-spec.md ("Bill ceiling", Nish 2026-09-30,
-// issue #29). The rule: monthly bill = min(metered, max($12, $8 × TB stored)),
-// TB measured to the GB, less the $1 free every month. Plateau: flat $12 up
-// to 1.5 TB, then $8/TB.
+// issue #29) plus the membership (drive#352 / #387). The storage ceiling is
+// min(metered, max($12, $8 × TB stored)), TB measured to the GB. The bill is
+// then at least the membership. Plateau: flat $12 up to 1.5 TB, then $8/TB.
 //
 // There is no bill arithmetic here: src/billing.js's monthBillCents() is the
 // one function that turns this config into dollars. This file holds the
@@ -45,8 +45,8 @@ export const PRICE = Object.freeze({
   // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
   // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
   b2FallbackUsdPerTb: B2_FALLBACK_USD_PER_TB,
-  // The $1 off every month with no card needed (build-spec.md "Free credit").
-  // A dollar line, never credit units.
+  // Kept for the card-less write cap leftover until every account has a card
+  // (#387). Not a public credit: copy never names this dollar.
   freeMonthlyUsd: FREE_MONTHLY_USD,
   // The page's headline, in the two lines it is set in: the rate as the big
   // number (its own `rateUnit` under it) and the ceiling sentence as the sub
@@ -61,12 +61,14 @@ export const PRICE = Object.freeze({
   ceiling: `${RATE_TEXT} per GB, billed by the minute. Never more than $${CAP_FLOOR_USD} a TB, and $${CAP_USD_PER_TB} a TB once you pass ${CAP_PLATEAU_TB} TB.`,
   // The browser-tab and share-card title: the brand and the one-line price.
   titleLine: `${RATE_TEXT} per GB, never more than $${CAP_FLOOR_USD} a TB`,
-  // The free line, on the page under the ceiling.
-  freeLine: `$${FREE_MONTHLY_USD} free every month, no card needed`,
-  // The whole bill, for the offer description and llms.txt: the ceiling,
-  // then the $1 off. Stated in words as well as symbols because a crawler
-  // reads prose, not a formula.
-  rule: `The bill is the metered cost capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored) less the $${FREE_MONTHLY_USD} free every month, never below zero: a flat $${CAP_FLOOR_USD} up to ${CAP_PLATEAU_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
+  // drive#387: membership, never "minimum". Founding copy never names the cap.
+  membershipLine:
+    "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
+  foundingLine: "Join now and keep $5 a month for good.",
+  needCard:
+    "We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
+  // The whole bill, for the offer description and llms.txt.
+  rule: `$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest, still capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): a flat $${CAP_FLOOR_USD} up to ${CAP_PLATEAU_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
   // Rival comparison on the worked-example rows. The source is
   // docs/build-spec.md's "Bill ceiling" decision (Nish 2026-09-30): "2 TB =
   // $16, against Space $27; 5 TB = $40, against Space $63", which is Space's
