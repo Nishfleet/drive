@@ -127,18 +127,36 @@ test("a founding config cannot be halved twice", () => {
   // fields, so an already-founding config is refused rather than re-halved.
   const month = { gbMinutes: fullMonthGbMinutes(2000) };
   assert.equal(monthBillCents({ ...month, foundingMember: true }).totalCents / 100, 10);
-  assert.throws(
-    () => monthBillCents({ ...month, config: foundingConfig(), foundingMember: true }),
-    (err) => {
-      assert.ok(err instanceof TypeError);
-      assert.match(err.message, /already founding-priced/);
-      return true;
-    },
-  );
-  // A config that merely has founding's share as a plain number (a copy test
-  // building one by hand) is still a legal config: only the mark is refused.
+  /** @param {import("../src/billing.js").BillingConfig} config */
+  const refuse = (config) =>
+    assert.throws(
+      () => monthBillCents({ ...month, config, foundingMember: true }),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /already (founding-priced|discounted)/);
+        return true;
+      },
+    );
+  refuse(foundingConfig());
+  // A copy of the founding config — the ordinary way a caller mends a config on
+  // its way somewhere — carries the mark, so it is refused as well. Dropping a
+  // non-enumerable mark on spread is what made this the second half of the
+  // bug: the same discount, applied twice, through a plain `{...config}`.
+  refuse({ ...foundingConfig() });
+  refuse(Object.assign({}, foundingConfig()));
+  // Without the mark, a cheaper rate plus the flag is the same mistake found by
+  // the numbers: refused too.
+  refuse({ ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 });
+  // A config that merely carries founding's numbers without the flag is a legal
+  // config: it is a price sheet, and nothing halves it twice.
   const copied = { ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 };
   assert.equal(monthBillCents({ ...month, config: copied }).totalCents / 100, 20);
+  // A marked config is not a price sheet at all, so it is refused with or
+  // without the flag: half of half is the only bill it could ever produce.
+  assert.throws(
+    () => monthBillCents({ ...month, config: foundingConfig() }),
+    /already founding-priced/,
+  );
 });
 
 test("the maximum follows the month's average, so a part-month bills for the part", () => {

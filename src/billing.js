@@ -102,7 +102,11 @@ export const BILLING_CONFIG = billingConfigFor(PRICE);
 /**
  * Marks the config a founding member is billed by, so a caller that hands it
  * back to monthBillCents() is refused rather than halved twice (drive#482).
- * Non-enumerable, so a spread of the config copies the numbers, not the mark.
+ * Enumerable on purpose: a copy of a config (`{...foundingConfig()}`,
+ * `Object.assign({}, config)`) carries every own enumerable property including
+ * symbols, so the mark travels with the copy. A non-enumerable mark is dropped
+ * by the first spread, and the caller that spread it is exactly the one the
+ * check exists to stop.
  * @type {symbol}
  */
 const FOUNDING_PRICED = Symbol("founding-priced");
@@ -126,7 +130,7 @@ export function foundingConfig(config = BILLING_CONFIG) {
       maxUsdPerTb: config.maxUsdPerTb * share,
     },
     FOUNDING_PRICED,
-    { value: true },
+    { value: true, enumerable: true },
   );
   return /** @type {BillingConfig} */ (Object.freeze(priced));
 }
@@ -416,6 +420,18 @@ export function monthBillCents(month) {
     );
   }
   const founding = isFoundingMember(fields, config);
+  // The same double discount with the mark gone, which is what a hand-built
+  // config is: the rate is already below the shipped one, so the flag would
+  // halve a discount. BILLING_CONFIG is the one shipped price sheet, so
+  // `rateUsdPerGbMonth` below it means "already discounted", not "a plan":
+  // PRICE is where a different price sheet is written, and it moves this base
+  // with it. Refused rather than ignored, because a bill nobody checks is the
+  // one that is wrong.
+  if (founding && config.rateUsdPerGbMonth < BILLING_CONFIG.rateUsdPerGbMonth) {
+    throw new TypeError(
+      "month.config is already discounted and month.foundingMember halves it again: monthBillCents derives the founding half once, from the month's own fields",
+    );
+  }
   const priced = founding ? foundingConfig(config) : config;
   const averageGb = gbMonths(gbMinutes);
   const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, priced) * 100);
