@@ -33,3 +33,4 @@ jobs:
     with:
       issue: ${{ inputs.issue }}
       agent_mode: ${{ vars.AGENT_MODE }}
+      runner: '["self-hosted","Linux","X64"]' # hosted minutes ran out 2026-10-03; sweep was refused for billing
