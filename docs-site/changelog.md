@@ -8,6 +8,16 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-04
+
+- A public savings calculator on the pricing page: enter a size, see this
+  month's bill beside our own flat-plan ceiling. The number is
+  `monthBillCents`, so it cannot drift from the invoice. No rival names or
+  rival prices.
+- `drive import <remote>` copies files from an rclone remote you already have
+  (`rclone config` on your machine) into the mounted drive. Docs show the
+  three commands: `rclone config`, `drive import photos:`, `drive status`.
+
 ## 2026-10-03
 
 - The three build step 1 storage questions are now measured against the real iDrive
