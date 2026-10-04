@@ -22,6 +22,7 @@ import {
   handleBranchesRequest,
   listBranches,
   readSnapshot,
+  readSnapshotObject,
   relativePath,
   removePrefixFiles,
   SNAPSHOT_BACKFILL_ROWS,
@@ -603,6 +604,24 @@ test("approve refuses an open row with no snapshot pointer before it copies", as
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a");
   assert.equal(failedStatus(await approveBranch(db, snapshots, scoped, ACCOUNT, "work")), 500);
   assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "the original was not copied over");
+  assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), "edited");
+});
+
+test("approve refuses a pointer whose KV value is missing or not a JSON object", async () => {
+  const { scoped, db, snapshots, kv } = await driven();
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "work" });
+  const key = snapshotKey(ACCOUNT, "work");
+  await scoped.write(`${BRANCHES_ROOT}/work/a.txt`, new Blob(["edited"]).stream(), "text/plain");
+
+  kv.values.delete(key);
+  assert.equal(await readSnapshotObject(snapshots, key), null);
+  assert.equal(failedStatus(await approveBranch(db, snapshots, scoped, ACCOUNT, "work")), 500);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "a missing value did not copy");
+
+  kv.values.set(key, "not-json");
+  assert.equal(await readSnapshotObject(snapshots, key), null);
+  assert.equal(failedStatus(await approveBranch(db, snapshots, scoped, ACCOUNT, "work")), 500);
+  assert.equal(await readText(scoped, "/Photos/a.txt"), "a", "malformed JSON did not copy");
   assert.equal(await readText(scoped, `${BRANCHES_ROOT}/work/a.txt`), "edited");
 });
 

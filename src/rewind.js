@@ -32,7 +32,13 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-import { diffBranch, discardBranch, listBranches, readSnapshot } from "./branches.js";
+import {
+  diffBranch,
+  discardBranch,
+  listBranches,
+  readSnapshot,
+  readSnapshotObject,
+} from "./branches.js";
 import { RECENTLY_DELETED_DAYS } from "./files.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
@@ -220,6 +226,10 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
   const branch = await rewindBranchRow(db, snapshots, store, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
+  }
+  if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
+    console.error?.(`rewind refused unavailable snapshot for row ${branch.id}`);
+    return { error: failureMessage("unexpected"), status: 500 };
   }
   const preview = await rewindPreview(store, branch, now, snapshots);
   if (!preview.canRewind) {

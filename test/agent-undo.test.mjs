@@ -26,7 +26,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createBranch, createKvSnapshotStore, handleBranchesRequest } from "../src/branches.js";
+import {
+  createBranch,
+  createKvSnapshotStore,
+  handleBranchesRequest,
+  snapshotKey,
+} from "../src/branches.js";
 import { createMemoryStore, scopeStore } from "../src/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import {
@@ -270,7 +275,8 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   // The branch snapshot lives in the KV namespace the Worker binds (drive
   // #252), and this test drives it through the same store object the route
   // gets, so the rewind below reads a snapshot out of KV rather than the row.
-  const snapshots = createKvSnapshotStore(createTestKv());
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv);
   const created = await createBranch(
     db,
     snapshots,
@@ -282,7 +288,7 @@ async function agentBranch({ changedBy = "k-claude" } = {}) {
   // The agent edits one file and deletes another, inside the branch copy.
   await scoped.write("/.branches/fix/a.txt", new Blob(["agent rewrote a"]).stream(), "text/plain");
   await scoped.remove("/.branches/fix/keep.txt");
-  return { raw, scoped, db, snapshots, created };
+  return { raw, scoped, db, snapshots, kv, created };
 }
 
 test("the rewind screen lists what the agent changed before anything is touched", async () => {
@@ -348,6 +354,33 @@ test("one click rewinds the agent's work and leaves the original folder exactly 
   const again = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT);
   assert.equal(failedStatus(again), 409);
   assert.equal(/** @type {{error: string}} */ (again).error, failureMessage("branch-not-open"));
+});
+
+test("rewind refuses an unavailable snapshot before it discards the copy", async () => {
+  const { raw, db, snapshots, kv } = await agentBranch();
+  const scoped = scopeStore(raw, ACCOUNT);
+  const key = snapshotKey(ACCOUNT, "fix");
+
+  kv.values.delete(key);
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
+
+  kv.values.set(key, "not-json");
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
+
+  await db
+    .prepare(
+      "UPDATE branches SET snapshot = '{}', snapshot_key = '', snapshot_bytes = 0 " +
+        "WHERE account_id = ?1 AND name = ?2",
+    )
+    .bind(ACCOUNT.id, "fix")
+    .run();
+  assert.equal(failedStatus(await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT)), 500);
+  assert.equal(await text(scoped, "/Photos/a.txt"), "original a");
+  assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
 test("the 30-day window is the server's, not a hidden button", async () => {

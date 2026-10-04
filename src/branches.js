@@ -316,10 +316,13 @@ export function sameFile(a, b) {
  * The value comes from the KV store, at the row's own pointer (migration 0012).
  * There is one source: the legacy `branches.snapshot` column is no longer read
  * (drive#329), because the backfill swept every open pre-namespace row into the
- * namespace (drive#321) and nothing writes the column any more. A value that
- * cannot be read as a map is treated as empty, exactly as `toBranch` treats an
- * unreadable snapshot: an approve with an unreadable snapshot stops on every
- * file, which is the safe direction.
+ * namespace (drive#321) and nothing writes the column any more.
+ *
+ * List and diff treat an empty pointer, a missing KV value, or JSON that is
+ * not an object as an empty map, so the screen shows every copy file as added
+ * rather than as "no changes". Approve and rewind use `readSnapshotObject`
+ * and stop when that returns null, because copying or discarding against an
+ * empty map is not the same as a real empty snapshot (`{}` in KV).
  *
  * `getBranch`/`listBranches` hand the row's pointer here; the KV read happens
  * per branch that is actually diffed, so a list does not fetch every branch's
@@ -334,39 +337,46 @@ export function sameFile(a, b) {
  * @returns {Promise<Record<string, Fingerprint>>}
  */
 export async function readSnapshot(snapshots, key) {
-  if (key !== "" && snapshots) {
-    const value = await snapshots.get(key);
-    if (typeof value === "string") {
-      return parseSnapshot(value);
-    }
-    // A row that names a key the store does not hold is a real state, not an
-    // empty branch: there is nothing else to read it from, so it is empty and
-    // the diff sees every file as added, which surfaces as a full-count diff
-    // rather than a silent "no changes". parseSnapshot is the one reader, so
-    // the shape cannot drift.
-  }
-  return parseSnapshot("{}");
+  return (await readSnapshotObject(snapshots, key)) ?? {};
 }
 
 /**
- * The one reader of a snapshot's JSON: a JSON object of fingerprints, or an
- * empty map. A value that is not an object, or does not parse, is empty — the
- * same safe direction as a missing entry.
- * @param {string} json
- * @returns {Record<string, Fingerprint>}
+ * The snapshot JSON when it is actually there: a JSON object at the pointer.
+ * Null means there is nothing to approve or rewind against — empty pointer,
+ * missing store, missing KV value, or a value that is not a JSON object.
+ *
+ * @param {SnapshotStore} snapshots
+ * @param {string} key the row's `snapshot_key`
+ * @returns {Promise<Record<string, Fingerprint>|null>}
  */
-function parseSnapshot(json) {
-  /** @type {Record<string, Fingerprint>} */
-  let snapshot = {};
+export async function readSnapshotObject(snapshots, key) {
+  if (key === "" || !snapshots) {
+    return null;
+  }
+  const value = await snapshots.get(key);
+  if (typeof value !== "string") {
+    return null;
+  }
+  return parseSnapshotObject(value);
+}
+
+/**
+ * The one reader of a snapshot's JSON: a JSON object of fingerprints, or null
+ * when the value is not an object. List/diff map null to `{}` through
+ * `readSnapshot`; approve and rewind refuse null.
+ * @param {string} json
+ * @returns {Record<string, Fingerprint>|null}
+ */
+function parseSnapshotObject(json) {
   try {
     const parsed = JSON.parse(json);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      snapshot = /** @type {Record<string, Fingerprint>} */ (parsed);
+      return /** @type {Record<string, Fingerprint>} */ (parsed);
     }
   } catch {
-    snapshot = {};
+    return null;
   }
-  return snapshot;
+  return null;
 }
 
 /**
@@ -939,19 +949,13 @@ export async function approveBranch(db, snapshots, store, account, name) {
   if (branch.state !== "open") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
-  if (branch.snapshotKey === "") {
-    // drive#329: the snapshot has one source. An empty pointer is a pre-sweep
-    // row the nightly backfill has not reached; copying from an empty snapshot
-    // would treat every copy file as added, and `saveSnapshot` would then throw
-    // after the work. Refuse before anything is copied. Production has none of
-    // these rows (the #321 sweep's COUNT query is 0).
-    // `unexpected` is the closest word in src/messages.js: this is a
-    // programmer/data fault (the sweep missed a row), not storage-down
-    // (the namespace is bound) and not branch-not-found (the row exists).
-    // No closer key exists, and a new user-facing sentence is out of scope.
-    console.error?.(
-      `approve refused empty snapshot pointer for ${account.id}/${name} (row ${branch.id})`,
-    );
+  if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
+    // drive#329: the snapshot has one source. An empty pointer, a missing KV
+    // value, or JSON that is not an object would make every copy file look
+    // added. Refuse before anything is copied. `unexpected` is the closest
+    // word in src/messages.js: this is a programmer/data fault, not
+    // storage-down (the namespace is bound) and not branch-not-found.
+    console.error?.(`approve refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };
   }
   const diff = await diffBranch(store, branch);
@@ -1299,7 +1303,7 @@ export async function backfillBranchSnapshots(db, snapshots, rows = SNAPSHOT_BAC
       .run();
     moved.push({ account, name, key, bytes: length });
     bytes += length;
-    files += Object.keys(parseSnapshot(json)).length;
+    files += Object.keys(parseSnapshotObject(json) ?? {}).length;
   }
   return { moved: moved.length, files, bytes, branches: moved };
 }
