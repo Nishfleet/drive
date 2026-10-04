@@ -366,8 +366,26 @@ test("the pointer path survives the snapshot column being dropped", async () => 
     },
   });
 
-  // The branch is made BEFORE the drop, so the row it writes is the row the
-  // deployed code writes today and the pointer it carries is a real one.
+  // drive#339's one statement, run against the real engine before any Worker
+  // call: that is the order the later drop PR will ship, so createBranch has
+  // to succeed with no `snapshot` column, not only list a row written while
+  // the column still existed. From here on, any SQL that names the dropped
+  // column fails at prepare.
+  db.sqlite.exec("ALTER TABLE branches DROP COLUMN snapshot");
+
+  const columns = /** @type {{name: string}[]} */ (
+    db.sqlite.prepare("PRAGMA table_info('branches')").all()
+  ).map((column) => column.name);
+  assert.ok(
+    !columns.includes("snapshot"),
+    `branches carries no snapshot column: ${columns.join(",")}`,
+  );
+  assert.throws(
+    () => db.sqlite.prepare("SELECT snapshot FROM branches"),
+    (error) =>
+      /no such column: snapshot/.test(error instanceof Error ? error.message : String(error)),
+  );
+
   const created = await createBranch(
     db,
     snapshots,
@@ -378,18 +396,6 @@ test("the pointer path survives the snapshot column being dropped", async () => 
   );
   const branch = /** @type {{name: string, state: string}} */ (created);
   assert.equal(branch.name, "after");
-
-  // drive#339's one statement, run against the real engine: from here on, any
-  // SQL that names the dropped column fails at prepare.
-  db.sqlite.exec("ALTER TABLE branches DROP COLUMN snapshot");
-
-  const columns = /** @type {{name: string}[]} */ (
-    db.sqlite.prepare("PRAGMA table_info('branches')").all()
-  ).map((column) => column.name);
-  assert.ok(
-    !columns.includes("snapshot"),
-    `branches carries no snapshot column: ${columns.join(",")}`,
-  );
 
   // The acceptance's three calls, over the pointer, after the drop.
   const listed = await listBranches(db, snapshots, scoped, ACCOUNT_AFTER);
@@ -418,7 +424,7 @@ test("the pointer path survives the snapshot column being dropped", async () => 
   console.log(
     `drive#399 proof: branch "after" of account ${ACCOUNT_AFTER.id}, ` +
       `created ${new Date(AFTER_AT).toISOString()}; ALTER TABLE branches DROP COLUMN snapshot ` +
-      `applied; branches columns [${columns.join(", ")}]; createBranch, listBranches, ` +
-      `readSnapshot, diffBranch and approveBranch all answered over the pointer.`,
+      `applied first; branches columns [${columns.join(", ")}]; createBranch after the drop, ` +
+      `then listBranches, readSnapshot, diffBranch and approveBranch all answered over the pointer.`,
   );
 });
