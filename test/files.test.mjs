@@ -892,6 +892,57 @@ test("a credentialed S3 store signs every request and still uses fetchImpl", asy
   }
 });
 
+test("an unsigned write sends the stream as it is, without buffering it", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk"));
+      controller.close();
+    },
+  });
+  /** @type {unknown} */
+  let sent;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (_input, init) => {
+    sent = init?.body;
+    return new Response(null, { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl,
+  });
+  await store.write("u/acct/a.txt", stream, "text/plain");
+  assert.equal(sent, stream);
+});
+
+test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk"));
+      controller.close();
+    },
+  });
+  /** @type {Uint8Array | undefined} */
+  let sent;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    sent = new Uint8Array(await request.arrayBuffer());
+    return new Response(null, { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl,
+  });
+  await store.write("u/acct/a.txt", stream, "text/plain");
+  assert.deepEqual(sent, new TextEncoder().encode("chunk"));
+});
+
 test("a signed write names a body it cannot hash", async () => {
   const { createS3Store } = await import("../src/files.js");
   const store = createS3Store({

@@ -309,9 +309,11 @@ async function countFilesUnderPrefix(store) {
  * searches for is written here, so the search measures the same corpus the
  * stand-in seeds.
  *
- * The paths are pushed into `written` as each batch starts, so the caller can
- * take them out again whatever happens: this is a billed object in a real
- * account, and a seed that dies half-way through must not leave its half.
+ * The paths are pushed into `written` as each batch starts, before the writes
+ * land, so a seed that dies mid-batch still names every path it attempted.
+ * `clearRealDrive` then removes those paths (a 404 for a write that never
+ * landed is success). It cannot name a path it never pushed, which is why
+ * the push is first.
  * @param {import("../src/files.js").FileStore} store scoped to ACCOUNT
  * @param {string[]} written the paths this call writes, filled in as it goes
  * @returns {Promise<void>}
@@ -320,7 +322,7 @@ async function seedRealDrive(store, written) {
   const before = await countFilesUnderPrefix(store);
   if (before > 0) {
     throw new Error(
-      `the real bucket already holds ${before} file(s) under this account's prefix; empty it before running the proof`,
+      `the real bucket already holds ${before} file(s) under u/${ACCOUNT.id}/; empty that prefix before running the proof. The proof will not delete files it did not seed.`,
     );
   }
   for (let start = 0; start < FILES; start += 50) {

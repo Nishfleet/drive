@@ -871,11 +871,14 @@ export function createMemoryStore() {
  * SigV4 signs the payload hash, so a stream must be in hand before the request
  * goes out; a body that is already bytes is passed through untouched.
  *
- * The whole-body buffer is also this store's size ceiling: a signed write holds
- * the object to hash it, and the FileStore interface carries no multipart write
- * to step around it. Only a signed store reads a body this way: the unsigned
- * stand-in sends the stream as it is, which is what `rclone serve s3` expects
- * and what keeps the no-credential path free of a buffer it does not need.
+ * A signed write therefore reads the whole body. There is no size check here:
+ * the FileStore interface has no multipart PUT, and the callers already hold
+ * or bound those bytes (the upload handler from the incoming request, the
+ * proof from an empty object). Inventing a second cap would be a second
+ * number for the same body. Only a signed store reads a body this way: the
+ * unsigned stand-in sends the stream as it is, which is what `rclone serve s3`
+ * expects and what keeps the no-credential path free of a buffer it does not
+ * need.
  * @param {BodyInit} body
  * @returns {Promise<Uint8Array>}
  */
@@ -971,16 +974,20 @@ export function createS3Store(config) {
    * signs the payload hash and a stream cannot be hashed after it is sent.
    * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
    * uses, so a test can still inject fetch and a credentialed store never
-   * bypasses it through `aws.fetch`.
+   * bypasses it through `aws.fetch`. Every caller below passes a string URL.
    *
-   * @type {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>}
+   * @type {(input: string | URL | Request, init?: RequestInit) => Promise<Response>}
    */
   const request =
     aws === null
       ? fetchImpl
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
-          if (opts.body !== undefined && opts.body !== null) {
+          if (opts.body === undefined) {
+            // GET, DELETE and CopyObject send no payload to hash.
+          } else if (opts.body === null) {
+            delete opts.body;
+          } else {
             const bytes = await signableBody(opts.body);
             // The body is sent exactly as it was signed: a Uint8Array is copied
             // into a plain view, the same copy createS3Client makes, because
@@ -989,10 +996,15 @@ export function createS3Store(config) {
             body.set(bytes);
             opts.body = body;
           }
-          if (opts.body === null) {
-            delete opts.body;
-          }
-          const signed = await aws.sign(String(input), opts);
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : typeof Request !== "undefined" && input instanceof Request
+                  ? input.url
+                  : String(input);
+          const signed = await aws.sign(url, opts);
           return fetchImpl(signed);
         };
 
