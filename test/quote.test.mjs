@@ -52,13 +52,14 @@ test("quoteForStoredTb is monthBillCents for a size held all month, plus the cei
     assert.equal(quote.ceilingUsd, monthlyCeilingUsd(tb * GB_PER_TB));
   }
   // The issue's own worked sizes, so a later edit cannot quietly re-price them.
+  // After #352 there is no $1 credit: 800 GB bills the $12 ceiling, 2 TB bills $16.
   const eightHundredGb = quoteForStoredTb(0.8);
-  assert.equal(eightHundredGb.billUsd, 11);
+  assert.equal(eightHundredGb.billUsd, 12);
   assert.equal(eightHundredGb.ceilingUsd, 12);
-  assert.equal(eightHundredGb.labels.bill, "$11.00");
+  assert.equal(eightHundredGb.labels.bill, "$12.00");
   assert.equal(eightHundredGb.labels.ceiling, "$12.00");
   const twoTb = quoteForStoredTb(2);
-  assert.equal(twoTb.billUsd, 15);
+  assert.equal(twoTb.billUsd, 16);
   assert.equal(twoTb.ceilingUsd, 16);
 });
 
