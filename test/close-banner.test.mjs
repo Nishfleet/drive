@@ -323,9 +323,10 @@ test("the shared script is one served file, and the public tree carries it", () 
 // (and a real purge) against the real migrations over node:sqlite.
 
 /** A settled flush of the script's promise chain (`fetch().then().then()`). */
-const flush = () => new Promise((resolve) => {
-  setImmediate(resolve);
-});
+const flush = () =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 
 /**
  * The real `GET /api/account/close` payload for an account that has really
@@ -366,7 +367,9 @@ async function pendingOrPurgedPayload({ purge }) {
       now: () => now,
     },
   );
-  return /** @type {{state: string, purgeOn: string|null, purgedAt: number|null, graceDays: number, copy: {pendingWhat: string, pendingCancel: string}}} */ (await response.json());
+  return /** @type {{state: string, purgeOn: string|null, purgedAt: number|null, graceDays: number, copy: {pendingWhat: string, pendingCancel: string}}} */ (
+    await response.json()
+  );
 }
 
 /**
@@ -392,11 +395,11 @@ function runBannerScript(fetch) {
       if (name === "href") this.href = value;
     },
   };
-  const byId = new Map([
-    ["close-banner", banner],
-    ["close-banner-what", what],
-    ["close-banner-cancel", cancel],
-  ]);
+  /** @type {Map<string, object>} */
+  const byId = new Map();
+  byId.set("close-banner", banner);
+  byId.set("close-banner-what", what);
+  byId.set("close-banner-cancel", cancel);
   const window = {
     /** @returns {number} */
     setInterval() {
