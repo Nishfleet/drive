@@ -176,7 +176,7 @@
     source: docs-site/pricing.md, "The bill worked out"
   assert:
     - type: javascript
-      value: "/(11|eleven) dollars|\\$11/i.test(output)"
+      value: "/(12|twelve) dollars|\\$12/i.test(output)"
 
 - description: what is free every month, and what it needs from me
   vars:
