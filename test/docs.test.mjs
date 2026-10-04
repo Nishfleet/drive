@@ -196,10 +196,7 @@ test("the agents page names the tools the CLI connects and their real powers", (
     page.includes("An agent key cannot delete a file."),
     "the agents page must say an agent key cannot delete",
   );
-  assert.ok(
-    page.includes("drive init"),
-    "the agents page must name drive init",
-  );
+  assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {

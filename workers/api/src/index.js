@@ -421,9 +421,8 @@ const IDRIVE_RESELLER_API = "https://api.idrivee2.com/api/reseller/v1";
  * The half-configured stub matches the KeyProvider shape (`mint`, `revoke`,
  * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
  * method.
- * @param {{[key: string]: unknown}} env
- * @returns {ReturnType<typeof s3KeyProviderFromEnv>|ReturnType<typeof createIdriveKeyProvider>|null}
  */
+
 /**
  * The endpoint and region `drive login` writes into this device's storage
  * settings. The account's own bucket comes from the mint's scope
@@ -456,6 +455,10 @@ export function storageLocationFromEnv(env) {
   return undefined;
 }
 
+/**
+ * @param {{[key: string]: unknown}} env
+ * @returns {ReturnType<typeof s3KeyProviderFromEnv>|ReturnType<typeof createIdriveKeyProvider>|null}
+ */
 function keyProviderFor(env) {
   const s3 = s3KeyProviderFromEnv(env);
   if (s3 !== null) {
