@@ -196,7 +196,15 @@ function providerDayGbMinutes(versions, day) {
   return gbMinutes;
 }
 
-test("a full day of GB-minutes matches the storage provider's own report within 1%", async (t) => {
+test(
+    "a full day of GB-minutes matches the storage provider's own report within 1%",
+    {
+      // The stand-in starts a container whose health check can exceed the
+      // default 5 s test timeout on a busy runner; the full day of writes
+      // and reconciliation needs more time.
+      timeout: 30_000,
+    },
+    async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
   }
@@ -469,7 +477,8 @@ test("a full day of GB-minutes matches the storage provider's own report within 
     drift <= TOLERANCE,
     `a day's GB-minutes must match the provider's own report within 1%: metered ${metered}, reported ${reported}`,
   );
-});
+  }
+);
 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
