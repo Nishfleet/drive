@@ -102,22 +102,28 @@ test("the monthly cap asks the account cap's own function, so the number is the 
 test("a founding account's agent key counts the founding bill, not the full one", () => {
   // drive#482: a founding member pays half, so a key on that account spends the
   // account's half in a month. The cap used the default config whatever the
-  // account was, so 2 TB counted $20 on a founding account whose own bill is
-  // $10: the key stopped at twice the account's real spend.
-  const regular = agentCapStatus(agent(2000, { founding: false }));
-  assert.equal(regular.monthly.usedUsd, 20);
-  assert.equal(regular.state, "read_only", "$20 is past the default $12 cap");
-  const founding = agentCapStatus(agent(2000, { founding: true }));
-  assert.equal(founding.monthly.usedUsd, 10);
-  assert.equal(founding.monthly.capUsd, 12, "the founding flag halves the bill, not the cap");
-  assert.equal(founding.monthly.remainingUsd, 2);
+  // account was, so 3 TB counted $30 on a founding account whose own bill is
+  // $15: the key stopped at twice the account's real spend. With the default
+  // $20 cap (drive#485), 2 TB lands exactly at it for both, so 3 TB is the
+  // mark where one key trips and the founding one does not.
+  const regular = agentCapStatus(agent(3000, { founding: false }));
+  assert.equal(regular.monthly.usedUsd, 30);
+  assert.equal(regular.state, "read_only", "$30 is past the default $20 cap");
+  const founding = agentCapStatus(agent(3000, { founding: true }));
+  assert.equal(founding.monthly.usedUsd, 15);
+  assert.equal(founding.monthly.capUsd, 20, "the founding flag halves the bill, not the cap");
+  assert.equal(founding.monthly.remainingUsd, 5);
   assert.equal(founding.monthly.over, false);
-  assert.equal(founding.state, "active", "$10 is the account's own bill, under $12");
+  assert.equal(founding.state, "active", "$15 is the account's own bill, under $20");
   // The same count the account cap makes for the same account and month, so a
   // founding account's key and its drive agree on what has been spent.
-  const accountCap = capStatus(fullMonthGbMinutes(2000), 12, BILLING_CONFIG, true);
+  const accountCap = capStatus(fullMonthGbMinutes(3000), 20, BILLING_CONFIG, true);
   assert.equal(founding.monthly.usedUsd, accountCap.countedUsd);
   assert.equal(founding.monthly.over, accountCap.state === "read_only");
+  // 2 TB on a founding account is the issue's worked size: $10, not $20, and
+  // at the cap for a non-founder. The discount is read in the number either
+  // way.
+  assert.equal(agentCapStatus(agent(2000, { founding: true })).monthly.usedUsd, 10);
   // No flag is not founding; a flag that is not a boolean is a data error.
   assert.equal(agentCapStatus(agent(2000)).monthly.usedUsd, 20);
   assert.throws(() => agentCapStatus(agent(100, { founding: "yes" })), TypeError);

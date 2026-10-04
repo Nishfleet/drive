@@ -44,11 +44,11 @@ const MIGRATIONS = [
   "drive/0007_device_codes.sql",
   "drive/0005_meter.sql",
   "drive/0006_usage_stored_bytes.sql",
-  // The founding-member flag (drive#386). Authenticate of an agent key now
-  // reads it, because the agent key cap counts the account's own bill
-  // (drive#482), so a fixture without this column fails on the still-live
-  // agent key rather than on the schema the live Worker ships.
-  "drive/0016_founding.sql",
+  // The founding-member flag (drive#386, drive#482). The account cap reads it
+  // from the accounts row, and authenticate of an agent key now reads it too:
+  // the agent key cap counts the account's own bill. `0016` is now in
+  // DRIVE_MIGRATIONS (drive#485 added it there), so it is not listed again
+  // here — a second application fails with `duplicate column name: founding`.
 ];
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
