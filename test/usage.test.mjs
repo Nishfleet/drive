@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import vm from "node:vm";
 import {
   BILLING_CONFIG,
   gbMonths,
@@ -443,6 +444,228 @@ test("the page states the free allowance from the config, not a literal", () => 
   assert.match(page, /3× the month's average stored size/);
   assert.equal(BILLING_CONFIG.freeDownloadMultiplier, 3);
   assert.match(USAGE_LABELS.downloadsHint, /Free up to 3×/);
+});
+
+/** A month with nothing stored in it: the read a brand-new account gets. */
+function emptyMonth() {
+  return usageSummary({
+    gbMinutes: 0,
+    peakGb: 0,
+    storedGb: 0,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 0,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  });
+}
+
+// The ids public/usage.html reaches for, so the stub below hands back one
+// stable element per id the way a browser would. A page that grows an id and
+// forgets this list reads as a null element here rather than passing silently.
+const PAGE_IDS = Object.freeze([
+  "saved",
+  "usage-status",
+  "usage-body",
+  "chart",
+  "chart-line",
+  "chart-figure",
+  "storage-empty",
+  "stored-now",
+  "gb-months",
+  "cost",
+  "bill-lines",
+  "downloads-line",
+  "upload-line",
+  "cap-slider",
+  "cap-value",
+  "close-what",
+  "close-next",
+  "close-closed-what",
+  "close-closed-next",
+  "close-purge-on",
+  "close-form",
+  "cancel-form",
+  "close-error",
+  "cancel-error",
+  "close-email",
+  "cancel-email",
+  "close-submit",
+  "cancel-submit",
+]);
+
+/**
+ * @typedef {object} StubElement
+ * @property {string} id
+ * @property {Record<string, string>} dataset
+ * @property {boolean} hidden
+ * @property {string} textContent
+ * @property {string} innerText
+ * @property {string} className
+ * @property {string} max
+ * @property {string} value
+ * @property {boolean} disabled
+ * @property {Map<string, string>} attributes
+ * @property {StubElement[]} appended
+ * @property {Map<string, (event: unknown) => void>} listeners
+ * @property {(name: string, value: unknown) => void} setAttribute
+ * @property {(name: string) => string | null} getAttribute
+ * @property {(...nodes: StubElement[]) => void} append
+ * @property {(...nodes: StubElement[]) => void} replaceChildren
+ * @property {(type: string, handler: (event: unknown) => void) => void} addEventListener
+ * @property {(selector: string) => StubElement} querySelector
+ */
+
+/**
+ * One element, with only what the usage page's script touches on it. The two
+ * sentences in the status region are found by class, so they are children it
+ * asks for rather than fields it sets.
+ * @param {string} id
+ * @returns {StubElement}
+ */
+function stubElement(id) {
+  /** @type {Map<string, StubElement>} */
+  const sentences = new Map();
+  const el = {
+    id,
+    dataset: {},
+    hidden: false,
+    textContent: "",
+    innerText: "",
+    className: "",
+    max: "",
+    value: "",
+    disabled: false,
+    attributes: /** @type {Map<string, string>} */ (new Map()),
+    appended: /** @type {StubElement[]} */ ([]),
+    listeners: /** @type {Map<string, (event: unknown) => void>} */ (new Map()),
+    setAttribute(/** @type {string} */ name, /** @type {unknown} */ value) {
+      el.attributes.set(name, String(value));
+    },
+    getAttribute(/** @type {string} */ name) {
+      return el.attributes.get(name) ?? null;
+    },
+    append(/** @type {...StubElement} */ ...nodes) {
+      el.appended.push(...nodes);
+    },
+    replaceChildren(/** @type {...StubElement} */ ...nodes) {
+      el.appended = nodes;
+    },
+    addEventListener(/** @type {string} */ type, /** @type {(event: unknown) => void} */ handler) {
+      el.listeners.set(type, handler);
+    },
+    querySelector(/** @type {string} */ selector) {
+      const cls = selector.replace(/^\./, "");
+      const existing = sentences.get(cls);
+      if (existing) {
+        return existing;
+      }
+      const created = stubElement(`${id}.${cls}`);
+      sentences.set(cls, created);
+      return created;
+    },
+  };
+  return el;
+}
+
+/**
+ * Runs the shipped page's own script (public/usage.html) against one /api/usage
+ * answer, and hands back the elements it wrote to plus the poll callback it
+ * registered. The page is a static asset and cannot import the module, so this
+ * is what proves the words and the hidden flags it lands: a source-level check
+ * cannot tell a rendered month from a parsed one.
+ * @param {unknown} summary the body /api/usage sends
+ * @param {{ok?: boolean}} [options] `ok: false` stands in for a service that could not be reached
+ * @returns {{elements: Map<string, StubElement>, poll: (() => Promise<void>) | undefined}}
+ */
+function runPage(summary, { ok = true } = {}) {
+  /** @type {Map<string, StubElement>} */
+  const elements = new Map();
+  for (const id of PAGE_IDS) {
+    const el = stubElement(id);
+    // The markup, not the stub, decides what a reader sees before the first
+    // read lands: these ship hidden so no month is painted early, and a stub
+    // that started them visible would make every page-before-read assertion
+    // here pass for the wrong reason.
+    const tag = page.match(new RegExp(`<[a-z]+[^>]*\\sid="${id}"[^>]*>`))?.[0] ?? "";
+    el.hidden = /\shidden(\s|>|=)/.test(tag);
+    elements.set(id, el);
+  }
+  /** @type {Array<() => Promise<void>>} */
+  const polls = [];
+  const sandbox = {
+    document: {
+      hidden: false,
+      visibilityState: "visible",
+      getElementById: (/** @type {string} */ id) => elements.get(id) ?? null,
+      createElement: (/** @type {string} */ tag) => stubElement(tag),
+      addEventListener() {},
+    },
+    window: {
+      setInterval: (/** @type {() => Promise<void>} */ fn) => polls.push(fn),
+    },
+    fetch: async (/** @type {string} */ url) =>
+      url === USAGE_ENDPOINT && ok
+        ? { ok: true, status: 200, json: async () => summary }
+        : { ok: false, status: 500, json: async () => ({}) },
+  };
+  const script = page.slice(page.indexOf("<script>") + 8, page.lastIndexOf("</script>"));
+  vm.runInNewContext(script, sandbox);
+  return { elements, poll: polls[0] };
+}
+
+/** Lets the page's await chain finish: one fetch, one json, then the render. */
+function settle() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * The element the page wrote to, by id, or a failure that names the id: an id
+ * the stub does not carry would hand back nothing and make every assertion
+ * below pass for the wrong reason.
+ * @param {Map<string, StubElement>} elements
+ * @param {string} id
+ * @returns {StubElement}
+ */
+function elementOf(elements, id) {
+  const el = elements.get(id);
+  assert.ok(el, `the page must have an element with id "${id}"`);
+  return el;
+}
+
+test("the page announces an empty month and takes the announcement back", async () => {
+  // The behaviour, not the source (drive issue #427). The reserved status slot
+  // has to fill for a drive with nothing stored, in the page's own words, and
+  // empty again on the next poll that has a month to draw.
+  const newAccount = runPage({ ...emptyMonth(), uploadLine: null });
+  await settle();
+  const status = elementOf(newAccount.elements, "usage-status");
+  assert.equal(elementOf(newAccount.elements, "usage-body").hidden, false, "the read landed");
+  assert.equal(status.hidden, false, "the reserved slot is filled, not left blank");
+  assert.equal(status.dataset.state, "empty");
+  assert.equal(status.querySelector(".what").textContent, USAGE_LABELS.monthEmpty.what);
+  assert.equal(status.querySelector(".next").textContent, USAGE_LABELS.monthEmpty.next);
+  assert.equal(elementOf(newAccount.elements, "chart-figure").hidden, true, "nothing to draw");
+  assert.equal(elementOf(newAccount.elements, "storage-empty").hidden, false);
+
+  // A month with history is the normal reachable read: no empty state, and the
+  // chart is drawn.
+  const withHistory = runPage({ ...month(12), uploadLine: null });
+  await settle();
+  assert.equal(elementOf(withHistory.elements, "usage-status").hidden, true);
+  assert.equal(elementOf(withHistory.elements, "chart-figure").hidden, false);
+  assert.ok(
+    (elementOf(withHistory.elements, "chart-line").getAttribute("points") ?? "").length > 0,
+  );
+
+  // A read that could not reach the service still says so, and does not fall
+  // back to calling the month empty.
+  const unreachable = runPage({}, { ok: false });
+  await settle();
+  const broken = elementOf(unreachable.elements, "usage-status");
+  assert.equal(broken.dataset.state, "unreachable");
+  assert.equal(broken.querySelector(".what").textContent, USAGE_LABELS.unreachable.what);
+  assert.equal(elementOf(unreachable.elements, "usage-body").hidden, true);
 });
 
 test("the empty chart is a state with a next step, not a blank panel", () => {
