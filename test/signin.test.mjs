@@ -1035,7 +1035,7 @@ test("the page shows the route's own error words, so every failure names a next 
     "the page must read the error field the route answers with",
   );
   assert.ok(
-    page.includes('id="form-note"') || page.includes('id="status"') || page.includes("aria-live"),
+    page.includes('id="signin-status"') && page.includes("aria-live"),
     "the page must have the live region the status words are read into",
   );
 });
