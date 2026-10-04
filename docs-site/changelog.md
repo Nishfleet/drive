@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-04
 
+- The notes `drive init` writes for agents no longer advertise `drive restore`,
+  a command that does not exist. The CLI now keeps one command table, and a
+  test holds both notes and `drive --help` to it, so neither can name a
+  command that does not run.
 - The usage page's spending cap is now a control and not a readout: move the
   slider, choose Save cap, and the new cap is written through the same api
   route `drive cap` writes. The page's confirmation is the api's own cap line,

@@ -115,14 +115,15 @@ func writeNote(env Env, name string) error {
 const noteMarker = "<!-- drive:agent-note -->"
 
 // noteBody is the short note left in the drive folder: where the drive is,
-// that deletes can be undone, and to branch before large edits.
+// and to branch before large edits. It names only subcommands the command
+// table runs (main.go commands; gate test TestNotesNameOnlyRealCommands,
+// drive#461) — it used to advertise `drive restore`, which no step ships.
 func noteBody(driveDir string) string {
 	return noteMarker + "\n" +
 		"# This is the drive\n\n" +
 		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
 		"agent. The `drive` MCP server reads and writes this folder; start the\n" +
 		"session in this folder so the server is allowed to serve it.\n\n" +
-		"- Deletes are recoverable: `drive restore <file>` brings a file back.\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve` when\n" +
 		"  the changes are ready to copy back.\n"
 }
