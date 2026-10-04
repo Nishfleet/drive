@@ -81,7 +81,7 @@ export async function revokeKeyRoute(request, ctx) {
   if (request.method !== "DELETE") {
     return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
   }
-  const result = await Promise.resolve(ctx.store.revokeKey(ctx.account, ctx.params.keyId));
+  const result = await ctx.store.revokeKey(ctx.account, ctx.params.keyId);
   if ("error" in result) {
     return errorResponse(404, "No such key on this account.");
   }
@@ -150,9 +150,9 @@ export async function revokePresentedKeyRoute(request, ctx) {
   if (device === null) {
     return errorResponse(401, "This key was revoked or is not valid.");
   }
-  // `revokeKey` is a promise whenever a D1 device store is bound (drive#402),
-  // so this awaits rather than reading `"error" in` off a Promise object.
-  const result = await Promise.resolve(ctx.store.revokeKey({ id: device.accountId }, device.id));
+  // `revokeKey` is a promise in both of its arms (drive#402), so this awaits
+  // rather than reading `"error" in` off a Promise object.
+  const result = await ctx.store.revokeKey({ id: device.accountId }, device.id);
   if ("error" in result) {
     return errorResponse(404, "No such key on this account.");
   }

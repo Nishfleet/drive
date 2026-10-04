@@ -277,25 +277,49 @@ test("a wrong secret, a revoked key, or no credentials refuse through /api/keys/
  * A stand-in for the bound device store that records what the route asked it
  * to do. `put` mirrors devices.js so `mintKey` writes through it the way the
  * live store does.
- * @param {(accountId: string, keyId: string) => Promise<{revoked: true}|{error: string}>} [revoke]
+ * @param {(account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>} [revoke]
+ * @returns {NonNullable<Parameters<typeof createMemoryStore>[0]>["deviceStore"] & {revokedInStore: Array<[string, string]>}}
  */
 function stubDeviceStore(revoke) {
   /** @type {Array<[string, string]>} */
   const revokedInStore = [];
   return {
     revokedInStore,
-    async put() {},
-    async authenticate() {
+    /** @param {unknown} _device */
+    async put(_device) {},
+    /** @param {string} _accessKeyId @param {string} _secret */
+    async authenticate(_accessKeyId, _secret) {
       return null;
     },
+    /** @param {{id: string}} account @param {string} keyId */
     async revokeKey(account, keyId) {
       revokedInStore.push([account.id, keyId]);
       if (revoke !== undefined) {
         return revoke(account, keyId);
       }
-      return { revoked: true };
+      return { revoked: /** @type {const} */ (true) };
     },
   };
+}
+
+/**
+ * Mint a key for a signed-in session through the route, the way the product
+ * does, and read the minted row back out of the response.
+ * @param {ReturnType<typeof createMemoryStore>} store
+ * @param {Awaited<ReturnType<typeof signIn>>} session
+ * @param {string} name
+ */
+async function mintThroughRoute(store, session, name) {
+  const res = await dispatch(
+    new Request("https://api.test/v1/keys", {
+      method: "POST",
+      headers: { ...bearer(session.deviceToken), "content-type": "application/json" },
+      body: JSON.stringify({ kind: "agent", name }),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(res.status, 201);
+  return res.json();
 }
 
 test("DELETE /v1/keys/:keyId marks this isolate's copy, so the storage API refuses it (drive#402)", async () => {
@@ -306,20 +330,8 @@ test("DELETE /v1/keys/:keyId marks this isolate's copy, so the storage API refus
 
   // Both accounts mint through the same bound store, so both rows are the ones
   // `authenticate` can read back out of the map the revoke must mark.
-  const mint = async (session, name) =>
-    (
-      await dispatch(
-        new Request("https://api.test/v1/keys", {
-          method: "POST",
-          headers: { ...bearer(session.deviceToken), "content-type": "application/json" },
-          body: JSON.stringify({ kind: "agent", name }),
-        }),
-        baseCtx(store, null),
-      )
-    ).json();
-
-  const revoked = await mint(owner, "claude");
-  const kept = await mint(other, "codex");
+  const revoked = await mintThroughRoute(store, owner, "claude");
+  const kept = await mintThroughRoute(store, other, "codex");
 
   // Before the revoke both keys open the storage API.
   const before = await dispatch(
@@ -383,18 +395,7 @@ test("a revoke the store refuses is a 404, and the map's copy stays live (drive#
   const owner = await signIn(store, "Nish's MacBook");
   const other = await signIn(store, "Nish's other Mac");
 
-  const mint = async (session, name) =>
-    (
-      await dispatch(
-        new Request("https://api.test/v1/keys", {
-          method: "POST",
-          headers: { ...bearer(session.deviceToken), "content-type": "application/json" },
-          body: JSON.stringify({ kind: "agent", name }),
-        }),
-        baseCtx(store, null),
-      )
-    ).json();
-  const theirs = await mint(other, "codex");
+  const theirs = await mintThroughRoute(store, other, "codex");
 
   // The owner asks the store to revoke a key that is not theirs. The store
   // refuses; the route says so, and the owner's other-account key is untouched.

@@ -317,30 +317,41 @@ export function createMemoryStore(options = {}) {
      * both places — the same two-place rule `revokeAllKeys` follows, and the
      * reason a key this isolate just revoked is refused here from the next
      * request on instead of working until this isolate dies (drive#402).
+     *
+     * Always a promise, bound or not: a caller that forgets to await cannot
+     * read `"error" in` off a promise and call a refused revoke a success
+     * (drive#402), and the two arms of this one method answering with two
+     * different types is how that happened.
      * @param {{id: string}} account
      * @param {string} keyId
-     * @returns {Promise<{revoked: true}|{error: string}>|{revoked: true}|{error: string}}
+     * @returns {Promise<{revoked: true}|{error: string}>}
      */
-    revokeKey(account, keyId) {
+    async revokeKey(account, keyId) {
       if (deviceStore?.revokeKey) {
-        const persisted = Promise.resolve(deviceStore.revokeKey(account, keyId));
+        // Fail-closed: the database is the source of truth, so the
+        // revoke must land there before the map is touched. The map is
+        // marked only on the store's accepted answer, so a refused or
+        // missing row is reported as refused and this isolate's copy
+        // stays live — the same rule the bulk path (#236) follows.
+        // A concurrent request inside this isolate can still read the
+        // live entry between the write and the mark (sub-ms, same writer);
+        // eliminating that window would require mark-first + unmark on
+        // refusal, which would fail-open if the DB is unreachable, so
+        // the window is accepted and documented rather than hidden.
+        const answer = await deviceStore.revokeKey(account, keyId);
         const device = devices.get(keyId);
-        // Only a row this store accepted is marked here. Marking on every call
-        // would let a not-found id from another account, or a store that
-        // refuses on a read-only replica, kill this isolate's copy: the
-        // revocation a caller asked about a row the database still holds would
-        // silently stop working on the one instance that must not decide it.
-        if (device !== undefined && device.accountId === account.id) {
-          return persisted.then((answer) => {
-            if ("revoked" in answer) {
-              if (device.revokedAt === null) {
-                device.revokedAt = nowSeconds(now());
-              }
-            }
-            return answer;
-          });
+        if (
+          device !== undefined &&
+          device.accountId === account.id &&
+          typeof answer === "object" &&
+          answer !== null &&
+          "revoked" in answer
+        ) {
+          if (device.revokedAt === null) {
+            device.revokedAt = nowSeconds(now());
+          }
         }
-        return persisted;
+        return answer;
       }
       const device = devices.get(keyId);
       if (device === undefined || device.accountId !== account.id) {

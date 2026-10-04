@@ -1,9 +1,9 @@
 // One key revoked, in the store the live Worker wires (drive issue #402).
 //
-// `DELETE /v1/keys/:keyId` used to write D1 when a device store was bound and
-// leave the stand-in map alone, and `authenticate` reads that map first, so a
-// key this isolate had just revoked kept opening the storage API until the
-// isolate died. #236 shut the same hole on the bulk path; this is the
+// `DELETE /v1/keys/:keyId` used to write D1 when a device store was bound
+// and leave the stand-in map alone, and `authenticate` reads that map first,
+// so a key this isolate had just revoked kept opening the storage API until
+// the isolate died. #236 shut the same hole on the bulk path; this is the
 // single-key one.
 //
 // The route-level proof (workers/api/test/key-revoke.test.js) drives
@@ -70,8 +70,9 @@ test("revoking one key kills it in D1 and in this isolate, and no other account'
   assert.deepEqual(await store.revokeKey(mine, revoked.keyId), { revoked: true });
 
   // The row: revoked in the database, so a copy of the pair does not open the
-  // next isolate either.
-  assert.notEqual(rowIn(sqlite, revoked.keyId).revoked_at, null, "the D1 row is revoked");
+  // next isolate either. The clock is fixed, so this is the exact second the
+  // revoke stamped rather than "some time".
+  assert.equal(rowIn(sqlite, revoked.keyId).revoked_at, NOW, "the D1 row is revoked at now");
 
   // This isolate, which reads the map first: the key it just revoked is
   // refused. Before the fix this returned the device, with `revokedAt: null`,
@@ -88,17 +89,21 @@ test("revoking one key kills it in D1 and in this isolate, and no other account'
   );
   assert.equal(rowIn(sqlite, kept.keyId).revoked_at, null, "their row stays live in D1");
 
-  // The wrong secret is still the wrong secret, which is the claim the map and
-  // the row make together rather than a refusal for a second reason.
-  assert.equal(await store.authenticate(kept.accessKeyId, "sk_wrong"), null);
+  // A wrong secret is refused whether or not the key is revoked, so the null
+  // below is the revoke, not a bad-secret coincidence.
+  assert.equal(
+    (await store.authenticate(kept.accessKeyId, "sk_wrong")) === null,
+    true,
+    "a wrong secret is refused whether or not the key is revoked",
+  );
 });
 
 test("a revoke the store refuses leaves this isolate's copy alone", async () => {
-  // The stand-in map and the bound store can disagree: a revoke the store
-  // answers `not-found` for — an id another account holds, or a row a restored
-  // backup dropped — is a revoke the caller is told did not happen, so the
-  // map's copy must stay live. Marking it would take a key offline on the one
-  // instance that has no right to decide that.
+  // A store that answers `not-found` — an id another account holds, or a row a
+  // restored backup dropped — is telling the caller the revoke did not happen.
+  // Marking the map anyway would take a key offline on the one instance that
+  // has no right to decide that, and would report a revoke the database never
+  // kept.
   const { sqlite, db } = makeMeteredDB();
   const store = storeOver(db);
   const mine = { id: "acct_two", name: "Mine" };
@@ -117,20 +122,46 @@ test("a revoke the store refuses leaves this isolate's copy alone", async () => 
   assert.deepEqual(await store.revokeKey(mine, "key_never_minted"), { error: "not-found" });
 });
 
-test("a second revoke of the same key is idempotent in both places", async () => {
+test("a second revoke of the same key keeps the first timestamp", async () => {
   const { sqlite, db } = makeMeteredDB();
   const store = storeOver(db);
   const mine = { id: "acct_idem", name: "Mine" };
   const key = await store.mintKey(mine, { kind: "agent", name: "claude" });
 
   await store.revokeKey(mine, key.keyId);
-  const firstStamp = rowIn(sqlite, key.keyId).revoked_at;
-  assert.notEqual(firstStamp, null);
-  assert.deepEqual(await store.revokeKey(mine, key.keyId), { revoked: true });
+  const firstStamp = /** @type {number} */ (rowIn(sqlite, key.keyId).revoked_at);
+  assert.notEqual(firstStamp, null, "the first revoke wrote a timestamp");
+  // Advance the clock past the first stamp so the second revoke cannot hide
+  // behind an equal value.
+  const clock = () => (firstStamp + 1) * 1000;
+  const later = createMemoryStore({
+    now: clock,
+    deviceStore: createD1DeviceStore(db, { now: clock }),
+  });
+  assert.deepEqual(await later.revokeKey(mine, key.keyId), { revoked: true });
   assert.equal(
     rowIn(sqlite, key.keyId).revoked_at,
     firstStamp,
     "the second revoke keeps the first timestamp",
   );
-  assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
+  assert.equal(await later.authenticate(key.accessKeyId, key.secret), null);
+});
+
+test("a cold isolate refuses a revoked key after the revoke", async () => {
+  // The map and the row can disagree: an isolate that started before the
+  // revoke has the key cached. A fresh isolate over the same DB has no
+  // cached entry; its authenticate must fall through to the row and refuse.
+  const { sqlite, db } = makeMeteredDB();
+  const warm = storeOver(db);
+  const mine = { id: "acct_cold", name: "Mine" };
+  const key = await warm.mintKey(mine, { kind: "agent", name: "claude" });
+  assert.ok(await warm.authenticate(key.accessKeyId, key.secret));
+  await warm.revokeKey(mine, key.keyId);
+  assert.equal(rowIn(sqlite, key.keyId).revoked_at, NOW, "D1 row says revoked");
+  const cold = storeOver(db);
+  assert.equal(
+    await cold.authenticate(key.accessKeyId, key.secret),
+    null,
+    "cold isolate refuses after the map miss and the D1 row",
+  );
 });
