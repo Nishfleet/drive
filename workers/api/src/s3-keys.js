@@ -226,3 +226,60 @@ export function createS3KeyProvider(config) {
     },
   };
 }
+
+/**
+ * The storage provider a deployment's env carries, or null when it carries
+ * none. All five STORAGE_* values or none: a half-configured deployment
+ * would mint keys the endpoint has never heard of, so the mint throws and
+ * every other route keeps answering. The stub matches the KeyProvider
+ * shape (`mint`, `revoke`, `swapToReadOnly`) so a cap swap hits the same
+ * refusal, not a missing method.
+ *
+ * Shared by the api Worker (POST /v1/keys) and the site Worker
+ * (`drive cap` on POST /api/cap): one function, so a deployment that can
+ * mint a device key can also swap it.
+ * @param {{[key: string]: unknown}} env
+ * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ */
+export function s3KeyProviderFromEnv(env) {
+  const names = [
+    "STORAGE_ENDPOINT",
+    "STORAGE_REGION",
+    "STORAGE_BUCKET",
+    "STORAGE_MASTER_ACCESS_KEY_ID",
+    "STORAGE_MASTER_SECRET_ACCESS_KEY",
+  ];
+  const values = names
+    .map((name) => env[name])
+    .filter((value) => typeof value === "string" && value.length > 0);
+  if (values.length === 0) {
+    return null;
+  }
+  if (values.length < names.length) {
+    const missing = names.filter((name) => typeof env[name] !== "string" || env[name] === "");
+    const problem = new Error(
+      `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
+    );
+    return {
+      mint() {
+        throw problem;
+      },
+      revoke() {
+        throw problem;
+      },
+      swapToReadOnly() {
+        throw problem;
+      },
+    };
+  }
+  return createS3KeyProvider({
+    endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
+    region: /** @type {string} */ (env.STORAGE_REGION),
+    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
+    masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
+    masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
+    ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
+      ? { roleArn: env.STORAGE_ROLE_ARN }
+      : {}),
+  });
+}

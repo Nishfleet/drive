@@ -8,6 +8,7 @@ import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
 import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
 import {
@@ -248,11 +249,12 @@ function linksFor(env) {
 // stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
 // 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
 // which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
-// and the row holds a pointer to it instead. It is optional, not required: a
-// deployment with no namespace still branches, and its snapshots stay in the
-// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
-// binding is not on the health check's required list either. `null` is the
-// answer a missing binding gets, and every reader treats it as "use the row".
+// and the row holds a pointer to it instead. Required since drive#329 dropped
+// the legacy-column fallback: a missing binding is a 503 on every branch and
+// rewind route, and BRANCH_SNAPSHOTS is already on src/health.js
+// `REQUIRED_BINDINGS` (required before this change).
+// `null` is still the answer a missing binding gets, so the handlers can refuse
+// it by name rather than throw on the first put.
 /**
  * @param {Env} env
  * @returns {import("./branches.js").SnapshotStore|null}
@@ -570,7 +572,9 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
-    const store = db ? createD1DeviceStore(db) : null;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });
 

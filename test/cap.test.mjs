@@ -869,3 +869,104 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   );
   assert.equal(anon.status, 401);
 });
+
+test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
+  // The finish line of drive issue #241 is a real mount going read-only, and
+  // nothing can go read-only on a mount that still holds the pre-cap key.
+  // rclone's config is a local file, so the CLI has to be *told* which key to
+  // write: the answer to POST /api/cap carries the credential the store just
+  // minted (access key id, secret and the STS session token a scoped key
+  // needs), and `drive cap` writes that into the rclone config on the restart.
+  //
+  // The swap is decided from the account's own month, not from a blank one:
+  // `capStore.monthUsage` is the read that makes setting the cap smaller than
+  // what the account already counted enforce at once (the finish line), and
+  // without it `drive cap 0` on a live drive would swap nothing.
+  const overCapMonth = {
+    gbMinutes: fullMonthGbMinutes(2000),
+    peakGb: 2000,
+    storedGb: 2000,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 2000,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+    cardAdded: true,
+  };
+  const deviceKeyRow = { ...deviceKey, capabilities: ["list", "read", "write", "delete"] };
+  const minted = {
+    keyId: "key-ro",
+    accessKeyId: "ro-access-key-id",
+    secret: "ro-secret",
+    sessionToken: "ro-session-token",
+  };
+  const store = {
+    async setCapCents() {},
+    async listCapKeys() {
+      return [deviceKeyRow];
+    },
+    async monthUsage() {
+      return { ...overCapMonth, capUsd: 0 };
+    },
+    keyProviderFor() {
+      return {
+        mint: async () => ({ ...minted }),
+        revoke: async () => {},
+        swapToReadOnly: async () => ({ ...minted }),
+      };
+    },
+    async setAccountState() {},
+  };
+  const swapped = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "0" }),
+    }),
+    { id: "acct-1" },
+    store,
+  );
+  assert.equal(swapped.status, 200);
+  assert.equal(
+    swapped.headers.get("cache-control"),
+    "no-store",
+    "the swap answer carries the secret, so it must not be stored",
+  );
+  const body = await swapped.json();
+  assert.equal(
+    body.cap.state,
+    "read_only",
+    "a cap below what the month already counted is reached",
+  );
+  assert.equal(body.mount.restart, true);
+  // The three values the mount needs to sign. The secret and the token are a
+  // credential, so they are only ever in this response and in the rclone
+  // config this CLI writes 0600.
+  assert.deepEqual(body.credential, {
+    accessKeyId: minted.accessKeyId,
+    secret: minted.secret,
+    sessionToken: minted.sessionToken,
+  });
+
+  // A store with no month read (a deployment without the meter tables) still
+  // answers, and with nothing over the cap the answer carries no credential:
+  // a second `drive cap` at the same amount must not make the CLI rewrite the
+  // mount config with the key it is already holding.
+  const settled = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1" },
+    {
+      ...store,
+      async listCapKeys() {
+        return [{ ...deviceKeyRow, capabilities: ["list", "read"] }];
+      },
+    },
+  );
+  assert.equal(settled.status, 200);
+  const settledBody = await settled.json();
+  assert.equal(settledBody.mount.restart, false);
+  assert.equal(settledBody.credential, undefined, "nothing was swapped, so no key is handed back");
+});
