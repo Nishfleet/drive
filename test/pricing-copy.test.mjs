@@ -152,14 +152,14 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
     assert.ok(exampleRow(label).includes(space), `the ${label} row must carry Space ${space}`);
   }
   // Pinned, so the rows cannot be quietly re-derived into something else.
-  assert.match(words, /800 GB kept all month[\s\S]{0,200}?\$12[\s\S]{0,120}?\$11/);
+  assert.match(words, /800 GB kept all month[\s\S]{0,200}?\$12[\s\S]{0,120}?\$12/);
   assert.match(
     words,
-    /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$15[\s\S]{0,80}?\(Space \$27\)/,
+    /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$16[\s\S]{0,80}?\(Space \$27\)/,
   );
   assert.match(
     words,
-    /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$39[\s\S]{0,80}?\(Space \$63\)/,
+    /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$40[\s\S]{0,80}?\(Space \$63\)/,
   );
 });
 
@@ -204,19 +204,19 @@ test("the ceiling math is the spec's plateau, not per-TB caps", () => {
   assert.equal(storage(5), 40);
   // The $1 comes off every one of them, and floors at nothing: 50 GB all
   // month is $1 of storage, so the credit takes it to $0, never a refund.
-  assert.equal(bill(0), 0, "an empty drive bills nothing");
-  assert.equal(bill(0.05), 0, "50 GB all month is exactly the free $1");
-  assert.equal(bill(0.5), 9);
-  assert.equal(bill(0.6), 11);
-  assert.equal(bill(0.8), 11);
-  assert.equal(bill(1), 11);
-  assert.equal(bill(1.3), 11);
-  assert.equal(bill(1.5), 11);
-  assert.equal(bill(1.6), 11.8);
-  assert.equal(bill(2), 15);
-  assert.equal(bill(3), 23);
-  assert.equal(bill(5), 39);
-  assert.equal(billForAllMonth(0).creditUsd, 1, "the credit is $1 every month");
+  assert.equal(bill(0), 10, "an empty drive bills the membership");
+  assert.equal(bill(0.05), 10, "50 GB all month is under the $10 membership");
+  assert.equal(bill(0.5), 10);
+  assert.equal(bill(0.6), 12);
+  assert.equal(bill(0.8), 12);
+  assert.equal(bill(1), 12);
+  assert.equal(bill(1.3), 12);
+  assert.equal(bill(1.5), 12);
+  assert.equal(bill(1.6), 12.8);
+  assert.equal(bill(2), 16);
+  assert.equal(bill(3), 24);
+  assert.equal(bill(5), 40);
+  assert.equal(billForAllMonth(0).creditUsd, 0, "no first-month discount on a later month");
   // Adding data never lowers the bill: the cap is a max(), not a cliff.
   for (const tb of [0.4, 0.8, 1.2, 1.5, 1.9, 2.1, 4.9]) {
     const smaller = storage(tb - 0.1);
@@ -232,8 +232,8 @@ test("the strip's 60%-full drive bills what the page prints", () => {
   // 0.6 TB metered at 2¢/GB is $12, and $12 is the cap at that size, so the
   // strip's figure is the metered cost under the cap, less the free $1.
   assert.equal(billForAllMonth(0.6).storageUsd, 12);
-  assert.match(words, /60% full - \$11/);
-  assert.match(words, /bills \$11 a month: \$12 of storage, less the free \$1/);
+  assert.match(words, /60% full - \$12/);
+  assert.match(words, /bills \$12 a month: \$12 of storage, less the free \$1/);
 });
 
 test("the page's ceiling prose names the cap from config", () => {
@@ -302,14 +302,13 @@ test("the bill's figures are exact cents, not a rounding near-miss", () => {
   };
   // 800 GB meters at $16 and caps at $12; 1.6 TB caps at $12.80; 2 TB is
   // $8 x 2 TB; 5 TB is $40. All less the $1.
-  assert.deepEqual(cents(0.8), { storage: 1200, credit: 100, total: 1100 });
-  assert.deepEqual(cents(1.6), { storage: 1280, credit: 100, total: 1180 });
-  assert.deepEqual(cents(2), { storage: 1600, credit: 100, total: 1500 });
-  assert.deepEqual(cents(5), { storage: 4000, credit: 100, total: 3900 });
-  // 50 GB all month is exactly the free $1, so the credit floors it at zero
-  // and never turns into a refund.
-  assert.deepEqual(cents(0.05), { storage: 100, credit: 100, total: 0 });
-  assert.deepEqual(cents(0), { storage: 0, credit: 100, total: 0 });
+  assert.deepEqual(cents(0.8), { storage: 1200, credit: 0, total: 1200 });
+  assert.deepEqual(cents(1.6), { storage: 1280, credit: 0, total: 1280 });
+  assert.deepEqual(cents(2), { storage: 1600, credit: 0, total: 1600 });
+  assert.deepEqual(cents(5), { storage: 4000, credit: 0, total: 4000 });
+  // 50 GB all month is $1 of storage, so the $10 membership is what is billed.
+  assert.deepEqual(cents(0.05), { storage: 100, credit: 0, total: 1000 });
+  assert.deepEqual(cents(0), { storage: 0, credit: 0, total: 1000 });
 });
 
 test("copy, meta tags and llms.txt all render from the one price source", () => {

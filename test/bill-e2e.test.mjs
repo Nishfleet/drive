@@ -317,15 +317,15 @@ test("the spec's sizes held all month bill the ceiling, before the $1 credit", a
   }
 });
 
-test("the $1 free credit comes off the total, and a light month owes nothing", async () => {
-  // The credit is the last term: a capped month pays the ceiling less $1.
+test("a light month pays the membership, and a capped month pays the cap", async () => {
+  // A capped month pays the ceiling. A light month pays the $10 membership.
   const capped = await storedAllMonth(2 * TB);
   const bill = billThroughTheMeter(capped);
   assert.equal(bill.storageCents, 1600, "2 TB bills the $16 ceiling");
-  assert.equal(bill.creditCents, 100, "the credit is $1 of its own");
-  assert.equal(bill.totalCents, 1500, "2 TB for a month is $15.00, never $16.00");
-  // A light user: 40 GB held all month is 80c of storage against the $1
-  // credit. Here the METER is the smaller number (80c is under the $12
+  assert.equal(bill.creditCents, 0, "no first-month discount on a later month");
+  assert.equal(bill.totalCents, 1600, "2 TB for a month is $16.00");
+  // A light user: 40 GB held all month is 80c of storage against the $10
+  // membership. Here the METER is the smaller number (80c is under the $12
   // plateau), so the min() picks the meter - the other side of the same rule.
   const light = await storedAllMonth(40 * GB);
   const lightBill = billThroughTheMeter(light);
@@ -337,12 +337,13 @@ test("the $1 free credit comes off the total, and a light month owes nothing", a
   assert.equal(lightBill.storageCents, metered, "a light month pays the meter, not the cap");
   assert.equal(
     lightBill.totalCents,
-    0,
-    "the $1 credit covers it: the bill is $0.00, never negative",
+    1000,
+    "the membership covers it: the bill is $10.00",
   );
   assert.equal(light.peak.peakBytes, 40 * GB);
-  const creditLine = lightBill.lines[lightBill.lines.length - 1];
-  assert.equal(creditLine.cents, -100, "the credit is a dollar line on the invoice");
+  const membershipLine = lightBill.lines[lightBill.lines.length - 1];
+  assert.equal(membershipLine.label, "Membership");
+  assert.equal(membershipLine.cents, 1000 - lightBill.storageCents);
 });
 
 test("43,800 minutes is the divisor the metered half bills by", async () => {
@@ -380,8 +381,8 @@ test("43,800 minutes is the divisor the metered half bills by", async () => {
   // storage, which the free $1 credit covers, so $0.00.
   const bill = billThroughTheMeter(month);
   assert.equal(bill.storageCents, 2, "the metered half is gb-minutes / 43,800 x 2c");
-  assert.equal(bill.totalCents, 0, "two cents of storage is under the free $1 credit");
-  assert.equal(bill.creditCents, 100, "and the credit is the $1 that covered it");
+  assert.equal(bill.totalCents, 1000, "two cents of storage is under the $10 membership");
+  assert.equal(bill.creditCents, 0, "no first-month discount on a later month");
   // The size that shows the divisor mattering: 800 GB held all month. The
   // metered half would be $15.78 for this 30-day month (over the $12
   // plateau, so the cap is what is billed), and the peak ceiling is the same
@@ -452,7 +453,7 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   );
   const septemberBill = billThroughTheMeter({ peak: september, gbMinutes: septemberMinutes });
   assert.equal(septemberBill.storageCents, 66, "the part-month pays the meter, not the cap");
-  assert.equal(septemberBill.totalCents, 0, "66 cents is under the free $1 credit: $0.00");
+  assert.equal(septemberBill.totalCents, 1000, "66 cents is under the $10 membership: $10.00");
 
   // October: the same file, held for the whole of the month this time (the
   // 1st is a full 31-day month), so its peak is the same 2 TB and its
@@ -464,10 +465,10 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
     "October bills its whole month: 2,000 GB x 44,640 minutes",
   );
   // October held the file all month, so the metered half is over the plateau
-  // and the peak ceiling is what the bill carries: $16 less the $1 credit.
+  // and the peak ceiling is what the bill carries: $16.
   const octoberBill = billThroughTheMeter({ peak: october, gbMinutes: octoberMinutes });
   assert.equal(octoberBill.storageCents, 1600, "a full month of 2 TB bills the $16 ceiling");
-  assert.equal(octoberBill.totalCents, 1500, "$16.00 less the $1 credit");
+  assert.equal(octoberBill.totalCents, 1600, "$16.00 at the ceiling");
 
   // The two months together are the file's own hours exactly - the boundary
   // was crossed once, and the hour starting 00:00 on the 1st is October's.
@@ -804,7 +805,7 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
     "so this month's bill is its meter, not the $12 plateau",
   );
   assert.equal(bill.storageCents, 605, "500 GB peak, $6.05 metered: the meter is smaller");
-  assert.equal(bill.totalCents, 505, "$6.05 of storage less the $1 credit");
+  assert.equal(bill.totalCents, 1000, "$6.05 of storage is under the $10 membership");
 });
 
 test("a month with no hours is an empty month, not a missing one", async () => {
@@ -819,7 +820,7 @@ test("a month with no hours is an empty month, not a missing one", async () => {
   );
   assert.equal(empty.peakBytes, 0, "an account with no rows holds nothing");
   assert.equal(empty.month, "2026-09", "the month a read answers for is the month's own label");
-  assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 0);
+  assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 1000);
 });
 
 test("a version hidden at the exact instant a month starts never held time in it", async () => {
@@ -1010,5 +1011,5 @@ test("the trigger rolls a whole month of hours and every one records the size", 
   );
   const bill = billThroughTheMeter({ peak: month, gbMinutes: triggerMinutes });
   assert.equal(bill.storageCents, 1200, "the $12 plateau, from the real trigger");
-  assert.equal(bill.totalCents, 1100, "$12.00 of storage less the $1 credit");
+  assert.equal(bill.totalCents, 1200, "$12.00 of storage at the plateau");
 });

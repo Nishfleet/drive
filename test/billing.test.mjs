@@ -233,7 +233,8 @@ test("a card-less account is capped at the free $1", () => {
 test("the usage summary is the empty month before the meter lands", () => {
   // Issues #6 (meter) and #2 (accounts) have not landed, so there are no
   // usage rows: the true answer is a month with nothing in it, which the
-  // usage page and the CLI can be written against now.
+  // usage page and the CLI can be written against now. The membership still
+  // applies (issue #352: no free tier).
   const summary = usageSummary({
     gbMinutes: 0,
     peakGb: 0,
@@ -244,7 +245,7 @@ test("the usage summary is the empty month before the meter lands", () => {
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
   assert.equal(summary.meteredUsd, 0);
-  assert.equal(summary.billUsd, 0);
+  assert.equal(summary.billUsd, 10);
   assert.equal(summary.cap.state, "active");
   assert.equal(summary.saved, null, "no saving on an empty month");
   assert.equal(summary.downloads.usd, 0);
@@ -286,7 +287,7 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
-  assert.equal(body.billUsd, 0);
+  assert.equal(body.billUsd, 10);
   assert.equal(body.saved, null, "an empty month has no line to show");
   assert.equal(body.cap.capUsd, BILLING_CONFIG.defaultCapUsd);
 
@@ -313,45 +314,44 @@ test("the Worker routes the usage read to the handler", async () => {
   assert.equal(asset.status, 200);
 });
 
-// --- Issue #76: the bill takes off the $1 free credit and adds download
-// charges, worked out in one function that returns integer cents ------------
+// --- Issue #352: membership floor, no free $1, first-month and founding ----
 
-test("the month's bill in cents: storage under the ceiling, minus the $1 credit", () => {
-  // The five figures issue #76 names, for data held all month. Storage is
-  // min(metered, max($12, $8 x peak TB)) exactly as before; the free $1 then
-  // comes off the total, which is never below zero:
-  //   30 GB   metered 60c  - $1 -> $0 (the credit floors it, never a refund)
-  //   400 GB  metered 800c - $1 -> $7
-  //   800 GB  metered 1600c capped at the $12 plateau, - $1 -> $11
-  //   2 TB    metered 4000c capped at $16, - $1 -> $15
-  //   5 TB    metered 10000c capped at $40, - $1 -> $39
+test("the month's bill in cents: storage under the ceiling, membership floor", () => {
+  // Storage is min(metered, max($12, $8 x peak TB)) exactly as before; the
+  // bill is then max($10 membership, storage). No free $1:
+  //   30 GB   metered 60c  → membership $10
+  //   400 GB  metered 800c → membership $10
+  //   800 GB  metered 1600c capped at the $12 plateau → $12
+  //   2 TB    metered 4000c capped at $16 → $16
+  //   5 TB    metered 10000c capped at $40 → $40
   const cases = [
-    [30, 60, 0],
-    [400, 800, 700],
-    [800, 1200, 1100],
-    [2000, 1600, 1500],
-    [5000, 4000, 3900],
+    [30, 60, 1000],
+    [400, 800, 1000],
+    [800, 1200, 1200],
+    [2000, 1600, 1600],
+    [5000, 4000, 4000],
   ];
   for (const [gb, storageCents, totalCents] of cases) {
     const bill = monthBillCents({ gbMinutes: fullMonthGbMinutes(gb), peakGb: gb });
     assert.equal(bill.storageCents, storageCents, `${gb} GB of storage`);
     assert.equal(bill.downloadCents, 0, `${gb} GB month with no downloads`);
-    assert.equal(bill.creditCents, 100, "the free $1 is a line of its own");
+    assert.equal(bill.membershipCents, 1000, "regular membership is $10");
+    assert.equal(bill.creditCents, 0, "no first-month discount on a later month");
     assert.equal(bill.totalCents, totalCents, `${gb} GB held all month bills ${usd(totalCents)}`);
   }
 });
 
 test("downloads at 4x stored add 1c a GB, on top of the capped storage", () => {
-  // 100 GB held all month: 200c of storage, so $1.00 after the credit.
+  // 100 GB held all month: 200c of storage, so $10.00 at the membership floor.
   const stored = { gbMinutes: fullMonthGbMinutes(100), peakGb: 100 };
   const quiet = monthBillCents(stored);
-  assert.equal(quiet.totalCents, 100);
+  assert.equal(quiet.totalCents, 1000);
   // 400 GB downloaded against 100 GB of average storage: 300 GB free, 100 GB
   // billable at 1c a GB = 100c on top.
   const busy = monthBillCents({ ...stored, downloadBytes: 400e9, averageStoredGb: 100 });
   assert.equal(busy.downloadCents, 100, "the 100 GB above the free 3x");
   assert.equal(busy.storageCents, quiet.storageCents, "downloads do not move storage");
-  assert.equal(busy.totalCents, 200, "$1.00 storage + $1.00 downloads - the $1 credit");
+  assert.equal(busy.totalCents, 1100, "$10.00 membership + $1.00 downloads");
   // A GB for a GB: each GB above the free 3x is exactly one more cent.
   for (const gb of [400, 401, 500, 1600]) {
     const bill = monthBillCents({ ...stored, downloadBytes: gb * 1e9, averageStoredGb: 100 });
@@ -369,31 +369,27 @@ test("downloads at 4x stored add 1c a GB, on top of the capped storage", () => {
   });
   assert.equal(capped.storageCents, 1600, "storage is still capped at $16");
   assert.equal(capped.downloadCents, 2000, "8 TB downloaded, 6 TB free, 2 TB billable");
-  assert.equal(capped.totalCents, 3500, "$16.00 + $20.00 - the $1 credit");
+  assert.equal(capped.totalCents, 3600, "$16.00 + $20.00");
 });
 
-test("the bill never goes below zero, and the credit is a dollar line", () => {
-  // 10 GB all month is 20c of storage against a $1 credit: the customer owes
-  // $0.00, never -$0.80.
+test("a light month pays the membership, and the membership is a dollar line", () => {
+  // 10 GB all month is 20c of storage against a $10 membership: the customer
+  // owes $10.00, never $0.20.
   const bill = monthBillCents({ gbMinutes: fullMonthGbMinutes(10), peakGb: 10 });
   assert.equal(bill.storageCents, 20);
-  assert.equal(bill.totalCents, 0);
-  // The invoice lines are separate: storage, downloads, and the free credit
-  // shown as a dollar line (build-spec.md, "Free credit": in dollars, never
-  // as credits or points).
+  assert.equal(bill.membershipCents, 1000);
+  assert.equal(bill.totalCents, 1000);
   assert.deepEqual(
     bill.lines.map((line) => [line.label, line.usd]),
     [
       ["Storage", "$0.20"],
       ["Downloads", "$0.00"],
-      ["Free credit", "-$1.00"],
+      ["Membership", "$9.80"],
     ],
   );
-  // The lines are storage + downloads - the credit, and the bill is that sum
-  // floored at zero.
   const sum = bill.lines.reduce((total, line) => total + line.cents, 0);
-  assert.equal(sum, -80, "the lines add to -80c before the floor");
-  assert.equal(bill.totalCents, Math.max(0, sum));
+  assert.equal(sum, 1000, "the lines add to the membership");
+  assert.equal(bill.totalCents, sum);
 });
 
 test("every line is integer cents, whatever the meter recorded", () => {
@@ -408,6 +404,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
       for (const key of /** @type {const} */ ([
         "storageCents",
         "downloadCents",
+        "membershipCents",
         "creditCents",
         "totalCents",
       ])) {
@@ -514,4 +511,120 @@ test("the usage page and the cap check read this one function", () => {
       bill.storageCents / 100,
     );
   }
+});
+
+test("use under the membership bills the membership price", () => {
+  // 200 GB all month is $4 metered, under the $10 membership, so the bill is $10.
+  const under = monthBillCents({ gbMinutes: fullMonthGbMinutes(200), peakGb: 200 });
+  assert.equal(under.storageCents, 400);
+  assert.equal(under.membershipCents, 1000);
+  assert.equal(under.totalCents, 1000);
+  // 400 GB is $8, still under $10.
+  const stillUnder = monthBillCents({ gbMinutes: fullMonthGbMinutes(400), peakGb: 400 });
+  assert.equal(stillUnder.storageCents, 800);
+  assert.equal(stillUnder.totalCents, 1000);
+});
+
+test("use between the membership and the cap bills the meter", () => {
+  // 550 GB all month is $11 metered, between the $10 membership and the $12
+  // ceiling, so the bill is the meter.
+  const between = monthBillCents({ gbMinutes: fullMonthGbMinutes(550), peakGb: 550 });
+  assert.equal(between.storageCents, 1100);
+  assert.equal(between.totalCents, 1100);
+});
+
+test("use over the cap bills the cap", () => {
+  const twoTb = monthBillCents({ gbMinutes: fullMonthGbMinutes(2000), peakGb: 2000 });
+  assert.equal(twoTb.storageCents, 1600);
+  assert.equal(twoTb.totalCents, 1600);
+  const fiveTb = monthBillCents({ gbMinutes: fullMonthGbMinutes(5000), peakGb: 5000 });
+  assert.equal(fiveTb.storageCents, 4000);
+  assert.equal(fiveTb.totalCents, 4000);
+});
+
+test("a regular first month halves the whole bill", () => {
+  // Low use: membership $10, halved to $5.
+  const low = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(200),
+    peakGb: 200,
+    firstMonth: true,
+  });
+  assert.equal(low.membershipCents, 1000);
+  assert.equal(low.creditCents, 500);
+  assert.equal(low.totalCents, 500);
+  assert.equal(low.lines[low.lines.length - 1].label, "First month");
+  // High use, still under the ceiling: 550 GB is $11 metered, halved to $5.50.
+  const high = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(550),
+    peakGb: 550,
+    firstMonth: true,
+  });
+  assert.equal(high.storageCents, 1100);
+  assert.equal(high.totalCents, 550);
+});
+
+test("a founding member pays $5 in month 1 and month 13", () => {
+  const low = { gbMinutes: fullMonthGbMinutes(200), peakGb: 200, foundingMember: true };
+  const month1 = monthBillCents({ ...low, monthNumber: 1 });
+  assert.equal(month1.membershipCents, 500);
+  assert.equal(month1.creditCents, 0, "founding members get no extra first-month cut");
+  assert.equal(month1.totalCents, 500);
+  assert.equal(month1.firstMonth, true);
+  const month13 = monthBillCents({ ...low, monthNumber: 13 });
+  assert.equal(month13.membershipCents, 500);
+  assert.equal(month13.creditCents, 0);
+  assert.equal(month13.totalCents, 500);
+  assert.equal(month13.firstMonth, false);
+});
+
+test("account 1,001 pays $10, and $5 in the first month", () => {
+  const low = { gbMinutes: fullMonthGbMinutes(200), peakGb: 200, payingAccountNumber: 1001 };
+  const later = monthBillCents(low);
+  assert.equal(later.foundingMember, false);
+  assert.equal(later.membershipCents, 1000);
+  assert.equal(later.totalCents, 1000);
+  const first = monthBillCents({ ...low, firstMonth: true });
+  assert.equal(first.membershipCents, 1000);
+  assert.equal(first.totalCents, 500);
+  // Account 1,000 is the last founding seat while the offer is open.
+  const lastFounder = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(200),
+    peakGb: 200,
+    payingAccountNumber: 1000,
+  });
+  assert.equal(lastFounder.foundingMember, true);
+  assert.equal(lastFounder.totalCents, 500);
+});
+
+test("switching the offer off keeps existing founders at $5 and prices new accounts at $10", () => {
+  const low = { gbMinutes: fullMonthGbMinutes(200), peakGb: 200 };
+  const existing = monthBillCents({
+    ...low,
+    foundingMember: true,
+    foundingOfferOpen: false,
+  });
+  assert.equal(existing.foundingMember, true);
+  assert.equal(existing.totalCents, 500);
+  const fresh = monthBillCents({
+    ...low,
+    foundingMember: false,
+    foundingOfferOpen: false,
+  });
+  assert.equal(fresh.foundingMember, false);
+  assert.equal(fresh.totalCents, 1000);
+  const rankedAfterClose = monthBillCents({
+    ...low,
+    payingAccountNumber: 1,
+    foundingOfferOpen: false,
+  });
+  assert.equal(rankedAfterClose.foundingMember, false);
+  assert.equal(rankedAfterClose.totalCents, 1000);
+  for (const bad of [1, "true", null]) {
+    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, foundingMember: bad }), TypeError);
+    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, firstMonth: bad }), TypeError);
+  }
+  assert.throws(
+    () => monthBillCents({ gbMinutes: 0, peakGb: 0, firstMonth: true, monthNumber: 1 }),
+    /never both/,
+  );
 });
