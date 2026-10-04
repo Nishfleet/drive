@@ -17,7 +17,7 @@
 // too, so a second ledger cannot even be written beside the meter: the
 // statement that tried fails at SQL, and the column checks in this file name
 // them gone.
-import assert from "node:assert/strict"
+import assert from "node:assert/strict";
 import { test } from "node:test";
 import { failureMessage } from "../../src/messages.js";
 import { BYTES_PER_GB } from "../../src/meter.js";
@@ -444,7 +444,9 @@ test("the spend ledger's columns are dropped, and the cap's table still reads an
   assert.throws(
     () =>
       sqlite
-        .prepare("INSERT INTO agent_caps (account_id, key_id, month_spend_cents) VALUES (?1, ?2, ?3)")
+        .prepare(
+          "INSERT INTO agent_caps (account_id, key_id, month_spend_cents) VALUES (?1, ?2, ?3)",
+        )
         .run(account.id, key.keyId, 500),
     /has no column named month_spend_cents|no such column: month_spend_cents/,
     "the second ledger's column is dropped: a spend beside the meter cannot be written back without failing this file",
