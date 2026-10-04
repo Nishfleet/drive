@@ -145,10 +145,10 @@ test("a revoked key is refused and does not come back", async () => {
   const { account } = await signedInAccount(store);
   const key = await store.mintKey(account, { kind: "agent" });
   assert.ok(await store.authenticate(key.accessKeyId, key.secret));
-  assert.deepEqual(store.revokeKey(account, key.keyId), { revoked: true });
+  assert.deepEqual(await store.revokeKey(account, key.keyId), { revoked: true });
   assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
   // Revoking again says "already gone" rather than resurrecting it.
-  assert.deepEqual(store.revokeKey(account, key.keyId), { revoked: true });
+  assert.deepEqual(await store.revokeKey(account, key.keyId), { revoked: true });
   assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
 });
 
@@ -166,7 +166,7 @@ test("an account can revoke its own key but never another account's", async () =
   const first = await signedInAccount(store);
   const second = await signedInAccount(store);
   const theirs = await store.mintKey(second.account, { kind: "agent" });
-  assert.deepEqual(store.revokeKey(first.account, theirs.keyId), { error: "not-found" });
+  assert.deepEqual(await store.revokeKey(first.account, theirs.keyId), { error: "not-found" });
   assert.ok(await store.authenticate(theirs.accessKeyId, theirs.secret));
 });
 
@@ -385,7 +385,7 @@ test("a revoked agent cannot renew, and its hour is not restarted", async () => 
   const mintedExpiry = key.expiresAt;
   // The agent is revoked while its credential still has an hour left. Every
   // request after that is refused, so none of them can restart the hour.
-  store.revokeKey(account, key.keyId);
+  await store.revokeKey(account, key.keyId);
   clock.advance(60);
   assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
   clock.advance(AGENT_KEY_TTL_SECONDS * 2);

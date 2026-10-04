@@ -29,10 +29,12 @@ import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 
 // The schema this proof needs, over the harness's default list: the device
 // sign-in tables (`device_codes`, `device_tokens`, migrations/drive/
-// 0007_device_codes.sql -- the same issue named them) and the two columns
-// `0010_accounts_devices.sql`'s `devices` table gained with drive#106, because
-// the key rows here are written the way the mint writes them. `0012` alters
-// `devices`, so it runs after `0010`, and the default list carries `0010`.
+// 0007_device_codes.sql -- the same issue named them). The default list now
+// also carries the two columns `0010_accounts_devices.sql`'s `devices` table
+// gained with drive#106 (`0012_agent_key_ttl.sql`), so the key rows here --
+// written the way the mint writes them -- land on the real schema without this
+// file listing `0012` a second time (which would fail with `duplicate column
+// name: expires_at`).
 // The meter tables are here because authenticate of an agent key now reads
 // the metered month (drive#171): a fixture without `usage_minutes` is not
 // the schema the live Worker ships, and that path would throw
@@ -40,7 +42,6 @@ import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 const MIGRATIONS = [
   ...DRIVE_MIGRATIONS,
   "drive/0007_device_codes.sql",
-  "drive/0012_agent_key_ttl.sql",
   "drive/0005_meter.sql",
   "drive/0006_usage_stored_bytes.sql",
 ];

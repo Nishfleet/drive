@@ -12,10 +12,7 @@
 //   * the snapshot store (a KV namespace, `BRANCH_SNAPSHOTS`, migration 0012),
 //     for the `{size, etag, modified}` snapshot taken at branch time — one
 //     entry per file, held out of the row so a branch of tens of thousands of
-//     files lands (drive#252, the phase 2 of drive#157). A nightly sweep
-//     (`backfillBranchSnapshots`) moves the rows that predate the namespace
-//     out of that column, so the column is on its way to being dropped
-//     (drive#321);
+//     files lands (drive#252, the phase 2 of drive#157);
 //
 // The copy is a server-side copy (`FileStore.copy`): S3's CopyObject on the
 // real store, so a branch never streams the bytes through the Worker. The
@@ -24,14 +21,13 @@
 // under it — the done-when's "an approve where the original changed after
 // branching stops and names the file". The snapshot lives in KV, and the row
 // carries a pointer to its key and its byte length; a row written before
-// migration 0012 has an empty pointer; `backfillBranchSnapshots` has since
-// swept every open pre-namespace row into the namespace (drive#321), and
-// `readSnapshot` no longer falls back to the legacy `branches.snapshot` column
-// (drive#329), so the only place a snapshot lives is the namespace. The
-// namespace is a required binding (`BRANCH_SNAPSHOTS` in src/health.js
-// `REQUIRED_BINDINGS`, already on that list before this change), so a store is
-// always present and a row with an empty pointer reads as empty rather than
-// from a column nothing writes any more.
+// migration 0012 has an empty pointer, and `readSnapshot` no longer falls back
+// to the legacy `branches.snapshot` column (drive#329), so the only place a
+// snapshot lives is the namespace. The namespace is a required binding
+// (`BRANCH_SNAPSHOTS` in src/health.js `REQUIRED_BINDINGS`, already on that
+// list before this change), so a store is always present and a row with an
+// empty pointer reads as empty rather than from a column nothing writes any
+// more.
 //
 // Two rules make that safe:
 //
@@ -176,27 +172,6 @@ export const BRANCHES_ENDPOINT = "/api/branches";
  * definition of where branches live (the `.branches` folder), not two.
  */
 export const BRANCHES_ROOT = BRANCHES_PATH;
-
-/** The snapshot backfill's schedule, in the Worker's cron syntax (the
- * `triggers.scheduled` entry in cloudflare.config.ts). 05:00 UTC is the hour
- * after the 03:00 reindex and the 04:00 meter reconciler, so the three nightly
- * walks never share a trip. The sweep is the only way a backfill starts, so a
- * web request cannot walk every open branch a drive ever made and spend the
- * KV writes for all of them — the same rule the reindex's safety review
- * reached (issue #18). */
-export const SNAPSHOT_BACKFILL_SCHEDULE = "0 5 * * *";
-
-/** How many pre-namespace rows one sweep moves. The nightly trigger is the only
- * way a backfill runs, so one run is bounded rather than walked to the end of
- * the table: the rows left over are the same rows the next night finds, in the
- * same order, because the sweep is idempotent. Sized to the query budget: one
- * row costs two subrequests (the KV write and the row update) beside the one
- * read, and the Workers free plan allows 50 subrequests per invocation, so 24
- * rows (49 calls) stays inside that ceiling with the headroom the meter's own
- * MAX_CATCHUP_HOURS keeps. The backfill is one-time work, so a night of 24 rows
- * is the price of a run that cannot hit the limit.
- */
-export const SNAPSHOT_BACKFILL_ROWS = 24;
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -1207,105 +1182,6 @@ async function removeBranchFiles(store, branch) {
   } catch (error) {
     console.error?.(`branch cleanup failed for ${branch.branchPrefix}: ${errorText(error)}`);
   }
-}
-
-/**
- * The backfill of the rows that predate the namespace (drive issue #321, the
- * step 1 of #252's remainder). Migration 0012 moved NEW snapshots into
- * `BRANCH_SNAPSHOTS` and left every older row's JSON in the legacy
- * `branches.snapshot` column with an empty `snapshot_key`. This sweep moves
- * those old rows: every OPEN branch with `snapshot_key = ''` gets its column
- * JSON written under its own `snapshotKey(account, name)` — the key a new
- * branch of that name would have — and the row's pointer and byte length are
- * set to it. Since drive#329 stopped reading the column, this sweep is what
- * makes every open row's snapshot reachable at all, so it must have run to
- * completion before that change shipped.
- *
- * Three rules the issue states:
- *
- *   * idempotent. The query matches `snapshot_key = ''` only, and the update
- *     is guarded the same way, so a second sweep over a moved row matches
- *     nothing and a sweep interrupted between the KV write and the row update
- *     simply does that row again.
- *   * it does not touch a closed branch. The query filters `state = 'open'`:
- *     an approved or discarded branch keeps its snapshot exactly where it was,
- *     its diff is the count on its row, and a closed branch resurrected later
- *     would be re-snapshotted at branch time rather than read from a value
- *     stored for a row that was already closed. A closed branch's column JSON
- *     is never read (drive#329 reads a closed branch through its `state` and
- *     its count), so leaving it is history, not a live fallback.
- *   * the column is NOT cleared. The JSON stays in `branches.snapshot` for
- *     rows this sweep moved — those were written when the old code still
- *     filled the column, so a rollback of drive#329's code still reads them.
- *     A branch created after this ships has a pointer (`saveSnapshot` writes
- *     `snapshot_key`) and `DEFAULT '{}'` in the leftover column. Rolling the
- *     reader back still prefers the pointer, so those completed rows keep
- *     their snapshot. The leftover that would read empty is only a claimed
- *     row whose snapshot save never landed, which `abandonClaim` already
- *     closes. Dropping the column is the later phase.
- *
- * Why this is safe to run before the drop: a row this moves could only ever
- * have been written with the old 1 MiB row limit in force, so its JSON is
- * bounded by that limit (a folder over the limit was refused at branch time,
- * migration 0012's own note, #157's phase-1 measurement). The sweep never moves
- * a value the old code could not have held.
- *
- * A KV or D1 failure throws: the nightly trigger awaits this, so Cloudflare
- * records a failed run and retries the next night, and a sweep that moved some
- * rows and then failed is resumed rather than reported as done.
- *
- * @param {D1Database} db the drive database (`branches`)
- * @param {SnapshotStore} snapshots the branch snapshot store; a backfill with
- *   no namespace is a programming error, not an empty report
- * @param {number} [rows] how many open pre-namespace rows this run moves
- * @returns {Promise<{moved: number, files: number, bytes: number,
- *   branches: {account: string, name: string, key: string, bytes: number}[]}>}
- */
-export async function backfillBranchSnapshots(db, snapshots, rows = SNAPSHOT_BACKFILL_ROWS) {
-  if (!snapshots || typeof snapshots.put !== "function") {
-    throw new TypeError("backfillBranchSnapshots needs the branch snapshot store");
-  }
-  if (!Number.isInteger(rows) || rows < 1) {
-    throw new TypeError(`a backfill row limit is a positive integer, got ${String(rows)}`);
-  }
-  const found = await db
-    .prepare(
-      "SELECT account_id, name, snapshot FROM branches " +
-        "WHERE state = 'open' AND snapshot_key = '' ORDER BY account_id, name LIMIT ?1",
-    )
-    .bind(rows)
-    .all();
-  /** @type {{account: string, name: string, key: string, bytes: number}[]} */
-  const moved = [];
-  let files = 0;
-  let bytes = 0;
-  for (const row of found?.results ?? []) {
-    const account = typeof row.account_id === "string" ? row.account_id : "";
-    const name = typeof row.name === "string" ? row.name : "";
-    // The JSON is moved verbatim, not re-encoded: it is the exact value
-    // `readSnapshot` handed the diff all along, so a moved row diffs and
-    // approves against the same map it did from the column.
-    const json = typeof row.snapshot === "string" ? row.snapshot : "{}";
-    // The key a branch of this name would have (the row's account decides it,
-    // the row's name is the last segment), built through the one builder
-    // `createBranch` uses, so a caller cannot name another account's value.
-    const key = snapshotKey({ id: account }, name);
-    const length = await snapshots.put(key, json);
-    // The guard repeats the query's, so a row that changed state or already
-    // moved under this sweep (a concurrent approve, a second sweep) is not
-    // written back. Idempotence here is the database's, not the caller's.
-    await db
-      .prepare(
-        "UPDATE branches SET snapshot_key = ?3, snapshot_bytes = ?4 " +
-          "WHERE account_id = ?1 AND name = ?2 AND state = 'open' AND snapshot_key = ''",
-      )
-      .bind(account, name, key, length)
-      .run();
-    moved.push({ account, name, key, bytes: length });
-    bytes += length;
-    files += Object.keys(parseSnapshotObject(json) ?? {}).length;
-  }
-  return { moved: moved.length, files, bytes, branches: moved };
 }
 
 /**
