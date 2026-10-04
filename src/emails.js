@@ -324,7 +324,7 @@ export function accountCloseReminderTemplate(data = {}) {
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
   const left = graceDays - reminderDays;
-  const subject = "Your Drive files will be deleted in 5 days";
+  const subject = `Your Drive files will be deleted in ${left} days`;
   const lines = [
     `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`,
     "",

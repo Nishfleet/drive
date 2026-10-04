@@ -99,6 +99,7 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
     reminderDays: CLOSE_REMINDER_DAYS,
     purgeOn: "2026-11-03",
   });
+  assert.match(reminder.subject, /5 days/);
   assert.match(reminder.text, /5 days/);
   assert.match(reminder.text, /2026-11-03/);
 });
@@ -132,11 +133,12 @@ test("closing with a matching email sets accounts.state to closed, revokes keys,
   assert.equal(closed.state, "closed");
 
   const row = world.sqlite
-    .prepare("SELECT state, closed_at, email FROM accounts WHERE id = ?")
+    .prepare("SELECT state, closed_at, email, close_mail_sent_at FROM accounts WHERE id = ?")
     .get(account.id);
   assert.equal(row.state, "closed");
   assert.equal(row.closed_at, clock.now() / 1000);
   assert.equal(row.email, "nish@example.com");
+  assert.equal(row.close_mail_sent_at, clock.now() / 1000);
 
   const device = world.sqlite
     .prepare("SELECT revoked_at FROM devices WHERE id = ?")
@@ -220,7 +222,18 @@ test("the nightly cron mails at day 25 and deletes files at day 30, and only for
   const closingStore = scopeStore(world.files, closing);
   const neighbourStore = scopeStore(world.files, neighbour);
   await closingStore.write("/gone.txt", "delete me after 30 days", "text/plain");
+  await closingStore.write("/.trash/old.txt", "hidden too", "text/plain");
   await neighbourStore.write("/stay.txt", "not yours to delete", "text/plain");
+  world.sqlite
+    .prepare(
+      "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?, ?, ?, '/', ?)",
+    )
+    .run(closing.id, "/gone.txt", "gone.txt", 4);
+  world.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(closing.id, "ver_gone", "/gone.txt", 4, START_MS);
   await closeAccount({
     devices: world.devices,
     email: world.email,
@@ -280,7 +293,21 @@ test("the nightly cron mails at day 25 and deletes files at day 30, and only for
   });
   assert.equal(purged.purged, 1);
   assert.equal(await closingStore.read("/gone.txt"), null, "day 30 deletes the files");
+  assert.equal(await closingStore.read("/.trash/old.txt"), null, "day 30 deletes .trash too");
   assert.notEqual(await neighbourStore.read("/stay.txt"), null, "the neighbour's files stay");
+  assert.equal(
+    world.sqlite.prepare("SELECT count(*) c FROM file_index WHERE account_id = ?").get(closing.id)
+      .c,
+    0,
+    "the file-name index is cleared for the closed account",
+  );
+  assert.equal(
+    world.sqlite
+      .prepare("SELECT count(*) c FROM file_versions WHERE account_id = ?")
+      .get(closing.id).c,
+    0,
+    "the version history is cleared for the closed account",
+  );
   const row = world.sqlite
     .prepare("SELECT purged_at, state FROM accounts WHERE id = ?")
     .get(closing.id);
@@ -338,6 +365,26 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
   assert.equal(closedBody.state, "closed");
   assert.equal(email.sent.length, 1);
   assert.equal(typeof account.id, "string");
+
+  const stillSignedIn = await workerFetch(
+    new Request(`https://drive.test${CLOSE_ENDPOINT}`, { headers: { cookie } }),
+    env,
+    ctx,
+  );
+  assert.equal(stillSignedIn.status, 200);
+  assert.equal((await stillSignedIn.json()).state, "closed");
+
+  const cancelled = await workerFetch(
+    new Request(`https://drive.test${CLOSE_CANCEL_ENDPOINT}`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ email: "close@example.com" }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(cancelled.status, 200);
+  assert.equal((await cancelled.json()).state, "active");
 });
 
 test("the close handlers refuse a missing JSON object the same way other account writes do", async () => {
@@ -373,4 +420,153 @@ test("the close handlers refuse a missing JSON object the same way other account
     deps,
   );
   assert.equal(get.status, 200);
+});
+
+test("a mailer failure leaves the account closed so the nightly pass can send the receipt", async () => {
+  const clock = clockAt();
+  const { sqlite, db } = makeMeteredDB();
+  const devices = createD1DeviceStore(db, { now: clock.now });
+  const files = createFileStore();
+  const down = makeFakeEmail(new Error("mailer down"));
+  const account = { id: "acct_mail_retry", email: "retry@example.com", name: "Retry" };
+  await assert.rejects(
+    () =>
+      closeAccount({
+        devices,
+        email: down,
+        mailFrom: MAIL_FROM,
+        account,
+        typedEmail: "retry@example.com",
+        now: clock.now(),
+      }),
+    /mailer down/,
+  );
+  const row = sqlite
+    .prepare("SELECT state, close_mail_sent_at FROM accounts WHERE id = ?")
+    .get(account.id);
+  assert.equal(row.state, "closed");
+  assert.equal(row.close_mail_sent_at, null);
+  const email = makeFakeEmail();
+  const replay = await runAccountCloseCron({
+    db,
+    devices,
+    store: files,
+    email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  assert.equal(replay.mailed, 1);
+  assert.equal(email.sent.length, 1);
+  assert.match(/** @type {{subject: string}} */ (email.sent[0]).subject, /closed/i);
+  const stamped = sqlite
+    .prepare("SELECT close_mail_sent_at FROM accounts WHERE id = ?")
+    .get(account.id);
+  assert.equal(stamped.close_mail_sent_at, clock.now() / 1000);
+});
+
+test("a first cron at day 30 still sends the reminder before it deletes the files", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_late", email: "late@example.com", name: "Late" };
+  const scoped = scopeStore(world.files, account);
+  await scoped.write("/late.txt", "still warn me", "text/plain");
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "late@example.com",
+    now: clock.now(),
+  });
+  world.email.sent.length = 0;
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const result = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: world.files,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  assert.equal(result.reminded, 1);
+  assert.equal(result.purged, 1);
+  assert.equal(world.email.sent.length, 1);
+  assert.match(/** @type {{text: string}} */ (world.email.sent[0]).text, /5 days/);
+  assert.equal(await scoped.read("/late.txt"), null);
+});
+
+test("a blank-email closed row is skipped, and the neighbour still purges", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const blank = { id: "acct_blank", email: "blank@example.com", name: "Blank" };
+  const neighbour = { id: "acct_ok", email: "ok@example.com", name: "Ok" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account: blank,
+    typedEmail: "blank@example.com",
+    now: clock.now(),
+  });
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account: neighbour,
+    typedEmail: "ok@example.com",
+    now: clock.now(),
+  });
+  world.sqlite.prepare("UPDATE accounts SET email = '' WHERE id = ?").run(blank.id);
+  clock.set(START_MS + CLOSE_REMINDER_DAYS * DAY_MS);
+  const result = await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: world.files,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  assert.equal(result.reminded, 1);
+});
+
+test("closing refuses an account with no email on file", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  await assert.rejects(
+    () =>
+      closeAccount({
+        devices: world.devices,
+        email: world.email,
+        mailFrom: MAIL_FROM,
+        account: { id: "acct_no_mail", email: "", name: "None" },
+        typedEmail: "none@example.com",
+        now: clock.now(),
+      }),
+    /no email on file/,
+  );
+  assert.equal(world.email.sent.length, 0);
+});
+
+test("a close POST that is not JSON is refused before the body is parsed", async () => {
+  const account = { id: "acct_ctype", email: "a@example.com", name: "A" };
+  const clock = clockAt();
+  const world = setup(clock);
+  const deps = {
+    devices: world.devices,
+    store: world.files,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now,
+  };
+  const res = await handleCloseRequest(
+    new Request("https://drive.test/api/account/close", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ email: "a@example.com" }),
+    }),
+    account,
+    deps,
+  );
+  assert.equal(res.status, 400);
+  assert.equal(world.email.sent.length, 0);
 });

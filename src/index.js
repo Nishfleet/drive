@@ -624,21 +624,21 @@ export function createApp() {
   app.get(CLOSE_ENDPOINT, async (c) => {
     const deps = closeDepsFor(c.env);
     if (!deps) {
-      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+      return c.json({ error: failureMessage("drive-not-configured") }, 503);
     }
     return handleCloseStatusRequest(c.req.raw, c.get("account"), deps);
   });
   app.post(CLOSE_ENDPOINT, async (c) => {
     const deps = closeDepsFor(c.env);
     if (!deps) {
-      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+      return c.json({ error: failureMessage("drive-not-configured") }, 503);
     }
     return handleCloseRequest(c.req.raw, c.get("account"), deps);
   });
   app.post(CLOSE_CANCEL_ENDPOINT, async (c) => {
     const deps = closeDepsFor(c.env);
     if (!deps) {
-      return c.json({ error: "The account store is not configured on this deployment." }, 503);
+      return c.json({ error: failureMessage("drive-not-configured") }, 503);
     }
     return handleCloseCancelRequest(c.req.raw, c.get("account"), deps);
   });
@@ -877,17 +877,17 @@ export default {
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
-      if (!env.DRIVE_DB) {
-        throw new Error("account close cron needs the customer database");
+      if (env.DRIVE_DB) {
+        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        await runAccountCloseCron({
+          db: env.DRIVE_DB,
+          devices: createD1DeviceStore(env.DRIVE_DB),
+          store: storeFor(env),
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          now: event.scheduledTime,
+        });
       }
-      const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-      await runAccountCloseCron({
-        devices: createD1DeviceStore(env.DRIVE_DB),
-        store: storeFor(env),
-        email: env.EMAIL,
-        mailFrom: secrets.MAIL_FROM ?? "",
-        now: event.scheduledTime,
-      });
       return;
     }
     // The snapshot backfill's trip (drive issue #321): every open branch that

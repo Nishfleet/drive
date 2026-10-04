@@ -39,8 +39,8 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // state) primary key, and after 0012's snapshot pointer columns.
   "drive/0015_branch_row_id.sql",
   // Close-account grace stamps (drive issue #235). Nullable expand of
-  // accounts: closed_at, reminder_sent_at, purged_at. 0017 because 0016 is
-  // the founding-member flag.
+  // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
+  // 0017 because 0016 is the founding-member flag.
   "drive/0017_account_close.sql",
 ]);
 

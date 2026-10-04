@@ -37,12 +37,15 @@ test("closing writes closed_at on the real accounts row, and a fresh store reads
   assert.equal(closed.alreadyClosed, false);
 
   const row = sqlite
-    .prepare("SELECT state, closed_at, reminder_sent_at, purged_at FROM accounts WHERE id = ?")
+    .prepare(
+      "SELECT state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?",
+    )
     .get(account.id);
   assert.notEqual(row, undefined, "the store answered from memory: the row is not in D1");
   assert.equal(row.state, "closed");
   assert.equal(row.closed_at, START_MS / 1000);
   assert.equal(row.reminder_sent_at, null);
+  assert.equal(row.close_mail_sent_at, null);
   assert.equal(row.purged_at, null);
 
   const reader = createD1DeviceStore(db, { now: clock.now });

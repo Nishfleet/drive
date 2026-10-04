@@ -3,12 +3,12 @@
 // confirms by typing their email and can cancel inside the grace window.
 //
 // The columns this module writes (`closed_at`, `reminder_sent_at`,
-// `purged_at`) are the expand-only migration in
+// `close_mail_sent_at`, `purged_at`) are the expand-only migration in
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
 import { sendEmail } from "./email-send.js";
-import { accountPrefix } from "./files.js";
+import { BRANCHES_PATH, scopeStore, TRASH_PATH } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
@@ -79,10 +79,10 @@ export function purgeOnDate(closedAtSeconds) {
  * @param {unknown} typed
  */
 function requireMatchingEmail(expected, typed) {
-  if (typeof typed !== "string" || typed.trim().length === 0) {
-    throw new TypeError(failureMessage("close-confirm-email"));
-  }
   if (normalizeEmail(expected) === "") {
+    throw new TypeError(failureMessage("close-no-email"));
+  }
+  if (typeof typed !== "string" || typed.trim().length === 0) {
     throw new TypeError(failureMessage("close-confirm-email"));
   }
   if (normalizeEmail(expected) !== normalizeEmail(typed)) {
@@ -117,7 +117,7 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
-  if (!closed.alreadyClosed) {
+  if (closed.closeMailSentAt === null) {
     await sendEmail(input.email, {
       to: expected,
       from: input.mailFrom,
@@ -128,6 +128,7 @@ export async function closeAccount(input) {
         purgeOn: purgeOnDate(closed.closedAt),
       },
     });
+    await input.devices.markCloseMailSent(closed.id, at);
   }
   return closed;
 }
@@ -153,13 +154,26 @@ export async function cancelClose(input) {
 
 /**
  * Delete every object under one account's storage prefix, including the
- * hidden `.trash` and `.branches` folders the scoped listing would skip.
+ * hidden `.trash` and `.branches` folders a scoped listing of `/` skips.
  * @param {FileStore} store
  * @param {{id: string}} account
  */
 export async function purgeAccountFiles(store, account) {
-  const prefix = accountPrefix(account);
-  await removeTree(store, prefix);
+  const scoped = scopeStore(store, account);
+  await removeTree(scoped, "/");
+  await removeTree(scoped, TRASH_PATH);
+  await removeTree(scoped, BRANCHES_PATH);
+}
+
+/**
+ * Drop the file-name index and version history for one account, so a purge
+ * that deleted the objects does not leave names in `GET /v1/export`.
+ * @param {D1Database} db
+ * @param {string} accountId
+ */
+export async function purgeAccountRecords(db, accountId) {
+  await db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(accountId).run();
+  await db.prepare("DELETE FROM file_versions WHERE account_id = ?1").bind(accountId).run();
 }
 
 /**
@@ -181,7 +195,7 @@ async function removeTree(store, path) {
  * Nightly pass: day-25 reminder, then day-30 file delete. Only rows whose
  * person asked to close are touched.
  * @param {{
- *   db?: unknown,
+ *   db: D1Database,
  *   devices: DeviceStore,
  *   store: FileStore,
  *   email: unknown,
@@ -190,17 +204,40 @@ async function removeTree(store, path) {
  * }} input
  */
 export async function runAccountCloseCron(input) {
+  if (input.db === undefined || input.db === null) {
+    throw new Error("account close cron needs the customer database");
+  }
   const at = Math.floor(input.now / 1000);
+  const dueReceipt = await input.devices.listDueCloseMail();
   const duePurge = await input.devices.listDuePurge(at - CLOSE_GRACE_DAYS * DAY_SECONDS);
   const dueReminder = await input.devices.listDueReminder(at - CLOSE_REMINDER_DAYS * DAY_SECONDS);
-  const purging = new Set(duePurge.map((row) => row.id));
-  let reminded = 0;
-  for (const row of dueReminder) {
-    if (purging.has(row.id)) {
+  let mailed = 0;
+  for (const row of dueReceipt) {
+    if (row.email.trim().length === 0) {
+      console.error(`account ${row.id} is due a close receipt but has no email`);
       continue;
     }
+    if (row.closedAt === null) {
+      throw new Error(`account ${row.id} is due a close receipt but has no closed_at`);
+    }
+    await sendEmail(input.email, {
+      to: row.email,
+      from: input.mailFrom,
+      kind: "account-closed",
+      data: {
+        graceDays: CLOSE_GRACE_DAYS,
+        reminderDays: CLOSE_REMINDER_DAYS,
+        purgeOn: purgeOnDate(row.closedAt),
+      },
+    });
+    await input.devices.markCloseMailSent(row.id, at);
+    mailed += 1;
+  }
+  let reminded = 0;
+  for (const row of dueReminder) {
     if (row.email.trim().length === 0) {
-      throw new Error(`account ${row.id} is due a close reminder but has no email`);
+      console.error(`account ${row.id} is due a close reminder but has no email`);
+      continue;
     }
     if (row.closedAt === null) {
       throw new Error(`account ${row.id} is due a close reminder but has no closed_at`);
@@ -221,15 +258,16 @@ export async function runAccountCloseCron(input) {
   let purged = 0;
   for (const row of duePurge) {
     await purgeAccountFiles(input.store, { id: row.id });
+    await purgeAccountRecords(input.db, row.id);
     await input.devices.markPurged(row.id, at);
     purged += 1;
   }
-  return { reminded, purged };
+  return { mailed, reminded, purged };
 }
 
 /**
  * @param {{id: string, name?: string, email?: string|null}} account
- * @param {{state: string, email: string, closedAt: number|null, reminderSentAt?: number|null, purgedAt: number|null}|null} state
+ * @param {{state: string, email: string, closedAt: number|null, reminderSentAt?: number|null, closeMailSentAt?: number|null, purgedAt: number|null}|null} state
  */
 function closePayload(account, state) {
   const closedAt = state === null || state === undefined ? null : state.closedAt;
@@ -258,6 +296,10 @@ function closePayload(account, state) {
  * @returns {Promise<{ok: true, email: unknown}|{ok: false, response: Response}>}
  */
 async function readEmailBody(request) {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("application/json")) {
+    return { ok: false, response: json({ error: failureMessage("json-object-needed") }, 400) };
+  }
   /** @type {unknown} */
   let body;
   try {
@@ -303,7 +345,7 @@ export async function handleCloseRequest(request, account, deps) {
     return json({ error: failureMessage("unauthorized") }, 401);
   }
   if (request.method !== "POST") {
-    return new Response("Method not allowed. POST to close your account.", {
+    return new Response(failureMessage("close-method"), {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
@@ -341,7 +383,7 @@ export async function handleCloseCancelRequest(request, account, deps) {
     return json({ error: failureMessage("unauthorized") }, 401);
   }
   if (request.method !== "POST") {
-    return new Response("Method not allowed. POST to cancel closing your account.", {
+    return new Response(failureMessage("close-cancel-method"), {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });

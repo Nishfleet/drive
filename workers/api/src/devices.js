@@ -21,6 +21,8 @@ import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForAccount, mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
+const CLOSE_CRON_LIMIT = 100;
+
 /**
  * @typedef {import("./keystore.js").Device} Device
  * @typedef {import("./keyprovider.js").KeyScope} KeyScope
@@ -246,7 +248,7 @@ export function createD1DeviceStore(db, options = {}) {
 
   /**
    * @param {unknown} row
-   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, purgedAt: number|null}|null}
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
    */
   function closeStateFromRow(row) {
     if (!row || typeof row !== "object") {
@@ -265,6 +267,10 @@ export function createD1DeviceStore(db, options = {}) {
         r.reminder_sent_at === null || r.reminder_sent_at === undefined
           ? null
           : Number(r.reminder_sent_at),
+      closeMailSentAt:
+        r.close_mail_sent_at === null || r.close_mail_sent_at === undefined
+          ? null
+          : Number(r.close_mail_sent_at),
       purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
     };
   }
@@ -276,7 +282,7 @@ export function createD1DeviceStore(db, options = {}) {
     return closeStateFromRow(
       await first(
         db,
-        "SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts WHERE id = ?1",
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
         accountId,
       ),
     );
@@ -308,10 +314,6 @@ export function createD1DeviceStore(db, options = {}) {
    */
   async function closeAccountRow(account, atSeconds) {
     const existing = await getCloseState(account.id);
-    if (existing !== null && existing.state === "closed" && existing.closedAt !== null) {
-      await revokeLiveKeys(account.id);
-      return { ...existing, alreadyClosed: true };
-    }
     const email = account.email ?? existing?.email ?? "";
     await run(
       db,
@@ -334,7 +336,7 @@ export function createD1DeviceStore(db, options = {}) {
     if (written === null) {
       throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
     }
-    return { ...written, alreadyClosed: false };
+    return { ...written, alreadyClosed: written.closedAt !== atSeconds };
   }
 
   /**
@@ -351,7 +353,8 @@ export function createD1DeviceStore(db, options = {}) {
     await run(
       db,
       `UPDATE accounts
-         SET state = 'active', closed_at = NULL, reminder_sent_at = NULL
+         SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
+             close_mail_sent_at = NULL
        WHERE id = ?1`,
       accountId,
     );
@@ -368,13 +371,15 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueReminder(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND reminder_sent_at IS NULL
            AND purged_at IS NULL
-           AND closed_at <= ?1`,
+           AND closed_at <= ?1
+         LIMIT ?2`,
       atSeconds,
+      CLOSE_CRON_LIMIT,
     );
     return rows.map(closeStateFromRow).filter((row) => row !== null);
   }
@@ -385,12 +390,33 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDuePurge(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
-           AND closed_at <= ?1`,
+           AND closed_at <= ?1
+         LIMIT ?2`,
       atSeconds,
+      CLOSE_CRON_LIMIT,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * Closed accounts whose day-0 receipt never landed, so the nightly pass
+   * can send it. No time floor: a close that stamped `closed` and then
+   * failed to mail is due on the next run.
+   */
+  async function listDueCloseMail() {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND close_mail_sent_at IS NULL
+           AND purged_at IS NULL
+         LIMIT ?1`,
+      CLOSE_CRON_LIMIT,
     );
     return rows.map(closeStateFromRow).filter((row) => row !== null);
   }
@@ -403,6 +429,19 @@ export function createD1DeviceStore(db, options = {}) {
     await run(
       db,
       "UPDATE accounts SET reminder_sent_at = ?1 WHERE id = ?2 AND reminder_sent_at IS NULL",
+      atSeconds,
+      accountId,
+    );
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markCloseMailSent(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET close_mail_sent_at = ?1 WHERE id = ?2 AND close_mail_sent_at IS NULL",
       atSeconds,
       accountId,
     );
@@ -765,7 +804,9 @@ export function createD1DeviceStore(db, options = {}) {
     cancelClose,
     listDueReminder,
     listDuePurge,
+    listDueCloseMail,
     markReminderSent,
+    markCloseMailSent,
     markPurged,
 
     /**

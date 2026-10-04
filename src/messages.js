@@ -230,6 +230,18 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The files from this account have already been deleted.",
     next: "The 30-day window has ended, so closing cannot be cancelled.",
   }),
+  "close-method": Object.freeze({
+    what: "Closing your account answers a POST only.",
+    next: "POST to close your account.",
+  }),
+  "close-cancel-method": Object.freeze({
+    what: "Cancelling a close answers a POST only.",
+    next: "POST to cancel closing your account.",
+  }),
+  "close-no-email": Object.freeze({
+    what: "This account has no email on file.",
+    next: "Add an email to this account, then type it to confirm.",
+  }),
   // The public savings calculator (drive issue #14): the size was missing,
   // not a number, negative, or past the quote ceiling, so nothing was billed
   // and the one thing to do is enter a size the quote can use.
