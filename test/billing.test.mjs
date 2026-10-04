@@ -586,14 +586,40 @@ test("account 1,001 pays $10, and $5 in the first month", () => {
   const first = monthBillCents({ ...low, firstMonth: true });
   assert.equal(first.membershipCents, 1000);
   assert.equal(first.totalCents, 500);
-  // Account 1,000 is the last founding seat while the offer is open.
+  // Account 1,000 is the last founding seat while the offer is open. Month 13
+  // so this is the locked $5, not the regular first-month half of $10.
   const lastFounder = monthBillCents({
     gbMinutes: fullMonthGbMinutes(200),
     peakGb: 200,
     payingAccountNumber: 1000,
+    monthNumber: 13,
   });
   assert.equal(lastFounder.foundingMember, true);
+  assert.equal(lastFounder.firstMonth, false);
+  assert.equal(lastFounder.creditCents, 0);
   assert.equal(lastFounder.totalCents, 500);
+  const regularLater = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(200),
+    peakGb: 200,
+    payingAccountNumber: 1001,
+    monthNumber: 13,
+  });
+  assert.equal(regularLater.totalCents, 1000);
+  // At high use, founding skips the 50% first-month cut: 2 TB is $16 for a
+  // founder in month 1, and $8 for a regular member.
+  const founderFirstHigh = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(2000),
+    peakGb: 2000,
+    foundingMember: true,
+    monthNumber: 1,
+  });
+  const regularFirstHigh = monthBillCents({
+    gbMinutes: fullMonthGbMinutes(2000),
+    peakGb: 2000,
+    firstMonth: true,
+  });
+  assert.equal(founderFirstHigh.totalCents, 1600);
+  assert.equal(regularFirstHigh.totalCents, 800);
 });
 
 test("switching the offer off keeps existing founders at $5 and prices new accounts at $10", () => {

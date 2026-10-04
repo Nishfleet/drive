@@ -339,7 +339,8 @@ test("a light month pays the membership, and a capped month pays the cap", async
   assert.equal(light.peak.peakBytes, 40 * GB);
   const membershipLine = lightBill.lines[lightBill.lines.length - 1];
   assert.equal(membershipLine.label, "Membership");
-  assert.equal(membershipLine.cents, 1000 - lightBill.storageCents);
+  assert.equal(lightBill.membershipCents, 1000);
+  assert.equal(lightBill.totalCents, 1000);
 });
 
 test("43,800 minutes is the divisor the metered half bills by", async () => {

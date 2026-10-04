@@ -222,7 +222,10 @@ test("a day of stored GB pushes the capped bill, with the free $1 as a dollar li
   const last = /** @type {Record<string, unknown>} */ (call.payload.events[23].metadata);
   assert.equal(last.storage_cents, bill.storageCents);
   assert.equal(last.total_cents, bill.totalCents);
-  assert.equal(last.credit_usd, bill.lines[2].usd);
+  const membershipLine = bill.lines.find((line) => line.label === "Membership");
+  assert.ok(membershipLine, "the invoice has a Membership line");
+  assert.equal(last.credit_usd, membershipLine.usd);
+  assert.equal(last.credit_label, "Membership");
   assert.equal(
     units.reduce((sum, n) => sum + n, 0),
     bill.totalCents,
