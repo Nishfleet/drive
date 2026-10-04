@@ -15,6 +15,7 @@ Usage:
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
+  drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
