@@ -67,6 +67,13 @@ export const PRICE = Object.freeze({
   foundingLine: "Join now and keep $5 a month for good.",
   needCard:
     "We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
+  // drive#417: until a card is really on file the usage page says no charge has
+  // been made and shows no bill as if charged. `monthBillCents()` still works
+  // the membership number out (money, untouched); this is the word the page
+  // and the CLI print instead for a card-less month, so the two cannot
+  // disagree. A stored `card_added_at` (accounts.row) is the record a card is
+  // on file; real capture waits on the Dodo key (#325).
+  noChargeYet: "No charge has been made. There is no card on file yet.",
   // The whole bill, for the offer description and llms.txt.
   rule: `$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest, still capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): a flat $${CAP_FLOOR_USD} up to ${CAP_PLATEAU_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
   // Rival comparison on the worked-example rows. The source is

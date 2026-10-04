@@ -250,6 +250,78 @@ test("sign-up without a card is refused and mails nothing", async () => {
   assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
 });
 
+test("every new-account path requires the card step (drive#417)", async () => {
+  // The one claim issue #417 makes about sign-up: no path opens a new account
+  // without the card step, and the answer comes from the server. Each path is
+  // driven the way the Worker's own dispatch (this file's workerFetch) takes
+  // it, against the real Better Auth database.
+  const made = dispatchEnv();
+  // 1. The email path: a first-time address with no card on file is refused,
+  // and no link is mailed, because the request never reaches the mailer.
+  // A body that names no card field at all is the same refusal (fail closed),
+  // so a client that drops the checkbox cannot open the account either. The
+  // raw JSON body below is the one this file's post() helper would otherwise
+  // fill in for, so the field is absent exactly as a client that sends none
+  // would send it.
+  for (const body of [
+    { step: "start", method: "email", email: "new@example.com", card: false },
+    { step: "start", method: "email", email: "new@example.com", card: "off" },
+  ]) {
+    const response = await workerFetch(post(body), made.env);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
+  }
+  const noCardField = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(noCardField.status, 400, "a start with no card field is refused");
+  assert.deepEqual(await noCardField.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
+  // The refusal is server side, not a screen: after the refusals the database
+  // holds no user row for the address, so nothing about the account exists.
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused sign-up");
+  // 2. The OAuth paths: Google and GitHub are the screen's buttons, and each
+  // is a closed door, so neither can open a new account behind the card step.
+  for (const method of ["google", "github"]) {
+    const response = await workerFetch(post({ step: "start", method }), made.env);
+    assert.equal(response.status, 503, `${method} is a closed door, not a new account`);
+    assert.deepEqual(await response.json(), signinClosedBody());
+    assert.equal(response.headers.get("set-cookie"), null, `${method} sets no session`);
+  }
+  assert.equal(made.sent.length, 0, "a closed sign-in mails nothing");
+  // 3. The email path WITH the card step is the one that opens the account, so
+  // the gate above is the card and not the address: the same first-time email
+  // now signs up, and the link leaves by email.
+  const withCard = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(withCard.status, 202, "the card step is what opens the new account");
+  assert.equal((await withCard.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  // The no-JavaScript form is the page's own path, so it is held to the same
+  // gate: an unchecked checkbox posts no card field.
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({ step: "start", method: "email", email: "form@example.com" }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 400, "the form path is refused with no card step");
+  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+});
+
 test("a request that did not come from the site is refused before anything is mailed", async () => {
   const made = dispatchEnv();
   const cross = post(

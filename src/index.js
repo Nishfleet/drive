@@ -613,9 +613,17 @@ export function createApp() {
     const account = c.get("account");
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
+    let cardOnFile = false;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
-      capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
+      const store = createD1DeviceStore(c.env.DRIVE_DB);
+      capUsd = await store.getCapUsd(account.id);
+      // The card on file is the accounts row's own stamp, read the same way as
+      // the cap (drive#417). Until it is really on file the usage page says no
+      // charge has been made and shows no bill, instead of the $10 membership
+      // line a card-less account would look like it had been charged. It is
+      // the display flag alone: the cap line and the write cap are unchanged.
+      cardOnFile = await store.cardAdded(account.id);
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -626,7 +634,7 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd },
+      { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
     );
   });
