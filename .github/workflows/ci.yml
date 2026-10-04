@@ -83,6 +83,15 @@ jobs:
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: go vet ./cmd/...
       - run: go build -o /tmp/drive ./cmd/drive
+      # The Windows jobs run only by hand (windows-msi.yml, drive#486), so the
+      # Windows code is still vetted and its tests compiled here, cross-built
+      # from Linux, on every PR.
+      - name: Windows code vets and its tests compile
+        env:
+          GOOS: windows
+        run: |
+          go vet ./cmd/...
+          go test -c -o /dev/null ./cmd/drive/
       - name: Unit tests
         run: go test ./cmd/drive/ -short -v
       # The step-2 done-when proof: a 64 MiB file's first bytes stream back

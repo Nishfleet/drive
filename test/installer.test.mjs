@@ -424,4 +424,6 @@ test("no Windows job runs on a pull request or a push, only when started by hand
   // The drive-letter proof moved with the job, it was not dropped.
   assert.match(WORKFLOW, /\n {2}windows:\n/, "the Windows workflow carries the windows job");
   assert.match(WORKFLOW, /TestWindowsMountProof/, "with its drive-letter mount proof");
+  // And the Windows code keeps a check on every PR, cross-built on Linux.
+  assert.match(ci, /GOOS: windows/, "ci.yml still vets the Windows code on every PR");
 });
