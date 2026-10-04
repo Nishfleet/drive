@@ -11,15 +11,17 @@
 // tables empty and fail here.
 //
 // The monthly half reads `usage_minutes`, the meter the invoice is worked out
-// from, so its number is the invoice's. That is asserted here by seeding the
-// month's own rows and leaving `agent_caps.month_spend_cents` at 0: one meter,
-// one number, and a store that had written a second ledger beside it would
-// fail this file.
-
-import assert from "node:assert/strict";
+// from, so its number is the invoice's. The two columns migration 0004 wrote
+// for a spend ledger (`month_key`, `month_spend_cents`) are dropped by
+// migrations 0017 and 0018 (drive issue #401), which `makeMeteredDB` applies
+// too, so a second ledger cannot even be written beside the meter: the
+// statement that tried fails at SQL, and the column checks in this file name
+// them gone.
+import assert from "node:assert/strict"
 import { test } from "node:test";
 import { failureMessage } from "../../src/messages.js";
 import { BYTES_PER_GB } from "../../src/meter.js";
+import { readAgentCaps } from "../../workers/api/src/agent-caps.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import apiWorker from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
@@ -42,6 +44,23 @@ function rowIn(sqlite, sql, ...params) {
   const row = sqlite.prepare(sql).get(...params);
   assert.notEqual(row, undefined, "the store answered from memory: the row is not in D1");
   return /** @type {Record<string, unknown>} */ (row);
+}
+
+/**
+ * The columns one table has, in the order it was built with, straight from the
+ * schema. The two columns a per-agent spend ledger lived in are dropped by
+ * migrations 0017 and 0018 (drive issue #401), and `makeMeteredDB` applies
+ * those files too, so this list is the proof they are gone and that the cap's
+ * own columns are the ones that are left.
+ * @param {import("../d1-sqlite.mjs").TestSqlite} sqlite
+ * @param {string} table
+ * @returns {string[]}
+ */
+function columnsOf(sqlite, table) {
+  return sqlite
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((column) => String(column.name));
 }
 
 /**
@@ -129,8 +148,9 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   // configured is capped rather than uncapped.
   assert.equal(stamped.monthly_cap_usd, 12);
   assert.equal(stamped.daily_requests, 1000);
-  // The second ledger stays empty: the month's spend is the meter's number.
-  assert.equal(stamped.month_spend_cents, 0);
+  // There is no second ledger beside the meter, not even an empty one: the
+  // columns one would live in were dropped (drive#401), so the row this read
+  // returns has neither of them.
 
   // A second request counts too, and writes: the count is a count of requests,
   // not a record of refusals.
@@ -236,17 +256,18 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   );
 
   // The spend is the meter's row, still exactly as the meter wrote it, and the
-  // `month_spend_cents` column migration 0004 left behind is still 0: the cap
-  // read the invoice's number and wrote nothing of its own.
+  // column a second ledger would have lived in is gone (migrations 0017 and
+  // 0018, drive#401): the cap read the invoice's number and wrote nothing of
+  // its own, so there is nothing left to read a spend from.
   assert.equal(
     rowIn(sqlite, "SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1", account.id)
       .gb_minutes_live,
     2000 * MINUTES_PER_MONTH,
   );
-  assert.equal(
-    rowIn(sqlite, "SELECT month_spend_cents FROM agent_caps WHERE key_id = ?1", key.keyId)
-      .month_spend_cents,
-    0,
+  assert.throws(
+    () => sqlite.prepare("SELECT month_spend_cents FROM agent_caps WHERE key_id = ?1").all(),
+    /no such column: month_spend_cents/,
+    "the second ledger's column is dropped: a spend beside the meter cannot be written back without failing this file",
   );
 
   // A device key is the person's own mount, so the same month caps nothing for
@@ -385,4 +406,58 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
       .day_requests,
     2,
   );
+});
+
+test("the spend ledger's columns are dropped, and the cap's table still reads and writes", async () => {
+  // The migration-only phase (drive issue #401): migrations 0017 and 0018 drop
+  // `month_key` and `month_spend_cents`, the two columns migration 0004 wrote
+  // for a per-agent spend ledger that was removed before it was ever read. This
+  // file's cap asks first for #171's deploy to be merged — a column drop cannot
+  // ride in the same deploy as the code that stops reading it — and it is (PR
+  // #400), so `makeMeteredDB` applies the drops with every other file in
+  // migrations/drive/ and the schema read back here is the schema that ships.
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_drop", name: "Drop drive" };
+  const key = await store.mintKey(account, { kind: "agent", name: "claude" });
+
+  // What is left is the cap's own, in the order the table was built with: the
+  // four columns the reader and the writer name, and no ledger's.
+  assert.deepEqual(columnsOf(sqlite, "agent_caps"), [
+    "account_id",
+    "key_id",
+    "monthly_cap_usd",
+    "daily_requests",
+    "day_key",
+    "day_requests",
+    "updated_at",
+  ]);
+
+  // A statement that names a dropped column fails here, where the failure is
+  // read, rather than in production — and so does a write that would put the
+  // second ledger back beside the meter.
+  assert.throws(
+    () => sqlite.prepare("SELECT month_key FROM agent_caps").all(),
+    /no such column: month_key/,
+  );
+  assert.throws(
+    () =>
+      sqlite
+        .prepare("INSERT INTO agent_caps (account_id, key_id, month_spend_cents) VALUES (?1, ?2, ?3)")
+        .run(account.id, key.keyId, 500),
+    /has no column named month_spend_cents|no such column: month_spend_cents/,
+    "the second ledger's column is dropped: a spend beside the meter cannot be written back without failing this file",
+  );
+
+  // Over the schema that is left, the table still reads and writes the way the
+  // Worker works it: one request stamps the key's own UTC day through the
+  // Worker's write path, the Worker's own read (`readAgentCaps`) answers from
+  // that row, and a person's stricter limit is an UPDATE the table takes.
+  const first = await writeAt(store, key, "/u/acct_drop/notes.md");
+  assert.equal(first.status, 201, "under the cap the key writes, on the dropped-column schema too");
+  assert.equal((await readAgentCaps(db, account.id, key.keyId))?.day_key, "2026-09-30");
+  assert.equal((await readAgentCaps(db, account.id, key.keyId))?.day_requests, 1);
+  sqlite.prepare("UPDATE agent_caps SET daily_requests = 2 WHERE key_id = ?1").run(key.keyId);
+  assert.equal((await readAgentCaps(db, account.id, key.keyId))?.daily_requests, 2);
 });
