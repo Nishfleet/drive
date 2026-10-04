@@ -550,7 +550,6 @@ function section(className) {
   assert.ok(from >= 0, `the .${className} section is missing from the page`);
   return words.slice(from, words.indexOf("</section>", from));
 }
-}
 
 const stripCaption = () => paragraph("strip-caption");
 const examplesNote = () => paragraph("examples-note");
