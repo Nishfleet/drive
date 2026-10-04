@@ -60,7 +60,9 @@ export function signupCardFingerprint(fields) {
   }
   const email = fields.email;
   if (typeof email !== "string" || email.trim() === "") {
-    throw new TypeError(`signupCardFingerprint needs an email when the card step has no fingerprint, got ${String(email)}`);
+    throw new TypeError(
+      `signupCardFingerprint needs an email when the card step has no fingerprint, got ${String(email)}`,
+    );
   }
   return `test:${email.trim().toLowerCase()}`;
 }
@@ -126,7 +128,10 @@ export async function claimCardFingerprint(db, options) {
     throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
   }
   const at = Math.floor(nowMs / 1000);
-  const existing = await db.prepare("SELECT id FROM accounts WHERE id = ?1").bind(accountId).first();
+  const existing = await db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
   try {
     if (existing === null || existing === undefined) {
       await db
@@ -216,7 +221,10 @@ export async function attachPendingCardAccount(db, options) {
   if (holdId === accountId) {
     return;
   }
-  const existing = await db.prepare("SELECT id FROM accounts WHERE id = ?1").bind(accountId).first();
+  const existing = await db
+    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
   if (existing !== null && existing !== undefined) {
     const fields = await db
       .prepare(
@@ -302,7 +310,9 @@ export async function accountFirstChargedAt(db, accountId) {
   }
   const n = typeof stamp === "bigint" ? Number(stamp) : stamp;
   if (typeof n !== "number" || !Number.isFinite(n)) {
-    throw new TypeError(`accounts.first_charged_at must be unix seconds or null, got ${String(stamp)}`);
+    throw new TypeError(
+      `accounts.first_charged_at must be unix seconds or null, got ${String(stamp)}`,
+    );
   }
   return n;
 }
@@ -322,7 +332,9 @@ export function preChargeUploadBlocked(fields) {
     const charged = fields.firstChargedAt;
     const n = typeof charged === "bigint" ? Number(charged) : charged;
     if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
-      throw new TypeError(`firstChargedAt must be a positive unix stamp or null, got ${String(charged)}`);
+      throw new TypeError(
+        `firstChargedAt must be a positive unix stamp or null, got ${String(charged)}`,
+      );
     }
     return null;
   }
@@ -340,7 +352,12 @@ export function preChargeUploadBlocked(fields) {
  * @returns {number}
  */
 function checkedBytes(value, name) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    !Number.isInteger(value)
+  ) {
     throw new TypeError(`${name} must be 0 or more whole bytes, got ${String(value)}`);
   }
   return value;

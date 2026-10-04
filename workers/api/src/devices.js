@@ -16,8 +16,8 @@ import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import {
   accountFounding,
-  markAccountPaying,
   releaseFoundingReservation as clearFoundingReservation,
+  markAccountPaying,
   reserveFoundingSlot,
 } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";

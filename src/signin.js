@@ -48,14 +48,14 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { AFTER_SIGNIN_PATH, authFor, sessionAccount, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
 import {
   attachPendingCardAccount,
   claimCardFingerprint,
   pendingCardAccountId,
   signupCardFingerprint,
 } from "./abuse-guards.js";
+import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS, sessionAccount } from "./auth.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { foundingOfferIsOpen } from "./founding.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -557,7 +557,12 @@ export async function handleSigninLinkVerify(request, env) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
   }
   const driveDb = env.DRIVE_DB;
-  if (driveDb !== undefined && driveDb !== null && typeof driveDb === "object" && "prepare" in driveDb) {
+  if (
+    driveDb !== undefined &&
+    driveDb !== null &&
+    typeof driveDb === "object" &&
+    "prepare" in driveDb
+  ) {
     const cookies = verified.headers.getSetCookie();
     const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
     const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);

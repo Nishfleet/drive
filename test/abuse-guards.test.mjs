@@ -6,11 +6,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  PRE_CHARGE_STORAGE_LIMIT_BYTES,
   accountStoredBytes,
   attachPendingCardAccount,
   cardFingerprintTaken,
   claimCardFingerprint,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
   pendingCardAccountId,
   preChargeUploadBlocked,
   signupCardFingerprint,
@@ -185,7 +185,9 @@ test("a founding slot is reserved at the card step, confirmed at first charge, a
   const reserved = await reserveFoundingSlot(db, "acct", { offerOpen: true, now: NOW });
   assert.deepEqual(reserved, { founding: false, reserved: true });
   const reservedRow = sqlite
-    .prepare("SELECT founding, founding_reserved, card_added_at, first_charged_at FROM accounts WHERE id = ?")
+    .prepare(
+      "SELECT founding, founding_reserved, card_added_at, first_charged_at FROM accounts WHERE id = ?",
+    )
     .get("acct");
   assert.equal(reservedRow.founding, null);
   assert.equal(reservedRow.founding_reserved, 1);

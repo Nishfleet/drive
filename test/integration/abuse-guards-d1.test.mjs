@@ -21,7 +21,9 @@ test("the real migrations add the three nullable abuse-guard columns", () => {
   assert.ok(migrationFiles.includes("0019_abuse_guards.sql"), "0019_abuse_guards.sql is missing");
   const { sqlite } = makeMeteredDB();
   for (const name of ["card_fingerprint", "founding_reserved", "first_charged_at"]) {
-    const row = sqlite.prepare("SELECT * FROM pragma_table_info('accounts') WHERE name = ?1").get(name);
+    const row = sqlite
+      .prepare("SELECT * FROM pragma_table_info('accounts') WHERE name = ?1")
+      .get(name);
     assert.ok(row, `accounts.${name} is missing`);
     assert.equal(row.notnull, 0, `accounts.${name} must stay nullable so old rows keep serving`);
     assert.equal(row.dflt_value, null, `accounts.${name} has no default`);

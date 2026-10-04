@@ -13,7 +13,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { dollarsToCapCents } from "../../src/cap.js";
-import { accountFounding, FOUNDING_PAYING_CAP, markAccountPaying, reserveFoundingSlot } from "../../src/founding.js";
+import {
+  accountFounding,
+  FOUNDING_PAYING_CAP,
+  markAccountPaying,
+  reserveFoundingSlot,
+} from "../../src/founding.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
@@ -56,7 +61,9 @@ test("a paying write and read land on the real rows, and a retry does not change
   const first = await store.markPaying(account.id, true);
   assert.deepEqual(first, { founding: true });
   const row = sqlite
-    .prepare("SELECT founding, card_added_at, founding_reserved, first_charged_at FROM accounts WHERE id = ?")
+    .prepare(
+      "SELECT founding, card_added_at, founding_reserved, first_charged_at FROM accounts WHERE id = ?",
+    )
     .get(account.id);
   assert.equal(row.founding, 1);
   assert.equal(row.founding_reserved, 1);
