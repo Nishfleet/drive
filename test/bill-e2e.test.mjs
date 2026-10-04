@@ -282,7 +282,7 @@ const meteredFromTheModule = (gbMinutes) => Math.round(meteredMonthlyBillUsd(gbM
 
 // --- The spec's five sizes, held all month --------------------------------
 
-test("the spec's sizes held all month bill the ceiling, before the $1 credit", async () => {
+test("the spec's sizes held all month bill the ceiling", async () => {
   // Each case is one calendar month of a drive holding one size from 00:00 UTC
   // on the 1st: 720 hours rolled, the peak read out of usage_minutes, and the
   // bill from monthBillCents(). The expected storage line is the spec's own

@@ -230,10 +230,10 @@ test("the ceiling math is the spec's plateau, not per-TB caps", () => {
 
 test("the strip's 60%-full drive bills what the page prints", () => {
   // 0.6 TB metered at 2¢/GB is $12, and $12 is the cap at that size, so the
-  // strip's figure is the metered cost under the cap, less the free $1.
+  // strip's figure is the metered cost under the cap.
   assert.equal(billForAllMonth(0.6).storageUsd, 12);
   assert.match(words, /60% full - \$12/);
-  assert.match(words, /bills \$12 a month: \$12 of storage, less the free \$1/);
+  assert.match(words, /bills \$12 a month: \$12 of storage/);
 });
 
 test("the page's ceiling prose names the cap from config", () => {
@@ -254,13 +254,11 @@ test("the page's ceiling prose names the cap from config", () => {
     ),
     "the examples note must spell the plateau out",
   );
-  // And the credit, the same way the bill does it (#76): the rows charge what
-  // the cap allows, less the $1, so the note has to say so.
+  // The charged figure, the same way the bill does it: the rows charge what
+  // the cap allows, so the note has to say so.
   assert.ok(
-    examplesNote().includes(
-      `less the free $${PRICE.freeMonthlyUsd}, so 2 TB is $${billForAllMonth(2).billUsd}`,
-    ),
-    "the examples note must state the figure the bill charges after the credit",
+    examplesNote().includes(`so 2 TB is $${billForAllMonth(2).billUsd}`),
+    "the examples note must state the figure the bill charges",
   );
 });
 
@@ -386,7 +384,7 @@ test("llms.txt's worked examples are the computed bills", () => {
   assert.ok(
     llmsFlat.includes(
       `1 TB drive kept 60% full bills ${usd(sixtyPercent.billUsd)} a month ` +
-        `(${usd(sixtyPercent.storageUsd)} of storage, less the $${PRICE.freeMonthlyUsd}).`,
+        `(${usd(sixtyPercent.storageUsd)} of storage).`,
     ),
     "llms.txt's 60%-full figure must be the computed bill",
   );

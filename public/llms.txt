@@ -25,9 +25,9 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
 - Version history: not in version 1.
 - No plan sizes and no fixed plans: you are billed for the GB you store, so a
-  1 TB drive kept 60% full bills $12 a month ($12 of storage, less the $1).
+  1 TB drive kept 60% full bills $12 a month ($12 of storage).
 
-Worked examples, each the amount charged after the $1 free:
+Worked examples, each the amount charged:
 
 - 800 GB kept all month = $12 ($12 of storage)
 - 1.6 TB = $12.80 ($12.80 of storage)
