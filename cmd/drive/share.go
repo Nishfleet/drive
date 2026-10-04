@@ -90,18 +90,22 @@ func addLinkFlags(fs *flag.FlagSet, action, argument string) *linkFlags {
 
 // endpoint resolves the --api value into the endpoint for one job, and refuses
 // the combinations that would make the command guess what it was asked to do.
-func (l *linkFlags) endpoint(path string) (string, error) {
+func (l *linkFlags) endpoint(path, home string) (string, error) {
 	if l.list && l.revoke != "" {
 		return "", fmt.Errorf("--list and --revoke are two different jobs; pick one")
 	}
-	if strings.TrimSpace(l.api) == "" {
-		return "", fmt.Errorf("no api Worker configured; set --api or DRIVE_API_URL")
-	}
-	base, err := parseAPIBase(l.api)
+	base, err := resolveAPIBase(home, l.api)
 	if err != nil {
 		return "", err
 	}
-	return base + path, nil
+	if strings.TrimSpace(base) == "" {
+		return "", fail("no-api")
+	}
+	parsed, err := parseAPIBase(base)
+	if err != nil {
+		return "", failDetail("api-url", err)
+	}
+	return parsed + path, nil
 }
 
 // runShare is `drive share`.
@@ -112,7 +116,7 @@ func runShare(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	endpoint, err := l.endpoint(SHARE_PATH)
+	endpoint, err := l.endpoint(SHARE_PATH, common.home)
 	if err != nil {
 		return err
 	}
@@ -177,7 +181,7 @@ func runRequest(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	endpoint, err := l.endpoint(REQUEST_PATH)
+	endpoint, err := l.endpoint(REQUEST_PATH, common.home)
 	if err != nil {
 		return err
 	}

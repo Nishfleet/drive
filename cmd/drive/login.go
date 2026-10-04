@@ -83,16 +83,17 @@ func Login(home, apiBase string, out io.Writer) error {
 		return failf("login-no-storage", strings.Join(missing, ", "))
 	}
 	creds := Credentials{
-		APIBase:     client.Base,
-		DeviceToken: token,
-		AccountID:   account.ID,
-		AccountName: account.Name,
-		Endpoint:    cfg.Endpoint,
-		Bucket:      cfg.Bucket,
-		Prefix:      cfg.Prefix,
-		Region:      cfg.Region,
-		AccessKeyID: cfg.AccessKey,
-		KeyID:       key.KeyID,
+		APIBase:      client.Base,
+		DeviceToken:  token,
+		AccountID:    account.ID,
+		AccountName:  account.Name,
+		AccountEmail: account.Email,
+		Endpoint:     cfg.Endpoint,
+		Bucket:       cfg.Bucket,
+		Prefix:       cfg.Prefix,
+		Region:       cfg.Region,
+		AccessKeyID:  cfg.AccessKey,
+		KeyID:        key.KeyID,
 	}
 	if err := SaveCredentials(home, creds); err != nil {
 		return err
@@ -100,7 +101,12 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Signed in as %s. Storage settings written. Run `drive init` to mount.\n", creds.AccountName)
+	who := accountLabel(account)
+	if who == "" {
+		fmt.Fprintln(out, "Signed in. Storage settings written. Run `drive init` to mount.")
+		return nil
+	}
+	fmt.Fprintf(out, "Signed in as %s. Storage settings written. Run `drive init` to mount.\n", who)
 	return nil
 }
 

@@ -67,9 +67,9 @@ func runCap(args []string) error {
 	if err != nil {
 		return err
 	}
-	base := strings.TrimSpace(*api)
-	if base == "" {
-		base = creds.APIBase
+	base, err := resolveAPIBase(home, *api)
+	if err != nil {
+		return err
 	}
 	client, err := NewAPIClient(base, creds.DeviceToken)
 	if err != nil {

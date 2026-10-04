@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,8 +46,11 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if !strings.Contains(printed, "BCDF-GHJK") {
 		t.Errorf("the code was not shown:\n%s", printed)
 	}
-	if !strings.Contains(printed, "Signed in as Nish's MacBook") {
-		t.Errorf("the account was not shown:\n%s", printed)
+	if !strings.Contains(printed, "Signed in as nish@example.com") {
+		t.Errorf("login must print the email, not the account id:\n%s", printed)
+	}
+	if strings.Contains(printed, "acct_1") {
+		t.Errorf("login printed the account id:\n%s", printed)
 	}
 
 	creds, err := LoadCredentials(home)
@@ -112,6 +116,44 @@ func TestLoginNamesMissingStorageInsteadOfLooping(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "Run `drive login` so this device gets") {
 		t.Fatalf("looping missing-config advice: %v", err)
+	}
+}
+
+func TestEmptyAPIBaseIsNoAPINotUnexpected(t *testing.T) {
+	_, err := NewAPIClient("", "")
+	var f *failure
+	if !errors.As(err, &f) || f.Kind != "no-api" {
+		t.Fatalf("empty api base = %v, want no-api", err)
+	}
+	if strings.Contains(err.Error(), "That did not work") {
+		t.Fatalf("empty api base was wrapped as unexpected: %v", err)
+	}
+}
+
+func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	env := Env{
+		Home:     home,
+		Runner:   &recordingRunner{},
+		LookPath: func(name string) (string, error) { return "/fake/" + name, nil },
+	}.withDefaults()
+	out := captureStdout(t, func() {
+		if err := initAgents(env); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "no drive api configured") {
+		t.Fatalf("init ignored the apiBase login saved:\n%s", out)
+	}
+	if strings.Contains(out, "sign in with") {
+		t.Fatalf("init advised signing in again after a saved login:\n%s", out)
 	}
 }
 

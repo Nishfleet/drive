@@ -102,10 +102,10 @@ var messageTable = map[string][2]string{
 	// CLI-shaped failures: the next step is an exact command.
 	"no-api": {
 		"No drive api is configured.",
-		"Run the command again with `--api <url>`, or set the DRIVE_API_URL environment variable.",
+		"Run `drive login`, or pass `--api <url>`, or set DRIVE_API_URL.",
 	},
 	"api-url": {
-		"{1} is not a working drive api address.",
+		"That drive api address is not a working http or https URL.",
 		"Pass the address as `--api <url>` (http or https), then run the command again.",
 	},
 	"api-answer": {

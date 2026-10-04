@@ -88,15 +88,15 @@ func branchClient(home, api string) (*APIClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := strings.TrimSpace(api)
-	if base == "" {
-		base = creds.APIBase
+	base, err := resolveAPIBase(home, api)
+	if err != nil {
+		return nil, err
 	}
 	if base == "" {
-		return nil, errors.New("no api Worker configured; set --api or DRIVE_API_URL")
+		return nil, fail("no-api")
 	}
 	if strings.TrimSpace(creds.DeviceToken) == "" {
-		return nil, errors.New("this device is not signed in yet; run `drive init` first")
+		return nil, fail("not-signed-in")
 	}
 	return NewAPIClient(base, creds.DeviceToken)
 }

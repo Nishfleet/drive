@@ -68,8 +68,9 @@ type MintedKey struct {
 
 // Account is the account a device token belongs to.
 type Account struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // APIClient talks to one api Worker as one signed-in device.
@@ -82,9 +83,12 @@ type APIClient struct {
 // NewAPIClient builds a client for a base URL, reusing parseAPIBase's checks
 // (status.go) so the same value is refused here and there.
 func NewAPIClient(apiBase, token string) (*APIClient, error) {
+	if strings.TrimSpace(apiBase) == "" {
+		return nil, fail("no-api")
+	}
 	base, err := parseAPIBase(apiBase)
 	if err != nil {
-		return nil, err
+		return nil, failDetail("api-url", err)
 	}
 	return &APIClient{Base: base, Token: token, HTTP: &http.Client{Timeout: apiTimeout}}, nil
 }
@@ -462,8 +466,9 @@ func (c *APIClient) doRaw(method, path string, body any) (*http.Response, error)
 type Credentials struct {
 	APIBase     string `json:"apiBase"`
 	DeviceToken string `json:"deviceToken"`
-	AccountID   string `json:"accountId"`
-	AccountName string `json:"accountName"`
+	AccountID    string `json:"accountId"`
+	AccountName  string `json:"accountName"`
+	AccountEmail string `json:"accountEmail,omitempty"`
 	Endpoint    string `json:"endpoint,omitempty"`
 	Bucket      string `json:"bucket,omitempty"`
 	Prefix      string `json:"prefix,omitempty"`
@@ -510,4 +515,36 @@ func SaveCredentials(home string, creds Credentials) error {
 		return err
 	}
 	return nil
+}
+
+// resolveAPIBase is --api / DRIVE_API_URL, then the apiBase `drive login`
+// wrote, then the live site when this device already holds a token. Empty
+// means this machine has not signed in and the caller did not pass an address.
+func resolveAPIBase(home, explicit string) (string, error) {
+	if v := strings.TrimSpace(explicit); v != "" {
+		return v, nil
+	}
+	creds, err := LoadCredentials(home)
+	if err != nil {
+		return "", err
+	}
+	if v := strings.TrimSpace(creds.APIBase); v != "" {
+		return v, nil
+	}
+	if strings.TrimSpace(creds.DeviceToken) != "" {
+		return defaultAPIBase, nil
+	}
+	return "", nil
+}
+
+// accountLabel is the words `drive login` prints after "Signed in as": the
+// email a person recognises, never the account id.
+func accountLabel(account Account) string {
+	if e := strings.TrimSpace(account.Email); e != "" {
+		return e
+	}
+	if n := strings.TrimSpace(account.Name); n != "" && n != account.ID {
+		return n
+	}
+	return ""
 }

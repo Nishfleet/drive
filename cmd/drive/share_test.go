@@ -341,6 +341,25 @@ func TestShareRefusesAnUnconfiguredApiWorker(t *testing.T) {
 	}
 }
 
+func TestShareReadsApiBaseDriveLoginSaved(t *testing.T) {
+	server := testLinkServer()
+	srv := server.start(t)
+	defer srv.Close()
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: srv.URL, DeviceToken: "dtok"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	stdout := captureStdout(t, func() {
+		if err := runShare([]string{"--home", home, filepath.Join(home, "Drive", "cat.jpg")}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stdout, "https://drive.test/s/"+shareToken) {
+		t.Errorf("output %q does not carry the link from the saved apiBase", stdout)
+	}
+}
+
 // The whole `drive share` path, run as the command itself: the argument is
 // translated, the endpoint is called and the link reaches stdout.
 func TestRunSharePrintsTheLink(t *testing.T) {
