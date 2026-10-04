@@ -502,7 +502,15 @@ test("this Worker mounts one /api/* route ahead of the gate, and it is the revok
   const lane = routes
     .filter((r) => r.method === "ALL" && r.path.startsWith("/api/"))
     .map((r) => r.path);
-  assert.deepEqual(lane, [REVOKE_PATH, "/api/*", "/api/files/*"]);
+  // The account-close pair (drive#235) adds two CSRF mounts, both after the
+  // gate, so the revoke is still the only /api/* route ahead of it.
+  assert.deepEqual(lane, [
+    REVOKE_PATH,
+    "/api/*",
+    "/api/files/*",
+    "/api/account/close",
+    "/api/account/close/cancel",
+  ]);
   const forward = routes.findIndex((r) => r.path === REVOKE_PATH);
   const gate = routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
   assert.ok(
