@@ -453,7 +453,7 @@ export const CAP_ENDPOINT = "/api/cap";
  *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
- * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function}|null} capStore
+ * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
  */
 export async function handleCapRequest(request, account, capStore) {
   if (!account) {
@@ -493,24 +493,34 @@ export async function handleCapRequest(request, account, capStore) {
   }
   await capStore.setCapCents(account, dollarsToCapCents(usd));
   const keys = await capStore.listCapKeys(account.id);
-  const usage = {
-    gbMinutes: 0,
-    peakGb: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd: usd,
-    cardAdded: true,
-  };
+  // The swap is decided from the month the account actually counted, so
+  // setting the cap below what it has already spent enforces at once (the
+  // finish line: making a drive read-only with `drive cap`). A deployment
+  // without the meter tables has no month read and keeps the blank one, which
+  // is the pre-existing behaviour and swaps nothing.
+  const usage =
+    typeof capStore.monthUsage === "function"
+      ? await capStore.monthUsage(account.id, { capUsd: usd })
+      : {
+          gbMinutes: 0,
+          peakGb: 0,
+          storedGb: 0,
+          storedDaily: [],
+          downloadBytes: 0,
+          averageStoredGb: 0,
+          capUsd: usd,
+          cardAdded: true,
+        };
   const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
+  const credential = swapCredential(report);
   return new Response(
     JSON.stringify({
       ...summary,
       capLine: capLine(summary.cap),
       mount: report.mount,
+      ...(credential ? { credential } : {}),
     }),
     {
       status: 200,
@@ -520,6 +530,51 @@ export async function handleCapRequest(request, account, capStore) {
       },
     },
   );
+}
+
+/**
+ * The credential a swap minted, in the shape the mount signs with, or null when
+ * the run swapped nothing.
+ *
+ * The finish line of drive issue #241 is a real mount going read-only, and a
+ * mount can only go read-only if it holds the swapped key: rclone's credential
+ * is a local config file, so whoever restarts the mount has to be told which
+ * key to write there. This is that answer — the access key id, the secret and
+ * the STS session token a scoped credential is minted with (the same three
+ * fields workers/api/src/s3-keys.js returns). Without the session token the
+ * storage server answers InvalidTokenId and the mount reads nothing at all
+ * (measured against the pinned MinIO), so a hand-back that dropped it would be
+ * worse than no hand-back.
+ *
+ * Only the LAST swap is reported, and it is the one the mount mounts with:
+ * one account's mount carries one credential, and the last swap is the
+ * account's current state. The store's own rows are the record of the others.
+ *
+ * @param {{applied?: ReadonlyArray<{minted?: unknown}>}} report an enforceCap result
+ * @returns {{accessKeyId: string, secret: string, sessionToken?: string|null}|null}
+ */
+function swapCredential(report) {
+  const applied = Array.isArray(report.applied) ? report.applied : [];
+  const minted =
+    /** @type {{accessKeyId?: unknown, secret?: unknown, sessionToken?: unknown}|undefined} */ (
+      applied.length === 0 ? undefined : applied[applied.length - 1].minted
+    );
+  if (typeof minted !== "object" || minted === null) {
+    return null;
+  }
+  if (typeof minted.accessKeyId !== "string" || minted.accessKeyId === "") {
+    return null;
+  }
+  if (typeof minted.secret !== "string" || minted.secret === "") {
+    return null;
+  }
+  return {
+    accessKeyId: minted.accessKeyId,
+    secret: minted.secret,
+    ...(typeof minted.sessionToken === "string" && minted.sessionToken !== ""
+      ? { sessionToken: minted.sessionToken }
+      : {}),
+  };
 }
 
 /**

@@ -102,17 +102,12 @@ export default defineConfig({
       // — twelve times D1's 1 MiB row limit, which is why phase 1 refused it
       // and why the snapshot now lives here instead. The `branches` row keeps
       // a pointer to the key and the value's byte length
-      // (migrations/drive/0012_branch_snapshot_kv.sql), and
-      // src/branches.js readSnapshot prefers this namespace and falls back to
-      // the legacy column for a row written before the migration.
-      //
-      // Optional, not required: `snapshotsFor()` in src/index.js answers null
-      // for a deployment with no namespace, and every reader treats null as
-      // "use the row", so it is deliberately NOT on the health check's
-      // required-bindings list (src/health.js) — a binding that a small
-      // deployment legitimately lacks must not page a human. It is created
-      // once, out of band, because an unattended `cf deploy` does not
-      // provision a namespace (it prompts, and nothing answers):
+      // (migrations/drive/0012_branch_snapshot_kv.sql). Since drive#329 the
+      // leftover column is unread and unwritten: `readSnapshot` takes the
+      // pointer only, and a missing namespace is a 503 on every branch and
+      // rewind route. The binding is on src/health.js `REQUIRED_BINDINGS`.
+      // It is created once, out of band, because an unattended `cf deploy`
+      // does not provision a namespace (it prompts, and nothing answers):
       //   cf kv namespaces create --title drive-branch-snapshots
       BRANCH_SNAPSHOTS: bindings.kv({
         id: "13f2292d4fdc448492c2a4603e1cc682",
@@ -129,6 +124,12 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
+      // drive issue #386: the founding-member offer switch. A Worker var, not
+      // a code change and not a secret: "1" keeps the offer open, "0" closes
+      // it. Closing it never changes accounts that already hold the flag
+      // (src/founding.js). The health check does not probe it: a string is
+      // not a reachable dependency, and a missing var is treated as open.
+      FOUNDING_OFFER_OPEN: bindings.text("1"),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.

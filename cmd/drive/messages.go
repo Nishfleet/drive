@@ -228,6 +228,18 @@ var messageTable = map[string][2]string{
 		"There is no signed-in account on this device to sign out everywhere.",
 		"Run `drive init` to sign in, then run `drive logout --all --yes`.",
 	},
+	"import-source": {
+		"That is not an rclone remote this command can import from.",
+		"Pass a remote you already made with `rclone config`, like `photos:`, then run `drive import` again.",
+	},
+	"import-not-mounted": {
+		"The drive is not mounted on this computer.",
+		"Run `drive init` first, then run `drive import` again.",
+	},
+	"import-failed": {
+		"rclone could not copy those files into the drive.",
+		"Run `rclone config` to check the remote, then run `drive import` again.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
