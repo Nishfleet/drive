@@ -221,24 +221,28 @@ export async function attachPendingCardAccount(db, options) {
   if (holdId === accountId) {
     return;
   }
+  const holdFields = await db
+    .prepare(
+      `SELECT card_fingerprint, founding_reserved, first_charged_at, card_added_at
+         FROM accounts WHERE id = ?1`,
+    )
+    .bind(holdId)
+    .first();
+  if (holdFields === null || holdFields === undefined || typeof holdFields !== "object") {
+    throw new TypeError(`attachPendingCardAccount lost the hold row ${holdId}`);
+  }
+  const holdFp = /** @type {{card_fingerprint?: unknown}} */ (holdFields).card_fingerprint;
   const existing = await db
-    .prepare("SELECT id FROM accounts WHERE id = ?1")
+    .prepare("SELECT id, card_fingerprint FROM accounts WHERE id = ?1")
     .bind(accountId)
     .first();
-  if (existing !== null && existing !== undefined) {
-    const fields = await db
-      .prepare(
-        `SELECT card_fingerprint, founding_reserved, first_charged_at, card_added_at
-           FROM accounts WHERE id = ?1`,
-      )
-      .bind(holdId)
-      .first();
-    const row = /** @type {{
-      card_fingerprint?: unknown,
-      founding_reserved?: unknown,
-      first_charged_at?: unknown,
-      card_added_at?: unknown,
-    } | null} */ (fields);
+  if (existing !== null && existing !== undefined && typeof existing === "object") {
+    const targetFp = /** @type {{card_fingerprint?: unknown}} */ (existing).card_fingerprint;
+    if (typeof targetFp === "string" && targetFp !== "" && targetFp !== holdFp) {
+      throw new TypeError(
+        `attachPendingCardAccount would replace ${accountId}'s fingerprint with a different card`,
+      );
+    }
     await db
       .prepare("UPDATE accounts SET card_fingerprint = NULL WHERE id = ?1")
       .bind(holdId)
@@ -253,10 +257,10 @@ export async function attachPendingCardAccount(db, options) {
           WHERE id = ?5`,
       )
       .bind(
-        row?.card_fingerprint ?? null,
-        row?.founding_reserved ?? null,
-        row?.first_charged_at ?? null,
-        row?.card_added_at ?? null,
+        holdFp ?? null,
+        /** @type {{founding_reserved?: unknown}} */ (holdFields).founding_reserved ?? null,
+        /** @type {{first_charged_at?: unknown}} */ (holdFields).first_charged_at ?? null,
+        /** @type {{card_added_at?: unknown}} */ (holdFields).card_added_at ?? null,
         accountId,
       )
       .run();

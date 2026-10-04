@@ -38,6 +38,7 @@
 // reason: one place formats each number, so the usage page and `drive usage`
 // cannot print the same money two different ways.
 
+import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { failureMessage } from "./messages.js";
 // The price's numbers come from src/pricing.js, the one price source: the
 // metered rate, the maximum per TB and the founding share are declared there
@@ -80,10 +81,10 @@ export function billingConfigFor(price) {
     // The first 1,000 paying accounts are founding while the offer is open.
     // The number never leaves this file as a public string.
     foundingLimit: 1000,
-    // The default spending cap, $20 a month (Nish, 2026-10-04, drive#464).
-    // The customer's own guardrail, not the price maximum: the cap counts
+    // The default spending cap (drive#464), from src/cap-default.js. The
+    // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
-    defaultCapUsd: 20,
+    defaultCapUsd: DEFAULT_CAP_USD,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,

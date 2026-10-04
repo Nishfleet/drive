@@ -227,6 +227,7 @@ test("closing before paying releases the reserved slot", async () => {
       .founding_reserved,
     null,
   );
+  assert.deepEqual(await confirmFounding(db, "acct", { now: NOW }), { founding: false });
 });
 
 test("both Worker configs declare FOUNDING_OFFER_OPEN as a text var defaulting to open", async () => {

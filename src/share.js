@@ -1244,6 +1244,8 @@ export async function handleRequestUploadRequest(request, files, links, capState
   if (options.db) {
     const stored = await accountStoredBytes(options.db, record.accountId);
     const header = Number(request.headers.get("content-length") ?? "");
+    // Same exact-limit edge as src/files.js: a missing length is 1 byte once
+    // stored has reached 1 TB, so the upload cannot sneak past with size 0.
     const incomingBytes =
       Number.isInteger(header) && header > 0
         ? header
