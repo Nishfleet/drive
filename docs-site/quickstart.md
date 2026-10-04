@@ -40,10 +40,15 @@ sudo dnf install drive
 ```
 
 One line per system, and nothing else to do by hand: the command and the parts
-it needs (the storage driver among them) arrive together, because each package
-declares the other as a dependency. `drive init` in step 3 refuses to mount
-when a part is older than it needs and prints the fix, so the version talk
-lives in [Other ways](#other-ways-to-install) and not in your way.
+it needs (the storage driver among them) arrive together, because each drive
+package declares the parts it needs and the package manager resolves them.
+`drive init` in step 3 refuses to mount when a part is older than it needs and
+prints the fix, so the version talk lives in [Other ways](#other-ways-to-install)
+and not in your way.
+
+These packages are not published yet — they land with the first release, and the
+line above is the one to paste once your package manager can resolve them.
+Until then use one of the [other ways](#other-ways-to-install).
 
 Windows installs with an installer that puts the command on your PATH and
 registers the logon task; it comes with the first published release.
@@ -139,8 +144,9 @@ that release has not run yet, or you would rather build the command yourself:
 - Build the command from the source with the Go toolchain. `drive --help` prints
   the exact route, and `drive update` runs the same build when a new version
   ships, so it leaves the old binary in place until the new one is built.
-- Build the Linux and macOS packages on your machine, then install the file
-  the build writes.
+- Build the Linux and macOS packages on your machine with
+  `goreleaser release --snapshot --clean`, then install the file the build
+  writes under `dist/`.
 - Windows installs with an MSI built with the stock WiX toolchain: it puts the
   command and rclone on your PATH, brings WinFsp in through WinFsp's own
   package dependency, and registers the logon task.

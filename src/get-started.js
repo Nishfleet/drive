@@ -41,12 +41,19 @@ export function installCommand() {
  * OS, above the command, so the page answers "how do I get it" before it asks
  * the reader to paste anything. Each row is checked here rather than trusted,
  * because a row that is not a single line is a row the page cannot render as
- * one pasted line.
+ * one pasted line. The rows are an argument with the module's own as the
+ * default, so a page reads its table and a test can hand the check a bad row.
+ * @param {ReadonlyArray<{os: string, line: string}>} [rows]
  * @returns {{os: string, line: string}[]}
  */
-export function installLines() {
-  return INSTALL_LINES.map((row, index) => {
-    if (typeof row.os !== "string" || typeof row.line !== "string") {
+export function installLines(rows = INSTALL_LINES) {
+  return rows.map((row, index) => {
+    if (typeof row.os !== "string" || row.os.trim() === "") {
+      throw new TypeError(
+        `install line ${index} needs a named system, got ${JSON.stringify(row.os)}`,
+      );
+    }
+    if (typeof row.line !== "string") {
       throw new TypeError(
         `install line ${index} needs an os and a line, got ${JSON.stringify(row)}`,
       );

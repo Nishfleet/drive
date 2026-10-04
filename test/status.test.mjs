@@ -143,6 +143,26 @@ test("the renderer hands the page one row per system", () => {
   );
 });
 
+test("a row without a system name, or a line break in its line, cannot reach the page", () => {
+  // The renderer checks each row rather than trusting the module (drive issue
+  // #428): a blank os renders an unnamed box, a missing line renders an empty
+  // command, and a line break in the line splits one pasted command across two.
+  // All three are refused at the check, not on the page.
+  assert.throws(
+    () => installLines([{ os: "  ", line: "brew install drive" }]),
+    /needs a named system/,
+  );
+  assert.throws(
+    () => installLines([{ os: "macOS", line: "brew install\ndrive" }]),
+    /must be one pasted line/,
+  );
+  assert.throws(
+    () => installLines([{ os: "macOS", line: /** @type {any} */ (undefined) }]),
+    /needs an os and a line/,
+  );
+  assert.throws(() => installLines([{ os: "macOS", line: "   " }]), /must be one pasted line/);
+});
+
 test("a device that has not signed in reads as waiting, not connected", () => {
   assert.equal(connectionStatus({}, now).state, "waiting");
   assert.equal(connectionStatus({ lastSeenAt: null }, now).state, "waiting");
