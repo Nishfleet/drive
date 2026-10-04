@@ -335,11 +335,7 @@ test("a light month pays the membership, and a capped month pays the cap", async
     `40 GB metered at ${metered}c is under the $12 plateau`,
   );
   assert.equal(lightBill.storageCents, metered, "a light month pays the meter, not the cap");
-  assert.equal(
-    lightBill.totalCents,
-    1000,
-    "the membership covers it: the bill is $10.00",
-  );
+  assert.equal(lightBill.totalCents, 1000, "the membership covers it: the bill is $10.00");
   assert.equal(light.peak.peakBytes, 40 * GB);
   const membershipLine = lightBill.lines[lightBill.lines.length - 1];
   assert.equal(membershipLine.label, "Membership");

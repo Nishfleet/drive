@@ -445,6 +445,7 @@ export function monthBillCents(month) {
   // is 50% off. Founding members pay $5 from month 1 with no extra cut.
   const creditCents = firstMonth && !founding ? Math.round(storageBillCents / 2) : 0;
   const membershipTopUpCents = Math.max(0, membershipCents - storageCents);
+  /** @type {Array<{label: string, cents: number, usd: string}>} */
   const lines = [
     Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
     Object.freeze({

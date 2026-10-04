@@ -620,7 +620,10 @@ test("switching the offer off keeps existing founders at $5 and prices new accou
   assert.equal(rankedAfterClose.foundingMember, false);
   assert.equal(rankedAfterClose.totalCents, 1000);
   for (const bad of [1, "true", null]) {
-    assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, foundingMember: bad }), TypeError);
+    assert.throws(
+      () => monthBillCents({ gbMinutes: 0, peakGb: 0, foundingMember: bad }),
+      TypeError,
+    );
     assert.throws(() => monthBillCents({ gbMinutes: 0, peakGb: 0, firstMonth: bad }), TypeError);
   }
   assert.throws(
