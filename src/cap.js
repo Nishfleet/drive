@@ -416,10 +416,11 @@ function capShapeError(given) {
   // One sentence with its own next step, and no surface's name in it: the
   // usage page's slider sends the same request the CLI does, so "Run: drive
   // cap 20" answered a person holding the slider with a command they have no
-  // way to run (drive#421).
+  // way to run, and "save it again" answered a terminal with a page's words
+  // (drive#421). The one sentence has to read right at both.
   return (
     `A spending cap is a dollar amount like 20 or 12.50, got ${given}. ` +
-    "Type a number like that and save it again."
+    "Type a number like that again."
   );
 }
 

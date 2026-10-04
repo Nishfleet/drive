@@ -1074,9 +1074,11 @@ test("a cap write that fails says what to do next, in plain words", async () => 
   const badBody = await bad.json();
   assert.match(badBody.error, /A spending cap is a dollar amount like 20 or 12\.50/);
   // One next step, and it holds on either surface: the page's slider sends the
-  // same request `drive cap` does, so it cannot end in "Run: drive cap 20".
-  assert.match(badBody.error, /Type a number like that and save it again/);
+  // same request `drive cap` does, so it cannot end in "Run: drive cap 20"
+  // and it cannot tell a terminal to save anything.
+  assert.match(badBody.error, /Type a number like that again/);
   assert.doesNotMatch(badBody.error, /drive cap/);
+  assert.doesNotMatch(badBody.error, /save/);
 });
 
 test("isSameOriginRequest lets no-Origin requests through", () => {

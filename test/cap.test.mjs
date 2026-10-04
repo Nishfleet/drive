@@ -745,8 +745,9 @@ test("drive cap takes a dollar amount and nothing else", () => {
   }
   // The error tells the person what to type next, in words that hold on either
   // surface: the usage page's slider sends the same request, so it cannot end
-  // in a command only the CLI can run (drive#421).
-  assert.throws(() => parseCapUsd("abc"), /Type a number like that and save it again/);
+  // in a command only the CLI can run, and it cannot name a page a terminal
+  // user cannot see (drive#421).
+  assert.throws(() => parseCapUsd("abc"), /Type a number like that again/);
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
@@ -850,7 +851,7 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.equal(bad.status, 400);
   const err = await bad.json();
   assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
-  assert.match(err.error, /Type a number like that and save it again/);
+  assert.match(err.error, /Type a number like that again/);
 
   const mangled = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
