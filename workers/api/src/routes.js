@@ -44,7 +44,8 @@ import {
  * The one route that does not live under it, POST /api/keys/revoke, is the
  * exception that walk carries on its own (drive#354): `drive logout` calls it
  * with the key the rclone config holds, so it cannot want a session and the
- * site's deny-by-default /api/* gate answers it first.
+ * site Worker forwards it to this one ahead of its deny-by-default
+ * /api/* gate, which is the only /api/* route that reaches this dispatcher.
  */
 export const API_PREFIX = "/v1";
 
