@@ -155,6 +155,29 @@ function graderSrc(a) {
 }
 
 /**
+ * A javascript grader whose value is real text. A malformed entry (a missing
+ * `value`, or a value that is not a string) is named here, so the gates below
+ * report a bad task entry instead of a raw TypeError.
+ *
+ * @param {EvalTask[]} tasks
+ * @returns {EvalGrader[]}
+ */
+function javascriptGraders(tasks) {
+  /** @type {EvalGrader[]} */
+  const out = [];
+  for (const t of tasks) {
+    for (const a of t.assert) {
+      if (a.type !== "javascript") continue;
+      if (typeof a.value !== "string") {
+        throw new Error(`${t.description}: a javascript grader has no string value`);
+      }
+      out.push(a);
+    }
+  }
+  return out;
+}
+
+/**
  * The vars promptfoo hands an assertion at run time, read from the config's
  * `defaultTest.vars`: a `file://` ref is the file's contents, resolved against
  * the config's own directory, so a grader and this gate read the same
@@ -493,12 +516,19 @@ test("the prompt's every {{var}} is a var the config actually provides", () => {
   // the agent reads an empty page as a real one (drive#413).
   const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
   const vars = new Set(Object.keys(cfg.defaultTest?.vars ?? {}));
-  const prompts = (Array.isArray(cfg.prompts) ? cfg.prompts : []).map((ref) =>
-    typeof ref === "string" && ref.startsWith("file://")
-      ? readFileSync(join(evals, ref.slice(7)), "utf8")
-      : "",
-  );
-  assert.ok(prompts.length >= 1, "the config has a prompt file to read");
+  /** @type {string[]} */
+  const promptFiles = [];
+  /** @param {unknown} ref */
+  function readPrompt(ref) {
+    if (typeof ref === "string" && ref.startsWith("file://")) {
+      promptFiles.push(join(evals, ref.slice(7)));
+    }
+  }
+  for (const ref of Array.isArray(cfg.prompts) ? cfg.prompts : []) readPrompt(ref);
+  // An inline prompt is not a file ref, so without this the guard below reads
+  // nothing and still passes: it would be a gate that can never fail.
+  assert.ok(promptFiles.length >= 1, "every prompt is a file:// ref this gate can read");
+  const prompts = promptFiles.map((p) => readFileSync(p, "utf8"));
   const unfilled = [
     ...new Set(prompts.flatMap((p) => [...p.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]))),
   ].filter((name) => name !== "task" && !vars.has(name));
@@ -519,7 +549,7 @@ test("no positive grader passes an empty or generic answer", () => {
   /** @type {string[]} */
   const vacuous = [];
   for (const t of tasks) {
-    const js = t.assert.filter((a) => a.type === "javascript");
+    const js = javascriptGraders([t]);
     const positives = js.filter((a) => !graderSrc(a).startsWith("!"));
     if (positives.length === 0) {
       vacuous.push(`${t.description}: no positive grader (only negatives)`);
@@ -528,7 +558,7 @@ test("no positive grader passes an empty or generic answer", () => {
     for (const a of positives) {
       const src = graderSrc(a);
       for (const sample of ["", "lorem ipsum dolor sit amet"]) {
-        if (gradeJavascript(a, sample, { vars: {} })) {
+        if (passed(gradeJavascript(a, sample, { vars: {} }))) {
           vacuous.push(`${t.description}: passes "${sample}" (grader: ${src.slice(0, 80)})`);
         }
       }
@@ -551,7 +581,7 @@ test("one unanswerable task: the docs cannot answer, grader expects honesty", ()
   const task = tasks.find((t) => t.description === "how to rotate storage keys");
   assert.ok(task, "train.yaml has the unanswerable task 'how to rotate storage keys'");
   assert.ok(task.vars?.why_hard, "unanswerable task says why it is hard");
-  const js = task.assert.filter((a) => a.type === "javascript");
+  const js = javascriptGraders([task]);
   assert.ok(js.length >= 2, "unanswerable task has at least two programmatic graders");
   const context = { vars: {} };
   const honest =
@@ -572,4 +602,15 @@ test("one unanswerable task: the docs cannot answer, grader expects honesty", ()
       `an invented rotate-keys answer must fail: ${src}`,
     );
   }
+  // An echo of the task's own why_hard prose is not an answer, and that prose
+  // must not be a template for one: the positive graders (the refusal-shaped
+  // ones) have to fail it, while a negative correctly passes any text that
+  // does not invent a command.
+  const echoed = task.vars.why_hard;
+  const positiveJs = js.filter((a) => !graderSrc(a).startsWith("!"));
+  assert.ok(positiveJs.length >= 1, "unanswerable task has at least one positive grader");
+  assert.ok(
+    Boolean(echoed) && positiveJs.every((a) => !passed(gradeJavascript(a, echoed, context))),
+    `echoing the task's own why_hard must fail every positive grader: ${echoed?.slice(0, 60)}`,
+  );
 });
