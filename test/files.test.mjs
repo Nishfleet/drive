@@ -1289,8 +1289,20 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // gate above is where the page's character set is compared with the
   // module's).
   assert.match(script, /encodeURIComponent\(\s*file\.name,?\s*\)/);
-  // A folder opens in place; a file opens the viewer.
+  // A folder opens in place; a previewable file opens the viewer; every other
+  // kind downloads through its own link.
   assert.ok(script.includes('row.kind === "folder"'));
+  // A file's name is a link to the file itself (drive#416): the preview URL
+  // for a kind the viewer opens, the download URL for every other kind. The
+  // old page gave every row the folder listing's URL and stopped the click's
+  // navigation in script only, so a browser without the script — or the
+  // navigation the click handler used to leave running — landed on the raw
+  // JSON the walkthrough hit.
+  assert.match(
+    script,
+    /name\.href = isPreviewable\(row\.kind\)\s*\?\s*`\$\{PREVIEW_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`\s*:\s*`\$\{DOWNLOAD_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`;/,
+    "a file's name links to the file itself — preview for a kind the viewer opens, download otherwise",
+  );
   // One tap restores: the Restore button posts the path and the list reloads.
   assert.ok(script.includes('restore.type = "button"'));
   assert.ok(script.includes("JSON.stringify({ path: row.path })"));
