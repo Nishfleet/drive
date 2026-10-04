@@ -1,0 +1,31 @@
+-- Drop the leftover `branches.snapshot` column (drive issue #339, the contract
+-- step after drive#329's expand steps).
+--
+-- 0003 created the column as the branch snapshot JSON. 0012 added the pointer
+-- (`snapshot_key`) and its byte length, and drive#321's backfill moved every
+-- OPEN row's JSON into the BRANCH_SNAPSHOTS namespace under that pointer. #338
+-- then stopped the request path from reading or writing the column at all, so
+-- the only reader left is the backfill sweep, and this file must not land until
+-- that sweep is gone (a prepared statement naming a dropped column fails at
+-- prepare, so the nightly trigger would fail every night, not on empty rows).
+--
+-- This is a contract step, not an expand: it deletes data. Any column JSON a
+-- closed branch still carries is deleted here and nothing brings it back. D1
+-- has no down-migrations, so this file is one-way.
+--
+-- Rollback: rolling the code back to #338's version is safe, because that
+-- version names only `snapshot_key` and `snapshot_bytes`. Rolling back PAST
+-- #338 is not: that code names `snapshot` in an INSERT, which this schema no
+-- longer has.
+--
+-- Precondition, measured against production D1 while shipping #338:
+--
+--   SELECT COUNT(*) FROM branches WHERE state = 'open' AND snapshot_key = '';
+--
+-- is 0, so no open branch is left reading the column. Closed rows may still
+-- hold JSON there; it is history, and it is what this file deletes.
+--
+-- Numbered 0017 because origin/main already ships 0016_founding. The deploy
+-- sorts on the numeric prefix alone.
+
+ALTER TABLE branches DROP COLUMN snapshot;
