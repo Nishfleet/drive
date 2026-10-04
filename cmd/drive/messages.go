@@ -140,6 +140,10 @@ var messageTable = map[string][2]string{
 		"The drive is missing its storage settings: {1}.",
 		"Run `drive login` so this device gets its storage settings, then run the command again.",
 	},
+	"login-no-storage": {
+		"The drive's api did not send storage settings for this device: {1}.",
+		"This deployment is not serving storage yet. Wait until it is, then run `drive login` again.",
+	},
 	"invalid-config": {
 		"The {1} has a newline or NUL in it, which would corrupt the rclone config.",
 		"Fix the {1} value, then run `drive mount` again.",

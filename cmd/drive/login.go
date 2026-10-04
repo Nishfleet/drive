@@ -80,7 +80,7 @@ func Login(home, apiBase string, out io.Writer) error {
 		if cfg.SecretKey == "" {
 			missing = append(missing, "secret key")
 		}
-		return failf("missing-config", strings.Join(missing, ", "))
+		return failf("login-no-storage", strings.Join(missing, ", "))
 	}
 	creds := Credentials{
 		APIBase:     client.Base,

@@ -416,11 +416,7 @@ func storageFromDisk(home string) StorageConfig {
 	return c
 }
 
-func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string, extra ...StorageConfig) (StorageConfig, error) {
-	var fromDisk StorageConfig
-	if len(extra) > 0 {
-		fromDisk = extra[0]
-	}
+func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string, fromDisk StorageConfig) (StorageConfig, error) {
 	c := StorageConfig{
 		Endpoint:     firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT"), fromDisk.Endpoint),
 		Bucket:       firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET"), fromDisk.Bucket),
