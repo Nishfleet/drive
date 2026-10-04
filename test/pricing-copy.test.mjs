@@ -167,6 +167,35 @@ test("the spec's worked example is still on the page", () => {
   assert.match(words, /500 GB for 3 days[\s\S]{0,120}?about \$1/);
 });
 
+test("every worked example reads as a sentence, with no arrow", () => {
+  // drive#430: "$1 → $10" and "$12 of storage → $12" each cost a second read,
+  // because an arrow says "turns into" where a reader wants a sentence that
+  // says what you pay. Every example is now one sentence naming both figures,
+  // and no arrow is left on the page for a later copy edit to bring back.
+  for (const label of [
+    "500 GB for 3 days",
+    "800 GB kept all month",
+    "2 TB kept all month",
+    "5 TB kept all month",
+  ]) {
+    const sentence = exampleSentence(label);
+    assert.match(
+      sentence,
+      /^(about )?\$\d[\d.,]* of storage, and you pay\b/,
+      `the ${label} example must name the storage and what you pay, got "${sentence}"`,
+    );
+    assert.match(
+      sentence,
+      /\.$/,
+      `the ${label} example must end as a finished sentence, got "${sentence}"`,
+    );
+  }
+  // The arrow is gone from the markup a reader's browser gets, not just from
+  // the folded copy the other assertions read.
+  assert.equal(page.includes("&rarr;"), false, "the page must not carry an arrow entity");
+  assert.doesNotMatch(words, /→/, "the page must not show an arrow between a figure and a bill");
+});
+
 test("the ceiling math is the spec's plateau, not per-TB caps", () => {
   // docs/build-spec.md "Bill ceiling" (Nish 2026-09-30, issue #29): the
   // monthly bill is min(metered, max($12, $8 × peak TB)), then the $1 free
@@ -439,6 +468,19 @@ function exampleRow(label) {
   const from = words.indexOf(label);
   assert.ok(from >= 0, `the ${label} row is missing from the page`);
   return words.slice(from, words.indexOf("</dd>", from));
+}
+
+// The same row's sentence, taken after the label it answers and with the
+// markup stripped and the whitespace folded, so an assertion about how the
+// example reads is about its words and not about the tags around them.
+/** @param {string} label */
+function exampleSentence(label) {
+  const row = exampleRow(label);
+  return row
+    .slice(row.indexOf(label) + label.length)
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // The text of a class-marked paragraph, read between its tags.
