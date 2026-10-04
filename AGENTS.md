@@ -30,6 +30,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
 
 - `METER_EVENT_TOKEN`
+- `IDRIVE_E2_API_TOKEN` (drive-api)
 
 ## Before you open a PR
 
