@@ -282,9 +282,12 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * One statement that kills every live key on one account. Close (drive#235)
+   * and sign-out-every-device (drive#236) both call this; the public store
+   * method wraps it as `{revoked: n}` so callers never pass a raw id.
    * @param {string} accountId
    */
-  async function revokeAllKeys(accountId) {
+  async function revokeLiveKeys(accountId) {
     const at = nowSeconds(now());
     const result = await run(
       db,
@@ -305,7 +308,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function closeAccountRow(account, atSeconds) {
     const existing = await getCloseState(account.id);
     if (existing !== null && existing.state === "closed" && existing.closedAt !== null) {
-      await revokeAllKeys(account.id);
+      await revokeLiveKeys(account.id);
       return { ...existing, alreadyClosed: true };
     }
     const email = account.email ?? existing?.email ?? "";
@@ -325,7 +328,7 @@ export function createD1DeviceStore(db, options = {}) {
       email,
       atSeconds,
     );
-    await revokeAllKeys(account.id);
+    await revokeLiveKeys(account.id);
     const written = await getCloseState(account.id);
     if (written === null) {
       throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
@@ -600,15 +603,7 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeAllKeys(account) {
-      const changed = await run(
-        db,
-        "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-        nowSeconds(now()),
-        account.id,
-      );
-      return {
-        revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
-      };
+      return { revoked: await revokeLiveKeys(account.id) };
     },
 
     /**
@@ -698,7 +693,6 @@ export function createD1DeviceStore(db, options = {}) {
 
     setAccountState,
     getCloseState,
-    revokeAllKeys,
     closeAccount: closeAccountRow,
     cancelClose,
     listDueReminder,
