@@ -44,7 +44,8 @@ the live site.
 - One command installs the drive CLI and rclone together: the Linux `.deb` and
   `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
   and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
-  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  the mount at login (a login item on macOS, a user unit on Linux, or a
+  Task Scheduler task on Windows). `drive uninstall`
   removes that login item.
 
 - `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on

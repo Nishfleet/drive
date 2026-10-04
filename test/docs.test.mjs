@@ -249,8 +249,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /go install github\.com\/Nishfleet\/drive\/cmd\/drive/,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
     "the limits page must give the install that works today",
+  );
+  assert.match(
+    page,
+    /drive --help/,
+    "the limits page must point at the command's own words for the exact route",
   );
   assert.match(
     page,
@@ -544,10 +549,10 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "go install github.com/Nishfleet/drive/cmd/drive@latest",
-    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
-    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
-    "brew install nishfleet/tap/drive",
+    "brew install drive",
+    "sudo apt install drive",
+    "sudo dnf install drive",
+    "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",
