@@ -70,7 +70,11 @@ and the invoice disagree.
 | `migrations/` | D1 migrations, split by database: `waitlist/` for the sign-up table, `drive/` for customer tables |
 | `cloudflare.config.ts` | the Worker, its D1 bindings (`WAITLIST_DB`, `DRIVE_DB`), secrets and cron triggers |
 
-Run `npm ci` first. `npm test` typechecks, lints, builds the docs and runs the test suite.
+Run `npm ci` first, on Node 24 (`.nvmrc`; `nvm use` picks it up). `npm run dev`
+starts the site Worker and the api Worker on <http://localhost:5173>. `npm test`
+typechecks, lints, builds the docs and runs the test suite. An older Node stops
+with the version it found and the version the repo needs, because the test
+adapter uses `node:sqlite`, which is experimental before Node 24.
 To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
 

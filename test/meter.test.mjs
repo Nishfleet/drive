@@ -2108,17 +2108,36 @@ test("the cron trigger the config declares is the one the meter exports", () => 
     "the two nightly walks do not share a trip",
   );
   assert.notEqual(METER_RECONCILE_SCHEDULE, METER_CRON, "the reconciler is not the hourly rollup");
-  // The config takes the schedules from the modules that own them, so a
-  // changed schedule cannot drift from the trigger that runs it: src/index.js
-  // tells the three trips apart by the cron string the platform hands it.
-  assert.match(
-    config,
-    /import \{ METER_CRON, METER_RECONCILE_SCHEDULE \} from "\.\/src\/meter\.js";/,
+  // The config spells the same three strings the modules export, so a changed
+  // schedule cannot drift from the trigger that runs it: src/index.js tells
+  // the three trips apart by the cron string the platform hands it.
+  //
+  // The config cannot import them. @cloudflare/config executes the config to
+  // read it, and every plain import it follows becomes a `server.fs.deny`
+  // entry in `cf dev`, which makes Vite refuse to read that file - so an
+  // import of src/meter.js or src/search.js pulls the whole shared Worker
+  // graph behind it and `npm run dev` dies before it prints a route
+  // (drive#432). The pin below is what keeps two spellings of one schedule
+  // honest.
+  const declared = [...config.matchAll(/triggers\.scheduled\(\{ schedule: "([^"]+)" \}\)/g)].map(
+    (m) => m[1],
   );
-  assert.match(config, /import \{ REINDEX_SCHEDULE \} from "\.\/src\/search\.js";/);
-  assert.match(
-    config,
-    /triggers: \[\s*triggers\.scheduled\(\{ schedule: METER_CRON \}\),\s*triggers\.scheduled\(\{ schedule: METER_RECONCILE_SCHEDULE \}\),\s*triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\),?\s*\]/,
+  assert.deepEqual(
+    declared,
+    [METER_CRON, METER_RECONCILE_SCHEDULE, REINDEX_SCHEDULE],
+    "cloudflare.config.ts declares the schedules the meter and the index export",
+  );
+
+  // The gate that stops drive#432 coming back: an import of the Worker's own
+  // modules from this config is a dev-server crash. Only `cf/config` and the
+  // `with { type: "cf-worker" }` entrypoint may be imported; anything else
+  // under ./src/ or ./workers/ is banned.
+  const imports = [...config.matchAll(/^import .*? from "([^"]+)";$/gm)].map((m) => m[1]);
+  const runtime = imports.filter((s) => /^\.\/(src|workers)\//.test(s) && !/index\.js$/.test(s));
+  assert.deepEqual(
+    runtime,
+    [],
+    "cloudflare.config.ts imports no Worker module: each one becomes a server.fs.deny entry in cf dev and crashes `npm run dev`",
   );
 });
 
