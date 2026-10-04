@@ -27,7 +27,7 @@
 //     goes to the namespace;
 //   * an empty pointer is not filled from that leftover column (drive#329):
 //     the reader has one source, the namespace, so a pre-namespace row reads
-//     empty until the backfill copies it out;
+//     empty;
 //   * a failure that is not the row limit is still the generic failure, and a
 //     namespace that cannot be written is `storage-down` with the copy cleaned
 //     up, not a 201 for a half-made branch.
@@ -35,8 +35,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  approveBranch,
-  backfillBranchSnapshots,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -263,11 +261,10 @@ test("a branch whose snapshot is over the row limit is created, listed and diffe
 });
 
 test("an empty pointer is not filled from the leftover column", async () => {
-  // drive#329: the column is no longer a source. A pre-namespace row still
-  // holds its JSON there (the drop is the next phase), but `readSnapshot` does
-  // not consult it, so an empty pointer reads empty until the backfill copies
-  // the JSON into the namespace. After that, the same row diffs and approves
-  // from the pointer, which is the only path left.
+  // drive#329: the column is no longer a source. A pre-namespace row may still
+  // hold its JSON there (the drop is the next phase), but `readSnapshot` does
+  // not consult it, so an empty pointer reads empty. That is the only source
+  // left: the namespace the pointer names.
   const db = createTestD1();
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
@@ -304,15 +301,6 @@ test("an empty pointer is not filled from the leftover column", async () => {
     1,
     "the copy's one file counts as added because the snapshot did not come from the column",
   );
-
-  const report = await backfillBranchSnapshots(db, snapshots);
-  assert.equal(report.moved, 1);
-  const after = await listBranches(db, snapshots, store, ACCOUNT);
-  assert.equal(after[0].changed, 1, "the pointer now resolves the real one-file change");
-  const approved = await approveBranch(db, snapshots, store, ACCOUNT, "old");
-  assert.equal(/** @type {{state: string}} */ (approved).state, "approved");
-  const object = await store.read("/Photos/a.txt");
-  assert.equal(object ? await new Response(object.body).text() : null, "edited");
 });
 
 test("listBranches never fills an empty pointer from the leftover column", async () => {
@@ -361,12 +349,6 @@ test("listBranches never fills an empty pointer from the leftover column", async
       "one answer is not N snapshots",
     );
   }
-
-  assert.equal((await backfillBranchSnapshots(db, snapshots)).moved, 1);
-  const restored = (await listBranches(db, snapshots, store, ACCOUNT)).find(
-    (branch) => branch.name === "old",
-  );
-  assert.equal(restored?.changed, 2, "after the sweep the same row diffs from the namespace");
 });
 
 test("a branch of a folder under the row limit is still stored whole", async () => {
