@@ -419,8 +419,11 @@ test("no Windows job runs on a pull request or a push, only when started by hand
     "ci.yml runs on every PR, so it holds no Windows job",
   );
   const triggers = WORKFLOW.slice(WORKFLOW.indexOf("\non:"), WORKFLOW.indexOf("\npermissions:"));
-  assert.match(triggers, /workflow_dispatch:/, "the Windows workflow is started by hand");
-  assert.doesNotMatch(triggers, /pull_request|push:|schedule:/, "and by nothing else");
+  assert.equal(
+    triggers.trim(),
+    "on:\n  workflow_dispatch:",
+    "the Windows workflow is started by hand, and by nothing else",
+  );
   // The drive-letter proof moved with the job, it was not dropped.
   assert.match(WORKFLOW, /\n {2}windows:\n/, "the Windows workflow carries the windows job");
   assert.match(WORKFLOW, /TestWindowsMountProof/, "with its drive-letter mount proof");
