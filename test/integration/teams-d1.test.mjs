@@ -28,7 +28,13 @@ import { test } from "node:test";
 import { accountByEmail } from "../../workers/api/src/index.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { createD1TeamStore } from "../../workers/api/src/teams.js";
-import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
+import {
+  createTestAuth,
+  DRIVE_MIGRATIONS,
+  signIn,
+  sqliteBoundValues,
+  sqlitePlaceholders,
+} from "../harness.mjs";
 
 // The teams migration is in the harness's default list (test/harness.mjs
 // DRIVE_MIGRATIONS), so the default is the whole customer schema the deploy
@@ -214,7 +220,12 @@ test("a role the table does not carry is refused, and a duplicate invite moves t
     await teams.inviteMember(owner.account, team.id, member.account.email, "read_write"),
   );
   assert.deepEqual([...teams.scopeForMember(corrected).capabilities], ["list", "read", "write"]);
-  const rows = sqlite.prepare("SELECT role FROM team_members WHERE team_id = ?1").all(team.id);
+  // The raw handle reads the row off the engine, and node:sqlite binds
+  // anonymous `?` and refuses D1's numbered `?1` (ERR_SQLITE_ERROR 25, node
+  // v24.5.0), so the SQL is rewritten and its values expanded the way
+  // `createTestAuth` rewrites every D1 statement (drive #395).
+  const sql = "SELECT role FROM team_members WHERE team_id = ?1";
+  const rows = sqlite.prepare(sqlitePlaceholders(sql)).all(...sqliteBoundValues(sql, [team.id]));
   assert.equal(rows.length, 1, "one row, not two seats");
   assert.equal(rows[0].role, "read_write");
 });

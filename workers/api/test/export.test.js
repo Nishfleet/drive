@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import "urlpattern-polyfill";
 import { applyMigrations, d1Over } from "../../../test/d1-sqlite.mjs";
+import { sqliteBoundValues, sqlitePlaceholders } from "../../../test/harness.mjs";
 import { createD1DeviceSigninStore } from "../src/device-signin.js";
 import { EXPORT_ROW_CAP } from "../src/export-routes.js";
 import { dispatch } from "../src/index.js";
@@ -232,24 +233,42 @@ test("a page that stops at the cap says so, and the cursor continues it", async 
   const token = polled.status === "approved" ? polled.deviceToken : "";
 
   // One more file than a page holds, so the first page must stop short.
+  // These two writes go straight to the raw handle rather than through
+  // `exportD1`, to seed rows the route will page over. node:sqlite binds
+  // anonymous `?` and refuses D1's numbered `?1` (ERR_SQLITE_ERROR 25, node
+  // v24.5.0), so the SQL is rewritten and its values expanded the way the D1
+  // adapter rewrites a statement (drive #395).
   const total = EXPORT_ROW_CAP + 1;
-  const insert = sqlite.prepare(
-    "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', ?4)",
-  );
+  const insertFileSql =
+    "INSERT INTO file_index (account_id, path, name, parent, size_bytes) VALUES (?1, ?2, ?3, '/', ?4)";
+  const insert = sqlite.prepare(sqlitePlaceholders(insertFileSql));
   for (let i = 0; i < total; i++) {
     // Zero-padded so the path order is the same as the numeric order, which is
     // what the keyset cursor walks.
-    insert.run("acct-big", `/f${String(i).padStart(6, "0")}.txt`, `f${i}.txt`, i);
+    insert.run(
+      .../** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+        sqliteBoundValues(insertFileSql, [
+          "acct-big",
+          `/f${String(i).padStart(6, "0")}.txt`,
+          `f${i}.txt`,
+          i,
+        ])
+      ),
+    );
   }
   // One version row that fits in the first page. It must appear in the merged
   // export exactly once: a later page (driven by the file cursor) must not
   // re-read the version list and duplicate it, which is the bug a live run of
   // `drive export` found against a hand-written stand-in on 2026-10-02.
+  const insertVersionSql =
+    "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)";
   sqlite
-    .prepare(
-      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at, hidden_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-    )
-    .run("acct-big", "v1", "/f000000.txt", 1, 1700000000000);
+    .prepare(sqlitePlaceholders(insertVersionSql))
+    .run(
+      .../** @type {Array<import("node:sqlite").SQLInputValue>} */ (
+        sqliteBoundValues(insertVersionSql, ["acct-big", "v1", "/f000000.txt", 1, 1700000000000])
+      ),
+    );
 
   const first = await dispatch(
     new Request("https://api.test/v1/export", {
