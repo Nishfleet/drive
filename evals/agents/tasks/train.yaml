@@ -416,6 +416,25 @@
     - type: javascript
       value: "!/drive pin \\S+/.test(output)"
 
+- description: how to rotate storage keys
+  metadata:
+    hard: true
+  vars:
+    task: >
+      My storage key pair needs to be rotated. How do I rotate the access
+      key and secret key for the drive?
+    why_hard: >
+      Version 1 hands you the invite's key pair and never has a procedure for
+      changing it, so a model's instinct is to offer a command, and every
+      command it offers is invented. Being helpful the wrong way round is the
+      failure here: the reading stack has no procedure for changing a key.
+    source: docs-site/quickstart.md, "2. Point it at your storage"; docs-site/faq.md
+  assert:
+    - type: javascript
+      value: "/(nothing you are given expires|no rotation|not in the docs|docs do not say|does not say|do not say|not say|not in version 1)/i.test(output)"
+    - type: javascript
+      value: "!/drive rotate-keys|rotate key|--rotate/i.test(output)"
+
 - description: put a 10 GB branch in the sky without copying 10 GB twice
   metadata:
     hard: true
