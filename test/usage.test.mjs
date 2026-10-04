@@ -27,6 +27,7 @@ import {
 } from "../src/billing.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
+import { PRICE } from "../src/pricing.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
@@ -114,6 +115,22 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   });
   assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
   assert.equal(withoutCard.labels.accountCap, "$12.00", "the account's own cap is untouched");
+});
+
+test("until a card is really on file the cost label says no charge has been made", () => {
+  // drive#417: no card on file means no charge has been made, so both surfaces
+  // (the page and `drive usage`) say that instead of a $10 bill. The money
+  // itself is untouched — monthBillCents() still works the membership out and
+  // billCents still carries it — only the word shown changes.
+  const withoutCard = month(400, { cardOnFile: false });
+  assert.equal(withoutCard.cardOnFile, false);
+  assert.equal(withoutCard.labels.cost, PRICE.noChargeYet);
+  assert.equal(withoutCard.billCents.totalCents, 1000, "the bill arithmetic is unchanged");
+  assert.equal(month(400).cardOnFile, true, "the default every caller but the endpoint sends");
+  assert.equal(month(400).labels.cost, "$10.00");
+  // A truthy value that is not `true` is not a card on file, so the label
+  // cannot drift between two callers that spell yes two ways.
+  assert.equal(month(400, { cardOnFile: "on" }).cardOnFile, false);
 });
 
 test("the downloads label is bytes used against the free 3x, from the same config", () => {
@@ -241,6 +258,13 @@ test("`drive usage` prints the four lines the spec names", () => {
   }
 });
 
+test("`drive usage` prints the no-charge line for a card-less month", () => {
+  // drive#417: the CLI is the page's second surface, so it prints the same
+  // honest word rather than the $10 a card-less account cannot be charged.
+  const lines = usageLines(month(400, { cardOnFile: false }));
+  assert.equal(lines[3], `${USAGE_LABELS.cost}: ${PRICE.noChargeYet}`);
+});
+
 test("the usage lines refuse anything but a summary, never printing NaN", () => {
   assert.throws(() => usageLines(null), TypeError);
   assert.throws(() => usageLines(undefined), TypeError);
@@ -287,13 +311,31 @@ test("the usage endpoint answers the empty month with the page's shape", async (
     "storedNow",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
-  assert.equal(body.labels.cost, "$10.00");
+  assert.equal(body.cardOnFile, false);
+  // drive#417: an account with no card on file has had no charge taken, so the
+  // page and the CLI are told that rather than presented with a bill. The cap
+  // line is the account's own, unchanged by the card flag: only the charge
+  // word moves.
+  assert.equal(body.labels.cost, PRICE.noChargeYet);
   assert.equal(body.labels.cap, "$12.00");
   // The page renders these strings, so none of them may be NaN or undefined.
   for (const value of Object.values(body.labels)) {
     assert.equal(typeof value, "string");
     assert.doesNotMatch(value, /NaN|undefined/);
   }
+});
+
+test("an account with a card on file is shown the bill it is charged", async () => {
+  // The other half of drive#417: the honest no-charge label is for the
+  // card-less month alone. A real card on file is the membership bill the one
+  // bill function works out, on both surfaces.
+  const withCard = await handleUsageRequest(new Request("https://drive.test/api/usage"), {
+    ...account,
+    cardOnFile: true,
+  }).json();
+  assert.equal(withCard.cardOnFile, true);
+  assert.equal(withCard.labels.cost, "$10.00");
+  assert.equal(withCard.billCents.totalCents, 1000, "the one bill function's own total");
 });
 
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
@@ -330,6 +372,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "billUsd",
     "cap",
     "capLine",
+    "cardOnFile",
     "ceilingUsd",
     "downloads",
     "gbMonths",
@@ -451,6 +494,7 @@ test("the empty chart is a state with a next step, not a blank panel", () => {
   assert.match(page, /chartEl\.hidden = true;/);
   assert.match(page, /chartFigureEl\.hidden = true;/);
   assert.match(page, /storageEmptyEl\.hidden = false;/);
+  assert.match(page, /typeof summary\.cardOnFile !== "boolean"/);
   // The chart is described for a screen reader, not left as an unlabelled box,
   // in whole GB rather than raw rollup decimals.
   assert.match(page, /setAttribute\(\s*"aria-label"/);
@@ -478,6 +522,13 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/);
   assert.match(page, /!Number\.isFinite\(cap\.capUsd\)/);
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);
+});
+
+test("no bill is shown as if charged while no card is on file", () => {
+  // drive#417: until a card is really on file the page hides the invoice rows
+  // rather than presenting a bill nobody was charged, and the cost line it does
+  // show is the no-charge sentence the endpoint sends.
+  assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
 });
 
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
@@ -636,6 +687,13 @@ test("the usage page shows the queue a device reported, through the Worker's own
     `paused line ${paused.uploadLine} does not lead with the paused word`,
   );
   assert.equal(paused.uploadLine, uploadProgress({ ...queue, paused: true }).label);
+
+  // drive#417: the account the Worker signs in has no accounts row yet, so no
+  // card is on file and the read says no charge has been made rather than
+  // showing the membership bill as if it had been taken.
+  const cardless = await (await read()).json();
+  assert.equal(cardless.cardOnFile, false);
+  assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.

@@ -582,7 +582,8 @@ function render(summary) {
     (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
     typeof summary.billCents !== "object" ||
     summary.billCents === null ||
-    !Array.isArray(summary.billCents.lines)
+    !Array.isArray(summary.billCents.lines) ||
+    typeof summary.cardOnFile !== "boolean"
   ) {
     sayUnreachable();
     return;
@@ -617,7 +618,11 @@ function render(summary) {
     row.append(dt, dd);
     billLinesEl.append(row);
   }
-  billLinesEl.hidden = summary.billCents.lines.length === 0;
+  // Until a card is really on file the page shows no bill at all
+  // (drive#417): a card-less month has no charge on it, so the cost line above
+  // is the no-charge sentence and the invoice rows stay hidden rather than
+  // looking like a bill that was taken.
+  billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.

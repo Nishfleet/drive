@@ -693,7 +693,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown, firstMonth?: unknown, monthNumber?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown, firstMonth?: unknown, monthNumber?: unknown}} */ (
       usage
     );
   const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
@@ -703,7 +703,19 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   const averageStoredGb = checked(fields.averageStoredGb, "usage.averageStoredGb");
   const capUsd = checked(fields.capUsd, "usage.capUsd");
   const series = storedSeries(fields.storedDaily);
+  // The cap writes stop at is the account's own cap for a provisioned account
+  // and the free $1 for a signed-out default (unchanged, `cardAdded`): the
+  // usage endpoint passes true here as it always has, so the cap line a
+  // card-less account is shown still matches the cap enforceCap() stops writes
+  // at (src/index.js capStateFor).
   const effectiveCap = fields.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
+  // drive#417: whether a real card is on file, the usage surfaces' own flag,
+  // separate from the write-cap basis above. It defaults to the write-cap flag
+  // so every caller that predates the accounts stamp keeps showing the bill it
+  // always did; the endpoint passes the accounts row's own state, fail-closed,
+  // so a card-less month says no charge has been made and shows no bill.
+  const cardOnFile =
+    fields.cardOnFile === undefined ? fields.cardAdded === true : fields.cardOnFile === true;
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
   const months = gbMonths(gbMinutes);
   // The one bill function (issue #352): membership floor on capped storage,
@@ -745,7 +757,11 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       storedNow: formatBytes(storedGb * BYTES_PER_GB),
       gbMonths: months.toFixed(2),
       downloads: `${formatBytes(downloadBytes)} of ${formatBytes(downloads.freeBytes)} free`,
-      cost: formatUsd(bill.totalCents / 100),
+      // The bill number is unchanged (monthBillCents() still owns it); only the
+      // word shown for a card-less month is the honest one (drive#417). The
+      // page hides the bill lines on the same flag, so a card-less month shows
+      // neither a $10 line nor a bill as if charged.
+      cost: cardOnFile ? formatUsd(bill.totalCents / 100) : PRICE.noChargeYet,
       // Two caps, because they are two things: `cap` is the cap writes stop
       // at (a card-less account's is the free $1, not the account's own) and
       // `accountCap` is the account's own setting, which is what the page's
@@ -753,6 +769,9 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       cap: formatUsd(effectiveCap),
       accountCap: formatUsd(capUsd),
     }),
+    // The page reads this to hide the bill lines for a card-less month, so the
+    // two surfaces cannot show a charge one and not the other (drive#417).
+    cardOnFile,
   });
 }
 
@@ -830,7 +849,7 @@ const USAGE_HEADERS = Object.freeze({
  * not a queue is refused rather than rendered, so the line can never be a
  * default the drive did not ask for.
  * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number}|null} account the signed-in account, or null when signed out
+ * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean}|null} account the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  */
 export function handleUsageRequest(request, account, upload = null) {
@@ -857,9 +876,15 @@ export function handleUsageRequest(request, account, upload = null) {
     downloadBytes: 0,
     averageStoredGb: 0,
     capUsd,
-    // The cardless $1 is a provisioned account's state until it adds a card
-    // (issue #2). Before accounts exist the honest cap is the sign-up default.
+    // The write-cap basis is a provisioned account's own (unchanged): the cap
+    // line this endpoint reports still matches the cap enforceCap() stops
+    // writes at (src/index.js capStateFor). The card on file is the account's
+    // own stamp, read from the accounts row (drive#417); until it is really on
+    // file there is no charge to report, so the honest label is "no charge
+    // yet" and the page shows no bill. It is absent (false) for a caller that
+    // names no card, so the check fails closed.
     cardAdded: true,
+    cardOnFile: account.cardOnFile === true,
   });
   // The cap line rides on the response rather than inside usageSummary(): the
   // summary is money (numbers only, which is what the usage page's chart and
