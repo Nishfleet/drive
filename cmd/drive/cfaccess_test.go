@@ -210,3 +210,40 @@ func TestInstallAccessTransportOnce(t *testing.T) {
 		t.Fatal("the default transport is not the Access transport")
 	}
 }
+
+func TestAccessTokenIsNeverSentToARedirectsOtherOrigin(t *testing.T) {
+	var leaked atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(accessTokenHeader) != "" {
+			leaked.Add(1)
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer other.Close()
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(accessTokenHeader) != "app.token" {
+			w.Header().Set("Location", "https://drive-test.cloudflareaccess.com/cdn-cgi/access/login/x")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, other.URL+"/landed", http.StatusFound)
+	}))
+	defer app.Close()
+	transport := newAccessTransport(http.DefaultTransport)
+	fake := &fakeCloudflared{token: "app.token", signedIn: true}
+	fake.install(transport)
+	client := &http.Client{Transport: transport}
+	for range 2 { // the second call uses the cached token from the start
+		resp, err := client.Get(app.URL + "/start")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		resp.Body.Close()
+		if resp.Request.URL.Host != strings.TrimPrefix(other.URL, "http://") {
+			t.Fatalf("redirect not followed to the other origin: %s", resp.Request.URL)
+		}
+	}
+	if leaked.Load() != 0 {
+		t.Fatalf("the app's Access token reached another origin %d times", leaked.Load())
+	}
+}
