@@ -118,6 +118,14 @@ h2 {
   border-left-color: var(--accent);
 }
 
+/* A month with nothing stored (drive issue #427). Not an error and not signed
+   out, so it takes the accent: the drive is fine, it just has no files on it
+   yet, and a new account has to be told that rather than left looking at a
+   blank box. */
+.status[data-state="empty"] {
+  border-left-color: var(--accent);
+}
+
 /* ---- The stored-GB line chart ----------------------------------------- */
 
 .chart {
@@ -437,6 +445,14 @@ const UNREACHABLE = {
 // service: it means this browser has no signed-in account, and showing one
 // account's month to another is the bug the gate exists to stop.
 
+// A month with nothing stored in it (drive issue #427). These are the
+// `monthEmpty` sentences src/usage.js pins, carried here for the same reason
+// UNREACHABLE is: the page is a static asset and cannot import the module.
+const MONTH_EMPTY = {
+  what: "Nothing stored yet.",
+  next: "Save a file in the drive folder and the chart below fills in from that day.",
+};
+
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
@@ -500,12 +516,29 @@ function saySignedOut(message) {
 
 function sayReachable() {
   statusEl.hidden = true;
+  // `sayReachable` is the neutral reset: it also clears whatever status state a
+  // previous render left on the shared slot (empty, unreachable, signed-out),
+  // so only this call's own state — a fresh `sayMonthEmpty` when the month is
+  // empty, nothing at all when it has history — is what the markup carries.
+  statusEl.dataset.state = "";
   // A read that succeeded proves the account is there, so the slider the
   // signed-out state disabled is usable again.
   capSlider.disabled = false;
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
+}
+
+// A month that read fine and holds no files (drive issue #427). The status
+// slot above the numbers is reserved from the first paint so nothing moves
+// under the reader, and hiding it left a new account staring at that reserved
+// space with a chart below it that has nothing to draw. This is what fills it:
+// the month is empty, said in the month's own words, in the month's own area.
+function sayMonthEmpty() {
+  statusEl.dataset.state = "empty";
+  statusEl.querySelector(".what").textContent = MONTH_EMPTY.what;
+  statusEl.querySelector(".next").textContent = MONTH_EMPTY.next;
+  statusEl.hidden = false;
 }
 
 // The chart's viewBox is one unit per day and 100 units tall, so a day is its
@@ -596,6 +629,14 @@ function render(summary) {
     return;
   }
   sayReachable();
+
+  // A month with no stored day has no chart to draw and no saving to report, so
+  // without this the "This month" area is blank for every new account (drive
+  // issue #427). The days, not the sizes: a month that stored and then emptied
+  // itself still has its history to draw, and says so.
+  if (summary.storedDaily.length === 0) {
+    sayMonthEmpty();
+  }
 
   // The saved line is the endpoint's own sentence, shown only when it is a
   // real saving: an empty month has none and stays hidden.
