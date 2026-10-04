@@ -377,10 +377,22 @@ export function createMemoryStore(options = {}) {
      * anything. A key whose row is revoked never reaches the renewal — the
      * revocation is checked first, so revoking an agent stops renewal at once
      * and the credential it held dies inside the hour it had left.
+     *
+     * With a D1 store bound, that store answers first (`revokeKey` and
+     * `renewKey` already delegate to it, for the same reason) and the rows
+     * held here are the stand-in for a deployment with no database. The
+     * per-agent cap (drive issue #171) is enforced in the D1 store's own
+     * authenticate, so a key minted by this isolate is capped on its next
+     * request in exactly the way a key minted by another one is: without the
+     * delegation the in-memory row would answer first and a cap could be
+     * routed around by using the isolate that minted the key.
      * @param {string} accessKeyId
      * @param {string} secret
      */
     async authenticate(accessKeyId, secret) {
+      if (deviceStore?.authenticate) {
+        return deviceStore.authenticate(accessKeyId, secret);
+      }
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
@@ -396,9 +408,6 @@ export function createMemoryStore(options = {}) {
         device.lastSeenAt = at;
         device.expiresAt = renewKeyWindow(device, at).expiresAt;
         return device;
-      }
-      if (deviceStore?.authenticate) {
-        return deviceStore.authenticate(accessKeyId, secret);
       }
       return null;
     },

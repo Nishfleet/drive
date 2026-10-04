@@ -9,6 +9,7 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
+import { failureMessage } from "../../../src/messages.js";
 import { errorResponse, json, readJsonObject } from "./http.js";
 import { authorizePath } from "./keystore.js";
 
@@ -118,6 +119,13 @@ export async function renewKeyRoute(request, ctx) {
     // difference the caller can act on.
     if (result.error === "revoked") {
       return errorResponse(409, "That key is revoked, so its hour cannot be restarted.");
+    }
+    // The key is at its own agent cap (drive issue #171), so the store took its
+    // write powers away in the same call and will not restart an hour on a
+    // credential it has withdrawn. The next step is a new key from `drive
+    // init`, and nothing about the key is lost: it is still listed, read-only.
+    if (result.error === "capped") {
+      return errorResponse(409, failureMessage("agent-cap-reached"));
     }
     return errorResponse(404, "No such key on this account.");
   }

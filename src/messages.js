@@ -30,6 +30,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This device's key was revoked, so it can't reach the drive.",
     next: "Sign in again to get a new key; your files are untouched.",
   }),
+  // One agent key reached its own cap (drive issue #171), so the drive took its
+  // write powers away and the tool keeps reading. Nothing was deleted, and the
+  // cap is per key: the person's own keys and the other agents are untouched.
+  "agent-cap-reached": Object.freeze({
+    what: "This agent reached its own limit, so it can read the drive but not change it.",
+    next: "Connect the tool again to give it a new key; nothing was deleted.",
+  }),
   // rclone's local VFS cache filled the disk, so saves cannot queue.
   "disk-cache-full": Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
