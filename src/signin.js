@@ -51,6 +51,12 @@
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import {
+  attachPendingCardAccount,
+  claimCardFingerprint,
+  pendingCardAccountId,
+  signupCardFingerprint,
+} from "./abuse-guards.js";
+import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
   authFor,
@@ -58,14 +64,6 @@ import {
   safeAfterSigninPath,
   sessionAccount,
 } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
-import {
-  attachPendingCardAccount,
-  claimCardFingerprint,
-  pendingCardAccountId,
-  signupCardFingerprint,
-} from "./abuse-guards.js";
-import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS, sessionAccount } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { foundingOfferIsOpen } from "./founding.js";
 import { failureMessage } from "./messages.js";

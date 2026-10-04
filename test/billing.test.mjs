@@ -182,11 +182,13 @@ test("the cap counts min(metered, maximum), and bites only past the cap", () => 
   // A spend exactly on the cap is what the person agreed to pay.
   assert.equal(capStatus(fullMonthGbMinutes(cap * 100), cap).state, "active");
   // Past the cap the drive goes read-only, and raising the cap writes again.
-  const past = capStatus(fullMonthGbMinutes(2000), cap);
-  assert.equal(past.countedUsd, 20);
+  // 2 TB bills the $20 maximum, exactly the $20 default: not past it.
+  assert.equal(capStatus(fullMonthGbMinutes(2000), cap).state, "active");
+  const past = capStatus(fullMonthGbMinutes(3000), cap);
+  assert.equal(past.countedUsd, 30);
   assert.equal(past.state, "read_only");
   assert.equal(past.remainingUsd, 0);
-  const raised = capStatus(fullMonthGbMinutes(2000), 25);
+  const raised = capStatus(fullMonthGbMinutes(3000), 35);
   assert.equal(raised.state, "active");
   assert.equal(raised.remainingUsd, 5);
   // A founding member's cap counts the founding bill.

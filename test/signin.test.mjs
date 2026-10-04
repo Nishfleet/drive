@@ -334,6 +334,8 @@ test("every new-account path requires the card step (drive#417)", async () => {
   assert.equal(form.status, 400, "the form path is refused with no card step");
   assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
   assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+});
+
 test("a second sign-up with the same card fingerprint is refused in plain words", async () => {
   const made = dispatchEnv();
   const first = await workerFetch(

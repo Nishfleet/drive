@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG, MINUTES_PER_MONTH } from "../../src/billing.js";
+import { MINUTES_PER_MONTH } from "../../src/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
@@ -88,7 +88,8 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
     storedDaily: [],
     downloadBytes: 0,
     averageStoredGb: 2000,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
+    // The account chose $12 above, under the $20 default, so 2 TB ($20) is past it.
+    capUsd: 12,
     cardAdded: true,
   };
 

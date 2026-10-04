@@ -79,21 +79,21 @@ test("the monthly cap asks the account cap's own function, so the number is the 
   // say a different number from the account cap for identical usage because it
   // never works one out: `capStatus` does it and this keeps the answer beside
   // the verdict.
-  const counted = capStatus(fullMonthGbMinutes(2000), 12);
-  const status = agentCapStatus(agent(2000));
+  const counted = capStatus(fullMonthGbMinutes(3000), 20);
+  const status = agentCapStatus(agent(3000));
   assert.equal(status.monthly.usedUsd, counted.countedUsd);
   assert.equal(status.monthly.capUsd, counted.capUsd);
   assert.equal(status.monthly.remainingUsd, counted.remainingUsd);
   assert.equal(status.monthly.over, true);
   assert.equal(status.state, "read_only");
-  // 2 TB bills $20 against a $12 cap, so the agent is over; 600 GB bills $12,
-  // exactly at the cap, which is not over it — the same ">" the account cap
-  // uses, so the two never read a number differently.
-  assert.equal(status.monthly.usedUsd, 20);
-  assert.equal(agentCapStatus(agent(600)).state, "active");
-  assert.equal(agentCapStatus(agent(1300)).state, "read_only", "1.3 TB is $13, past $12");
+  // 3 TB bills $30 against the $20 default cap, so the agent is over; 2 TB
+  // bills $20, exactly at the cap, which is not over it — the same ">" the
+  // account cap uses, so the two never read a number differently.
+  assert.equal(status.monthly.usedUsd, 30);
+  assert.equal(agentCapStatus(agent(2000)).state, "active");
+  assert.equal(agentCapStatus(agent(2100)).state, "read_only", "2.1 TB is $21, past $20");
   // A cap below the default is a stricter choice the drive honours: an
-  // agent's own cap can be $1 while the drive's is $12.
+  // agent's own cap can be $1 while the drive's is $20.
   const strict = agentCapStatus(agent(200, { caps: { monthly_cap_usd: 1 } }));
   assert.equal(strict.monthly.capUsd, 1);
   assert.equal(strict.state, "read_only");
