@@ -107,13 +107,13 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
 test("the shipped usage page states the 30-day grace period in the module's words", () => {
   const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
   // The usage page's own close section renders these itself, so it carries them
-  // as literals. The pending banner's three (pendingWhat, pendingNext,
-  // pendingCancel) are the exception drive#424 introduced: no page inlines them
-  // because public/close-banner.js renders them from the endpoint's payload on
-  // all four signed-in pages, with the purge date filled in. A literal in one
-  // page would be the second copy that split exists to remove, so the banner's
-  // own gate is in test/close-banner.test.mjs and this one names the line.
-  const BANNER_KEYS = new Set(["pendingWhat", "pendingNext", "pendingCancel"]);
+  // as literals. The pending banner's two (pendingWhat, pendingCancel) are the
+  // exception drive#424 introduced: no page inlines them, because
+  // public/close-banner.js renders them from the endpoint's payload on all four
+  // signed-in pages, with the purge date filled in. A literal in one page would
+  // be the second copy that split exists to remove, so the banner's own gate is
+  // in test/close-banner.test.mjs and this one names the line.
+  const BANNER_KEYS = new Set(["pendingWhat", "pendingCancel"]);
   for (const [name, value] of Object.entries(CLOSE_COPY)) {
     if (BANNER_KEYS.has(name)) {
       // The banner's date is a {purgeOn} placeholder, so no page may inline

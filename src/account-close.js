@@ -37,9 +37,9 @@ export const CLOSE_COPY = Object.freeze({
   // (drive#424). `{purgeOn}` is the one placeholder in the set: the page
   // renders what the endpoint sent, so the date on screen is the date the
   // account will actually be purged, not a copy of a day count worked out in
-  // the browser.
+  // the browser. Two keys, because the banner is two slots — a sentence and
+  // a link — and a key nothing renders is a second thing to drift.
   pendingWhat: "This account closes on {purgeOn}. Your files stay visible until then.",
-  pendingNext: "Changed your mind?",
   pendingCancel: "Cancel closing",
 });
 

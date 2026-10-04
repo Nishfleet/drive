@@ -51,10 +51,10 @@
   const fill = (sentence, purgeOn) => sentence.replace(/\{purgeOn\}/g, purgeOn);
 
   /**
-   * Show the banner for a closing account. The element is revealed before its
-   * text is set, because a `role="status"` region filled while still hidden is
-   * not announced by every screen reader — the same rule the usage page's
-   * status region follows.
+   * Show the banner for a closing account. The text is set and then the region
+   * is revealed, the same order the usage page's status region uses
+   * (public/usage.html sayUnreachable), so the two status regions on that page
+   * are read the same way.
    * @param {{state: string, purgeOn: unknown, copy: Record<string, string>}} payload
    */
   const reveal = (payload) => {

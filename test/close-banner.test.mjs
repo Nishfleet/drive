@@ -75,13 +75,8 @@ test("the banner's words are the module's, and the date is the endpoint's", () =
     CLOSE_COPY.pendingWhat,
     "This account closes on {purgeOn}. Your files stay visible until then.",
   );
-  assert.equal(CLOSE_COPY.pendingNext, "Changed your mind?");
   assert.equal(CLOSE_COPY.pendingCancel, "Cancel closing");
-  for (const sentence of [
-    CLOSE_COPY.pendingWhat,
-    CLOSE_COPY.pendingNext,
-    CLOSE_COPY.pendingCancel,
-  ]) {
+  for (const sentence of [CLOSE_COPY.pendingWhat, CLOSE_COPY.pendingCancel]) {
     assert.ok(sentence.length > 0, "every banner sentence is a real sentence");
   }
   // The placeholders the banner allows are exactly the date. A second one would
@@ -91,6 +86,18 @@ test("the banner's words are the module's, and the date is the endpoint's", () =
     [...CLOSE_COPY.pendingWhat.matchAll(/\{(\w+)\}/g)].map((match) => match[1]),
   );
   assert.deepEqual([...placeholders], ["purgeOn"]);
+
+  // Every key the banner added is one the banner actually renders, and the
+  // script is the only consumer of them. A key nothing renders is a sentence
+  // that will be edited in one place and stay stale in the other.
+  const bannerKeys = Object.keys(CLOSE_COPY).filter((name) => name.startsWith("pending"));
+  assert.deepEqual(bannerKeys.sort(), ["pendingCancel", "pendingWhat"]);
+  for (const key of bannerKeys) {
+    assert.ok(
+      bannerScript.includes(`copy.${key}`),
+      `public/close-banner.js must render CLOSE_COPY.${key}, or the key is dead copy`,
+    );
+  }
 });
 
 test("the GET endpoint answers a pending close with the date and the banner's words", async () => {
@@ -194,8 +201,14 @@ test("the shared banner script reads the endpoint's words and shows the date and
   assert.ok(bannerScript.includes("state"), "the script reads the account state");
   assert.ok(bannerScript.includes("closed"), "the banner is for a closed account");
   // The banner is an alert region, so a screen reader reads the sentence and
-  // the link as one interruption, and the date is in the text.
-  assert.ok(bannerScript.includes("role="), "the banner is a live region");
+  // the link as one interruption, and the date is in the text. The role is the
+  // page's markup, so it is checked on the page, not here.
+  for (const { name, url } of SIGNED_IN_PAGES) {
+    const html = readFileSync(url, "utf8");
+    const banner = html.slice(html.indexOf('id="close-banner"'));
+    assert.match(banner, /role="status"/, `${name}'s banner is a live region`);
+    assert.match(banner, /aria-live="polite"/, `${name}'s banner is a polite region`);
+  }
   assert.ok(
     bannerScript.includes('"close-banner"') && bannerScript.includes("getElementById"),
     "the script finds the one element the page marks by its id",
