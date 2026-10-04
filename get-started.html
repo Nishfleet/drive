@@ -101,6 +101,40 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- The one line per system, above the one command ------------------ */
+
+.install {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+}
+
+.install li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+.install li + li {
+  border-top: 1px solid var(--rule);
+}
+
+.install .os {
+  min-width: 13em;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.install code {
+  font-family: var(--mono);
+  font-size: clamp(15px, 2.2vw, 18px);
+}
+
 /* ---- The one command, with its copy button --------------------------- */
 
 .command {
@@ -248,6 +282,13 @@ th {
         One command on the Mac you want the drive on. This page tells you
         whether it worked, without you refreshing anything.
       </p>
+    </section>
+
+    <section id="install-heading" aria-labelledby="install-heading-title">
+      <h2 id="install-heading-title">Install, one line</h2>
+      <ul class="install" id="install-lines">
+        <!-- Filled by get-started.js from src/status.js -->
+      </ul>
     </section>
 
     <section id="command-heading" aria-labelledby="steps-heading">

@@ -72,6 +72,7 @@ and the invoice disagree.
 Run `npm ci` first. `npm test` typechecks, lints, builds the docs and runs the test suite.
 To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
+To install the CLI from source: `go install github.com/Nishfleet/drive/cmd/drive@latest`.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
 step) and [`docs/spec.md`](docs/spec.md) (why: prices, rivals).

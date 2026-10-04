@@ -14,11 +14,13 @@ would rather you read it here than find out in week three.
   an account arrives by invitation.
 - **The packages are built but not published yet.** GoReleaser builds the
   `.deb`, the `.rpm` and the Homebrew formula from `.goreleaser.yaml`, and a
-  release on a `v*` tag publishes them. Until that release runs, install from
-  the source with `go install github.com/Nishfleet/drive/cmd/drive@latest`, or
+  release on a `v*` tag publishes them. Until that release runs, the install
+  that works today is to build the command from this repository's source with
+  the Go toolchain (`drive --help` prints the exact `go install` route); or
   build the same package locally with
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
-  The [Quickstart](/quickstart) is written for the released commands.
+  The [Quickstart](/quickstart) leads with the released commands and
+  keeps the details in its Other ways section.
 - **macOS is read-only for us.** We can prove the drive on a Mac only on a
   GitHub macOS runner or by hand, so what we have measured end to end is
   Linux.

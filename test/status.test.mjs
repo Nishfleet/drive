@@ -25,6 +25,7 @@ import {
   deviceSyncState,
   emptyState,
   installCommand,
+  installLines,
   isConnected,
   lastSyncText,
   pollIntervalMs,
@@ -46,6 +47,7 @@ import {
   formatBytes,
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
+  INSTALL_LINES,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
@@ -93,6 +95,52 @@ test("the install command is drive init, and the steps walk through it", () => {
     assert.equal(typeof step.body, "string");
     assert.ok(step.body.length > 0, "every step needs a sentence");
   }
+});
+
+test("the page leads with one pasted install line per system", () => {
+  // drive issue #428: the get-started page and the docs lead with one line per
+  // OS, so a new person reads what to paste before they are told where to paste
+  // it. macOS first (the page's own subject), then the two Linux package
+  // managers, and each row is a single line with no line break in it.
+  assert.deepEqual(
+    INSTALL_LINES.map((row) => row.os),
+    ["macOS", "Linux, Debian or Ubuntu", "Linux, Fedora or RHEL"],
+  );
+  const systems = new Set();
+  for (const row of INSTALL_LINES) {
+    assert.ok(row.os.length > 0, "every install row needs the system it is for");
+    assert.ok(!systems.has(row.os), `two rows for ${row.os} would be noise`);
+    systems.add(row.os);
+    assert.doesNotMatch(
+      row.line,
+      /[\r\n]/,
+      `the install line for ${row.os} must be one pasted line`,
+    );
+    assert.match(
+      row.line,
+      /^(brew install|sudo apt install|sudo dnf install) \S+$/,
+      `the install line for ${row.os} must be one package-manager invocation`,
+    );
+  }
+  // The detail a line cannot carry (the tap, the module path, the Windows
+  // installer name) belongs in the docs' "Other ways" section, so no customer
+  // page shows an internal name. test/own-words.test.mjs walks the pages; this
+  // is the same rule at the source of the page's copy.
+  for (const row of INSTALL_LINES) {
+    assert.doesNotMatch(row.line, /nishfleet/i, `the install line for ${row.os} must not name us`);
+    assert.doesNotMatch(
+      row.line,
+      /launchd|\/tap\//,
+      `the install line for ${row.os} must stay one line`,
+    );
+  }
+});
+
+test("the renderer hands the page one row per system", () => {
+  assert.deepEqual(
+    installLines(),
+    INSTALL_LINES.map((row) => ({ os: row.os, line: row.line })),
+  );
 });
 
 test("a device that has not signed in reads as waiting, not connected", () => {
@@ -490,6 +538,18 @@ test("the page's Devices table has a last-sync column and its empty states", () 
   }
 });
 
+// The page's install block is the one place it names a system: the renderer
+// fills #install-lines from the module, so a shell that carried one row itself
+// would be a second copy of the module's words.
+test("the shell carries an empty install list for the renderer to fill", () => {
+  assert.match(shell, /<ul class="install" id="install-lines">\s*<!--[^>]*-->\s*<\/ul>/);
+  assert.match(
+    readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8"),
+    /required\("install-lines"\)\.replaceChildren/,
+    "the renderer must fill #install-lines from the module",
+  );
+});
+
 test("the shell is structure only: the module's copy is not re-declared in it", () => {
   // The old gate policed a second copy of every sentence; this one fails if a
   // second copy is ever reintroduced. The shell carries structure and styles;
@@ -510,6 +570,12 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
     assert.ok(
       !shell.includes(step.body),
       `the shell must not carry the step text for "${step.title}"`,
+    );
+  }
+  for (const row of INSTALL_LINES) {
+    assert.ok(
+      !shell.includes(row.line),
+      `the shell must not carry the install line for ${row.os}; the renderer writes it from the module`,
     );
   }
   for (const fragment of Object.values(UPLOAD_LABEL)) {
@@ -534,6 +600,7 @@ test("the shell loads the renderer as a module and carries the copy button", () 
   assert.match(shell, /<script type="module" src="\.\/src\/get-started\.js"><\/script>/);
   assert.match(shell, /<button type="button" id="copy-command">Copy<\/button>/);
   assert.match(shell, /<code id="install-command"><\/code>/);
+  assert.match(shell, /<ul class="install" id="install-lines">/);
   assert.match(shell, /<ol class="steps" id="steps">/);
 });
 
