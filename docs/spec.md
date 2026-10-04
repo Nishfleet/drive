@@ -61,7 +61,7 @@ The first says don't build. The second says if you build, sell to people first. 
 | "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
 | Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum |
 | Snapshots | Paid add-on only |
-| Storage | Backblaze B2 as primary, plus a backup copy on a Hetzner Storage Box |
+| Storage | iDrive e2 as primary — one bucket per customer, each key limited to that bucket (drive#371) — plus a backup copy on a Hetzner Storage Box. Backblaze B2 stays the standby |
 
 #### Pricing pressure test (1.5¢ to 2¢, prices checked 2026-09-29)
 
@@ -69,10 +69,10 @@ The first says don't build. The second says if you build, sell to people first. 
 
 | Provider | Storage | Downloads | Minimum stay and other catches | Fit |
 |---|---|---|---|---|
-| Backblaze B2 | $6.95 | Free up to 3x stored, then $10/TB | None. API calls free (a rare class costs $0.004 per 10k after 2,500/day) | **Primary if iDrive fails step 1**, otherwise standby |
+| Backblaze B2 | $6.95 | Free up to 3x stored, then $10/TB | None. API calls free (a rare class costs $0.004 per 10k after 2,500/day) | **Standby**: iDrive keeps step 1 on drive#371's bucket answer, so B2 is what the build falls back to if the reseller API stops answering |
 | Hetzner Storage Box (BX41, 20 TB) | about €2 (€40.60 for the box) | Free | Fixed box sizes, one datacenter, SFTP/WebDAV only, 10 connections | **Backup copy** |
 | Hetzner Object Storage | €5.99 base covers 1 TB + 1 TB downloads, then billed per TB-hour | Includes 1 TB | 64 KB minimum billed object size. Overage rate not readable on the page | Live second copy if a premium tier needs one |
-| iDrive e2 | $4.96 on yearly plans ($59.50/TB/year); **$5/TB-month billed monthly on the Veeam/MSP/Reseller plan, $5 minimum (1 TB), first 1 TB free to try** (Nish's screenshot, 2026-09-29) | Free up to 3x stored, then $10/TB | Has event notifications, versioning and no API fees (site checked 2026-09-29). Measured on the real account 2026-10-03 (drive#173): keys limited to one folder — **No**, the endpoint's STS has no `AssumeRole` and its access keys scope to buckets, never to a prefix, so the `u/<account-id>/` scope has nothing to bind to. A month is billed on neither average nor peak: one storage figure per 30-day cycle, and an object deleted early stays billed to day 30, so the 1-day hidden-version rule caps retention, not cost. Still unchecked: whether we qualify as a reseller | **Fails step 1: not primary** (Nish, 2026-09-29; measured 2026-10-03). Margin at 2¢ with the Storage Box: about 54%, against 44% on B2. B2 becomes the primary |
+| iDrive e2 | $4.96 on yearly plans ($59.50/TB/year); **$5/TB-month billed monthly on the Veeam/MSP/Reseller plan, $5 minimum (1 TB), first 1 TB free to try** (Nish's screenshot, 2026-09-29) | Free up to 3x stored, then $10/TB | Has event notifications, versioning and no API fees (site checked 2026-09-29). Measured on the real account 2026-10-03 (drive#173): keys limited to one folder — **No**, the endpoint's STS has no `AssumeRole` and its access keys scope to buckets, never to a prefix, so the `u/<account-id>/` scope has nothing to bind to. A month is billed on neither average nor peak: one storage figure per 30-day cycle, and an object deleted early stays billed to day 30, so the 1-day hidden-version rule caps retention, not cost. Still unchecked: whether we qualify as a reseller | **Primary** (measured 2026-10-03, drive#173: no `AssumeRole`, keys scope to buckets; answered by drive#371, 2026-10-04: one bucket per customer, so the scope is the bucket). Margin at 2¢ with the Storage Box: about 54%, against 44% on B2. Still unchecked: whether we qualify as a reseller, and the mint and revoke on the real account, which need the reseller token |
 | Wasabi | $7.99 | Free within its fair-use policy | 90-day minimum stay and a 1 TB minimum charge | Rejected: breaks hourly billing |
 | Storj | $7 | $7/TB | 30-day minimum stay, $5 minimum monthly fee | Rejected: download fee and minimum stay |
 | Cloudflare R2 | $15 | Free | None. $4.50 per million writes, $0.36 per million reads | Rejected as primary: costs as much as our whole 1.5¢ price |
@@ -166,7 +166,7 @@ Price sources (checked 2026-09-29): https://www.backblaze.com/cloud-storage/pric
 
 ### How it works
 
-- Files are stored as plain files in one B2 bucket, one folder per user. No chunking, no custom format, so anything that speaks S3 or rclone can read them.
+- Files are stored as plain files in one bucket per user, one folder per account inside it. No chunking, no custom format, so anything that speaks S3 or rclone can read them.
 - Opening a file streams it; only what you open uses disk space.
 - A file uploads a few seconds after it is closed (decision 2026-09-28). No 60-second whole-drive snapshots.
 - Agents use the same files through the drive folder, an MCP server or the S3 API, each with its own scoped key.
