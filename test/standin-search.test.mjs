@@ -447,6 +447,7 @@ test("100,000 real files: the index search is under a second, the bucket walk it
     t.diagnostic("rclone is not installed; the S3 stand-in proof did not run");
     return;
   }
+  const before = Date.now();
   const db = makeD1();
   // The exact wiring src/index.js's scheduled handler uses: the S3 store,
   // scoped to one account, walked by the reconciler.
@@ -533,6 +534,22 @@ test("100,000 real files: the index search is under a second, the bucket walk it
   const afterWrite = await searchDrive(db, ACCOUNT, "standin-write");
   assert.equal(afterWrite.count, 1, "a file written to the bucket is searchable at once");
   assert.equal(afterWrite.results[0].path, "/folder-0/standin-write.pdf");
+  // The row the write wrote carries the size and the date the listing of the
+  // same folder reads back from the storage, not zero and nothing until the
+  // nightly walk corrects them (drive#426).
+  const listed = await live.list("/folder-0");
+  const listedWrite = listed.find((entry) => entry.path === "/folder-0/standin-write.pdf");
+  assert.ok(listedWrite !== undefined, "the written file is in the folder's own listing");
+  assert.equal(
+    afterWrite.results[0].sizeBytes,
+    listedWrite.size,
+    `the search shows the size the listing shows (${listedWrite.size})`,
+  );
+  const modified = Date.parse(String(afterWrite.results[0].modifiedAt));
+  assert.ok(
+    !Number.isNaN(modified) && modified > before,
+    `the search shows the date it was written (${afterWrite.results[0].modifiedAt}, the run started ${new Date(before).toISOString()})`,
+  );
   await live.remove("/folder-0/standin-write.pdf");
   const afterRemove = await searchDrive(db, ACCOUNT, "standin-write");
   assert.equal(afterRemove.count, 0, "a file removed from the bucket leaves the index");

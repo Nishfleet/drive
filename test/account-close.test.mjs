@@ -19,6 +19,7 @@ import {
   handleCloseCancelRequest,
   handleCloseRequest,
   handleCloseStatusRequest,
+  purgeOnDate,
   runAccountCloseCron,
 } from "../src/account-close.js";
 import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
@@ -87,21 +88,21 @@ test("the close emails are kinds the renderer knows, and they name the 30-day wi
   const closed = renderEmail("account-closed", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "2026-11-03",
+    purgeOn: "3 Nov",
   });
   assert.match(closed.subject, /closed/i);
   assert.match(closed.text, /30 days/);
-  assert.match(closed.text, /2026-11-03/);
+  assert.match(closed.text, /3 Nov/);
   assert.match(closed.text, /cancel/i);
   assert.match(closed.html, /30 days/);
   const reminder = renderEmail("account-close-reminder", {
     graceDays: CLOSE_GRACE_DAYS,
     reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: "2026-11-03",
+    purgeOn: "3 Nov",
   });
   assert.match(reminder.subject, /5 days/);
   assert.match(reminder.text, /5 days/);
-  assert.match(reminder.text, /2026-11-03/);
+  assert.match(reminder.text, /3 Nov/);
 });
 
 test("the shipped usage page states the 30-day grace period in the module's words", () => {
@@ -133,6 +134,79 @@ test("the shipped usage page states the 30-day grace period in the module's word
   }
   assert.ok(page.includes(`const CLOSE_ENDPOINT = "${CLOSE_ENDPOINT}";`));
   assert.ok(page.includes(`const CLOSE_CANCEL_ENDPOINT = "${CLOSE_CANCEL_ENDPOINT}";`));
+});
+
+test("the purge date reads like 3 Nov, a day number and the month's short name", () => {
+  // drive#422: the walkthrough found the account-close box showing
+  // "2026-11-03", which is correct but unreadable to a person. The window is
+  // 30 days, so a year in the sentence adds nothing and only confuses.
+  assert.equal(purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000), "3 Nov");
+  assert.equal(purgeOnDate(Date.parse("2026-10-31T23:59:59.000Z") / 1000), "30 Nov");
+  assert.equal(purgeOnDate(Date.parse("2026-11-30T00:00:00.000Z") / 1000), "30 Dec");
+  // A year boundary does not leave a year on the sentence.
+  assert.equal(purgeOnDate(Date.parse("2026-12-31T00:00:00.000Z") / 1000), "30 Jan");
+  assert.throws(() => purgeOnDate(Number.NaN), /unix seconds/);
+  // @ts-expect-error the guard is under test — the function expects a number
+  assert.throws(() => purgeOnDate("yesterday"), /unix seconds/);
+});
+
+test("the close emails carry the short date and refuse an ISO one", () => {
+  // The template's own guard: the day arrives from purgeOnDate(), so a value
+  // that is not "3 Nov" is a payload the sender did not build.
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" }),
+      /must be a short date \(3 Nov\)/,
+    );
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "3 November" }),
+      /must be a short date \(3 Nov\)/,
+      "the short month name, not the long one",
+    );
+    assert.throws(
+      () => renderEmail(kind, { graceDays: 30, reminderDays: 25, purgeOn: "03 Nov" }),
+      /must be a short date \(3 Nov\)/,
+    );
+    const mailed = renderEmail(kind, {
+      graceDays: 30,
+      reminderDays: 25,
+      purgeOn: "3 Nov",
+    });
+    assert.match(mailed.text, /3 Nov/);
+    assert.doesNotMatch(mailed.text, /2026-11-03/);
+  }
+});
+
+test("the one box posts cancel while a close is pending and close once it is not", () => {
+  // drive#422, the second box: two forms both asked for "Type your email to
+  // confirm", and the cancel one stayed on the page after the purge.
+  const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  // One form, one label, one button, and the prompt it shows is the state's.
+  assert.equal((page.match(/<form class="close-form"/g) ?? []).length, 1);
+  assert.equal((page.match(/<label for="close-email"/g) ?? []).length, 1);
+  assert.match(page, /id="close-email-label">Type your email to confirm</);
+  assert.match(page, /id="close-submit">Close account</);
+  const script = page.slice(page.indexOf("<script>"));
+  assert.doesNotMatch(script, /cancel-form|cancel-error|cancel-email/);
+  // A close is pending while the 30-day window is open: state is closed and
+  // the nightly cron has not purged the files yet.
+  assert.match(
+    script,
+    /const pending = closed && \(status\.purgedAt === null \|\| status\.purgedAt === undefined\);/,
+  );
+  // Cancelling only shows while a close is pending. After the purge the box
+  // is gone: there is nothing left to close and nothing left to cancel.
+  assert.match(script, /closeFormEl\.hidden = closed && !pending;/);
+  assert.match(script, /closeClosedNextEl\.hidden = !pending;/);
+  // The button is the action it will take, never "Close account" while the
+  // account is already closed.
+  assert.match(script, /closeSubmitEl\.textContent = pending \? CLOSE_BOX\.cancel\.submit/);
+  assert.match(script, /closeTarget = pending \? CLOSE_CANCEL_ENDPOINT : CLOSE_ENDPOINT;/);
+  // Once the files are gone, the box is gone and the section says so, instead
+  // of leaving a person who cancelled too late with a prompt that cannot work.
+  assert.match(script, /closePurgedNextEl\.hidden = pending \|\| !closed;/);
+  assert.match(script, /closePurgeOnEl\.textContent = pending/);
+  assert.match(script, /Files were deleted on \$\{status\.purgeOn\}\./);
 });
 
 test("closing with a matching email sets accounts.state to closed, revokes keys, and mails day 0", async () => {

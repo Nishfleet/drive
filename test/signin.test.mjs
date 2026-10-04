@@ -948,6 +948,26 @@ test("the page offers no provider the server cannot complete (drive#180)", async
 
 test("the page states the spec's two promises: a card at sign-up, and the membership", () => {
   assert.ok(page.includes(SIGNIN_COPY.needCard), "the page must say why a card is needed");
+  // drive#420: once. The sentence used to sit in three places — the paragraph
+  // above the form, the tick box's own label and the footer — which read as a
+  // legal notice rather than a reason. The count is what holds it: a second
+  // copy anywhere on the page fails here, so a future edit cannot put one back
+  // silently.
+  assert.equal(
+    page.split(SIGNIN_COPY.needCard).length - 1,
+    1,
+    "the card sentence appears exactly once on the page",
+  );
+  // And the box is labelled in short, with the whole sentence nowhere inside
+  // its label. Read out of the shipped file, so a label that grew the sentence
+  // back fails here rather than reading as a long legal box.
+  const cardLabel = page.match(/<label[^>]*for="card"[^>]*>([\s\S]*?)<\/label>/)?.[1];
+  assert.ok(cardLabel, "the page carries a label for the card checkbox");
+  const labelText = cardLabel
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  assert.equal(labelText, SIGNIN_COPY.cardConsent, "the box is labelled in short");
   assert.ok(page.includes(SIGNIN_COPY.membershipLine), "the page must quote the membership line");
   assert.ok(page.includes(SIGNIN_COPY.foundingLine), "the page must quote the founding line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
