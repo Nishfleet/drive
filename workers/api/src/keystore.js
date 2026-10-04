@@ -179,7 +179,13 @@ export function createMemoryStore(options = {}) {
       capabilities: device.capabilities,
       endpoint: storage?.endpoint ?? null,
       region: storage?.region ?? null,
-      bucket: scope.bucket ?? null,
+      // The bucket the credential is scoped to, straight from the scope:
+      // the account's own `drv-<id>` (or a team's `drv-t-<id>`), which is the
+      // boundary the storage server enforces (drive#371). It is part of the
+      // answer so a caller mounting this key mounts the bucket the key can
+      // reach, and so drive#462's regression — a mint that named no bucket at
+      // all — is visible in every answer rather than only in the policy.
+      bucket: scope.bucket,
     };
   }
 

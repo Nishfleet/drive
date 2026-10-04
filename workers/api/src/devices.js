@@ -18,7 +18,7 @@ import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { bucketForAccount, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
+import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
 const CLOSE_CRON_LIMIT = 100;
@@ -589,6 +589,12 @@ export function createD1DeviceStore(db, options = {}) {
             keyId: device.id,
             kind: device.kind,
             prefix: device.prefix,
+            // The bucket this row's own prefix puts it in. A cap swap mints
+            // its replacement against this bucket (src/cap.js
+            // `applyCapSwap`), so a team key stays in the team's bucket and
+            // an account key stays in the account's, whatever the cap does
+            // (drive#462).
+            bucket: bucketForKeyPrefix(accountId, device.prefix),
             capabilities: Object.freeze([...device.capabilities]),
             ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
           }),
@@ -972,6 +978,9 @@ export function createD1DeviceStore(db, options = {}) {
             sessionToken: credential.sessionToken,
             expiresIn: credential.expiresIn,
             expiresAt: device.expiresAt,
+            // The scope's own bucket, in the one answer that carries a
+            // credential and the row that holds it (drive#462).
+            bucket: scope.bucket,
           };
         },
 
@@ -1023,10 +1032,11 @@ export function createD1DeviceStore(db, options = {}) {
           const credential = await mintCredential({
             prefix: device.prefix,
             capabilities: READ_ONLY_CAPABILITIES,
-            // The cap swap keeps the key inside the account's own bucket, so
-            // the replacement credential is limited to the same boundary the
-            // old one was (drive#371).
-            bucket: bucketForAccount(accountId),
+            // The cap swap keeps the key inside the bucket the old key was
+            // scoped to, so the replacement credential is limited to the same
+            // boundary: an account's own bucket for an account key, and the
+            // team's for a key on a team prefix (drive#371, drive#462).
+            bucket: bucketForKeyPrefix(accountId, device.prefix),
           });
           // The swap keeps the row's own lifetime and its own id: the hour
           // restarts on the new credential, and the key a person sees listed
