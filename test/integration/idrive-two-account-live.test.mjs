@@ -36,6 +36,7 @@
 // command (run line below). See the header for the exact invocation.
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { createIdriveKeyProvider } from "../../workers/api/src/idrive-keys.js";
 import { bucketForAccount, scopeFor } from "../../workers/api/src/keyprovider.js";
@@ -80,7 +81,7 @@ const MASTER_SECRET = process.env.IDRIVE_S3_SECRET_ACCESS_KEY ?? "";
  * @returns {string}
  */
 function randomSuffix() {
-  return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+  return randomUUID().replaceAll("-", "").slice(0, 8);
 }
 
 // Two throwaway account ids for the run. bucketForAccount folds them the same
@@ -169,6 +170,9 @@ function assertRefused(answer, what) {
     answer.code !== null && ACCESS_DENIAL.includes(answer.code),
     `${what} should be refused for access, not for a bad credential or a bad request; the code was ${answer.code}: ${answer.text.slice(0, 200)}`,
   );
+  // One line per proven refusal, so a real run is citable from its own output
+  // rather than only from "the test passed".
+  console.log(`  refused 403 ${answer.code}: ${what}`);
 }
 
 test("two accounts' keys cannot reach each other on the real iDrive e2", async (t) => {
@@ -243,6 +247,20 @@ test("two accounts' keys cannot reach each other on the real iDrive e2", async (
     });
     const keyA = { client: clientFor(mintedA), accessKeyId: mintedA.accessKeyId };
     const keyB = { client: clientFor(mintedB), accessKeyId: mintedB.accessKeyId };
+
+    // The citation the finish line asks for (drive#462): the two bucket names,
+    // the two non-secret key ids, and the timestamp, printed so a real run can
+    // be pasted into the issue. A key's access key id is a public identifier —
+    // it is the half a client presents — and the secret half is never printed,
+    // never logged and never in this line.
+    console.log(
+      [
+        `idrive two-account proof — real iDrive e2, ${new Date().toISOString()}`,
+        `  account A ${ACCOUNT_A}: bucket ${bucketA}, key id ${mintedA.accessKeyId}`,
+        `  account B ${ACCOUNT_B}: bucket ${bucketB}, key id ${mintedB.accessKeyId}`,
+        `  agent key capabilities: ${scopeA.capabilities.join(", ")} (no delete)`,
+      ].join("\n"),
+    );
 
     // A real object in B's bucket, written by the master, so B has something of
     // its own to read (and A has something of B's to fail on). A matching
