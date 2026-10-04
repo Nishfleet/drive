@@ -507,6 +507,13 @@ function saySignedOut(message) {
 }
 
 function sayReachable() {
+  // `sayReachable` is the neutral reset: it clears whatever status state the
+  // previous render left on the shared slot (empty, unreachable, signed-out)
+  // so the next state — including a fresh `sayMonthEmpty` on this same call
+  // — is the only one the markup carries. Call order in `render()` is: this
+  // first, then the empty-month check, because only an empty month re-fills
+  // the slot; a month with history leaves it cleared and hidden.
+  statusEl.dataset.state = "";
   statusEl.hidden = true;
   // A read that succeeded proves the account is there, so the slider the
   // signed-out state disabled is usable again.
