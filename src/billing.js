@@ -103,18 +103,39 @@ export const BILLING_CONFIG = billingConfigFor(PRICE);
  */
 
 /**
+ * Marks the config a founding member is billed by, so a caller that hands it
+ * back to monthBillCents() is refused rather than halved twice (drive#482).
+ * Enumerable on purpose: a copy of a config (`{...foundingConfig()}`,
+ * `Object.assign({}, config)`) carries every own enumerable property including
+ * symbols, so the mark travels with the copy. A non-enumerable mark is dropped
+ * by the first spread, and the caller that spread it is exactly the one the
+ * check exists to stop.
+ * @type {symbol}
+ */
+const FOUNDING_PRICED = Symbol("founding-priced");
+
+/**
  * The config a founding member is billed by: half the rate and half the
  * maximum, derived from the share, never typed (drive#463).
+ *
+ * The result carries the FOUNDING_PRICED mark, so monthBillCents() can see
+ * when a caller has already halved a config and is about to be halved again
+ * (drive#482: 0.25 cents, $2.50).
  * @param {BillingConfig} [config]
  * @returns {BillingConfig}
  */
 export function foundingConfig(config = BILLING_CONFIG) {
   const share = billingConfig(config).foundingShare;
-  return Object.freeze({
-    ...config,
-    rateUsdPerGbMonth: config.rateUsdPerGbMonth * share,
-    maxUsdPerTb: config.maxUsdPerTb * share,
-  });
+  const priced = Object.defineProperty(
+    {
+      ...config,
+      rateUsdPerGbMonth: config.rateUsdPerGbMonth * share,
+      maxUsdPerTb: config.maxUsdPerTb * share,
+    },
+    FOUNDING_PRICED,
+    { value: true, enumerable: true },
+  );
+  return /** @type {BillingConfig} */ (Object.freeze(priced));
 }
 
 /**
@@ -384,6 +405,14 @@ export function monthBillCents(month) {
       ? 0
       : checked(fields.averageStoredGb, "month.averageStoredGb");
   const config = billingConfig(fields.config ?? BILLING_CONFIG);
+  // Founding is derived once, here, from the month's own fields. A caller that
+  // already halved a config and hands it back would be halved a second time
+  // (drive#482: $10 becomes $5), so an already-founding config is refused.
+  if (/** @type {Record<symbol, unknown>} */ (config)[FOUNDING_PRICED] === true) {
+    throw new TypeError(
+      "month.config is already founding-priced: monthBillCents derives the founding half once, from month.foundingMember",
+    );
+  }
   // The free 3x allowance is the average stored size, so a rollup with
   // download bytes but no stored average is a broken month: defaulting the
   // average to 0 would silently charge every downloaded byte. Both omitted is
@@ -394,6 +423,18 @@ export function monthBillCents(month) {
     );
   }
   const founding = isFoundingMember(fields, config);
+  // The same double discount with the mark gone, which is what a hand-built
+  // config is: the rate is already below the shipped one, so the flag would
+  // halve a discount. BILLING_CONFIG is the one shipped price sheet, so
+  // `rateUsdPerGbMonth` below it means "already discounted", not "a plan":
+  // PRICE is where a different price sheet is written, and it moves this base
+  // with it. Refused rather than ignored, because a bill nobody checks is the
+  // one that is wrong.
+  if (founding && config.rateUsdPerGbMonth < BILLING_CONFIG.rateUsdPerGbMonth) {
+    throw new TypeError(
+      "month.config is already discounted and month.foundingMember halves it again: monthBillCents derives the founding half once, from the month's own fields",
+    );
+  }
   const priced = founding ? foundingConfig(config) : config;
   const averageGb = gbMonths(gbMinutes);
   const meteredCents = Math.round(meteredMonthlyBillUsd(gbMinutes, priced) * 100);
@@ -480,16 +521,28 @@ export function savedLine(bill, gbMinutes) {
  * maximum) — not the raw meter, so the cap can never pass what the invoice
  * will be. At the cap the api Worker deletes each write-capable key and mints
  * read-only ones; the CLI restarts the mount. Nothing is deleted.
+ *
+ * Founding is the account's own flag, passed in and never re-derived here: the
+ * account cap (usageSummary) and the agent key cap (agentCapStatus) pass the
+ * same one, so both count the same bill (drive#482).
  * @param {unknown} gbMinutes metered so far this month
  * @param {unknown} capUsd the account's cap in dollars
- * @param {BillingConfig} [config=BILLING_CONFIG] a founding member's is foundingConfig()
+ * @param {BillingConfig} [config=BILLING_CONFIG]
+ * @param {boolean} [founding=false] the account's founding flag (#386)
  * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
  */
-export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG) {
+export function capStatus(gbMinutes, capUsd, config = BILLING_CONFIG, founding = false) {
   const minutes = checked(gbMinutes, "gbMinutes");
   const cap = checked(capUsd, "capUsd");
+  if (typeof founding !== "boolean") {
+    throw new TypeError(`capStatus founding must be true or false, got ${String(founding)}`);
+  }
   const counted =
-    monthBillCents({ gbMinutes: minutes, config: billingConfig(config) }).storageCents / 100;
+    monthBillCents({
+      gbMinutes: minutes,
+      config: billingConfig(config),
+      foundingMember: founding,
+    }).storageCents / 100;
   // Read-only when the counted spend would exceed the cap, not at it: a bill
   // that lands exactly on the cap is what the person agreed to pay. Passing the
   // cap is what cuts writes off.
@@ -644,7 +697,6 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     payingAccountNumber: fields.payingAccountNumber,
     foundingOfferOpen: fields.foundingOfferOpen,
   });
-  const priced = bill.foundingMember ? foundingConfig(config) : config;
   return Object.freeze({
     gbMonths: months,
     storedGb,
@@ -662,7 +714,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
       billableBytes: downloads.billableBytes,
       usd: downloads.usd,
     }),
-    cap: capStatus(gbMinutes, effectiveCap, priced),
+    cap: capStatus(gbMinutes, effectiveCap, config, bill.foundingMember),
     // The finished strings the page sets and `drive usage` prints. One place
     // formats each number, so a change here moves both surfaces together.
     labels: Object.freeze({

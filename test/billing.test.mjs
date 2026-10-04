@@ -120,6 +120,45 @@ test("the founding numbers are derived as half, never typed", () => {
   assert.equal(Object.isFrozen(founding), true);
 });
 
+test("a founding config cannot be halved twice", () => {
+  // drive#482: monthBillCents() derived the founding half itself, so a caller
+  // that handed it a config foundingConfig() had already halved got half of
+  // half: $10.00 became $2.50. Founding is derived once, from the month's own
+  // fields, so an already-founding config is refused rather than re-halved.
+  const month = { gbMinutes: fullMonthGbMinutes(2000) };
+  assert.equal(monthBillCents({ ...month, foundingMember: true }).totalCents / 100, 10);
+  /** @param {import("../src/billing.js").BillingConfig} config */
+  const refuse = (config) =>
+    assert.throws(
+      () => monthBillCents({ ...month, config, foundingMember: true }),
+      (err) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /already (founding-priced|discounted)/);
+        return true;
+      },
+    );
+  refuse(foundingConfig());
+  // A copy of the founding config — the ordinary way a caller mends a config on
+  // its way somewhere — carries the mark, so it is refused as well. Dropping a
+  // non-enumerable mark on spread is what made this the second half of the
+  // bug: the same discount, applied twice, through a plain `{...config}`.
+  refuse({ ...foundingConfig() });
+  refuse(Object.assign({}, foundingConfig()));
+  // Without the mark, a cheaper rate plus the flag is the same mistake found by
+  // the numbers: refused too.
+  refuse({ ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 });
+  // A config that merely carries founding's numbers without the flag is a legal
+  // config: it is a price sheet, and nothing halves it twice.
+  const copied = { ...BILLING_CONFIG, rateUsdPerGbMonth: 0.01, maxUsdPerTb: 10 };
+  assert.equal(monthBillCents({ ...month, config: copied }).totalCents / 100, 20);
+  // A marked config is not a price sheet at all, so it is refused with or
+  // without the flag: half of half is the only bill it could ever produce.
+  assert.throws(
+    () => monthBillCents({ ...month, config: foundingConfig() }),
+    /already founding-priced/,
+  );
+});
+
 test("the maximum follows the month's average, so a part-month bills for the part", () => {
   // 2 TB held for 3 days is about 197 GB on average: about $3.94, under the
   // $10 maximum. The old peak-based ceiling would have charged a 2 TB month.
@@ -191,8 +230,9 @@ test("the cap counts min(metered, maximum), and bites only past the cap", () => 
   const raised = capStatus(fullMonthGbMinutes(3000), 35);
   assert.equal(raised.state, "active");
   assert.equal(raised.remainingUsd, 5);
-  // A founding member's cap counts the founding bill.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), cap, foundingConfig()).countedUsd, 10);
+  // A founding member's cap counts the founding bill: the flag, not a
+  // pre-halved config (drive#482).
+  assert.equal(capStatus(fullMonthGbMinutes(2000), cap, BILLING_CONFIG, true).countedUsd, 10);
   for (const bad of [Number.NaN, -1, "600", null, undefined]) {
     assert.throws(() => capStatus(bad, 12), TypeError);
     assert.throws(() => monthlyMaximumUsd(bad), TypeError);
