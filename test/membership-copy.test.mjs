@@ -64,13 +64,15 @@ test("pricing copy names a membership, never a minimum", () => {
   assert.equal("freeLine" in PRICE, false);
 });
 
-test("site, FAQ, emails and build-spec carry no $1 credit text", () => {
+test("site, FAQ, emails, build-spec and README carry no $1 credit text", () => {
   const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "utf8");
   const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const surfaces = [
     ...pages.map((page) => [page.name, page.text]),
     ["docs/build-spec.md", spec],
     ["docs-site/pricing.md", docsPricing],
+    ["README.md", readme],
     ["FAQ", FAQ.map((entry) => entry.answer).join("\n")],
     ["SIGNIN_COPY", JSON.stringify(SIGNIN_COPY)],
     ["PRICE", JSON.stringify(PRICE)],
@@ -86,6 +88,17 @@ test("site, FAQ, emails and build-spec carry no $1 credit text", () => {
   for (const [name, text] of surfaces) {
     assert.doesNotMatch(text, CREDIT_TEXT, `${name} still carries $1 credit text`);
   }
+});
+
+// drive#419: the README is a public surface, so its plan sentence is the
+// pricing page's sentence. These two assertions are what stop it drifting back
+// to the old "$1 free every month, no card needed" plan (#352, #387).
+test("the README states the membership and the card at sign-up", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.ok(readme.includes(PRICE.membershipLine), "README is missing the membership line");
+  assert.ok(readme.includes(PRICE.needCard), "README is missing the card-at-sign-up line");
+  assert.doesNotMatch(readme, CREDIT_TEXT, "README still carries $1 credit text");
+  assert.doesNotMatch(readme, MINIMUM_IN_PRICING, "README says minimum");
 });
 
 test("the public site never contains the founding cap or a spots count", () => {
