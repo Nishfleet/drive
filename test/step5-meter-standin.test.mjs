@@ -196,17 +196,13 @@ function providerDayGbMinutes(versions, day) {
   return gbMinutes;
 }
 
-const STANDIN_TIMEOUT_MS = Number(process.env.DRIVE_STANDIN_TEST_TIMEOUT ?? 30_000);
-
-test(
-    "a full day of GB-minutes matches the storage provider's own report within 1%",
-    {
-      // The stand-in starts a container whose health check can exceed the
-      // default 5 s test timeout on a busy runner; the full day of writes
-      // and reconciliation needs more time. Tune via DRIVE_STANDIN_TEST_TIMEOUT.
-      timeout: STANDIN_TIMEOUT_MS,
-    },
-    async (t) => {
+test("a full day of GB-minutes matches the storage provider's own report within 1%", {
+  // startMinioStandin waits up to 30s for the API port and 60s for
+  // /minio/health/live; waitFor then allows 60s per notification batch.
+  // node:test's default 5s timeout killed the stand-in start on a busy
+  // runner (drive#457: 4999.68ms on PR 435).
+  timeout: 240_000,
+}, async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
   }
@@ -479,8 +475,7 @@ test(
     drift <= TOLERANCE,
     `a day's GB-minutes must match the provider's own report within 1%: metered ${metered}, reported ${reported}`,
   );
-  }
-);
+});
 
 /**
  * The FileStore shape the reconciler walks, over the same signed client the
