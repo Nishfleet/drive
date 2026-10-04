@@ -405,3 +405,23 @@ test("the scoreboard carries the Windows row and the docs gain the installer", (
   asserts("docs-site/limits.md", /Windows installs with an MSI/, "the limits page names the MSI");
   asserts("docs-site/limits.md", /unsigned/, "and says the builds are unsigned");
 });
+
+test("no Windows job runs on a pull request or a push, only when started by hand (drive#486)", () => {
+  // GitHub refused every hosted Windows job with "recent account payments have
+  // failed or your spending limit needs to be increased", so each PR carried
+  // two red checks that never ran a step. Windows is out of v1 (docs/spec.md),
+  // and the only runners we own are Linux, so both Windows jobs sit in one
+  // workflow that runs only when someone starts it.
+  const ci = read(".github/workflows/ci.yml");
+  assert.doesNotMatch(
+    ci,
+    /runs-on:\s*windows/,
+    "ci.yml runs on every PR, so it holds no Windows job",
+  );
+  const triggers = WORKFLOW.slice(WORKFLOW.indexOf("\non:"), WORKFLOW.indexOf("\npermissions:"));
+  assert.match(triggers, /workflow_dispatch:/, "the Windows workflow is started by hand");
+  assert.doesNotMatch(triggers, /pull_request|push:|schedule:/, "and by nothing else");
+  // The drive-letter proof moved with the job, it was not dropped.
+  assert.match(WORKFLOW, /\n {2}windows:\n/, "the Windows workflow carries the windows job");
+  assert.match(WORKFLOW, /TestWindowsMountProof/, "with its drive-letter mount proof");
+});
