@@ -118,6 +118,14 @@ h2 {
   border-left-color: var(--accent);
 }
 
+/* A month with nothing stored (drive issue #427). Not an error and not signed
+   out, so it takes the accent: the drive is fine, it just has no files on it
+   yet, and a new account has to be told that rather than left looking at a
+   blank box. */
+.status[data-state="empty"] {
+  border-left-color: var(--accent);
+}
+
 /* ---- The stored-GB line chart ----------------------------------------- */
 
 .chart {
@@ -393,17 +401,12 @@ h2 {
         <p class="hint" id="close-purge-on" hidden></p>
         <p class="lede" id="close-closed-what" hidden>This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.</p>
         <p class="hint" id="close-closed-next" hidden>You can cancel until then. Type your email to cancel.</p>
+        <p class="hint" id="close-purged-next" hidden>Your files were deleted. This account stays closed.</p>
         <form class="close-form" id="close-form">
-          <label for="close-email">Type your email to confirm</label>
+          <label for="close-email" id="close-email-label">Type your email to confirm</label>
           <input type="email" id="close-email" name="email" autocomplete="email" required>
           <p class="error" id="close-error" hidden></p>
           <button type="submit" id="close-submit">Close account</button>
-        </form>
-        <form class="close-form" id="cancel-form" hidden>
-          <label for="cancel-email">Type your email to confirm</label>
-          <input type="email" id="cancel-email" name="email" autocomplete="email" required>
-          <p class="error" id="cancel-error" hidden></p>
-          <button type="submit" id="cancel-submit">Cancel closing</button>
         </form>
       </section>
     </div>
@@ -442,6 +445,14 @@ const UNREACHABLE = {
 // service: it means this browser has no signed-in account, and showing one
 // account's month to another is the bug the gate exists to stop.
 
+// A month with nothing stored in it (drive issue #427). These are the
+// `monthEmpty` sentences src/usage.js pins, carried here for the same reason
+// UNREACHABLE is: the page is a static asset and cannot import the module.
+const MONTH_EMPTY = {
+  what: "Nothing stored yet.",
+  next: "Save a file in the drive folder and the chart below fills in from that day.",
+};
+
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
 const bodyEl = document.getElementById("usage-body");
@@ -463,9 +474,22 @@ const closeClosedWhatEl = document.getElementById("close-closed-what");
 const closeClosedNextEl = document.getElementById("close-closed-next");
 const closePurgeOnEl = document.getElementById("close-purge-on");
 const closeFormEl = document.getElementById("close-form");
-const cancelFormEl = document.getElementById("cancel-form");
 const closeErrorEl = document.getElementById("close-error");
-const cancelErrorEl = document.getElementById("cancel-error");
+const closeEmailLabelEl = document.getElementById("close-email-label");
+const closeSubmitEl = document.getElementById("close-submit");
+const closePurgedNextEl = document.getElementById("close-purged-next");
+
+// The one box (drive#422): the close form and the cancel form were
+// two boxes that both asked for "Type your email to confirm", and
+// the cancel one stayed on the page after the 30 days were up.
+const CLOSE_BOX = {
+  confirm: { label: "Type your email to confirm", submit: "Close account" },
+  cancel: { label: "Type your email to cancel", submit: "Cancel closing" },
+};
+// Which action the one box posts to (drive#422): the close endpoint
+// while the account is open, the cancel endpoint while a close is
+// pending. renderClose() sets it from the account's state.
+let closeTarget = CLOSE_ENDPOINT;
 
 function sayUnreachable() {
   statusEl.dataset.state = "unreachable";
@@ -492,12 +516,29 @@ function saySignedOut(message) {
 
 function sayReachable() {
   statusEl.hidden = true;
+  // `sayReachable` is the neutral reset: it also clears whatever status state a
+  // previous render left on the shared slot (empty, unreachable, signed-out),
+  // so only this call's own state — a fresh `sayMonthEmpty` when the month is
+  // empty, nothing at all when it has history — is what the markup carries.
+  statusEl.dataset.state = "";
   // A read that succeeded proves the account is there, so the slider the
   // signed-out state disabled is usable again.
   capSlider.disabled = false;
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
+}
+
+// A month that read fine and holds no files (drive issue #427). The status
+// slot above the numbers is reserved from the first paint so nothing moves
+// under the reader, and hiding it left a new account staring at that reserved
+// space with a chart below it that has nothing to draw. This is what fills it:
+// the month is empty, said in the month's own words, in the month's own area.
+function sayMonthEmpty() {
+  statusEl.dataset.state = "empty";
+  statusEl.querySelector(".what").textContent = MONTH_EMPTY.what;
+  statusEl.querySelector(".next").textContent = MONTH_EMPTY.next;
+  statusEl.hidden = false;
 }
 
 // The chart's viewBox is one unit per day and 100 units tall, so a day is its
@@ -589,6 +630,14 @@ function render(summary) {
   }
   sayReachable();
 
+  // A month with no stored day has no chart to draw and no saving to report, so
+  // without this the "This month" area is blank for every new account (drive
+  // issue #427). The days, not the sizes: a month that stored and then emptied
+  // itself still has its history to draw, and says so.
+  if (summary.storedDaily.length === 0) {
+    sayMonthEmpty();
+  }
+
   // The saved line is the endpoint's own sentence, shown only when it is a
   // real saving: an empty month has none and stays hidden.
   if (summary.saved === null) {
@@ -639,14 +688,28 @@ function showCloseError(el, message) {
 
 function renderClose(status) {
   const closed = status.state === "closed";
+  // A close is pending while the 30-day window is open: the
+  // account is closed and the nightly cron has not reached the
+  // purge. After the purge there is nothing left to close and
+  // nothing left to cancel, so the box is not on the page.
+  const pending = closed && (status.purgedAt === null || status.purgedAt === undefined);
+  // The one box posts to whichever action it now offers: the close
+  // endpoint while the account is open, the cancel endpoint while a
+  // close is pending.
+  closeTarget = pending ? CLOSE_CANCEL_ENDPOINT : CLOSE_ENDPOINT;
+  closeEmailLabelEl.textContent = pending ? CLOSE_BOX.cancel.label : CLOSE_BOX.confirm.label;
+  closeSubmitEl.textContent = pending ? CLOSE_BOX.cancel.submit : CLOSE_BOX.confirm.submit;
+  closeFormEl.hidden = closed && !pending;
   closeWhatEl.hidden = closed;
   closeNextEl.hidden = closed;
   closeClosedWhatEl.hidden = !closed;
-  closeClosedNextEl.hidden = !closed;
-  closeFormEl.hidden = closed;
-  cancelFormEl.hidden = !closed;
+  closeClosedNextEl.hidden = !pending;
+  closePurgedNextEl.hidden = pending || !closed;
+  showCloseError(closeErrorEl, "");
   if (closed && typeof status.purgeOn === "string") {
-    closePurgeOnEl.textContent = `Files are deleted on ${status.purgeOn}.`;
+    closePurgeOnEl.textContent = pending
+      ? `Files are deleted on ${status.purgeOn}.`
+      : `Files were deleted on ${status.purgeOn}.`;
     closePurgeOnEl.hidden = false;
   } else {
     closePurgeOnEl.hidden = true;
@@ -692,11 +755,7 @@ async function postClose(url, email, errorEl) {
 
 closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
-  postClose(CLOSE_ENDPOINT, document.getElementById("close-email").value, closeErrorEl);
-});
-cancelFormEl.addEventListener("submit", (event) => {
-  event.preventDefault();
-  postClose(CLOSE_CANCEL_ENDPOINT, document.getElementById("cancel-email").value, cancelErrorEl);
+  postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
 });
 
 async function readMonth() {

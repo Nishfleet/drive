@@ -14,8 +14,9 @@ write the same folder.
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.
 - **Billed by the minute, with a ceiling.** 2¢ per GB a month, and the bill is
-  cut off at $12 up to 1.5 TB, then $8 a TB. $1 is free every month and no
-  card is needed to start.
+  cut off at $12 up to 1.5 TB, then $8 a TB.
+- **A membership and a card.** $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.
+  We need a card at sign-up because there is no free tier. Storage use counts toward your membership.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
