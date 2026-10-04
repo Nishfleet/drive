@@ -33,10 +33,16 @@ import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 // `0010_accounts_devices.sql`'s `devices` table gained with drive#106, because
 // the key rows here are written the way the mint writes them. `0012` alters
 // `devices`, so it runs after `0010`, and the default list carries `0010`.
+// The meter tables are here because authenticate of an agent key now reads
+// the metered month (drive#171): a fixture without `usage_minutes` is not
+// the schema the live Worker ships, and that path would throw
+// `no such table: usage_minutes` on the other account's still-live agent key.
 const MIGRATIONS = [
   ...DRIVE_MIGRATIONS,
   "drive/0007_device_codes.sql",
   "drive/0012_agent_key_ttl.sql",
+  "drive/0005_meter.sql",
+  "drive/0006_usage_stored_bytes.sql",
 ];
 
 // A fixed clock, so the timestamps written by the revoke are the ones asserted.
