@@ -22,6 +22,7 @@ import {
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  storageBucketForKey,
 } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
@@ -365,6 +366,94 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
     assert.ok(prefix !== null, `every storage request names an account prefix: ${request}`);
     const other = prefix === "a" ? "u/b" : "u/a";
     assert.ok(!request.includes(other), `${prefix} must never name the other account: ${request}`);
+  }
+});
+
+test("gate 2b: Files page and share reads use the account's own bucket", async () => {
+  // drive#460: the prefix isolation above still holds, and the bucket is now
+  // the boundary the key provider already uses. A file written the way Finder
+  // writes (into drv-<id>) must show on GET /api/files for that account and
+  // must be unreachable from the other account's bucket.
+  assert.match(srcFile("files.js"), /export function storageBucketForKey\(/);
+  assert.match(srcFile("index.js"), /bucketFor:\s*storageBucketForKey/);
+  assert.doesNotMatch(srcFile("index.js"), /bucket:\s*(dev|storage)\.FILES_S3_BUCKET/);
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const server = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const { pathname, search } = new URL(String(url));
+    const segments = decodeURIComponent(pathname)
+      .split("/")
+      .filter((segment) => segment !== "");
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} ${bucket}/${key}${search}`);
+    if (method === "PUT") {
+      objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    if (search.includes("list-type=2")) {
+      const inBucket = new Map(
+        [...objects.entries()]
+          .filter(([name]) => name.startsWith(`${bucket}/`))
+          .map(([name, body]) => [name.slice(bucket.length + 1), body]),
+      );
+      return rcloneListResponse(inBucket, search, { bucket });
+    }
+    const stored = objects.get(`${bucket}/${key}`);
+    return stored !== undefined
+      ? new Response(stored, { status: 200 })
+      : new Response("no key", { status: 404 });
+  };
+  const store = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl: server,
+  });
+  const a = { id: "acct-a", name: "A" };
+  const b = { id: "acct-b", name: "B" };
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {string} body
+   */
+  const put = (account, body) =>
+    handleFilesRequest(
+      new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F&name=note.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      store,
+      account,
+    );
+  /** @param {{id: string, name: string}} account */
+  const list = (account) =>
+    handleFilesRequest(new Request(`https://drive.test${FILES_ENDPOINT}?path=/`), store, account);
+  assert.equal((await put(a, "A's own bytes")).status, 201);
+  /** @type {{rows: Array<{name: string}>}} */
+  const aList = await (await list(a)).json();
+  assert.deepEqual(
+    aList.rows.map((row) => row.name),
+    ["note.txt"],
+  );
+  assert.deepEqual((await (await list(b)).json()).rows, []);
+  assert.ok(
+    seen.some((request) => request.includes("drv-acct-a/")),
+    `A's calls name drv-acct-a: ${JSON.stringify(seen)}`,
+  );
+  assert.ok(
+    seen.some((request) => request.includes("drv-acct-b/")),
+    `B's calls name drv-acct-b: ${JSON.stringify(seen)}`,
+  );
+  for (const request of seen) {
+    if (request.includes("drv-acct-a/")) {
+      assert.ok(!request.includes("drv-acct-b/"), `A must never name B's bucket: ${request}`);
+    }
+    if (request.includes("drv-acct-b/")) {
+      assert.ok(!request.includes("drv-acct-a/"), `B must never name A's bucket: ${request}`);
+    }
   }
 });
 
