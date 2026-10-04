@@ -52,6 +52,9 @@ const account = Object.freeze({ id: "1", name: "Your drive" });
 // The first-run page is a Vite entry at the repo root (issue #70), not a
 // verbatim asset in public/, so its shell is read from there.
 const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
+// The Web Files page, which adopted the shared header and menu in drive#425 and
+// is now the third page under the one-navigation gate below.
+const filesPage = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
@@ -752,12 +755,12 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
 });
 
 test("the pages' mastheads read as one navigation", () => {
-  // The review found the headers disagreeing. The two mastheads that carry a
-  // nav (usage and get-started) list Your files, Pricing, Get started, Usage,
-  // Sign in in that order (the Web Files link leads since #48 merged, and Sign
-  // in closes it since drive#10), and each marks itself. The pricing page's
-  // masthead is its wordmark alone — its links are its footer nav, which is
-  // issue #11's and is checked below.
+  // The review found the headers disagreeing. The three mastheads that carry a
+  // nav (usage, get-started and the Web Files page since drive#425) list Your
+  // files, Pricing, Get started, Usage, Sign in in that order (the Web Files
+  // link leads since #48 merged, and Sign in closes it since drive#10), and
+  // each marks itself. The pricing page's masthead is its wordmark alone — its
+  // links are its footer nav, which is issue #11's and is checked below.
   const nav = [
     '<a href="/files"',
     '<a href="/"',
@@ -765,16 +768,36 @@ test("the pages' mastheads read as one navigation", () => {
     '<a href="/usage"',
     '<a href="/signin"',
   ];
-  for (const masthead of [page, getStartedPage]) {
-    const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
+  // The link each page marks as the one the reader is on.
+  const CURRENT = new Map([
+    ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
+    ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
+    ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
+  ]);
+  for (const [name, html] of [
+    ["usage.html", page],
+    ["get-started.html", getStartedPage],
+    ["files.html", filesPage],
+  ]) {
+    // The header's own links, and not the page's: a link elsewhere must not
+    // satisfy this gate, and must not fail it either. The header is the markup
+    // between its open and close tags, the same slice test/pricing-copy.test.mjs
+    // takes of the pricing page.
+    const header = html.slice(0, html.indexOf("</header>"));
+    const links = [...header.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
     assert.deepEqual(
-      links.slice(0, nav.length),
+      links,
       nav,
-      "the masthead links are in the same order on both pages",
+      `${name}'s header carries the site's five links, and nothing else, in the same order`,
     );
+    assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
+    assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
+    // Each page marks itself, or the header reads as one long list of links
+    // with no indication of where the reader is.
+    const here = CURRENT.get(name);
+    assert.ok(here, `${name} has a current-page link of its own to check`);
+    assert.match(header, here, `${name} marks itself in the header with aria-current`);
   }
-  assert.match(page, /<a href="\/usage" aria-current="page">Usage<\/a>/);
-  assert.match(getStartedPage, /<a href="\/get-started" aria-current="page">Get started<\/a>/);
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.
   const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
