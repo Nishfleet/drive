@@ -698,7 +698,7 @@ test("a same-origin form POST with Origin: null is accepted, a cross-site one is
   // Referrer-Policy: no-referrer makes Chromium send `Origin: null` on the
   // device approve form; Sec-Fetch-Site says whether it was really ours.
   const url = "https://drive.example/v1/device/approve";
-  const form = (site) =>
+  const form = (/** @type {string} */ site) =>
     new Request(url, { method: "POST", headers: { origin: "null", "sec-fetch-site": site } });
   assert.equal(isSameOriginRequest(form("same-origin")), true);
   assert.equal(isSameOriginRequest(form("cross-site")), false);
