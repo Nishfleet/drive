@@ -70,6 +70,11 @@
 //     dependency: switching the founding offer is a config flip, and a string
 //     cannot be probed. A missing var is treated as open by src/founding.js,
 //     so it is not an outage.
+//   - API, the api Worker's service binding (drive#342). It is a second
+//     Worker with its own GET /v1/health, reached through this one; a lost
+//     binding already answers every /v1/* request with the message table's
+//     closed door (src/index.js forwardToApi), and probing it here would make
+//     the site's health page on the api Worker's.
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read

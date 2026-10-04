@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- The live test address serves the drive api at `/v1/*` (drive-api deploys
+  before the site, with no address of its own). People who passed Cloudflare
+  Access sign in with "Continue as" and their address, and the `drive` CLI gets
+  its Access token from `cloudflared`. Email sign-in still waits for the domain.
 - Abuse guards: one active account per card, 1 TB storage until the first
   charge, spending cap default $20, and a founding slot reserved at the card
   step.

@@ -25,6 +25,8 @@
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
 import { betterAuth } from "better-auth";
+import { APIError, createAuthEndpoint } from "better-auth/api";
+import { setSessionCookie } from "better-auth/cookies";
 import { magicLink } from "better-auth/plugins";
 import { sendEmail } from "./email-send.js";
 
@@ -193,8 +195,51 @@ export function createAuth(options) {
           await options.sendLink({ to: email, url: signinLink(token, options.baseURL) });
         },
       }),
+      accessSignin(),
     ],
   });
+}
+
+/**
+ * Sign-in for a person Cloudflare Access already proved (src/access-signin.js).
+ * A Better Auth plugin, the library's own extension point, so the session is
+ * the library's: the same user table, the same session row, the same signed
+ * cookie the magic link's verify step sets. The endpoint is server-only: it is
+ * never on the HTTP router, so the only way to reach it is `auth.api` from the
+ * route that has already verified the Access JWT. The steps are the magic-link
+ * verify step's own (find or create the user, create the session, set the
+ * cookie), minus the token, because the verified JWT is the proof here.
+ */
+function accessSignin() {
+  return {
+    id: "drive-access-signin",
+    endpoints: {
+      signInWithAccess: createAuthEndpoint.serverOnly({ method: "POST" }, async (ctx) => {
+        const body = /** @type {{email?: unknown}} */ (ctx.body ?? {});
+        const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+        if (email === "") {
+          throw new APIError("BAD_REQUEST", { message: "email is required" });
+        }
+        const adapter = ctx.context.internalAdapter;
+        let user = (await adapter.findUserByEmail(email))?.user;
+        if (!user) {
+          user = await adapter.createUser(
+            { email, emailVerified: true, name: "" },
+            { method: "cloudflare-access" },
+          );
+        }
+        if (!user) {
+          throw new APIError("INTERNAL_SERVER_ERROR", { message: "failed to create user" });
+        }
+        const session = await adapter.createSession(user.id);
+        if (!session) {
+          throw new APIError("INTERNAL_SERVER_ERROR", { message: "failed to create session" });
+        }
+        await setSessionCookie(ctx, { session, user });
+        return ctx.json({ ok: true });
+      }),
+    },
+  };
 }
 
 /**

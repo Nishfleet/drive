@@ -682,8 +682,9 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // secret no probe can exercise without a storage event to feed it, whose
   // absence fails closed at the intake (src/meter.js) instead of at the probe,
   // and FOUNDING_OFFER_OPEN is a Worker var (inline text) that cannot be
-  // probed.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "FOUNDING_OFFER_OPEN"]);
+  // probed. API is the api Worker's service binding (drive#342), a second
+  // Worker with its own /v1/health whose loss is already the /v1/* closed door.
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "FOUNDING_OFFER_OPEN", "API"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

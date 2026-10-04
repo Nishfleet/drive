@@ -34,12 +34,12 @@ export default defineWorker({
   // src/status.js and src/messages.js with it, and two Workers on two dates
   // drift in the runtime they run on.
   compatibilityDate: "2026-09-29",
-  // The same posture the site Worker ships with (cloudflare.config.ts, Nish
-  // 2026-10-01): private until drive has its own domain, the workers.dev
-  // address on only behind Cloudflare Access ("All traffic", Cloudflare
-  // account members), and no preview URLs. Nothing here opens a public
-  // address the site Worker does not already hold.
-  workersDev: true,
+  // No address of its own (drive#342): the site Worker forwards /v1/* here
+  // over its `API` service binding, and the site sits behind Cloudflare Access
+  // until drive has its own domain. A workers.dev address here would be a
+  // second door with no Access app in front of it, so it stays off, and so do
+  // preview URLs.
+  workersDev: false,
   previewUrls: false,
   entrypoint: "workers/api/src/index.js",
   env: {

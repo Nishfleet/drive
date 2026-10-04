@@ -184,6 +184,9 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	// An api address behind Cloudflare Access (drive#342) gets its token
+	// from cloudflared; see cfaccess.go.
+	installAccessTransport()
 	var err error
 	switch os.Args[1] {
 	case "version", "--version", "-v":

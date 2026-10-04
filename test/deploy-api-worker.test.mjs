@@ -273,3 +273,24 @@ test("a device-code request takes the closed door when a declared limiter is mis
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
 });
+
+// drive#342: the live wiring. drive-api has no workers.dev address of its own
+// (it is reached only through the site Worker, which sits behind Cloudflare
+// Access), the site Worker binds it as `API`, and the deploy job ships it
+// before the site Worker, because a binding with no target fails the deploy.
+test("drive-api has no public address and the site binds it as API", () => {
+  assert.equal(apiConfig.workersDev, false, "drive-api must not have a workers.dev address");
+  assert.equal(apiConfig.previewUrls, false);
+  const site = read("cloudflare.config.ts");
+  assert.match(site, /^\s*API: bindings\.worker\(\{ worker: "drive-api" \}\),/m);
+});
+
+test("the deploy job ships drive-api before the site Worker, and checks /v1 stays private", () => {
+  const workflow = read(".github/workflows/deploy-production.yml");
+  const api = workflow.indexOf("run: npx cf deploy --prebuilt --worker drive-api");
+  const site = workflow.search(/run: npx cf deploy --prebuilt\n/);
+  assert.ok(api > 0, "the api Worker has a deploy step");
+  assert.ok(site > api, "the api Worker deploys before the site Worker");
+  assert.match(workflow, /drive-pricing\.nishant345\.workers\.dev\/v1\/health/);
+  assert.match(workflow, /drive-api\.nishant345\.workers\.dev\/v1\/health/);
+});
