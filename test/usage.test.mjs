@@ -26,6 +26,7 @@ import {
   USAGE_HISTORY_DAYS,
   usageSummary,
 } from "../src/billing.js";
+import { CAP_ENDPOINT } from "../src/cap.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
@@ -482,6 +483,10 @@ const PAGE_IDS = Object.freeze([
   "upload-line",
   "cap-slider",
   "cap-value",
+  "cap-note",
+  "cap-save",
+  "cap-saved",
+  "cap-saving",
   "close-what",
   "close-next",
   "close-closed-what",
@@ -750,8 +755,71 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
     /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.ceilingUsd, cap\.capUsd\)\)\);/,
   );
   assert.match(page, /<label for="cap-slider">Monthly cap, in dollars<\/label>/);
-  // It is a display, not a control, until the accounts store lands (#2).
-  assert.match(page, /id="cap-slider"[^>]*disabled/);
+  // Nothing writes the slider's own value out of the page: the endpoint's
+  // dollar values arrive finished, so a page-side "$12.34" would be a second
+  // copy of the one formatter.
+  assert.doesNotMatch(page, /capValueEl\.textContent = `\$/);
+});
+
+test("the cap is a control, not a readout, and it saves through the api", async () => {
+  // The accounts store is live (drive issue #2), so #421 asks for the write
+  // itself: the slider is enabled, a button appears when it has a number worth
+  // keeping, and the number goes to the one route `drive cap` writes.
+  assert.equal(CAP_ENDPOINT, "/api/cap");
+  assert.ok(
+    page.includes(`const CAP_ENDPOINT = "${CAP_ENDPOINT}";`),
+    "the page must write to the endpoint src/cap.js names",
+  );
+  // The slider ships usable: the signed-out state is what disables it, which
+  // is the gate (drive#73) rather than a not-yet-implemented placeholder.
+  assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
+  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.match(page, /capSlider\.addEventListener\("input"/);
+  assert.match(page, /capSaveEl\.addEventListener\("click"/);
+  // The write: the same body `drive cap` sends, and the answer's own sentence
+  // is the confirmation, so the page writes no cap words of its own.
+  assert.match(page, /body: JSON\.stringify\(\{ amount \}\)/);
+  assert.match(page, /capSavedEl\.textContent = payload/);
+  // The signed-out state still disables it: an account on this browser is what a
+  // write needs, so a page with none cannot move a cap.
+  assert.match(page, /capSlider\.disabled = true;\s*capSaveEl\.hidden = true;/);
+  // A save in flight when the session ends has no answer left to wait for, so
+  // its two hints sleep with the slider.
+  assert.match(page, /capSavingEl\.hidden = true;\s*capSavedEl\.hidden = true;/);
+  // A worker's sentence left under the slider would answer a number the person
+  // has since moved on from, so the input that shows the button returns the
+  // note to its own words.
+  assert.match(
+    page,
+    /capSaveEl\.hidden = false;\s*capNoteWhatEl\.textContent = CAP_NOTE\.what;\s*capNoteNextEl\.textContent = CAP_NOTE\.next;/,
+  );
+  // A minute's read does not move the slider back out from under the person
+  // moving it, and the saved line is the endpoint's own sentence.
+  assert.match(
+    page,
+    /if \(capSaveEl\.hidden\) \{\s*capSlider\.value = String\(cap\.capUsd\);\s*\}/,
+  );
+  // Visual feedback while the POST is in flight, so the slider's
+  // disabled state is not the only signal that the save is happening.
+  assert.match(page, /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/);
+  // The note under the slider is the one pair src/usage.js pins
+  // (USAGE_LABELS.capNote). The page is a static asset and cannot import it,
+  // so the words are repeated, and this is what keeps the repeat honest: a
+  // drifted line would leave a person reading the api's words in one place and
+  // a copy of them in another.
+  const note = vm.runInNewContext(
+    `${page.slice(
+      page.indexOf("const CAP_NOTE = {"),
+      page.indexOf("};", page.indexOf("const CAP_NOTE = {")) + 2,
+    )}CAP_NOTE;`,
+  );
+  // JSON, because the page's words are read out of a fresh vm context and a
+  // deepStrictEqual across realms fails on the prototype rather than the text.
+  assert.equal(JSON.stringify(note), JSON.stringify(USAGE_LABELS.capNote));
+  // The line that used to say a cap "arrives with accounts" is gone: a slider
+  // that can be moved makes that sentence false, and nothing on the page says
+  // the cap is out of reach (drive#421).
+  assert.doesNotMatch(page, /arrives with accounts/);
 });
 
 test("the pages' mastheads read as one navigation", () => {
