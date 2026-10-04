@@ -215,14 +215,17 @@ test("a day of stored GB pushes the capped bill, with the free $1 as a dollar li
     assert.equal(event.customer_id, CUSTOMER);
     assert.equal(event.event_name, DODO_EVENT_NAME);
     const metadata = /** @type {Record<string, unknown>} */ (event.metadata);
-    assert.equal(metadata.credit_usd, "-$1.00");
-    assert.equal(metadata.credit_label, "Free credit");
+    assert.equal(metadata.credit_label, "Membership");
     assert.equal(event.timestamp, undefined, "omit timestamp: Dodo rejects hours older than 1h");
     return Number(metadata.amount_units);
   });
   const last = /** @type {Record<string, unknown>} */ (call.payload.events[23].metadata);
   assert.equal(last.storage_cents, bill.storageCents);
   assert.equal(last.total_cents, bill.totalCents);
+  const membershipLine = bill.lines.find((line) => line.label === "Membership");
+  assert.ok(membershipLine, "the invoice has a Membership line");
+  assert.equal(last.credit_usd, membershipLine.usd);
+  assert.equal(last.credit_label, "Membership");
   assert.equal(
     units.reduce((sum, n) => sum + n, 0),
     bill.totalCents,
@@ -334,7 +337,7 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
     fetch: recorder.fetch,
     now: hour1,
   });
-  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 1500);
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 1600);
   await recordUsage(db, ACCOUNT, hour0, 60, BYTES_PER_GB, hour1);
   await recordUsage(db, ACCOUNT, hour1, 60, BYTES_PER_GB, hour1 + HOUR_MS);
   await pushBillingHours(db, [hour1], {
@@ -359,15 +362,15 @@ test("Dodo receives the ceiling-capped amount, never the uncapped meter", async 
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
   const bill = monthBillCents({ gbMinutes, peakBytes: 2000 * BYTES_PER_GB });
   assert.equal(bill.storageCents, 1600);
-  assert.equal(bill.totalCents, 1500);
+  assert.equal(bill.totalCents, 1600);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
   const metadata = recorder.calls[0].payload.events[0].metadata;
   assert.equal(metadata.amount_units, bill.totalCents);
   assert.equal(metadata.storage_cents, 1600);
-  assert.equal(metadata.credit_usd, "-$1.00");
+  assert.equal(metadata.credit_usd, "$0.00");
   assert.ok(metadata.amount_units < 4000, "the raw $40 meter must not reach Dodo");
-  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 1500);
+  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 1600);
 });
 
 test("no key, and no Dodo customer, skip the ingest rather than invent one", async () => {

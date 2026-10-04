@@ -467,19 +467,19 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   // The storage bill is read out of it rather than worked out a second time.
   assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return monthBillCents\(/);
   // Three months worked out by hand from the spec's numbers (2¢/GB-month on
-  // 43,800 minutes, the $12 floor, $8/TB past it, the free $1, downloads free
-  // to 3x the average then 1¢/GB) and checked against the one function:
-  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, -$1 → 700¢
+  // 43,800 minutes, the $12 floor, $8/TB past it, the $10 membership, downloads
+  // free to 3x the average then 1¢/GB) and checked against the one function:
+  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, membership floor →
+  //   1000¢
   //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
-  //   100 GB billable → +100¢ → $2.00
-  //   2 TB all month: 4000¢ metered, capped at 8 × $2 = $16 → 1600¢, -$1 →
-  //   1500¢
+  //   100 GB billable → +100¢ → $11.00
+  //   2 TB all month: 4000¢ metered, capped at 8 × $2 = $16 → 1600¢
   const MINUTES_PER_MONTH = 43800;
   /** @type {Array<[{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number}, {storageCents: number, downloadCents: number, creditCents: number, totalCents: number}]>} */
   const cases = [
     [
       { gbMinutes: 400 * MINUTES_PER_MONTH, peakGb: 400 },
-      { storageCents: 800, downloadCents: 0, creditCents: 100, totalCents: 700 },
+      { storageCents: 800, downloadCents: 0, creditCents: 0, totalCents: 1000 },
     ],
     [
       {
@@ -488,11 +488,11 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
         downloadBytes: 400e9,
         averageStoredGb: 100,
       },
-      { storageCents: 800, downloadCents: 100, creditCents: 100, totalCents: 800 },
+      { storageCents: 800, downloadCents: 100, creditCents: 0, totalCents: 1100 },
     ],
     [
       { gbMinutes: 2000 * MINUTES_PER_MONTH, peakGb: 2000 },
-      { storageCents: 1600, downloadCents: 0, creditCents: 100, totalCents: 1500 },
+      { storageCents: 1600, downloadCents: 0, creditCents: 0, totalCents: 1600 },
     ],
   ];
   for (const [input, expected] of cases) {

@@ -81,12 +81,13 @@ function month(storedGb, overrides = {}) {
 
 test("the summary carries the raw sizes and the finished labels both surfaces show", () => {
   const summary = month(400);
-  // 400 GB held all month at 2¢ is $8 of storage, under the $12 ceiling, less
-  // the free $1 credit: the cost the page and the CLI show is $7 (issue #76).
-  assert.equal(summary.billUsd, 7);
-  assert.equal(summary.billCents.storageCents, 800, "the storage line before the credit");
-  assert.equal(summary.billCents.creditCents, 100, "the free $1 as a dollar line");
-  assert.equal(summary.billCents.totalCents, 700);
+  // 400 GB held all month at 2¢ is $8 of storage, under the $12 ceiling and
+  // under the $10 membership: the cost the page and the CLI show is $10
+  // (issue #352).
+  assert.equal(summary.billUsd, 10);
+  assert.equal(summary.billCents.storageCents, 800, "the storage line before the membership floor");
+  assert.equal(summary.billCents.membershipCents, 1000, "regular membership is $10");
+  assert.equal(summary.billCents.totalCents, 1000);
   assert.equal(summary.storedGb, 400);
   assert.equal(summary.gbMonths, 400, "400 GB for a whole month is 400 GB-months");
   assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS);
@@ -94,7 +95,7 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // render, they do not format.
   assert.equal(summary.labels.storedNow, "400 GB");
   assert.equal(summary.labels.gbMonths, "400.00");
-  assert.equal(summary.labels.cost, "$7.00");
+  assert.equal(summary.labels.cost, "$10.00");
   assert.equal(summary.labels.cap, "$12.00");
   assert.equal(summary.labels.accountCap, "$12.00");
   assert.equal(summary.labels.downloads, "0 B of 1.2 TB free");
@@ -227,7 +228,7 @@ test("`drive usage` prints the four lines the spec names", () => {
       "Stored GB now: 400 GB",
       "GB-months so far: 400.00",
       "Downloads: 500 GB of 1.2 TB free",
-      "Cost so far: $7.00",
+      "Cost so far: $10.00",
     ],
     "stored GB now, GB-months so far, downloads out of the free 3x, cost so far",
   );
@@ -271,8 +272,8 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
-  // Empty until issues #6 and #2 land: no history, no bill, no line to show.
-  assert.equal(body.billUsd, 0);
+  // Empty until issues #6 and #2 land: no history, membership still due.
+  assert.equal(body.billUsd, 10);
   assert.equal(body.storedGb, 0);
   assert.equal(body.gbMonths, 0);
   assert.deepEqual(body.storedDaily, []);
@@ -286,7 +287,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
     "storedNow",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
-  assert.equal(body.labels.cost, "$0.00");
+  assert.equal(body.labels.cost, "$10.00");
   assert.equal(body.labels.cap, "$12.00");
   // The page renders these strings, so none of them may be NaN or undefined.
   for (const value of Object.values(body.labels)) {
@@ -307,7 +308,7 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
   const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
-  assert.equal((await handler.json()).billUsd, 0);
+  assert.equal((await handler.json()).billUsd, 10);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
     "the page must read the endpoint the Worker routes",
@@ -620,7 +621,7 @@ test("the usage page shows the queue a device reported, through the Worker's own
   );
   // The money on the answer is untouched by the queue: they are two fields.
   assert.equal(typeof after.capLine, "string");
-  assert.equal(after.billUsd, 0, "the empty month is still the empty month");
+  assert.equal(after.billUsd, 10, "the empty month still bills the membership");
 
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".

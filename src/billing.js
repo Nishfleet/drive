@@ -7,33 +7,36 @@
 // cannot disagree. The one fetch handler at the bottom serves GET /api/usage
 // with the standard Response, which node --test provides.
 //
-// The rule (docs/build-spec.md, "Bill ceiling", "How the money is worked out"
-// and "Free credit"; Nish 2026-09-30, superseding the older per-TB caps; drive
-// issue #76):
+// The rule (drive issue #352; storage ceiling unchanged from #76):
 //
-//     storage      = min(metered_2c_per_GB_minute, max($12, $8 x peak_TB))
+//     metered      = 2¢/GB-month, billed by the minute
+//     capped       = min(metered, max($12, $8 x peak_TB))
+//     membership   = $5 founding, else $10
+//     storage_bill = max(membership, capped)
+//     first month  = 50% off storage_bill for a regular member; founding
+//                    members keep $5 from month 1 with no extra discount
 //     downloads    = 1¢/GB above 3x the month's average stored size
-//     monthly_bill = max(0, storage + downloads - $1 free credit)
+//     monthly_bill = storage_bill (after first-month) + downloads
 //
 // with peak_TB measured to the GB, so 1.6 TB caps at $12.80, not $16. The
 // max() is what stops a cliff: adding data never lowers the bill. Inside the
 // ceiling the metered rate is 2¢ per GB-month billed by the minute, so GB that
 // was stored for only part of the month bills for that part only. The ceiling
 // is the spec's storage formula; downloads are the spec's own separate line,
-// outside it, and the free $1 comes off the total, never below zero.
+// outside it. There is no free $1 credit (Nish, 2026-10-03: no free tier).
 // monthBillCents() is the one function that returns this bill, in integer
 // cents, so the invoice, the usage page and the cap all read the same number.
 // Nish's six storage figures (400 GB, 800 GB, 1.3 TB, 1.6 TB, 2 TB, 5 TB, all
-// held all month) are the storage-line cases, and the five #76 figures are the
-// month's totals, in test/billing.test.mjs.
+// held all month) are the storage-line cases. The founding flag is a parameter
+// until #386 lands the column and the offer switch.
 //
 // Two storage inputs, not one: the meter (the metered charge) and the peak
 // size (the ceiling). They are the same number only when the data was held for
 // the whole month (Nish's cases). When the drive grew mid-month they differ,
 // and the ceiling must follow the peak, so the peak is passed in rather than
 // read back out of the meter. monthBillCents() takes two more — the download
-// bytes and the average stored size that sets their free 3x — and the config's
-// $1 credit is the last term.
+// bytes and the average stored size that sets their free 3x — plus the
+// membership floor and first-month discount from issue #352.
 //
 // The peak arrives as BYTES, because that is what the meter records (drive
 // issue #163): usage_minutes.stored_bytes is the account's stored bytes at the
@@ -96,9 +99,16 @@ export const BILLING_CONFIG = Object.freeze({
   // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
   // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
   b2FallbackPerTbUsd: PRICE.b2FallbackUsdPerTb,
-  // The free credit, in dollars, off every month with no card needed. Shown as
-  // a dollar line, never as credits (build-spec.md, "Free credit").
+  // The free credit, in dollars. Copy still quotes it (#387 removes it); the
+  // bill no longer subtracts it (issue #352: no free tier).
   freeMonthlyUsd: PRICE.freeMonthlyUsd,
+  // The monthly membership, which storage use counts toward (issue #352).
+  // Founding members keep $5 for as long as the account stays open; everyone
+  // else pays $10. The first 1,000 paying accounts are founding while the
+  // offer is open. The cap number never leaves this file as a public string.
+  membershipUsd: 10,
+  foundingMembershipUsd: 5,
+  foundingLimit: 1000,
   // The default spending cap, $12 (orchestrator decision 2026-09-30, issue
   // #39). Its own number, not PRICE.capFloorUsd: the ceiling floor is the
   // issue #29 decision and they only happen to agree today, so a ceiling
@@ -168,6 +178,77 @@ function checked(value, name, { min = 0 } = {}) {
     throw new TypeError(`${name} must be a number of ${min} or more, got ${String(value)}`);
   }
   return value;
+}
+
+/**
+ * A whole count of 1 or more (paying-account rank, billing month number).
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {number}
+ */
+function wholeCount(value, name) {
+  const n = checked(value, name, { min: 1 });
+  if (!Number.isSafeInteger(n)) {
+    throw new TypeError(`${name} must be a whole number of 1 or more, got ${String(value)}`);
+  }
+  return n;
+}
+
+/**
+ * Founding status for this bill. The locked flag on the account wins, so
+ * closing the offer never changes an account that already holds founding
+ * pricing. Until #386 lands the column, tests pass the flag, or the paying
+ * rank plus the offer switch, as parameters.
+ * @param {{foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown}} fields
+ * @param {BillingConfig} config
+ * @returns {boolean}
+ */
+function isFoundingMember(fields, config) {
+  if (fields.foundingMember !== undefined) {
+    if (typeof fields.foundingMember !== "boolean") {
+      throw new TypeError(
+        `month.foundingMember must be true or false, got ${String(fields.foundingMember)}`,
+      );
+    }
+    return fields.foundingMember;
+  }
+  if (fields.foundingOfferOpen !== undefined && typeof fields.foundingOfferOpen !== "boolean") {
+    throw new TypeError(
+      `month.foundingOfferOpen must be true or false, got ${String(fields.foundingOfferOpen)}`,
+    );
+  }
+  if (fields.payingAccountNumber === undefined) {
+    return false;
+  }
+  const rank = wholeCount(fields.payingAccountNumber, "month.payingAccountNumber");
+  const offerOpen = fields.foundingOfferOpen !== false;
+  return offerOpen && rank <= config.foundingLimit;
+}
+
+/**
+ * Whether this is the account's first billed month. Exactly one spelling:
+ * `firstMonth` or `monthNumber` (1 is the first month).
+ * @param {{firstMonth?: unknown, monthNumber?: unknown}} fields
+ * @returns {boolean}
+ */
+function isFirstMonth(fields) {
+  if (fields.firstMonth !== undefined && fields.monthNumber !== undefined) {
+    throw new TypeError(
+      "month takes firstMonth or monthNumber, never both: the first month is one fact",
+    );
+  }
+  if (fields.firstMonth !== undefined) {
+    if (typeof fields.firstMonth !== "boolean") {
+      throw new TypeError(
+        `month.firstMonth must be true or false, got ${String(fields.firstMonth)}`,
+      );
+    }
+    return fields.firstMonth;
+  }
+  if (fields.monthNumber === undefined) {
+    return false;
+  }
+  return wholeCount(fields.monthNumber, "month.monthNumber") === 1;
 }
 
 /**
@@ -256,7 +337,8 @@ export function monthlyStorageBillUsd(gbMinutes, peakGb, config = BILLING_CONFIG
  * The pricing page's worked examples are all "kept all month" figures
  * (drive issue #23, folded #86), so this is the one call both the copy gate and
  * anything else quoting a size can share: the storage figure the examples
- * print beside the total, and the total the invoice charges.
+ * print beside the total, and the total the invoice charges (membership floor,
+ * no first-month discount).
  *
  * The metered half is that many GB stored for every minute of an average
  * month, over the spec's own 43,800-minute divisor — the conversion every
@@ -309,15 +391,18 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
 }
 
 /**
- * The month's bill, in integer cents (drive issue #76): the one function the
+ * The month's bill, in integer cents (drive issue #352): the one function the
  * invoice, the usage page and the cap all read.
  *
- *   storageCents  = min(metered, max($12, $8 x peak TB)), the spec's ceiling
- *                   formula (build-spec.md "Bill ceiling"), in whole cents
- *   downloadCents = 1¢/GB for the bytes over 3x the month's average stored
- *                   size (build-spec.md "How the money is worked out")
- *   creditCents   = the free $1 every month (build-spec.md "Free credit")
- *   totalCents    = max(0, storage + downloads - credit), never below zero
+ *   storageCents     = min(metered, max($12, $8 x peak TB)), the spec's ceiling
+ *                      formula (build-spec.md "Bill ceiling"), in whole cents
+ *   downloadCents    = 1¢/GB for the bytes over 3x the month's average stored
+ *                      size (build-spec.md "How the money is worked out")
+ *   membershipCents  = $5 founding, else $10
+ *   creditCents      = 50% off the storage bill in a regular member's first
+ *                      month; 0 otherwise. Founding members get no extra
+ *                      discount.
+ *   totalCents       = max(membership, storage) after first-month, plus downloads
  *
  * The peak is `month.peakBytes` (the meter's own unit, drive issue #163) or
  * `month.peakGb` in decimal GB: exactly one of the two, so this function has a
@@ -325,14 +410,20 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
  *
  * The ceiling caps storage only: the spec's min() is over the storage meter
  * ("monthly cost = total GB-minutes ÷ 43,800 × 2¢"), and downloads are the
- * spec's own separate line, so they ride on top of the ceiling. The free $1 is
- * the last term and comes off storage + downloads together.
+ * spec's own separate line, so they ride on top of the ceiling. Membership
+ * includes storage use up to its own price; use above that is billed by the
+ * minute, still under the ceiling.
+ *
+ * Founding status is `month.foundingMember` (locked on the account, #386) or,
+ * until that column exists, `month.payingAccountNumber` plus
+ * `month.foundingOfferOpen`. The first month is `month.firstMonth` or
+ * `month.monthNumber === 1`.
  *
  * Every field is a whole number of cents, the smallest unit money has, so a
  * caller cannot hand Dodo a fractional cent (billing_pushes.amount_units).
- * `lines` is the same three amounts as the invoice's own lines — storage,
- * downloads, and the credit shown as a dollar line — so the invoice prints
- * what the arithmetic produced.
+ * `lines` is the invoice: storage, downloads, the membership top-up that
+ * brings a light month up to the membership, and the first-month discount
+ * when it applies.
  * @param {unknown} month
  */
 export function monthBillCents(month) {
@@ -340,7 +431,7 @@ export function monthBillCents(month) {
     throw new TypeError(`monthBillCents needs a month object, got ${String(month)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, peakBytes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, peakBytes?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, config?: BillingConfig, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown, firstMonth?: unknown, monthNumber?: unknown}} */ (
       month
     );
   const gbMinutes = checked(fields.gbMinutes, "month.gbMinutes");
@@ -379,25 +470,48 @@ export function monthBillCents(month) {
   const downloadCents = Math.round(
     downloadCostUsd(downloadBytes, averageStoredGb, config).usd * 100,
   );
-  const creditCents = Math.round(config.freeMonthlyUsd * 100);
-  return Object.freeze({
-    storageCents,
-    downloadCents,
-    creditCents,
-    totalCents: Math.max(0, storageCents + downloadCents - creditCents),
-    lines: Object.freeze([
-      Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
+  const founding = isFoundingMember(fields, config);
+  const firstMonth = isFirstMonth(fields);
+  const membershipCents = Math.round(
+    (founding ? config.foundingMembershipUsd : config.membershipUsd) * 100,
+  );
+  const storageBillCents = Math.max(membershipCents, storageCents);
+  // Regular first month: the whole storage bill from max(membership, capped)
+  // is 50% off. Founding members pay $5 from month 1 with no extra cut.
+  const creditCents = firstMonth && !founding ? Math.round(storageBillCents / 2) : 0;
+  const membershipTopUpCents = Math.max(0, membershipCents - storageCents);
+  /** @type {Array<{label: string, cents: number, usd: string}>} */
+  const lines = [
+    Object.freeze({ label: "Storage", cents: storageCents, usd: formatUsd(storageCents / 100) }),
+    Object.freeze({
+      label: "Downloads",
+      cents: downloadCents,
+      usd: formatUsd(downloadCents / 100),
+    }),
+    Object.freeze({
+      label: "Membership",
+      cents: membershipTopUpCents,
+      usd: formatUsd(membershipTopUpCents / 100),
+    }),
+  ];
+  if (creditCents > 0) {
+    lines.push(
       Object.freeze({
-        label: "Downloads",
-        cents: downloadCents,
-        usd: formatUsd(downloadCents / 100),
-      }),
-      Object.freeze({
-        label: "Free credit",
+        label: "First month",
         cents: -creditCents,
         usd: signedUsd(-creditCents / 100),
       }),
-    ]),
+    );
+  }
+  return Object.freeze({
+    storageCents,
+    downloadCents,
+    membershipCents,
+    creditCents,
+    totalCents: storageBillCents - creditCents + downloadCents,
+    foundingMember: founding,
+    firstMonth,
+    lines: Object.freeze(lines),
   });
 }
 
@@ -579,7 +693,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
     throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
   }
   const fields =
-    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown}} */ (
+    /** @type {{gbMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, foundingMember?: unknown, payingAccountNumber?: unknown, foundingOfferOpen?: unknown, firstMonth?: unknown, monthNumber?: unknown}} */ (
       usage
     );
   const gbMinutes = checked(fields.gbMinutes, "usage.gbMinutes");
@@ -592,10 +706,21 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
   const effectiveCap = fields.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
   const downloads = downloadCostUsd(downloadBytes, averageStoredGb, config);
   const months = gbMonths(gbMinutes);
-  // The one bill function (issue #76): storage capped at the ceiling, plus the
-  // download line, minus the free $1 credit. The page's cost and the cap both
-  // read it, so neither can work out a different number.
-  const bill = monthBillCents({ gbMinutes, peakGb, downloadBytes, averageStoredGb, config });
+  // The one bill function (issue #352): membership floor on capped storage,
+  // plus the download line, with a regular first month halved. The page's
+  // cost and the cap both read it, so neither can work out a different number.
+  const bill = monthBillCents({
+    gbMinutes,
+    peakGb,
+    downloadBytes,
+    averageStoredGb,
+    config,
+    foundingMember: fields.foundingMember,
+    payingAccountNumber: fields.payingAccountNumber,
+    foundingOfferOpen: fields.foundingOfferOpen,
+    firstMonth: fields.firstMonth,
+    monthNumber: fields.monthNumber,
+  });
   return Object.freeze({
     gbMonths: months,
     storedGb,

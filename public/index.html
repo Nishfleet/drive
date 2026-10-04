@@ -639,7 +639,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
 
     <section class="calculator" id="calculator" aria-labelledby="calculator-heading">
       <h2 id="calculator-heading">What a month would cost</h2>
-      <p class="calculator-lede">Enter how much you store. The bill is our metered price, capped at our own flat-plan ceiling, less the free $1.</p>
+      <p class="calculator-lede">Enter how much you store. The bill is our metered price, capped at our own flat-plan ceiling.</p>
       <form id="quote" class="waitlist" action="/api/quote" method="get">
         <label class="field-label" for="quote-tb">TB you keep all month</label>
         <div class="field-row">
@@ -654,11 +654,11 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
 
     <section class="strip" aria-label="You pay only for what you store">
       <div class="strip-bar" role="img"
-           aria-label="A one terabyte drive kept sixty percent full bills eleven dollars a month after the free dollar; the empty forty percent bills nothing">
-        <span class="strip-full">60% full &middot; $11</span>
+           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing extra">
+        <span class="strip-full">60% full &middot; $12</span>
         <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $11 a month: $12 of storage, less the free $1. The empty 40% bills nothing, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month: $12 of storage. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
     </section>
 
     <section class="demos" aria-labelledby="demos-heading">
@@ -687,22 +687,22 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
       <dl class="examples-list">
         <div class="example">
           <dt>500 GB for 3 days</dt>
-          <dd>about $1 &rarr; <strong>$0</strong> after the free $1</dd>
+          <dd>about $1 &rarr; <strong>$10</strong></dd>
         </div>
         <div class="example">
           <dt>800 GB kept all month</dt>
-          <dd>$12 &rarr; <strong>$11</strong> after the free $1</dd>
+          <dd>$12 of storage &rarr; <strong>$12</strong></dd>
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>$16 &rarr; <strong>$15</strong> after the free $1<span class="compare">(Space $27)</span></dd>
+          <dd>$16 of storage &rarr; <strong>$16</strong><span class="compare">(Space $27)</span></dd>
         </div>
         <div class="example">
           <dt>5 TB kept all month</dt>
-          <dd>$40 &rarr; <strong>$39</strong> after the free $1<span class="compare">(Space $63)</span></dd>
+          <dd>$40 of storage &rarr; <strong>$40</strong><span class="compare">(Space $63)</span></dd>
         </div>
       </dl>
-      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after — less the free $1, so 2&nbsp;TB is $15.</p>
+      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
       <p class="examples-note">Version history is not in version 1.</p>
     </section>
 

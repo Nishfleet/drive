@@ -4,8 +4,8 @@
 // keyed by account and hour (docs/build-spec.md "the meter pushes each hour's
 // total to Dodo, keyed by account and hour, so a repeat push is ignored").
 // The amount is monthBillCents() — the ceiling-capped bill in integer cents,
-// never the raw meter — and the event's metadata carries the invoice's three
-// dollar lines, including "Free credit −$1.00".
+// never the raw meter — and the event's metadata carries the invoice's dollar
+// lines, including the membership top-up.
 //
 // The Dodo host is configurable via DODO_BASE_URL (env, read in src/index.js),
 // defaulting to the test server. Switching to live is Nish's call, and the
@@ -287,6 +287,10 @@ export async function pushBillingHours(db, hours, options = {}) {
       const amountUnits = Math.max(0, bill.totalCents - previously);
       running.set(accountId, previously + amountUnits);
       const eventId = billingEventId(accountId, hour);
+      const membershipLine = bill.lines.find((line) => line.label === "Membership");
+      if (membershipLine === undefined) {
+        throw new TypeError("monthBillCents must include a Membership line");
+      }
       pending.push({
         accountId,
         hour,
@@ -304,8 +308,8 @@ export async function pushBillingHours(db, hours, options = {}) {
             total_cents: bill.totalCents,
             storage_usd: bill.lines[0].usd,
             downloads_usd: bill.lines[1].usd,
-            credit_usd: bill.lines[2].usd,
-            credit_label: bill.lines[2].label,
+            credit_usd: membershipLine.usd,
+            credit_label: membershipLine.label,
           },
         },
       });
