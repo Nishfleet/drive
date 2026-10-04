@@ -25,6 +25,7 @@ import {
   deviceSyncState,
   emptyState,
   installCommand,
+  installLines,
   isConnected,
   lastSyncText,
   pollIntervalMs,
@@ -42,10 +43,13 @@ import {
   CONNECTION_COPY,
   connectionStatus,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
   formatBytes,
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
+  INSTALL_LINES,
+  LOGIN_COMMAND,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
@@ -78,13 +82,13 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 /** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
 
-test("the install command is drive init, and the steps walk through it", () => {
-  // build-spec.md "One-command setup": `drive init` signs in, mounts the drive
-  // and connects every agent tool it finds. The steps are the walk-through the
-  // issue asks for, in order: run, approve, watch it flip.
+test("the box carries the login and init lines, and the steps walk through them", () => {
   assert.equal(INSTALL_COMMAND, "drive init");
+  assert.equal(LOGIN_COMMAND, "drive login");
+  assert.equal(FIRST_RUN_COMMAND, `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`);
   assert.equal(FIRST_RUN_STEPS.length, 3);
   assert.match(FIRST_RUN_STEPS[0].body, /drive init/);
+  assert.match(FIRST_RUN_STEPS[0].body, /drive login/);
   assert.match(FIRST_RUN_STEPS[1].body, /Approve the code/);
   assert.match(FIRST_RUN_STEPS[2].body, /flips to connected/);
   for (const step of FIRST_RUN_STEPS) {
@@ -93,6 +97,72 @@ test("the install command is drive init, and the steps walk through it", () => {
     assert.equal(typeof step.body, "string");
     assert.ok(step.body.length > 0, "every step needs a sentence");
   }
+});
+
+test("the page leads with one pasted install line per system", () => {
+  // drive issue #428: the get-started page and the docs lead with one line per
+  // OS, so a new person reads what to paste before they are told where to paste
+  // it. macOS first (the page's own subject), then the two Linux package
+  // managers, and each row is a single line with no line break in it.
+  assert.deepEqual(
+    INSTALL_LINES.map((row) => row.os),
+    ["macOS", "Linux, Debian or Ubuntu", "Linux, Fedora or RHEL"],
+  );
+  const systems = new Set();
+  for (const row of INSTALL_LINES) {
+    assert.ok(row.os.length > 0, "every install row needs the system it is for");
+    assert.ok(!systems.has(row.os), `two rows for ${row.os} would be noise`);
+    systems.add(row.os);
+    assert.doesNotMatch(
+      row.line,
+      /[\r\n]/,
+      `the install line for ${row.os} must be one pasted line`,
+    );
+    assert.match(
+      row.line,
+      /^(brew install|sudo apt install|sudo dnf install) \S+$/,
+      `the install line for ${row.os} must be one package-manager invocation`,
+    );
+  }
+  // The detail a line cannot carry (the tap, the module path, the Windows
+  // installer name) belongs in the docs' "Other ways" section, so no customer
+  // page shows an internal name. test/own-words.test.mjs walks the pages; this
+  // is the same rule at the source of the page's copy.
+  for (const row of INSTALL_LINES) {
+    assert.doesNotMatch(row.line, /nishfleet/i, `the install line for ${row.os} must not name us`);
+    assert.doesNotMatch(
+      row.line,
+      /launchd|\/tap\//,
+      `the install line for ${row.os} must stay one line`,
+    );
+  }
+});
+
+test("the renderer hands the page one row per system", () => {
+  assert.deepEqual(
+    installLines(),
+    INSTALL_LINES.map((row) => ({ os: row.os, line: row.line })),
+  );
+});
+
+test("a row without a system name, or a line break in its line, cannot reach the page", () => {
+  // The renderer checks each row rather than trusting the module (drive issue
+  // #428): a blank os renders an unnamed box, a missing line renders an empty
+  // command, and a line break in the line splits one pasted command across two.
+  // All three are refused at the check, not on the page.
+  assert.throws(
+    () => installLines([{ os: "  ", line: "brew install drive" }]),
+    /needs a named system/,
+  );
+  assert.throws(
+    () => installLines([{ os: "macOS", line: "brew install\ndrive" }]),
+    /must be one pasted line/,
+  );
+  assert.throws(
+    () => installLines([{ os: "macOS", line: /** @type {any} */ (undefined) }]),
+    /needs an os and a line/,
+  );
+  assert.throws(() => installLines([{ os: "macOS", line: "   " }]), /must be one pasted line/);
 });
 
 test("a device that has not signed in reads as waiting, not connected", () => {
@@ -249,7 +319,7 @@ test("every empty screen says what to do first", () => {
   for (const [name, entry] of Object.entries(EMPTY_STATES)) {
     assert.match(entry.what, /\.$/, `${name}'s what is one sentence`);
     assert.match(entry.next, /\.$/, `${name}'s next is one sentence`);
-    assert.match(entry.next, /drive init|shows up/, `${name}'s next has an action`);
+    assert.match(entry.next, /drive login|shows up/, `${name}'s next has an action`);
   }
 });
 
@@ -490,6 +560,31 @@ test("the page's Devices table has a last-sync column and its empty states", () 
   }
 });
 
+// The page's install block is the one place it names a system: the renderer
+// fills #install-lines from the module, so a shell that carried one row's
+// words itself would be a second copy of the module's words. The shell does
+// carry one wordless row per system, because rows that appear only when the
+// script runs push the steps below them down after first paint, and that
+// layout shift broke the CLS budget (lighthouserc.json) on main.
+test("the shell carries one wordless install row per system for the renderer to fill", () => {
+  const list = shell.match(/<ul class="install" id="install-lines">([\s\S]*?)<\/ul>/);
+  assert.ok(list, "the shell must carry #install-lines");
+  const rows = list[1].replace(/<!--[\s\S]*?-->/g, "").match(/<li>[\s\S]*?<\/li>/g) ?? [];
+  assert.equal(rows.length, INSTALL_LINES.length, "one placeholder row per system");
+  for (const row of rows) {
+    assert.equal(
+      row,
+      '<li><span class="os">&nbsp;</span><code>&nbsp;</code></li>',
+      "a placeholder row has the rendered row's shape and no words",
+    );
+  }
+  assert.match(
+    readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8"),
+    /required\("install-lines"\)\.replaceChildren/,
+    "the renderer must fill #install-lines from the module",
+  );
+});
+
 test("the shell is structure only: the module's copy is not re-declared in it", () => {
   // The old gate policed a second copy of every sentence; this one fails if a
   // second copy is ever reintroduced. The shell carries structure and styles;
@@ -510,6 +605,12 @@ test("the shell is structure only: the module's copy is not re-declared in it", 
     assert.ok(
       !shell.includes(step.body),
       `the shell must not carry the step text for "${step.title}"`,
+    );
+  }
+  for (const row of INSTALL_LINES) {
+    assert.ok(
+      !shell.includes(row.line),
+      `the shell must not carry the install line for ${row.os}; the renderer writes it from the module`,
     );
   }
   for (const fragment of Object.values(UPLOAD_LABEL)) {
@@ -534,6 +635,7 @@ test("the shell loads the renderer as a module and carries the copy button", () 
   assert.match(shell, /<script type="module" src="\.\/src\/get-started\.js"><\/script>/);
   assert.match(shell, /<button type="button" id="copy-command">Copy<\/button>/);
   assert.match(shell, /<code id="install-command"><\/code>/);
+  assert.match(shell, /<ul class="install" id="install-lines">/);
   assert.match(shell, /<ol class="steps" id="steps">/);
 });
 
@@ -548,7 +650,7 @@ test("the renderer's wiring never lets a failed copy pass silently", () => {
 test("the renderer shows the module's words: command, steps, states, fragments", () => {
   // These are behavior assertions on the builders the page is built from, so
   // a page sentence can only change by changing the module it comes from.
-  assert.equal(installCommand(), INSTALL_COMMAND);
+  assert.equal(installCommand(), FIRST_RUN_COMMAND);
   assert.equal(statusEndpoint(), STATUS_ENDPOINT);
   assert.equal(pollIntervalMs(), POLL_INTERVAL_MS);
   assert.deepEqual(

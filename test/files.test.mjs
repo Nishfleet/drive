@@ -1099,8 +1099,12 @@ test("the Worker routes the page's API to the files handler", async () => {
   });
 
   // A path that is not an API still comes from the asset layer.
-  const page = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
-  assert.equal(await page.text(), "asset");
+  const filesAsset = await workerFetch(
+    new Request("https://drive.test/files"),
+    { ASSETS: assets },
+    ctx,
+  );
+  assert.equal(await filesAsset.text(), "asset");
 });
 
 // ---------------------------------------------------------------- the page
@@ -1117,6 +1121,86 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /<dialog class="viewer" id="viewer"/);
   // A keyboard user can reach the list without the mouse.
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
+});
+
+test("the page wears the site's header, with room for the view strip", () => {
+  // drive#425, from the new-customer walkthrough: the files page's top bar was
+  // its own — a wordmark and a static "Your drive" — so it was the one page
+  // with no way from it to Pricing or Usage. It now carries the shared
+  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
+  // one navigation across the pages that use it), with this page's folder path
+  // under it, and the view strip given room instead of sitting cramped against
+  // the header.
+  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
+  assert.ok(masthead, "the page carries the shared masthead header");
+  assert.match(
+    masthead[0],
+    /<span class="tagline">A Finder drive for people and their agents\.<\/span>/,
+  );
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+  assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
+  // The static label is gone, and no script is left reading it. The words are
+  // not lost either: the crumbs row's own root button says "Your drive"
+  // (crumbsForParts), which is where the walkthrough's reader saw them before.
+  assert.doesNotMatch(page, /id="account"/);
+  assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
+
+  // The rule each part of the header owns, and it owns nothing else: this
+  // page's own padding, background and sticky bar around the shared masthead
+  // (public/site.css owns the header's own metrics, its link colour and the
+  // tagline), this page's own wordmark size, and the crumbs row. A page that
+  // starts restyling a part it does not own fails here, which is what keeps the
+  // pages from drifting apart again. test/site-styles.test.mjs holds the same
+  // line for the other pages.
+  /** @param {string} selector */
+  const rules = (selector) =>
+    [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
+      (rule) => rule[1],
+    );
+  const mastheadRules = rules("masthead").join("");
+  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
+    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
+  }
+  assert.ok(
+    !mastheadRules.includes("display:"),
+    "the page does not lay the header out, which the shared chrome already does",
+  );
+  assert.deepEqual(
+    rules("wordmark"),
+    ["\n  font-size: 24px;\n"],
+    "the page sets its own wordmark size and nothing else",
+  );
+  assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
+
+  // The strip's rule is the one that lays it out as a strip; the page has a
+  // second .tabs rule that only lines it up with the page's 900px column.
+  const tabs = rules("tabs").find((rule) => rule.includes("display: flex"));
+  assert.ok(tabs, "the page lays the tab strip out as a strip");
+  const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
+  const above = Number.parseInt(tabs.match(/padding-top:\s*(\d+)px/)?.[1] ?? "0", 10);
+  assert.equal(
+    above,
+    24,
+    `the strip sits 24px under the header, not cramped against it, it sits ${above}px`,
+  );
+  assert.equal(gap, 8, `the tabs have 8px between them, they have ${gap}px`);
+  const tab = rules("tabs button").find((rule) => rule.includes("padding:"));
+  const pad = tab?.match(/padding:\s*(\d+)px\s+(\d+)px/);
+  assert.ok(pad, "each tab carries its own padding");
+  assert.deepEqual(
+    [Number.parseInt(pad[1], 10), Number.parseInt(pad[2], 10)],
+    [12, 16],
+    "each tab has room inside it: 12px over, 16px along",
+  );
+
+  // The acceptance for drive#425 is a page with no sideways scroll. No rule
+  // here can measure that, so what this holds is the two things a rule can
+  // prove about it: the page does not hide the symptom, and it does not hold
+  // the list in a box that could keep an overflowing row off the screen. The
+  // measurements themselves are in the PR body, taken in a browser at 1280,
+  // 1024, 768, 390, 360 and 320 pixels wide.
+  assert.doesNotMatch(page, /overflow-x:\s*hidden/);
+  assert.doesNotMatch(page, /\.list\s*\{[^}]*overflow/);
 });
 
 test("the page's copy is the module's copy", () => {
@@ -1204,8 +1288,20 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   // gate above is where the page's character set is compared with the
   // module's).
   assert.match(script, /encodeURIComponent\(\s*file\.name,?\s*\)/);
-  // A folder opens in place; a file opens the viewer.
+  // A folder opens in place; a previewable file opens the viewer; every other
+  // kind downloads through its own link.
   assert.ok(script.includes('row.kind === "folder"'));
+  // A file's name is a link to the file itself (drive#416): the preview URL
+  // for a kind the viewer opens, the download URL for every other kind. The
+  // old page gave every row the folder listing's URL and stopped the click's
+  // navigation in script only, so a browser without the script — or the
+  // navigation the click handler used to leave running — landed on the raw
+  // JSON the walkthrough hit.
+  assert.match(
+    script,
+    /name\.href = isPreviewable\(row\.kind\)\s*\?\s*`\$\{PREVIEW_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`\s*:\s*`\$\{DOWNLOAD_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`;/,
+    "a file's name links to the file itself — preview for a kind the viewer opens, download otherwise",
+  );
   // One tap restores: the Restore button posts the path and the list reloads.
   assert.ok(script.includes('restore.type = "button"'));
   assert.ok(script.includes("JSON.stringify({ path: row.path })"));

@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthlyBillForStoredTb } from "../src/billing.js";
+import { BILLING_CONFIG, monthlyBillForStoredTb } from "../src/billing.js";
 import { PRICE, rivalMonthlyUsd } from "../src/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../src/seo.js";
 
@@ -165,6 +165,45 @@ test("the superseded per-TB caps are gone from the page", () => {
 
 test("the spec's worked example is still on the page", () => {
   assert.match(words, /500 GB for 3 days[\s\S]{0,120}?about \$1/);
+});
+
+test("every worked example reads as a sentence, with no arrow", () => {
+  // drive#430: "$1 → $10" and "$12 of storage → $12" each cost a second read,
+  // because an arrow says "turns into" where a reader wants a sentence that
+  // says what you pay. Each example is now one whole sentence, built here from
+  // the same config and the same monthBillCents() the invoice reads, so a row
+  // cannot quietly lose either figure (the review on #446).
+  /** @param {number} tb */
+  const sentenceFor = (tb) => {
+    const { storage, afterCredit } = billCents(tb);
+    return `${storage} of storage, and you pay ${afterCredit}.`;
+  };
+  // The 500 GB row is three days, not a month: the same per-GB rate over three
+  // days of a 30-day month, and the membership the bill floors at.
+  const threeDays = usd(BILLING_CONFIG.rateUsdPerGbMonth * 500 * (3 / 30));
+  for (const [label, sentence] of [
+    [
+      "500 GB for 3 days",
+      `about ${threeDays} of storage, and you pay the $${BILLING_CONFIG.membershipUsd} membership.`,
+    ],
+    ["800 GB kept all month", sentenceFor(0.8)],
+    ["2 TB kept all month", sentenceFor(2)],
+    ["5 TB kept all month", sentenceFor(5)],
+  ]) {
+    assert.equal(
+      exampleSentence(label),
+      sentence,
+      `the ${label} example must read as one sentence carrying both figures`,
+    );
+  }
+  // The arrow is gone from the worked-examples markup a reader's browser gets,
+  // not just from the folded copy the assertions above read.
+  assert.doesNotMatch(
+    section("examples"),
+    /→/,
+    "the worked examples must not show an arrow between a figure and a bill",
+  );
+  assert.equal(page.includes("&rarr;"), false, "the page must not carry an arrow entity");
 });
 
 test("the ceiling math is the spec's plateau, not per-TB caps", () => {
@@ -441,12 +480,34 @@ function exampleRow(label) {
   return words.slice(from, words.indexOf("</dd>", from));
 }
 
+// The same row's sentence, taken after the label it answers and with the
+// markup stripped and the whitespace folded, so an assertion about how the
+// example reads is about its words and not about the tags around them.
+/** @param {string} label */
+function exampleSentence(label) {
+  const row = exampleRow(label);
+  return row
+    .slice(row.indexOf(label) + label.length)
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // The text of a class-marked paragraph, read between its tags.
 /** @param {string} className */
 function paragraph(className) {
   const from = words.indexOf(`<p class="${className}">`);
   assert.ok(from >= 0, `the .${className} paragraph is missing from the page`);
   return words.slice(from, words.indexOf("</p>", from));
+}
+
+// One whole class-marked <section>, read between its tags, so a claim about
+// what a section shows is checked against that section and not the whole page.
+/** @param {string} className */
+function section(className) {
+  const from = words.indexOf(`<section class="${className}"`);
+  assert.ok(from >= 0, `the .${className} section is missing from the page`);
+  return words.slice(from, words.indexOf("</section>", from));
 }
 
 const stripCaption = () => paragraph("strip-caption");

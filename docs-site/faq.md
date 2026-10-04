@@ -12,4 +12,6 @@ an answer whose row is still "not yet measured" stays off this page until it
 is measured, so nothing here is a promise. What version 1 does not do at all
 is on the [Limits](/limits) page.
 
+{{NOT_OPEN}} {{VERSION_HISTORY}}
+
 {{FAQ}}

@@ -654,10 +654,18 @@ export function createApp() {
   app.post(SHARE_ENDPOINT, (c) =>
     handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
+  // DELETE revokes a link (`drive share --revoke`); the handler answers it,
+  // but a route that is not registered is a 405 before the handler runs.
+  app.delete(SHARE_ENDPOINT, (c) =>
+    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
   app.get(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
+    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+  );
+  app.delete(REQUEST_ENDPOINT, (c) =>
     handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
   );
 

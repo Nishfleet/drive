@@ -7,17 +7,20 @@ write the same folder.
 
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
-- **Every save keeps a version.** Every change for a day, then one a day for 30
-  days, and a delete can be undone.
+- **Version history is not in version 1.** Saving a file again replaces it, and
+  a delete can be undone from the storage provider's own versions. The full list
+  of what version 1 does not do is on the
+  [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.
 - **Billed by the minute, with a ceiling.** 2¢ per GB a month, and the bill is
-  cut off at $12 up to 1.5 TB, then $8 a TB. $1 is free every month and no
-  card is needed to start.
+  cut off at $12 up to 1.5 TB, then $8 a TB.
+- **A membership and a card.** $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.
+  We need a card at sign-up because there is no free tier. Storage use counts toward your membership.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
-**Not open yet.** Sign-ups on the pricing page go to a waitlist.
+**The drive is not open yet. Sign-ups on the pricing page go to a waitlist.**
 
 ## Docs
 
@@ -29,7 +32,7 @@ agents.
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
   five steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
-  plain files, versions, restore
+  plain files, the cache, restore, the bill
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
   `drive init` per tool, and what an agent key cannot do
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —
@@ -69,9 +72,14 @@ and the invoice disagree.
 | `migrations/` | D1 migrations, split by database: `waitlist/` for the sign-up table, `drive/` for customer tables |
 | `cloudflare.config.ts` | the Worker, its D1 bindings (`WAITLIST_DB`, `DRIVE_DB`), secrets and cron triggers |
 
-Run `npm ci` first. `npm test` typechecks, lints, builds the docs and runs the test suite.
+Run `npm ci` first, on Node 24 (`.nvmrc`; `nvm use` picks it up). `npm run dev`
+starts the site Worker and the api Worker on <http://localhost:5173>. `npm test`
+typechecks, lints, builds the docs and runs the test suite. An older Node stops
+with the version it found and the version the repo needs, because the test
+adapter uses `node:sqlite`, which is experimental before Node 24.
 To run one test file, build the docs once (`npm run docs:build`), then `node --test test/x.test.mjs`.
 `go test ./...` runs the CLI's tests.
+To install the CLI from source: `go install github.com/Nishfleet/drive/cmd/drive@latest`.
 
 The spec is [`docs/build-spec.md`](docs/build-spec.md) (what to build, step by
 step) and [`docs/spec.md`](docs/spec.md) (why: prices, rivals).

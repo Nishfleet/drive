@@ -84,11 +84,6 @@ body {
   font-size: 28px;
 }
 
-.tagline {
-  color: var(--ink-soft);
-  font-size: 15px;
-}
-
 main {
   max-width: 1180px;
 }
@@ -400,10 +395,11 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
 }
 
 .example {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  /* The value is a sentence now (drive#430), so it sits under its label and
+     reads left to right, the way a sentence is read. It used to hang right of
+     the label in mono, which only worked while it was two figures and an
+     arrow. */
+  display: block;
   padding: 15px 0;
   border-bottom: 1px solid var(--rule);
 }
@@ -413,16 +409,14 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
 }
 
 .example dd {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 17px;
+  margin: 5px 0 0;
+  /* The sentence reads in the page's text face, and the money figures inside
+     it keep tabular numerals so the four rows line up. */
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  /* The row carries two figures (storage, then the bill), so it wraps
-     between words rather than pushing the page wider than the viewport. The
-     figures themselves have no spaces, so a number never breaks mid-figure. */
+  line-height: 1.45;
+  color: var(--ink-soft);
   white-space: normal;
-  text-align: right;
 }
 
 .examples-note {
@@ -563,22 +557,12 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   }
 }
 
-/* The example rows carry two figures now (what the ceiling charges, then what
-   the membership bills), so on a narrow phone they stack instead of forcing the
-   row wider than the viewport. */
+/* An example is a label with a sentence under it at every width now
+   (drive#430), so there is no narrow-phone rule left to add: the only thing a
+   phone needs is the sentence at reading size. */
 @media (max-width: 520px) {
-  .example {
-    flex-direction: column;
-    gap: 4px;
-  }
-
   .example dd {
     font-size: 16px;
-    white-space: normal;
-  }
-
-  .example dd {
-    text-align: left;
   }
 }
 
@@ -618,7 +602,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
           <input type="hidden" name="source" value="pricing-page">
           <button type="submit">Join the waitlist</button>
         </div>
-        <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
+        <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. Sign-ups on the pricing page go to a waitlist. If you already have an account, <a href="/signin">sign in</a>.</p>
       </form>
       <nav class="footer-nav" aria-label="Drive">
         <a href="/signin">Sign in</a>
@@ -678,23 +662,23 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
       <dl class="examples-list">
         <div class="example">
           <dt>500 GB for 3 days</dt>
-          <dd>about $1 &rarr; <strong>$10</strong></dd>
+          <dd>about $1 of storage, and you pay the <strong>$10</strong> membership.</dd>
         </div>
         <div class="example">
           <dt>800 GB kept all month</dt>
-          <dd>$12 of storage &rarr; <strong>$12</strong></dd>
+          <dd>$12 of storage, and you pay <strong>$12</strong>.</dd>
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>$16 of storage &rarr; <strong>$16</strong></dd>
+          <dd>$16 of storage, and you pay <strong>$16</strong>.</dd>
         </div>
         <div class="example">
           <dt>5 TB kept all month</dt>
-          <dd>$40 of storage &rarr; <strong>$40</strong></dd>
+          <dd>$40 of storage, and you pay <strong>$40</strong>.</dd>
         </div>
       </dl>
       <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
-      <p class="examples-note">Version history is not in version 1.</p>
+      <p class="examples-note">Version history is not in version 1. <a href="/docs/limits">What version 1 does not do</a>.</p>
     </section>
 
     <section class="columns" aria-label="What you get and what it costs">
@@ -703,7 +687,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
         <ul>
           <li>Your files in Finder, on macOS and Linux, streaming on demand</li>
           <li>Your disk never fills up; the cache is capped at a size you choose</li>
-          <li>A folder your agents can read and write, where a delete can be undone</li>
+          <li>A folder your agents can read and write, where a delete can be undone from the storage provider's own versions</li>
           <li>A safe copy of any folder for an agent to work in, which you approve or throw away</li>
           <li>A spending cap you set; at the cap the drive goes read-only and nothing is deleted</li>
         </ul>

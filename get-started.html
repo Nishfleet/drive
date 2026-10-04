@@ -101,6 +101,40 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- The one line per system, above the one command ------------------ */
+
+.install {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+}
+
+.install li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+.install li + li {
+  border-top: 1px solid var(--rule);
+}
+
+.install .os {
+  min-width: 13em;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.install code {
+  font-family: var(--mono);
+  font-size: clamp(15px, 2.2vw, 18px);
+}
+
 /* ---- The one command, with its copy button --------------------------- */
 
 .command {
@@ -118,6 +152,7 @@ h2 {
 .command code {
   font-family: var(--mono);
   font-size: clamp(17px, 2.4vw, 21px);
+  white-space: pre-wrap;
 }
 
 button {
@@ -248,6 +283,19 @@ th {
         One command on the Mac you want the drive on. This page tells you
         whether it worked, without you refreshing anything.
       </p>
+      <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
+    </section>
+
+    <section id="install-heading" aria-labelledby="install-heading-title">
+      <h2 id="install-heading-title">Install, one line</h2>
+      <ul class="install" id="install-lines">
+        <!-- Filled by get-started.js from src/status.js. One empty row per
+             system holds the list's height, so the rows the script writes
+             push nothing down (the CLS budget in lighthouserc.json). -->
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
+      </ul>
     </section>
 
     <section id="command-heading" aria-labelledby="steps-heading">

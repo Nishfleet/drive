@@ -277,8 +277,15 @@ function requireDays(value, name) {
  * @returns {string}
  */
 function requireDay(value, name) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new TypeError(`${name} must be an ISO date (YYYY-MM-DD), got ${String(value)}`);
+  // "3 Nov", the shape purgeOnDate() sends since drive#422: a day
+  // number and the month's short name, no year. The close window is
+  // 30 days, so the year never belongs in the sentence.
+  // en-GB's numeric day never pads, so neither does the guard.
+  if (
+    typeof value !== "string" ||
+    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(value)
+  ) {
+    throw new TypeError(`${name} must be a short date (3 Nov), got ${String(value)}`);
   }
   return value;
 }
