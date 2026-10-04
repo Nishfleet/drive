@@ -31,16 +31,22 @@
 # is the only way the cause of a silent failure gets named (drive#369).
 #
 # The builds are UNSIGNED. A signing certificate costs money (Azure Trusted
-# Signing is about $10 a month), so nothing here publishes: this job runs on
-# pull requests and on main, and output artefacts stay inside the run. Signing
-# and the winget PR to microsoft/winget-pkgs are Nish's call (drive#154).
+# Signing is about $10 a month), so nothing here publishes: output artefacts
+# stay inside the run. Signing and the winget PR to microsoft/winget-pkgs are
+# Nish's call (drive#154).
+#
+# STARTED BY HAND ONLY (drive#486). GitHub refused every hosted Windows job
+# with "recent account payments have failed or your spending limit needs to be
+# increased", so the jobs never ran a step and every PR showed red `windows`
+# and `msi` checks. Windows is out of v1 (docs/spec.md) and the only runners
+# we own are Linux, so both Windows jobs live here and run from the Actions
+# tab (Run workflow) once hosted Windows minutes are paid for. The `windows`
+# job is the drive-letter mount proof that used to run in ci.yml (drive#153).
 
 name: Windows MSI
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,6 +56,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Windows (drive#153): the drive-letter mount through stock `rclone mount`
+  # with WinFsp as the driver. The unit tests cover every Windows branch; the
+  # proof mounts at the first free letter from D: up, writes a file through
+  # the drive letter, reads it back, then unmounts.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24"
+          cache: true
+      # rclone and WinFsp are the two stock pieces the mount stands on. Both
+      # are the vendor's own Windows builds, downloaded from the vendor's own
+      # release, not a vendored copy.
+      - name: Install rclone (the stock tool the mount drives)
+        shell: pwsh
+        run: |
+          curl.exe -sSO https://downloads.rclone.org/rclone-current-windows-amd64.zip
+          Expand-Archive -Path rclone-current-windows-amd64.zip -DestinationPath rclone
+          $exe = Get-ChildItem -Path rclone -Recurse -Filter rclone.exe | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $exe.FullName)
+          & $exe.FullName version
+      - name: Install WinFsp (the driver rclone mount needs on Windows)
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod https://api.github.com/repos/winfsp/winfsp/releases/latest
+          $asset = $release.assets | Where-Object { $_.name -like '*.msi' } | Select-Object -First 1
+          if (-not $asset) { throw 'the WinFsp release carries no .msi asset' }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile winfsp.msi
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', 'winfsp.msi', '/qn'
+          $bin = Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'
+          if (-not (Test-Path (Join-Path $bin 'winfsp-x64.dll'))) { throw 'WinFsp did not install its driver' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+      - run: go vet ./cmd/...
+      # Only the Windows-specific tests run here: about 60 other tests in
+      # cmd/drive assume Unix file modes and paths and fail on Windows today.
+      # Widening this to the whole suite is a separate Windows-port job.
+      - name: Windows unit tests
+        run: go test ./cmd/drive/ -short -v -run 'Windows|WinFsp|Schtasks|DriveLetter|MountedDir|LoginItemPresent'
+      - name: Windows drive-letter mount proof
+        env:
+          DRIVE_DEBUG: "1"
+        run: go test ./cmd/drive/ -run TestWindowsMountProof -v -timeout 300s
+
   msi:
     runs-on: windows-latest
     timeout-minutes: 40
