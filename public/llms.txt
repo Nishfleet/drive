@@ -1,11 +1,9 @@
 # Drive
 
 > A Finder drive for people and their agents: plain files in object storage,
-> mounted with stock rclone, and billed at 2¢ per GB-month by the minute. The
-> monthly bill never passes max($12, $8 × TB stored): a flat $12 up to 1.5 TB,
-> then $8 for each TB after. $10 a month membership, and your storage use counts toward it.
-> Go past $10 and you pay by the minute for the rest. Join now and keep $5 a month for good.
-> Rate and ceiling in one line: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
+> mounted with stock rclone, and billed at 2¢ per GB-month by the minute.
+> Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
+> No minimum. No plans.
 
 Drive is a mounted folder (macOS and Linux) where your files live in object
 storage; what is on your disk is the parts you have opened, held in a cache
@@ -15,25 +13,21 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 
 ## Pricing
 
-- Rate: 2¢ per GB per month, billed by the minute, pay only for what you store.
-- Bill ceiling: 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.
-  The monthly bill is a $10 a month membership, and your storage use counts toward it.
-  Go past $10 and you pay by the minute for the rest, still min(metered, max($12, $8 × TB stored)),
-  TB measured to the GB, so the cap is a flat $12 up to
-  1.5 TB and only then rises at $8 a TB.
-- Membership: $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.
-  Join now and keep $5 a month for good. We need a card at sign-up because there is no free tier.
+- Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
+- The rule: You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.
+- No minimum. No plans. Storage is metered by the minute and averaged over the month.
+- Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.
+- We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
 - Version history is not in version 1.
-- No plan sizes and no fixed plans: you are billed for the GB you store, so a
-  1 TB drive kept 60% full bills $12 a month ($12 of storage).
+- A 1 TB drive kept 60% full bills $10 a month.
 
-Worked examples, each the amount charged:
+Worked examples, each kept all month, with a usual 1 TB plan beside it:
 
-- 800 GB kept all month = $12 ($12 of storage)
-- 1.6 TB = $12.80 ($12.80 of storage)
-- 2 TB = $16 ($16 of storage)
-- 5 TB = $40 ($40 of storage)
+- 50 GB = $1 (a usual 1 TB plan: $15)
+- 200 GB = $4 (a usual 1 TB plan: $15)
+- 500 GB to 1 TB = $10 (a usual 1 TB plan: $15)
+- 3 TB = $30 (a usual 1 TB plan: $39)
 
 ## What it is
 

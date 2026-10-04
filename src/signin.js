@@ -131,7 +131,7 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
-  membershipLine: PRICE.membershipLine,
+  noMinimumLine: PRICE.noMinimumLine,
   foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",

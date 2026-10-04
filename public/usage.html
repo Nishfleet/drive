@@ -709,7 +709,7 @@ function render(summary) {
     typeof cap !== "object" ||
     cap === null ||
     !Number.isFinite(cap.capUsd) ||
-    !Number.isFinite(summary.ceilingUsd) ||
+    !Number.isFinite(summary.maximumUsd) ||
     !Array.isArray(summary.storedDaily) ||
     // The chart draws every entry's day and gb, so a payload whose entries are
     // not a real day and a real size is refused here rather than drawn as
@@ -783,8 +783,8 @@ function render(summary) {
   uploadLineEl.hidden = summary.uploadLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
-  // month's ceiling or the cap, whichever is larger, in whole dollars.
-  capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, cap.capUsd)));
+  // month's maximum or the cap, whichever is larger, in whole dollars.
+  capSlider.max = String(Math.ceil(Math.max(summary.maximumUsd, cap.capUsd)));
   // A person who has moved the slider is not moved back: the minute's read
   // would otherwise throw away the amount they just picked, so it paints the
   // value only while no save is waiting.

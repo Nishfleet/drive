@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — 2¢ per GB, never more than $12 a TB</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <title>Drive — 2¢ per GB, never more than $10 per TB</title>
+  <meta name="description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
        in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
        fails CI when the tags and that config drift apart. The ceiling stated
-       here is the current rule from docs/build-spec.md ("Bill ceiling", Nish
-       2026-09-30, issue #29): min(metered, max($12, $8 × TB stored)). Issue
+       here is the current rule from drive#463 (Nish 2026-10-04): min(2¢ × GB,
+       $10 × max(1, TB stored)). Issue
        #23 made that config the single source the visible copy, these tags and
        llms.txt all render from, so the page can no longer contradict itself. -->
   <!-- rel="canonical" declares a URL for a crawler to read; the browser never
@@ -22,15 +22,15 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
   <meta property="og:site_name" content="Drive">
-  <meta property="og:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta property="og:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:image:alt" content="Drive — Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <script type="application/ld+json">
 {
@@ -39,20 +39,20 @@
   "name": "Drive",
   "applicationCategory": "BusinessApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.",
+  "description": "A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
   "url": "https://drive-pricing.nishant345.workers.dev/",
   "image": "https://drive-pricing.nishant345.workers.dev/og.png",
   "offers": {
     "@type": "Offer",
-    "price": "12.00",
+    "price": "10.00",
     "priceCurrency": "USD",
     "priceSpecification": {
       "@type": "UnitPriceSpecification",
-      "price": "12.00",
+      "price": "10.00",
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest, still capped at max($12, $8 × TB stored): a flat $12 up to 1.5 TB, then $8 for each TB after."
+    "description": "Pay only for what you store. 2 cents per GB. Never more than $10 per TB. You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB."
   }
 }
   </script>
@@ -104,7 +104,16 @@ main {
   font-size: clamp(44px, 7.6vw, 92px);
 }
 
+.price h1 .lead {
+  display: block;
+  font-size: 0.4em;
+  line-height: 1.2;
+  letter-spacing: 0;
+  margin-bottom: 0.25em;
+}
+
 .price h1 .amount {
+  display: block;
   font-variant-numeric: tabular-nums;
 }
 
@@ -586,12 +595,12 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   <main>
     <section class="price" aria-labelledby="price-heading">
       <h1 id="price-heading">
-        <span class="amount">2¢</span>
-        <span class="unit">per GB, billed by the&nbsp;minute</span>
+        <span class="lead">Pay only for what you store.</span>
+        <span class="amount">2 cents per GB.</span>
+        <span class="unit">Never more than $10 per TB.</span>
       </h1>
-      <p class="sub">Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
-      <p class="free">$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</p>
-      <p class="free">Join now and keep $5 a month for good.</p>
+      <p class="sub">No minimum. No plans.</p>
+      <p class="free">Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.</p>
 
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
     <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
@@ -614,7 +623,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
 
     <section class="calculator" id="calculator" aria-labelledby="calculator-heading">
       <h2 id="calculator-heading">What a month would cost</h2>
-      <p class="calculator-lede">Enter how much you store. The bill is our metered price, capped at our own flat-plan ceiling.</p>
+      <p class="calculator-lede">Enter how much you store. The bill is 2 cents per GB, never more than $10 per TB, beside what a usual 1 TB plan charges for the same size.</p>
       <form id="quote" class="waitlist" action="/api/quote" method="get">
         <label class="field-label" for="quote-tb">TB you keep all month</label>
         <div class="field-row">
@@ -622,18 +631,18 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
                  inputmode="decimal" value="1">
           <button type="submit">See the bill</button>
         </div>
-        <p class="form-note" id="quote-note" role="status" aria-live="polite">Enter a size to see this month's bill beside our flat-plan ceiling.</p>
+        <p class="form-note" id="quote-note" role="status" aria-live="polite">Enter a size to see this month's bill beside our maximum and a usual 1 TB plan.</p>
       </form>
       <noscript><p class="form-note">Without JavaScript the form returns the same numbers as JSON from /api/quote.</p></noscript>
     </section>
 
     <section class="strip" aria-label="You pay only for what you store">
       <div class="strip-bar" role="img"
-           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing extra">
-        <span class="strip-full">60% full &middot; $12</span>
+           aria-label="A one terabyte drive kept sixty percent full bills ten dollars a month; the empty forty percent bills nothing extra">
+        <span class="strip-full">60% full &middot; $10</span>
         <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month: $12 of storage. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $10 a month. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes $10 per TB.</p>
     </section>
 
     <section class="demos" aria-labelledby="demos-heading">
@@ -661,23 +670,23 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
       <h2 id="examples-heading">Worked examples</h2>
       <dl class="examples-list">
         <div class="example">
-          <dt>500 GB for 3 days</dt>
-          <dd>about $1 of storage, and you pay the <strong>$10</strong> membership.</dd>
+          <dt>50 GB kept all month</dt>
+          <dd>you pay <strong>$1</strong>, against $15 on a usual 1 TB plan.</dd>
         </div>
         <div class="example">
-          <dt>800 GB kept all month</dt>
-          <dd>$12 of storage, and you pay <strong>$12</strong>.</dd>
+          <dt>200 GB kept all month</dt>
+          <dd>you pay <strong>$4</strong>, against $15 on a usual 1 TB plan.</dd>
         </div>
         <div class="example">
-          <dt>2 TB kept all month</dt>
-          <dd>$16 of storage, and you pay <strong>$16</strong>.</dd>
+          <dt>500 GB to 1 TB kept all month</dt>
+          <dd>you pay <strong>$10</strong>, against $15 on a usual 1 TB plan.</dd>
         </div>
         <div class="example">
-          <dt>5 TB kept all month</dt>
-          <dd>$40 of storage, and you pay <strong>$40</strong>.</dd>
+          <dt>3 TB kept all month</dt>
+          <dd>you pay <strong>$30</strong>, against $39 on a usual 1 TB plan.</dd>
         </div>
       </dl>
-      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
+      <p class="examples-note">You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.</p>
       <p class="examples-note">Version history is not in version 1. <a href="/docs/limits">What version 1 does not do</a>.</p>
     </section>
 
@@ -695,9 +704,10 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
       <div class="column">
         <h2>What it costs</h2>
         <ul>
-          <li>2¢ per GB, billed by the minute, pay only for what you store</li>
-          <li>$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</li>
-          <li>Join now and keep $5 a month for good.</li>
+          <li>2¢ per GB a month, billed by the minute, pay only for what you store</li>
+          <li>Never more than $10 per TB.</li>
+          <li>No minimum. No plans.</li>
+          <li>Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.</li>
           <li>Downloads free up to 3&times; what you store, then 1¢ per GB</li>
         </ul>
       </div>
@@ -855,7 +865,7 @@ quoteForm.addEventListener("submit", async (event) => {
       return;
     }
     sayQuote(
-      `This month: ${payload.labels.bill}. Flat-plan ceiling: ${payload.labels.ceiling}.`,
+      `This month: ${payload.labels.bill}. Our maximum: ${payload.labels.maximum}. A usual 1 TB plan: ${payload.labels.plan}.`,
       "done",
     );
   } catch (error) {

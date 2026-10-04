@@ -339,7 +339,6 @@ async function liveQueueFor(env, account) {
 function capStateFor(_accountId) {
   const empty = usageSummary({
     gbMinutes: 0,
-    peakGb: 0,
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,
