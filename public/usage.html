@@ -405,6 +405,7 @@ h2 {
           <p class="next" id="cap-note-next">Move the slider, then choose Save cap.</p>
         </div>
         <p class="hint" id="cap-saved" role="status" hidden></p>
+        <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
       </section>
 
       <section aria-labelledby="close-heading" id="close-section">
@@ -536,6 +537,7 @@ async function saveCap() {
   const amount = capSlider.value;
   capSlider.disabled = true;
   capSaveEl.disabled = true;
+  capSavingEl.hidden = false;
   let response;
   try {
     response = await fetch(CAP_ENDPOINT, {
@@ -544,18 +546,23 @@ async function saveCap() {
       body: JSON.stringify({ amount }),
     });
   } catch (_error) {
+    capSavingEl.hidden = true;
+    capSlider.disabled = false;
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
     sayCapError(UNREACHABLE);
     return;
   }
   const payload = await response.json().catch(() => null);
   const error = payload && typeof payload.error === "string" ? payload.error : "";
+  capSavingEl.hidden = true;
+  capSlider.disabled = false;
+  capSaveEl.hidden = false;
+  capSaveEl.disabled = false;
   if (!response.ok) {
     sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
     return;
   }
-  capSlider.disabled = false;
-  capSaveEl.hidden = true;
-  capSaveEl.disabled = false;
   showCapNote(CAP_NOTE);
   // The confirmation is the endpoint's own line, so the page never writes a
   // sentence about a number it cannot see. It is the one line that is not

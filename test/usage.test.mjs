@@ -525,6 +525,9 @@ test("the cap is a control, not a readout, and it saves through the api", async 
     page,
     /if \(capSaveEl\.hidden\) \{\s*capSlider\.value = String\(cap\.capUsd\);\s*\}/,
   );
+  // Visual feedback while the POST is in flight, so the slider's
+  // disabled state is not the only signal that the save is happening.
+  assert.match(page, /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/);
 });
 
 test("the pages' mastheads read as one navigation", () => {

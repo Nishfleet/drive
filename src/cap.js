@@ -480,6 +480,10 @@ export async function handleCapRequest(request, account, capStore) {
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
   }
+  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
+  // no Origin header through, so the CLI ('drive cap 20', no browser
+  // evidence) still reaches this handler — the account gate is what
+  // identifies it, not the header.
   if (!isSameOriginRequest(request)) {
     // A specific line rather than the generic one: "try again in a moment"
     // would be advice to retry a request that is always refused, and the one
@@ -521,7 +525,6 @@ export async function handleCapRequest(request, account, capStore) {
     return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
   await capStore.setCapCents(account, dollarsToCapCents(usd));
-  const keys = await capStore.listCapKeys(account.id);
   // The swap is decided from the month the account actually counted, so
   // setting the cap below what it has already spent enforces at once (the
   // finish line: making a drive read-only with `drive cap`). A deployment
@@ -540,7 +543,10 @@ export async function handleCapRequest(request, account, capStore) {
           capUsd: usd,
           cardAdded: true,
         };
-  const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
+  const report = await enforceCap(
+    { usage, keys: await capStore.listCapKeys(account.id) },
+    capStore.keyProviderFor(account.id),
+  );
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
