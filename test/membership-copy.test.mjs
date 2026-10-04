@@ -97,6 +97,20 @@ test("the public site never contains the founding cap or a spots count", () => {
   assert.ok(pages.some((page) => page.text.includes(PRICE.membershipLine)));
 });
 
+test("the public site never names a rival or quotes a rival's price", () => {
+  const rival = /\bSpace\b/;
+  for (const page of pages) {
+    assert.doesNotMatch(page.text, rival, page.name);
+  }
+  assert.doesNotMatch(
+    FAQ.map((entry) => entry.answer).join("\n"),
+    rival,
+    "FAQ",
+  );
+  const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
+  assert.doesNotMatch(docsPricing, rival);
+});
+
 test("pricing copy on the public pages never says minimum", () => {
   for (const page of pages) {
     if (page.name === "files.html" || page.name === "usage.html") continue;

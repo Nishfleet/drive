@@ -4,9 +4,8 @@
 // the date next to each term. This file fails when any of them appear in the
 // paths customers see. Internal rival analysis in docs/spec.md,
 // docs/scoreboard.md and docs/build-spec.md is exempt, and those files are
-// not in the trees this test walks. Plain price comparisons that name the
-// rival (for example "(Space $27)") stay until the legal-wording review;
-// stripAllowedComparisons drops those before the scan.
+// not in the trees this test walks. Drive#387 dropped public rival names and
+// prices, so a "(Space $27)" comparison on a customer-facing path fails.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -91,20 +90,9 @@ const TEXT_EXT = new Set([
   ".xml",
 ]);
 const SRC_JS_EXT = new Set([".js", ".mjs", ".cjs"]);
-// The rival's name lives in these two modules as the data that formats the
-// allowed "(Space $27)" comparisons. Nowhere else in src/ may a "Space"
-// string pass.
+// The rival's name lives in these two modules as internal data (scoreboard
+// figures, PRICE.rival). Nowhere else in src/ may a "Space" string pass.
 const RIVAL_NAME_FILES = new Set(["src/docs.js", "src/pricing.js"]);
-
-/** Drop the price-comparison forms issue #195 leaves in place.
- * @param {string} text
- */
-function stripAllowedComparisons(text) {
-  return text
-    .replace(/\(Space \$[\d.]+\)/g, "")
-    .replace(/against Space \$[\d.]+/g, "")
-    .replace(/\bname:\s*["']Space["']/g, "");
-}
 
 /** @param {string} text */
 function dropExactRivalName(text) {
@@ -120,7 +108,7 @@ function dropExactRivalName(text) {
  * @param {{allowRivalName?: boolean}} [options]
  */
 function hitsIn(path, text, options = {}) {
-  let scanned = stripAllowedComparisons(text);
+  let scanned = text;
   if (options.allowRivalName) {
     scanned = dropExactRivalName(scanned);
   }
@@ -348,12 +336,23 @@ test("a planted rival term fails the scan", () => {
   }
 });
 
-test("a price comparison that names the rival is left alone", () => {
-  assert.deepEqual(hitsIn("page.html", '<span class="compare">(Space $27)</span>'), []);
-  assert.deepEqual(hitsIn("llms.txt", "2 TB = $15 ($16 of storage, against Space $27)"), []);
+test("a price comparison that names the rival fails the public scan", () => {
+  assert.ok(
+    hitsIn("page.html", '<span class="compare">(Space $27)</span>').some(
+      (hit) => hit.term === "Space",
+    ),
+    "a (Space $27) span on a public page must fail",
+  );
+  assert.ok(
+    hitsIn("llms.txt", "2 TB = $16 ($16 of storage, against Space $27)").some(
+      (hit) => hit.term === "Space",
+    ),
+    "an against-Space figure in llms.txt must fail",
+  );
   assert.deepEqual(
-    hitsIn("src/pricing.js", 'rival: Object.freeze({ name: "Space", monthlyUsd: 15 })'),
+    hitsIn("src/pricing.js", "Space", { allowRivalName: true }),
     [],
+    "the rival name constant in pricing.js stays allowed",
   );
 });
 

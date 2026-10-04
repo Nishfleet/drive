@@ -418,20 +418,11 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   font-size: 17px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  /* The row carries two figures and the $1 the bill takes off, so it wraps
+  /* The row carries two figures (storage, then the bill), so it wraps
      between words rather than pushing the page wider than the viewport. The
      figures themselves have no spaces, so a number never breaks mid-figure. */
   white-space: normal;
   text-align: right;
-}
-
-/* The rival's figure beside our own, so the row reads "$16  (Space $27)". */
-.example .compare {
-  margin-left: 0.5em;
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--ink-faint);
 }
 
 .examples-note {
@@ -586,8 +577,7 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
     white-space: normal;
   }
 
-  .example dd,
-  .example .compare {
+  .example dd {
     text-align: left;
   }
 }
@@ -696,11 +686,11 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
         </div>
         <div class="example">
           <dt>2 TB kept all month</dt>
-          <dd>$16 of storage &rarr; <strong>$16</strong><span class="compare">(Space $27)</span></dd>
+          <dd>$16 of storage &rarr; <strong>$16</strong></dd>
         </div>
         <div class="example">
           <dt>5 TB kept all month</dt>
-          <dd>$40 of storage &rarr; <strong>$40</strong><span class="compare">(Space $63)</span></dd>
+          <dd>$40 of storage &rarr; <strong>$40</strong></dd>
         </div>
       </dl>
       <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>

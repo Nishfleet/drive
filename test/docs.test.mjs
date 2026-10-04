@@ -369,17 +369,13 @@ test("the shipped FAQ is exactly the answers the data publishes", () => {
   }
 });
 
-test("the FAQ's rival line keeps the orchestrator's phrasing, from the scoreboard's row", () => {
+test("the FAQ does not name a rival or quote a rival's price", () => {
   const faq = shipped("faq.md");
-  // "Space price line: say '$20 a month, or $15 paid yearly'" — the
-  // phrasing is fixed, and both figures must still be the ones the
-  // scoreboard's price-at-1-TB row records for Space, so the line
-  // cannot drift from the row it came from.
-  assert.ok(faq.includes(RIVAL_1TB_LINE), "the FAQ must carry the rival line built in src/docs.js");
-  assert.ok(
-    faq.includes("Space charges $20 a month, or $15 paid yearly, for 1 TB."),
-    "the rival line must keep the orchestrator's exact phrasing",
-  );
+  // Drive#387: public copy uses our words. The scoreboard still records the
+  // rival's 1 TB figures internally, and the line is kept in src/docs.js so
+  // this test can prove the FAQ never quotes it.
+  assert.equal(faq.includes(RIVAL_1TB_LINE), false, "the FAQ must not quote the rival line");
+  assert.doesNotMatch(faq, /\bSpace\b/);
   const row = scoreboard.split("\n").find((line) => line.startsWith("| price at 1 TB |"));
   assert.ok(row);
   const figures = [...row.matchAll(/\$(\d+)/g)].map((match) => match[1]);

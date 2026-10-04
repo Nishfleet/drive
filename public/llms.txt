@@ -32,8 +32,8 @@ Worked examples, each the amount charged:
 
 - 800 GB kept all month = $12 ($12 of storage)
 - 1.6 TB = $12.80 ($12.80 of storage)
-- 2 TB = $16 ($16 of storage, against Space $27)
-- 5 TB = $40 ($40 of storage, against Space $63)
+- 2 TB = $16 ($16 of storage)
+- 5 TB = $40 ($40 of storage)
 
 ## What it is
 

@@ -122,11 +122,10 @@ test("the bill ceiling headline is the spec's sentence, from config", () => {
   assert.equal(PRICE.capPlateauTb, 1.5);
 });
 
-test("the example rows are the spec's worked figures, with the free $1", () => {
-  // Issue #23 names the rows as 800 GB = $12, 2 TB = $16 against Space $27,
-  // 5 TB = $40 against Space $63; folded #86 (the bill now takes the $1 off)
-  // says the rows show what the bill charges. Both figures are on each row,
-  // both computed by src/billing.js's monthBillCents().
+test("the example rows are the spec's worked figures, with no rival names", () => {
+  // Issue #23 names the rows as 800 GB = $12, 2 TB = $16, 5 TB = $40.
+  // Drive#387 dropped the rival figures from public copy. Both of our figures
+  // are on each row, both computed by src/billing.js's monthBillCents().
   for (const [label, tb] of /** @type {Array<[string, number]>} */ ([
     ["800 GB kept all month", 0.8],
     ["2 TB kept all month", 2],
@@ -140,28 +139,14 @@ test("the example rows are the spec's worked figures, with the free $1", () => {
     );
     assert.ok(
       row.includes(afterCredit),
-      `the ${label} row must show the ${afterCredit} bill after the free $1, got ${row.trim()}`,
+      `the ${label} row must show the ${afterCredit} bill, got ${row.trim()}`,
     );
   }
-  // The rival comparison, by the rival's own rule (build-spec.md): $15 a month
-  // plus $12 for each TB after the first.
-  for (const [label, tb, space] of /** @type {Array<[string, number, string]>} */ ([
-    ["2 TB kept all month", 2, "$27"],
-    ["5 TB kept all month", 5, "$63"],
-  ])) {
-    assert.equal(rivalMonthlyUsd(tb).toFixed(0), space.slice(1));
-    assert.ok(exampleRow(label).includes(space), `the ${label} row must carry Space ${space}`);
-  }
-  // Pinned, so the rows cannot be quietly re-derived into something else.
+  assert.doesNotMatch(words, /\bSpace\b/);
+  assert.doesNotMatch(llms, /\bSpace\b/);
   assert.match(words, /800 GB kept all month[\s\S]{0,200}?\$12[\s\S]{0,120}?\$12/);
-  assert.match(
-    words,
-    /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$16[\s\S]{0,80}?\(Space \$27\)/,
-  );
-  assert.match(
-    words,
-    /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$40[\s\S]{0,80}?\(Space \$63\)/,
-  );
+  assert.match(words, /2 TB kept all month[\s\S]{0,200}?\$16[\s\S]{0,120}?\$16/);
+  assert.match(words, /5 TB kept all month[\s\S]{0,200}?\$40[\s\S]{0,120}?\$40/);
 });
 
 test("the superseded per-TB caps are gone from the page", () => {
