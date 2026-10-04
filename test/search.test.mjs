@@ -851,10 +851,16 @@ test("the deployed cron schedule is the one the module names", () => {
   // say nothing.
   assert.equal(REINDEX_SCHEDULE, "0 3 * * *", "the reconciler's quiet-hour schedule");
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
-  assert.match(
-    config,
-    /triggers\.scheduled\(\{ schedule: REINDEX_SCHEDULE \}\)/,
-    "cloudflare.config.ts runs the reindex on REINDEX_SCHEDULE",
+  // The config spells the schedule rather than importing it: an import here
+  // becomes a `server.fs.deny` entry in `cf dev` and crashes `npm run dev`
+  // (drive#432), so the trigger's string is read back out of the config and
+  // compared to this module's own export.
+  const declared = [...config.matchAll(/triggers\.scheduled\(\{ schedule: "([^"]+)" \}\)/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(
+    declared.includes(REINDEX_SCHEDULE),
+    `cloudflare.config.ts runs the reindex on ${REINDEX_SCHEDULE}; it declares ${declared.join(", ") || "no schedule"}`,
   );
 });
 
