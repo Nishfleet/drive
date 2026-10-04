@@ -4,18 +4,21 @@
 // It is a static asset served next to the pages that load it, so it cannot
 // import src/account-close.js the way the Worker does. The words come from
 // where every other page's words come from: the endpoint's own payload. GET
-// /api/account/close answers `{state, purgeOn, copy}`, and `copy` is the
+// /api/account/close answers `{state, purgeOn, purgedAt, copy}`, and `copy` is the
 // CLOSE_COPY object in src/account-close.js, so the sentence on screen is the
 // module's and the date beside it is the date the nightly cron will actually
 // purge on. This file carries no sentence and no date arithmetic of its own,
 // which is what test/close-banner.test.mjs holds it to.
 //
-// Three outcomes, and the third is the one that must be quiet:
+// How the banner behaves, and where it must stay quiet:
 //   - a 401 or any other failed read: this browser has no signed-in account, or
 //     the service is unreachable. Either way the page's own content is the
 //     truth, so the banner stays hidden and nothing is announced.
 //   - `state === "active"`: the account is not closing. Banner stays hidden.
-//   - `state === "closed"`: reveal it, with the purge date and a Cancel link.
+//   - `state === "closed"` and still pending: reveal it, with the purge date
+//     and a Cancel link. `state` stays "closed" after the cron has purged the
+//     files too, and there the banner is quiet, because its sentence is about
+//     files that are still there (see read()).
 //
 // The link is a real link to /usage, the page where the close and the cancel
 // both live and where the person types their email to confirm. It is a link and
