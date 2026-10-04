@@ -292,6 +292,17 @@ th {
     <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
   <main>
     <section aria-labelledby="get-started-heading">
       <h1 id="get-started-heading">Get started</h1>
@@ -371,6 +382,9 @@ th {
     <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
   </footer>
 
+  <!-- The pending-close banner (drive issue #424) ships inside this
+       page's one module (src/get-started.js imports public/close-banner.js).
+       A second <script src> would fail the Lighthouse script-count budget. -->
   <script type="module" src="./src/get-started.js"></script>
 </body>
 </html>

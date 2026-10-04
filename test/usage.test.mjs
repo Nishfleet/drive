@@ -664,7 +664,11 @@ function runPage(summary, { ok = true } = {}) {
         ? { ok: true, status: 200, json: async () => summary }
         : { ok: false, status: 500, json: async () => ({}) },
   };
-  const script = page.slice(page.indexOf("<script>") + 8, page.lastIndexOf("</script>"));
+  // The inline script is the page's own. lastIndexOf("</script>") would also
+  // take the close-banner module tag that follows it (drive#424), and that
+  // markup is not JavaScript.
+  const start = page.indexOf("<script>");
+  const script = page.slice(start + 8, page.indexOf("</script>", start));
   vm.runInNewContext(script, sandbox);
   return { elements, poll: polls[0] };
 }
