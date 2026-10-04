@@ -44,6 +44,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The cap could not be saved, so the one in force is unchanged.",
     next: "Ask whoever runs this deployment to set up the account store.",
   }),
+  // A cap write that arrived from another origin (drive#421). A cap write
+  // swaps an account's storage keys, so a page on another origin that could
+  // forge the POST could revoke a real drive's keys: the write is refused
+  // rather than attempted, and the next step is where the write is allowed.
+  "cap-from-page": Object.freeze({
+    what: "You can only change a spending cap from the drive page.",
+    next: "Open drive on this account, then move the cap slider there.",
+  }),
   // rclone's local VFS cache filled the disk, so saves cannot queue.
   "disk-cache-full": Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
