@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-04
 
+- `drive login` connects the app to your account: it opens the browser, mints
+  this machine's key, and writes the storage settings, so `drive init` needs
+  no pasted keys. Get started shows the real install and login lines.
 - The notes `drive init` writes for agents no longer advertise `drive restore`,
   a command that does not exist. The CLI now keeps one command table, and a
   test holds the notes' command lists and `drive --help` to it in both

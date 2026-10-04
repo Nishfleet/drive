@@ -17,8 +17,8 @@ import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
   INSTALL_LINES,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
@@ -33,7 +33,7 @@ import {
  * @returns {string}
  */
 export function installCommand() {
-  return INSTALL_COMMAND;
+  return FIRST_RUN_COMMAND;
 }
 
 /**

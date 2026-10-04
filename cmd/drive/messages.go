@@ -126,11 +126,11 @@ var messageTable = map[string][2]string{
 	},
 	"sign-in-expired": {
 		"The sign-in code expired before it was approved.",
-		"Run `drive init` again for a new code.",
+		"Run `drive login` again for a new code.",
 	},
 	"not-signed-in": {
 		"This device is not signed in to the drive.",
-		"Run `drive init` to sign in, then run the command again.",
+		"Run `drive login` to sign in, then run the command again.",
 	},
 	"no-rclone": {
 		"rclone is not installed; the drive mounts with rclone.",
@@ -138,7 +138,11 @@ var messageTable = map[string][2]string{
 	},
 	"missing-config": {
 		"The drive is missing its storage settings: {1}.",
-		"Set them and run `drive mount` again: `drive mount --endpoint <url> --bucket <bucket> --prefix <prefix>` with DRIVE_S3_ACCESS_KEY_ID and DRIVE_S3_SECRET_ACCESS_KEY in the environment.",
+		"Run `drive login` so this device gets its storage settings, then run the command again.",
+	},
+	"login-no-storage": {
+		"The drive's api did not send storage settings for this device: {1}.",
+		"This deployment is not serving storage yet. Wait until it is, then run `drive login` again.",
 	},
 	"invalid-config": {
 		"The {1} has a newline or NUL in it, which would corrupt the rclone config.",

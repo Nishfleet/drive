@@ -43,11 +43,13 @@ import {
   CONNECTION_COPY,
   connectionStatus,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
   formatBytes,
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
   INSTALL_LINES,
+  LOGIN_COMMAND,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
@@ -80,13 +82,13 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 /** @param {number} ms */
 const iso = (ms) => new Date(now - ms).toISOString();
 
-test("the install command is drive init, and the steps walk through it", () => {
-  // build-spec.md "One-command setup": `drive init` signs in, mounts the drive
-  // and connects every agent tool it finds. The steps are the walk-through the
-  // issue asks for, in order: run, approve, watch it flip.
+test("the box carries the login and init lines, and the steps walk through them", () => {
   assert.equal(INSTALL_COMMAND, "drive init");
+  assert.equal(LOGIN_COMMAND, "drive login");
+  assert.equal(FIRST_RUN_COMMAND, `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`);
   assert.equal(FIRST_RUN_STEPS.length, 3);
   assert.match(FIRST_RUN_STEPS[0].body, /drive init/);
+  assert.match(FIRST_RUN_STEPS[0].body, /drive login/);
   assert.match(FIRST_RUN_STEPS[1].body, /Approve the code/);
   assert.match(FIRST_RUN_STEPS[2].body, /flips to connected/);
   for (const step of FIRST_RUN_STEPS) {
@@ -317,7 +319,7 @@ test("every empty screen says what to do first", () => {
   for (const [name, entry] of Object.entries(EMPTY_STATES)) {
     assert.match(entry.what, /\.$/, `${name}'s what is one sentence`);
     assert.match(entry.next, /\.$/, `${name}'s next is one sentence`);
-    assert.match(entry.next, /drive init|shows up/, `${name}'s next has an action`);
+    assert.match(entry.next, /drive login|shows up/, `${name}'s next has an action`);
   }
 });
 
@@ -648,7 +650,7 @@ test("the renderer's wiring never lets a failed copy pass silently", () => {
 test("the renderer shows the module's words: command, steps, states, fragments", () => {
   // These are behavior assertions on the builders the page is built from, so
   // a page sentence can only change by changing the module it comes from.
-  assert.equal(installCommand(), INSTALL_COMMAND);
+  assert.equal(installCommand(), FIRST_RUN_COMMAND);
   assert.equal(statusEndpoint(), STATUS_ENDPOINT);
   assert.equal(pollIntervalMs(), POLL_INTERVAL_MS);
   assert.deepEqual(

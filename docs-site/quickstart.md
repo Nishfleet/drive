@@ -62,23 +62,16 @@ drive update
 It leaves your Drive folder and mount working throughout. `drive version` says
 which version you are on.
 
-## 2. Point it at your storage
-
-Your invite comes with the endpoint, bucket and prefix for your own folder, and
-a key pair. Put them in your shell environment, not on the command line, so the
-secret never lands in your shell history or in `ps`:
+## 2. Log in
 
 ```sh
-export DRIVE_S3_ENDPOINT=https://your-endpoint
-export DRIVE_S3_BUCKET=your-bucket
-export DRIVE_S3_PREFIX=your-folder
-export DRIVE_S3_ACCESS_KEY_ID=...
-export DRIVE_S3_SECRET_ACCESS_KEY=...
+drive login
 ```
 
-The first three say where your folder is. The last two are the key pair: the
-`DRIVE_S3_SECRET_ACCESS_KEY` one is never a flag (`--secret-key` is refused),
-and `drive mount --secret-key-stdin` reads it from stdin instead.
+`drive login` opens the browser to the device-approve page, waits until you
+approve this machine, mints its key, and writes the storage settings. You do
+not paste keys. After it finishes, `drive init` and `drive mount` work on this
+machine with no environment variables.
 
 ## 3. Mount it, at login and now
 
@@ -86,10 +79,10 @@ and `drive mount --secret-key-stdin` reads it from stdin instead.
 drive init
 ```
 
-`drive init` is the whole first run: it checks the installed parts are present
-and new enough, sets the drive to start on its own at every login, starts it
-now, and then looks for Claude, Codex, Gemini, Cursor and Kiro and connects
-each one it finds. A folder called **Drive** appears in your
+`drive init` is the rest of the first run: it checks the installed parts are
+present and new enough, sets the drive to start on its own at every login,
+starts it now, and then looks for Claude, Codex, Gemini, Cursor and Kiro and
+connects each one it finds. A folder called **Drive** appears in your
 home directory on macOS and Linux, and a drive letter on Windows, and every app
 on the machine can open it. [Agents](/agents) has the details, including what
 an agent key cannot do.

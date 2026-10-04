@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SESSION_TTL_SECONDS } from "../../../src/auth.js";
-import { CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
+import { bucketForAccount, CAPABILITIES_BY_KIND } from "../src/keyprovider.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   authorizePath,
@@ -103,11 +103,17 @@ test("a device token resolves to its account, and a made-up token does not", asy
 });
 
 test("minting a key returns the secret once and stores only its hash", async () => {
-  const store = createMemoryStore({ now: () => 0 });
+  const store = createMemoryStore({
+    now: () => 0,
+    storage: { endpoint: "https://s3.example.test", region: "eu-west-3" },
+  });
   const { account } = await signedInAccount(store);
   const minted = await store.mintKey(account, { kind: "device" });
   assert.ok(minted.secret.length > 0);
   assert.equal(minted.prefix, `u/${account.id}/`);
+  assert.equal(minted.endpoint, "https://s3.example.test");
+  assert.equal(minted.region, "eu-west-3");
+  assert.equal(minted.bucket, bucketForAccount(account.id));
   assert.deepEqual(minted.capabilities, ["list", "read", "write", "delete"]);
   const listed = await store.listKeys(account);
   assert.equal(listed.length, 1);

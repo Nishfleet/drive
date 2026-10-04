@@ -14,6 +14,7 @@ import (
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
+  drive login [flags]     connect this machine to your account and write its storage settings
   drive init [flags]      mount the drive, start it at login, and connect your agent tools
   drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
@@ -48,7 +49,7 @@ Usage:
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
 
-Install, one line per system, then run drive init:
+Install, one line per system, then run drive login and drive init:
   macOS                   brew install drive
   Linux, Debian or Ubuntu  sudo apt install drive
   Linux, Fedora or RHEL    sudo dnf install drive
@@ -98,6 +99,9 @@ Mount flags work on drive init too: init mounts the drive first, then
 connects the agent tools, so one command takes a machine from nothing to a
 mounted drive.
 
+Login flags:
+  --api    drive api base URL (env DRIVE_API_URL, default the live site)
+
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key
 
@@ -140,6 +144,7 @@ Logout flags:
 // so neither can drift from what actually runs (drive#461: both notes
 // advertised `drive restore`, which no step has shipped).
 var commands = map[string]func([]string) error{
+	"login":     runLogin,
 	"init":      runInit,
 	"agents":    runAgents,
 	"search":    runSearch,
@@ -313,7 +318,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
-	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey)
+	c, err := LoadStorageConfig(m.endpoint, m.bucket, m.prefix, m.region, m.downloadURL, secretKey, storageFromDisk(m.common.home))
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
