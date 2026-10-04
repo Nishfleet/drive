@@ -14,6 +14,7 @@
 
 import { BILLING_CONFIG } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
+import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForAccount, mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
@@ -492,6 +493,26 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     setAccountState,
+
+    /**
+     * Set the founding flag once, when this account becomes paying. The
+     * parsed Worker var is the second argument, so a closed offer cannot
+     * silently default open inside the store.
+     * @param {string} accountId
+     * @param {boolean} offerOpen
+     */
+    markPaying(accountId, offerOpen) {
+      return markAccountPaying(db, accountId, { offerOpen, now: now() });
+    },
+
+    /**
+     * @param {string} accountId
+     * @returns {Promise<boolean>}
+     */
+    async isFounding(accountId) {
+      const result = await accountFounding(db, accountId);
+      return result.founding;
+    },
 
     /**
      * A KeyProvider bound to one account, so `mint(scope)` can persist the
