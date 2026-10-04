@@ -249,11 +249,12 @@ function linksFor(env) {
 // stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
 // 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
 // which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
-// and the row holds a pointer to it instead. It is optional, not required: a
-// deployment with no namespace still branches, and its snapshots stay in the
-// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
-// binding is not on the health check's required list either. `null` is the
-// answer a missing binding gets, and every reader treats it as "use the row".
+// and the row holds a pointer to it instead. Required since drive#329 dropped
+// the legacy-column fallback: a missing binding is a 503 on every branch and
+// rewind route, and BRANCH_SNAPSHOTS is already on src/health.js
+// `REQUIRED_BINDINGS` (required before this change).
+// `null` is still the answer a missing binding gets, so the handlers can refuse
+// it by name rather than throw on the first put.
 /**
  * @param {Env} env
  * @returns {import("./branches.js").SnapshotStore|null}
