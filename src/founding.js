@@ -73,7 +73,8 @@ export function foundingOfferIsOpen(value) {
  * @param {string} accountId
  * @param {string} name the caller's name, so a data error names the read that
  *   found it rather than this helper
- * @returns {Promise<0|1|null>}
+ * @returns {Promise<0|1|null|undefined>} undefined when there is no accounts
+ *   row; each public answer below decides what that means for its own caller
  * @throws {TypeError} when the account id is not a string, or the flag is
  *   neither 0, 1 nor null
  */
