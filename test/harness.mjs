@@ -46,7 +46,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // Close-account grace stamps (drive issue #235). Nullable expand of
   // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
   // 0017 because 0016 is the founding-member flag.
+  "drive/0016_founding.sql",
   "drive/0017_account_close.sql",
+  // Abuse guards (drive#464): card fingerprint, founding reservation, first
+  // charge stamp. Expand only, three nullable columns.
+  "drive/0019_abuse_guards.sql",
 ]);
 
 /**

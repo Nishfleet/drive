@@ -43,6 +43,12 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
+  preChargeUploadBlocked,
+} from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
   joinPath,
@@ -1189,7 +1195,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1238,6 +1244,21 @@ export async function handleRequestUploadRequest(request, files, links, capState
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  if (options.db) {
+    // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
+    // not on the length header a stranger's client sent. An empty body counts
+    // as 1 byte once the drive is at 1 TB, the same edge src/files.js holds.
+    const stored = await accountStoredBytes(options.db, record.accountId);
+    const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
+    const blocked = preChargeUploadBlocked({
+      firstChargedAt,
+      storedBytes: stored,
+      incomingBytes: Math.max(sized.bytes, stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES ? 1 : 0),
+    });
+    if (blocked !== null) {
+      return json({ error: blocked }, 403);
+    }
   }
   const path = joinPath(record.folder, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
