@@ -513,10 +513,14 @@ dialog.viewer::backdrop {
       <a href="/usage">Usage</a>
       <a href="/signin" id="nav-signin">Sign in</a>
       <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout">
           <button type="submit">Sign out</button>
         </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout-all">
           <button type="submit">Sign out everywhere</button>
