@@ -135,7 +135,7 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 			fmt.Printf("Signed in as %s\n", who)
 		}
 	}
-	client, err := NewAPIClient(firstNonEmpty(creds.APIBase, base), creds.DeviceToken)
+	client, err := NewAPIClient(base, creds.DeviceToken)
 	if err != nil {
 		return env, err
 	}
