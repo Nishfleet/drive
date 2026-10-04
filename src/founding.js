@@ -177,3 +177,35 @@ export async function markAccountPaying(db, accountId, options) {
   }
   return publicFounding(flag);
 }
+
+/**
+ * The same flag as `accountFounding`, as the agent key cap reads it
+ * (drive#482).
+ *
+ * Tolerant where `accountFounding` is loud, because the cap is a gate on every
+ * request rather than a page someone waited for: an account row that is gone,
+ * or a flag the row has not decided yet, reads as not founding. That is the
+ * safe direction for a cap — the key stops at the full price rather than being
+ * let to spend an account's money it was counted on wrongly. A flag that is
+ * neither 0, 1 nor null is still a data error and fails.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @returns {Promise<boolean>}
+ */
+export async function accountFoundingFlag(db, accountId) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`accountFoundingFlag needs an account id, got ${String(accountId)}`);
+  }
+  const row = await db
+    .prepare("SELECT founding FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (row === null || row === undefined || typeof row !== "object") {
+    return false;
+  }
+  const flag = foundingFlag(
+    /** @type {{founding?: unknown}} */ (row).founding,
+    "accounts.founding",
+  );
+  return flag === 1;
+}
