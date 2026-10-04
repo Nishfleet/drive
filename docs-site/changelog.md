@@ -12,8 +12,9 @@ the live site.
 
 - The notes `drive init` writes for agents no longer advertise `drive restore`,
   a command that does not exist. The CLI now keeps one command table, and a
-  test holds both notes and `drive --help` to it, so neither can name a
-  command that does not run.
+  test holds the notes' command lists and `drive --help` to it in both
+  directions: neither can name a command that does not run, and no shipped
+  command is left out of the help.
 - Every minted storage key is scoped to the bucket that is the account's own
   rather than the deployment's one shared bucket, and a minted answer now names
   the bucket it can reach. A key that named no bucket is refused at the mint
