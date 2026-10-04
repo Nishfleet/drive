@@ -1119,6 +1119,53 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
 });
 
+test("the page wears the site's header, with room for the view strip", () => {
+  // drive#425, from the new-customer walkthrough: the files page's top bar was
+  // its own — a wordmark and a static "Your drive" — so it was the one page
+  // with no way from it to Pricing or Usage. It now carries the shared
+  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
+  // one navigation across the pages that use it), with this page's folder path
+  // under it, and the view strip given room instead of sitting cramped against
+  // the header.
+  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
+  assert.ok(masthead, "the page carries the shared masthead header");
+  assert.match(
+    masthead[0],
+    /<span class="tagline">A Finder drive for people and their agents\.<\/span>/,
+  );
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+  assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
+  // The static label is gone and its words are not lost: the crumbs row's own
+  // root button says "Your drive" (crumbsForParts), so nothing says it twice.
+  assert.doesNotMatch(page, /id="account"/);
+
+  // The strip's rule is the one that lays it out as a strip; the page has a
+  // second .tabs rule that only lines it up with the page's 900px column.
+  /** @param {string} selector */
+  const rules = (selector) =>
+    [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
+      (rule) => rule[1],
+    );
+  const tabs = rules("tabs").find((rule) => rule.includes("display: flex"));
+  assert.ok(tabs, "the page lays the tab strip out as a strip");
+  const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
+  const above = Number.parseInt(tabs.match(/padding-top:\s*(\d+)px/)?.[1] ?? "0", 10);
+  assert.ok(above >= 20, `the strip needs 20px of clear space under the header, it has ${above}px`);
+  assert.ok(gap >= 8, `the tabs need room between them, the gap is ${gap}px`);
+  const tab = rules("tabs button").find((rule) => rule.includes("padding:"));
+  const pad = tab?.match(/padding:\s*(\d+)px\s+(\d+)px/);
+  assert.ok(pad, "each tab carries its own padding");
+  assert.ok(
+    Number.parseInt(pad[1], 10) >= 12 && Number.parseInt(pad[2], 10) >= 16,
+    "each tab needs room inside it",
+  );
+
+  // The acceptance for drive#425 is a page with no sideways scroll. Hiding the
+  // symptom instead of fixing it fails here, so the proof has to be the
+  // measurements in the PR, taken in a browser.
+  assert.doesNotMatch(page, /overflow-x:\s*hidden/);
+});
+
 test("the page's copy is the module's copy", () => {
   // The page cannot import src/files.js, so these are the strings it must
   // carry. Drifting copy fails here instead of shipping a page that disagrees
