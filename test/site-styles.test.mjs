@@ -72,15 +72,16 @@ const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
 const CHROME_OVERRIDES = new Map([
   [
     "public/files.html",
-    new Map([
-      [".masthead", new Set(["margin", "padding", "border-bottom"])],
-      [".wordmark", new Set(["font-size"])],
-    ])
-  ],
+    new Map([[".masthead", new Set(['margin', 'padding', 'border-bottom'])], [".wordmark", new Set(['font-size'])]]),
+  ] ,
+  [
+    "public/starter.html",
+    new Map([[".wordmark", new Set(['font-size'])]]),
+  ] ,
   [
     "public/signin.html",
-    new Map([[".masthead", new Set(["padding"])]])
-  ],
+    new Map([[".masthead", new Set(['padding'])]]),
+  ]
 ]);
 
 // The shared file's own header rules. Pages may restate only the
@@ -106,11 +107,23 @@ const commentsRemoved = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "");
  */
 function selectorsIn(css) {
   const found = new Set();
+  // Commas inside () or [] (e.g. :is(a, b)) are not selector separators.
   for (const [, selector] of commentsRemoved(css).matchAll(/([^}{]+)\{/g)) {
-    for (const part of selector.split(",")) {
-      const trimmed = part.trim().replace(/\s+/g, " ");
-      if (trimmed) found.add(trimmed);
+    let depth = 0;
+    let cur = '';
+    for (const ch of selector) {
+      if (ch === '(' || ch === '[') depth++;
+      else if (ch === ')' || ch === ']') depth--;
+      else if (ch === ',' && depth === 0) {
+        const trimmed = cur.trim().replace(/\s+/g, ' ');
+        if (trimmed) found.add(trimmed);
+        cur = '';
+        continue;
+      }
+      cur += ch;
     }
+    const trimmed = cur.trim().replace(/\s+/g, ' ');
+    if (trimmed) found.add(trimmed);
   }
   return found;
 }
