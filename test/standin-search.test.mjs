@@ -288,6 +288,9 @@ async function countFilesUnderPrefix(store) {
   let files = 0;
   while (queue.length > 0) {
     const folder = queue.shift();
+    if (folder === undefined) {
+      throw new Error("the folder walk queued a hole: shift on a non-empty queue returned nothing");
+    }
     for (const entry of await store.list(folder)) {
       if (entry.kind === "folder") {
         queue.push(entry.path);
@@ -464,7 +467,7 @@ test("100,000 real files: the index search is under a second, the bucket walk it
     // Registered before the first object is written: these are billed objects
     // in a real account, not rows in a fixture, so a seed that dies half-way
     // through must still take out what it wrote.
-    const written = [];
+    const written = /** @type {string[]} */ ([]);
     t.after(() => clearRealDrive(store, written));
     await seedRealDrive(store, written);
   }
