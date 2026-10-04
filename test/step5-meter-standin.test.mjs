@@ -198,8 +198,12 @@ function providerDayGbMinutes(versions, day) {
 
 // startMinioStandin waits 30s for the API port and 60s for /minio/health/live.
 // The test then waitFor(3, 60) and waitFor(4, 60) for webhook deliveries.
-// node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
-const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
+// A run that reached the test with a 5s limit failed it at 4999.68ms while the
+// stand-in was still starting (drive#457, PR 435). The test's own budget is
+// the sum of those waits plus 60s for the cron and the compare, so no limit
+// handed down by the runner can cut a slow but healthy start short, and a
+// stand-in that never comes up still fails on the helper's own named error.
+const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000 + 60_000;
 
 test("a full day of GB-minutes matches the storage provider's own report within 1%", {
   timeout: STANDIN_TEST_TIMEOUT_MS,
