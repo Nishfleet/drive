@@ -1,5 +1,14 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig, type Plugin } from "vite";
+import {
+  assertSingleBeacon,
+  BEACON_PAGES,
+  BEACON_TOKEN_SETTING,
+  beaconToken,
+  withBeacon,
+} from "./src/analytics.js";
 import { FIRST_RUN_STEPS, INSTALL_COMMAND } from "./src/status.js";
 import apiWorker from "./workers/api/cloudflare.config.ts";
 
@@ -19,6 +28,7 @@ export default defineConfig({
       ],
     }),
     staticFirstRunShell(),
+    webAnalyticsBeacon(),
   ],
   environments: {
     client: {
@@ -40,6 +50,77 @@ export default defineConfig({
     },
   },
 });
+
+/**
+ * The Cloudflare Web Analytics beacon, in the six pages drive#246 names, and
+ * only when a beacon token is configured (drive issue #246).
+ *
+ * The pages ship as static assets: five are copied out of public/ verbatim and
+ * one is the built Vite entry, and only the built entry reaches
+ * `transformIndexHtml`. So the beacon is injected where both land, which is the
+ * client environment's output directory, in `writeBundle` (after Vite has
+ * written the files and before the Cloudflare plugin collects them as the
+ * Worker's assets). That directory is taken from the client environment's own
+ * resolved config, where `build.outDir` is already absolute: this repo's output
+ * is `.cloudflare/output/...` inside the root, and joining the root onto the
+ * resolved path walks it a second time. The six pages are the site's most-read
+ * documents, served straight from the asset layer so that no page view costs a
+ * Worker invocation (cloudflare.config.ts), and a request-time rewrite to add an
+ * analytics script would spend one.
+ *
+ * The token comes from the environment, and an unset setting is the
+ * switched-off case: the tag is not written at all, so the pages are byte for
+ * byte what they ship today. Set it to the dashboard's 32-hex token to measure:
+ *
+ *   DRIVE_CF_BEACON_TOKEN=<32 hex> npm run build
+ *
+ * and in a deploy, a GitHub Actions variable of that name on the build step
+ * (it is a variable, not a secret: the token is in every page's HTML).
+ * src/analytics.js holds the token's shape and the tag, so both are unit
+ * tested, and test/web-analytics.test.mjs fails if this plugin is dropped.
+ * @returns {Plugin}
+ */
+function webAnalyticsBeacon(): Plugin {
+  // The client environment's output directory, taken from the environment this
+  // plugin is applied to rather than from the top-level config, which is the
+  // Worker build's. Vite has already resolved it to an absolute path here.
+  let assetsDir = "";
+  return {
+    name: "drive-web-analytics-beacon",
+    applyToEnvironment(environment) {
+      if (environment.name !== "client") return false;
+      assetsDir = environment.config.build.outDir;
+      // A relative value would join page names onto the wrong tree, and
+      // readFileSync would then fail on a path that looks plausible.
+      if (assetsDir !== "" && !isAbsolute(assetsDir)) {
+        throw new Error(
+          `drive-web-analytics-beacon (environment client): build.outDir resolved to ${assetsDir}, which is not an absolute path`,
+        );
+      }
+      return true;
+    },
+    writeBundle() {
+      // An empty directory would make every readFileSync below throw ENOENT with a
+      // path that says nothing about why it is wrong, so it is named here.
+      if (assetsDir === "") {
+        throw new Error("drive-web-analytics-beacon found no client build output directory");
+      }
+      // Read once, before the loop: a mis-set token fails the build before any
+      // file is touched, so a failed build leaves no half-instrumented output.
+      const token = beaconToken(process.env[BEACON_TOKEN_SETTING]);
+      if (token === "") return;
+      for (const page of BEACON_PAGES) {
+        const file = join(assetsDir, page);
+        const html = readFileSync(file, "utf8");
+        const withTag = withBeacon(html, token);
+        if (withTag !== html) writeFileSync(file, withTag);
+        // The gate on the bytes as written, not on the bytes as computed: the
+        // file on disk is what ships, so the file on disk is what is checked.
+        assertSingleBeacon(readFileSync(file, "utf8"), page);
+      }
+    },
+  };
+}
 
 /**
  * The walk-through and the one command, printed into the built
