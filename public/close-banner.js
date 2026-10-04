@@ -57,7 +57,7 @@
    * @param {string} purgeOn
    * @returns {string}
    */
-  const fill = (sentence, purgeOn) => sentence.replace(/\{purgeOn\}/g, purgeOn);
+  const fill = (sentence, purgeOn) => sentence.replace(/\{purgeOn\}/g, () => purgeOn);
 
   /**
    * Show the banner for a closing account. The text is set and then the region
@@ -71,8 +71,12 @@
     if (!banner) return;
     const what = document.getElementById(WHAT_ID);
     const cancel = document.getElementById(CANCEL_ID);
+    const sentence = fill(payload.copy.pendingWhat, String(payload.purgeOn));
+    // The 60s poll re-reads a pending close that has not changed. Writing the
+    // same sentence into an aria-live region again would re-announce it.
+    if (!banner.hidden && what && what.textContent === sentence) return;
     if (what) {
-      what.textContent = fill(payload.copy.pendingWhat, String(payload.purgeOn));
+      what.textContent = sentence;
     }
     if (cancel) {
       // The link's own words are the payload's too, and its href is the page

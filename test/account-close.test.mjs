@@ -122,9 +122,11 @@ test("the shipped usage page states the 30-day grace period in the module's word
       // may legitimately repeat in a nav or a form, so only the placeholder
       // sentence is checked here.
       if (value.includes("{purgeOn}")) {
+        const afterDate = value.split("{purgeOn}.")[1]?.trim() ?? "";
+        assert.ok(afterDate.length > 0, `${name} must have words after the date`);
         assert.doesNotMatch(
           page,
-          /Your files stay visible until then/,
+          new RegExp(afterDate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
           "the banner's sentence is the payload's, not a page literal",
         );
       }
