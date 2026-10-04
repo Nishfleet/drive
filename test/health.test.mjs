@@ -674,14 +674,16 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
     );
   }
   // The other direction: a binding in the config that the health check does
-  // not know about is a gap the alert would not cover. Two documented
-  // exceptions (src/health.js), and the count is derived from them rather than
-  // written down, so adding one needs a reason in that module and nothing
-  // else: the email binding can only be exercised by really sending mail (only
-  // the token-gated internal send route uses it), and the meter's event token
-  // is a secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (src/meter.js) instead of at the probe.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN"]);
+  // not know about is a gap the alert would not cover. Documented exceptions
+  // (src/health.js), and the count is derived from them rather than written
+  // down, so adding one needs a reason in that module and nothing else: the
+  // email binding can only be exercised by really sending mail (only the
+  // token-gated internal send route uses it), the meter's event token is a
+  // secret no probe can exercise without a storage event to feed it, whose
+  // absence fails closed at the intake (src/meter.js) instead of at the probe,
+  // and FOUNDING_OFFER_OPEN is a Worker var (inline text) that cannot be
+  // probed.
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "FOUNDING_OFFER_OPEN"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

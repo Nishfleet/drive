@@ -15,7 +15,7 @@ concurrency:
 jobs:
   verify:
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 10
+    timeout-minutes: 25 # own runners share the VPS with 10 builders: verify ran 6.5 min idle, passed 10 min under load (2026-10-04)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,7 +60,7 @@ jobs:
   # The drive CLI is Go; the stand-in mount proof needs rclone and FUSE.
   go:
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
-    timeout-minutes: 10
+    timeout-minutes: 20 # go took 8 min under load on own runners (2026-10-04)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
