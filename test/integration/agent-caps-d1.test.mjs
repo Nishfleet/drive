@@ -242,9 +242,9 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   const account = { id: "acct_month", name: "Month drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-  // 2 TB held for a whole month bills $20 against the drive's own $12 cap, so
+  // 3 TB held for a whole month bills $30 against the drive's own $20 cap, so
   // the agent's key is over the moment the key is used.
-  meterAMonthOf(sqlite, account.id, 2000);
+  meterAMonthOf(sqlite, account.id, 3000);
   assert.equal((await writeAt(store, key, "/u/acct_month/over.md")).status, 403);
   assert.deepEqual(
     JSON.parse(
@@ -262,7 +262,7 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   assert.equal(
     rowIn(sqlite, "SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1", account.id)
       .gb_minutes_live,
-    2000 * MINUTES_PER_MONTH,
+    3000 * MINUTES_PER_MONTH,
   );
   assert.throws(
     () => sqlite.prepare("SELECT month_spend_cents FROM agent_caps WHERE key_id = ?1").all(),

@@ -39,14 +39,14 @@ import { BILLING_CONFIG, capStatus } from "./billing.js";
 import { capSwapPlan } from "./cap.js";
 
 // The ceilings an agent key gets when its row says nothing about its own.
-// $12 is the account's own default cap (BILLING_CONFIG.defaultCapUsd), so an
+// The account's own default cap (BILLING_CONFIG.defaultCapUsd), so an
 // agent inherits the number a customer already reads on the usage page rather
 // than a second number to explain. 1,000 requests a day is far above what a
 // working editing session sends and far below what a runaway loop reaches; it
 // is a count of requests rather than of bytes, so it costs nothing to keep and
 // is not a second money rule.
 export const DEFAULT_AGENT_CAPS = Object.freeze({
-  monthlyCapUsd: 12,
+  monthlyCapUsd: BILLING_CONFIG.defaultCapUsd,
   dailyRequests: 1000,
 });
 

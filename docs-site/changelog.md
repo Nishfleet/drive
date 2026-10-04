@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-05
 
+- Abuse guards: one active account per card, 1 TB storage until the first
+  charge, spending cap default $20, and a founding slot reserved at the card
+  step.
 - New pricing: pay only for what you store. {{RATE}}, never more than
   {{MAX_PER_TB}} per TB, and no minimum. The $10 membership, the first
   month at half price and the old ceiling are gone. Founding members pay half

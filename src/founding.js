@@ -1,10 +1,12 @@
-// The founding-member flag and the offer switch (drive issue #386).
+// The founding-member flag and the offer switch (drive issue #386, reserve/
+// confirm split in drive#464).
 //
-// An account becomes founding when it becomes paying, the offer is open, and
-// fewer than FOUNDING_PAYING_CAP paying accounts already exist. The flag is
-// written once and never changed after: switching the offer off, or later
-// paying accounts crossing the cap, cannot take the flag off a row that
-// already holds it, and cannot give it to a row that already decided 0.
+// A founding slot is reserved at the card step so a small bill does not lose
+// the offer. The slot is confirmed at the first successful charge, and
+// released if the account closes before paying. The public flag is written
+// once at confirm and never changed after: switching the offer off, or later
+// accounts crossing the cap, cannot take the flag off a row that already
+// holds it, and cannot give it to a row that already decided 0.
 //
 // The cap and the live count stay on the server. Public answers from this
 // module are `{ founding: boolean }` and nothing else: no remaining-spots
@@ -108,13 +110,207 @@ export async function accountFounding(db, accountId) {
 }
 
 /**
- * Sets the founding flag once, when the account becomes paying. A row that
- * already holds 0 or 1 is returned unchanged. The count of paying accounts is
- * the count of rows whose founding is already decided, taken inside the same
- * UPDATE so two concurrent first-time writes cannot both see a free slot.
+ * Live founding slots: confirmed founding members (including closed: they
+ * paid, so the slot stays theirs) plus reservations on accounts that are
+ * still open and have not been charged. Closed-before-pay rows must have
+ * founding_reserved cleared, so they drop out of this count.
+ */
+const SLOT_COUNT_SQL = `(
+  SELECT COUNT(*) FROM accounts
+   WHERE founding = 1
+      OR (founding_reserved = 1 AND first_charged_at IS NULL AND state != 'closed')
+)`;
+
+/**
+ * Reserves a founding slot at the card step. The public founding flag stays
+ * unset until the first charge confirms it. A row that already reserved (0 or
+ * 1) is returned unchanged, so closing the offer later cannot take a slot
+ * back. The live count is taken inside the same UPDATE so two concurrent
+ * card steps cannot both see a free slot.
  *
  * `offerOpen` is the already-parsed Worker var, so this function never reads
  * env and tests can close the offer without a Worker.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{offerOpen: boolean, now?: number}} options
+ * @returns {Promise<{founding: boolean, reserved: boolean}>}
+ */
+export async function reserveFoundingSlot(db, accountId, options) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`reserveFoundingSlot needs an account id, got ${String(accountId)}`);
+  }
+  if (typeof options !== "object" || options === null) {
+    throw new TypeError(`reserveFoundingSlot needs {offerOpen}, got ${String(options)}`);
+  }
+  if (typeof options.offerOpen !== "boolean") {
+    throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
+  }
+  const nowMs = options.now === undefined ? Date.now() : options.now;
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
+    throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
+  }
+  const at = Math.floor(nowMs / 1000);
+
+  const existing = await db
+    .prepare("SELECT founding_reserved FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (existing === null || existing === undefined || typeof existing !== "object") {
+    throw new TypeError(`reserveFoundingSlot needs an accounts row, got none for ${accountId}`);
+  }
+  const already = foundingFlag(
+    /** @type {{founding_reserved?: unknown}} */ (existing).founding_reserved,
+    "accounts.founding_reserved",
+  );
+  if (already !== null) {
+    return Object.freeze({ founding: false, reserved: already === 1 });
+  }
+
+  if (options.offerOpen) {
+    await db
+      .prepare(
+        `UPDATE accounts
+            SET founding_reserved = CASE
+                  WHEN ${SLOT_COUNT_SQL} < ?1 THEN 1
+                  ELSE 0
+                END,
+                card_added_at = COALESCE(card_added_at, ?2)
+          WHERE id = ?3 AND founding_reserved IS NULL`,
+      )
+      .bind(FOUNDING_PAYING_CAP, at, accountId)
+      .run();
+  } else {
+    await db
+      .prepare(
+        `UPDATE accounts
+            SET founding_reserved = 0,
+                card_added_at = COALESCE(card_added_at, ?1)
+          WHERE id = ?2 AND founding_reserved IS NULL`,
+      )
+      .bind(at, accountId)
+      .run();
+  }
+
+  const after = await db
+    .prepare("SELECT founding_reserved FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (after === null || after === undefined || typeof after !== "object") {
+    throw new TypeError(`reserveFoundingSlot lost the accounts row for ${accountId}`);
+  }
+  const flag = foundingFlag(
+    /** @type {{founding_reserved?: unknown}} */ (after).founding_reserved,
+    "accounts.founding_reserved",
+  );
+  if (flag === null) {
+    throw new TypeError(
+      `reserveFoundingSlot left accounts.founding_reserved unset for ${accountId}`,
+    );
+  }
+  return Object.freeze({ founding: false, reserved: flag === 1 });
+}
+
+/**
+ * Confirms the reserved slot at the first successful charge, and stamps
+ * first_charged_at, which lifts the 1 TB pre-charge limit. Confirming a
+ * released reservation writes founding=0: close-before-pay
+ * gave the slot back, so a later charge on the same row is not founding.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {{now?: number}} [options]
+ * @returns {Promise<{founding: boolean}>}
+ */
+export async function confirmFounding(db, accountId, options = {}) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`confirmFounding needs an account id, got ${String(accountId)}`);
+  }
+  const nowMs = options.now === undefined ? Date.now() : options.now;
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
+    throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
+  }
+  const at = Math.floor(nowMs / 1000);
+
+  const existing = await db
+    .prepare("SELECT founding, founding_reserved FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (existing === null || existing === undefined || typeof existing !== "object") {
+    throw new TypeError(`confirmFounding needs an accounts row, got none for ${accountId}`);
+  }
+  const already = foundingFlag(
+    /** @type {{founding?: unknown}} */ (existing).founding,
+    "accounts.founding",
+  );
+  if (already !== null) {
+    // An account decided before drive#464 (founding set at an earlier charge)
+    // still needs the first-charge stamp, or the 1 TB pre-charge limit would
+    // hold a customer who has already paid.
+    await db
+      .prepare(
+        "UPDATE accounts SET first_charged_at = COALESCE(first_charged_at, ?1) WHERE id = ?2",
+      )
+      .bind(at, accountId)
+      .run();
+    return publicFounding(already);
+  }
+  const reserved = foundingFlag(
+    /** @type {{founding_reserved?: unknown}} */ (existing).founding_reserved,
+    "accounts.founding_reserved",
+  );
+
+  await db
+    .prepare(
+      `UPDATE accounts
+          SET founding = CASE WHEN ?1 = 1 THEN 1 ELSE 0 END,
+              first_charged_at = COALESCE(first_charged_at, ?2)
+        WHERE id = ?3 AND founding IS NULL`,
+    )
+    .bind(reserved === 1 ? 1 : 0, at, accountId)
+    .run();
+
+  const after = await db
+    .prepare("SELECT founding FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (after === null || after === undefined || typeof after !== "object") {
+    throw new TypeError(`confirmFounding lost the accounts row for ${accountId}`);
+  }
+  const flag = foundingFlag(
+    /** @type {{founding?: unknown}} */ (after).founding,
+    "accounts.founding",
+  );
+  if (flag === null) {
+    throw new TypeError(`confirmFounding left accounts.founding unset for ${accountId}`);
+  }
+  return publicFounding(flag);
+}
+
+/**
+ * Releases a reserved slot when the account closes before paying. A confirmed
+ * founding flag is left alone. Public answers stay `{ founding }`.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @returns {Promise<void>}
+ */
+export async function releaseFoundingReservation(db, accountId) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`releaseFoundingReservation needs an account id, got ${String(accountId)}`);
+  }
+  await db
+    .prepare(
+      `UPDATE accounts
+          SET founding_reserved = NULL
+        WHERE id = ?1 AND first_charged_at IS NULL AND founding IS NULL`,
+    )
+    .bind(accountId)
+    .run();
+}
+
+/**
+ * Sets the founding flag once, when the account becomes paying (the first
+ * successful charge). A reserved slot from the card step is confirmed here.
+ * `offerOpen` is kept so existing callers still compile; the switch is read
+ * at reserve time, not here.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {{offerOpen: boolean, now?: number}} options
@@ -130,67 +326,23 @@ export async function markAccountPaying(db, accountId, options) {
   if (typeof options.offerOpen !== "boolean") {
     throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
   }
-  const nowMs = options.now === undefined ? Date.now() : options.now;
-  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
-    throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
-  }
-  const at = Math.floor(nowMs / 1000);
-
-  const existing = await db
-    .prepare("SELECT founding FROM accounts WHERE id = ?1")
+  // A card added before drive#464 never reserved a slot. Reserve it now, from
+  // the switch as it stands, so that account is judged like a new one rather
+  // than written founding=0 for good.
+  const row = await db
+    .prepare("SELECT founding, founding_reserved FROM accounts WHERE id = ?1")
     .bind(accountId)
     .first();
-  if (existing === null || existing === undefined || typeof existing !== "object") {
-    throw new TypeError(`markAccountPaying needs an accounts row, got none for ${accountId}`);
+  if (
+    row !== null &&
+    row !== undefined &&
+    typeof row === "object" &&
+    /** @type {{founding?: unknown}} */ (row).founding === null &&
+    /** @type {{founding_reserved?: unknown}} */ (row).founding_reserved === null
+  ) {
+    await reserveFoundingSlot(db, accountId, { offerOpen: options.offerOpen, now: options.now });
   }
-  const already = foundingFlag(
-    /** @type {{founding?: unknown}} */ (existing).founding,
-    "accounts.founding",
-  );
-  if (already !== null) {
-    return publicFounding(already);
-  }
-
-  if (options.offerOpen) {
-    await db
-      .prepare(
-        `UPDATE accounts
-         SET founding = CASE
-               WHEN (SELECT COUNT(*) FROM accounts WHERE founding IS NOT NULL) < ?1 THEN 1
-               ELSE 0
-             END,
-             card_added_at = COALESCE(card_added_at, ?2)
-         WHERE id = ?3 AND founding IS NULL`,
-      )
-      .bind(FOUNDING_PAYING_CAP, at, accountId)
-      .run();
-  } else {
-    await db
-      .prepare(
-        `UPDATE accounts
-         SET founding = 0,
-             card_added_at = COALESCE(card_added_at, ?1)
-         WHERE id = ?2 AND founding IS NULL`,
-      )
-      .bind(at, accountId)
-      .run();
-  }
-
-  const after = await db
-    .prepare("SELECT founding FROM accounts WHERE id = ?1")
-    .bind(accountId)
-    .first();
-  if (after === null || after === undefined || typeof after !== "object") {
-    throw new TypeError(`markAccountPaying lost the accounts row for ${accountId}`);
-  }
-  const flag = foundingFlag(
-    /** @type {{founding?: unknown}} */ (after).founding,
-    "accounts.founding",
-  );
-  if (flag === null) {
-    throw new TypeError(`markAccountPaying left accounts.founding unset for ${accountId}`);
-  }
-  return publicFounding(flag);
+  return confirmFounding(db, accountId, { now: options.now });
 }
 
 /**
