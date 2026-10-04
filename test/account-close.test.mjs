@@ -174,7 +174,10 @@ test("closing refuses a typed email that is not the account's, and changes nothi
     /email/i,
   );
   const row = world.sqlite.prepare("SELECT state FROM accounts WHERE id = ?").get(account.id);
-  assert.equal(row === undefined || row.state !== "closed", true);
+  assert.ok(
+    row === undefined || row.state !== "closed",
+    "a refused close must not set state to closed",
+  );
   assert.equal(world.email.sent.length, 0);
 });
 
