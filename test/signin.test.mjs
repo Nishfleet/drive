@@ -20,7 +20,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createAuth, SIGNIN_LINK_PATH } from "../src/auth.js";
+import { AFTER_SIGNIN_COOKIE, createAuth, safeAfterSigninPath, SIGNIN_LINK_PATH } from "../src/auth.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
@@ -628,6 +628,40 @@ test("a good link mints the session and lands on the drive; a used one does not"
     assert.match(String(failed.headers.get("location")), /error=invalid-link|error=no-token/);
     assert.equal(failed.headers.getSetCookie().length, 0, "a failed link mints no session");
   }
+});
+
+test("safeAfterSigninPath only returns the device-approve page", () => {
+  assert.equal(
+    safeAfterSigninPath("/v1/device/approve?user_code=BCDF-GHJK"),
+    "/v1/device/approve?user_code=BCDF-GHJK",
+  );
+  assert.equal(safeAfterSigninPath("/v1/device/approve"), "/v1/device/approve");
+  assert.equal(safeAfterSigninPath("https://evil.test/v1/device/approve"), "");
+  assert.equal(safeAfterSigninPath("//evil.test"), "");
+  assert.equal(safeAfterSigninPath("/files"), "");
+  assert.equal(safeAfterSigninPath("/v1/device/approve?user_code=x&next=https://evil.test"), "");
+});
+
+test("a good link with the after-signin cookie returns to the approve page", async () => {
+  const made = dispatchEnv();
+  await workerFetch(
+    post({ step: "start", method: "email", email: "device@example.com" }),
+    made.env,
+  );
+  const next = "/v1/device/approve?user_code=BCDF-GHJK";
+  const followed = await workerFetch(
+    new Request(made.sent[0].url, {
+      headers: { cookie: `${AFTER_SIGNIN_COOKIE}=${encodeURIComponent(next)}` },
+    }),
+    made.env,
+  );
+  assert.equal(followed.status, 302);
+  assert.equal(followed.headers.get("location"), next);
+  assert.match(
+    followed.headers.getSetCookie().join("\n"),
+    new RegExp(`${AFTER_SIGNIN_COOKIE}=;`),
+    "the return cookie is cleared after it is used",
+  );
 });
 
 test("sign-out through the route revokes the session the cookie names", async () => {

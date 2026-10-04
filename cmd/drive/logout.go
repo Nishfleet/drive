@@ -492,10 +492,14 @@ func runLogout(args []string) error {
 	var revoker TokenRevoker
 	var account AccountRevoker
 	creds, _ := LoadCredentials(common.home)
-	if creds.DeviceToken != "" && creds.APIBase != "" {
-		client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+	base, err := resolveAPIBase(common.home, *api)
+	if err != nil {
+		return err
+	}
+	if creds.DeviceToken != "" && base != "" {
+		client, err := NewAPIClient(base, creds.DeviceToken)
 		if err != nil {
-			return fmt.Errorf("build api client: %w", err)
+			return err
 		}
 		// One client, both seams: the account-wide revoke and this device's own
 		// token revoke are the same token against the same api Worker, and

@@ -76,14 +76,10 @@ export const routes = [
   //
   // The CLI's two calls are public, each for its own reason: the CLI has no
   // credential before it asks for one, so /v1/device/code and /v1/device/token
-  // cannot require one. The approval page and its POST are account routes
-  // (drive#136 finding 2): only a signed-in person may approve a code, so the
-  // dispatcher answers 401 to an anonymous request (resolving the sign-in
-  // session cookie through the same `signedInAccount` gate drive#109 uses) and
-  // no handler runs. The page is served by the api Worker because it is part
-  // of the device flow; the identity it checks is the sign-in flow's
-  // (drive#130). The GET is gated too, so the whole path answers 401 before it
-  // names a method, the same rule every other account path follows.
+  // cannot require one. The approval POST is an account route (drive#136
+  // finding 2): only a signed-in person may approve a code. The GET is public
+  // so a signed-out person is redirected to sign-in and back (drive#459)
+  // instead of seeing the gate's JSON 401.
   {
     method: "POST",
     path: "/v1/device/code",
@@ -99,7 +95,7 @@ export const routes = [
   {
     method: "GET",
     path: "/v1/device/approve",
-    auth: "account",
+    auth: "public",
     handler: approvePageRoute,
   },
   {
