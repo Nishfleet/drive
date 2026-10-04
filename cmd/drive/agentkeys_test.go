@@ -75,7 +75,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, 200, map[string]any{
 			"status":      "approved",
 			"deviceToken": testDeviceToken,
-			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook"},
+			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook", "email": "nish@example.com"},
 		})
 	case r.URL.Path == keysPath && r.Method == http.MethodPost:
 		if f.rejectMints {

@@ -386,3 +386,28 @@ func TestRunCapRestartRejectsASwappedCredentialThatWouldInjectAnOption(t *testin
 		})
 	}
 }
+
+// drive#459: after `drive login` and no DRIVE_API_URL, cap reaches the api
+// address login saved instead of failing with "That did not work".
+func TestRunCapReadsTheAPIBaseDriveLoginSaved(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."})
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: srv.URL, DeviceToken: "dtok_test"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	line := captureStdout(t, func() {
+		if err := runCap([]string{"--home", home, "20"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if gotPath != CAP_PATH || !strings.Contains(line, "Cap $20.00") {
+		t.Errorf("cap did not reach the saved apiBase: path %q, output %q", gotPath, line)
+	}
+}

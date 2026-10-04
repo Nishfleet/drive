@@ -50,7 +50,14 @@
 
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS, sessionAccount } from "./auth.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  AFTER_SIGNIN_PATH,
+  authFor,
+  SIGNIN_LINK_TTL_SECONDS,
+  safeAfterSigninPath,
+  sessionAccount,
+} from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -574,8 +581,13 @@ export async function handleSigninLinkVerify(request, env) {
   }
   // The one thing this route does is take the cookie Better Auth set onto a
   // same-origin redirect of its own, so a person lands on the drive rather
-  // than on a JSON body.
-  return redirect(AFTER_SIGNIN_PATH, cookieHeaders(verified));
+  // than on a JSON body. When they opened the device-approve link while signed
+  // out, that page left a return cookie so they come back to the code.
+  const extra = cookieHeaders(verified);
+  const cookies = extra["set-cookie"] ?? [];
+  const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
+  cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+  return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
 }
 
 /**
@@ -638,6 +650,31 @@ function signinLinkRequest(auth, email, request) {
 function cookieHeaders(response) {
   const cookies = response.headers.getSetCookie();
   return cookies.length === 0 ? {} : { "set-cookie": cookies };
+}
+
+/**
+ * One cookie value from the request, or empty. Used only to read the
+ * after-signin return path the approve page set.
+ * @param {Request} request
+ * @param {string} name
+ */
+function cookieValue(request, name) {
+  const header = request.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) {
+      continue;
+    }
+    if (part.slice(0, idx).trim() !== name) {
+      continue;
+    }
+    try {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 /**

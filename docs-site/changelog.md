@@ -15,6 +15,12 @@ the live site.
   month at half price and the old ceiling are gone. Founding members pay half
   of both numbers for good.
 
+- After `drive login`, every command reads the api address it saved, so
+  `drive init`, `drive cap` and `drive share` work without `DRIVE_API_URL`.
+  Login prints `Signed in as` plus the email. Opening the approve link while
+  signed out goes to sign-in and back; after Approve the tab says this Mac is
+  connected.
+
 ## 2026-10-04
 
 - `drive login` connects the app to your account: it opens the browser, mints

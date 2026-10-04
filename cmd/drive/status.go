@@ -114,9 +114,9 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	base := strings.TrimSpace(*api)
-	if base == "" {
-		base = creds.APIBase
+	base, err := resolveAPIBase(home, *api)
+	if err != nil {
+		return err
 	}
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
