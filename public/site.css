@@ -98,3 +98,38 @@ main {
   padding-top: 18px;
   border-top: 1px solid var(--rule);
 }
+
+/* The pending-close banner (drive issue #424). Every signed-in page carries
+   this one <aside>, hidden until GET /api/account/close says the account is
+   closing, and public/close-banner.js fills the two slots from that payload:
+   the sentence is the module's CLOSE_COPY.pendingWhat with the endpoint's
+   purgeOn in it, and the link is the module's pendingCancel words. The styles
+   live here rather than in each page's <style> block so the four pages that
+   show it are one banner, and a page cannot drift from the others. */
+
+.close-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  border: 1px solid var(--bad);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.close-banner[hidden] {
+  display: none;
+}
+
+.close-banner p {
+  margin: 0;
+}
+
+.close-banner a {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}

@@ -291,6 +291,17 @@ h2 {
     <a href="/signin">Sign in</a>
   </header>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
   <main>
     <section aria-labelledby="usage-heading">
       <h1 id="usage-heading">Usage</h1>
@@ -742,5 +753,10 @@ document.addEventListener("visibilitychange", () => {
   }
 });
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       Every signed-in page loads the same file, so the banner cannot
+       drift between them; it reads the endpoint and never carries the
+       words itself. -->
+  <script src="/close-banner.js" defer></script>
 </body>
 </html>
