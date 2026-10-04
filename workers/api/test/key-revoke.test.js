@@ -461,7 +461,6 @@ test("DELETE /v1/keys asks for a signed-in account and nothing else", async () =
   assert.notEqual(after.revokedAt, null, "a key the body named must still be revoked");
 });
 
-
 /** @param {ReturnType<typeof createMemoryStore>} store @param {string} token @param {string} name */
 async function mint(store, token, name) {
   return dispatch(
@@ -522,7 +521,11 @@ function stubDeviceStore(revoke, { forgetOnRevoke = false } = {}) {
      */
     async put(device) {
       if (!rows.has(device.accessKeyId)) {
-        rows.set(device.accessKeyId, { id: device.id, revokedAt: device.revokedAt ?? null, device: /** @type {any} */ (device) });
+        rows.set(device.accessKeyId, {
+          id: device.id,
+          revokedAt: device.revokedAt ?? null,
+          device: /** @type {any} */ (device),
+        });
       }
     },
     /** @param {string} accessKeyId @param {string} _secret */
