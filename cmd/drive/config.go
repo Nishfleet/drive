@@ -24,9 +24,16 @@ type StorageConfig struct {
 	Endpoint  string // S3 endpoint URL, e.g. http://127.0.0.1:8080 (stand-in) or https://s3.eu-west-3.idrivee2-<n>.com
 	AccessKey string
 	SecretKey string
-	Bucket    string
-	Prefix    string // key prefix this device mounts, e.g. /u/<id>/
-	Region    string // S3 region name; stand-ins accept any
+	// SessionToken is the STS token a scoped credential is minted with
+	// (workers/api/src/s3-keys.js). A deployment whose keys are permanent has
+	// none, and then this is empty and no session_token line is written. A
+	// scoped key carries one, and without it the storage server answers
+	// InvalidTokenId (measured against the pinned MinIO, issue #241), so the
+	// mount would fail to read a drive it is entitled to.
+	SessionToken string
+	Bucket       string
+	Prefix       string // key prefix this device mounts, e.g. /u/<id>/
+	Region       string // S3 region name; stand-ins accept any
 	// DownloadURL is the dl Worker (drive issue #58, build step 5): the host
 	// reads stream through, so the mount's reads land in that account's
 	// download bytes. Empty means no download host is configured, and the
@@ -364,6 +371,8 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 			c.AccessKey = value
 		case "secret_access_key":
 			c.SecretKey = value
+		case "session_token":
+			c.SessionToken = value
 		case "endpoint":
 			c.Endpoint = value
 		case "region":
@@ -385,12 +394,13 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 // config, not code: the same binary talks to the local stand-in or to iDrive e2.
 func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey string) (StorageConfig, error) {
 	c := StorageConfig{
-		Endpoint:  firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
-		Bucket:    firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
-		Prefix:    firstNonEmpty(prefix, os.Getenv("DRIVE_S3_PREFIX")),
-		Region:    firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
-		AccessKey: os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
-		SecretKey: secretKey,
+		Endpoint:     firstNonEmpty(endpoint, os.Getenv("DRIVE_S3_ENDPOINT")),
+		Bucket:       firstNonEmpty(bucket, os.Getenv("DRIVE_S3_BUCKET")),
+		Prefix:       firstNonEmpty(prefix, os.Getenv("DRIVE_S3_PREFIX")),
+		Region:       firstNonEmpty(region, os.Getenv("DRIVE_S3_REGION"), "us-east-1"),
+		AccessKey:    os.Getenv("DRIVE_S3_ACCESS_KEY_ID"),
+		SecretKey:    secretKey,
+		SessionToken: os.Getenv("DRIVE_S3_SESSION_TOKEN"),
 		// The download host is optional and has no default: with none set the
 		// mount reads straight from storage (the local stand-in case), and with
 		// one set rclone streams every read through the dl Worker, which counts
@@ -430,6 +440,7 @@ func LoadStorageConfig(endpoint, bucket, prefix, region, downloadURL, secretKey 
 		{"download url", c.DownloadURL},
 		{"access key", c.AccessKey},
 		{"secret key", c.SecretKey},
+		{"session token", c.SessionToken},
 	} {
 		if err := checkConfigValue(f.name, f.value); err != nil {
 			return c, err
@@ -483,6 +494,19 @@ func firstNonEmpty(vals ...string) string {
 // RcloneConfig renders the drive-managed rclone config file. The remote is an
 // S3 backend pointed at this device's storage endpoint and key; s3v4 is the
 // stock signature version every S3-compatible provider accepts.
+//
+// A scoped key is an STS session, and rclone signs it with the session token
+// (issue #241): the line is written only when the credential carries one,
+// because a deployment with permanent credentials has none and an empty value
+// would sign with an empty token.
+//
+// no_check_bucket is required for those same scoped keys. rclone's S3 backend
+// HeadBucket/CreateBucket-checks the bucket before a PutObject, including
+// when a remount drains the VFS cache. A drive key's session policy has
+// neither action (workers/api/src/s3-keys.js), so that check is 403 and the
+// queued file never goes up — which is the cap-raise path issue #241 proves.
+// A permanent key can HeadBucket, so the line is only written when a session
+// token is present.
 func RcloneConfig(c StorageConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s]\n", RcloneRemoteName)
@@ -490,6 +514,10 @@ func RcloneConfig(c StorageConfig) string {
 	b.WriteString("provider = Other\n")
 	fmt.Fprintf(&b, "access_key_id = %s\n", c.AccessKey)
 	fmt.Fprintf(&b, "secret_access_key = %s\n", c.SecretKey)
+	if c.SessionToken != "" {
+		fmt.Fprintf(&b, "session_token = %s\n", c.SessionToken)
+		fmt.Fprintf(&b, "no_check_bucket = true\n")
+	}
 	fmt.Fprintf(&b, "endpoint = %s\n", c.Endpoint)
 	fmt.Fprintf(&b, "region = %s\n", c.Region)
 	return b.String()
@@ -503,6 +531,9 @@ func RcloneConfigRedacted(c StorageConfig) string {
 	r := c
 	r.AccessKey = "<redacted>"
 	r.SecretKey = "<redacted>"
+	if r.SessionToken != "" {
+		r.SessionToken = "<redacted>"
+	}
 	return RcloneConfig(r)
 }
 

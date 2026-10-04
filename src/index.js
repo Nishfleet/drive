@@ -8,6 +8,7 @@ import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
+import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -17,7 +18,14 @@ import {
   runAccountCloseCron,
 } from "./account-close.js";
 import { authFor, SIGNIN_LINK_PATH } from "./auth.js";
-import { BILLING_CONFIG, handleUsageRequest, USAGE_ENDPOINT, usageSummary } from "./billing.js";
+import {
+  BILLING_CONFIG,
+  handleQuoteRequest,
+  handleUsageRequest,
+  QUOTE_ENDPOINT,
+  USAGE_ENDPOINT,
+  usageSummary,
+} from "./billing.js";
 import {
   BRANCHES_ENDPOINT,
   backfillBranchSnapshots,
@@ -123,6 +131,8 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 //     and one that expires or is revoked answers 404 (src/share.js).
 //   - /api/request/info and /api/request/upload: the logged-out side of an
 //     upload request, where the token in the query is the whole proof.
+//   - /api/quote: the public savings calculator (drive issue #14). It quotes
+//     the price for a size, not an account, so it has no session to need.
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
@@ -133,6 +143,7 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${SHARE_LINK_PREFIX}/*`,
   `${REQUEST_ENDPOINT}/info`,
   `${REQUEST_ENDPOINT}/upload`,
+  QUOTE_ENDPOINT,
 ]);
 
 /** @param {string} pathname */
@@ -276,11 +287,12 @@ function linksFor(env) {
 // stale copy to serve. A branch's snapshot is ~117 bytes a file, so a
 // 100,000-file branch is ~11 MiB of JSON — twelve times D1's 1 MiB row limit,
 // which is why it lives in KV (migrations/drive/0012_branch_snapshot_kv.sql)
-// and the row holds a pointer to it instead. It is optional, not required: a
-// deployment with no namespace still branches, and its snapshots stay in the
-// legacy column (the pre-#252 behaviour src/branches.js falls back to), so this
-// binding is not on the health check's required list either. `null` is the
-// answer a missing binding gets, and every reader treats it as "use the row".
+// and the row holds a pointer to it instead. Required since drive#329 dropped
+// the legacy-column fallback: a missing binding is a 503 on every branch and
+// rewind route, and BRANCH_SNAPSHOTS is already on src/health.js
+// `REQUIRED_BINDINGS` (required before this change).
+// `null` is still the answer a missing binding gets, so the handlers can refuse
+// it by name rather than throw on the first put.
 /**
  * @param {Env} env
  * @returns {import("./branches.js").SnapshotStore|null}
@@ -600,7 +612,9 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
-    const store = db ? createD1DeviceStore(db) : null;
+    const store = db
+      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });
 
@@ -650,6 +664,10 @@ export function createApp() {
   app.post("/api/waitlist", (c) =>
     handleWaitlistRequest(c.req.raw, c.env.WAITLIST_DB, c.env.WAITLIST_RATE_LIMITER),
   );
+
+  // The public savings calculator (drive issue #14). GET only; the handler
+  // refuses every other method. No account: it quotes the price, not a bill.
+  app.get(QUOTE_ENDPOINT, (c) => handleQuoteRequest(c.req.raw));
 
   // The meter's event intake (issue #6), behind the provider's shared token.
   app.post("/api/storage-events", (c) =>

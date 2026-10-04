@@ -32,7 +32,13 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-import { diffBranch, discardBranch, listBranches, readSnapshot } from "./branches.js";
+import {
+  diffBranch,
+  discardBranch,
+  listBranches,
+  readSnapshot,
+  readSnapshotObject,
+} from "./branches.js";
 import { RECENTLY_DELETED_DAYS } from "./files.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
@@ -112,12 +118,16 @@ function plain(message, status, headers = {}) {
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {import("./branches.js").Branch & {changed: number}} branch a branch row as `listBranches` returns
  * @param {number} now epoch milliseconds, injected so the tests pin the clock
- * @param {import("./branches.js").SnapshotStore|null} [snapshots] the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store;
+ *   required because the leftover column is no longer a source (drive#329)
  * @returns {Promise<RewindPreview>}
  */
-export async function rewindPreview(store, branch, now, snapshots = null) {
+export async function rewindPreview(store, branch, now, snapshots) {
   if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`rewindPreview needs a clock, got ${String(now)}`);
+  }
+  if (!snapshots) {
+    throw new TypeError("rewindPreview needs the branch snapshot store");
   }
   const createdAt = Date.parse(branch.createdAt);
   if (!Number.isFinite(createdAt)) {
@@ -143,7 +153,7 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
   const diff = open
     ? await diffBranch(store, {
         ...branch,
-        snapshot: await readSnapshot(snapshots, branch.snapshotKey, branch.snapshot),
+        snapshot: await readSnapshot(snapshots, branch.snapshotKey),
       })
     : null;
   const files = diff
@@ -180,7 +190,7 @@ export async function rewindPreview(store, branch, now, snapshots = null) {
  * would not show and a branch of another account is "not found", never
  * "forbidden" — the same answer `drive branches` gives.
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
@@ -204,7 +214,7 @@ export async function rewindBranchRow(db, snapshots, store, account, name) {
  * from ever meaning two different things to the same branch.
  *
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore} snapshots the KV snapshot store
  * @param {import("./branches.js").FileStore} store a scoped store
  * @param {{id: string}} account
  * @param {string} name
@@ -216,6 +226,10 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
   const branch = await rewindBranchRow(db, snapshots, store, account, name);
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
+  }
+  if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
+    console.error?.(`rewind refused unavailable snapshot for row ${branch.id}`);
+    return { error: failureMessage("unexpected"), status: 500 };
   }
   const preview = await rewindPreview(store, branch, now, snapshots);
   if (!preview.canRewind) {
@@ -248,7 +262,9 @@ export async function rewindBranch(db, snapshots, store, account, name, now) {
  *
  * @param {Request} request
  * @param {D1Database} db
- * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot store
+ * @param {import("./branches.js").SnapshotStore|null} snapshots the KV snapshot
+ *   store; a request with no namespace is a 503, because the legacy column a
+ *   branch could fall back to is gone (drive#329)
  * @param {import("./branches.js").FileStore|null} store a scoped store
  * @param {{id: string}|null} account
  * @param {() => number} now
@@ -266,6 +282,14 @@ export async function handleRewindRequest(
   }
   if (!db || !store) {
     return json({ error: failureMessage("unexpected") }, 503);
+  }
+  if (!snapshots) {
+    // A rewind names the files it would undo by diffing against the branch's
+    // snapshot, and that snapshot has exactly one source now, so a missing
+    // namespace is the "a dependency the drive cannot serve without" answer and
+    // not a rewind that reports nothing changed.
+    console.error?.("rewind: BRANCH_SNAPSHOTS is not bound");
+    return json({ error: failureMessage("storage-down") }, 503);
   }
   const url = new URL(request.url);
   const rest = url.pathname.slice(REWIND_ENDPOINT.length).replace(/\/$/, "");

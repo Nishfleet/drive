@@ -4,7 +4,7 @@
 //
 // The columns this module writes (`closed_at`, `reminder_sent_at`,
 // `purged_at`) are the expand-only migration in
-// migrations/drive/0016_account_close.sql. `accounts.state` already carries
+// migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
 import { sendEmail } from "./email-send.js";

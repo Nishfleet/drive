@@ -2,7 +2,7 @@
 //
 // The unit tests in test/account-close.test.mjs exercise the close, cancel
 // and purge paths. This file is the D1 expand/contract gate: the three new
-// columns exist because 0016 ran, a WRITE lands on the real table, and a
+// columns exist because 0017 ran, a WRITE lands on the real table, and a
 // second store instance (the next Worker isolate) READs the same values.
 // A mocked Map would leave these tables empty and fail here.
 
@@ -14,11 +14,15 @@ import { makeMeteredDB } from "../d1-sqlite.mjs";
 
 const START_MS = Date.parse("2026-10-04T12:00:00.000Z");
 
-test("0016_account_close.sql is in the drive migrations the stand-in applies", () => {
+test("0017_account_close.sql is in the drive migrations the stand-in applies", () => {
   const files = readdirSync(new URL("../../migrations/drive/", import.meta.url));
   assert.ok(
-    files.includes("0016_account_close.sql"),
+    files.includes("0017_account_close.sql"),
     "the close columns must ship as a numbered drive migration",
+  );
+  assert.ok(
+    files.includes("0016_founding.sql"),
+    "close is 0017 because founding already took 0016",
   );
 });
 

@@ -13,6 +13,13 @@ the live site.
 - Closing an account revokes every key at once, keeps files for 30 days, emails
   on day 0 and day 25, and lets the person cancel until then by typing their
   email on the usage page.
+- A public savings calculator on the pricing page: enter a size, see this
+  month's bill beside our own flat-plan ceiling. The number is
+  `monthBillCents`, so it cannot drift from the invoice. No rival names or
+  rival prices.
+- `drive import <remote>` copies files from an rclone remote you already have
+  (`rclone config` on your machine) into the mounted drive. Docs show the
+  three commands: `rclone config`, `drive import photos:`, `drive status`.
 
 ## 2026-10-03
 

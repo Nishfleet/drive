@@ -88,6 +88,10 @@ export default defineWorker({
       namespace: "1007",
       simple: { limit: 600, period: 60 },
     }),
+    // drive issue #386: the same founding-member offer switch the site Worker
+    // holds. This Worker owns the accounts row (workers/api/src/devices.js),
+    // so the write that sets the flag has to see the same var. Default open.
+    FOUNDING_OFFER_OPEN: bindings.text("1"),
     // No mailer is declared, and none is needed: no route this Worker mounts
     // sends mail. The device flow starts with a code the CLI shows
     // (POST /v1/device/code) and ends with the person approving it on

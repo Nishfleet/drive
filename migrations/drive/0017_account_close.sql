@@ -11,6 +11,10 @@
 --   reminder_sent_at  unix seconds when the day-25 mail went out
 --   purged_at         unix seconds when the files were deleted
 --
+-- Numbered 0017 because 0016 is the founding-member flag (drive#386). The
+-- deploy sorts on the numeric prefix alone, so two 0016 files would be
+-- unordered against each other.
+--
 -- Rollback of the code leaves the columns in place (D1 has no down-migration).
 -- The fleet's auto-revert stays possible because an old Worker ignores them.
 

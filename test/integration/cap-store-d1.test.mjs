@@ -17,8 +17,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BILLING_CONFIG } from "../../src/billing.js";
-import { dollarsToCapCents, enforceCap, READ_ONLY_CAPABILITIES } from "../../src/cap.js";
+import { BILLING_CONFIG, MINUTES_PER_MONTH } from "../../src/billing.js";
+import {
+  dollarsToCapCents,
+  enforceCap,
+  handleCapRequest,
+  READ_ONLY_CAPABILITIES,
+} from "../../src/cap.js";
+import { monthStart } from "../../src/meter.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
@@ -142,5 +148,62 @@ test("a second store over the same database sees the persisted cap and keys", as
   assert.equal(
     rowIn(sqlite, "SELECT cap_cents FROM accounts WHERE id = ?", account.id).cap_cents,
     800,
+  );
+});
+
+test("drive cap below the month already counted swaps on the real rows", async () => {
+  // The finish line of drive#241 is a real mount going read-only because
+  // `drive cap` ran, and that only happens when the swap is decided from the
+  // month the account actually counted (not a blank one). This is that read
+  // on the real schema: 2 TB held all of September bills past a $0 cap, so
+  // POST /api/cap 0 must swap and hand the minted credential back.
+  const at = Date.parse("2026-09-30T12:00:00.000Z");
+  const { sqlite, db } = makeMeteredDB();
+  const store = createD1DeviceStore(db, { now: () => at });
+  const account = { id: "acct-month", email: "month@example.com" };
+  await store.setCapCents(account, dollarsToCapCents(12));
+  await store.put({
+    id: "key_device",
+    accountId: account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_write",
+    secretHash: "00",
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+    createdAt: 1,
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  sqlite
+    .prepare(
+      `INSERT INTO usage_minutes
+         (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
+       VALUES (?, ?, ?, ?, 0, ?)`,
+    )
+    .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+
+  const swapped = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "0" }),
+    }),
+    account,
+    store,
+  );
+  assert.equal(swapped.status, 200);
+  const body = await swapped.json();
+  assert.equal(body.cap.state, "read_only", "a cap below the counted month is reached");
+  assert.equal(body.mount.restart, true);
+  assert.equal(typeof body.credential?.accessKeyId, "string");
+  assert.equal(typeof body.credential?.secret, "string");
+  assert.deepEqual(
+    JSON.parse(
+      String(
+        rowIn(sqlite, "SELECT capabilities FROM devices WHERE id = ?", "key_device").capabilities,
+      ),
+    ),
+    [...READ_ONLY_CAPABILITIES],
   );
 });
