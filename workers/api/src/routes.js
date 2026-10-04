@@ -17,6 +17,7 @@ import {
   listKeysRoute,
   mintKeyRoute,
   renewKeyRoute,
+  revokeAllKeysRoute,
   revokeKeyRoute,
   revokePresentedKeyRoute,
   storageListRoute,
@@ -139,6 +140,27 @@ export const routes = [
     path: "/v1/keys/:keyId",
     auth: "account",
     handler: revokeKeyRoute,
+  },
+  // Sign out of every device at once (account lifecycle, drive#34). The
+  // collection itself is the whole point of this route: it takes no body and no
+  // key id, revokes every live key and every live device token on the account
+  // the gate resolved, and answers 204. It is `auth: "account"` for the same
+  // reason its neighbours are: the credential that asks is a signed-in device's
+  // token or the session cookie, so the caller revokes its own account and
+  // cannot name another's. The owner's resolved decision is in the issue
+  // (`decision-resolved: build it`): the action exists on its own, behind a
+  // confirm step in the web app, separate from closing the account.
+  //
+  // Why it revokes the caller's own token too: "every device" means every
+  // device, and the device that asked is a device. That request is already
+  // authenticated, so the answer still gets out; the next request from it is the
+  // 401 a device with no live token should get, which is why the CLI half of
+  // this is a command that then signs the local machine out too.
+  {
+    method: "DELETE",
+    path: "/v1/keys",
+    auth: "account",
+    handler: revokeAllKeysRoute,
   },
   // Renewing is behind the same gate as minting, and that is the whole point
   // (drive issue #106): the credential that asks is the signed-in device's

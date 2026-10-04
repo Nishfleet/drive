@@ -41,6 +41,7 @@ Usage:
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)
   drive logout [flags]     stop the mount, revoke this device's key on the server, and delete the local key and config
+  drive logout --all      sign out every device signed in to this account (--yes to confirm)
   drive export [flags]     write this account's data to a file (or stdout)
   drive import <remote>    copy files from an rclone remote you already have
   drive update [flags]     replace this binary with the latest release
@@ -116,6 +117,9 @@ Logout flags:
   --force       discard files waiting to upload instead of refusing to logout
   --forget-pending  clear the failed-revoke record, after you have revoked the
                key on the devices page in the web app
+  --all         sign out every device signed in to this account, not just this
+               one. It prints what it would do and changes nothing without --yes
+  --yes         answer yes to --all's confirm step
 `
 
 // version is the fallback when the toolchain records no module version
