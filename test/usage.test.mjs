@@ -30,6 +30,7 @@ import { CAP_ENDPOINT } from "../src/cap.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
 import { PRICE } from "../src/pricing.js";
+import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
@@ -543,6 +544,9 @@ const PAGE_IDS = Object.freeze([
   "cancel-email",
   "close-submit",
   "cancel-submit",
+  "nav-signin",
+  "nav-signout",
+  "nav-signout-all",
 ]);
 
 /**
@@ -914,8 +918,11 @@ test("the pages' mastheads read as one navigation", () => {
   // nav (usage, get-started and the Web Files page since drive#425) list Your
   // files, Pricing, Get started, Usage, Sign in in that order (the Web Files
   // link leads since #48 merged, and Sign in closes it since drive#10), and
-  // each marks itself. The pricing page's masthead is its wordmark alone — its
-  // links are its footer nav, which is issue #11's and is checked below.
+  // each marks itself. Sign out is a button, not a link, so a signed-out
+  // browser and a browser with no script still see the five links; JS swaps
+  // Sign in for Sign out when the account is there (drive#423). The pricing
+  // page's masthead is its wordmark alone — its links are its footer nav,
+  // which is issue #11's and is checked below.
   const nav = [
     '<a href="/files"',
     '<a href="/"',
@@ -952,6 +959,53 @@ test("the pages' mastheads read as one navigation", () => {
     const here = CURRENT.get(name);
     assert.ok(here, `${name} has a current-page link of its own to check`);
     assert.match(header, here, `${name} marks itself in the header with aria-current`);
+    assert.match(
+      header,
+      /id="nav-signin">Sign in<\/a>/,
+      `${name} keeps Sign in as the signed-out default`,
+    );
+    assert.match(
+      header,
+      new RegExp(`id="nav-signout" hidden>${SIGNIN_COPY.signOut}</button>`),
+      `${name} carries Sign out, hidden until the session is there`,
+    );
+    assert.match(
+      header,
+      new RegExp(`id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`),
+      `${name} carries Sign out everywhere, hidden until the session is there`,
+    );
+    assert.match(
+      header,
+      /<noscript>/,
+      `${name} keeps a Sign out form for a browser with no script`,
+    );
+    assert.match(header, /name="step" value="signout"/, `${name}'s form posts the sign-out step`);
+    assert.match(
+      header,
+      /name="step" value="signout-all"/,
+      `${name}'s form posts sign-out everywhere`,
+    );
+  }
+  // The posts live in each page's own script. get-started.html is a Vite
+  // entry, so its script is src/get-started.js rather than an inline block.
+  const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  for (const [name, source] of [
+    ["usage.html", page],
+    ["files.html", filesPage],
+    ["get-started.js", getStartedJs],
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}"`),
+      `${name} posts sign-out to the sign-in route`,
+    );
+    assert.match(source, /postSignout\("signout"\)/, `${name} posts the sign-out step`);
+    assert.match(source, /postSignout\("signout-all"\)/, `${name} posts sign-out everywhere`);
+    assert.match(
+      source,
+      /\.disabled = true/,
+      `${name} sleeps the button while the post is in flight`,
+    );
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.
