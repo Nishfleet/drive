@@ -54,6 +54,7 @@ type SearchResults struct {
 // the CLI at a different deployment needs no code change.
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	common := addCommonFlags(fs)
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL")
 	limit := fs.Int("limit", 50, "how many results to print (1-200)")
 	if err := fs.Parse(args); err != nil {
@@ -64,7 +65,11 @@ func runSearch(args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return errFlagParse
 	}
-	results, err := fetchSearch(*api, query, *limit)
+	base, err := resolveAPIBase(common.home, *api)
+	if err != nil {
+		return err
+	}
+	results, err := fetchSearch(base, query, *limit)
 	if err != nil {
 		return err
 	}
@@ -78,7 +83,7 @@ func runSearch(args []string) error {
 // 5xx is passed through so an outage is not mistaken for "no matches".
 func fetchSearch(apiBase, query string, limit int) (*SearchResults, error) {
 	if strings.TrimSpace(apiBase) == "" {
-		return nil, fmt.Errorf("no api Worker configured; set --api or DRIVE_API_URL")
+		return nil, fail("no-api")
 	}
 	base, err := parseAPIBase(apiBase)
 	if err != nil {

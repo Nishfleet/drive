@@ -30,9 +30,11 @@
 // caller's own token from its own bearer header, so there is nothing for a
 // stranger to spend.
 
+import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
 import { isSameOriginRequest } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
+import { signedInAccount } from "../../../src/status.js";
 import { bearerToken, errorResponse, json } from "./http.js";
 
 /** The stand-in key store (src/keystore.js `createMemoryStore`), the same one
@@ -46,7 +48,7 @@ import { bearerToken, errorResponse, json } from "./http.js";
  * route in this module. Declared structurally rather than as the dispatcher's
  * full `Ctx` so a handler names exactly what it uses, the same shape the key
  * routes use.
- * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string}|null}} DeviceCtx
+ * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null}} DeviceCtx
  */
 
 // The two edge-limit bindings the device flow answers behind (drive issue #147,
@@ -110,6 +112,7 @@ const APPROVE_TITLE = "Approve drive on this device";
 const APPROVE_INTRO =
   "Type the code shown in the drive terminal, then approve. You are signed in, " +
   "so approving signs this device in to your drive.";
+const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
 
 // The characters an HTML text or attribute value must not contain, and what
 // they become. One pass over the string, so nothing is escaped twice and no
@@ -147,6 +150,7 @@ function escapeHtml(text) {
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
     `<meta name="robots" content="noindex">\n` +
+    `<link rel="stylesheet" href="/site.css">\n` +
     `<title>${APPROVE_TITLE}</title>\n</head>\n<body>\n` +
     `<main>\n<h1>${APPROVE_TITLE}</h1>\n` +
     `<p>${APPROVE_INTRO}</p>\n` +
@@ -156,6 +160,24 @@ function escapeHtml(text) {
     `<input id="user_code" name="user_code" value="${escapeHtml(userCode)}" ` +
     `autocomplete="one-time-code" autocapitalize="characters" required>\n` +
     `<button type="submit">Approve</button>\n</form>\n</main>\n</body>\n</html>\n`;
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/**
+ * The page after a successful Approve: one sentence, no form, so the person
+ * can tell it worked and close the tab.
+ */
+function connectedPage() {
+  const body =
+    `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
+    `<meta name="robots" content="noindex">\n` +
+    `<link rel="stylesheet" href="/site.css">\n` +
+    `<title>${escapeHtml(CONNECTED_COPY)}</title>\n</head>\n<body>\n` +
+    `<main>\n<h1>${escapeHtml(CONNECTED_COPY)}</h1>\n</main>\n</body>\n</html>\n`;
   return new Response(body, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
@@ -302,20 +324,49 @@ export async function pollDeviceTokenRoute(request, ctx) {
     return json({
       status: "approved",
       deviceToken: result.deviceToken,
-      account: { id: result.account.id, name: result.account.name },
+      account: {
+        id: result.account.id,
+        name: result.account.name,
+        email: result.account.email ?? "",
+      },
     });
   }
   return errorResponse(400, "That device code has expired. Run `drive init` again for a new one.");
 }
 
 /**
- * GET /v1/device/approve — the page the CLI sends the person to. An account
- * route (routes.js), so only a signed-in person reaches it.
- * @param {Request} _request
+ * GET /v1/device/approve — the page the CLI sends the person to. Public so a
+ * signed-out person gets a sign-in redirect instead of raw JSON; the POST
+ * stays an account route.
+ * @param {Request} request
  * @param {DeviceCtx} ctx
  */
-export function approvePageRoute(_request, ctx) {
-  return approvePage({ userCode: ctx.url.searchParams.get("user_code") ?? "" });
+export async function approvePageRoute(request, ctx) {
+  const userCode = ctx.url.searchParams.get("user_code") ?? "";
+  let account = ctx.account ?? null;
+  if (account == null && ctx.accounts) {
+    account = await signedInAccount(request, ctx.accounts);
+  }
+  if (account == null) {
+    const nextUrl = new URL("/v1/device/approve", "https://drive.invalid");
+    if (userCode) {
+      nextUrl.searchParams.set("user_code", userCode);
+    }
+    const next = safeAfterSigninPath(nextUrl.pathname + nextUrl.search);
+    const signin = new URL("/signin", ctx.url);
+    if (next) {
+      signin.searchParams.set("next", next);
+    }
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: signin.toString(),
+        "set-cookie": `${AFTER_SIGNIN_COOKIE}=${encodeURIComponent(next)}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+        "cache-control": "no-store",
+      },
+    });
+  }
+  return approvePage({ userCode });
 }
 
 /**
@@ -363,10 +414,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
           : "That code was not recognised. Check the terminal and try again.";
     return approvePageError(userCode, notice);
   }
-  return approvePage({
-    userCode,
-    notice: `Approved. Return to the terminal; ${result.name} is signed in.`,
-  });
+  return connectedPage();
 }
 
 /**

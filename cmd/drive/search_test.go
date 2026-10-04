@@ -178,3 +178,23 @@ func TestSearchResultsDecodeIgnoresUnknownFields(t *testing.T) {
 		t.Fatalf("an answer with a field this binary does not know must still decode: %v", err)
 	}
 }
+
+func TestRunSearchReadsApiBaseDriveLoginSaved(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		writeHits(t, w, searchBody)
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: server.URL, DeviceToken: "dtok"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	if err := runSearch([]string{"--home", home, "invoice"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != SEARCH_PATH {
+		t.Errorf("path = %q, want the search route on the saved apiBase", gotPath)
+	}
+}

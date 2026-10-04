@@ -181,6 +181,7 @@ async function signIn(store, name) {
   assert.equal(token.status, "approved");
   assert.equal(token.account.id, account.id);
   assert.equal(token.account.name, account.name);
+  assert.equal(token.account.email, account.email);
   return { account: token.account, deviceToken: token.deviceToken };
 }
 
@@ -808,8 +809,32 @@ test("an approval from another site is 403 and a same-origin one is approved", a
 
   const sameSite = await post("https://api.test");
   assert.equal(sameSite.status, 200);
-  assert.match(await sameSite.text(), /Approved\. Return to the terminal/);
+  const connected = await sameSite.text();
+  assert.match(connected, /This Mac is connected\. You can close this tab\./);
+  assert.doesNotMatch(connected, /<form/);
   assert.equal((await store.pollDeviceCode(code.deviceCode)).status, "approved");
+});
+
+test("a signed-out approve link goes to sign-in, never raw JSON (drive#459)", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const accounts = makeAccounts();
+  const code = await store.requestDeviceCode({ name: "laptop" });
+  const page = await dispatch(
+    new Request(
+      `https://api.test/v1/device/approve?user_code=${encodeURIComponent(code.userCode)}`,
+    ),
+    baseCtx(store, null, { accounts }),
+  );
+  assert.equal(page.status, 302, "signed out must redirect, not 401 JSON");
+  const location = page.headers.get("location");
+  assert.match(String(location), /\/signin\?/);
+  const next = new URL(String(location), "https://api.test").searchParams.get("next");
+  assert.equal(next, `/v1/device/approve?user_code=${code.userCode}`);
+  const cookie = page.headers.get("set-cookie") ?? "";
+  assert.match(cookie, /drive_after_signin=/);
+  const body = await page.text();
+  assert.doesNotMatch(body, /"error"/);
+  assert.deepEqual(await store.pollDeviceCode(code.deviceCode), { status: "pending" });
 });
 
 // ---- the one-hour agent credential (drive issue #106) ----

@@ -59,7 +59,11 @@ func runInit(args []string) error {
 	if fs.NArg() > 0 {
 		return usageFailure(usage, fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
-	return initDevice(fs, m, *api)
+	base, err := resolveAPIBase(m.common.home, *api)
+	if err != nil {
+		return err
+	}
+	return initDevice(fs, m, base)
 }
 
 // initDevice is the body `drive init` runs: check rclone, write the login item
@@ -94,15 +98,19 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 	if env.Minter != nil {
 		return env, nil
 	}
-	if strings.TrimSpace(apiBase) == "" {
-		return env, fail("no-api")
-	}
 	creds, err := LoadCredentials(env.Home)
 	if err != nil {
 		return env, err
 	}
+	base, err := resolveAPIBase(env.Home, apiBase)
+	if err != nil {
+		return env, err
+	}
+	if strings.TrimSpace(base) == "" {
+		return env, fail("no-api")
+	}
 	if creds.DeviceToken == "" {
-		client, err := NewAPIClient(apiBase, "")
+		client, err := NewAPIClient(base, "")
 		if err != nil {
 			return env, err
 		}
@@ -110,16 +118,24 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		creds = Credentials{APIBase: client.Base, DeviceToken: token, AccountID: account.ID, AccountName: account.Name}
+		creds = Credentials{
+			APIBase:      client.Base,
+			DeviceToken:  token,
+			AccountID:    account.ID,
+			AccountName:  account.Name,
+			AccountEmail: account.Email,
+		}
 		if err := SaveCredentials(env.Home, creds); err != nil {
 			return env, err
 		}
-		// The account name is the one fact that says whose drive this is now.
-		// The api base is not printed: the person either typed it or it came
-		// from the environment, and an address is not news.
-		fmt.Printf("Signed in as %s\n", creds.AccountName)
+		who := accountLabel(account)
+		if who == "" {
+			fmt.Println("Signed in")
+		} else {
+			fmt.Printf("Signed in as %s\n", who)
+		}
 	}
-	client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
+	client, err := NewAPIClient(base, creds.DeviceToken)
 	if err != nil {
 		return env, err
 	}
@@ -161,7 +177,7 @@ func initAgents(env Env, apiBase ...string) error {
 		if failureKind(err) != "no-api" {
 			return err
 		}
-		fmt.Println("note: no drive api configured, so tools connect without their own keys (run `drive init --api <url>` for keys)")
+		fmt.Println("note: no drive api configured, so tools connect without their own keys (run `drive login` for keys)")
 	}
 	env = signedIn
 	// Nothing on the first run may sit silent for more than two seconds: say
@@ -204,7 +220,7 @@ func initAgents(env Env, apiBase ...string) error {
 			return err
 		}
 		if key == nil {
-			fmt.Printf("  %-8s connected (no agent key; sign in with `drive init` for one)\n", t.Name)
+			fmt.Printf("  %-8s connected (no agent key; run `drive login` for one)\n", t.Name)
 		} else {
 			// The key id is not on screen: `drive agents revoke <tool>` names
 			// the tool, so the id is debug detail. The capabilities are the
@@ -328,7 +344,11 @@ func runAgents(args []string) error {
 			positional = append(positional, a)
 		}
 	}
-	return agents(Env{Home: home}.withDefaults(), positional, api)
+	base, err := resolveAPIBase(home, api)
+	if err != nil {
+		return err
+	}
+	return agents(Env{Home: home}.withDefaults(), positional, base)
 }
 
 // usageFailure prints the command's usage and the reason to stderr, and
