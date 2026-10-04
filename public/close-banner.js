@@ -88,6 +88,17 @@
       .then((payload) => {
         if (!payload || typeof payload !== "object") return;
         if (payload.state !== "closed") return;
+        // `state === "closed"` is true both while the grace window runs and
+        // after the nightly cron deleted the files, so the account state alone
+        // is not the pending case. The sentence is about files that are still
+        // there, so the banner is for a close that has not been purged yet.
+        // `purgedAt` is how the endpoint and the usage page separate the two
+        // (public/usage.html: `const pending = closed && (status.purgedAt ===
+        // null || status.purgedAt === undefined)`), and it is null while the
+        // files stay. A purged account keeps its closed state but carries a
+        // stamp, and its files are already gone, so the banner stays quiet
+        // there (drive#424).
+        if (payload.purgedAt !== null && payload.purgedAt !== undefined) return;
         if (!payload.copy || typeof payload.copy !== "object") return;
         reveal(payload);
       })

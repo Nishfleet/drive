@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { createContext, runInContext } from "node:vm";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_COPY,
@@ -33,6 +34,7 @@ import {
   CLOSE_GRACE_DAYS,
   closeAccount,
   handleCloseStatusRequest,
+  purgeOnDate,
 } from "../src/account-close.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
@@ -135,13 +137,14 @@ test("the GET endpoint answers a pending close with the date and the banner's wo
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.state, "closed");
-  // The date is a real YYYY-MM-DD, and it is the close plus the grace period,
-  // not a number of days the page adds itself.
-  assert.match(payload.purgeOn, /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal(
-    payload.purgeOn,
-    new Date((closedAt + CLOSE_GRACE_DAYS * 86_400) * 1000).toISOString().slice(0, 10),
-  );
+  // The grace window and the date both come from the endpoint: graceDays is the
+  // module's constant, and the date is the close the account made plus that
+  // many days, read the way the account's own pages read a day (drive#422): a
+  // day number and the month's short name, not an ISO stamp the page worked
+  // out itself. It is the endpoint's value, so the banner shows the day the
+  // nightly cron actually purges on.
+  assert.equal(payload.graceDays, CLOSE_GRACE_DAYS);
+  assert.equal(payload.purgeOn, purgeOnDate(closedAt));
   // The banner's words travel in the same payload as the date, so a page cannot
   // show the endpoint's date beside its own sentence.
   assert.equal(payload.copy.pendingWhat, CLOSE_COPY.pendingWhat);
@@ -310,4 +313,164 @@ test("the shared script is one served file, and the public tree carries it", () 
     /This account closes on/,
     "the script must not carry the banner sentence; the payload does",
   );
+});
+
+// The shipped script run for real. The assertions above read the source; these
+// load the actual public/close-banner.js into a minimal DOM the way a browser
+// page sets it up, so the banner's reveal-and-fill is executed rather than
+// inferred. What is stubbed is only the network read: `fetch` returns the
+// payload the Worker's route would have answered, built from a real close
+// (and a real purge) against the real migrations over node:sqlite.
+
+/** A settled flush of the script's promise chain (`fetch().then().then()`). */
+const flush = () => new Promise((resolve) => {
+  setImmediate(resolve);
+});
+
+/**
+ * The real `GET /api/account/close` payload for an account that has really
+ * closed, optionally marked purged the way the nightly cron marks it, so the
+ * banner is tested against the state the Worker actually reaches rather than a
+ * hand-written payload that could drift from `closePayload`.
+ * @param {{purge: boolean}} options
+ */
+async function pendingOrPurgedPayload({ purge }) {
+  const { db } = makeMeteredDB();
+  const now = Date.parse("2026-10-04T12:00:00.000Z");
+  const devices = createD1DeviceStore(db, { now: () => now });
+  const account = { id: "acct_banner_run", email: "nish@example.com", name: "Nish" };
+  await closeAccount({
+    devices,
+    email: {
+      /** @returns {Promise<{messageId: string}>} */
+      send() {
+        return Promise.resolve({ messageId: "<banner@drive.example>" });
+      },
+    },
+    mailFrom: "notifications@drive.example",
+    account,
+    typedEmail: "nish@example.com",
+    now,
+  });
+  if (purge) {
+    await devices.markPurged(account.id, Math.floor(now / 1000));
+  }
+  const response = await handleCloseStatusRequest(
+    new Request(`https://drive.test${CLOSE_ENDPOINT}`),
+    account,
+    {
+      devices,
+      store: /** @type {never} */ (undefined),
+      email: undefined,
+      mailFrom: "",
+      now: () => now,
+    },
+  );
+  return /** @type {{state: string, purgeOn: string|null, purgedAt: number|null, graceDays: number, copy: {pendingWhat: string, pendingCancel: string}}} */ (await response.json());
+}
+
+/**
+ * Load the shipped public/close-banner.js into a minimal DOM the way a signed-in
+ * page sets it up. The script looks up three elements by id, fills the two
+ * slots and un-hides the banner only for a pending close. `fetch` is stubbed so
+ * the test decides the exact payload the endpoint would have answered. The
+ * elements are handed back so a test can assert on what the script did to them.
+ * @param {(url: string, init?: {headers?: Record<string, string>}) => Promise<{ok: boolean, json: () => Promise<unknown>}>} fetch
+ * @returns {{banner: {hidden: boolean}, what: {textContent: string}, cancel: {textContent: string, href: string}}}
+ */
+function runBannerScript(fetch) {
+  const banner = { hidden: true };
+  const what = { textContent: "" };
+  const cancel = {
+    textContent: "",
+    href: "",
+    /**
+     * @param {string} name
+     * @param {string} value
+     */
+    setAttribute(name, value) {
+      if (name === "href") this.href = value;
+    },
+  };
+  const byId = new Map([
+    ["close-banner", banner],
+    ["close-banner-what", what],
+    ["close-banner-cancel", cancel],
+  ]);
+  const window = {
+    /** @returns {number} */
+    setInterval() {
+      return 0;
+    },
+  };
+  const document = {
+    /** @param {string} id @returns {unknown} */
+    getElementById(id) {
+      return byId.get(id) ?? null;
+    },
+  };
+  runInContext(bannerScript, createContext({ document, window, fetch }));
+  return { banner, what, cancel };
+}
+
+test("the shipped banner reveals a pending close with the endpoint's date and cancel link", async () => {
+  const payload = await pendingOrPurgedPayload({ purge: false });
+  assert.equal(payload.state, "closed");
+  assert.equal(payload.purgedAt, null, "a pending close has not been purged");
+  const { banner, what, cancel } = runBannerScript(() =>
+    Promise.resolve({ ok: true, json: () => Promise.resolve(payload) }),
+  );
+  await flush();
+  await flush();
+  assert.equal(banner.hidden, false, "a pending close reveals the banner");
+  assert.equal(
+    what.textContent,
+    payload.copy.pendingWhat.replace("{purgeOn}", String(payload.purgeOn)),
+    "the sentence is the module's, with the endpoint's purge date filled in",
+  );
+  assert.equal(cancel.textContent, payload.copy.pendingCancel, "the link's words are the module's");
+  assert.equal(cancel.href, "/usage", "the cancel link points at the usage page's cancel form");
+});
+
+test("the shipped banner is quiet after the purge, when the files are already gone", async () => {
+  const payload = await pendingOrPurgedPayload({ purge: true });
+  // A purged account keeps its closed state but carries a purge stamp, and its
+  // files are already deleted. The banner's sentence is about files that stay
+  // visible, so the banner is for the pending case only.
+  assert.equal(payload.state, "closed", "a purged account is still closed");
+  assert.notEqual(payload.purgedAt, null, "but carries the purge stamp");
+  const { banner, what } = runBannerScript(() =>
+    Promise.resolve({ ok: true, json: () => Promise.resolve(payload) }),
+  );
+  await flush();
+  await flush();
+  assert.equal(banner.hidden, true, "a purged account sees no files-stay-visible banner");
+  assert.equal(what.textContent, "", "and the sentence is never filled in");
+});
+
+test("the shipped banner is quiet for an account that is not closing", async () => {
+  const { banner, what } = runBannerScript(() =>
+    Promise.resolve({
+      ok: true,
+      json: () =>
+        Promise.resolve({ state: "active", purgeOn: null, purgedAt: null, copy: CLOSE_COPY }),
+    }),
+  );
+  await flush();
+  await flush();
+  assert.equal(banner.hidden, true, "an active account shows nothing");
+  assert.equal(what.textContent, "");
+});
+
+test("a failed read of the close endpoint leaves the banner hidden", async () => {
+  const unauthorized = runBannerScript(() =>
+    Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "unauthorized" }) }),
+  );
+  const unreachable = runBannerScript(() => Promise.reject(new Error("offline")));
+  await flush();
+  await flush();
+  await flush();
+  await flush();
+  assert.equal(unauthorized.banner.hidden, true, "a 401 leaves the page as it was");
+  assert.equal(unreachable.banner.hidden, true, "a network failure leaves the page as it was");
 });
