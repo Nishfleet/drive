@@ -33,6 +33,10 @@ const words = page
   .replaceAll("&times;", "×")
   .replaceAll("&rarr;", "→")
   .replaceAll("&amp;", "&");
+// A line a reader holds as one offer: short enough to take in at a glance, not
+// a sentence with a clause bolted on. drive#429 pinned the home page's offer
+// block to two of these.
+const SHORT_OFFER_LINE_WORDS = 12;
 
 // The bill a person is quoted for a size in TB, kept all month. This is the
 // paved arithmetic — src/billing.js's monthBillCents(), the one function the
@@ -82,11 +86,6 @@ test("the headline is the rate, as the spec says", () => {
     assert.equal(text.includes("$20"), false, `${name} must not carry the dropped "$20" headline`);
   }
 });
-
-// A line a reader holds as one offer: short enough to read at a glance, not a
-// sentence with a clause bolted on. drive#429 pinned the home page's offer
-// block to two of these.
-const SHORT_OFFER_LINE_WORDS = 12;
 
 test("the rate and the membership line sit under the number", () => {
   const headline = words.indexOf("per GB, billed by the minute");
