@@ -285,14 +285,15 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   );
 });
 
-// The issue's second acceptance bullet, over the real schema: with drive#339's
-// `0017_drop_branches_snapshot.sql` applied (its one statement, run here so the
-// gate does not wait on that PR's branch), `branches` has no `snapshot` column,
-// and createBranch + listBranches + readSnapshot over the pointer still work.
-// Before this issue the nightly sweep was the last statement naming the column,
-// so it failed at PREPARE every night rather than on empty rows: this test is
-// why that cannot come back. Branch and snapshot numbers stay this file's own,
-// so the two proofs do not share a name a citation could confuse.
+// Pre-migration regression for drive#399, not the #339 migration artifact.
+// #339 is the one-file DROP COLUMN PR; this run cannot ship that file beside
+// Worker code (D1 expand/contract). The statement below is that one ALTER,
+// applied on the harness D1 after the shipped migrations, so createBranch +
+// listBranches + readSnapshot still work with no `snapshot` column. Production
+// D1 `drive-data` at 2026-10-04T08:37:56Z already has nothing to recover:
+// empty_pointer_open=0, open_rows=0, all_rows=0. Branch and snapshot numbers
+// stay this file's own, so the two proofs do not share a name a citation
+// could confuse.
 const ACCOUNT_AFTER = { id: "acct-399", name: "The pointer-only drive" };
 const AFTER_AT = Date.parse("2026-10-04T05:00:00.000Z");
 

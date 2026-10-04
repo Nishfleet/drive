@@ -809,6 +809,11 @@ export default {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       return;
     }
+    // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
+    // column is unread (#329/#338), and production D1 `drive-data` at
+    // 2026-10-04T08:37:56Z had `empty_pointer_open=0`, `open_rows=0`,
+    // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
+    // whose JSON the sweep could still move. Dropping the column is #339.
 
     context.waitUntil(
       (async () => {
