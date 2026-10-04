@@ -88,7 +88,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -349,10 +349,20 @@ export function createMemoryStore(options = {}) {
      * Idempotent and history-preserving, like every other revoke here: a row
      * that is already revoked keeps the first timestamp, and only rows this
      * call actually killed are counted, so a second call answers `0`.
+     *
+     * When a D1 device store is bound (the live Worker), that store is the
+     * source of truth: `authenticate` falls through to it after this isolate's
+     * map is already revoked, so a key this call turned off must die in both
+     * places. The count comes from the persisted statement; the map update
+     * keeps this isolate from handing a just-revoked key back on the next
+     * request.
      * @param {{id: string}} account
-     * @returns {{revoked: number}}
+     * @returns {Promise<{revoked: number}>|{revoked: number}}
      */
-    revokeAllKeys(account) {
+    async revokeAllKeys(account) {
+      const persisted = deviceStore?.revokeAllKeys
+        ? await deviceStore.revokeAllKeys(account)
+        : null;
       let revoked = 0;
       for (const device of devices.values()) {
         if (device.accountId === account.id && device.revokedAt === null) {
@@ -360,7 +370,7 @@ export function createMemoryStore(options = {}) {
           revoked++;
         }
       }
-      return { revoked };
+      return persisted ?? { revoked };
     },
 
     /**

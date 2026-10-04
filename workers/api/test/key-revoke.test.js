@@ -356,6 +356,59 @@ test("DELETE /v1/keys signs out every device on the account and no other", async
   );
 });
 
+test("DELETE /v1/keys revokes the bound device store and this isolate's map", async () => {
+  // Production wires createMemoryStore({ deviceStore: createD1DeviceStore(...) }).
+  // authenticate reads the in-memory map first and falls through to D1, so a
+  // bulk revoke that updated only one of the two would leave a copied key pair
+  // working. The stub is the bound store; the 401 is this isolate's map.
+  /** @type {string[]} */
+  const persisted = [];
+  const store = createMemoryStore({
+    now: () => 0,
+    deviceStore: {
+      put: async () => {},
+      revokeAllKeys: async (account) => {
+        persisted.push(account.id);
+        return { revoked: 1 };
+      },
+    },
+  });
+  const signed = await signIn(store, "Nish's MacBook");
+  const other = await signIn(store, "Nish's Raspberry Pi");
+  const minted = await mint(store, signed.deviceToken, "laptop");
+  assert.equal(minted.status, 201);
+  const key = await minted.json();
+  const otherMinted = await mint(store, other.deviceToken, "pi");
+  assert.equal(otherMinted.status, 201);
+  const otherKey = await otherMinted.json();
+
+  const signedOut = await dispatch(
+    new Request("https://api.test/v1/keys", {
+      method: "DELETE",
+      headers: bearer(signed.deviceToken),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(signedOut.status, 204);
+  assert.deepEqual(persisted, [signed.account.id], "the bound store must see this account and no other");
+
+  const dead = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${key.prefix}`, {
+      headers: basic(key.accessKeyId, key.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(dead.status, 401, "this isolate must refuse the key it just revoked");
+
+  const stillLive = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${otherKey.prefix}`, {
+      headers: basic(otherKey.accessKeyId, otherKey.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(stillLive.status, 200, "another account's key stays live on this isolate");
+});
+
 test("DELETE /v1/keys asks for a signed-in account and nothing else", async () => {
   const store = createMemoryStore({ now: () => 0 });
   const signed = await signIn(store, "Nish's MacBook");

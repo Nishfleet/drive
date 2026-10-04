@@ -24,6 +24,7 @@ import { test } from "node:test";
 
 import { createD1DeviceSigninStore } from "../../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { createTestAuth, DRIVE_MIGRATIONS, signIn } from "../harness.mjs";
 
 // The schema this proof needs, over the harness's default list: the device
@@ -185,4 +186,42 @@ test("a signed-out token row is the row the sweep drops, and nobody else's", asy
   const left = made.db.sqlite.prepare("SELECT token_hash FROM device_tokens").all();
   assert.equal(left.length, 1, "only the other account's token row is left");
   assert.notEqual(await signin.accountForDeviceToken(theirToken), null);
+});
+
+test("the composed store revokes D1 keys the way the live Worker wires them", async () => {
+  // storeFor() in workers/api/src/index.js is createMemoryStore({ deviceStore,
+  // signin }). The route calls store.revokeAllKeys, so a bulk revoke that
+  // updated only the stand-in map would leave the D1 row live for the next
+  // isolate. This is that wiring, over the real schema.
+  const made = createTestAuth({ migrations: MIGRATIONS });
+  const mine = await signIn(made, "mine@example.com");
+  const theirs = await signIn(made, "theirs@example.com");
+  const clock = () => NOW;
+  const store = createMemoryStore({
+    now: clock,
+    signin: createD1DeviceSigninStore(made.db, { now: clock }),
+    deviceStore: createD1DeviceStore(made.db, { now: clock }),
+  });
+  const mineKey = await store.mintKey(mine.account, { kind: "device", name: "laptop" });
+  const theirKey = await store.mintKey(theirs.account, { kind: "agent", name: "pi" });
+
+  const revoked = await store.revokeAllKeys(mine.account);
+  assert.equal(revoked.revoked, 1, "the persisted statement must count this account's row");
+
+  const mineRow = made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(mineKey.keyId);
+  assert.ok(mineRow !== undefined, "this account's key row is there");
+  assert.notEqual(mineRow.revoked_at, null, "the composed store must revoke the D1 row");
+  const theirRow = made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(theirKey.keyId);
+  assert.ok(theirRow !== undefined, "the other account's key row is there");
+  assert.equal(theirRow.revoked_at, null, "another account's D1 row stays live");
+  assert.equal(
+    await store.authenticate(mineKey.accessKeyId, mineKey.secret),
+    null,
+    "this isolate must refuse the key it just revoked",
+  );
+  assert.notEqual(
+    await store.authenticate(theirKey.accessKeyId, theirKey.secret),
+    null,
+    "another account's key still authenticates",
+  );
 });
