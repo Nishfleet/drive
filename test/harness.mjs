@@ -29,6 +29,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0009_upload_request_caps.sql",
   "drive/0010_accounts_devices.sql",
   "drive/0011_rate_limit.sql",
+  // An agent key's hour: the `expires_at`/`ttl_seconds` columns
+  // `D1DeviceStore.put` writes on every mint (drive issue #106). Expand only,
+  // two nullable columns, so a mint with a device store bound is not refused
+  // on a schema that predates them.
+  "drive/0012_agent_key_ttl.sql",
   "drive/0012_branch_snapshot_kv.sql",
   // The live upload-queue report a device posts over its device token
   // (drive issue #318). A queue row is a customer row like any other, so a
