@@ -558,19 +558,18 @@ async function saveCap() {
   const error = payload && typeof payload.error === "string" ? payload.error : "";
   capSavingEl.hidden = true;
   capSlider.disabled = false;
-  capSaveEl.hidden = true;
-  capSaveEl.disabled = false;
-  showCapNote(CAP_NOTE);
   if (!response.ok) {
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
     sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
     return;
   }
-  showCapNote(CAP_NOTE);
-  // The confirmation is the endpoint's own line, so the page never writes a
-  // sentence about a number it cannot see. It is the one line that is not
-  // there before a cap has been saved, so it hides when there is none.
+  capSaveEl.hidden = true;
+  capSaveEl.disabled = false;
+  capSavedEl.hidden = true;
   capSavedEl.textContent = payload && typeof payload.capLine === "string" ? payload.capLine : "";
   capSavedEl.hidden = capSavedEl.textContent === "";
+  showCapNote(CAP_NOTE);
   readMonth();
 }
 

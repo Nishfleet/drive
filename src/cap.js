@@ -418,7 +418,7 @@ function capShapeError(given) {
   // cap 20" answered a person holding the slider with a command they have no
   // way to run (drive#421).
   return (
-    `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
+    `A spending cap is a dollar amount like 20 or 12.50, got ${given}. ` +
     "Type a number like that and save it again."
   );
 }

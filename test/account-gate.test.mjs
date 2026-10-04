@@ -24,6 +24,7 @@ import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { CAP_ENDPOINT } from "../src/cap.js";
+import { isSameOriginRequest } from "../src/email-send.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
@@ -1076,4 +1077,15 @@ test("a cap write that fails says what to do next, in plain words", async () => 
   // same request `drive cap` does, so it cannot end in "Run: drive cap 20".
   assert.match(badBody.error, /Type a number like that and save it again/);
   assert.doesNotMatch(badBody.error, /drive cap/);
+});
+
+test("isSameOriginRequest lets no-Origin requests through", () => {
+  const same = isSameOriginRequest(new Request("https://drive.test/api/cap", { headers: {} }));
+  assert.equal(same, true, "a caller with no Origin is not blocked");
+  const diff = isSameOriginRequest(
+    new Request("https://drive.test/api/cap", {
+      headers: { origin: "https://evil.example" },
+    }),
+  );
+  assert.equal(diff, false, "a different origin is refused");
 });
