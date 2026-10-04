@@ -27,6 +27,7 @@ import {
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
+import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 import { SITE } from "./seo.js";
 
 /**
@@ -290,6 +291,13 @@ export function markerValues(extra = {}) {
     AGENT_CANNOT_DELETE: agentCannotDeleteSentence(),
     KEY_TABLE: KEY_TABLE,
     BILL_TABLE: BILL_TABLE,
+    // The two claims every page states and no page may contradict
+    // (drive#418). The pages carry the markers, the static surfaces
+    // carry the same strings verbatim, and test/version-1-claims.test.mjs
+    // reads the built pages to prove no page promises a feature the
+    // Limits page rules out.
+    VERSION_HISTORY: VERSION_HISTORY,
+    NOT_OPEN: NOT_OPEN,
     ...extra,
   };
 }

@@ -34,7 +34,7 @@ for.
 
 ## Version history
 
-Version history is not in version 1. See [Limits](/limits) for what is not in
+{{VERSION_HISTORY}} {{NOT_OPEN}} See [Limits](/limits) for what is not in
 version 1.
 
 ## The bill worked out
