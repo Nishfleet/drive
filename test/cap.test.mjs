@@ -56,8 +56,8 @@ const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
-// past the $12 default cap (2000 GB meters $40, held to the $20 maximum) and
-// at it (1200 GB bills $12, exactly the cap, which is not past it).
+// past the $20 default cap (2600 GB meters $52, held to the $26 maximum) and
+// under it (1200 GB bills the $12 maximum).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
   gbMinutes: fullMonthGbMinutes(gb),
@@ -656,14 +656,14 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   });
   const keys = [deviceKey];
 
-  // 1 TB on the default $12 cap: the invoice is the $10 maximum, so the cap is
-  // not passed and the drive keeps writing (the orchestrator decision on #39).
+  // 1 TB on the default $20 cap: the invoice is the $10 maximum, so the cap is
+  // not passed and the drive keeps writing (drive#464).
   const active = await enforceCap({ usage: usage(1000), keys }, recordingProvider());
   assert.equal(active.state, "active");
   assert.equal(active.applied.length, 0);
   assert.equal(active.mount.restart, false);
 
-  // 2 TB: the maximum is $20, past the $12 cap, so the one write key is
+  // 2.6 TB: the maximum is $26, past the $20 cap, so the one write key is
   // replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
   const capped = await enforceCap({ usage: usage(2600), keys }, capProvider);
@@ -675,9 +675,10 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
-  // summary rule too: 2 TB at the default cap is read_only, 1 TB is active.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), 12).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1000), 12).state, "active");
+  // summary rule too: 2.6 TB at the default cap is read_only, 1 TB is active.
+  const cap = BILLING_CONFIG.defaultCapUsd;
+  assert.equal(capStatus(fullMonthGbMinutes(2600), cap).state, "read_only");
+  assert.equal(capStatus(fullMonthGbMinutes(1000), cap).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -697,7 +698,7 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   const report = await enforceCap(account, recordingProvider());
   assert.equal(report.state, "read_only", "60 GB is over the free $1 without a card");
   assert.equal(report.applied.length, 1);
-  // With the card on file the same drive is under the $12 cap and writing.
+  // With the card on file the same drive is under the $20 cap and writing.
   const withCard = await enforceCap(
     { ...account, usage: { ...account.usage, cardAdded: true } },
     recordingProvider(),

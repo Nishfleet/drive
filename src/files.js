@@ -21,6 +21,8 @@ import {
   accountFirstChargedAt,
   accountStoredBytes,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
+  PreChargeLimitError,
+  preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
@@ -1893,6 +1895,8 @@ async function uploadRequest(request, url, store, account, options = {}) {
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
   }
+  /** @type {number|null} bytes this upload may still add before the first charge */
+  let allowance = null;
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
     const header = Number(request.headers.get("content-length") ?? "");
@@ -1910,14 +1914,24 @@ async function uploadRequest(request, url, store, account, options = {}) {
     if (blocked !== null) {
       return json({ error: blocked }, 403);
     }
+    if (firstChargedAt === null) {
+      allowance = PRE_CHARGE_STORAGE_LIMIT_BYTES - stored;
+    }
   }
   const path = joinPath(checked.path, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
+  // A Worker request's body is a ReadableStream; a request with no body is
+  // an upload that never carried one, refused above. Before the first charge
+  // the bytes are counted as they pass, because the length header is the
+  // client's claim: a missing or short one cannot carry the drive past 1 TB.
+  const body = /** @type {ReadableStream} */ (request.body);
+  const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
-    // A Worker request's body is a ReadableStream; a request with no body is
-    // an upload that never carried one, refused above.
-    await store.write(path, /** @type {ReadableStream} */ (request.body), contentType);
+    await store.write(path, counted, contentType);
   } catch (error) {
+    if (error instanceof PreChargeLimitError) {
+      return json({ error: error.message }, 403);
+    }
     return json({ error: `The upload did not finish: ${String(error)}` }, 500);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);

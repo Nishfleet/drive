@@ -634,10 +634,19 @@ export async function handleSigninLinkVerify(request, env) {
     const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
     const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
     if (account !== null) {
-      await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
-        email: account.email,
-        accountId: account.id,
-      });
+      // The person is signed in by now: Better Auth set the cookie above. A
+      // hold that cannot move (a clash with a card already on the account)
+      // is logged loudly and the hold stays where it was, rather than
+      // turning a good sign-in into a 500.
+      try {
+        await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
+          email: account.email,
+          accountId: account.id,
+          offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
+        });
+      } catch (cause) {
+        console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
+      }
     }
   }
   // The one thing this route does is take the cookie Better Auth set onto a

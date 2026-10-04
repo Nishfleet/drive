@@ -196,8 +196,9 @@ export async function reserveFoundingSlot(db, accountId, options) {
 }
 
 /**
- * Confirms the reserved slot at the first successful charge. A row that
- * Confirming a released reservation writes founding=0: close-before-pay
+ * Confirms the reserved slot at the first successful charge, and stamps
+ * first_charged_at, which lifts the 1 TB pre-charge limit. Confirming a
+ * released reservation writes founding=0: close-before-pay
  * gave the slot back, so a later charge on the same row is not founding.
  * @param {D1Database} db
  * @param {string} accountId
@@ -226,6 +227,15 @@ export async function confirmFounding(db, accountId, options = {}) {
     "accounts.founding",
   );
   if (already !== null) {
+    // An account decided before drive#464 (founding set at an earlier charge)
+    // still needs the first-charge stamp, or the 1 TB pre-charge limit would
+    // hold a customer who has already paid.
+    await db
+      .prepare(
+        "UPDATE accounts SET first_charged_at = COALESCE(first_charged_at, ?1) WHERE id = ?2",
+      )
+      .bind(at, accountId)
+      .run();
     return publicFounding(already);
   }
   const reserved = foundingFlag(
@@ -300,6 +310,22 @@ export async function markAccountPaying(db, accountId, options) {
   }
   if (typeof options.offerOpen !== "boolean") {
     throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
+  }
+  // A card added before drive#464 never reserved a slot. Reserve it now, from
+  // the switch as it stands, so that account is judged like a new one rather
+  // than written founding=0 for good.
+  const row = await db
+    .prepare("SELECT founding, founding_reserved FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (
+    row !== null &&
+    row !== undefined &&
+    typeof row === "object" &&
+    /** @type {{founding?: unknown}} */ (row).founding === null &&
+    /** @type {{founding_reserved?: unknown}} */ (row).founding_reserved === null
+  ) {
+    await reserveFoundingSlot(db, accountId, { offerOpen: options.offerOpen, now: options.now });
   }
   return confirmFounding(db, accountId, { now: options.now });
 }

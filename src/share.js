@@ -1241,26 +1241,24 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
   }
-  if (options.db) {
-    const stored = await accountStoredBytes(options.db, record.accountId);
-    const header = Number(request.headers.get("content-length") ?? "");
-    // Same exact-limit edge as src/files.js: a missing length is 1 byte once
-    // stored has reached 1 TB, so the upload cannot sneak past with size 0.
-    const incomingBytes =
-      Number.isInteger(header) && header > 0
-        ? header
-        : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
-          ? 1
-          : 0;
-    const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
-    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
-    if (blocked !== null) {
-      return json({ error: blocked }, 403);
-    }
-  }
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {
     return json({ error: sized.error }, 413);
+  }
+  if (options.db) {
+    // The owner's 1 TB pre-charge limit, judged on the bytes actually read,
+    // not on the length header a stranger's client sent. An empty body counts
+    // as 1 byte once the drive is at 1 TB, the same edge src/files.js holds.
+    const stored = await accountStoredBytes(options.db, record.accountId);
+    const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
+    const blocked = preChargeUploadBlocked({
+      firstChargedAt,
+      storedBytes: stored,
+      incomingBytes: Math.max(sized.bytes, stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES ? 1 : 0),
+    });
+    if (blocked !== null) {
+      return json({ error: blocked }, 403);
+    }
   }
   const path = joinPath(record.folder, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";

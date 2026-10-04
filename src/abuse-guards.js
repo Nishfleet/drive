@@ -6,9 +6,11 @@
 // counter. The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
 // The real card capture still waits on the Dodo key (#417). The fingerprint
-// here is the test double: a posted `cardFingerprint`, or `test:<email>` when
-// the existing card checkbox is the only proof, the same shape PR 445 used
-// for the card step itself. No Dodo call, and no secret.
+// here is the test double: a posted `cardFingerprint` (kept as
+// `posted:<value>`), or `test:<email>` when the existing card checkbox is the
+// only proof, the same shape PR 445 used for the card step itself. No Dodo
+// call, and no secret. The two prefixes keep a posted string from ever
+// equalling another person's stand-in, so nobody can lock an address out.
 
 import { GB_PER_TB } from "./billing.js";
 import { reserveFoundingSlot } from "./founding.js";
@@ -19,6 +21,13 @@ export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;
 
 /** Accounts row id used at the card step, before Better Auth mints a user. */
 const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
+
+/**
+ * How long an unfollowed card-step hold keeps its card. After this the hold
+ * is deleted at the next card step, so a sign-up nobody finished cannot keep a
+ * card locked. A day is far past the sign-in link's own life.
+ */
+export const HOLD_TTL_SECONDS = 24 * 60 * 60;
 
 /**
  * The accounts.id the card step writes before the magic-link is followed.
@@ -50,7 +59,7 @@ export function signupCardFingerprint(fields) {
   }
   const posted = fields.cardFingerprint;
   if (typeof posted === "string" && posted.trim() !== "") {
-    return posted.trim();
+    return `posted:${posted.trim()}`;
   }
   // Same four yes-values hasSignupCard reads (src/signin.js). Copied here so
   // this module does not import the route, which imports this file.
@@ -120,14 +129,22 @@ export async function claimCardFingerprint(db, options) {
   if (typeof options.offerOpen !== "boolean") {
     throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
   }
-  if (await cardFingerprintTaken(db, fingerprint, accountId)) {
-    return { error: failureMessage("card-in-use") };
-  }
   const nowMs = options.now === undefined ? Date.now() : options.now;
   if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
     throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
   }
   const at = Math.floor(nowMs / 1000);
+  // A hold nobody followed within a day gives its card back.
+  await db
+    .prepare(
+      `DELETE FROM accounts
+        WHERE id LIKE ?1 AND created_at < ?2 AND first_charged_at IS NULL`,
+    )
+    .bind(`${PENDING_CARD_ACCOUNT_PREFIX}%`, at - HOLD_TTL_SECONDS)
+    .run();
+  if (await cardFingerprintTaken(db, fingerprint, accountId)) {
+    return { error: failureMessage("card-in-use") };
+  }
   const existing = await db
     .prepare("SELECT id FROM accounts WHERE id = ?1")
     .bind(accountId)
@@ -174,6 +191,12 @@ export async function claimCardFingerprint(db, options) {
   ) {
     return { error: failureMessage("card-in-use") };
   }
+  // A hold is an address nobody has proven yet, so it reserves no founding
+  // slot: attachPendingCardAccount reserves once the link is followed. Else a
+  // script could fill the 1,000 slots with addresses it never opens.
+  if (accountId.startsWith(PENDING_CARD_ACCOUNT_PREFIX)) {
+    return { fingerprint, reserved: false };
+  }
   const reserved = await reserveFoundingSlot(db, accountId, {
     offerOpen: options.offerOpen,
     now: nowMs,
@@ -183,11 +206,11 @@ export async function claimCardFingerprint(db, options) {
 
 /**
  * Moves the card-step hold onto the Better Auth user id after the magic-link
- * is followed. The fingerprint, founding reservation and first-charge stamp
- * stay on the same row. A missing hold is a no-op: returning sign-ins never
- * created one.
+ * is followed, then reserves the founding slot for the now-proven address.
+ * The fingerprint and first-charge stamp stay on the same row. A missing hold
+ * is a no-op: returning sign-ins never created one.
  * @param {D1Database} db
- * @param {{email: string, accountId: string}} options
+ * @param {{email: string, accountId: string, offerOpen: boolean, now?: number}} options
  * @returns {Promise<void>}
  */
 export async function attachPendingCardAccount(db, options) {
@@ -202,6 +225,11 @@ export async function attachPendingCardAccount(db, options) {
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`attachPendingCardAccount needs an account id, got ${String(accountId)}`);
   }
+  if (typeof options.offerOpen !== "boolean") {
+    throw new TypeError(`offerOpen must be a boolean, got ${String(options.offerOpen)}`);
+  }
+  const reserve = () =>
+    reserveFoundingSlot(db, accountId, { offerOpen: options.offerOpen, now: options.now });
   const hold = await db
     .prepare(
       `SELECT id FROM accounts
@@ -219,6 +247,7 @@ export async function attachPendingCardAccount(db, options) {
     throw new TypeError(`attachPendingCardAccount read a hold with no id for ${email}`);
   }
   if (holdId === accountId) {
+    await reserve();
     return;
   }
   const holdFields = await db
@@ -265,9 +294,41 @@ export async function attachPendingCardAccount(db, options) {
       )
       .run();
     await db.prepare("DELETE FROM accounts WHERE id = ?1").bind(holdId).run();
+    await reserve();
     return;
   }
   await db.prepare("UPDATE accounts SET id = ?1 WHERE id = ?2").bind(accountId, holdId).run();
+  await reserve();
+}
+
+/**
+ * A body stream that counts bytes as they pass and fails once they exceed
+ * `allowance`, so an upload with no length, or a short one, cannot carry a
+ * pre-charge account past 1 TB. The failure is a PreChargeLimitError the
+ * route turns into the message table's words.
+ * @param {number} allowance bytes this upload may still add
+ * @returns {TransformStream<Uint8Array, Uint8Array>}
+ */
+export function preChargeLimitStream(allowance) {
+  let seen = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      seen += chunk.byteLength;
+      if (seen > allowance) {
+        controller.error(new PreChargeLimitError());
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+/** The error preChargeLimitStream fails with. */
+export class PreChargeLimitError extends Error {
+  constructor() {
+    super(failureMessage("pre-charge-storage-limit"));
+    this.name = "PreChargeLimitError";
+  }
 }
 
 /**
