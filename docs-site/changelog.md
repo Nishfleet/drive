@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-04
 
+- The home page's price block says the offer in two short lines: "$10 a month
+  membership, and your storage use counts toward it", then "Join now and keep
+  $5 a month for good". The overage sentence ("Go past $10 and you pay by the
+  minute for the rest") stays in the What it costs column below it.
 - Membership copy: $10 a month, storage use counts toward it, founding members
   keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails

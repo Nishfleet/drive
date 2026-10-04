@@ -62,8 +62,17 @@ export const PRICE = Object.freeze({
   // The browser-tab and share-card title: the brand and the one-line price.
   titleLine: `${RATE_TEXT} per GB, never more than $${CAP_FLOOR_USD} a TB`,
   // drive#387: membership, never "minimum". Founding copy never names the cap.
+  // This is the whole membership sentence, past-$10 overage included, and it
+  // stays on a public surface: the home page's "What it costs" column, the
+  // other price pages, the meta description and llms.txt all carry it.
   membershipLine:
     "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
+  // drive#429: the home page's price block, set as two short lines. A new
+  // customer's walkthrough (2026-10-04, item 15) found the first paragraph
+  // under the number dense, so the block says the offer and nothing else:
+  // this line, then the founding line. The overage sentence above is not lost
+  // from the page — it stays in the "What it costs" column below the block.
+  membershipOfferLine: "$10 a month membership, and your storage use counts toward it.",
   foundingLine: "Join now and keep $5 a month for good.",
   needCard:
     "We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",

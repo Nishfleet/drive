@@ -83,6 +83,11 @@ test("the headline is the rate, as the spec says", () => {
   }
 });
 
+// A line a reader holds as one offer: short enough to read at a glance, not a
+// sentence with a clause bolted on. drive#429 pinned the home page's offer
+// block to two of these.
+const SHORT_OFFER_LINE_WORDS = 12;
+
 test("the rate and the membership line sit under the number", () => {
   const headline = words.indexOf("per GB, billed by the minute");
   assert.ok(headline >= 0, "headline missing");
@@ -91,6 +96,36 @@ test("the rate and the membership line sit under the number", () => {
   assert.ok(rate > headline, "the ceiling line must follow the number");
   assert.ok(membership > rate, "the membership line must follow the ceiling line");
   assert.ok(words.includes(PRICE.foundingLine), "the page must carry founding member pricing");
+});
+
+test("the home page's offer is two short lines from the one price source (drive#429)", () => {
+  // A new customer's walkthrough (2026-10-04, item 15) found the first
+  // paragraph under the number dense: the membership sentence and the overage
+  // sentence set as one long line. The block now says the offer and nothing
+  // else, in two short lines built from this config: the membership, then the
+  // founding offer. Both lines sit under the ceiling sentence, in that order,
+  // and the overage sentence is still on the page, in the "What it costs"
+  // column below, so shortening the headline cannot lose a price fact.
+  const lines = freeLines();
+  assert.equal(lines.length, 2, "the price block carries exactly the two offer lines");
+  assert.equal(lines[0], PRICE.membershipOfferLine, "the first offer line is the config's");
+  assert.equal(lines[1], PRICE.foundingLine, "the second offer line is the founding offer");
+  for (const [index, line] of lines.entries()) {
+    const count = line.split(/\s+/).length;
+    assert.ok(
+      count <= SHORT_OFFER_LINE_WORDS,
+      `offer line ${index + 1} is ${count} words, over the ${SHORT_OFFER_LINE_WORDS} of a short line: ${line}`,
+    );
+  }
+  assert.ok(
+    words.indexOf(lines[0]) > words.indexOf(PRICE.ceilingLine),
+    "the offer follows the ceiling",
+  );
+  assert.ok(words.indexOf(lines[1]) > words.indexOf(lines[0]), "the founding offer comes last");
+  assert.ok(
+    words.includes(PRICE.membershipLine),
+    "the full membership sentence, overage included, stays on the page",
+  );
 });
 
 test("the bill ceiling headline is the spec's sentence, from config", () => {
@@ -447,6 +482,13 @@ function paragraph(className) {
   const from = words.indexOf(`<p class="${className}">`);
   assert.ok(from >= 0, `the .${className} paragraph is missing from the page`);
   return words.slice(from, words.indexOf("</p>", from));
+}
+
+// Every `<p class="free">` on the home page, in the order they are set, as a
+// reader reads them. The price block is the only place that class is set.
+/** @returns {string[]} */
+function freeLines() {
+  return [...page.matchAll(/<p class="free">([\s\S]*?)<\/p>/g)].map((match) => match[1]);
 }
 
 const stripCaption = () => paragraph("strip-caption");
