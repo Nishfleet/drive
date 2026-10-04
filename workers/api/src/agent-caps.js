@@ -32,6 +32,7 @@ import {
   monthKey,
 } from "../../../src/agentcaps.js";
 import { BYTES_PER_GB, monthUsageThrough } from "../../../src/meter.js";
+import { bucketForKeyPrefix } from "./keyprovider.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:
@@ -158,17 +159,20 @@ export async function agentCapGate(db, device, at) {
 
 /**
  * The key row the cap's own swap rule takes read-only, in the shape
- * `capSwapPlan` reads: `keyId`, `kind`, `prefix`, `capabilities` and
- * `cappedFrom`. One key, from one row, in the same shape the account cap hands
- * `capSwapPlan` (workers/api/src/devices.js `listCapKeys`) rather than a second
- * reading of what a key row is.
- * @param {{id: string, kind?: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}} device
+ * `capSwapPlan` reads: `keyId`, `kind`, `prefix`, `bucket`, `capabilities`
+ * and `cappedFrom`. One key, from one row, in the same shape the account cap
+ * hands `capSwapPlan` (workers/api/src/devices.js `listCapKeys`) rather than a
+ * second reading of what a key row is.
+ * @param {{id: string, accountId: string, kind?: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}} device
  */
 export function capKeyRow(device) {
   return {
     keyId: device.id,
     kind: device.kind ?? AGENT_KEY_KIND,
     prefix: device.prefix,
+    // The bucket the swap mints its replacement in: the account's own for an
+    // account key, the team's for a key on a team prefix (drive#462).
+    bucket: bucketForKeyPrefix(device.accountId, device.prefix),
     capabilities: device.capabilities,
     ...(device.cappedFrom ? { cappedFrom: device.cappedFrom } : {}),
   };

@@ -88,17 +88,22 @@ test("the api Worker's config declares the two device limiters the routes read",
 test("the config binds the api Worker to the drive database, the device limits, and the founding offer switch", () => {
   // The declarations are the env this Worker has: the one database its stores
   // and Better Auth's user and session tables live on, the two limiters above,
-  // and the founding-member offer switch (drive#386) the accounts store reads
-  // when a row becomes paying. The accounts store the device approval reads is
-  // the user table already on this database (#181), not a second one, and no
-  // mailer is declared because no route this Worker mounts sends mail (the
-  // site Worker's /api/signin owns the sign-in link).
+  // the founding-member offer switch (drive#386) the accounts store reads
+  // when a row becomes paying, and the iDrive e2 reseller token (drive#462)
+  // the per-bucket key provider mints with. The accounts store the device
+  // approval reads is the user table already on this database (#181), not a
+  // second one, and no mailer is declared because no route this Worker mounts
+  // sends mail (the site Worker's /api/signin owns the sign-in link).
   assert.deepEqual(Object.keys(apiConfig.env), [
     "DRIVE_DB",
     "DEVICE_RATE_LIMITER",
     "DEVICE_GLOBAL_RATE_LIMITER",
     "FOUNDING_OFFER_OPEN",
+    "IDRIVE_E2_API_TOKEN",
   ]);
+  // The iDrive token is a secret binding, so its value is never in the config
+  // and `wrangler types` reads it off the deployed Worker (drive#462).
+  assert.equal(apiConfig.env.IDRIVE_E2_API_TOKEN.type, "secret");
   assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.type, "text");
   assert.equal(apiConfig.env.FOUNDING_OFFER_OPEN.value, "1");
   assert.equal(

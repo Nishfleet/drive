@@ -30,6 +30,7 @@ import { MINUTES_PER_MONTH } from "../src/billing.js";
 import { dollarsToCapCents, handleCapRequest } from "../src/cap.js";
 import { monthStart } from "../src/meter.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
@@ -39,7 +40,12 @@ const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
 
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
-const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? `drive-cap-${process.pid}`;
+// One account for the whole run, and the bucket that is its own
+// (`drv-<accountId>`, keyprovider.js `bucketForAccount`, drive#371): the mint
+// the proof performs is scoped to this bucket by the storage server, so what
+// this run proves is that a key minted for one bucket cannot reach another's.
+const ACCOUNT_ID = `acct_cap_${randomBytes(4).toString("hex")}`;
+const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(ACCOUNT_ID);
 const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 0);
 const CONFIGURED_ENDPOINT = process.env.DRIVE_STANDIN_ENDPOINT ?? null;
 const ROOT_ACCESS_KEY =
@@ -193,7 +199,7 @@ async function proof(t, rcloneBin, workDir) {
   };
   t.after(cleanup);
 
-  const accountId = `acct_cap_${randomBytes(4).toString("hex")}`;
+  const accountId = ACCOUNT_ID;
   const prefix = `u/${accountId}`;
   const standin = CONFIGURED_ENDPOINT
     ? { endpoint: CONFIGURED_ENDPOINT }
@@ -225,7 +231,6 @@ async function proof(t, rcloneBin, workDir) {
     keyProvider: createS3KeyProvider({
       endpoint,
       region: REGION,
-      bucket: BUCKET,
       masterAccessKeyId: ROOT_ACCESS_KEY,
       masterSecretAccessKey: ROOT_SECRET_KEY,
     }),
@@ -235,6 +240,7 @@ async function proof(t, rcloneBin, workDir) {
   const writeKey = await store.keyProviderFor(accountId).mint({
     prefix: `${prefix}/`,
     capabilities: ["list", "read", "write", "delete"],
+    bucket: BUCKET,
   });
   assert.ok(writeKey.sessionToken, "a scoped key signs with a session token");
   const writer = createS3Client({
