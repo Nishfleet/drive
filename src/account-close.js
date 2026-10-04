@@ -27,10 +27,12 @@ export const CLOSE_COPY = Object.freeze({
   what: "Closing revokes every key at once. Your files stay for 30 days, then they are deleted.",
   next: "Type your email to confirm. You can cancel any time in those 30 days.",
   confirmLabel: "Type your email to confirm",
+  cancelLabel: "Type your email to cancel",
   submit: "Close account",
   closedWhat:
     "This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.",
   closedNext: "You can cancel until then. Type your email to cancel.",
+  purgedNext: "Your files were deleted. This account stays closed.",
   cancelSubmit: "Cancel closing",
   reminder: "We email you now and again 5 days before the files go.",
 });
@@ -60,6 +62,13 @@ export function normalizeEmail(value) {
 }
 
 /**
+ * The day a closed account's files are deleted, in words: "3 Nov"
+ * (drive#422). The ISO stamp the Worker used to send was correct but
+ * unreadable to a person, and the walkthrough named it.
+ *
+ * `en-GB` with a numeric day and a short month is the same pair
+ * src/files.js formatWhen uses for the same-year dates in the file list, so
+ * every customer-facing day drive shows reads one way.
  * @param {number} closedAtSeconds
  * @returns {string}
  */
@@ -69,9 +78,10 @@ export function purgeOnDate(closedAtSeconds) {
       `purgeOnDate needs closed_at in unix seconds, got ${String(closedAtSeconds)}`,
     );
   }
-  return new Date((closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000)
-    .toISOString()
-    .slice(0, 10);
+  return new Date((closedAtSeconds + CLOSE_GRACE_DAYS * DAY_SECONDS) * 1000).toLocaleDateString(
+    "en-GB",
+    { day: "numeric", month: "short", timeZone: "UTC" },
+  );
 }
 
 /**
