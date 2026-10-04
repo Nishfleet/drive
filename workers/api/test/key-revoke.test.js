@@ -259,3 +259,163 @@ test("a wrong secret, a revoked key, or no credentials refuse through /api/keys/
   );
   assert.equal(wrongMethod.status, 405);
 });
+
+// ---- the single-key revoke with a D1 device store bound (drive#402) ----
+//
+// `DELETE /v1/keys/:keyId` used to delegate to `deviceStore.revokeKey` and
+// return, leaving the stand-in map's copy of the row live. `authenticate` reads
+// that map first, so a key this isolate had just revoked still opened the
+// storage API until the isolate died. The stub `deviceStore` below stands in
+// for the bound D1 store so the route's own composition is exercised: the call
+// goes to the store, and the map is marked on the answer the store gave.
+//
+// A test that only talks to the store is not enough (the issue's own words),
+// and the D1-backed proof of the same claim lives in
+// test/integration/key-revoke-d1.test.mjs.
+
+/**
+ * A stand-in for the bound device store that records what the route asked it
+ * to do. `put` mirrors devices.js so `mintKey` writes through it the way the
+ * live store does.
+ * @param {(accountId: string, keyId: string) => Promise<{revoked: true}|{error: string}>} [revoke]
+ */
+function stubDeviceStore(revoke) {
+  /** @type {Array<[string, string]>} */
+  const revokedInStore = [];
+  return {
+    revokedInStore,
+    async put() {},
+    async authenticate() {
+      return null;
+    },
+    async revokeKey(account, keyId) {
+      revokedInStore.push([account.id, keyId]);
+      if (revoke !== undefined) {
+        return revoke(account, keyId);
+      }
+      return { revoked: true };
+    },
+  };
+}
+
+test("DELETE /v1/keys/:keyId marks this isolate's copy, so the storage API refuses it (drive#402)", async () => {
+  const deviceStore = stubDeviceStore();
+  const store = createMemoryStore({ now: () => 0, deviceStore });
+  const owner = await signIn(store, "Nish's MacBook");
+  const other = await signIn(store, "Nish's other Mac");
+
+  // Both accounts mint through the same bound store, so both rows are the ones
+  // `authenticate` can read back out of the map the revoke must mark.
+  const mint = async (session, name) =>
+    (
+      await dispatch(
+        new Request("https://api.test/v1/keys", {
+          method: "POST",
+          headers: { ...bearer(session.deviceToken), "content-type": "application/json" },
+          body: JSON.stringify({ kind: "agent", name }),
+        }),
+        baseCtx(store, null),
+      )
+    ).json();
+
+  const revoked = await mint(owner, "claude");
+  const kept = await mint(other, "codex");
+
+  // Before the revoke both keys open the storage API.
+  const before = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${revoked.prefix}`, {
+      headers: basic(revoked.accessKeyId, revoked.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(before.status, 200);
+
+  // The route reaches the bound store with this account's id and the key's id,
+  // and gets its 204 for a store that accepted the revoke.
+  const del = await dispatch(
+    new Request(`https://api.test/v1/keys/${revoked.keyId}`, {
+      method: "DELETE",
+      headers: bearer(owner.deviceToken),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(del.status, 204);
+  assert.deepEqual(deviceStore.revokedInStore, [[owner.account.id, revoked.keyId]]);
+
+  // The headline claim: the same store, the same key, the next request. Before
+  // the fix this was 200 for as long as the isolate lived.
+  const after = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${revoked.prefix}`, {
+      headers: basic(revoked.accessKeyId, revoked.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(after.status, 401, "the storage API refuses the key this isolate just revoked");
+
+  // The other account's key is untouched in both places.
+  const otherStillWorks = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${kept.prefix}`, {
+      headers: basic(kept.accessKeyId, kept.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(otherStillWorks.status, 200, "another account's key still opens the storage API");
+  assert.deepEqual(
+    (await store.authenticate(kept.accessKeyId, kept.secret))?.id,
+    kept.keyId,
+    "and still authenticates",
+  );
+
+  // `authenticate` is what the 401 above went through, and it is null for the
+  // revoked pair because the map row carries the revoke now, not because the
+  // request took a different path.
+  assert.equal(await store.authenticate(revoked.accessKeyId, revoked.secret), null);
+});
+
+test("a revoke the store refuses is a 404, and the map's copy stays live (drive#402)", async () => {
+  // A store that answers `not-found` — an id another account holds, or a row a
+  // restored backup dropped — is telling the caller the revoke did not happen.
+  // Marking the map anyway would take a key offline on the one instance that
+  // has no right to decide that, and would report a revoke the database never
+  // kept.
+  const deviceStore = stubDeviceStore(async () => ({ error: "not-found" }));
+  const store = createMemoryStore({ now: () => 0, deviceStore });
+  const owner = await signIn(store, "Nish's MacBook");
+  const other = await signIn(store, "Nish's other Mac");
+
+  const mint = async (session, name) =>
+    (
+      await dispatch(
+        new Request("https://api.test/v1/keys", {
+          method: "POST",
+          headers: { ...bearer(session.deviceToken), "content-type": "application/json" },
+          body: JSON.stringify({ kind: "agent", name }),
+        }),
+        baseCtx(store, null),
+      )
+    ).json();
+  const theirs = await mint(other, "codex");
+
+  // The owner asks the store to revoke a key that is not theirs. The store
+  // refuses; the route says so, and the owner's other-account key is untouched.
+  const del = await dispatch(
+    new Request(`https://api.test/v1/keys/${theirs.keyId}`, {
+      method: "DELETE",
+      headers: bearer(owner.deviceToken),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(del.status, 404);
+  assert.equal(
+    (await store.authenticate(theirs.accessKeyId, theirs.secret))?.id,
+    theirs.keyId,
+    "the refused key still authenticates: the map was not marked",
+  );
+  const stillWorks = await dispatch(
+    new Request(`https://api.test/v1/storage/list?path=${theirs.prefix}`, {
+      headers: basic(theirs.accessKeyId, theirs.secret),
+    }),
+    baseCtx(store, null),
+  );
+  assert.equal(stillWorks.status, 200);
+});

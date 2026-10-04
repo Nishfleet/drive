@@ -307,12 +307,40 @@ export function createMemoryStore(options = {}) {
     /**
      * Revoke one of the account's own keys. An id from another account is
      * "not found", not a revoke.
+     *
+     * When a D1 device store is bound (the live Worker, `storeFor` in
+     * workers/api/src/index.js), that store is the source of truth and its
+     * answer is what the caller gets: a revoke it refused is a revoke this call
+     * reports as refused, so the caller cannot be told a kill the database
+     * would not have kept. `authenticate` reads this isolate's map first and
+     * falls through to the store, so a kill the store accepted is marked in
+     * both places — the same two-place rule `revokeAllKeys` follows, and the
+     * reason a key this isolate just revoked is refused here from the next
+     * request on instead of working until this isolate dies (drive#402).
      * @param {{id: string}} account
      * @param {string} keyId
+     * @returns {Promise<{revoked: true}|{error: string}>|{revoked: true}|{error: string}}
      */
     revokeKey(account, keyId) {
       if (deviceStore?.revokeKey) {
-        return deviceStore.revokeKey(account, keyId);
+        const persisted = Promise.resolve(deviceStore.revokeKey(account, keyId));
+        const device = devices.get(keyId);
+        // Only a row this store accepted is marked here. Marking on every call
+        // would let a not-found id from another account, or a store that
+        // refuses on a read-only replica, kill this isolate's copy: the
+        // revocation a caller asked about a row the database still holds would
+        // silently stop working on the one instance that must not decide it.
+        if (device !== undefined && device.accountId === account.id) {
+          return persisted.then((answer) => {
+            if ("revoked" in answer) {
+              if (device.revokedAt === null) {
+                device.revokedAt = nowSeconds(now());
+              }
+            }
+            return answer;
+          });
+        }
+        return persisted;
       }
       const device = devices.get(keyId);
       if (device === undefined || device.accountId !== account.id) {
