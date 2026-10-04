@@ -196,12 +196,13 @@ function providerDayGbMinutes(versions, day) {
   return gbMinutes;
 }
 
+// startMinioStandin waits 30s for the API port and 60s for /minio/health/live.
+// The test then waitFor(3, 60) and waitFor(4, 60) for webhook deliveries.
+// node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
+const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
+
 test("a full day of GB-minutes matches the storage provider's own report within 1%", {
-  // startMinioStandin waits up to 30s for the API port and 60s for
-  // /minio/health/live; waitFor then allows 60s per notification batch.
-  // node:test's default 5s timeout killed the stand-in start on a busy
-  // runner (drive#457: 4999.68ms on PR 435).
-  timeout: 240_000,
+  timeout: STANDIN_TEST_TIMEOUT_MS,
 }, async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
