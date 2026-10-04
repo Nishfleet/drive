@@ -13,27 +13,72 @@ import (
 // that does not exist. main.go's commands table is the one place a
 // subcommand exists, so these tests hold the notes and `drive --help`
 // (usage) to that table and neither can drift from what runs.
+//
+// Both gates run both ways: every command a note or the help names is a
+// real one, and every command in the table is in the help.
 
-// noteCommandRe matches a backticked span that names a drive subcommand, as
-// both notes write them: `drive search <words>`, `drive cache --max 5G`. A
-// bare `drive` (the MCP server's name in the notes) has no word after it
-// and does not match.
-var noteCommandRe = regexp.MustCompile("`drive ([a-z]+)")
+// mainAnswers names the two commands main.go's switch answers itself,
+// outside the table: `drive version` and `drive help` print and exit
+// instead of running a command, so they have no run function to table.
+// `drive version` is in the help text, so the gates must count it as real.
+var mainAnswers = map[string]bool{"version": true, "help": true}
 
-// noteCommands lists the subcommands a note names, in note order.
+// isRealCommand reports whether name is a command a session can actually run:
+// an entry in the table, or one main answers itself.
+func isRealCommand(name string) bool {
+	if _, ok := commands[name]; ok {
+		return true
+	}
+	return mainAnswers[name]
+}
+
+// commandRe matches the first word after `drive` in a note or the help, at a
+// word boundary: `drive search <words>`, `drive cache --max 5G`, and a plain
+// "run drive restore" in prose. A bare `drive` (the MCP server's name in the
+// notes) has no word after it and does not match.
+var commandRe = regexp.MustCompile(`\bdrive ([a-z][a-z0-9-]*)\b`)
+
+// commandNames lists the command names a span of text writes, in order.
+func commandNames(text string) []string {
+	var out []string
+	for _, m := range commandRe.FindAllStringSubmatch(text, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// mentions reports whether text writes `drive <name>` as a whole word, so a
+// command named `cap` is not satisfied by a word that starts with it.
+func mentions(text, name string) bool {
+	return regexp.MustCompile(`\bdrive ` + regexp.QuoteMeta(name) + `\b`).MatchString(text)
+}
+
+// noteCommands returns the command lists a note writes: each bullet with its
+// continuation lines. A note's prose describes the drive ("the user's drive is
+// `<dir>`", "a name in the drive folder") and names no command, so the bullets
+// are the commands the note claims exist, in the note's own wording.
 func noteCommands(note string) []string {
 	var out []string
-	for _, m := range noteCommandRe.FindAllStringSubmatch(note, -1) {
-		out = append(out, m[1])
+	lines := strings.Split(note, "\n")
+	for i := 0; i < len(lines); i++ {
+		if !strings.HasPrefix(lines[i], "- ") {
+			continue
+		}
+		bullet := []string{lines[i]}
+		for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "  ") {
+			i++
+			bullet = append(bullet, lines[i])
+		}
+		out = append(out, strings.Join(bullet, "\n"))
 	}
 	return out
 }
 
 // TestNotesNameOnlyRealCommands holds both agent notes to the command
 // table: the in-folder note (CLAUDE.md / AGENTS.md, noteBody) and the skill
-// note (SKILL.md / steering, skillBody) may name only subcommands main
-// dispatches, so `drive init` can never again advertise a command that
-// does not exist.
+// note (SKILL.md / steering, skillBody) may name only commands main runs, in
+// code spans or in plain words, so `drive init` can never again advertise a
+// command that does not exist.
 func TestNotesNameOnlyRealCommands(t *testing.T) {
 	for _, note := range []struct{ name, body string }{
 		{"the in-folder note", noteBody("/drive")},
@@ -41,28 +86,74 @@ func TestNotesNameOnlyRealCommands(t *testing.T) {
 	} {
 		named := noteCommands(note.body)
 		if len(named) == 0 {
-			t.Fatalf("%s names no commands; the gate is checking nothing", note.name)
+			t.Fatalf("%s lists no commands; the gate is checking nothing", note.name)
 		}
-		for _, cmd := range named {
-			if _, ok := commands[cmd]; !ok {
-				t.Errorf("%s names `drive %s`, which is not a subcommand (drive --help lists the real ones)", note.name, cmd)
+		for _, bullet := range named {
+			for _, cmd := range commandNames(bullet) {
+				if !isRealCommand(cmd) {
+					t.Errorf("%s lists `drive %s`, which is not a command (drive --help lists the real ones)", note.name, cmd)
+				}
 			}
 		}
 	}
 }
 
-// TestHelpListsEveryCommand holds `drive --help` to the same table: every
-// subcommand main dispatches is documented in usage, so a shipped command
-// the help text does not mention is caught the same way (prefetch was).
+// usageCommands returns the command columns the help text's own list shows:
+// each line under "Usage:" up to the gap that starts its description. The
+// description is prose ("whether the drive is connected", "from the drive
+// index"), and the rest of the help is prose about flags and installs, so the
+// column is where the help states which commands exist.
+func usageCommands() string {
+	start := strings.Index(usage, "Usage:\n")
+	if start < 0 {
+		return ""
+	}
+	block := usage[start:]
+	if end := strings.Index(block, "\n\n"); end >= 0 {
+		block = block[:end]
+	}
+	var columns []string
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimPrefix(line, "  ")
+		if !strings.HasPrefix(line, "drive ") {
+			continue
+		}
+		column := line
+		if gap := strings.Index(line, "  "); gap >= 0 {
+			column = line[:gap]
+		}
+		columns = append(columns, column)
+	}
+	return strings.Join(columns, "\n")
+}
+
+// TestHelpListsEveryCommand holds `drive --help` to the table in both
+// directions: every subcommand main dispatches is documented in the help, and
+// every command the help's own list names is one main runs. The first caught
+// a shipped command the help did not document (prefetch); the second catches a
+// documented command that does not exist, which is the note's old bug.
 func TestHelpListsEveryCommand(t *testing.T) {
+	block := usageCommands()
+	if block == "" {
+		t.Fatal("the usage const has no `Usage:` command list; the gate is checking nothing")
+	}
+	listed := commandNames(block)
+	if len(listed) == 0 {
+		t.Fatal("the usage const's command list names no commands; the gate is checking nothing")
+	}
+	for _, cmd := range listed {
+		if !isRealCommand(cmd) {
+			t.Errorf("drive --help documents `drive %s`, which is not a command", cmd)
+		}
+	}
 	names := make([]string, 0, len(commands))
 	for name := range commands {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if !strings.Contains(usage, "drive "+name) {
-			t.Errorf("drive --help does not mention `drive %s`", name)
+		if !mentions(block, name) {
+			t.Errorf("drive --help does not document `drive %s`, which is a command", name)
 		}
 	}
 }
