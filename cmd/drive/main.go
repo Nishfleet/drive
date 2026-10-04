@@ -134,6 +134,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	installEdgeGate()
 	var err error
 	switch os.Args[1] {
 	case "init":
