@@ -20,6 +20,81 @@ type TokenRevoker interface {
 	RevokeDeviceToken() error
 }
 
+// AccountRevoker signs the WHOLE account out of every device at once, and is
+// what `drive logout --all` asks for (drive#236, the standalone action
+// `nish3451` resolved in #34: sign out every device, separate from closing the
+// account). It is its own interface, not another method on TokenRevoker,
+// because it is not about this device's token: it is the route behind the
+// account gate that revokes every key and every token the gate resolved, so the
+// two revokes are not two views of one credential and one cannot stand in for
+// the other. A CLI half can be handed the one and not the other — the account
+// store is not configured — and that has to be a state it can report, not a
+// silent skip.
+type AccountRevoker interface {
+	RevokeAllKeys() error
+}
+
+// The pending-uploads refusal, factored out of Logout so `drive logout --all`
+// can ask the same question first (pendingUploadsRefusal). The account-wide
+// revoke cannot run before this answer is known: it turns off every key on the
+// account, this device's included, so asking afterwards would leave a person
+// who has files still queued with a machine that can no longer upload them and
+// a command that then refuses to clear the queue. Refuse first, revoke second.
+//
+// With force the queue is the person's call to discard, exactly as in Logout,
+// and the answer here is nil so the account-wide revoke proceeds to the same
+// judgement Logout makes.
+func pendingUploadsRefusal(force bool, home string) error {
+	pending, err := PendingUploads(DefaultCacheDir(home))
+	if err != nil {
+		return failDetail("queue-unreadable", err, DefaultCacheDir(home))
+	}
+	if pending.Files > 0 && !force {
+		return failf("uploads-stuck", fmt.Sprint(pending.Files), fmt.Sprint(pending.Bytes))
+	}
+	return nil
+}
+
+// LogoutEveryDevice is `drive logout --all`: sign every device signed in to
+// this account out, then sign this one out locally (drive#236).
+//
+// The order is the whole design. The upload queue is checked FIRST, because the
+// account-wide revoke takes this device's key with it like any other and a
+// command that asked afterwards would kill the device's upload path before it
+// had looked. Then the account-wide revoke runs while the credentials file that
+// holds the token is still on disk, and only then does Logout do its own local
+// work: stop the mount, ask the server about this device's key and token again
+// (both answer "already dead" and both are read as the state logout wants),
+// and delete the local config.
+//
+// Two failures are refused rather than worked around, and both leave this
+// device exactly as it was:
+//
+//   - No account revoker at all is "there is no signed-in account here", not a
+//     local-only logout. Running it as a plain `drive logout` would sign this
+//     machine out and leave every other device live, which is the opposite of
+//     what --all means.
+//   - An account-wide revoke that fails stops the command before Logout runs.
+//     The account is unchanged, so the local half would print a clean sign-out
+//     over an account that is still signed in on every other device.
+//
+// The confirm step is not here: it belongs to the command line (runLogout),
+// which is the only place that knows whether the person said yes. This function
+// is the work, and taking an unconfirmed argument to a function would put the
+// gate one layer away from the person who typed the flags.
+func LogoutEveryDevice(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevoker, account AccountRevoker) error {
+	if account == nil {
+		return fail("signout-everywhere-no-account")
+	}
+	if err := pendingUploadsRefusal(force, home); err != nil {
+		return err
+	}
+	if err := account.RevokeAllKeys(); err != nil {
+		return failDetail("signout-everywhere-failed", err)
+	}
+	return Logout(goos, home, force, revoker, revoke)
+}
+
 // Logout is `drive logout`: stop the mount, revoke this device's key and its
 // device token on the server, then delete the key and its local config
 // (issue #75, build-spec.md "Commands" — "Unmount, delete this device's key
@@ -67,12 +142,11 @@ func Logout(goos, home string, force bool, revoker TokenRevoker, revoke KeyRevok
 	if revoke == nil {
 		revoke = noAPIKeyStore{}
 	}
-	pending, err := PendingUploads(DefaultCacheDir(home))
-	if err != nil {
-		return failDetail("queue-unreadable", err, DefaultCacheDir(home))
-	}
-	if pending.Files > 0 && !force {
-		return failf("uploads-stuck", fmt.Sprint(pending.Files), fmt.Sprint(pending.Bytes))
+	// The same question `drive logout --all` asks before it revokes the account
+	// (pendingUploadsRefusal), asked through the one helper so the two answers
+	// cannot drift.
+	if err := pendingUploadsRefusal(force, home); err != nil {
+		return err
 	}
 	// Stop the mount before the key goes, so nothing is mid-upload when the
 	// config it reads disappears. Unmount stops the login item; stopMount then
@@ -369,6 +443,18 @@ func removeIfPresent(path string) error {
 	return nil
 }
 
+// signOutEverywhereWarning is what `drive logout --all` prints before it asks
+// for --yes. It is the whole confirm step: `--all` on its own says exactly what
+// would happen and changes nothing, and only `--yes` goes on. The words name
+// every device, this one included, because the thing a person must weigh is not
+// "my key dies" (they asked to log out) but "the laptop in my bag stops
+// working" — the cost of running this by accident, and the reason it is not one
+// keystroke away on the way to an ordinary logout.
+const signOutEverywhereWarning = `About to sign out EVERY device signed in to this account: every key and every
+signed-in session, on this machine and on every other one. The files stay
+where they are; each device has to sign in again before it can reach them.
+Run drive logout --all --yes to go ahead.`
+
 // runLogout is `drive logout`.
 func runLogout(args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
@@ -376,6 +462,8 @@ func runLogout(args []string) error {
 	api := fs.String("api", os.Getenv("DRIVE_API_URL"), "api Worker base URL (env DRIVE_API_URL); the key-revoke endpoint")
 	force := fs.Bool("force", false, "discard files waiting to upload instead of stopping")
 	forgetPending := fs.Bool("forget-pending", false, "clear the failed-revoke record after you revoked the key on the devices page")
+	all := fs.Bool("all", false, "sign out every device signed in to this account, not just this one (asks for --yes)")
+	yes := fs.Bool("yes", false, "answer yes to --all's confirm step")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -402,13 +490,35 @@ func runLogout(args []string) error {
 	// file is absent or has no token, there is nothing to revoke; a missing file
 	// is the "not signed in" case, not an error.
 	var revoker TokenRevoker
+	var account AccountRevoker
 	creds, _ := LoadCredentials(common.home)
 	if creds.DeviceToken != "" && creds.APIBase != "" {
 		client, err := NewAPIClient(creds.APIBase, creds.DeviceToken)
 		if err != nil {
 			return fmt.Errorf("build api client: %w", err)
 		}
+		// One client, both seams: the account-wide revoke and this device's own
+		// token revoke are the same token against the same api Worker, and
+		// holding two clients would mean two credentials for one account.
 		revoker = client
+		account = client
+	}
+	if *all {
+		// The confirm step, and it is a step: `--all` says what it would do
+		// and stops, so an account-wide revoke can never be one keystroke away
+		// on the way to an ordinary logout. The words are the account-wide ones
+		// on purpose — "every device", including the laptop in the bag — because
+		// the cost of running it by accident is every other signed-in machine
+		// needing to sign in again, and the cost of not saying so is that
+		// surprise. --yes is the answer; there is no prompt to mistype.
+		if !*yes {
+			fmt.Println(signOutEverywhereWarning)
+			return fail("signout-everywhere-unconfirmed")
+		}
+		return LogoutEveryDevice(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api), account)
+	}
+	if *yes {
+		return fail("confirm-without-all")
 	}
 	return Logout(CurrentGOOS(), common.home, *force, revoker, resolveKeyRevoker(*api))
 }
