@@ -405,6 +405,39 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * Revoke every live key one account holds: the key half of "sign out of
+     * every device" (drive#34, slice drive#236). One statement filtered on the
+     * account id the account gate resolved, so the store never reads a row it
+     * cannot name and there is no loop to leave half-done.
+     *
+     * Conditional on `revoked_at IS NULL`, so a key that is already dead keeps
+     * the first revoke's timestamp and `meta.changes` counts only the rows this
+     * call killed: an answer of `0` means every key on this account was already
+     * off, which is what makes the route's count something a person can read.
+     *
+     * The revoked rows are refused by the same `authenticate` the single-key
+     * revoke's rows are refused by, so there is no second path where a key this
+     * call turned off still works (drive#20 already relied on that for a
+     * removed member's key, which is why this is one statement and not a new
+     * rule). Nothing is deleted: the row stays, cancelled, so an export and the
+     * devices list can still name it, and the key it held is dead from the next
+     * request.
+     * @param {{id: string}} account
+     * @returns {Promise<{revoked: number}>}
+     */
+    async revokeAllKeys(account) {
+      const changed = await run(
+        db,
+        "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+        nowSeconds(now()),
+        account.id,
+      );
+      return {
+        revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
+      };
+    },
+
+    /**
      * Restart the hour on one of the account's own keys (drive issue #106).
      * The one renewal rule is keystore.js `renewKeyWindow`, so this store and
      * the in-memory stand-in renew by the same amount and by the same refusal
