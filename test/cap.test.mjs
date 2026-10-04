@@ -68,7 +68,7 @@ const monthUsage = (gb) => ({
   capUsd: BILLING_CONFIG.defaultCapUsd,
   cardAdded: true,
 });
-const capUsage = () => monthUsage(2000);
+const capUsage = () => monthUsage(2600);
 const underCapUsage = () => monthUsage(1200);
 
 // The four kinds of key the spec mints, in the shape the plan reads.
@@ -666,7 +666,7 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   // 2 TB: the maximum is $20, past the $12 cap, so the one write key is
   // replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
-  const capped = await enforceCap({ usage: usage(2000), keys }, capProvider);
+  const capped = await enforceCap({ usage: usage(2600), keys }, capProvider);
   assert.equal(capped.state, "read_only");
   assert.equal(capped.applied.length, 1);
   assert.deepEqual(capProvider.calls, [
@@ -797,7 +797,7 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
-  assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
+  assert.equal(body.capLine, "Cap $20.00: $0.00 counted this month, $20.00 left.");
   // The Worker still routes the path to the handler, and the handler's gate
   // answers 401 to an anonymous request rather than the asset layer's 404.
   const anonymous = await workerFetch(new Request("https://drive.test/api/usage"), {

@@ -117,7 +117,7 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
   assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
-  assert.equal(withoutCard.labels.accountCap, "$12.00", "the account's own cap is untouched");
+  assert.equal(withoutCard.labels.accountCap, "$20.00", "the account's own cap is untouched");
 });
 
 test("until a card is really on file the cost label says no charge has been made", () => {

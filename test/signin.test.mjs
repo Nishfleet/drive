@@ -334,6 +334,32 @@ test("every new-account path requires the card step (drive#417)", async () => {
   assert.equal(form.status, 400, "the form path is refused with no card step");
   assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
   assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+test("a second sign-up with the same card fingerprint is refused in plain words", async () => {
+  const made = dispatchEnv();
+  const first = await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "one@example.com",
+      card: true,
+      cardFingerprint: "fp_shared",
+    }),
+    made.env,
+  );
+  assert.equal(first.status, 202);
+  const second = await workerFetch(
+    post({
+      step: "start",
+      method: "email",
+      email: "two@example.com",
+      card: true,
+      cardFingerprint: "fp_shared",
+    }),
+    made.env,
+  );
+  assert.equal(second.status, 400);
+  assert.deepEqual(await second.json(), { error: failureMessage("card-in-use") });
+  assert.equal(made.sent.length, 1, "the refused second sign-up mails nothing");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {

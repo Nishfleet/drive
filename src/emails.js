@@ -21,12 +21,11 @@ export const FROM_NAME = "Drive";
 // re-derived so the saved line cannot disagree with the bill it sits under.
 export const RATE_USD_PER_GB = 0.02;
 
-// The spending cap's default, from build-spec.md "Spending cap" (drive#39,
-// 2026-09-30: the default moved to $12, the ceiling floor). Exported so a
-// caller that really means the default can pass it; the templates require the
-// cap explicitly, because an account may have set its own and a default
-// silently used would mail the wrong number.
-export const DEFAULT_CAP_USD = 12;
+// The spending cap's default. BILLING_CONFIG.defaultCapUsd is the one product
+// number (drive#464: $20). This copy cannot import billing.js — that module
+// loads status → auth → email-send → this file — so the emails test pins the
+// two numbers equal.
+export const DEFAULT_CAP_USD = 20;
 
 // The two "you saved" sentences, verbatim from drive#39 (orchestrator,
 // 2026-09-30). A capped month compares the meter against the bill; an

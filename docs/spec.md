@@ -57,7 +57,7 @@ The first says don't build. The second says if you build, sell to people first. 
 | Billing | Dodo usage billing on what is stored; no fixed monthly minimum |
 | Free credit | $1 of storage free every month (about 50 GB), no card needed to start; a card only to go past it. Shown in dollars, never as credit units or expiring balances (Nish, 2026-09-29, from the Higgsfield research) |
 | Headline | "Never more than $12 a TB, then $8" as the ceiling line under the rate; never an "unlimited" plan (Nish, 2026-09-30) |
-| Spending cap | Each account sets one, default $12 (the ceiling floor); storage goes read-only on exceeding the cap, nothing is deleted. The cap counts min(metered so far, ceiling), so a default account is never cut off at or under 1.5 TB peak (Nish via #39, 2026-09-30) |
+| Spending cap | Each account sets one, default $20; storage goes read-only on exceeding the cap, nothing is deleted. Email at 80%. The cap counts min(metered so far, ceiling) (Nish via #464, 2026-10-04) |
 | "You saved" line | Copy varies by month type (Nish via #39, 2026-09-30): capped month (metered > ceiling) "Our price cap saved you $X", X = metered − bill; uncapped month "You paid $X less than a flat plan", X = ceiling − bill. Hidden when X ≤ 0, or when the month's bill is $0 |
 | Business tier (on the pricing page from day one as "Talk to us", built later) | Same storage price. Sells single sign-on, SOC 2 report, a pooled company bill with per-team breakdown, and support. No fixed monthly minimum |
 | Snapshots | Paid add-on only |

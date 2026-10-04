@@ -44,6 +44,10 @@ const REQUIRED_PATHS = [
   "json-object-needed",
   "upload-needs-name",
   "file-not-found",
+  // Abuse guards (drive#464): a second sign-up with the same card, and an
+  // unpaid account that has filled the 1 TB storage limit.
+  "card-in-use",
+  "pre-charge-storage-limit",
 ];
 
 // Every entry must have exactly these keys, no more, no less (sorted for the

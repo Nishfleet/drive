@@ -80,8 +80,10 @@ export function billingConfigFor(price) {
     // The first 1,000 paying accounts are founding while the offer is open.
     // The number never leaves this file as a public string.
     foundingLimit: 1000,
-    // The default spending cap (issue #39). #464 owns moving it.
-    defaultCapUsd: 12,
+    // The default spending cap, $20 a month (Nish, 2026-10-04, drive#464).
+    // The customer's own guardrail, not the price maximum: the cap counts
+    // min(metered so far, maximum), so it cannot pass what the invoice will be.
+    defaultCapUsd: 20,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
