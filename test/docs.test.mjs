@@ -535,12 +535,15 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // own docs plus mdBook's, on 2026-09-30). The samples here are shell commands
   // that mount storage and connect agent tools, which a CI runner cannot do, so
   // the mechanical substitute is this: every `drive ...` sample is checked
-  // against the subcommand switch in cmd/drive/main.go, and the one sample that
+  // against the command table in cmd/drive/main.go (the one place a
+  // subcommand exists: the dispatch reads it, and Go-side gates hold the
+  // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
   const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const switchBody = mainGo.slice(mainGo.indexOf("switch os.Args[1]"), mainGo.indexOf("default:"));
-  const subcommands = new Set([...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]));
+  const tableStart = mainGo.indexOf("var commands = map[string]func([]string) error{");
+  const tableBody = mainGo.slice(tableStart, mainGo.indexOf("}", tableStart));
+  const subcommands = new Set([...tableBody.matchAll(/"([a-z]+)":/g)].map((m) => m[1]));
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",

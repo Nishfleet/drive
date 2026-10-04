@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-04
 
+- The notes `drive init` writes for agents no longer advertise `drive restore`,
+  a command that does not exist. The CLI now keeps one command table, and a
+  test holds both notes and `drive --help` to it, so neither can name a
+  command that does not run.
 - The home page's worked examples read as sentences: "about $1 of storage, and
   you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
 - Membership copy: $10 a month, storage use counts toward it, founding members
