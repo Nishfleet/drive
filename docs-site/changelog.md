@@ -14,6 +14,8 @@ the live site.
   membership, and your storage use counts toward it", then "Join now and keep
   $5 a month for good". The overage sentence ("Go past $10 and you pay by the
   minute for the rest") stays in the What it costs column below it.
+- The home page's worked examples read as sentences: "about $1 of storage, and
+  you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
 - Membership copy: $10 a month, storage use counts toward it, founding members
   keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails

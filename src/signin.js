@@ -120,8 +120,16 @@ export const SIGNIN_COPY = Object.freeze({
   // and their buttons to SIGNIN_COPY, when SIGNIN_OFFERED_METHODS carries
   // them.
   lede: "One link by email.",
-  // drive#387: a card at sign-up, and why, in plain words.
+  // drive#387: a card at sign-up, and why, in plain words. The page says it
+  // once (drive#420), and needCard is also the server's own refusal, so a
+  // person who ticks the box without a card gets the same sentence the page
+  // already showed them once.
   needCard: PRICE.needCard,
+  // drive#420: what the tick box is labelled, in short. The box used to carry
+  // the whole needCard sentence, which put the same words on the page three
+  // times and read as a legal box; the reason lives once above the box and the
+  // label says only that the person understands it.
+  cardConsent: "I understand a card is required",
   membershipLine: PRICE.membershipLine,
   foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
@@ -143,8 +151,6 @@ export const SIGNIN_COPY = Object.freeze({
   // email is a link a browser follows. The step names are data the routes
   // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
-  signupNote:
-    "New here? We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
 });
 
 /**
