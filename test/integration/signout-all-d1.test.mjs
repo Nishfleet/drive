@@ -208,10 +208,14 @@ test("the composed store revokes D1 keys the way the live Worker wires them", as
   const revoked = await store.revokeAllKeys(mine.account);
   assert.equal(revoked.revoked, 1, "the persisted statement must count this account's row");
 
-  const mineRow = made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(mineKey.keyId);
+  const mineRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get(mineKey.keyId);
   assert.ok(mineRow !== undefined, "this account's key row is there");
   assert.notEqual(mineRow.revoked_at, null, "the composed store must revoke the D1 row");
-  const theirRow = made.db.sqlite.prepare("SELECT revoked_at FROM devices WHERE id = ?").get(theirKey.keyId);
+  const theirRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get(theirKey.keyId);
   assert.ok(theirRow !== undefined, "the other account's key row is there");
   assert.equal(theirRow.revoked_at, null, "another account's D1 row stays live");
   assert.equal(

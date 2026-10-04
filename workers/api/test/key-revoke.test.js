@@ -390,7 +390,11 @@ test("DELETE /v1/keys revokes the bound device store and this isolate's map", as
     baseCtx(store, null),
   );
   assert.equal(signedOut.status, 204);
-  assert.deepEqual(persisted, [signed.account.id], "the bound store must see this account and no other");
+  assert.deepEqual(
+    persisted,
+    [signed.account.id],
+    "the bound store must see this account and no other",
+  );
 
   const dead = await dispatch(
     new Request(`https://api.test/v1/storage/list?path=${key.prefix}`, {

@@ -357,7 +357,7 @@ export function createMemoryStore(options = {}) {
      * keeps this isolate from handing a just-revoked key back on the next
      * request.
      * @param {{id: string}} account
-     * @returns {Promise<{revoked: number}>|{revoked: number}}
+     * @returns {Promise<{revoked: number}>}
      */
     async revokeAllKeys(account) {
       const persisted = deviceStore?.revokeAllKeys
