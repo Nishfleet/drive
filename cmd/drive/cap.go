@@ -4,8 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
+
+var validCapAmount = regexp.MustCompile(`^\d+(?:\.\d{1,2})?$|^\.\d{1,2}$`)
 
 // CAP_PATH is the pricing Worker's spending-cap write (src/cap.js
 // `handleCapRequest`). `drive cap` posts here so the amount is parsed by
@@ -55,6 +58,9 @@ func runCap(args []string) error {
 	}
 	amount := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if amount == "" {
+		return fmt.Errorf("a spending cap is a dollar amount like 20 or 12.50. Run: drive cap 20")
+	}
+	if !validCapAmount.MatchString(amount) {
 		return fmt.Errorf("a spending cap is a dollar amount like 20 or 12.50. Run: drive cap 20")
 	}
 	home := common.home

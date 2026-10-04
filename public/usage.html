@@ -495,6 +495,7 @@ const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
 const capSaveEl = document.getElementById("cap-save");
 const capSavedEl = document.getElementById("cap-saved");
+const capSavingEl = document.getElementById("cap-saving");
 const capNoteEl = document.getElementById("cap-note");
 const closeWhatEl = document.getElementById("close-what");
 const closeNextEl = document.getElementById("close-next");
@@ -557,8 +558,9 @@ async function saveCap() {
   const error = payload && typeof payload.error === "string" ? payload.error : "";
   capSavingEl.hidden = true;
   capSlider.disabled = false;
-  capSaveEl.hidden = false;
+  capSaveEl.hidden = true;
   capSaveEl.disabled = false;
+  showCapNote(CAP_NOTE);
   if (!response.ok) {
     sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
     return;
