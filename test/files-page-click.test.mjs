@@ -88,7 +88,9 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // One server that answers the browser with the Worker itself: the page and
   // its assets are served from the byte-for-byte source, and every /api/* path
   // goes to the Worker with the session cookie, which is the route a browser
-  // takes in production.
+  // takes in production. The browser's own headers carry over (minus the
+  // hop-by-hop ones), so a request the page makes is the request the Worker
+  // answers, headers included.
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", TEST_BASE_URL);
     if (url.pathname === "/" || url.pathname === "/files") {
@@ -96,9 +98,15 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
       response.end(page);
       return;
     }
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(request.headers)) {
+      if (["host", "connection", "content-length", "accept-encoding"].includes(name)) continue;
+      headers.set(name, Array.isArray(value) ? value.join(", ") : (value ?? ""));
+    }
+    headers.set("cookie", cookie);
     const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
       method: request.method,
-      headers: { cookie },
+      headers,
       body:
         request.method === "GET" || request.method === "HEAD"
           ? undefined
@@ -123,7 +131,18 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // rather than a claim.
   const downloads = mkdtempSync(join(tmpdir(), "drive-files-page-"));
 
-  const { default: puppeteer } = await import("puppeteer-core");
+  // The drive repo pins every dependency in package.json, and puppeteer-core
+  // is not one of them: it rides in through @lhci/cli, which CI installs for
+  // its own Lighthouse run on this same runner. A checkout without it skips
+  // rather than fails, the way the rclone-backed tests do without rclone.
+  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
+  let puppeteer;
+  try {
+    ({ default: puppeteer } = await import("puppeteer-core"));
+  } catch {
+    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
+    return;
+  }
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
@@ -232,9 +251,19 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   );
 
   // The one assertion the ticket is about: the page is still the page. No
-  // navigation happened, and no part of the document is the listing's JSON.
+  // click navigated away, the document is a page and not a payload, and no
+  // part of the listing's JSON is in it.
   assert.equal(chrome.url(), `${origin}/`, "the page never navigates away on a click");
-  assert.deepEqual(navigations, [`${origin}/`], "only the load navigated");
+  assert.deepEqual(
+    navigations.filter((url) => url !== `${origin}/`),
+    [],
+    "only the load itself navigated, never a click",
+  );
+  assert.equal(
+    await chrome.evaluate(() => document.contentType),
+    "text/html",
+    "the document is the page, never a JSON payload",
+  );
   const body = await chrome.evaluate(() => document.body.textContent ?? "");
   assert.ok(!body.includes('"view":"folder"'), "the page is never the listing's raw JSON");
   assert.ok(!body.includes('"path":"/'), "no part of the listing payload is in the document");

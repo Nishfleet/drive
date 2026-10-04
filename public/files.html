@@ -749,12 +749,13 @@ function rowFor(row) {
   // a click that follows it — the handler below, or a browser with the script
   // blocked — buys a page of raw JSON instead of the file.
   const name = document.createElement("a");
-  name.href = isPreviewable(row.kind)
-    ? `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`
-    : `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "folder") {
     name.href = listing;
     name.dataset.listing = "";
+  } else {
+    name.href = isPreviewable(row.kind)
+      ? `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`
+      : `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   }
   name.textContent = row.name;
   name.addEventListener("click", (event) => {
