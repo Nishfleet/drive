@@ -240,6 +240,21 @@ function checkedTeamId(teamId) {
 }
 
 /**
+ * An id as it can sit in a bucket name. S3 bucket names are lowercase letters,
+ * digits and dashes (MinIO answers InvalidBucketName for anything else, and
+ * the real vendors refuse it too), while sign-in ids are mixed case and may
+ * carry an underscore. Only the bucket name is folded: the `u/<id>/` prefix
+ * keeps the id as it is, so two ids that fold to one bucket would still be two
+ * prefixes. A random 32-character id folding onto another's is not a case the
+ * 62^32 space produces.
+ * @param {string} id
+ * @returns {string}
+ */
+function bucketSafe(id) {
+  return id.toLowerCase().replaceAll("_", "-");
+}
+
+/**
  * The bucket one account's files live in: `drv-<accountId>`. The id is checked
  * with the same rule the prefix uses, so a bucket name cannot be built from an
  * id that would have been refused as a prefix, and the bucket and the prefix a
@@ -248,7 +263,7 @@ function checkedTeamId(teamId) {
  * @returns {string}
  */
 export function bucketForAccount(accountId) {
-  return `${ACCOUNT_BUCKET_PREFIX}${checkedAccountId(accountId)}`;
+  return `${ACCOUNT_BUCKET_PREFIX}${bucketSafe(checkedAccountId(accountId))}`;
 }
 
 /**
@@ -257,7 +272,7 @@ export function bucketForAccount(accountId) {
  * @returns {string}
  */
 export function bucketForTeam(teamId) {
-  return `${TEAM_BUCKET_PREFIX}${checkedTeamId(teamId)}`;
+  return `${TEAM_BUCKET_PREFIX}${bucketSafe(checkedTeamId(teamId))}`;
 }
 
 /**
