@@ -9,13 +9,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BILLING_CONFIG } from "../src/billing.js";
 import {
   handleSendEmailRequest,
   isAuthorizedSend,
   isSameOriginRequest,
   sendEmail,
 } from "../src/email-send.js";
-import { BILLING_CONFIG } from "../src/billing.js";
 import {
   capWarningTemplate,
   DEFAULT_CAP_USD,

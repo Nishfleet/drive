@@ -188,7 +188,9 @@ export async function reserveFoundingSlot(db, accountId, options) {
     "accounts.founding_reserved",
   );
   if (flag === null) {
-    throw new TypeError(`reserveFoundingSlot left accounts.founding_reserved unset for ${accountId}`);
+    throw new TypeError(
+      `reserveFoundingSlot left accounts.founding_reserved unset for ${accountId}`,
+    );
   }
   return Object.freeze({ founding: false, reserved: flag === 1 });
 }
