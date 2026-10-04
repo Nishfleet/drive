@@ -52,6 +52,7 @@ const HOLDOUT_DEFAULT = "/home/nish/.local/share/drive/eval-holdout.yaml";
  *
  * @typedef {object} EvalConfig
  * @property {string} [description]
+ * @property {string[]} [prompts]
  * @property {EvalProvider[]} [providers]
  * @property {{ repeat?: number }} [evaluateOptions]
  * @property {{ options?: { transform?: string }, vars?: Record<string, string> }} [defaultTest]
@@ -138,6 +139,19 @@ function gradeJavascript(a, output, context = { vars: {} }) {
   if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to run`);
   const fn = new Function("output", "context", `"use strict"; ${graderBody(a.value)}`);
   return fn(output, context);
+}
+
+/**
+ * The grader's own text, which every gate below reads to name the check it is
+ * making. A javascript grader without one is the gate's own fault, so it
+ * throws here rather than reading `undefined`.
+ *
+ * @param {EvalGrader} a
+ * @returns {string}
+ */
+function graderSrc(a) {
+  if (typeof a.value !== "string") throw new Error(`${a.type} grader has no value to read`);
+  return a.value.trim();
 }
 
 /**
@@ -446,21 +460,53 @@ test("the scoreboard gate counts the agents row", () => {
 });
 
 test("dead-artefact guard: every file:// ref in promptfooconfig.yaml exists", () => {
-  // The eval config points at prompts, context files and the task split via
-  // file:// refs. If any target is missing the run would fail with a confusing
-  // error. This guard catches it at gate time with a clear message.
+  // The eval config points at its prompt, its context and its task split with
+  // file:// refs, resolved against the config's own directory. A ref whose
+  // target is gone leaves the run reading nothing, so this gate names the ref
+  // and the path it resolved to instead of letting promptfoo fail on a
+  // missing file (drive#413).
   const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
+  /** @type {string[]} */
   const missing = [];
+  /** @param {unknown} ref @param {string} label */
   function check(ref, label) {
     if (typeof ref !== "string" || !ref.startsWith("file://")) return;
     const p = join(evals, ref.slice(7));
     if (!existsSync(p)) missing.push(`${label}: ${ref} -> ${p}`);
   }
-  check(cfg.prompts?.[0], "prompt");
-  for (const [k, v] of Object.entries(cfg.defaultTest?.vars ?? {})) check(v, `var ${k}`);
+  assert.ok(Array.isArray(cfg.prompts) && cfg.prompts.length >= 1, "config names a prompt");
+  for (const [i, ref] of (cfg.prompts ?? []).entries()) check(ref, `prompt ${i}`);
+  for (const [name, value] of Object.entries(cfg.defaultTest?.vars ?? {})) {
+    check(value, `var ${name}`);
+  }
   check(cfg.tests, "tests");
-  assert.equal(missing.length, 0, `missing files:
-${missing.join("\n")}`);
+  assert.equal(
+    missing.length,
+    0,
+    `file:// refs whose target does not exist:\n${missing.join("\n")}`,
+  );
+});
+
+test("the prompt's every {{var}} is a var the config actually provides", () => {
+  // The guard above proves the files exist; this proves the prompt is wired to
+  // them. A `{{docs_faq}}` the config never fills renders as a literal, and
+  // the agent reads an empty page as a real one (drive#413).
+  const cfg = loadConfig("evals/agents/promptfooconfig.yaml");
+  const vars = new Set(Object.keys(cfg.defaultTest?.vars ?? {}));
+  const prompts = (Array.isArray(cfg.prompts) ? cfg.prompts : []).map((ref) =>
+    typeof ref === "string" && ref.startsWith("file://")
+      ? readFileSync(join(evals, ref.slice(7)), "utf8")
+      : "",
+  );
+  assert.ok(prompts.length >= 1, "the config has a prompt file to read");
+  const unfilled = [
+    ...new Set(prompts.flatMap((p) => [...p.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]))),
+  ].filter((name) => name !== "task" && !vars.has(name));
+  assert.deepEqual(
+    unfilled,
+    [],
+    `the prompt interpolates vars the config does not provide: ${unfilled.join(", ")}`,
+  );
 });
 
 test("no positive grader passes an empty or generic answer", () => {
@@ -470,45 +516,60 @@ test("no positive grader passes an empty or generic answer", () => {
   // check positive graders. A task that has only negative graders is vacuous —
   // nothing can fail it — so every task must have at least one positive grader.
   const tasks = loadTasks("evals/agents/tasks/train.yaml");
+  /** @type {string[]} */
   const vacuous = [];
   for (const t of tasks) {
     const js = t.assert.filter((a) => a.type === "javascript");
-    const positives = js.filter((a) => !a.value.trim().startsWith("!"));
+    const positives = js.filter((a) => !graderSrc(a).startsWith("!"));
     if (positives.length === 0) {
       vacuous.push(`${t.description}: no positive grader (only negatives)`);
       continue;
     }
     for (const a of positives) {
-      const src = a.value.trim();
+      const src = graderSrc(a);
       for (const sample of ["", "lorem ipsum dolor sit amet"]) {
-        if (gradeJavascript({ ...a, value: src }, sample, { vars: {} })) {
+        if (gradeJavascript(a, sample, { vars: {} })) {
           vacuous.push(`${t.description}: passes "${sample}" (grader: ${src.slice(0, 80)})`);
         }
       }
     }
   }
-  assert.equal(vacuous.length, 0, `graders that always pass:
-${vacuous.join("\n")}`);
+  assert.equal(
+    vacuous.length,
+    0,
+    `graders that always pass:
+${vacuous.join("\n")}`,
+  );
 });
 
 test("one unanswerable task: the docs cannot answer, grader expects honesty", () => {
-  // The train split contains one task whose answer is not in the docs or
-  // drive --help. Its grader requires the agent to say so rather than invent.
+  // The train split carries one task whose answer is nowhere in the docs or
+  // in drive --help. The honest answer says so; an invented answer must not
+  // pass. Each grader is checked on its own, so dropping any one of them (or
+  // softening it) is caught instead of being masked by its neighbours.
   const tasks = loadTasks("evals/agents/tasks/train.yaml");
   const task = tasks.find((t) => t.description === "how to rotate storage keys");
   assert.ok(task, "train.yaml has the unanswerable task 'how to rotate storage keys'");
   assert.ok(task.vars?.why_hard, "unanswerable task says why it is hard");
   const js = task.assert.filter((a) => a.type === "javascript");
-  assert.ok(js.length >= 1, "unanswerable task has a programmatic grader");
+  assert.ok(js.length >= 2, "unanswerable task has at least two programmatic graders");
   const context = { vars: {} };
-  // An invented answer must fail
+  const honest =
+    "The docs do not say how to rotate storage keys. Your invite comes with a key pair, and drive --help lists no rotation command.";
+  // The real failure mode: a reply that quotes the docs' own words and then
+  // invents a flag on top of them. It reads like a good answer, so only the
+  // refusal grader separates it from the honest one.
+  const invented =
+    "Your invite comes with a key pair. Set the new pair in the environment and run drive rotate-keys --old-key $OLD --new-key $NEW, then drive status to confirm.";
   for (const a of js) {
-    const src = a.value.trim();
-    const invented = "Use drive rotate-keys --old-key $OLD --new-key $NEW to rotate your storage keys.";
-    const honest = "The docs do not say how to rotate storage keys. The invite comes with a key pair and there is no rotation command in drive --help.";
-    const passHonest = gradeJavascript({ ...a, value: src }, honest, context);
-    const passInvented = gradeJavascript({ ...a, value: src }, invented, context);
-    assert.ok(passHonest, `honest answer must pass: ${src}`);
-    assert.ok(!passInvented, `invented answer must fail: ${src}`);
+    const src = graderSrc(a);
+    assert.ok(
+      passed(gradeJavascript(a, honest, context)),
+      `an honest "the docs do not say" answer must pass: ${src}`,
+    );
+    assert.ok(
+      !passed(gradeJavascript(a, invented, context)),
+      `an invented rotate-keys answer must fail: ${src}`,
+    );
   }
 });
