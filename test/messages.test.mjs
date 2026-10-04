@@ -32,6 +32,10 @@ const REQUIRED_PATHS = [
   // account store lands with build step 1, and the refusal a cross-site
   // request gets from the same-origin rule.
   "sign-in-closed",
+  // The sign-in link that never left, which is its own door and not the closed
+  // one: no email setting, or a mailer that threw, still names a next step
+  // instead of falling back to unexpected (drive#431).
+  "sign-in-email-failed",
   "cross-site",
   // The account routes' four failure paths (drive#158): the deployment with no
   // drive behind it, the request that is not a JSON object, the upload with no

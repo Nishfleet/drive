@@ -18,7 +18,7 @@ import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { bucketForAccount, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
+import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
 const CLOSE_CRON_LIMIT = 100;
@@ -589,6 +589,12 @@ export function createD1DeviceStore(db, options = {}) {
             keyId: device.id,
             kind: device.kind,
             prefix: device.prefix,
+            // The bucket this row's own prefix puts it in. A cap swap mints
+            // its replacement against this bucket (src/cap.js
+            // `applyCapSwap`), so a team key stays in the team's bucket and
+            // an account key stays in the account's, whatever the cap does
+            // (drive#462).
+            bucket: bucketForKeyPrefix(accountId, device.prefix),
             capabilities: Object.freeze([...device.capabilities]),
             ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
           }),
@@ -828,6 +834,34 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
+     * Whether a card is really on file for this account (drive#417), read
+     * from `accounts.card_added_at` — the one stamp `markAccountPaying`
+     * (src/founding.js) writes when the account becomes paying, and the only
+     * record a card exists. Fail closed: no accounts row and a null stamp both
+     * read as no card, because an account that cannot show a card cannot show
+     * a charge either (the usage page's "no charge yet" label, src/billing.js).
+     * No Dodo call happens here: real capture waits on the Dodo key (#325).
+     * @param {string} accountId
+     * @returns {Promise<boolean>}
+     */
+    async cardAdded(accountId) {
+      const row = await first(db, "SELECT card_added_at FROM accounts WHERE id = ?1", accountId);
+      if (!row || typeof row !== "object") {
+        return false;
+      }
+      const at = /** @type {{card_added_at: unknown}} */ (row).card_added_at;
+      if (at === null || at === undefined) {
+        return false;
+      }
+      if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) {
+        throw new TypeError(
+          `accounts.card_added_at must be a unix second or null, got ${String(at)}`,
+        );
+      }
+      return true;
+    },
+
+    /**
      * @param {{id: string, email?: string}} account
      * @param {number} capCents
      */
@@ -972,6 +1006,9 @@ export function createD1DeviceStore(db, options = {}) {
             sessionToken: credential.sessionToken,
             expiresIn: credential.expiresIn,
             expiresAt: device.expiresAt,
+            // The scope's own bucket, in the one answer that carries a
+            // credential and the row that holds it (drive#462).
+            bucket: scope.bucket,
           };
         },
 
@@ -1023,10 +1060,11 @@ export function createD1DeviceStore(db, options = {}) {
           const credential = await mintCredential({
             prefix: device.prefix,
             capabilities: READ_ONLY_CAPABILITIES,
-            // The cap swap keeps the key inside the account's own bucket, so
-            // the replacement credential is limited to the same boundary the
-            // old one was (drive#371).
-            bucket: bucketForAccount(accountId),
+            // The cap swap keeps the key inside the bucket the old key was
+            // scoped to, so the replacement credential is limited to the same
+            // boundary: an account's own bucket for an account key, and the
+            // team's for a key on a team prefix (drive#371, drive#462).
+            bucket: bucketForKeyPrefix(accountId, device.prefix),
           });
           // The swap keeps the row's own lifetime and its own id: the hour
           // restarts on the new credential, and the key a person sees listed

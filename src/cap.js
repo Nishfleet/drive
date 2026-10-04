@@ -47,6 +47,7 @@
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -81,7 +82,15 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
  * A key row as the cap reads it, after checkedKey() has validated its shape.
  * The same row arrives from D1 and from the tests' fakes, so the fields the
  * arithmetic reads are all named here rather than being `object`.
- * @typedef {{keyId: string, kind: string, prefix: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
+ *
+ * `bucket` is the one the swap mints its replacement in, and it is optional
+ * because not every caller that builds these rows has a bucket to name: the
+ * two that do are the ones the api Worker binds (devices.js `listCapKeys`,
+ * agent-caps.js `capKeyRow`), and both read it off the key row's own prefix
+ * (keyprovider.js `bucketForKeyPrefix`). A swap without one mints a scope the
+ * storage provider refuses rather than a scope in some other account's bucket
+ * (s3-keys.js, drive#462).
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
  */
 
 /**
@@ -267,6 +276,13 @@ export function capSwapPlan(keys, cap) {
           keyId: row.keyId,
           kind: row.kind,
           prefix: row.prefix,
+          // The bucket the row names, carried into the swap so the replacement
+          // key is minted in the bucket the one it replaces was scoped to: an
+          // account's own, or a team's for a key on a team prefix (drive#371,
+          // drive#462). A swap without one would mint a scope with no bucket,
+          // which a storage provider refuses rather than answering with a
+          // deployment-wide bucket.
+          ...(row.bucket === undefined ? {} : { bucket: row.bucket }),
           capabilities,
           cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
         }),
@@ -336,17 +352,40 @@ export async function applyCapSwap(plan, provider) {
   /** @type {Array<CapKey & {minted: unknown}>} */
   const applied = [];
   for (const swap of plan.swaps) {
+    // The replacement is minted in the bucket the row names, so the key that
+    // comes back is scoped to the same boundary the one it replaces was: an
+    // account's own bucket, or a team's for a key on a team prefix (drive#371,
+    // drive#462). A swap that names no bucket mints a scope with none in it,
+    // which a storage provider refuses rather than answering with a
+    // deployment-wide bucket — that is how every key ended up in the shared
+    // bucket before drive#462.
+    const scope =
+      swap.bucket === undefined
+        ? { prefix: swap.prefix, capabilities: swap.capabilities }
+        : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
+        // The provider's own swap is handed the keyId alone and re-derives the
+        // scope from the row it is replacing (workers/api/src/devices.js
+        // `swapToReadOnly` mints in `bucketForKeyPrefix(accountId, prefix)`),
+        // so the bucket the row was scoped to reaches the replacement without
+        // this module having to pass it.
         minted = await keys.swapToReadOnly(swap.keyId);
       } else {
+        // Revoke first, mint second. This is the cap path, and the cap is the
+        // safety limit: if the mint then fails, the account is on the safe side
+        // of the cap with no write key rather than still over the cap with a
+        // live one. The api Worker retries the same plan, and a mount with no
+        // write key is recoverable where a spend over the cap is not. This is
+        // deliberate and pinned by "a provider failure is raised, never
+        // swallowed" in test/cap.test.mjs.
         await keys.revoke(swap.keyId);
-        minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+        minted = await keys.mint(scope);
       }
     } else {
-      minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+      minted = await keys.mint(scope);
       await keys.revoke(swap.keyId);
     }
     applied.push(Object.freeze({ ...swap, minted }));
@@ -412,9 +451,18 @@ export function parseCapUsd(input) {
  * @returns {string}
  */
 function capShapeError(given) {
+  // One sentence with its own next step, and no surface's name in it: the
+  // usage page's slider sends the same request the CLI does, so "Run: drive
+  // cap 20" answered a person holding the slider with a command they have no
+  // way to run, and "save it again" answered a terminal with a page's words
+  // (drive#421). The one sentence has to read right at both.
+  // JSON.stringify keeps the culprit delimited: without it an empty amount
+  // reads "got ." and "20 dollars" reads as if the whole thing were what the
+  // person typed. The quotes are also what the api's 400 body carries, so the
+  // CLI prints what the Worker said rather than a reworded copy of it.
   return (
     `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
-    "Run: drive cap 20"
+    "Type a number like that again."
   );
 }
 
@@ -451,6 +499,16 @@ export const CAP_ENDPOINT = "/api/cap";
  * parseCapUsd() TypeError message when the amount is bad, so that sentence
  * is the 400 body and nothing else.
  *
+ * The write is refused when it arrives from another origin (drive#421): the
+ * usage page's slider saves a cap through this route, and a cap write is a key
+ * swap — it revokes the old credential and mints a new one — so a page on
+ * another origin that could forge the POST would revoke a real drive's keys.
+ * The rule is the one every other state-changing route carries
+ * (src/files.js, src/waitlist.js, src/email-send.js), it lives in the handler
+ * rather than in a middleware layer, and it reads no header the CLI cannot
+ * send: a request with no Origin at all is not a browser, so `drive cap` still
+ * reaches it.
+ *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
  * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
@@ -463,6 +521,20 @@ export async function handleCapRequest(request, account, capStore) {
     return new Response("Method not allowed. POST this endpoint to set the spending cap.", {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
+  // no Origin header through, so the CLI ('drive cap 20', no browser
+  // evidence) still reaches this handler — the account gate is what
+  // identifies it, not the header.
+  if (!isSameOriginRequest(request)) {
+    // A specific line rather than the generic one: "try again in a moment"
+    // would be advice to retry a request that is always refused, and the one
+    // next step is to do it from the drive page. The words are the one message
+    // table's, the way every other user-facing failure sentence in this repo
+    // is (drive#421).
+    return jsonCapError(failureMessage("cap-from-page"), 403, {
+      "cache-control": "no-store",
     });
   }
   /** @type {unknown} */
@@ -489,10 +561,11 @@ export async function handleCapRequest(request, account, capStore) {
     throw error;
   }
   if (capStore === null) {
-    return jsonCapError("The account store is not configured on this deployment.", 503);
+    // The one message table's words, with the one next step the table names: the
+    // cap did not move, and waiting will not fix a deployment that has no store.
+    return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
   await capStore.setCapCents(account, dollarsToCapCents(usd));
-  const keys = await capStore.listCapKeys(account.id);
   // The swap is decided from the month the account actually counted, so
   // setting the cap below what it has already spent enforces at once (the
   // finish line: making a drive read-only with `drive cap`). A deployment
@@ -511,6 +584,7 @@ export async function handleCapRequest(request, account, capStore) {
           capUsd: usd,
           cardAdded: true,
         };
+  const keys = await capStore.listCapKeys(account.id);
   const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
@@ -581,12 +655,21 @@ function swapCredential(report) {
  * @param {string} message
  * @param {number} status
  */
-function jsonCapError(message, status) {
+/**
+ * @param {string} message
+ * @param {number} status
+ * @param {Record<string, string>} [extraHeaders]
+ */
+function jsonCapError(message, status, extraHeaders) {
+  // no-store on every answer here: a cap write is a money and key state, and a
+  // shared cache holding one account's 400 would answer another account's 400
+  // with it. The origin gate's 403 and the store-missing 503 carry it too.
   return new Response(JSON.stringify({ error: message }), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      ...extraHeaders,
     },
   });
 }

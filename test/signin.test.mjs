@@ -34,6 +34,7 @@ import {
   SIGNIN_PATH,
   SIGNIN_STEPS,
   signinClosedBody,
+  signinEmailFailedBody,
 } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
@@ -247,6 +248,78 @@ test("sign-up without a card is refused and mails nothing", async () => {
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
   assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
+});
+
+test("every new-account path requires the card step (drive#417)", async () => {
+  // The one claim issue #417 makes about sign-up: no path opens a new account
+  // without the card step, and the answer comes from the server. Each path is
+  // driven the way the Worker's own dispatch (this file's workerFetch) takes
+  // it, against the real Better Auth database.
+  const made = dispatchEnv();
+  // 1. The email path: a first-time address with no card on file is refused,
+  // and no link is mailed, because the request never reaches the mailer.
+  // A body that names no card field at all is the same refusal (fail closed),
+  // so a client that drops the checkbox cannot open the account either. The
+  // raw JSON body below is the one this file's post() helper would otherwise
+  // fill in for, so the field is absent exactly as a client that sends none
+  // would send it.
+  for (const body of [
+    { step: "start", method: "email", email: "new@example.com", card: false },
+    { step: "start", method: "email", email: "new@example.com", card: "off" },
+  ]) {
+    const response = await workerFetch(post(body), made.env);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
+  }
+  const noCardField = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(noCardField.status, 400, "a start with no card field is refused");
+  assert.deepEqual(await noCardField.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
+  // The refusal is server side, not a screen: after the refusals the database
+  // holds no user row for the address, so nothing about the account exists.
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused sign-up");
+  // 2. The OAuth paths: Google and GitHub are the screen's buttons, and each
+  // is a closed door, so neither can open a new account behind the card step.
+  for (const method of ["google", "github"]) {
+    const response = await workerFetch(post({ step: "start", method }), made.env);
+    assert.equal(response.status, 503, `${method} is a closed door, not a new account`);
+    assert.deepEqual(await response.json(), signinClosedBody());
+    assert.equal(response.headers.get("set-cookie"), null, `${method} sets no session`);
+  }
+  assert.equal(made.sent.length, 0, "a closed sign-in mails nothing");
+  // 3. The email path WITH the card step is the one that opens the account, so
+  // the gate above is the card and not the address: the same first-time email
+  // now signs up, and the link leaves by email.
+  const withCard = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(withCard.status, 202, "the card step is what opens the new account");
+  assert.equal((await withCard.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  // The no-JavaScript form is the page's own path, so it is held to the same
+  // gate: an unchecked checkbox posts no card field.
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({ step: "start", method: "email", email: "form@example.com" }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 400, "the form path is refused with no card step");
+  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
 });
 
 test("a request that did not come from the site is refused before anything is mailed", async () => {
@@ -480,11 +553,12 @@ test("a limiter that throws fails closed with the table's words, never the error
 
 // ---------------------------------------------------------- the verify link
 
-test("a mailer that throws is a closed door, never a 202 for a link that never left", async () => {
+test("a mailer that throws says the email did not go out, never a 202 for a link that never left", async () => {
   // The guarantee the hand-written store made ("a code that could not be sent
   // is never reported as sent") has to hold on the library too: Better Auth
-  // propagates a rejected sendMagicLink, and the route turns that into the
-  // closed door rather than a 202 the person waits on.
+  // propagates a rejected sendMagicLink, and the route turns that into words
+  // that say no email went out (drive#431) rather than a 202 the person waits
+  // on an inbox for.
   const db = createTestAuth().db;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -502,8 +576,63 @@ test("a mailer that throws is a closed door, never a 202 for a link that never l
     env,
   );
   assert.equal(response.status, 503, "a link that could not be sent is not a 202");
-  assert.deepEqual(await response.json(), signinClosedBody());
+  assert.deepEqual(await response.json(), signinEmailFailedBody());
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("a deployment with no email setting says the email did not go out", async () => {
+  // The walkthrough path (drive#431): no mailer behind the route at all, so
+  // nothing can be sent. Every shape of the missing setting — no EMAIL binding
+  // at all, and a binding with no sending domain — is one failure path, because
+  // from the person's side all of them mean the same: no link is on its way.
+  const made = createTestAuth();
+  const base = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_RATE_LIMITER: makeRateLimiter(),
+    SIGNIN_GLOBAL_RATE_LIMITER: makeRateLimiter(),
+  };
+  for (const [name, env] of [
+    // No EMAIL binding and no MAIL_FROM: the provider's send function is gone.
+    ["no EMAIL binding", base],
+    // The binding is there but no domain to send from, which sendEmail refuses.
+    ["a binding with no MAIL_FROM", { ...base, EMAIL: { send: async () => {} } }],
+    // The one that works: the send is a seam in the test env, so this case is
+    // the control that proves the two above are the setting, not the request.
+    [
+      "a working mailer",
+      {
+        ...base,
+        SIGNIN_MAIL: (/** @type {{to: string, url: string}} */ link) => made.sent.push(link),
+      },
+    ],
+  ]) {
+    const response = await workerFetch(
+      post({ step: "start", method: "email", email: "a@b.co" }),
+      env,
+    );
+    if (name === "a working mailer") {
+      assert.equal(response.status, 202, `${name} sends the link`);
+      assert.equal(made.sent.length, 1);
+      continue;
+    }
+    assert.equal(response.status, 503, `${name} is not a 202`);
+    assert.deepEqual(await response.json(), signinEmailFailedBody(), `${name} says so`);
+    assert.equal(made.sent.length, 0, `${name} mails nothing`);
+    assert.equal(response.headers.get("set-cookie"), null, `${name} mints no session`);
+  }
+});
+
+test("the email-failed words are the message table's, once", () => {
+  // The one source for the words: src/signin.js builds the body from the
+  // table, so the sentence the person reads is the entry's two halves and
+  // never a copy this route wrote for itself.
+  assert.deepEqual(signinEmailFailedBody(), {
+    error: `${FAILURE_MESSAGES["sign-in-email-failed"].what} ${FAILURE_MESSAGES["sign-in-email-failed"].next}`,
+  });
+  assert.equal(signinEmailFailedBody().error, failureMessage("sign-in-email-failed"));
 });
 
 test("the sign-in link is at the path the page and the email name", async () => {
@@ -985,6 +1114,22 @@ test("the page's failure words are the message table's", () => {
   // test/messages.test.mjs runs over this page.
   assert.ok(page.includes(FAILURE_MESSAGES.offline.what));
   assert.ok(page.includes(FAILURE_MESSAGES.unexpected.what));
+});
+
+test("the page shows the route's own error words, so every failure names a next step", () => {
+  // The server owns the words for the failures only it can see (drive#431:
+  // an email that could not be sent). The page is a static asset, so it cannot
+  // hold them; what it must do is put the answer's `error` in the live status
+  // line as it arrives, which is what keeps those failure paths from falling
+  // back to "That did not work." with no next step.
+  assert.ok(
+    page.includes("payload.error"),
+    "the page must read the error field the route answers with",
+  );
+  assert.ok(
+    page.includes('id="signin-status"') && page.includes("aria-live"),
+    "the page must have the live region the status words are read into",
+  );
 });
 
 test("the page is at the path the module names, and the Worker serves it as an asset", async () => {

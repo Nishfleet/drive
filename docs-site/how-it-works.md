@@ -1,6 +1,6 @@
 ---
 title: How it works
-description: Plain files in object storage, versions, restore, and how the bill is counted.
+description: Plain files in object storage, the cache, restore, and how the bill is counted.
 ---
 
 # How it works
@@ -58,8 +58,9 @@ the drive keep working, because reads come the other way.
 
 ## Versions
 
-Version history is not in version 1. Saving a file again replaces it, and no
-command lists the versions that were there before. See
+{{VERSION_HISTORY}} Saving a file again replaces it, and no
+command lists the versions that were there before. A delete can be undone
+through the storage provider's own versions. {{NOT_OPEN}} See
 [Limits](/limits) for what is not in version 1.
 
 ## Restore

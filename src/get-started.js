@@ -17,8 +17,9 @@ import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
+  INSTALL_LINES,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
@@ -32,7 +33,38 @@ import {
  * @returns {string}
  */
 export function installCommand() {
-  return INSTALL_COMMAND;
+  return FIRST_RUN_COMMAND;
+}
+
+/**
+ * The install line for each system, in the module's order: one pasted line per
+ * OS, above the command, so the page answers "how do I get it" before it asks
+ * the reader to paste anything. Each row is checked here rather than trusted,
+ * because a row that is not a single line is a row the page cannot render as
+ * one pasted line. The rows are an argument with the module's own as the
+ * default, so a page reads its table and a test can hand the check a bad row.
+ * @param {ReadonlyArray<{os: string, line: string}>} [rows]
+ * @returns {{os: string, line: string}[]}
+ */
+export function installLines(rows = INSTALL_LINES) {
+  return rows.map((row, index) => {
+    if (typeof row.os !== "string" || row.os.trim() === "") {
+      throw new TypeError(
+        `install line ${index} needs a named system, got ${JSON.stringify(row.os)}`,
+      );
+    }
+    if (typeof row.line !== "string") {
+      throw new TypeError(
+        `install line ${index} needs an os and a line, got ${JSON.stringify(row)}`,
+      );
+    }
+    if (/\s/.test(row.line.trim()) === false || /[\r\n]/.test(row.line)) {
+      throw new TypeError(
+        `install line ${index} must be one pasted line with no line break, got ${JSON.stringify(row.line)}`,
+      );
+    }
+    return { os: row.os, line: row.line };
+  });
 }
 
 /**
@@ -343,6 +375,19 @@ function renderCommand() {
   required("install-command").textContent = installCommand();
 }
 
+// One row per system, each a system name and the single line to paste for it.
+// textContent throughout, like every other builder here: nothing from the
+// module is ever interpolated into innerHTML.
+function renderInstallLines() {
+  const rows = installLines().map((row) => {
+    const li = document.createElement("li");
+    li.appendChild(element("span", "os", row.os));
+    li.appendChild(element("code", null, row.line));
+    return li;
+  });
+  required("install-lines").replaceChildren(...rows);
+}
+
 // The live line: all three arms are rendered up front, so a `say()` is a
 // switch between text that is already on the page, never a lookup that can
 // come back empty and leave a blank line.
@@ -565,6 +610,7 @@ function wireCopyButton() {
 function start() {
   renderSteps();
   renderEmptyStates();
+  renderInstallLines();
   renderCommand();
   renderConnection();
   wireCopyButton();

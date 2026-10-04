@@ -37,6 +37,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
   }),
+  // A cap write from the usage page or `drive cap` reached a Worker with no
+  // account store behind it (drive#421). The cap was not changed, so the next
+  // step is not to wait and retry: this deployment has to be wired first.
+  "cap-store-missing": Object.freeze({
+    what: "The cap could not be saved, so the one in force is unchanged.",
+    next: "Ask whoever runs this deployment to set up the account store.",
+  }),
+  // A cap write that arrived from another origin (drive#421). A cap write
+  // swaps an account's storage keys, so a page on another origin that could
+  // forge the POST could revoke a real drive's keys: the write is refused
+  // rather than attempted, and the next step is where the write is allowed.
+  "cap-from-page": Object.freeze({
+    what: "You can only change a spending cap from the drive page.",
+    next: "Open drive on this account, then move the cap slider there.",
+  }),
   // rclone's local VFS cache filled the disk, so saves cannot queue.
   "disk-cache-full": Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
@@ -195,6 +210,16 @@ export const FAILURE_MESSAGES = Object.freeze({
   "sign-in-closed": Object.freeze({
     what: "Signing in is not open yet.",
     next: "Join the waitlist, and your first email will carry a sign-in link.",
+  }),
+  // The sign-in link never left the site, so the person is waiting on an
+  // inbox that will stay empty: a deployment with no mailer (no EMAIL binding,
+  // or no sending domain in MAIL_FROM), a provider that refused the send, and
+  // a mailer that threw all reach it. The one thing to do is try again, and
+  // the waitlist is the door that stays open while we fix the setting
+  // (drive#431: the closed door's words told a person nothing had been sent).
+  "sign-in-email-failed": Object.freeze({
+    what: "Your sign-in email did not go out.",
+    next: "Try again in a moment, and join the waitlist if it keeps failing.",
   }),
   // The branch's snapshot is larger than one database row holds (drive#157).
   // A branch of a folder with tens of thousands of files needs a snapshot per

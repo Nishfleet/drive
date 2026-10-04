@@ -107,8 +107,9 @@ func TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds(t *testing.T) {
 }
 
 // TestConnectWritesTheSkillNote proves the note the spec asks for: where the
-// drive is, that there is a search, that deletes can be undone, and to branch
-// before large edits.
+// drive is, that there is a search, and to branch before large edits. Every
+// command it names is held to the command table by
+// TestNotesNameOnlyRealCommands (command_table_test.go).
 func TestConnectWritesTheSkillNote(t *testing.T) {
 	for _, name := range toolNames() {
 		t.Run(name, func(t *testing.T) {
@@ -122,7 +123,7 @@ func TestConnectWritesTheSkillNote(t *testing.T) {
 			}
 			path, _ := tool.SkillPath(env)
 			text := readFile(t, path)
-			for _, want := range []string{skillBegin, skillEnd, env.DriveDir, "search_files", "drive search", "the parts an app has opened", "drive cache --max", "drive restore", "drive branch"} {
+			for _, want := range []string{skillBegin, skillEnd, env.DriveDir, "search_files", "drive search", "the parts an app has opened", "drive cache --max", "drive branch", "drive approve"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s skill note is missing %q:\n%s", name, want, text)
 				}

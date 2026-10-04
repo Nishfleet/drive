@@ -10,21 +10,22 @@ would rather you read it here than find out in week three.
 
 ## Not in version 1
 
-- **We are not open yet.** Sign-ups on the pricing page go to a waitlist, and
-  an account arrives by invitation.
+- **We are not open yet.** {{NOT_OPEN}} An account arrives by invitation.
 - **The packages are built but not published yet.** GoReleaser builds the
   `.deb`, the `.rpm` and the Homebrew formula from `.goreleaser.yaml`, and a
-  release on a `v*` tag publishes them. Until that release runs, install from
-  the source with `go install github.com/Nishfleet/drive/cmd/drive@latest`, or
+  release on a `v*` tag publishes them. Until that release runs, the install
+  that works today is to build the command from this repository's source with
+  the Go toolchain (`drive --help` prints the exact `go install` route); or
   build the same package locally with
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
-  The [Quickstart](/quickstart) is written for the released commands.
+  The [Quickstart](/quickstart) leads with the released commands and
+  keeps the details in its Other ways section.
 - **macOS is read-only for us.** We can prove the drive on a Mac only on a
   GitHub macOS runner or by hand, so what we have measured end to end is
   Linux.
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
-- **No version history.** Save a file again and the file is replaced; no command
+- **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Windows installs with an MSI, not a command.** Windows gets the

@@ -37,12 +37,12 @@ export const USAGE_LABELS = Object.freeze({
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
   cost: "Cost so far",
   cap: "Your cap",
-  // The cap's own sentence. Until the accounts store lands (issue #2) the
-  // slider on the page shows the cap in force; changing it from the page is
-  // part of that store, and the page says so rather than pretending.
+  // The cap's own sentence. The accounts store is live (drive issue #2), so
+  // the slider on the usage page is a control: `next` is what a person does
+  // with it, and the page's own save button carries the same sentence.
   capNote: Object.freeze({
     what: "At the cap the drive goes read-only; nothing is ever deleted.",
-    next: "Changing the cap from this page arrives with accounts.",
+    next: "Move the slider, then choose Save cap.",
   }),
   // The empty month's chart, before the meter or the account store lands
   // (issues #6 and #2). An empty chart is a state with a next step, never a
@@ -50,6 +50,16 @@ export const USAGE_LABELS = Object.freeze({
   storageEmpty: Object.freeze({
     what: "No storage history yet.",
     next: "It fills in from the drive's first day on the meter.",
+  }),
+  // A drive that has stored nothing this month, said in the "This month" area
+  // (drive issue #427). The status slot there is reserved from the first paint
+  // (drive#225), so a new account's first look at the page was a blank box over
+  // a chart with nothing to draw. This is the sentence that fills it. It is
+  // this month's own state, which is why it is not storageEmpty: that one is
+  // about the chart's 30-day window and stays under the chart.
+  monthEmpty: Object.freeze({
+    what: "Nothing stored yet.",
+    next: "Save a file in the drive folder and the chart below fills in from that day.",
   }),
   // The upload-progress line's section (drive issue #308). The line itself is
   // not a word here: /api/usage carries it finished, assembled by

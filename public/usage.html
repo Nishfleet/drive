@@ -25,10 +25,6 @@ body {
   max-width: 940px;
 }
 
-.masthead a[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
-}
 
 .wordmark {
   font-size: 28px;
@@ -115,6 +111,14 @@ h2 {
    read, it is this browser having no signed-in account, and it gets its own
    colour and its own words. */
 .status[data-state="signed-out"] {
+  border-left-color: var(--accent);
+}
+
+/* A month with nothing stored (drive issue #427). Not an error and not signed
+   out, so it takes the accent: the drive is fine, it just has no files on it
+   yet, and a new account has to be told that rather than left looking at a
+   blank box. */
+.status[data-state="empty"] {
   border-left-color: var(--accent);
 }
 
@@ -213,6 +217,26 @@ h2 {
 .cap-value {
   font-family: var(--mono);
   font-size: clamp(18px, 2.6vw, 22px);
+}
+
+/* The save button the slider reveals once it holds a number worth keeping.
+   The same shape as the close form's button, because it is the same promise:
+   a deliberate write on this page. */
+.cap button {
+  margin: 6px 0 0;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.cap button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .close-form {
@@ -387,13 +411,16 @@ h2 {
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
           <label for="cap-slider">Monthly cap, in dollars</label>
-          <input type="range" id="cap-slider" min="0.01" max="12" step="0.01" value="12" disabled aria-describedby="cap-note">
+          <input type="range" id="cap-slider" min="0" max="12" step="0.01" value="12" aria-describedby="cap-note">
           <p class="cap-value" id="cap-value"></p>
+          <button type="button" id="cap-save" hidden>Save cap</button>
         </div>
         <div class="empty" id="cap-note">
-          <p class="what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-          <p class="next">Changing the cap from this page arrives with accounts.</p>
+          <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
+          <p class="next" id="cap-note-next">Move the slider, then choose Save cap.</p>
         </div>
+        <p class="hint" id="cap-saved" role="status" hidden></p>
+        <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
       </section>
 
       <section aria-labelledby="close-heading" id="close-section">
@@ -430,6 +457,10 @@ h2 {
 // sentence, the endpoint or the poll interval drifts from there — the same gate
 // test/status.test.mjs runs for the first-run page.
 const USAGE_ENDPOINT = "/api/usage";
+// The cap write the slider POSTs to: the same route `drive cap` writes, so
+// one function on the Worker parses and writes a cap however it arrives. It
+// is already behind the account gate, and its words are the api's own.
+const CAP_ENDPOINT = "/api/cap";
 const CLOSE_ENDPOINT = "/api/account/close";
 const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 const POLL_INTERVAL_MS = 60000;
@@ -441,12 +472,29 @@ const UNREACHABLE = {
   next: "Leave this page open. It checks again in a minute.",
 };
 
+// The cap's own pair, the one src/usage.js pins as USAGE_LABELS.capNote. The
+// `next` is the resting instruction, and it says what to do rather than what
+// is not possible yet: the accounts store is live (drive issue #2), so the
+// slider below is a control and this is how a person uses it.
+const CAP_NOTE = {
+  what: "At the cap the drive goes read-only; nothing is ever deleted.",
+  next: "Move the slider, then choose Save cap.",
+};
+
 // The account gate's words (drive issue #73) are not repeated here: the 401
 // body is the message table's `unauthorized` entry (src/messages.js) and the
 // page renders what the API sent, so the endpoint and the page cannot say
 // different things and the copy has one source. A 401 is not an unreadable
 // service: it means this browser has no signed-in account, and showing one
 // account's month to another is the bug the gate exists to stop.
+
+// A month with nothing stored in it (drive issue #427). These are the
+// `monthEmpty` sentences src/usage.js pins, carried here for the same reason
+// UNREACHABLE is: the page is a static asset and cannot import the module.
+const MONTH_EMPTY = {
+  what: "Nothing stored yet.",
+  next: "Save a file in the drive folder and the chart below fills in from that day.",
+};
 
 const savedEl = document.getElementById("saved");
 const statusEl = document.getElementById("usage-status");
@@ -463,6 +511,10 @@ const downloadsEl = document.getElementById("downloads-line");
 const uploadLineEl = document.getElementById("upload-line");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
+const capSaveEl = document.getElementById("cap-save");
+const capSavedEl = document.getElementById("cap-saved");
+const capSavingEl = document.getElementById("cap-saving");
+const capNoteEl = document.getElementById("cap-note");
 const closeWhatEl = document.getElementById("close-what");
 const closeNextEl = document.getElementById("close-next");
 const closeClosedWhatEl = document.getElementById("close-closed-what");
@@ -486,6 +538,72 @@ const CLOSE_BOX = {
 // pending. renderClose() sets it from the account's state.
 let closeTarget = CLOSE_ENDPOINT;
 
+// The cap's note under the slider. It rests on the instruction above, and it
+// carries the words of a save that failed, the way the signed-out state
+// carries the 401's own words.
+function showCapNote(note) {
+  capNoteEl.querySelector(".what").textContent = note.what;
+  capNoteEl.querySelector(".next").textContent = note.next;
+}
+
+// A save that failed. The Worker's sentence is the one that answers what went
+// wrong, so it is shown as it arrived, with no second sentence of ours next to
+// it -- the same shape the signed-out state uses. The button stays, so the
+// same amount can be tried again without moving the slider back.
+function sayCapError(note) {
+  capSavedEl.hidden = true;
+  showCapNote(note);
+  capSlider.disabled = false;
+  capSaveEl.disabled = false;
+  capSaveEl.hidden = false;
+}
+
+// The cap write (drive issue #421). The accounts store is live, so the slider
+// is a control and not a readout: it sends the number to the one route that
+// writes a cap, which `drive cap` also uses, so a cap is parsed and written
+// once however it arrives. The answer is the month with the cap just written,
+// so the endpoint's own `capLine` sentence is what confirms the save, and the
+// read that follows paints the cap now in force. No money is worked out here
+// and no sentence is written here.
+async function saveCap() {
+  const amount = capSlider.value;
+  capSlider.disabled = true;
+  capSaveEl.disabled = true;
+  capSavingEl.hidden = false;
+  let response;
+  try {
+    response = await fetch(CAP_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ amount }),
+    });
+  } catch (_error) {
+    capSavingEl.hidden = true;
+    capSlider.disabled = false;
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(UNREACHABLE);
+    return;
+  }
+  const payload = await response.json().catch(() => null);
+  const error = payload && typeof payload.error === "string" ? payload.error : "";
+  capSavingEl.hidden = true;
+  capSlider.disabled = false;
+  if (!response.ok) {
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
+    return;
+  }
+  capSaveEl.hidden = true;
+  capSaveEl.disabled = false;
+  capSavedEl.hidden = true;
+  capSavedEl.textContent = payload && typeof payload.capLine === "string" ? payload.capLine : "";
+  capSavedEl.hidden = capSavedEl.textContent === "";
+  showCapNote(CAP_NOTE);
+  readMonth();
+}
+
 function sayUnreachable() {
   statusEl.dataset.state = "unreachable";
   statusEl.querySelector(".what").textContent = UNREACHABLE.what;
@@ -506,17 +624,41 @@ function saySignedOut(message) {
   statusEl.querySelector(".next").textContent = "";
   statusEl.hidden = false;
   bodyEl.hidden = true;
+  // An account on this browser is what a write needs, so a signed-out page
+  // cannot move a cap: the slider and the button that saves it both sleep, and
+  // a save that was in flight when the session ended has no answer left to
+  // wait for, so its two hints sleep with them.
   capSlider.disabled = true;
+  capSaveEl.hidden = true;
+  capSavingEl.hidden = true;
+  capSavedEl.hidden = true;
 }
 
 function sayReachable() {
   statusEl.hidden = true;
+  // `sayReachable` is the neutral reset: it also clears whatever status state a
+  // previous render left on the shared slot (empty, unreachable, signed-out),
+  // so only this call's own state — a fresh `sayMonthEmpty` when the month is
+  // empty, nothing at all when it has history — is what the markup carries.
+  statusEl.dataset.state = "";
   // A read that succeeded proves the account is there, so the slider the
   // signed-out state disabled is usable again.
   capSlider.disabled = false;
   // The first successful read is what puts the numbers on the page; until then
   // nothing painted them, so an unread month never looks like an empty one.
   bodyEl.hidden = false;
+}
+
+// A month that read fine and holds no files (drive issue #427). The status
+// slot above the numbers is reserved from the first paint so nothing moves
+// under the reader, and hiding it left a new account staring at that reserved
+// space with a chart below it that has nothing to draw. This is what fills it:
+// the month is empty, said in the month's own words, in the month's own area.
+function sayMonthEmpty() {
+  statusEl.dataset.state = "empty";
+  statusEl.querySelector(".what").textContent = MONTH_EMPTY.what;
+  statusEl.querySelector(".next").textContent = MONTH_EMPTY.next;
+  statusEl.hidden = false;
 }
 
 // The chart's viewBox is one unit per day and 100 units tall, so a day is its
@@ -601,12 +743,21 @@ function render(summary) {
     (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
     typeof summary.billCents !== "object" ||
     summary.billCents === null ||
-    !Array.isArray(summary.billCents.lines)
+    !Array.isArray(summary.billCents.lines) ||
+    typeof summary.cardOnFile !== "boolean"
   ) {
     sayUnreachable();
     return;
   }
   sayReachable();
+
+  // A month with no stored day has no chart to draw and no saving to report, so
+  // without this the "This month" area is blank for every new account (drive
+  // issue #427). The days, not the sizes: a month that stored and then emptied
+  // itself still has its history to draw, and says so.
+  if (summary.storedDaily.length === 0) {
+    sayMonthEmpty();
+  }
 
   // The saved line is the endpoint's own sentence, shown only when it is a
   // real saving: an empty month has none and stays hidden.
@@ -636,7 +787,11 @@ function render(summary) {
     row.append(dt, dd);
     billLinesEl.append(row);
   }
-  billLinesEl.hidden = summary.billCents.lines.length === 0;
+  // Until a card is really on file the page shows no bill at all
+  // (drive#417): a card-less month has no charge on it, so the cost line above
+  // is the no-charge sentence and the invoice rows stay hidden rather than
+  // looking like a bill that was taken.
+  billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.
@@ -644,11 +799,14 @@ function render(summary) {
   uploadLineEl.hidden = summary.uploadLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
-  // month's ceiling or the cap, whichever is larger, in whole dollars. It is a
-  // display until the accounts store lands (issue #2), which is why it ships
-  // disabled.
+  // month's ceiling or the cap, whichever is larger, in whole dollars.
   capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, cap.capUsd)));
-  capSlider.value = String(cap.capUsd);
+  // A person who has moved the slider is not moved back: the minute's read
+  // would otherwise throw away the amount they just picked, so it paints the
+  // value only while no save is waiting.
+  if (capSaveEl.hidden) {
+    capSlider.value = String(cap.capUsd);
+  }
 }
 
 function showCloseError(el, message) {
@@ -726,6 +884,22 @@ async function postClose(url, email, errorEl) {
 closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
   postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
+});
+capSlider.addEventListener("input", () => {
+  // A chosen number is not a saved number: the button is there to make it one,
+  // so it appears the moment the slider leaves the cap in force and stays
+  // until the save lands or this page's own read catches up with it.
+  //
+  // The note goes back to its own words at the same time. A worker's sentence
+  // left sitting under the slider after it was read would answer a number the
+  // person has since changed, and it is the one line on this page that names
+  // an amount the person did not choose.
+  capSaveEl.hidden = false;
+  capNoteWhatEl.textContent = CAP_NOTE.what;
+  capNoteNextEl.textContent = CAP_NOTE.next;
+});
+capSaveEl.addEventListener("click", () => {
+  saveCap();
 });
 
 async function readMonth() {

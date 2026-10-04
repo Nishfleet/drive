@@ -106,11 +106,7 @@ func signedInEnv(env Env, apiBase string) (Env, error) {
 		if err != nil {
 			return env, err
 		}
-		name, err := os.Hostname()
-		if err != nil || strings.TrimSpace(name) == "" {
-			name = "this device"
-		}
-		token, account, err := SignIn(client, name, os.Stdout)
+		token, account, err := SignIn(client, deviceName(), os.Stdout)
 		if err != nil {
 			return env, err
 		}
