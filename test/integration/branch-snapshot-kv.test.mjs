@@ -34,7 +34,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   approveBranch,
-  backfillBranchSnapshots,
   createBranch,
   createKvSnapshotStore,
   diffBranch,
@@ -286,130 +285,140 @@ test("a 100,000-file branch is created, listed, diffed and approved, over the re
   );
 });
 
-// The step 1 of drive#321: the rows that predate the namespace are moved into
-// it. This is the same proof shape as the file above — the real migrations
-// (0012 included) applied to a real SQLite engine, a real KV namespace behind
-// the module's own store — and the claim it makes is the one a unit test with
-// a hand-built table cannot: a pre-namespace row at the largest shape the old
-// code could really have written (D1's 1 MiB row limit bounded every
-// pre-0012 branch; #157's phase 1 measured the limit at 8,800 files) is swept
-// into the namespace under its own key, its row carries the pointer and the
-// value's true length, its closed siblings are not touched, and after the
-// sweep there is no OPEN row left reading the column.
-test("an open pre-namespace branch is backfilled into the namespace over the real schema", async () => {
+// The issue's second acceptance bullet, over the real schema: with drive#339's
+// `0017_drop_branches_snapshot.sql` applied (its one statement, run here so the
+// gate does not wait on that PR's branch), `branches` has no `snapshot` column,
+// and createBranch + listBranches + readSnapshot over the pointer still work.
+// Before this issue the nightly sweep was the last statement naming the column,
+// so it failed at PREPARE every night rather than on empty rows: this test is
+// why that cannot come back. Branch and snapshot numbers stay this file's own,
+// so the two proofs do not share a name a citation could confuse.
+const ACCOUNT_AFTER = { id: "acct-399", name: "The pointer-only drive" };
+const AFTER_AT = Date.parse("2026-10-04T05:00:00.000Z");
+
+test("the pointer path survives the snapshot column being dropped", async () => {
   const db = createTestD1();
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv);
-
-  // The largest pre-0012 row shape: a folder the old code accepted, just under
-  // the row limit it was written under. A 100,000-file folder was refused at
-  // branch time, so a real legacy row is bounded by this size.
-  const LEGACY_FILES = 8000;
-  /** @type {Record<string, {size: number, etag: string, modified: number}>} */
-  const legacy = {};
-  for (let index = 0; index < LEGACY_FILES; index += 1) {
-    const album = String(Math.floor(index / 1000)).padStart(3, "0");
-    legacy[`album-${album}/img-${String(index).padStart(6, "0")}.jpg`] = {
-      size: 102400 + (index % 900),
-      etag: (index % 100000).toString(16).padStart(32, "0"),
-      modified: AT - index,
+  const scope = scopeStore(createMemoryStore(), ACCOUNT_AFTER);
+  // One folder with two files: the smallest tree that makes a snapshot, a diff
+  // and an approve each real, so this stays under a second rather than the
+  // 100,000-file walk the first proof in this file measures. `entry` builds
+  // the one listing shape `createBranch` and `diffBranch` consume.
+  const entry = (
+    /** @type {string} */ prefix,
+    /** @type {string} */ name,
+    /** @type {number} */ size,
+  ) => ({
+    name,
+    path: `${prefix}/${name}`,
+    kind: /** @type {const} */ ("file"),
+    size,
+    etag: size.toString(16).padStart(32, "0"),
+    modified: AFTER_AT,
+  });
+  // The walk is breadth-first over real listings: `folderState` decides "is
+  // this a folder" from a listing of its PARENT (src/branches.js), so the drive
+  // root answers with the folder, the folder answers with its files, and the
+  // branch's own prefix answers with the copies the walk made. That is the
+  // shape a real drive's listing returns, and it is why the diff below is a
+  // diff of two real trees rather than of two fixtures.
+  // Every file the walk copied, keyed by the branch path it was copied to, so
+  // the branch's own listing answers back the real copies rather than a
+  // second hand-written list that could drift from what `copy` was asked for.
+  /** @type {Map<string, {name: string, path: string, kind: string, size: number, etag: string, modified: number}>} */
+  const copied = new Map();
+  /** The source entry for a copy, as the walk read it. @param {string} from @param {string} to */
+  const entryFrom = (from, to) => {
+    const name = from.slice(from.lastIndexOf("/") + 1);
+    const size = name === "a.txt" ? 4 : 5;
+    return {
+      name,
+      path: to,
+      kind: "file",
+      size,
+      etag: entry("/Notes", name, size).etag,
+      modified: AFTER_AT,
     };
-  }
-  const column = JSON.stringify(legacy);
+  };
+  const scoped = /** @type {import("../../src/files.js").FileStore} */ ({
+    ...scope,
+    async list(path) {
+      if (path === "/") {
+        return [{ name: "Notes", path: "/Notes", kind: "folder" }];
+      }
+      if (path === "/Notes") {
+        return [entry("/Notes", "a.txt", 4), entry("/Notes", "b.txt", 5)];
+      }
+      if (path === "/.branches/after") {
+        return [...copied.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+      }
+      return [];
+    },
+    // The copy is recorded under the branch path, so the branch's own listing
+    // above answers the files the walk really copied and the diff below is a
+    // diff of two real trees. `copy` on the in-memory store would refuse: the
+    // store has no bytes at `u/acct-399/Notes/a.txt`, because the stand-in for
+    // the object storage is the listing above (drive#157 measured the bytes).
+    async copy(/** @type {string} */ from, /** @type {string} */ to, /** @type {number} */ size) {
+      void size;
+      copied.set(to, { ...entryFrom(from, to) });
+    },
+  });
+
+  // The branch is made BEFORE the drop, so the row it writes is the row the
+  // deployed code writes today and the pointer it carries is a real one.
+  const created = await createBranch(
+    db,
+    snapshots,
+    scoped,
+    ACCOUNT_AFTER,
+    { folder: "/Notes", name: "after" },
+    () => AFTER_AT,
+  );
+  const branch = /** @type {{name: string, state: string}} */ (created);
+  assert.equal(branch.name, "after");
+
+  // drive#339's one statement, run against the real engine: from here on, any
+  // SQL that names the dropped column fails at prepare.
+  db.sqlite.exec("ALTER TABLE branches DROP COLUMN snapshot");
+
+  const columns = /** @type {{name: string}[]} */ (
+    db.sqlite.prepare("PRAGMA table_info('branches')").all()
+  ).map((column) => column.name);
   assert.ok(
-    Buffer.byteLength(column) < D1_ROW_LIMIT,
-    `the legacy row is ${Buffer.byteLength(column)} bytes, under the ${D1_ROW_LIMIT}-byte row limit it was written under`,
+    !columns.includes("snapshot"),
+    `branches carries no snapshot column: ${columns.join(",")}`,
   );
 
-  // The rows migration 0012 inherited, written with plain SQL: the JSON in the
-  // column, the pointer at its '' default, the length at 0.
-  const insert = db.sqlite.prepare(
-    "INSERT INTO branches (account_id, name, source_prefix, branch_prefix, snapshot, " +
-      "state, created_at, changed_by_key_id) VALUES (?,?,?,?,?,?,?,'a-key')",
+  // The acceptance's three calls, over the pointer, after the drop.
+  const listed = await listBranches(db, snapshots, scoped, ACCOUNT_AFTER);
+  assert.equal(listed.length, 1, "the branch is listed across the dropped column");
+  const restored = await readSnapshot(snapshots, listed[0].snapshotKey);
+  assert.deepEqual(
+    Object.keys(restored).sort(),
+    ["a.txt", "b.txt"],
+    "the pointer resolves the snapshot",
   );
-  const createdAt = new Date(AT).toISOString();
-  insert.run(ACCOUNT.id, "old", "/Photos", "/.branches/old", column, "open", createdAt);
-  insert.run(ACCOUNT.id, "done", "/Photos", "/.branches/done", column, "approved", createdAt);
-  insert.run(ACCOUNT.id, "gone", "/Photos", "/.branches/gone", column, "discarded", createdAt);
+  assert.equal(listed[0].changed, 0, "a branch nobody touched has changed nothing");
 
-  /** @param {string} name @param {string} state */
-  const rowAt = (name, state) =>
-    /** @type {{snapshot: string, snapshot_key: string, snapshot_bytes: number}} */ (
-      db.sqlite
-        .prepare(
-          "SELECT snapshot, snapshot_key, snapshot_bytes FROM branches " +
-            "WHERE account_id = ? AND name = ? AND state = ?",
-        )
-        .get(ACCOUNT.id, name, state)
-    );
+  const diff = await diffBranch(scoped, { ...listed[0], snapshot: restored });
+  assert.deepEqual(diff.added, [], "the diff reads the pointer");
+  assert.deepEqual(diff.removed, []);
 
-  // Before: the pointer is empty. drive#329 dropped the column fallback, so
-  // the reader resolves that as empty until the sweep copies the JSON out.
-  const before = rowAt("old", "open");
-  assert.equal(before.snapshot_key, "");
-  assert.equal(before.snapshot_bytes, 0);
-  assert.deepEqual(await readSnapshot(snapshots, before.snapshot_key), {});
-
-  // The sweep: the open row moves, the closed rows do not.
-  const report = await backfillBranchSnapshots(db, snapshots);
-  assert.equal(report.moved, 1, "one open pre-namespace row");
-  assert.equal(report.files, LEGACY_FILES, "the report counts the entries it moved");
-  assert.equal(report.bytes, Buffer.byteLength(column), "the report counts the bytes it moved");
-
-  const moved = rowAt("old", "open");
-  assert.equal(moved.snapshot_key, snapshotKey(ACCOUNT, "old"));
-  assert.equal(
-    moved.snapshot_bytes,
-    Buffer.byteLength(column),
-    "the row records the value's own length",
+  const approved = await approveBranch(db, snapshots, scoped, ACCOUNT_AFTER, "after");
+  assert.equal(/** @type {{state: string}} */ (approved).state, "approved");
+  const after = await readSnapshot(snapshots, snapshotKey(ACCOUNT_AFTER, "after"));
+  assert.deepEqual(
+    Object.keys(after).sort(),
+    ["a.txt", "b.txt"],
+    "the approve wrote the pointer, not the dropped column",
   );
-  // The value, read off the namespace itself: the exact column JSON, not a
-  // re-encoding of it, and the row still carries its own copy (the column is
-  // dropped only in the later phase, once nothing reads it).
-  assert.equal(kv.values.get(moved.snapshot_key), column);
-  assert.equal(moved.snapshot, column);
-  // The WRITE is real, and the READ resolves the same map through the pointer:
-  // 8,000 entries, every one of them the fingerprint the column held.
-  const afterRead = await readSnapshot(snapshots, moved.snapshot_key);
-  assert.equal(Object.keys(afterRead).length, LEGACY_FILES);
-  assert.deepEqual(afterRead, legacy);
 
-  // The closed branches: untouched, and no value of theirs in the namespace —
-  // their snapshot is the count their row already carries.
-  for (const [name, state] of [
-    ["done", "approved"],
-    ["gone", "discarded"],
-  ]) {
-    const closed = rowAt(name, state);
-    assert.equal(closed.snapshot_key, "", `${state} keeps its empty pointer`);
-    assert.equal(closed.snapshot_bytes, 0, `${state} keeps its zero byte length`);
-    assert.equal(closed.snapshot, column, `${state} keeps its JSON exactly where it was`);
-    assert.equal(
-      kv.values.has(snapshotKey(ACCOUNT, name)),
-      false,
-      `${state} has no namespace value`,
-    );
-  }
-
-  // The condition the drop phase waits on, as the query itself: no OPEN row
-  // is left without a pointer.
-  const remaining = /** @type {{n: number}} */ (
-    db.sqlite
-      .prepare("SELECT COUNT(*) AS n FROM branches WHERE state = 'open' AND snapshot_key = ''")
-      .get()
-  );
-  assert.equal(remaining.n, 0);
-
-  // Idempotent: the sweep matches `snapshot_key = ''`, so a second run moves
-  // nothing and the namespace is unchanged.
-  assert.equal((await backfillBranchSnapshots(db, snapshots)).moved, 0);
-
-  // The proof, in one line for the PR body.
   console.log(
-    `drive#321 proof: branch "old" of account ${ACCOUNT.id}, ${LEGACY_FILES} files, ` +
-      `column ${Buffer.byteLength(column)} bytes (under D1's ${D1_ROW_LIMIT}-byte row limit), ` +
-      `taken ${createdAt}; backfill moved it to ${moved.snapshot_key} with ` +
-      `snapshot_bytes=${moved.snapshot_bytes}; the approved and discarded rows kept their column; ` +
-      `a second run moved 0; open rows without a pointer after: ${remaining.n}.`,
+    `drive#399 proof: branch "after" of account ${ACCOUNT_AFTER.id}, ` +
+      `created ${new Date(AFTER_AT).toISOString()}; ALTER TABLE branches DROP COLUMN snapshot ` +
+      `applied; branches columns [${columns.join(", ")}]; createBranch, listBranches, ` +
+      `readSnapshot, diffBranch and approveBranch all answered over the pointer.`,
   );
 });
