@@ -415,10 +415,11 @@ export async function handleSigninRequest(request, env) {
           try {
             await createD1DeviceStore(db).revokeAllKeys(account);
             await createD1DeviceSigninStore(db).revokeAllDeviceTokens(account);
-            await /** @type {D1Database} */ (db)
-              .prepare(`DELETE FROM session WHERE "userId" = ?1`)
-              .bind(account.id)
-              .run();
+            // Better Auth's own adapter, not a hand-written delete against
+            // its table. Its revoke-sessions endpoint would do the same, but
+            // it demands a fresh session, so a day-old sign-in could not
+            // sign out everywhere.
+            await (await auth.$context).internalAdapter.deleteUserSessions(account.id);
           } catch (_error) {
             everywhereError = failureMessage("storage-down");
           }

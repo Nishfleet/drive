@@ -816,6 +816,11 @@ test("sign-out everywhere revokes keys, device tokens, and the browser session",
     made.env,
   );
   assert.equal(otherBrowser.status, 401, "the other browser session is gone");
+  const theirBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: theirs.cookie } }),
+    made.env,
+  );
+  assert.notEqual(theirBrowser.status, 401, "another account's browser session stays live");
 
   const mineRow = made.db.sqlite
     .prepare("SELECT revoked_at FROM devices WHERE id = ?")
