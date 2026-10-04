@@ -630,6 +630,10 @@ function showSessionNav(signedIn) {
  * @param {"signout"|"signout-all"} step
  */
 async function postSignout(step) {
+  const signout = required("nav-signout");
+  const everywhere = required("nav-signout-all");
+  if (signout instanceof HTMLButtonElement) signout.disabled = true;
+  if (everywhere instanceof HTMLButtonElement) everywhere.disabled = true;
   let response;
   try {
     response = await fetch(SIGNIN_ENDPOINT, {
@@ -638,9 +642,15 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
     return;
   }
   if (!response.ok) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
     return;
   }
   window.location.reload();

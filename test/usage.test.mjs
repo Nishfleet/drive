@@ -887,6 +887,17 @@ test("the pages' mastheads read as one navigation", () => {
       new RegExp(`id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`),
       `${name} carries Sign out everywhere, hidden until the session is there`,
     );
+    assert.match(
+      header,
+      /<noscript>/,
+      `${name} keeps a Sign out form for a browser with no script`,
+    );
+    assert.match(header, /name="step" value="signout"/, `${name}'s form posts the sign-out step`);
+    assert.match(
+      header,
+      /name="step" value="signout-all"/,
+      `${name}'s form posts sign-out everywhere`,
+    );
   }
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.
@@ -903,6 +914,11 @@ test("the pages' mastheads read as one navigation", () => {
     );
     assert.match(source, /postSignout\("signout"\)/, `${name} posts the sign-out step`);
     assert.match(source, /postSignout\("signout-all"\)/, `${name} posts sign-out everywhere`);
+    assert.match(
+      source,
+      /\.disabled = true/,
+      `${name} sleeps the button while the post is in flight`,
+    );
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.

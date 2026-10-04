@@ -512,6 +512,16 @@ dialog.viewer::backdrop {
       <a href="/get-started">Get started</a>
       <a href="/usage">Usage</a>
       <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
       <button type="button" id="nav-signout" hidden>Sign out</button>
       <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
     </header>
@@ -1134,6 +1144,8 @@ function showSessionNav(signedIn) {
 }
 
 async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
   let response;
   try {
     response = await fetch(SIGNIN_ENDPOINT, {
@@ -1142,9 +1154,21 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
+    say("You look offline. Check your connection and try again.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
     return;
   }
   if (!response.ok) {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      payload = {};
+    }
+    say(payload.error || "That did not work. Try again in a moment.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
     return;
   }
   location.reload();

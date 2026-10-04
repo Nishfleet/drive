@@ -720,6 +720,8 @@ test("sign-out everywhere revokes keys, device tokens, and the browser session",
     .deviceToken;
   assert.notEqual(await signinStore.accountForDeviceToken(myToken), null);
   assert.notEqual(await signinStore.accountForDeviceToken(theirToken), null);
+  const again = await signIn(made, "mine@example.com");
+  assert.notEqual(again.cookie, mine.cookie, "a second browser has its own session");
 
   const out = await workerFetch(
     new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
@@ -737,6 +739,11 @@ test("sign-out everywhere revokes keys, device tokens, and the browser session",
     made.env,
   );
   assert.equal(after.status, 401, "the browser session is gone");
+  const otherBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: again.cookie } }),
+    made.env,
+  );
+  assert.equal(otherBrowser.status, 401, "the other browser session is gone");
 
   const mineRow = made.db.sqlite
     .prepare("SELECT revoked_at FROM devices WHERE id = ?")
@@ -758,6 +765,68 @@ test("sign-out everywhere revokes keys, device tokens, and the browser session",
     null,
     "another account's token stays live",
   );
+});
+
+test("a no-JavaScript sign-out form posts and lands on the sign-in page", async () => {
+  const made = dispatchEnv();
+  const { cookie } = await signIn(made, "form@example.com");
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: new URLSearchParams({ step: "signout" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 302, "a form post is a redirect, not a JSON body");
+  assert.equal(out.headers.get("location"), SIGNIN_PATH);
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the form's sign-out ended the session");
+});
+
+test("sign-out everywhere still ends this session when the key store fails", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "partial@example.com");
+  const db = made.db;
+  const failing = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          if (/UPDATE\s+devices/i.test(String(sql))) {
+            throw new Error("devices store down");
+          }
+          return target.prepare(sql);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: JSON.stringify({ step: "signout-all" }),
+    }),
+    { ...made.env, DRIVE_DB: failing },
+  );
+  assert.equal(out.status, 503, "a partial everywhere is not reported as ok");
+  assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "this browser is signed out even when keys stay live");
 });
 
 // --------------------------------------------------------- per-IP rate limit
