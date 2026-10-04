@@ -212,6 +212,18 @@ var messageTable = map[string][2]string{
 		"The branch was copied, but its key could not be minted.",
 		"Run `drive branch` again with the same name to mint the key; the copy is already there.",
 	},
+	"import-source": {
+		"That is not an rclone remote this command can import from.",
+		"Pass a remote you already made with `rclone config`, like `photos:`, then run `drive import` again.",
+	},
+	"import-not-mounted": {
+		"The drive is not mounted on this computer.",
+		"Run `drive init` first, then run `drive import` again.",
+	},
+	"import-failed": {
+		"rclone could not copy those files into the drive.",
+		"Run `rclone config` to check the remote, then run `drive import` again.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.
