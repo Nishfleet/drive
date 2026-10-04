@@ -219,6 +219,26 @@ h2 {
   font-size: clamp(18px, 2.6vw, 22px);
 }
 
+/* The save button the slider reveals once it holds a number worth keeping.
+   The same shape as the close form's button, because it is the same promise:
+   a deliberate write on this page. */
+.cap button {
+  margin: 6px 0 0;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.cap button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .close-form {
   display: grid;
   gap: 10px;
@@ -380,13 +400,16 @@ h2 {
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
           <label for="cap-slider">Monthly cap, in dollars</label>
-          <input type="range" id="cap-slider" min="0.01" max="12" step="0.01" value="12" disabled aria-describedby="cap-note">
+          <input type="range" id="cap-slider" min="0" max="12" step="0.01" value="12" aria-describedby="cap-note">
           <p class="cap-value" id="cap-value"></p>
+          <button type="button" id="cap-save" hidden>Save cap</button>
         </div>
         <div class="empty" id="cap-note">
-          <p class="what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-          <p class="next">Changing the cap from this page arrives with accounts.</p>
+          <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
+          <p class="next" id="cap-note-next">Move the slider, then choose Save cap.</p>
         </div>
+        <p class="hint" id="cap-saved" role="status" hidden></p>
+        <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
       </section>
 
       <section aria-labelledby="close-heading" id="close-section">
@@ -423,6 +446,10 @@ h2 {
 // sentence, the endpoint or the poll interval drifts from there — the same gate
 // test/status.test.mjs runs for the first-run page.
 const USAGE_ENDPOINT = "/api/usage";
+// The cap write the slider POSTs to: the same route `drive cap` writes, so
+// one function on the Worker parses and writes a cap however it arrives. It
+// is already behind the account gate, and its words are the api's own.
+const CAP_ENDPOINT = "/api/cap";
 const CLOSE_ENDPOINT = "/api/account/close";
 const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 const POLL_INTERVAL_MS = 60000;
@@ -432,6 +459,15 @@ const POLL_INTERVAL_MS = 60000;
 const UNREACHABLE = {
   what: "Could not reach the usage service just now.",
   next: "Leave this page open. It checks again in a minute.",
+};
+
+// The cap's own pair, the one src/usage.js pins as USAGE_LABELS.capNote. The
+// `next` is the resting instruction, and it says what to do rather than what
+// is not possible yet: the accounts store is live (drive issue #2), so the
+// slider below is a control and this is how a person uses it.
+const CAP_NOTE = {
+  what: "At the cap the drive goes read-only; nothing is ever deleted.",
+  next: "Move the slider, then choose Save cap.",
 };
 
 // The account gate's words (drive issue #73) are not repeated here: the 401
@@ -464,6 +500,10 @@ const downloadsEl = document.getElementById("downloads-line");
 const uploadLineEl = document.getElementById("upload-line");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
+const capSaveEl = document.getElementById("cap-save");
+const capSavedEl = document.getElementById("cap-saved");
+const capSavingEl = document.getElementById("cap-saving");
+const capNoteEl = document.getElementById("cap-note");
 const closeWhatEl = document.getElementById("close-what");
 const closeNextEl = document.getElementById("close-next");
 const closeClosedWhatEl = document.getElementById("close-closed-what");
@@ -487,6 +527,72 @@ const CLOSE_BOX = {
 // pending. renderClose() sets it from the account's state.
 let closeTarget = CLOSE_ENDPOINT;
 
+// The cap's note under the slider. It rests on the instruction above, and it
+// carries the words of a save that failed, the way the signed-out state
+// carries the 401's own words.
+function showCapNote(note) {
+  capNoteEl.querySelector(".what").textContent = note.what;
+  capNoteEl.querySelector(".next").textContent = note.next;
+}
+
+// A save that failed. The Worker's sentence is the one that answers what went
+// wrong, so it is shown as it arrived, with no second sentence of ours next to
+// it -- the same shape the signed-out state uses. The button stays, so the
+// same amount can be tried again without moving the slider back.
+function sayCapError(note) {
+  capSavedEl.hidden = true;
+  showCapNote(note);
+  capSlider.disabled = false;
+  capSaveEl.disabled = false;
+  capSaveEl.hidden = false;
+}
+
+// The cap write (drive issue #421). The accounts store is live, so the slider
+// is a control and not a readout: it sends the number to the one route that
+// writes a cap, which `drive cap` also uses, so a cap is parsed and written
+// once however it arrives. The answer is the month with the cap just written,
+// so the endpoint's own `capLine` sentence is what confirms the save, and the
+// read that follows paints the cap now in force. No money is worked out here
+// and no sentence is written here.
+async function saveCap() {
+  const amount = capSlider.value;
+  capSlider.disabled = true;
+  capSaveEl.disabled = true;
+  capSavingEl.hidden = false;
+  let response;
+  try {
+    response = await fetch(CAP_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ amount }),
+    });
+  } catch (_error) {
+    capSavingEl.hidden = true;
+    capSlider.disabled = false;
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(UNREACHABLE);
+    return;
+  }
+  const payload = await response.json().catch(() => null);
+  const error = payload && typeof payload.error === "string" ? payload.error : "";
+  capSavingEl.hidden = true;
+  capSlider.disabled = false;
+  if (!response.ok) {
+    capSaveEl.hidden = false;
+    capSaveEl.disabled = false;
+    sayCapError(error ? { what: error, next: "" } : UNREACHABLE);
+    return;
+  }
+  capSaveEl.hidden = true;
+  capSaveEl.disabled = false;
+  capSavedEl.hidden = true;
+  capSavedEl.textContent = payload && typeof payload.capLine === "string" ? payload.capLine : "";
+  capSavedEl.hidden = capSavedEl.textContent === "";
+  showCapNote(CAP_NOTE);
+  readMonth();
+}
+
 function sayUnreachable() {
   statusEl.dataset.state = "unreachable";
   statusEl.querySelector(".what").textContent = UNREACHABLE.what;
@@ -507,7 +613,10 @@ function saySignedOut(message) {
   statusEl.querySelector(".next").textContent = "";
   statusEl.hidden = false;
   bodyEl.hidden = true;
+  // An account on this browser is what a write needs, so a signed-out page
+  // cannot move a cap: the slider and the button that saves it both sleep.
   capSlider.disabled = true;
+  capSaveEl.hidden = true;
 }
 
 function sayReachable() {
@@ -670,11 +779,14 @@ function render(summary) {
   uploadLineEl.hidden = summary.uploadLine === null;
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
-  // month's ceiling or the cap, whichever is larger, in whole dollars. It is a
-  // display until the accounts store lands (issue #2), which is why it ships
-  // disabled.
+  // month's ceiling or the cap, whichever is larger, in whole dollars.
   capSlider.max = String(Math.ceil(Math.max(summary.ceilingUsd, cap.capUsd)));
-  capSlider.value = String(cap.capUsd);
+  // A person who has moved the slider is not moved back: the minute's read
+  // would otherwise throw away the amount they just picked, so it paints the
+  // value only while no save is waiting.
+  if (capSaveEl.hidden) {
+    capSlider.value = String(cap.capUsd);
+  }
 }
 
 function showCloseError(el, message) {
@@ -752,6 +864,15 @@ async function postClose(url, email, errorEl) {
 closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
   postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
+});
+capSlider.addEventListener("input", () => {
+  // A chosen number is not a saved number: the button is there to make it one,
+  // so it appears the moment the slider leaves the cap in force and stays
+  // until the save lands or this page's own read catches up with it.
+  capSaveEl.hidden = false;
+});
+capSaveEl.addEventListener("click", () => {
+  saveCap();
 });
 
 async function readMonth() {

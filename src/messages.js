@@ -37,6 +37,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
   }),
+  // A cap write from the usage page or `drive cap` reached a Worker with no
+  // account store behind it (drive#421). The cap was not changed, so the next
+  // step is not to wait and retry: this deployment has to be wired first.
+  "cap-store-missing": Object.freeze({
+    what: "The cap could not be saved, so the one in force is unchanged.",
+    next: "Ask whoever runs this deployment to set up the account store.",
+  }),
   // rclone's local VFS cache filled the disk, so saves cannot queue.
   "disk-cache-full": Object.freeze({
     what: "The local cache is full, so new saves can't upload.",

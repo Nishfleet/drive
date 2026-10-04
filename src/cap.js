@@ -47,6 +47,7 @@
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
+import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -412,9 +413,14 @@ export function parseCapUsd(input) {
  * @returns {string}
  */
 function capShapeError(given) {
+  // One sentence with its own next step, and no surface's name in it: the
+  // usage page's slider sends the same request the CLI does, so "Run: drive
+  // cap 20" answered a person holding the slider with a command they have no
+  // way to run, and "save it again" answered a terminal with a page's words
+  // (drive#421). The one sentence has to read right at both.
   return (
-    `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
-    "Run: drive cap 20"
+    `A spending cap is a dollar amount like 20 or 12.50, got ${given}. ` +
+    "Type a number like that again."
   );
 }
 
@@ -451,6 +457,16 @@ export const CAP_ENDPOINT = "/api/cap";
  * parseCapUsd() TypeError message when the amount is bad, so that sentence
  * is the 400 body and nothing else.
  *
+ * The write is refused when it arrives from another origin (drive#421): the
+ * usage page's slider saves a cap through this route, and a cap write is a key
+ * swap — it revokes the old credential and mints a new one — so a page on
+ * another origin that could forge the POST would revoke a real drive's keys.
+ * The rule is the one every other state-changing route carries
+ * (src/files.js, src/waitlist.js, src/email-send.js), it lives in the handler
+ * rather than in a middleware layer, and it reads no header the CLI cannot
+ * send: a request with no Origin at all is not a browser, so `drive cap` still
+ * reaches it.
+ *
  * @param {Request} request
  * @param {{id: string, name?: string, email?: string|null, capUsd?: number}|null} account
  * @param {{setCapCents: Function, listCapKeys: Function, keyProviderFor: Function, setAccountState: Function, monthUsage?: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}|null} capStore
@@ -464,6 +480,22 @@ export async function handleCapRequest(request, account, capStore) {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
+  }
+  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
+  // no Origin header through, so the CLI ('drive cap 20', no browser
+  // evidence) still reaches this handler — the account gate is what
+  // identifies it, not the header.
+  if (!isSameOriginRequest(request)) {
+    // A specific line rather than the generic one: "try again in a moment"
+    // would be advice to retry a request that is always refused, and the one
+    // next step is to do it from the drive page.
+    return new Response(
+      JSON.stringify({ error: "You can only change a spending cap from the drive page." }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      },
+    );
   }
   /** @type {unknown} */
   let body;
@@ -489,10 +521,11 @@ export async function handleCapRequest(request, account, capStore) {
     throw error;
   }
   if (capStore === null) {
-    return jsonCapError("The account store is not configured on this deployment.", 503);
+    // The one message table's words, with the one next step the table names: the
+    // cap did not move, and waiting will not fix a deployment that has no store.
+    return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
   await capStore.setCapCents(account, dollarsToCapCents(usd));
-  const keys = await capStore.listCapKeys(account.id);
   // The swap is decided from the month the account actually counted, so
   // setting the cap below what it has already spent enforces at once (the
   // finish line: making a drive read-only with `drive cap`). A deployment
@@ -511,7 +544,10 @@ export async function handleCapRequest(request, account, capStore) {
           capUsd: usd,
           cardAdded: true,
         };
-  const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
+  const report = await enforceCap(
+    { usage, keys: await capStore.listCapKeys(account.id) },
+    capStore.keyProviderFor(account.id),
+  );
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);

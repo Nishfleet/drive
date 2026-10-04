@@ -24,6 +24,7 @@ import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { CAP_ENDPOINT } from "../src/cap.js";
+import { isSameOriginRequest } from "../src/email-send.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
@@ -33,7 +34,7 @@ import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
-import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
+import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -970,4 +971,123 @@ test("the usage read is behind the same gate", async () => {
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
   assert.equal((await signedIn.json()).billUsd, 10);
+});
+
+// -------------------------------------------------------------- the cap write
+
+test("a signed-in browser's cap write passes; a forged cross-site one is refused", async () => {
+  // The cap write became a browser-facing lane on drive#421 (the usage page's
+  // slider saves a cap), and a cap write is a key swap: it revokes the old
+  // credential and mints a new one, so a page on another origin that could
+  // forge this POST would revoke a real drive's keys. The request goes through
+  // the Worker's own dispatch, so what is proved here is the middleware that
+  // stands in front of the handler rather than a handler called directly.
+  //
+  // The account store is a real one (the migration list the site Worker runs
+  // in production), so the write that passes is a write that really lands.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie, account } = await signIn(made, "capslider@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  /** @param {Record<string, string>} headers @returns {Promise<Response>} */
+  const post = (headers) =>
+    workerFetch(
+      new Request(`https://drive.test${CAP_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie, ...headers },
+        body: JSON.stringify({ amount: "20" }),
+      }),
+      env,
+      ctx,
+    );
+
+  // Our own page: the Origin the browser sends for a same-origin POST, and the
+  // Sec-Fetch-Site that says so without an Origin. Both are the request the
+  // slider makes, and both must reach the handler.
+  for (const headers of /** @type {Array<Record<string, string>>} */ ([
+    { origin: "https://drive.test" },
+    { "sec-fetch-site": "same-origin" },
+  ])) {
+    const answer = await post(headers);
+    assert.equal(answer.status, 200, `a ${Object.keys(headers)[0]} write must reach the handler`);
+  }
+  /** @returns {number} */
+  const storedCapCents = () => {
+    const row = made.db.sqlite
+      .prepare("SELECT cap_cents FROM accounts WHERE id = ?")
+      .get(account.id);
+    assert.notEqual(row, undefined, "the account's own row is the one the cap is stored on");
+    return Number(/** @type {{cap_cents: number}} */ (row).cap_cents);
+  };
+  // The person's own choice, and no one else's: the row now says $20.00, and
+  // the answer is the api's own cap line rather than a sentence of ours.
+  assert.equal(storedCapCents(), 2000);
+
+  // A page on another origin, forged into this one's request: it is refused
+  // before the handler runs, so it never reaches the account's keys.
+  const forged = await post({
+    origin: "https://evil.example",
+    "sec-fetch-site": "cross-site",
+  });
+  assert.equal(forged.status, 403);
+  // Nothing moved: the cap the person set is still the cap in force.
+  assert.equal(storedCapCents(), 2000, "a refused cross-site write must leave the cap alone");
+
+  // And the Go CLI, which is what `drive cap 20` sends: no Origin and no
+  // Sec-Fetch-Site at all, so it is not a browser request and passes through
+  // to the account gate, which is what identifies it.
+  const cli = await post({});
+  assert.equal(cli.status, 200, "the CLI's write must still reach the handler");
+  assert.equal(storedCapCents(), 2000);
+});
+
+test("a cap write that fails says what to do next, in plain words", async () => {
+  // The words a browser sees: a number the api cannot read, and a deployment
+  // with no account store behind it. Neither ends in a command the page's
+  // visitor cannot run (drive#421).
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "capwords@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: "drive-test-secret-not-used-outside-the-test-suite",
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  /** @param {string} amount @returns {Promise<Response>} */
+  const post = (amount) =>
+    workerFetch(
+      new Request(`https://drive.test${CAP_ENDPOINT}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie, origin: "https://drive.test" },
+        body: JSON.stringify({ amount }),
+      }),
+      env,
+      ctx,
+    );
+
+  const bad = await post("abc");
+  assert.equal(bad.status, 400);
+  const badBody = await bad.json();
+  assert.match(badBody.error, /A spending cap is a dollar amount like 20 or 12\.50/);
+  // One next step, and it holds on either surface: the page's slider sends the
+  // same request `drive cap` does, so it cannot end in "Run: drive cap 20"
+  // and it cannot tell a terminal to save anything.
+  assert.match(badBody.error, /Type a number like that again/);
+  assert.doesNotMatch(badBody.error, /drive cap/);
+  assert.doesNotMatch(badBody.error, /save/);
+});
+
+test("isSameOriginRequest lets no-Origin requests through", () => {
+  const same = isSameOriginRequest(new Request("https://drive.test/api/cap", { headers: {} }));
+  assert.equal(same, true, "a caller with no Origin is not blocked");
+  const diff = isSameOriginRequest(
+    new Request("https://drive.test/api/cap", {
+      headers: { origin: "https://evil.example" },
+    }),
+  );
+  assert.equal(diff, false, "a different origin is refused");
 });
