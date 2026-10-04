@@ -189,13 +189,15 @@ function providerDayGbMinutes(versions, day) {
   return gbMinutes;
 }
 
+const STANDIN_TIMEOUT_MS = Number(process.env.DRIVE_STANDIN_TEST_TIMEOUT ?? 30_000);
+
 test(
     "a full day of GB-minutes matches the storage provider's own report within 1%",
     {
       // The stand-in starts a container whose health check can exceed the
       // default 5 s test timeout on a busy runner; the full day of writes
-      // and reconciliation needs more time.
-      timeout: 30_000,
+      // and reconciliation needs more time. Tune via DRIVE_STANDIN_TEST_TIMEOUT.
+      timeout: STANDIN_TIMEOUT_MS,
     },
     async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
