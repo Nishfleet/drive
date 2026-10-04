@@ -145,7 +145,7 @@ func TestWriteNoteCreatesTheDriveFolderAndBothNotes(t *testing.T) {
 				t.Fatal(err)
 			}
 			text := readFile(t, filepath.Join(env.DriveDir, name))
-			for _, want := range []string{env.DriveDir, "drive restore", "drive branch"} {
+			for _, want := range []string{env.DriveDir, "drive branch", "drive approve"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s note is missing %q:\n%s", name, want, text)
 				}
@@ -226,7 +226,7 @@ func TestConnectClaudeWritesBothAccessGrants(t *testing.T) {
 		t.Errorf("the drive is not in the claude settings:\n%s", got)
 	}
 	note := readFile(t, filepath.Join(env.DriveDir, claudeNoteName))
-	for _, want := range []string{noteMarker, env.DriveDir, "drive restore", "drive branch"} {
+	for _, want := range []string{noteMarker, env.DriveDir, "drive branch", "drive approve"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the %s note is missing %q:\n%s", claudeNoteName, want, note)
 		}
