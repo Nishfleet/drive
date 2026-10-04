@@ -533,7 +533,12 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     );
 
   // 1. Start: an address, and a link that leaves by email and nowhere else.
-  const start = await signin({ step: "start", method: "email", email: "newperson@example.com" });
+  const start = await signin({
+    step: "start",
+    method: "email",
+    email: "newperson@example.com",
+    card: true, // a card at sign-up (drive#387)
+  });
   assert.equal(start.status, 202, "a start emails a link");
   const accepted = await start.json();
   assert.equal(accepted.ok, true);

@@ -178,14 +178,14 @@
     - type: javascript
       value: "/(12|twelve) dollars|\\$12/i.test(output)"
 
-- description: what is free every month, and what it needs from me
+- description: is there a free tier, and what sign-up needs from me
   vars:
     task: >
-      What comes free every month, and do I need a card to get it?
-    source: docs-site/pricing.md, "The free $1"
+      Is anything free every month, and do I need a card to sign up?
+    source: docs-site/pricing.md, "The membership"
   assert:
     - type: javascript
-      value: "/1 dollar|\\$1/i.test(output) && /no card|without a card/i.test(output)"
+      value: "/no free tier/i.test(output) && /card/i.test(output) && /10 dollars|\\$10/i.test(output)"
 
 - description: when downloads start costing money
   vars:
