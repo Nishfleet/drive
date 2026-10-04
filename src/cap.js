@@ -81,7 +81,15 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
  * A key row as the cap reads it, after checkedKey() has validated its shape.
  * The same row arrives from D1 and from the tests' fakes, so the fields the
  * arithmetic reads are all named here rather than being `object`.
- * @typedef {{keyId: string, kind: string, prefix: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
+ *
+ * `bucket` is the one the swap mints its replacement in, and it is optional
+ * because not every caller that builds these rows has a bucket to name: the
+ * two that do are the ones the api Worker binds (devices.js `listCapKeys`,
+ * agent-caps.js `capKeyRow`), and both read it off the key row's own prefix
+ * (keyprovider.js `bucketForKeyPrefix`). A swap without one mints a scope the
+ * storage provider refuses rather than a scope in some other account's bucket
+ * (s3-keys.js, drive#462).
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
  */
 
 /**
@@ -267,6 +275,13 @@ export function capSwapPlan(keys, cap) {
           keyId: row.keyId,
           kind: row.kind,
           prefix: row.prefix,
+          // The bucket the row names, carried into the swap so the replacement
+          // key is minted in the bucket the one it replaces was scoped to: an
+          // account's own, or a team's for a key on a team prefix (drive#371,
+          // drive#462). A swap without one would mint a scope with no bucket,
+          // which a storage provider refuses rather than answering with a
+          // deployment-wide bucket.
+          ...(row.bucket === undefined ? {} : { bucket: row.bucket }),
           capabilities,
           cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
         }),
@@ -336,6 +351,17 @@ export async function applyCapSwap(plan, provider) {
   /** @type {Array<CapKey & {minted: unknown}>} */
   const applied = [];
   for (const swap of plan.swaps) {
+    // The replacement is minted in the bucket the row names, so the key that
+    // comes back is scoped to the same boundary the one it replaces was: an
+    // account's own bucket, or a team's for a key on a team prefix (drive#371,
+    // drive#462). A swap that names no bucket mints a scope with none in it,
+    // which a storage provider refuses rather than answering with a
+    // deployment-wide bucket — that is how every key ended up in the shared
+    // bucket before drive#462.
+    const scope =
+      swap.bucket === undefined
+        ? { prefix: swap.prefix, capabilities: swap.capabilities }
+        : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
     if (plan.state === "read_only") {
@@ -343,10 +369,10 @@ export async function applyCapSwap(plan, provider) {
         minted = await keys.swapToReadOnly(swap.keyId);
       } else {
         await keys.revoke(swap.keyId);
-        minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+        minted = await keys.mint(scope);
       }
     } else {
-      minted = await keys.mint({ prefix: swap.prefix, capabilities: swap.capabilities });
+      minted = await keys.mint(scope);
       await keys.revoke(swap.keyId);
     }
     applied.push(Object.freeze({ ...swap, minted }));

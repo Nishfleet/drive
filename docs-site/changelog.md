@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-04
 
+- Every minted storage key is scoped to the bucket that is the account's own,
+  so the storage server itself refuses one account's key against another
+  account's files, and a minted answer names the bucket it can reach.
 - The home page's worked examples read as sentences: "about $1 of storage, and
   you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
 - Membership copy: $10 a month, storage use counts toward it, founding members

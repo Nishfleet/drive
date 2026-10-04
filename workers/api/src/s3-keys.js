@@ -11,11 +11,20 @@
 // answers.
 //
 // The mint is STS `AssumeRole` with a session policy, which is stock S3, so
-// the endpoint, region, bucket and master credential are the whole of the
+// the endpoint, region and master credential are the whole of the
 // configuration difference between the local stand-in and a provider that
 // mints this way. MinIO and Backblaze B2 do; iDrive e2 refuses `AssumeRole`
 // outright (403 AccessDenied, measured 2026-10-03, drive#173), so its bucket
 // settings come from this module but its keys cannot.
+//
+// The bucket a minted key is scoped to is the key scope's own, never this
+// provider's: one bucket per account and one per team (keyprovider.js
+// `bucketForAccount` / `bucketForTeam`, drive#371), so the boundary the
+// storage server enforces is the account. drive#462 measured the other way
+// round on the real Mac run of 2026-10-04: the mint resolved its bucket from
+// the deployment's `STORAGE_BUCKET`, so every key the deployment minted was
+// scoped to the one shared bucket, and the prefix was the only thing left
+// separating two accounts' files.
 //
 // Revoking a minted key is deliberately not here: a temporary S3 credential
 // cannot be withdrawn before it expires, so the provider is built with a
@@ -129,7 +138,6 @@ export function policyForScope(scope, bucket) {
  * @typedef {object} S3KeyProviderConfig
  * @property {string} endpoint
  * @property {string} region
- * @property {string} bucket
  * @property {string} masterAccessKeyId
  * @property {string} masterSecretAccessKey
  * @property {number} [sessionSeconds] how long a minted credential lives
@@ -146,6 +154,9 @@ export function policyForScope(scope, bucket) {
  * @property {string} accessKeyId
  * @property {string} secret
  * @property {string} sessionToken
+ * @property {string} bucket the bucket the credential is scoped to, which is
+ *   the key scope's own bucket (`drv-<accountId>`, `drv-t-<teamId>`) and the
+ *   boundary the storage server enforces
  * @property {ReturnType<typeof policyForScope>} policy
  * @property {number} expiresIn
  */
@@ -158,7 +169,6 @@ export function createS3KeyProvider(config) {
   const {
     endpoint,
     region,
-    bucket,
     masterAccessKeyId,
     masterSecretAccessKey,
     sessionSeconds = 3600,
@@ -166,8 +176,8 @@ export function createS3KeyProvider(config) {
     roleArn,
     fetchImpl = fetch,
   } = config;
-  if (!bucket || !masterAccessKeyId || !masterSecretAccessKey) {
-    throw new TypeError("The S3 key provider needs a bucket and the master credential.");
+  if (!masterAccessKeyId || !masterSecretAccessKey) {
+    throw new TypeError("The S3 key provider needs the master credential.");
   }
   if (!Number.isInteger(sessionSeconds) || sessionSeconds < 900 || sessionSeconds > 43200) {
     throw new TypeError(
@@ -190,6 +200,20 @@ export function createS3KeyProvider(config) {
      * @returns {Promise<MintedStorageKey>}
      */
     async mint(scope) {
+      // The scope's own bucket, and nothing else. drive#371 moved the boundary
+      // from the prefix to the bucket: a key scoped to one bucket cannot list,
+      // read or write another account's, whatever the prefix inside it, and
+      // that is the guarantee the old `u/<id>/` prefix could not give on a
+      // vendor that cannot scope a key to a folder. So a scope that names no
+      // bucket is refused, exactly as the iDrive provider refuses one
+      // (idrive-keys.js): handing it the deployment's own bucket instead would
+      // mint a key for the shared bucket, which is the bug drive#462 found.
+      const bucket = typeof scope.bucket === "string" && scope.bucket !== "" ? scope.bucket : null;
+      if (bucket === null) {
+        throw new TypeError(
+          "The S3 key provider needs a scope that names its bucket (keyprovider.js scopeFor).",
+        );
+      }
       const policy = policyForScope(scope, bucket);
       // STS answers on the service root with the parameters in the form body
       // and no query string, signed for the `sts` service with the same region
@@ -222,18 +246,28 @@ export function createS3KeyProvider(config) {
           `the answer was missing ${missing} of 3 credential fields`,
         );
       }
-      return { accessKeyId, secret, sessionToken, policy, expiresIn: sessionSeconds };
+      // The bucket is part of the answer, not a detail of the policy: the
+      // store keeps it on the key row it hands back and the callers mount this
+      // bucket, so a mint is where an account's own bucket name is learned.
+      return { accessKeyId, secret, sessionToken, bucket, policy, expiresIn: sessionSeconds };
     },
   };
 }
 
 /**
  * The storage provider a deployment's env carries, or null when it carries
- * none. All five STORAGE_* values or none: a half-configured deployment
+ * none. All four STORAGE_* values or none: a half-configured deployment
  * would mint keys the endpoint has never heard of, so the mint throws and
  * every other route keeps answering. The stub matches the KeyProvider
  * shape (`mint`, `revoke`, `swapToReadOnly`) so a cap swap hits the same
  * refusal, not a missing method.
+ *
+ * No bucket is configured here, and that is deliberate: the bucket a key is
+ * scoped to is the scope's own (keyprovider.js `bucketForAccount` /
+ * `bucketForTeam`), so a deployment-wide bucket is not a thing this provider
+ * can be given. drive#462 removed `STORAGE_BUCKET` from this list for that
+ * reason: with it, every key the deployment minted was scoped to the one
+ * bucket it named.
  *
  * Shared by the api Worker (POST /v1/keys) and the site Worker
  * (`drive cap` on POST /api/cap): one function, so a deployment that can
@@ -245,7 +279,6 @@ export function s3KeyProviderFromEnv(env) {
   const names = [
     "STORAGE_ENDPOINT",
     "STORAGE_REGION",
-    "STORAGE_BUCKET",
     "STORAGE_MASTER_ACCESS_KEY_ID",
     "STORAGE_MASTER_SECRET_ACCESS_KEY",
   ];
@@ -275,7 +308,6 @@ export function s3KeyProviderFromEnv(env) {
   return createS3KeyProvider({
     endpoint: /** @type {string} */ (env.STORAGE_ENDPOINT),
     region: /** @type {string} */ (env.STORAGE_REGION),
-    bucket: /** @type {string} */ (env.STORAGE_BUCKET),
     masterAccessKeyId: /** @type {string} */ (env.STORAGE_MASTER_ACCESS_KEY_ID),
     masterSecretAccessKey: /** @type {string} */ (env.STORAGE_MASTER_SECRET_ACCESS_KEY),
     ...(typeof env.STORAGE_ROLE_ARN === "string" && env.STORAGE_ROLE_ARN !== ""
