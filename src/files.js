@@ -969,6 +969,9 @@ export function createS3Store(config) {
    * The one request path every method below uses, so a store is either fully
    * signed or fully unsigned. A body is read into bytes first, because SigV4
    * signs the payload hash and a stream cannot be hashed after it is sent.
+   * Signing is `aws.sign` then `fetchImpl`, the same path `createS3Client`
+   * uses, so a test can still inject fetch and a credentialed store never
+   * bypasses it through `aws.fetch`.
    *
    * @type {(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>}
    */
@@ -978,12 +981,19 @@ export function createS3Store(config) {
       : async (input, init = {}) => {
           const opts = /** @type {any} */ ({ ...init });
           if (opts.body !== undefined && opts.body !== null) {
-            opts.body = await signableBody(opts.body);
+            const bytes = await signableBody(opts.body);
+            // The body is sent exactly as it was signed: a Uint8Array is copied
+            // into a plain view, the same copy createS3Client makes, because
+            // sending anything other than the signed bytes is SignatureDoesNotMatch.
+            const body = new Uint8Array(bytes.byteLength);
+            body.set(bytes);
+            opts.body = body;
           }
           if (opts.body === null) {
             delete opts.body;
           }
-          return aws.fetch(input, opts);
+          const signed = await aws.sign(String(input), opts);
+          return fetchImpl(signed);
         };
 
   return {

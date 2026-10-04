@@ -838,6 +838,75 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
   assert.equal(typeof store.list, "function");
 });
 
+test("the S3 store needs both a region and a credential, or neither", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  assert.throws(
+    () =>
+      createS3Store({
+        endpoint: "http://127.0.0.1:9000",
+        bucket: "drive",
+        region: "eu-west-3",
+      }),
+    /both a region and a credential/,
+  );
+  assert.throws(
+    () =>
+      createS3Store({
+        endpoint: "http://127.0.0.1:9000",
+        bucket: "drive",
+        credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+      }),
+    /both a region and a credential/,
+  );
+});
+
+test("a credentialed S3 store signs every request and still uses fetchImpl", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  /** @type {string[]} */
+  const authorizations = [];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+</ListBucketResult>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization") ?? "");
+    if (request.url.includes("list-type=2")) {
+      return new Response(xml, { status: 200 });
+    }
+    return new Response(null, { status: 200 });
+  };
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl,
+  });
+  await store.list("u/acct");
+  await store.write("u/acct/a.txt", "hi", "text/plain");
+  await store.remove("u/acct/a.txt");
+  assert.equal(authorizations.length, 3);
+  for (const auth of authorizations) {
+    assert.match(auth, /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//);
+  }
+});
+
+test("a signed write names a body it cannot hash", async () => {
+  const { createS3Store } = await import("../src/files.js");
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl: async () => new Response(null, { status: 200 }),
+  });
+  await assert.rejects(
+    store.write("u/acct/a.txt", /** @type {any} */ ({ not: "a body" }), "text/plain"),
+    /cannot send a body of type/,
+  );
+});
+
 test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {
   // The bucket is one namespace for every account, so this is the layer where
   // a missing prefix would actually cross accounts (drive issue #73). The fake
