@@ -274,6 +274,16 @@ th {
     <a href="/get-started" aria-current="page">Get started</a>
     <a href="/usage">Usage</a>
     <a href="/signin" id="nav-signin">Sign in</a>
+    <noscript>
+      <form method="POST" action="/api/signin">
+        <input type="hidden" name="step" value="signout">
+        <button type="submit">Sign out</button>
+      </form>
+      <form method="POST" action="/api/signin">
+        <input type="hidden" name="step" value="signout-all">
+        <button type="submit">Sign out everywhere</button>
+      </form>
+    </noscript>
     <button type="button" id="nav-signout" hidden>Sign out</button>
     <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>

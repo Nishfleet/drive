@@ -100,7 +100,13 @@ body {
 }
 
 /* Sign out is an action, not a place, so it is a button. It has to read as
-   the other menu items or it looks bolted on. */
+   the other menu items or it looks bolted on. The no-script path is a form
+   that posts the same step, so the form itself must not add a box. */
+.masthead form {
+  display: inline;
+  margin: 0;
+}
+
 .masthead button {
   color: var(--ink-soft);
   background: none;

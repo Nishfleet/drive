@@ -312,9 +312,19 @@ h2 {
     <a href="/">Pricing</a>
     <a href="/get-started">Get started</a>
     <a href="/usage" aria-current="page">Usage</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-    <button type="button" id="nav-signout" hidden>Sign out</button>
-    <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
   <main>
@@ -954,6 +964,8 @@ function showSessionNav(signedIn) {
 }
 
 async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
   let response;
   try {
     response = await fetch(SIGNIN_ENDPOINT, {
@@ -962,9 +974,15 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
     return;
   }
   if (!response.ok) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
     return;
   }
   location.reload();
