@@ -10,6 +10,7 @@ import { handleUsageRequest } from "../src/billing.js";
 import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
 import {
   accountFounding,
+  accountFoundingFlag,
   FOUNDING_OFFER_VAR,
   FOUNDING_PAYING_CAP,
   foundingOfferIsOpen,
@@ -152,6 +153,40 @@ test("accountFounding reads the stored flag and treats unset as not founding", a
   await markAccountPaying(db, "unset", { offerOpen: true, now: NOW });
   assert.deepEqual(await accountFounding(db, "unset"), { founding: true });
   await assert.rejects(accountFounding(db, "nope"), /needs an accounts row/);
+});
+
+test("the cap's own read of the flag agrees with accountFounding, and survives a missing row", async () => {
+  // drive#482: the agent key cap reads the same column on every request. A row
+  // that is gone reads as not founding there rather than failing every request
+  // on the account, and the full price is the safe direction for a cap: the key
+  // stops at what the account would be billed at full price, never lower.
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "unset");
+  await insertAccount(db, "founder", 1);
+  await insertAccount(db, "payer", 0);
+  for (const id of ["unset", "founder", "payer"]) {
+    const read = await accountFoundingFlag(db, id);
+    assert.equal(read, (await accountFounding(db, id)).founding, `one flag, one answer: ${id}`);
+  }
+  assert.deepEqual(
+    [await accountFoundingFlag(db, "unset"), await accountFoundingFlag(db, "payer")],
+    [false, false],
+  );
+  assert.equal(await accountFoundingFlag(db, "nope"), false);
+  // The two ids it still refuses are the ones a caller got wrong, not a row it
+  // could not find: an empty id names no account to read.
+  await assert.rejects(accountFoundingFlag(db, ""), /account id/);
+  await assert.rejects(
+    accountFoundingFlag(
+      /** @type {D1Database} */ (
+        /** @type {unknown} */ ({
+          prepare: () => ({ bind: () => ({ first: async () => ({ founding: 7 }) }) }),
+        })
+      ),
+      "acct",
+    ),
+    /accounts.founding must be 0, 1 or null/,
+  );
 });
 
 test("a public founding answer never carries the cap or a remaining-spots count", async () => {

@@ -65,6 +65,33 @@ export function foundingOfferIsOpen(value) {
 }
 
 /**
+ * The one read of `accounts.founding`: the row's own flag, or null when the
+ * account has not become paying yet (an account that is not yet paying is not
+ * founding). The query, the id check and the flag's own validation live here so
+ * the two public answers below cannot drift into two rules for one column.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {string} name the caller's name, so a data error names the read that
+ *   found it rather than this helper
+ * @returns {Promise<0|1|null>}
+ * @throws {TypeError} when the account id is not a string, or the flag is
+ *   neither 0, 1 nor null
+ */
+async function readFoundingFlag(db, accountId, name) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`${name} needs an account id, got ${String(accountId)}`);
+  }
+  const row = await db
+    .prepare("SELECT founding FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  if (row === null || row === undefined || typeof row !== "object") {
+    return undefined;
+  }
+  return foundingFlag(/** @type {{founding?: unknown}} */ (row).founding, "accounts.founding");
+}
+
+/**
  * The account's founding flag as billing reads it. An account that is not yet
  * paying is not founding. A missing row fails rather than defaulting.
  * @param {D1Database} db
@@ -72,24 +99,11 @@ export function foundingOfferIsOpen(value) {
  * @returns {Promise<{founding: boolean}>}
  */
 export async function accountFounding(db, accountId) {
-  if (typeof accountId !== "string" || accountId === "") {
-    throw new TypeError(`accountFounding needs an account id, got ${String(accountId)}`);
-  }
-  const row = await db
-    .prepare("SELECT founding FROM accounts WHERE id = ?1")
-    .bind(accountId)
-    .first();
-  if (row === null || row === undefined || typeof row !== "object") {
+  const flag = await readFoundingFlag(db, accountId, "accountFounding");
+  if (flag === undefined) {
     throw new TypeError(`accountFounding needs an accounts row, got none for ${accountId}`);
   }
-  const flag = foundingFlag(
-    /** @type {{founding?: unknown}} */ (row).founding,
-    "accounts.founding",
-  );
-  if (flag === null) {
-    return Object.freeze({ founding: false });
-  }
-  return publicFounding(flag);
+  return publicFounding(flag === 1 ? 1 : 0);
 }
 
 /**
@@ -176,4 +190,24 @@ export async function markAccountPaying(db, accountId, options) {
     throw new TypeError(`markAccountPaying left accounts.founding unset for ${accountId}`);
   }
   return publicFounding(flag);
+}
+
+/**
+ * The same flag as `accountFounding`, as the agent key cap reads it
+ * (drive#482).
+ *
+ * Tolerant where `accountFounding` is loud, and only about the row: the cap is
+ * a gate on every agent request rather than a page somebody waited for, so an
+ * account row that is gone reads as not founding rather than failing every
+ * request on the account. That is the safe direction for a cap — the key stops
+ * at the full price rather than being let to spend money the account was not
+ * counted on. A flag that is neither 0, 1 nor null is still a data error and
+ * throws, out of the same read.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @returns {Promise<boolean>}
+ */
+export async function accountFoundingFlag(db, accountId) {
+  const flag = await readFoundingFlag(db, accountId, "accountFoundingFlag");
+  return flag === 1;
 }
