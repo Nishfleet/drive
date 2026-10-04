@@ -163,6 +163,19 @@ export function signinClosedBody() {
 }
 
 /**
+ * The answer when the start step reached the mailer and the link never left.
+ * A deployment with no email setting, a mailer that threw and a token that
+ * could not be stored all get these words, because from the person's side they
+ * are the same fact: they are waiting on an email that is not coming
+ * (drive#431). Built from the message table like every other answer, so the
+ * words are the source side's and not this route's.
+ * @returns {{error: string}}
+ */
+export function signinEmailFailedBody() {
+  return { error: failureMessage("sign-in-email-failed") };
+}
+
+/**
  * The two steps a sign-in post can be. Anything else is refused, so a typo in
  * a field name cannot read as a request to start a sign-in.
  */
@@ -421,18 +434,19 @@ export async function handleSigninRequest(request, env) {
     if (authResponse.status === 400) {
       return json({ error: BAD_ADDRESS_MESSAGE }, 400);
     }
-    // Any other non-200 is a real failure — a database error, a token that
-    // could not be stored, or a mailer that threw: the closed door, never a
-    // 202 for a link that never left.
+    // Any other non-200 is a real failure — a mailer that threw, a
+    // deployment with no email setting, a token that could not be stored: no
+    // link went out, so the answer says exactly that and never a 202 for an
+    // inbox that will stay empty (drive#431).
     if (authResponse.status !== 200) {
-      return json(signinClosedBody(), 503);
+      return json(signinEmailFailedBody(), 503);
     }
   } catch {
     // A rate-limit refusal arrives as the 429 Response handled above, never a
-    // throw. This catch is for anything else `auth.handler` lets escape — a torn
-    // D1 binding, a runtime fault — which is the closed door, never a 202 for a
-    // send that never landed.
-    return json(signinClosedBody(), 503);
+    // throw. This catch is for anything else `auth.handler` lets escape — a
+    // mailer with no way to send, a torn D1 binding, a runtime fault — which
+    // means no link went out, so the answer says so (drive#431).
+    return json(signinEmailFailedBody(), 503);
   }
   return json(
     { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
