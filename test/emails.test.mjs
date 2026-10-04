@@ -694,6 +694,21 @@ test("the same-origin rule matches the waitlist API's", () => {
   );
 });
 
+test("a same-origin form POST with Origin: null is accepted, a cross-site one is not", () => {
+  // Referrer-Policy: no-referrer makes Chromium send `Origin: null` on the
+  // device approve form; Sec-Fetch-Site says whether it was really ours.
+  const url = "https://drive.example/v1/device/approve";
+  const form = (site) =>
+    new Request(url, { method: "POST", headers: { origin: "null", "sec-fetch-site": site } });
+  assert.equal(isSameOriginRequest(form("same-origin")), true);
+  assert.equal(isSameOriginRequest(form("cross-site")), false);
+  assert.equal(isSameOriginRequest(form("same-site")), false);
+  assert.equal(
+    isSameOriginRequest(new Request(url, { method: "POST", headers: { origin: "null" } })),
+    false,
+  );
+});
+
 test("the route names the one method it serves", async () => {
   const res = await handleSendEmailRequest(
     new Request("https://drive.example/api/emails/send", { method: "GET" }),
