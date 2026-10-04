@@ -73,7 +73,6 @@ function month(storedGb, overrides = {}) {
   }
   return usageSummary({
     gbMinutes: storedGb * MINUTES_PER_MONTH,
-    peakGb: storedGb,
     storedGb,
     storedDaily: days,
     downloadBytes: 0,
@@ -86,13 +85,12 @@ function month(storedGb, overrides = {}) {
 
 test("the summary carries the raw sizes and the finished labels both surfaces show", () => {
   const summary = month(400);
-  // 400 GB held all month at 2¢ is $8 of storage, under the $12 ceiling and
-  // under the $10 membership: the cost the page and the CLI show is $10
-  // (issue #352).
-  assert.equal(summary.billUsd, 10);
-  assert.equal(summary.billCents.storageCents, 800, "the storage line before the membership floor");
-  assert.equal(summary.billCents.membershipCents, 1000, "regular membership is $10");
-  assert.equal(summary.billCents.totalCents, 1000);
+  // 400 GB held all month at 2¢ is $8, under the $10 maximum. No minimum, so
+  // the cost the page and the CLI show is $8 (drive#463).
+  assert.equal(summary.billUsd, 8);
+  assert.equal(summary.billCents.storageCents, 800);
+  assert.equal(summary.maximumUsd, 10);
+  assert.equal(summary.billCents.totalCents, 800);
   assert.equal(summary.storedGb, 400);
   assert.equal(summary.gbMonths, 400, "400 GB for a whole month is 400 GB-months");
   assert.equal(summary.storedDaily.length, USAGE_HISTORY_DAYS);
@@ -100,7 +98,7 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // render, they do not format.
   assert.equal(summary.labels.storedNow, "400 GB");
   assert.equal(summary.labels.gbMonths, "400.00");
-  assert.equal(summary.labels.cost, "$10.00");
+  assert.equal(summary.labels.cost, "$8.00");
   assert.equal(summary.labels.cap, "$12.00");
   assert.equal(summary.labels.accountCap, "$12.00");
   assert.equal(summary.labels.downloads, "0 B of 1.2 TB free");
@@ -110,7 +108,6 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   // is still the sign-up default.
   const withoutCard = usageSummary({
     gbMinutes: 400 * MINUTES_PER_MONTH,
-    peakGb: 400,
     storedGb: 400,
     storedDaily: [],
     downloadBytes: 0,
@@ -145,7 +142,6 @@ test("the stored series is the last 30 days, oldest first", () => {
   entries.reverse();
   const summary = usageSummary({
     gbMinutes: 0,
-    peakGb: 0,
     storedGb: 40,
     storedDaily: entries,
     downloadBytes: 0,
@@ -164,7 +160,6 @@ test("a day the calendar does not have fails, not just a day that is not a date"
   // makes "a real date" true, and the rollup cannot have produced the other.
   const base = {
     gbMinutes: 0,
-    peakGb: 0,
     storedGb: 0,
     downloadBytes: 0,
     averageStoredGb: 0,
@@ -185,7 +180,6 @@ test("a day the calendar does not have fails, not just a day that is not a date"
 test("a day that is not a day, or a size that is not a size, fails at the entry point", () => {
   const base = {
     gbMinutes: 0,
-    peakGb: 0,
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,
@@ -208,20 +202,28 @@ test("a day that is not a day, or a size that is not a size, fails at the entry 
 });
 
 test("both saved sentences come from the one table in src/billing.js", () => {
-  // The capped month: 2 TB held all month meters $40 against a $16 ceiling,
-  // so the line is the cap's own sentence.
+  // The capped month: 2 TB held all month meters $40 against a $20 maximum, so
+  // the maximum saved $20, and the usual 1 TB plan ($27 at 2 TB) $7 more.
+  const plan = (/** @type {string} */ amount) =>
+    SAVED_COPY.plan.replace("{amount}", amount).replace("{plan}", "a usual 1 TB plan");
   const capped = month(2000);
   assert.ok(capped.saved);
-  assert.equal(capped.saved.usd, 24);
-  assert.equal(capped.saved.copy, SAVED_COPY.capped.replace("{amount}", "$24.00"));
-  // The uncapped month: the ceiling is what a flat plan would have cost.
+  assert.equal(capped.saved.usd, 20);
+  assert.equal(capped.saved.planUsd, 7);
+  assert.equal(
+    capped.saved.copy,
+    `${SAVED_COPY.capped.replace("{amount}", "$20.00")} ${plan("$7.00")}`,
+  );
+  // The uncapped month: $6 under the $10 maximum and the $15 plan.
   const uncapped = month(300);
   assert.ok(uncapped.saved);
-  assert.equal(uncapped.saved.usd, 6);
-  assert.equal(uncapped.saved.copy, SAVED_COPY.uncapped.replace("{amount}", "$6.00"));
-  // No real saving means no line at all: the page hides it and the CLI prints
+  assert.equal(uncapped.saved.usd, 4);
+  assert.equal(
+    uncapped.saved.copy,
+    `${SAVED_COPY.uncapped.replace("{amount}", "$4.00")} ${plan("$9.00")}`,
+  );
+  // An empty month has no line at all: the page hides it and the CLI prints
   // the four lines without it.
-  assert.equal(month(600).saved, null);
   assert.equal(month(0).saved, null);
 });
 
@@ -233,7 +235,7 @@ test("`drive usage` prints the four lines the spec names", () => {
       "Stored GB now: 400 GB",
       "GB-months so far: 400.00",
       "Downloads: 500 GB of 1.2 TB free",
-      "Cost so far: $10.00",
+      "Cost so far: $8.00",
     ],
     "stored GB now, GB-months so far, downloads out of the free 3x, cost so far",
   );
@@ -277,8 +279,8 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
-  // Empty until issues #6 and #2 land: no history, membership still due.
-  assert.equal(body.billUsd, 10);
+  // Empty until issues #6 and #2 land: no history, and no minimum, so $0.
+  assert.equal(body.billUsd, 0);
   assert.equal(body.storedGb, 0);
   assert.equal(body.gbMonths, 0);
   assert.deepEqual(body.storedDaily, []);
@@ -292,7 +294,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
     "storedNow",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
-  assert.equal(body.labels.cost, "$10.00");
+  assert.equal(body.labels.cost, "$0.00");
   assert.equal(body.labels.cap, "$12.00");
   // The page renders these strings, so none of them may be NaN or undefined.
   for (const value of Object.values(body.labels)) {
@@ -313,7 +315,7 @@ test("the Worker routes the usage read and the page's endpoint is that route", a
     assert.equal(anonymous.status, 401, `${path} must reach the gate`);
   }
   const handler = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
-  assert.equal((await handler.json()).billUsd, 10);
+  assert.equal((await handler.json()).billUsd, 0);
   assert.ok(
     page.includes(`const USAGE_ENDPOINT = "${USAGE_ENDPOINT}";`),
     "the page must read the endpoint the Worker routes",
@@ -335,10 +337,10 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "billUsd",
     "cap",
     "capLine",
-    "ceilingUsd",
     "downloads",
     "gbMonths",
     "labels",
+    "maximumUsd",
     "meteredUsd",
     "saved",
     "storedDaily",
@@ -454,7 +456,6 @@ test("the page states the free allowance from the config, not a literal", () => 
 function emptyMonth() {
   return usageSummary({
     gbMinutes: 0,
-    peakGb: 0,
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,
@@ -748,11 +749,11 @@ test("no month is painted before a read has landed", () => {
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
   // The thumb is the account's cap (labels.accountCap, the account's own
   // setting), not the card-less cap writes stop at, and the range tops out at
-  // the month's ceiling: a cap above that is not a real choice.
+  // the month's maximum: a cap above that is not a real choice.
   assert.match(page, /capValueEl\.textContent = labels\.accountCap;/);
   assert.match(
     page,
-    /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.ceilingUsd, cap\.capUsd\)\)\);/,
+    /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.maximumUsd, cap\.capUsd\)\)\);/,
   );
   assert.match(page, /<label for="cap-slider">Monthly cap, in dollars<\/label>/);
   // Nothing writes the slider's own value out of the page: the endpoint's
@@ -970,7 +971,7 @@ test("the usage page shows the queue a device reported, through the Worker's own
   );
   // The money on the answer is untouched by the queue: they are two fields.
   assert.equal(typeof after.capLine, "string");
-  assert.equal(after.billUsd, 10, "the empty month still bills the membership");
+  assert.equal(after.billUsd, 0, "the empty month bills nothing");
 
   // A paused queue renders the paused line, so the page never shows bytes that
   // are not leaving as "Uploading".

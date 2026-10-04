@@ -140,16 +140,18 @@ export function buildPrice({
     rule: `You pay ${centsWords(rateCents)} per GB a month until the bill reaches $${max}, at ${sizeWords(reachesMaxGb)}. From ${sizeWords(reachesMaxGb)} to 1 TB the bill stays $${max}. Above 1 TB you never pay more than $${max} for each TB, counted to the GB.`,
     // The worked examples, as sizes held all month. The dollars beside each
     // are monthBillCents()'s, never typed here. `toGb` marks a range row.
-    examples: Object.freeze([
-      Object.freeze({ label: "50 GB", gb: 50 }),
-      Object.freeze({ label: "200 GB", gb: 200 }),
-      Object.freeze({
-        label: `${sizeWords(reachesMaxGb)} to 1 TB`,
-        gb: reachesMaxGb,
-        toGb: GB_PER_TB,
-      }),
-      Object.freeze({ label: "3 TB", gb: 3 * GB_PER_TB }),
-    ]),
+    examples: /** @type {ReadonlyArray<Readonly<{label: string, gb: number, toGb?: number}>>} */ (
+      Object.freeze([
+        Object.freeze({ label: "50 GB", gb: 50 }),
+        Object.freeze({ label: "200 GB", gb: 200 }),
+        Object.freeze({
+          label: `${sizeWords(reachesMaxGb)} to 1 TB`,
+          gb: reachesMaxGb,
+          toGb: GB_PER_TB,
+        }),
+        Object.freeze({ label: "3 TB", gb: 3 * GB_PER_TB }),
+      ])
+    ),
     usualPlan: USUAL_PLAN,
   });
 }

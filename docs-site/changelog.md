@@ -11,7 +11,7 @@ the live site.
 ## 2026-10-05
 
 - New pricing: pay only for what you store. {{RATE}}, never more than
-  {{MAX_PER_TB}} for each TB, and no minimum. The $10 membership, the first
+  {{MAX_PER_TB}} per TB, and no minimum. The $10 membership, the first
   month at half price and the old ceiling are gone. Founding members pay half
   of both numbers for good.
 

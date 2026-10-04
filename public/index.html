@@ -8,7 +8,7 @@
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
        in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
-       fails CI when the tags and that config drift apart. The ceiling stated
+       fails CI when the tags and that config drift apart. The maximum stated
        here is the current rule from drive#463 (Nish 2026-10-04): min(2¢ × GB,
        $10 × max(1, TB stored)). Issue
        #23 made that config the single source the visible copy, these tags and
@@ -671,19 +671,19 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
       <dl class="examples-list">
         <div class="example">
           <dt>50 GB kept all month</dt>
-          <dd>you pay <strong>$1</strong>, against $15 on a usual 1 TB plan.</dd>
+          <dd>you pay <strong>$1</strong>. A usual 1 TB plan costs $15, so you save $14.</dd>
         </div>
         <div class="example">
           <dt>200 GB kept all month</dt>
-          <dd>you pay <strong>$4</strong>, against $15 on a usual 1 TB plan.</dd>
+          <dd>you pay <strong>$4</strong>. A usual 1 TB plan costs $15, so you save $11.</dd>
         </div>
         <div class="example">
           <dt>500 GB to 1 TB kept all month</dt>
-          <dd>you pay <strong>$10</strong>, against $15 on a usual 1 TB plan.</dd>
+          <dd>you pay <strong>$10</strong>. A usual 1 TB plan costs $15, so you save $5.</dd>
         </div>
         <div class="example">
           <dt>3 TB kept all month</dt>
-          <dd>you pay <strong>$30</strong>, against $39 on a usual 1 TB plan.</dd>
+          <dd>you pay <strong>$30</strong>. A usual 1 TB plan costs $39, so you save $9.</dd>
         </div>
       </dl>
       <p class="examples-note">You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.</p>

@@ -24,10 +24,10 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 
 Worked examples, each kept all month, with a usual 1 TB plan beside it:
 
-- 50 GB = $1 (a usual 1 TB plan: $15)
-- 200 GB = $4 (a usual 1 TB plan: $15)
-- 500 GB to 1 TB = $10 (a usual 1 TB plan: $15)
-- 3 TB = $30 (a usual 1 TB plan: $39)
+- 50 GB = $1 (a usual 1 TB plan: $15, so you save $14)
+- 200 GB = $4 (a usual 1 TB plan: $15, so you save $11)
+- 500 GB to 1 TB = $10 (a usual 1 TB plan: $15, so you save $5)
+- 3 TB = $30 (a usual 1 TB plan: $39, so you save $9)
 
 ## What it is
 
@@ -58,7 +58,7 @@ holds all nine in one file.
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
-- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the ceiling and four worked sizes.
+- [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq.md): the questions we can answer with a measured number.
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits.md): what version 1 does not do, in plain words.
 - [Benchmarks](https://drive-pricing.nishant345.workers.dev/docs/benchmarks.md): measured speed, including where we lose.

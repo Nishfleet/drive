@@ -13,10 +13,9 @@ write the same folder.
   [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.
-- **Billed by the minute, with a ceiling.** 2¢ per GB a month, and the bill is
-  cut off at $12 up to 1.5 TB, then $8 a TB.
-- **A membership and a card.** $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.
-  We need a card at sign-up because there is no free tier. Storage use counts toward your membership.
+- **One price.** Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
+  No minimum. No plans.
+- **A card at sign-up.** We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
@@ -36,7 +35,7 @@ agents.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
   `drive init` per tool, and what an agent key cannot do
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —
-  the rate, the ceiling and four worked sizes
+  the rate, the maximum and four worked sizes
 - [FAQ](https://drive-pricing.nishant345.workers.dev/docs/faq) — the questions
   we can answer with a measured number
 - [Limits](https://drive-pricing.nishant345.workers.dev/docs/limits) — what

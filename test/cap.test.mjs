@@ -56,12 +56,11 @@ const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
-// past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
-// under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+// past the $12 default cap (2000 GB meters $40, held to the $20 maximum) and
+// at it (1200 GB bills $12, exactly the cap, which is not past it).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
   gbMinutes: fullMonthGbMinutes(gb),
-  peakGb: gb,
   storedGb: gb,
   storedDaily: [],
   downloadBytes: 0,
@@ -648,7 +647,6 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   /** @param {number} gb */
   const usage = (gb) => ({
     gbMinutes: fullMonthGbMinutes(gb),
-    peakGb: gb,
     storedGb: gb,
     storedDaily: [],
     downloadBytes: 0,
@@ -658,14 +656,14 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   });
   const keys = [deviceKey];
 
-  // 1.3 TB on the default $12 cap: the invoice is the $12 floor, so the cap is
+  // 1 TB on the default $12 cap: the invoice is the $10 maximum, so the cap is
   // not passed and the drive keeps writing (the orchestrator decision on #39).
-  const active = await enforceCap({ usage: usage(1300), keys }, recordingProvider());
+  const active = await enforceCap({ usage: usage(1000), keys }, recordingProvider());
   assert.equal(active.state, "active");
   assert.equal(active.applied.length, 0);
   assert.equal(active.mount.restart, false);
 
-  // 2 TB: the ceiling rises to $16, past the $12 cap, so the one write key is
+  // 2 TB: the maximum is $20, past the $12 cap, so the one write key is
   // replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
   const capped = await enforceCap({ usage: usage(2000), keys }, capProvider);
@@ -677,9 +675,9 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
-  // summary rule too: 2 TB at the default cap is read_only, 1.3 TB is active.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), 2000, 12).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1300), 1300, 12).state, "active");
+  // summary rule too: 2 TB at the default cap is read_only, 1 TB is active.
+  assert.equal(capStatus(fullMonthGbMinutes(2000), 12).state, "read_only");
+  assert.equal(capStatus(fullMonthGbMinutes(1000), 12).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -688,7 +686,6 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   const account = {
     usage: {
       gbMinutes: fullMonthGbMinutes(60),
-      peakGb: 60,
       storedGb: 60,
       storedDaily: [],
       downloadBytes: 0,
@@ -760,23 +757,23 @@ test("drive cap takes a dollar amount and nothing else", () => {
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
-  const active = capLine(capStatus(fullMonthGbMinutes(300), 300, 12));
+  const active = capLine(capStatus(fullMonthGbMinutes(300), 12));
   assert.equal(active, "Cap $12.00: $6.00 counted this month, $6.00 left.");
 
-  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 2000, 12));
+  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 12));
   const [what, numbers] = capped.split("\n");
   // The words for a read-only drive come from the one message table, so the
   // page, the CLI and the api cannot drift apart.
   assert.equal(what, tableMessage("cap-reached"));
   assert.equal(
     numbers,
-    "Cap $12.00 reached: $16.00 counted this month. " +
+    "Cap $12.00 reached: $20.00 counted this month. " +
       "Uploads waiting in the cache stay on this Mac and go up once the cap is raised.",
   );
   // Raised again: the line goes back to one line and says there is room.
   assert.equal(
-    capLine(capStatus(fullMonthGbMinutes(2000), 2000, 20)),
-    "Cap $20.00: $16.00 counted this month, $4.00 left.",
+    capLine(capStatus(fullMonthGbMinutes(2000), 25)),
+    "Cap $25.00: $20.00 counted this month, $5.00 left.",
   );
   for (const bad of [
     null,
@@ -912,7 +909,6 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
   // without it `drive cap 0` on a live drive would swap nothing.
   const overCapMonth = {
     gbMinutes: fullMonthGbMinutes(2000),
-    peakGb: 2000,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,

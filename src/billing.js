@@ -68,7 +68,7 @@ const BYTES_PER_GB = 1e9;
 export function billingConfigFor(price) {
   return Object.freeze({
     // From the one price source: the metered rate, in dollars per GB-month,
-    // billed by the minute. The 1.5¢ floor applies to this rate.
+    // billed by the minute.
     rateUsdPerGbMonth: price.rateUsdPerGbMonth,
     // The maximum: maxUsdPerTb for each TB stored, never less than one TB's
     // worth. One config value (drive#463).
@@ -801,7 +801,7 @@ function quoteSizeError() {
  * Handles GET /api/quote, the public savings calculator (drive issue #14).
  * `tb` is a size in TB held all month; `gb` is the same size in GB. Exactly
  * one of the two. The numbers are quoteForStoredTb(), which is monthBillCents
- * plus the ceiling, so a later price edit moves the calculator with the
+ * plus the maximum, so a later price edit moves the calculator with the
  * invoice. Any other method is 405. A size the quote cannot use is 400 with
  * the message table's quote-size words, never a stack.
  * @param {Request} request

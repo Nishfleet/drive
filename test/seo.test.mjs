@@ -31,7 +31,7 @@ const publicDir = new URL("../public/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, publicDir), "utf8");
 
 // Dollars the way the page and llms.txt write them: no cents where there are
-// none, cents where the rule produces them ($12.80). The same shape
+// none, cents where the rule produces them ($10.01). The same shape
 // test/pricing-copy.test.mjs uses, so the two gates quote identical strings.
 /** @param {number} usd */
 const dollars = (usd) => `$${usd.toFixed(2).replace(/\.00$/, "")}`;
@@ -224,20 +224,20 @@ test("every non-indexable page is noindex and stays out of the sitemap", () => {
   }
 });
 
-test("the JSON-LD offer carries the ceiling as a real per-unit price", () => {
+test("the JSON-LD offer carries the maximum as a real per-unit price", () => {
   const { offers } = softwareApplicationLd();
   assert.equal(offers["@type"], "Offer");
-  // The price is the one-TB-month ceiling, not the 2¢ rate: a bare 0.02 here
+  // The price is the one-TB-month maximum, not the 2¢ rate: a bare 0.02 here
   // would be read as "this product costs two cents", which the page refutes.
-  assert.equal(offers.price, BILLING.capFloorUsd.toFixed(2));
+  assert.equal(offers.price, BILLING.maxUsdPerTb.toFixed(2));
   assert.ok(Number(offers.price) > 0, "offers.price must be a positive number");
   assert.equal(offers.priceCurrency, "USD");
   assert.equal(offers.priceSpecification["@type"], "UnitPriceSpecification");
   assert.equal(offers.priceSpecification.unitText, "TB-month");
   assert.equal(offers.priceSpecification.price, offers.price);
   assert.ok(
-    offers.description.includes(BILLING.ceiling),
-    "the offer description must state the ceiling sentence from config",
+    offers.description.includes(BILLING.headline),
+    "the offer description must state the headline from config",
   );
 });
 
@@ -278,33 +278,24 @@ test("llms.txt describes the drive and the current price rule", () => {
   // The llmstxt.org shape: an H1 name, a blockquote summary, then sections.
   assert.match(llms, /^# Drive$/m);
   assert.match(llms, /^> /m);
-  assert.ok(llms.includes(BILLING.ceiling), "llms.txt must state the ceiling sentence from config");
+  assert.ok(llms.includes(BILLING.headline), "llms.txt must state the headline from config");
+  assert.ok(llms.includes(BILLING.rule), "llms.txt must state the rule from config");
   assert.ok(
-    llms.includes(BILLING.membershipLine),
-    "llms.txt must state the membership line from config",
+    llms.includes(BILLING.noMinimumLine),
+    "llms.txt must state the no-minimum line from config",
   );
   assert.ok(
     llms.includes(BILLING.foundingLine),
     "llms.txt must state the founding line from config",
   );
   assert.ok(llms.includes(absoluteUrl(SITE.homePath)), "llms.txt links the page");
-  // The spec's own worked figures, so an answer engine cannot quote a number
-  // the pricing page contradicts. Each is min(metered, max($12, $8 x TB))
-  // less the $1 free, from the one bill function (issues #23, #76).
-  for (const [label, tb] of [
-    ["800 GB kept all month", 0.8],
-    ["1.6 TB", 1.6],
-    ["2 TB", 2],
-    ["5 TB", 5],
-  ]) {
-    const bill = monthlyBillForStoredTb(tb);
+  // The issue's worked figures, so an answer engine cannot quote a number the
+  // pricing page contradicts, each from the one bill function (drive#463).
+  for (const row of PRICE.examples) {
+    const bill = monthlyBillForStoredTb((row.toGb ?? row.gb) / 1000);
     assert.ok(
-      llms.includes(`${label} = ${dollars(bill.billUsd)}`),
-      `llms.txt must carry the ${dollars(bill.billUsd)} bill for ${label}`,
-    );
-    assert.ok(
-      llms.includes(`(${dollars(bill.storageUsd)} of storage`),
-      `llms.txt must name the ${dollars(bill.storageUsd)} storage figure for ${label}`,
+      llms.includes(`- ${row.label} = ${dollars(bill.billUsd)} (`),
+      `llms.txt must carry the ${dollars(bill.billUsd)} bill for ${row.label}`,
     );
   }
   // No claim the page itself is not allowed to make.
@@ -331,38 +322,26 @@ test("every file the metadata points at is one this site actually ships", () => 
   }
 });
 
-test("the ceiling in the metadata is the spec's plateau, not per-TB caps", () => {
-  // docs/spec.md and docs/build-spec.md ("Bill ceiling", Nish 2026-09-30,
-  // issue #29): the monthly bill is min(metered, max($12, $8 x peak TB)). The
-  // cap is flat at $12 until 1.5 TB and only then rises at $8 a TB. If the
-  // spec is restated, the metadata has to match, so a re-priced product cannot
-  // keep serving the old ceiling to crawlers.
-  //
-  // The numbers and the sentences come from src/pricing.js, the one price
-  // source, so this pins the spec's values once and against PRICE: a price
-  // change is one edit there and it moves the tags, the JSON-LD, llms.txt and
-  // the visible copy together (issue #23).
-  assert.equal(PRICE.capFloorUsd, 12);
-  assert.equal(PRICE.capUsdPerTb, 8);
-  assert.equal(PRICE.capPlateauTb, 1.5);
-  // BILLING is built from PRICE, not declared beside it: a second set of
-  // numbers would be exactly the drift issue #23 was reopened for.
-  assert.equal(BILLING.capFloorUsd, PRICE.capFloorUsd);
-  assert.equal(BILLING.capUsdPerTb, PRICE.capUsdPerTb);
-  assert.equal(BILLING.ceiling, PRICE.ceiling);
-  assert.equal(BILLING.membershipLine, PRICE.membershipLine);
+test("the maximum in the metadata is the issue's rule, from the one price source", () => {
+  // drive#463 (Nish 2026-10-04): min(2¢ x avg GB, $10 x max(1, avg TB)). The
+  // numbers and the sentences come from src/pricing.js, so a price change is
+  // one edit there and it moves the tags, the JSON-LD, llms.txt and the
+  // visible copy together (issue #23).
+  assert.equal(PRICE.rateUsdPerGbMonth, 0.02);
+  assert.equal(PRICE.maxUsdPerTb, 10);
+  // BILLING is built from PRICE, not declared beside it.
+  assert.equal(BILLING.maxUsdPerTb, PRICE.maxUsdPerTb);
+  assert.equal(BILLING.headline, PRICE.headline);
+  assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
   assert.equal(BILLING.foundingLine, PRICE.foundingLine);
   assert.equal(BILLING.rule, PRICE.rule);
-  assert.match(
-    BILLING.ceiling,
-    /Never more than \$12 a TB, and \$8 a TB once you pass 1\.5 TB\./,
-    "the ceiling sentence must be the spec's sentence",
+  assert.equal(
+    BILLING.headline,
+    "Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
   );
-  // The rule string spells out the plateau, so no consumer of the config can
-  // read the numbers back as "$12 for the first TB, then $8 each after".
-  assert.match(BILLING.rule, /\$12 up to 1\.5 TB, then \$8 for each TB after\./);
-  // The superseded per-TB caps (PR #24) are what the live page contradicted
-  // itself over, so they may not come back through the tags either.
-  assert.doesNotMatch(BILLING.ceiling, /\$15/);
-  assert.doesNotMatch(BILLING.rule, /\$15/);
+  // The superseded rules may not come back through the tags: the $12 floor,
+  // the $8 slope, the 1.5 TB plateau and the membership.
+  for (const text of [BILLING.headline, BILLING.rule, SITE.description]) {
+    assert.doesNotMatch(text, /\$12|\$8 a TB|1\.5 TB|membership|ceiling/i);
+  }
 });

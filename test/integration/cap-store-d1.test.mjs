@@ -84,7 +84,6 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
 
   const month = {
     gbMinutes: 2000 * 43800,
-    peakGb: 2000,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,

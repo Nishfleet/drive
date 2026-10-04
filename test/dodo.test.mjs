@@ -3,8 +3,8 @@
 // The meter already writes `usage_minutes`. This file is the billing half
 // that follows: each closed hour becomes one ingest event at
 // test.dodopayments.com, keyed by account and hour, carrying the
-// ceiling-capped bill from monthBillCents() — never the raw meter — and the
-// invoice's three dollar lines, including "Free credit −$1.00".
+// bill from monthBillCents(), held to the maximum — never the raw meter — and
+// the invoice's two dollar lines, storage and downloads.
 //
 // fetch is injected. A test that reached the live host, or that let a retried
 // hour mint a second event id, would charge twice; both are refused here.
@@ -191,13 +191,10 @@ test("the event id is the account and hour, so a retry is the same id", () => {
   assert.notEqual(billingEventId("other", hour), billingEventId(ACCOUNT, hour));
 });
 
-test("a day of stored GB pushes the capped bill, with the free $1 as a dollar line", async () => {
+test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
-  const bill = monthBillCents({
-    gbMinutes: 400 * 60 * 24,
-    peakBytes: 400 * BYTES_PER_GB,
-  });
+  const bill = monthBillCents({ gbMinutes: 400 * 60 * 24 });
   const result = await pushBillingHours(day.db, day.hours, {
     apiKey: KEY,
     fetch: recorder.fetch,
@@ -215,17 +212,20 @@ test("a day of stored GB pushes the capped bill, with the free $1 as a dollar li
     assert.equal(event.customer_id, CUSTOMER);
     assert.equal(event.event_name, DODO_EVENT_NAME);
     const metadata = /** @type {Record<string, unknown>} */ (event.metadata);
-    assert.equal(metadata.credit_label, "Membership");
+    assert.equal(metadata.credit_label, undefined, "no membership line (drive#463)");
     assert.equal(event.timestamp, undefined, "omit timestamp: Dodo rejects hours older than 1h");
     return Number(metadata.amount_units);
   });
   const last = /** @type {Record<string, unknown>} */ (call.payload.events[23].metadata);
   assert.equal(last.storage_cents, bill.storageCents);
   assert.equal(last.total_cents, bill.totalCents);
-  const membershipLine = bill.lines.find((line) => line.label === "Membership");
-  assert.ok(membershipLine, "the invoice has a Membership line");
-  assert.equal(last.credit_usd, membershipLine.usd);
-  assert.equal(last.credit_label, "Membership");
+  assert.deepEqual(
+    bill.lines.map((line) => line.label),
+    ["Storage", "Downloads"],
+  );
+  assert.equal(last.storage_usd, bill.lines[0].usd);
+  assert.equal(last.downloads_usd, bill.lines[1].usd);
+  assert.equal(last.credit_usd, undefined);
   assert.equal(
     units.reduce((sum, n) => sum + n, 0),
     bill.totalCents,
@@ -276,10 +276,7 @@ test("an October hour does not count September's GB-minutes", async () => {
     now: october + HOUR_MS,
   });
   const metadata = recorder.calls[0].payload.events[0].metadata;
-  const octoberBill = monthBillCents({
-    gbMinutes: 10 * 60,
-    peakBytes: 10 * BYTES_PER_GB,
-  });
+  const octoberBill = monthBillCents({ gbMinutes: 10 * 60 });
   assert.equal(metadata.storage_cents, octoberBill.storageCents);
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
 });
@@ -293,14 +290,8 @@ test("a push that spans the month boundary bills each month on its own", async (
   // itself against September's pushed total, it undercharges by that much.
   await recordUsage(db, ACCOUNT, september, 2000 * 60 * 24, 2000 * BYTES_PER_GB, october);
   await recordUsage(db, ACCOUNT, october, 2000 * 43800, 2000 * BYTES_PER_GB, october + HOUR_MS);
-  const septemberBill = monthBillCents({
-    gbMinutes: 2000 * 60 * 24,
-    peakBytes: 2000 * BYTES_PER_GB,
-  });
-  const octoberBill = monthBillCents({
-    gbMinutes: 2000 * 43800,
-    peakBytes: 2000 * BYTES_PER_GB,
-  });
+  const septemberBill = monthBillCents({ gbMinutes: 2000 * 60 * 24 });
+  const octoberBill = monthBillCents({ gbMinutes: 2000 * 43800 });
   assert.ok(septemberBill.totalCents > 0, "September needs a bill to subtract by mistake");
   assert.ok(octoberBill.totalCents > septemberBill.totalCents, "October must exceed September");
   const recorder = recordingFetch();
@@ -337,7 +328,7 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
     fetch: recorder.fetch,
     now: hour1,
   });
-  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 1600);
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 2000);
   await recordUsage(db, ACCOUNT, hour0, 60, BYTES_PER_GB, hour1);
   await recordUsage(db, ACCOUNT, hour1, 60, BYTES_PER_GB, hour1 + HOUR_MS);
   await pushBillingHours(db, [hour1], {
@@ -352,25 +343,25 @@ test("a bill that falls after a reroll sends 0, never a negative unit", async ()
   );
 });
 
-test("Dodo receives the ceiling-capped amount, never the uncapped meter", async () => {
-  // 2 TB held a whole average month: $40 metered, capped at $16, $15 billed
-  // after the $1 credit (test/billing.test.mjs, issue #76).
+test("Dodo receives the bill held to the maximum, never the uncapped meter", async () => {
+  // 2 TB held a whole average month: $40 metered, held to the $20 maximum
+  // ($10 per TB, drive#463).
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   const hour = midnight();
   const gbMinutes = 2000 * 43800;
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  const bill = monthBillCents({ gbMinutes, peakBytes: 2000 * BYTES_PER_GB });
-  assert.equal(bill.storageCents, 1600);
-  assert.equal(bill.totalCents, 1600);
+  const bill = monthBillCents({ gbMinutes });
+  assert.equal(bill.storageCents, 2000);
+  assert.equal(bill.totalCents, 2000);
   const recorder = recordingFetch();
   await pushBillingHours(db, [hour], { apiKey: KEY, fetch: recorder.fetch, now: hour + HOUR_MS });
   const metadata = recorder.calls[0].payload.events[0].metadata;
   assert.equal(metadata.amount_units, bill.totalCents);
-  assert.equal(metadata.storage_cents, 1600);
-  assert.equal(metadata.credit_usd, "$0.00");
+  assert.equal(metadata.storage_cents, 2000);
+  assert.equal(metadata.credit_usd, undefined);
   assert.ok(metadata.amount_units < 4000, "the raw $40 meter must not reach Dodo");
-  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 1600);
+  assert.equal(sqlite.prepare("SELECT amount_units FROM billing_pushes").get().amount_units, 2000);
 });
 
 test("no key, and no Dodo customer, skip the ingest rather than invent one", async () => {

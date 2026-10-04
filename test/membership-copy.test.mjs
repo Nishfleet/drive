@@ -1,6 +1,6 @@
-// Copy and sign-up gates for drive issue #387: membership wording, card at
-// sign-up, no $1 credit text, no "minimum" in pricing copy, and no founding
-// cap or spots count on a public surface.
+// Copy and sign-up gates for drive issue #387, updated for drive#463: card at
+// sign-up, no $1 credit text, no membership, "minimum" only in "no minimum",
+// and no founding cap or spots count on a public surface.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -12,7 +12,10 @@ import { hasSignupCard, refuseSignupWithoutCard, SIGNIN_COPY } from "../src/sign
 
 const CREDIT_TEXT =
   /\$1\s+free|free\s+\$1|\$1\s+credit|free credit|no card needed|No card asked|No card to start/i;
-const MINIMUM_IN_PRICING = /\bminimum\b/i;
+// "minimum" is allowed only as "no minimum" (drive#463: "No minimum. No
+// plans."). Any other use, such as a membership floor, fails.
+const MINIMUM_IN_PRICING = /(?<!\bno )\bminimum\b/i;
+const MEMBERSHIP = /\bmembership\b/i;
 const FOUNDING_LEAK =
   /remaining[- ]spots|spots left|first 1,?000 paying|1,?000 (paying )?accounts|founding (cap|limit|spots)/i;
 
@@ -51,17 +54,17 @@ test("sign-up without a card is refused, in plain words", () => {
   assert.equal(refuseSignupWithoutCard(true), null);
 });
 
-test("pricing copy names a membership, never a minimum", () => {
-  assert.equal(
-    PRICE.membershipLine,
-    "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
-  );
-  assert.equal(PRICE.foundingLine, "Join now and keep $5 a month for good.");
-  assert.doesNotMatch(PRICE.membershipLine, MINIMUM_IN_PRICING);
-  assert.doesNotMatch(PRICE.foundingLine, MINIMUM_IN_PRICING);
-  assert.doesNotMatch(PRICE.rule, MINIMUM_IN_PRICING);
-  assert.doesNotMatch(PRICE.ceiling, MINIMUM_IN_PRICING);
+test("pricing copy has no membership, and says minimum only as no minimum", () => {
+  assert.equal(PRICE.noMinimumLine, "No minimum. No plans.");
+  assert.equal("membershipLine" in PRICE, false);
   assert.equal("freeLine" in PRICE, false);
+  for (const line of [PRICE.headline, PRICE.foundingLine, PRICE.rule, PRICE.needCard]) {
+    assert.doesNotMatch(line, MINIMUM_IN_PRICING);
+    assert.doesNotMatch(line, MEMBERSHIP);
+  }
+  // The guard itself: it lets "no minimum" through and stops everything else.
+  assert.doesNotMatch("No minimum. No plans.", MINIMUM_IN_PRICING);
+  assert.match("a $10 minimum", MINIMUM_IN_PRICING);
 });
 
 test("site, FAQ, emails, build-spec and README carry no $1 credit text", () => {
@@ -93,9 +96,11 @@ test("site, FAQ, emails, build-spec and README carry no $1 credit text", () => {
 // drive#419: the README is a public surface, so its plan sentence is the
 // pricing page's sentence. These two assertions are what stop it drifting back
 // to the old "$1 free every month, no card needed" plan (#352, #387).
-test("the README states the membership and the card at sign-up", () => {
+test("the README states the headline and the card at sign-up", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  assert.ok(readme.includes(PRICE.membershipLine), "README is missing the membership line");
+  assert.ok(readme.includes(PRICE.headline), "README is missing the headline");
+  assert.ok(readme.includes(PRICE.noMinimumLine), "README is missing the no-minimum line");
+  assert.doesNotMatch(readme, MEMBERSHIP, "README still names a membership");
   assert.ok(readme.includes(PRICE.needCard), "README is missing the card-at-sign-up line");
   assert.doesNotMatch(readme, CREDIT_TEXT, "README still carries $1 credit text");
   assert.doesNotMatch(readme, MINIMUM_IN_PRICING, "README says minimum");
@@ -107,7 +112,7 @@ test("the public site never contains the founding cap or a spots count", () => {
     assert.equal(page.text.includes("1,000"), false, `${page.name} leaked 1,000`);
   }
   assert.ok(pages.some((page) => page.text.includes(PRICE.foundingLine)));
-  assert.ok(pages.some((page) => page.text.includes(PRICE.membershipLine)));
+  assert.ok(pages.some((page) => page.text.includes(PRICE.noMinimumLine)));
 });
 
 test("the public site never names a rival or quotes a rival's price", () => {
@@ -124,6 +129,7 @@ test("pricing copy on the public pages never says minimum", () => {
   for (const page of pages) {
     if (page.name === "files.html" || page.name === "usage.html") continue;
     assert.doesNotMatch(page.text, MINIMUM_IN_PRICING, page.name);
+    assert.doesNotMatch(page.text, MEMBERSHIP, page.name);
   }
   const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
   assert.doesNotMatch(docsPricing, MINIMUM_IN_PRICING);

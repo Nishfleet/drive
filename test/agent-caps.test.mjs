@@ -26,7 +26,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTES_PER_MONTH = 43800;
 /**
  * A whole month of a given size, so a test says "2 TB this month" and means
- * the metered spend and the peak are the same number.
+ * that size held for the whole month.
  * @param {number} gb
  */
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
@@ -50,7 +50,7 @@ const agentKey = (overrides = {}) => ({
  * @param {Record<string, unknown>} [overrides]
  */
 const agent = (gb, overrides = {}) => ({
-  usage: { gbMinutes: fullMonthGbMinutes(gb), peakGb: gb },
+  usage: { gbMinutes: fullMonthGbMinutes(gb) },
   caps: {},
   requestsToday: 0,
   day: dayKey(AT),
@@ -74,23 +74,24 @@ test("a fresh agent key is capped by default, and the default is the account's",
 });
 
 test("the monthly cap asks the account cap's own function, so the number is the invoice's", () => {
-  // The same bytes, the same ceiling, the same answer. The agent cap cannot
+  // The same bytes, the same maximum, the same answer. The agent cap cannot
   // say a different number from the account cap for identical usage because it
   // never works one out: `capStatus` does it and this keeps the answer beside
   // the verdict.
-  const counted = capStatus(fullMonthGbMinutes(2000), 2000, 12);
+  const counted = capStatus(fullMonthGbMinutes(2000), 12);
   const status = agentCapStatus(agent(2000));
   assert.equal(status.monthly.usedUsd, counted.countedUsd);
   assert.equal(status.monthly.capUsd, counted.capUsd);
   assert.equal(status.monthly.remainingUsd, counted.remainingUsd);
   assert.equal(status.monthly.over, true);
   assert.equal(status.state, "read_only");
-  // 2 TB bills $16 against a $12 cap, so the agent is over; 1.2 TB pins at the
-  // $12 ceiling floor and is exactly at the cap, which is not over it — the
-  // same ">" the account cap uses, so the two never read a number differently.
-  assert.equal(status.monthly.usedUsd, 16);
-  assert.equal(agentCapStatus(agent(1200)).state, "active");
-  // A ceiling below the default is a stricter choice the drive honours: an
+  // 2 TB bills $20 against a $12 cap, so the agent is over; 600 GB bills $12,
+  // exactly at the cap, which is not over it — the same ">" the account cap
+  // uses, so the two never read a number differently.
+  assert.equal(status.monthly.usedUsd, 20);
+  assert.equal(agentCapStatus(agent(600)).state, "active");
+  assert.equal(agentCapStatus(agent(1300)).state, "read_only", "1.3 TB is $13, past $12");
+  // A cap below the default is a stricter choice the drive honours: an
   // agent's own cap can be $1 while the drive's is $12.
   const strict = agentCapStatus(agent(200, { caps: { monthly_cap_usd: 1 } }));
   assert.equal(strict.monthly.capUsd, 1);
