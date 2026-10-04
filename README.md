@@ -7,8 +7,10 @@ write the same folder.
 
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
-- **Every save keeps a version.** Every change for a day, then one a day for 30
-  days, and a delete can be undone.
+- **Version history is not in version 1.** Saving a file again replaces it, and
+  a delete can be undone from the storage provider's own versions. The full list
+  of what version 1 does not do is on the
+  [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.
 - **Billed by the minute, with a ceiling.** 2¢ per GB a month, and the bill is
@@ -17,7 +19,7 @@ write the same folder.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
-**Not open yet.** Sign-ups on the pricing page go to a waitlist.
+**The drive is not open yet. Sign-ups on the pricing page go to a waitlist.**
 
 ## Docs
 
@@ -29,7 +31,7 @@ agents.
 - [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart) —
   five steps to a mounted drive
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works) —
-  plain files, versions, restore
+  plain files, the cache, restore, the bill
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents) —
   `drive init` per tool, and what an agent key cannot do
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing) —

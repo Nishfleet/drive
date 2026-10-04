@@ -11,8 +11,8 @@ same files.
 
 ## Before you start
 
-You need an invite and a machine running macOS, Linux or Windows. The drive is
-not open yet, so ask on the pricing page.
+You need an invite and a machine running macOS, Linux or Windows.
+{{NOT_OPEN}} Ask on the pricing page.
 
 Nothing else on macOS and Linux. The install command brings rclone with it: the
 Linux packages declare `Depends: rclone` and the macOS formula declares a
@@ -148,5 +148,5 @@ landing.
 
 ## Next
 
-- [How it works](/how-it-works) — plain files, versions, restore.
+- [How it works](/how-it-works) — plain files, the cache, restore, the bill.
 - [Limits](/limits) — what version 1 does not do.

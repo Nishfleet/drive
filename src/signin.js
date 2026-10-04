@@ -53,6 +53,7 @@ import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { NOT_OPEN } from "./release-state.js";
 
 /** @typedef {import("./auth.js").Auth} Auth */
 
@@ -145,6 +146,14 @@ export const SIGNIN_COPY = Object.freeze({
   sending: "Sending…",
   signupNote:
     "New here? We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
+  // drive#418: the screen used to read as an open door beside a pricing page
+  // that said the drive was not open. These are the canonical words from
+  // src/release-state.js, carried here because a static page cannot import the
+  // module: a person who has no invite now reads where to get one instead of
+  // mailing an address into a route that answers with the closed door.
+  notOpen: NOT_OPEN,
+  inviteNote:
+    "This screen is for an invited account. Without an invite, join the waitlist on the pricing page.",
 });
 
 /**
