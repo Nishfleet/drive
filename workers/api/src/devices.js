@@ -18,7 +18,7 @@ import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { bucketForAccount, mintTtlSeconds, teamScopeFor } from "./keyprovider.js";
+import { bucketForAccount, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
 /**
@@ -508,16 +508,19 @@ export function createD1DeviceStore(db, options = {}) {
      * isolate and on every request after this one (drive#408).
      *
      * The prefix is the one rule that names a team key — keyprovider.js
-     * `teamScopeFor`, which the memory store and the mint both read — so this
-     * statement's filter is written once and cannot drift from the prefix the
-     * key was minted with. An account's own keys and another team's keys carry
-     * a different prefix, so they are outside this statement by construction
-     * rather than by a LIKE that would let one team id match another's.
+     * `teamPrefix`, the same function `teamScopeFor` writes at mint and both
+     * revokes read — so this statement's filter is written once and cannot
+     * drift from the prefix a key was minted with. One prefix for both roles,
+     * a reader's and a writer's, so neither capability hides from the revoke.
+     * An account's own keys and another team's keys carry a different prefix,
+     * so they are outside this statement by construction rather than by a
+     * LIKE that would let one team id match another's.
      *
      * Conditional on `revoked_at IS NULL`, so a key that is already dead keeps
      * the first revoke's timestamp and `meta.changes` counts only the rows
-     * this call killed, which is the number the route answers with. Nothing is
-     * deleted: the row stays, cancelled, so the devices list can still name it.
+     * this call killed, which is the number the route reports in
+     * `x-drive-revoked-keys`. Nothing is deleted: the row stays, cancelled, so
+     * the devices list can still name it.
      * @param {string} accountId
      * @param {string} teamId
      * @returns {Promise<{revoked: number}>}
@@ -528,7 +531,7 @@ export function createD1DeviceStore(db, options = {}) {
         "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND prefix = ?3 AND revoked_at IS NULL",
         nowSeconds(now()),
         accountId,
-        teamScopeFor("read_only", teamId).prefix,
+        teamPrefix(teamId),
       );
       return {
         revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),

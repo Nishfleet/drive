@@ -100,20 +100,30 @@ test("one member's removal leaves that account's own key and another team's key 
   const minted = storeOver(db);
   const removed = storeOver(db);
   const member = { id: "acct_both", name: "Member" };
+  // Both roles inside one team: they share the prefix, so one removal has to
+  // cover them both or a writer's key outlives their seat.
   const teamKey = await minted.mintTeamKey(member, TEAM, "read_only", { name: "ravi" });
+  const teamWriterKey = await minted.mintTeamKey(member, TEAM, "read_write", { name: "ravi" });
   const otherTeamKey = await minted.mintTeamKey(member, OTHER_TEAM, "read_write", { name: "ravi" });
   const ownKey = await minted.mintKey(member, { kind: "device", name: "ravi's own" });
-  assert.notEqual(otherTeamKey.prefix, teamKey.prefix, "one prefix per team");
+  assert.equal(teamWriterKey.prefix, teamKey.prefix, "both roles on one team share the prefix");
+  assert.notEqual(otherTeamKey.prefix, teamKey.prefix, "another team has its own prefix");
   assert.notEqual(ownKey.prefix, teamKey.prefix, "an account key is not a team key");
 
-  assert.equal(await removed.revokeTeamKeys(member.id, TEAM), 1);
-  assert.equal(rowIn(sqlite, teamKey.keyId).revoked_at, NOW, "the removed member's row is revoked");
+  assert.equal(await removed.revokeTeamKeys(member.id, TEAM), 2, "both of the member's keys went");
+  assert.equal(rowIn(sqlite, teamKey.keyId).revoked_at, NOW, "the reader's row is revoked");
+  assert.equal(rowIn(sqlite, teamWriterKey.keyId).revoked_at, NOW, "the writer's row is revoked");
 
   // The prefix names one team and nothing else: another team's key and the
   // account's own key are outside the statement by construction, which is the
   // "one member, not the team" claim on the real rows.
   assert.equal(rowIn(sqlite, otherTeamKey.keyId).revoked_at, null, "another team's row stays live");
   assert.equal(rowIn(sqlite, ownKey.keyId).revoked_at, null, "the account's own row stays live");
+  assert.equal(
+    await minted.authenticate(teamKey.accessKeyId, teamKey.secret),
+    null,
+    "the member's reader key is refused where they still hold another team's key",
+  );
   assert.equal(
     (await minted.authenticate(otherTeamKey.accessKeyId, otherTeamKey.secret))?.id,
     otherTeamKey.keyId,

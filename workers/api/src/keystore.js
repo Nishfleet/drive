@@ -37,6 +37,7 @@ import {
   mintTtlSeconds,
   renewTtlSeconds,
   scopeFor,
+  teamPrefix,
   teamScopeFor,
 } from "./keyprovider.js";
 import { createTeamStore } from "./teams.js";
@@ -546,10 +547,10 @@ export function createMemoryStore(options = {}) {
      */
     async revokeTeamKeys(accountId, teamId) {
       // The team prefix is the one every member key carries whatever the role:
-      // `teamScopeFor` builds it from the team id, and the role only chooses
-      // the capabilities, so one call names the prefix and the capability set
-      // is irrelevant to the match.
-      const prefix = teamScopeFor("read_only", teamId).prefix;
+      // keyprovider.js `teamPrefix`, the same function the mint and both
+      // revokes read, so the map's match and the store's statement name one
+      // string.
+      const prefix = teamPrefix(teamId);
       const persisted = deviceStore?.revokeTeamKeys
         ? await deviceStore.revokeTeamKeys(accountId, teamId)
         : null;
@@ -564,6 +565,11 @@ export function createMemoryStore(options = {}) {
           revoked++;
         }
       }
+      // The persisted count wins when a store is bound, so the number the
+      // caller reports is the rows that died rather than this isolate's map.
+      // The loop still runs either way — its side effect on `devices` is what
+      // makes this isolate refuse the key from its next request, whether or
+      // not anyone reads the count it produced.
       return persisted === null ? revoked : persisted.revoked;
     },
 
