@@ -1099,8 +1099,8 @@ test("the Worker routes the page's API to the files handler", async () => {
   });
 
   // A path that is not an API still comes from the asset layer.
-  const page = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
-  assert.equal(await page.text(), "asset");
+  const filesAsset = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
+  assert.equal(await filesAsset.text(), "asset");
 });
 
 // ---------------------------------------------------------------- the page
@@ -1135,17 +1135,41 @@ test("the page wears the site's header, with room for the view strip", () => {
   );
   assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
   assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
-  // The static label is gone and its words are not lost: the crumbs row's own
-  // root button says "Your drive" (crumbsForParts), so nothing says it twice.
+  // The static label is gone, and no script is left reading it. The words are
+  // not lost either: the crumbs row's own root button says "Your drive"
+  // (crumbsForParts), which is where the walkthrough's reader saw them before.
   assert.doesNotMatch(page, /id="account"/);
+  assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
 
-  // The strip's rule is the one that lays it out as a strip; the page has a
-  // second .tabs rule that only lines it up with the page's 900px column.
+  // The rule each part of the header owns, and it owns nothing else: this
+  // page's own padding, background and sticky bar around the shared masthead
+  // (public/site.css owns the header's own metrics, its link colour and the
+  // tagline), this page's own wordmark size, and the crumbs row. A page that
+  // starts restyling a part it does not own fails here, which is what keeps the
+  // pages from drifting apart again. test/site-styles.test.mjs holds the same
+  // line for the other pages.
   /** @param {string} selector */
   const rules = (selector) =>
     [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
       (rule) => rule[1],
     );
+  const mastheadRules = rules("masthead").join("");
+  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
+    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
+  }
+  assert.ok(
+    !mastheadRules.includes("display:"),
+    "the page does not lay the header out, which the shared chrome already does",
+  );
+  assert.deepEqual(
+    rules("wordmark"),
+    ["\n  font-size: 24px;\n"],
+    "the page sets its own wordmark size and nothing else",
+  );
+  assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
+
+  // The strip's rule is the one that lays it out as a strip; the page has a
+  // second .tabs rule that only lines it up with the page's 900px column.
   const tabs = rules("tabs").find((rule) => rule.includes("display: flex"));
   assert.ok(tabs, "the page lays the tab strip out as a strip");
   const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
@@ -1160,10 +1184,14 @@ test("the page wears the site's header, with room for the view strip", () => {
     "each tab needs room inside it",
   );
 
-  // The acceptance for drive#425 is a page with no sideways scroll. Hiding the
-  // symptom instead of fixing it fails here, so the proof has to be the
-  // measurements in the PR, taken in a browser.
+  // The acceptance for drive#425 is a page with no sideways scroll. No rule
+  // here can measure that, so what this holds is the two things a rule can
+  // prove about it: the page does not hide the symptom, and it does not hold
+  // the list in a box that could keep an overflowing row off the screen. The
+  // measurements themselves are in the PR body, taken in a browser at 1280,
+  // 1024, 768, 390, 360 and 320 pixels wide.
   assert.doesNotMatch(page, /overflow-x:\s*hidden/);
+  assert.doesNotMatch(page, /\.list\s*\{[^}]*overflow/);
 });
 
 test("the page's copy is the module's copy", () => {

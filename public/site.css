@@ -99,6 +99,13 @@ body {
   color: var(--ink-soft);
 }
 
+/* The page you are on, in the menu. Declared here so a page takes the shared
+   header with it, as the Web Files page took its own markup until drive#425. */
+.masthead a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 main {
   margin: 0 auto;
 }

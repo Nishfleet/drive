@@ -511,30 +511,24 @@ test("the pages' mastheads read as one navigation", () => {
     '<a href="/usage"',
     '<a href="/signin"',
   ];
-  for (const masthead of [page, getStartedPage, filesPage]) {
-    const links = [...masthead.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
-    assert.deepEqual(
-      links.slice(0, nav.length),
-      nav,
-      "the masthead links are in the same order on every page",
-    );
-  }
-  assert.match(page, /<a href="\/usage" aria-current="page">Usage<\/a>/);
-  assert.match(getStartedPage, /<a href="\/get-started" aria-current="page">Get started<\/a>/);
-  assert.match(filesPage, /<a href="\/files" aria-current="page">Your files<\/a>/);
-  // Each masthead is the shared chrome (public/site.css's .masthead), not a
-  // page's own top bar: the Web Files page had one of its own until drive#425.
-  for (const [name, masthead] of [
+  for (const [name, html] of [
     ["usage.html", page],
     ["get-started.html", getStartedPage],
     ["files.html", filesPage],
   ]) {
-    assert.match(
-      masthead,
-      /<header class="masthead">[\s\S]*?<\/header>/,
-      `${name} carries the shared masthead header`,
+    // The header's own links, and not the page's: a link elsewhere must not
+    // satisfy this gate, and must not fail it either. The header is the markup
+    // between its open and close tags, the same slice test/pricing-copy.test.mjs
+    // takes of the pricing page.
+    const header = html.slice(0, html.indexOf("</header>"));
+    const links = [...header.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
+    assert.deepEqual(
+      links,
+      nav,
+      `${name}'s header carries the site's five links, and nothing else, in the same order`,
     );
-    assert.doesNotMatch(masthead, /<header class="topbar">/, `${name} has no top bar of its own`);
+    assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
+    assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.

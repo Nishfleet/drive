@@ -62,17 +62,16 @@ body {
   padding-right: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
 }
 
+/* The shared header, at the height of a page you work in rather than one you
+   read: the site's own 28px/20px padding is a reading page's. This is the
+   page's own padding around the header and its own bottom rule; the header
+   itself — how it is laid out, its links, its tagline, how it marks the page
+   you are on and the size of the wordmark — is public/site.css's, so this page
+   cannot drift from it again the way it did before drive#425. */
 .masthead {
-  /* The shared header, at the height of a page you work in rather than one you
-     read: the site's own 28px/20px padding is a reading page's. */
   margin: 0;
   padding: 14px 0 12px;
   border-bottom: 0;
-}
-
-.masthead a[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
 }
 
 .wordmark {
