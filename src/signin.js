@@ -48,8 +48,15 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
+import { AFTER_SIGNIN_PATH, authFor, sessionAccount, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
+import {
+  attachPendingCardAccount,
+  claimCardFingerprint,
+  pendingCardAccountId,
+  signupCardFingerprint,
+} from "./abuse-guards.js";
+import { foundingOfferIsOpen } from "./founding.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
@@ -195,7 +202,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
  * sentence the route returns as a 400. The two steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}
  *   | {step: "signout"}
  *   | {error: string}} SigninRequest
  */
@@ -268,7 +275,7 @@ async function emailHasUser(env, email) {
 /**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -285,7 +292,13 @@ function readStart(body) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: BAD_ADDRESS_MESSAGE };
   }
-  return { step: "start", method, email, card: body.card };
+  return {
+    step: "start",
+    method,
+    email,
+    card: body.card,
+    cardFingerprint: body.cardFingerprint,
+  };
 }
 
 /**
@@ -293,7 +306,7 @@ function readStart(body) {
  * Better Auth settings (src/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit, FOUNDING_OFFER_OPEN?: string}} SigninEnv
  */
 
 /**
@@ -407,11 +420,42 @@ export async function handleSigninRequest(request, env) {
   }
   // A first-time address is sign-up: refuse it without a card (drive#387). A
   // returning address is sign-in and already has an account. No Dodo call
-  // here, so an unset key still charges nobody (#325).
-  if (!(await emailHasUser(env, email))) {
+  // here, so an unset key still charges nobody (#325). The fingerprint is the
+  // test double (drive#464): a posted provider id, or `test:<email>` from the
+  // checkbox, the same stand-in PR 445 used for the card step itself.
+  const isNew = !(await emailHasUser(env, email));
+  /** @type {string|null} */
+  let fingerprint = null;
+  if (isNew) {
     const refused = refuseSignupWithoutCard(read.card);
     if (refused !== null) {
       return json({ error: refused }, 400);
+    }
+    fingerprint = signupCardFingerprint({
+      card: read.card,
+      cardFingerprint: read.cardFingerprint,
+      email,
+    });
+    const driveDb = env.DRIVE_DB;
+    if (
+      fingerprint !== null &&
+      driveDb !== undefined &&
+      driveDb !== null &&
+      typeof driveDb === "object" &&
+      "prepare" in driveDb
+    ) {
+      // The user row does not exist until the link is followed. The hold row
+      // (id `hold:<email>`) is the live account for uniqueness and the
+      // founding reservation until verify remaps it.
+      const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
+        accountId: pendingCardAccountId(email),
+        email,
+        fingerprint,
+        offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
+      });
+      if ("error" in claimed) {
+        return json({ error: claimed.error }, 400);
+      }
     }
   }
   try {
@@ -511,6 +555,18 @@ export async function handleSigninLinkVerify(request, env) {
   }
   if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
+  }
+  const driveDb = env.DRIVE_DB;
+  if (driveDb !== undefined && driveDb !== null && typeof driveDb === "object" && "prepare" in driveDb) {
+    const cookies = verified.headers.getSetCookie();
+    const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
+    const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
+    if (account !== null) {
+      await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
+        email: account.email,
+        accountId: account.id,
+      });
+    }
   }
   // The one thing this route does is take the cookie Better Auth set onto a
   // same-origin redirect of its own, so a person lands on the drive rather

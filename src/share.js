@@ -43,6 +43,12 @@
 // statements src/search.js and src/branches.js already send, so there is one
 // way to reach the customer database and one place the account is applied.
 
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  preChargeUploadBlocked,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
+} from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
   joinPath,
@@ -1189,7 +1195,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1234,6 +1240,21 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // The owner's cap is the owner's rule; a stranger gets the table's words
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
+  }
+  if (options.db) {
+    const stored = await accountStoredBytes(options.db, record.accountId);
+    const header = Number(request.headers.get("content-length") ?? "");
+    const incomingBytes =
+      Number.isInteger(header) && header > 0
+        ? header
+        : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
+          ? 1
+          : 0;
+    const firstChargedAt = await accountFirstChargedAt(options.db, record.accountId);
+    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
+    if (blocked !== null) {
+      return json({ error: blocked }, 403);
+    }
   }
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {

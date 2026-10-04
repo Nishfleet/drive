@@ -56,8 +56,8 @@ const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
-// past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
-// under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+// past the $20 default cap (2600 GB bills $52, capped to the $20.80 ceiling)
+// and under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
   gbMinutes: fullMonthGbMinutes(gb),
@@ -69,7 +69,7 @@ const monthUsage = (gb) => ({
   capUsd: BILLING_CONFIG.defaultCapUsd,
   cardAdded: true,
 });
-const capUsage = () => monthUsage(2000);
+const capUsage = () => monthUsage(2600);
 const underCapUsage = () => monthUsage(1200);
 
 // The four kinds of key the spec mints, in the shape the plan reads.
@@ -658,17 +658,17 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   });
   const keys = [deviceKey];
 
-  // 1.3 TB on the default $12 cap: the invoice is the $12 floor, so the cap is
-  // not passed and the drive keeps writing (the orchestrator decision on #39).
+  // 1.3 TB on the default $20 cap: the invoice is the $12 floor, so the cap is
+  // not passed and the drive keeps writing (drive#464).
   const active = await enforceCap({ usage: usage(1300), keys }, recordingProvider());
   assert.equal(active.state, "active");
   assert.equal(active.applied.length, 0);
   assert.equal(active.mount.restart, false);
 
-  // 2 TB: the ceiling rises to $16, past the $12 cap, so the one write key is
-  // replaced by a read-only key and the mount is told to restart.
+  // 2.6 TB: the ceiling rises to $20.80, past the $20 cap, so the one write
+  // key is replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
-  const capped = await enforceCap({ usage: usage(2000), keys }, capProvider);
+  const capped = await enforceCap({ usage: usage(2600), keys }, capProvider);
   assert.equal(capped.state, "read_only");
   assert.equal(capped.applied.length, 1);
   assert.deepEqual(capProvider.calls, [
@@ -677,9 +677,9 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
-  // summary rule too: 2 TB at the default cap is read_only, 1.3 TB is active.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), 2000, 12).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1300), 1300, 12).state, "active");
+  // summary rule too: 2.6 TB at the default cap is read_only, 1.3 TB is active.
+  assert.equal(capStatus(fullMonthGbMinutes(2600), 2600, 20).state, "read_only");
+  assert.equal(capStatus(fullMonthGbMinutes(1300), 1300, 20).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -788,7 +788,7 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
-  assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
+  assert.equal(body.capLine, "Cap $20.00: $0.00 counted this month, $20.00 left.");
   // The Worker still routes the path to the handler, and the handler's gate
   // answers 401 to an anonymous request rather than the asset layer's 404.
   const anonymous = await workerFetch(new Request("https://drive.test/api/usage"), {

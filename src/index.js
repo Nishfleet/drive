@@ -415,6 +415,8 @@ const filesHandler = (c) => {
     c.req.raw,
     account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
     account,
+    Date.now(),
+    { db: c.env.DRIVE_DB },
   );
 };
 
@@ -695,6 +697,7 @@ export function createApp() {
     handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
+      db: c.env.DRIVE_DB,
     }),
   );
 

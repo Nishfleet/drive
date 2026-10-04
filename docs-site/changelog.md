@@ -8,6 +8,12 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-05
+
+- Abuse guards: one active account per card, 1 TB storage until the first
+  charge, spending cap default $20, and a founding slot reserved at the card
+  step.
+
 ## 2026-10-04
 
 - The home page's worked examples read as sentences: "about $1 of storage, and

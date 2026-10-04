@@ -259,6 +259,18 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That size is not a storage amount we can quote.",
     next: "Enter how many TB or GB you store, as a number of 0 or more.",
   }),
+  // A second sign-up tried to use a card already on an active account
+  // (drive#464). Closed accounts do not hold the fingerprint.
+  "card-in-use": Object.freeze({
+    what: "That card is already on another account.",
+    next: "Sign in to the account that uses it, or use a different card.",
+  }),
+  // A new account has not been charged yet, so storage stops at 1 TB
+  // (drive#464). Downloads keep working. Support can lift the limit early.
+  "pre-charge-storage-limit": Object.freeze({
+    what: "New accounts can store 1 TB until the first payment goes through.",
+    next: "Ask support if you need more storage before then.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the

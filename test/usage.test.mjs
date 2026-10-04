@@ -100,8 +100,8 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   assert.equal(summary.labels.storedNow, "400 GB");
   assert.equal(summary.labels.gbMonths, "400.00");
   assert.equal(summary.labels.cost, "$10.00");
-  assert.equal(summary.labels.cap, "$12.00");
-  assert.equal(summary.labels.accountCap, "$12.00");
+  assert.equal(summary.labels.cap, "$20.00");
+  assert.equal(summary.labels.accountCap, "$20.00");
   assert.equal(summary.labels.downloads, "0 B of 1.2 TB free");
   assert.equal(Object.isFrozen(summary.labels), true);
   // The cap writes stop at and the cap the account chose are two things: a
@@ -117,7 +117,7 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
     capUsd: BILLING_CONFIG.defaultCapUsd,
   });
   assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
-  assert.equal(withoutCard.labels.accountCap, "$12.00", "the account's own cap is untouched");
+  assert.equal(withoutCard.labels.accountCap, "$20.00", "the account's own cap is untouched");
 });
 
 test("the downloads label is bytes used against the free 3x, from the same config", () => {
@@ -292,7 +292,7 @@ test("the usage endpoint answers the empty month with the page's shape", async (
   ]);
   assert.equal(body.labels.storedNow, "0 B");
   assert.equal(body.labels.cost, "$10.00");
-  assert.equal(body.labels.cap, "$12.00");
+  assert.equal(body.labels.cap, "$20.00");
   // The page renders these strings, so none of them may be NaN or undefined.
   for (const value of Object.values(body.labels)) {
     assert.equal(typeof value, "string");

@@ -14,7 +14,12 @@
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import { accountFounding, markAccountPaying } from "../../../src/founding.js";
+import {
+  accountFounding,
+  markAccountPaying,
+  releaseFoundingReservation as clearFoundingReservation,
+  reserveFoundingSlot,
+} from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
@@ -909,6 +914,24 @@ export function createD1DeviceStore(db, options = {}) {
      */
     markPaying(accountId, offerOpen) {
       return markAccountPaying(db, accountId, { offerOpen, now: now() });
+    },
+
+    /**
+     * Reserve a founding slot at the card step. The parsed Worker var is the
+     * second argument, the same shape as markPaying.
+     * @param {string} accountId
+     * @param {boolean} offerOpen
+     */
+    reserveFounding(accountId, offerOpen) {
+      return reserveFoundingSlot(db, accountId, { offerOpen, now: now() });
+    },
+
+    /**
+     * Drop a reserved slot when the account closes before paying.
+     * @param {string} accountId
+     */
+    releaseFoundingReservation(accountId) {
+      return clearFoundingReservation(db, accountId);
     },
 
     /**

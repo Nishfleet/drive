@@ -16,7 +16,7 @@ import {
   dayKey,
   monthKey,
 } from "../src/agentcaps.js";
-import { capStatus } from "../src/billing.js";
+import { BILLING_CONFIG, capStatus } from "../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../src/cap.js";
 
 // One pinned instant, so a day boundary is a fact of the test. Midday UTC,
@@ -59,12 +59,13 @@ const agent = (gb, overrides = {}) => ({
 });
 
 test("a fresh agent key is capped by default, and the default is the account's", () => {
-  // The default is the account's own $12 cap (issue #39's number, read from
+  // The default is the account's own $20 cap (drive#464, read from
   // src/billing.js), so an agent inherits the number a customer already reads
   // on the usage page rather than a second number to learn.
   const defaults = agentCaps();
-  assert.equal(defaults.monthlyCapUsd, 12);
+  assert.equal(defaults.monthlyCapUsd, BILLING_CONFIG.defaultCapUsd);
   assert.equal(defaults.monthlyCapUsd, DEFAULT_AGENT_CAPS.monthlyCapUsd);
+  assert.equal(defaults.monthlyCapUsd, 20);
   assert.equal(defaults.dailyRequests, 1000);
   // A row that has not been written yet reads as the defaults, so a key minted
   // this second is already capped rather than uncapped until a first sweep.
@@ -79,7 +80,7 @@ test("the monthly cap asks the account cap's own function, so the number is the 
   // never works one out: `capStatus` does it and this keeps the answer beside
   // the verdict.
   const counted = capStatus(fullMonthGbMinutes(2000), 2000, 12);
-  const status = agentCapStatus(agent(2000));
+  const status = agentCapStatus(agent(2000, { caps: { monthly_cap_usd: 12 } }));
   assert.equal(status.monthly.usedUsd, counted.countedUsd);
   assert.equal(status.monthly.capUsd, counted.capUsd);
   assert.equal(status.monthly.remainingUsd, counted.remainingUsd);
@@ -89,7 +90,7 @@ test("the monthly cap asks the account cap's own function, so the number is the 
   // $12 ceiling floor and is exactly at the cap, which is not over it — the
   // same ">" the account cap uses, so the two never read a number differently.
   assert.equal(status.monthly.usedUsd, 16);
-  assert.equal(agentCapStatus(agent(1200)).state, "active");
+  assert.equal(agentCapStatus(agent(1200, { caps: { monthly_cap_usd: 12 } })).state, "active");
   // A ceiling below the default is a stricter choice the drive honours: an
   // agent's own cap can be $1 while the drive's is $12.
   const strict = agentCapStatus(agent(200, { caps: { monthly_cap_usd: 1 } }));
@@ -103,7 +104,7 @@ test("an agent over its monthly cap goes read-only, and the swap is the account 
   // capped agent gets is the swap a capped drive gets — the same read-only
   // pair, and the same record of what was taken, so a raise gives back exactly
   // that and no more.
-  const over = agentCapStatus(agent(2000));
+  const over = agentCapStatus(agent(2000, { caps: { monthly_cap_usd: 12 } }));
   assert.equal(over.state, "read_only");
   const plan = agentCapPlan([agentKey()], over);
   assert.equal(plan.swaps.length, 1);

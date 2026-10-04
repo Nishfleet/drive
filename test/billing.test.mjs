@@ -149,22 +149,25 @@ test("the two 'you saved' lines, each with its copy", () => {
 
 test("the cap counts min(metered, ceiling), so it never bites early", () => {
   // A default account at 1.3 TB: metered $26 over the ceiling, but the
-  // invoice is the $12 ceiling, so a $12 cap is not reached and the drive
-  // keeps writing. build-spec.md's open question (issue #39) resolved.
+  // invoice is the $12 ceiling, so a $20 default cap is not reached and the
+  // drive keeps writing (drive#464).
   const gbMinutes = fullMonthGbMinutes(1300);
   const cap = capStatus(gbMinutes, 1300, BILLING_CONFIG.defaultCapUsd);
   assert.equal(cap.countedUsd, 12, "the cap counts the ceiling, not the meter");
   assert.equal(cap.state, "active", "a default account is never cut off early");
-  assert.equal(cap.remainingUsd, 0);
-  // A default account past 1.5 TB: the ceiling rises above the $12 cap, so
-  // the metered bill is what the cap sees, and the cap is exceeded.
-  const past = capStatus(fullMonthGbMinutes(2000), 2000, BILLING_CONFIG.defaultCapUsd);
-  assert.equal(past.countedUsd, 16, "the ceiling rose to $16, above the $12 cap");
+  assert.equal(cap.remainingUsd, 8);
+  // A default account at 2 TB: the ceiling is $16, still under $20.
+  const twoTb = capStatus(fullMonthGbMinutes(2000), 2000, BILLING_CONFIG.defaultCapUsd);
+  assert.equal(twoTb.countedUsd, 16);
+  assert.equal(twoTb.state, "active");
+  // Past $20 of counted ceiling (2.6 TB → $20.80) the default cap bites.
+  const past = capStatus(fullMonthGbMinutes(2600), 2600, BILLING_CONFIG.defaultCapUsd);
+  assert.equal(past.countedUsd, 20.8);
   assert.equal(past.state, "read_only", "past the cap the drive goes read-only");
   // Raising the cap back writes again, with nothing deleted.
-  const raised = capStatus(fullMonthGbMinutes(2000), 2000, 20);
+  const raised = capStatus(fullMonthGbMinutes(2600), 2600, 25);
   assert.equal(raised.state, "active", "raising the cap writes again");
-  assert.equal(raised.remainingUsd, 4);
+  assert.equal(Number(raised.remainingUsd.toFixed(2)), 4.2);
 });
 
 test("the cap bites only past the cap, so the $12 floor never cuts writes", () => {
@@ -226,7 +229,7 @@ test("a card-less account is capped at the free $1", () => {
     capUsd: BILLING_CONFIG.defaultCapUsd,
     cardAdded: true,
   });
-  assert.equal(withCard.cap.capUsd, 12);
+  assert.equal(withCard.cap.capUsd, BILLING_CONFIG.defaultCapUsd);
   assert.equal(withCard.cap.state, "active");
 });
 

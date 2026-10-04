@@ -16,6 +16,12 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  preChargeUploadBlocked,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
+} from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -1619,8 +1625,11 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
+ * @param {{db?: D1Database}} [options] the customer database, so the 1 TB
+ *   pre-charge storage limit (drive#464) can read stored bytes. Tests that
+ *   do not pass a database skip that check.
  */
-export async function handleFilesRequest(request, store, account, now = Date.now()) {
+export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -1654,7 +1663,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return readRequest(request, url, scoped, route.endsWith("download"));
   }
   if (route === `${FILES_ENDPOINT}/upload`) {
-    return uploadRequest(request, url, scoped);
+    return uploadRequest(request, url, scoped, account, options);
   }
   if (route === `${FILES_ENDPOINT}/delete`) {
     return deleteRequest(request, scoped, now);
@@ -1837,9 +1846,11 @@ async function readRequest(request, url, store, download) {
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
+ * @param {{id: string}} account
+ * @param {{db?: D1Database}} [options]
  * @returns {Promise<Response>}
  */
-async function uploadRequest(request, url, store) {
+async function uploadRequest(request, url, store, account, options = {}) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file.", 405);
   }
@@ -1850,6 +1861,21 @@ async function uploadRequest(request, url, store) {
   const name = url.searchParams.get("name") || "";
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
+  }
+  if (options.db) {
+    const stored = await accountStoredBytes(options.db, account.id);
+    const header = Number(request.headers.get("content-length") ?? "");
+    const incomingBytes =
+      Number.isInteger(header) && header > 0
+        ? header
+        : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
+          ? 1
+          : 0;
+    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
+    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
+    if (blocked !== null) {
+      return json({ error: blocked }, 403);
+    }
   }
   const path = joinPath(checked.path, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";

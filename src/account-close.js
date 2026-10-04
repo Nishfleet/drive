@@ -127,6 +127,7 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
+  await input.devices.releaseFoundingReservation(input.account.id);
   if (closed.closeMailSentAt === null) {
     await sendEmail(input.email, {
       to: expected,

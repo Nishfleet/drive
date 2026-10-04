@@ -109,13 +109,13 @@ export const BILLING_CONFIG = Object.freeze({
   membershipUsd: 10,
   foundingMembershipUsd: 5,
   foundingLimit: 1000,
-  // The default spending cap, $12 (orchestrator decision 2026-09-30, issue
-  // #39). Its own number, not PRICE.capFloorUsd: the ceiling floor is the
-  // issue #29 decision and they only happen to agree today, so a ceiling
-  // edit must not move every default cap silently. The cap counts
-  // min(metered so far, ceiling), not the raw meter, so the cap cannot pass
-  // what the invoice will be.
-  defaultCapUsd: 12,
+  // The default spending cap, $20 (Nish, 2026-10-04, drive#464). Its own
+  // number, not PRICE.capFloorUsd: the ceiling floor is the issue #29
+  // decision and they are not the same thing, so a ceiling edit must not
+  // move every default cap silently. The cap counts min(metered so far,
+  // ceiling), not the raw meter, so the cap cannot pass what the invoice
+  // will be.
+  defaultCapUsd: 20,
   // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
   freeDownloadMultiplier: 3,
   downloadRateUsdPerGb: 0.01,
