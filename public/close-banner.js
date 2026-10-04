@@ -28,6 +28,12 @@
 // would either skip the confirmation or open a second copy of it.
 
 (() => {
+  // src/get-started.js imports this file so the first-run page can carry the
+  // banner inside its one module (lighthouserc.json allows one script resource).
+  // node --test imports that module with no document, and the first real work
+  // here is getElementById, so there is nothing to do in that process.
+  if (typeof document === "undefined") return;
+
   const CLOSE_ENDPOINT = "/api/account/close";
   const BANNER_ID = "close-banner";
   const WHAT_ID = "close-banner-what";
@@ -105,7 +111,7 @@
         if (!payload.copy || typeof payload.copy !== "object") return;
         reveal(payload);
       })
-      .catch(() => {
+      .catch((_error) => {
         // A banner that could not be read stays hidden. The page's own content
         // is still correct, and a close that is in flight is also shown in the
         // account's email, so nothing is lost by saying nothing here.
@@ -120,3 +126,9 @@
   // keeps the date fresh as the day moves.
   window.setInterval(read, 60000);
 })();
+
+// The static signed-in pages load this file as type=module, and the first-run
+// page imports it, so it has to be a module. The empty export is that mark;
+// nothing reads it. test/close-banner.test.mjs strips this line before it
+// runs the file as a script, because the vm script context rejects export.
+export {};

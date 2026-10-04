@@ -366,11 +366,9 @@ th {
     <p>Pay only for what you store, billed by the minute. <a href="/">See the price</a>.</p>
   </footer>
 
+  <!-- The pending-close banner (drive issue #424) ships inside this
+       page's one module (src/get-started.js imports public/close-banner.js).
+       A second <script src> would fail the Lighthouse script-count budget. -->
   <script type="module" src="./src/get-started.js"></script>
-  <!-- The one shared pending-close banner script (drive issue #424).
-       Every signed-in page loads the same file, so the banner cannot
-       drift between them; it reads the endpoint and never carries the
-       words itself. -->
-  <script src="/close-banner.js" defer></script>
 </body>
 </html>

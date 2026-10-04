@@ -946,9 +946,9 @@ document.addEventListener("visibilitychange", () => {
 });
   </script>
   <!-- The one shared pending-close banner script (drive issue #424).
-       Every signed-in page loads the same file, so the banner cannot
-       drift between them; it reads the endpoint and never carries the
-       words itself. -->
-  <script src="/close-banner.js" defer></script>
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

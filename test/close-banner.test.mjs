@@ -2,13 +2,12 @@
 // close, every signed-in page says so on screen: the date the files are
 // deleted, and a Cancel link next to the sentence.
 //
-// Why a shared asset and not five inline scripts. The signed-in pages are
-// static assets served straight from public/ (cloudflare.config.ts), so none of
-// them can import a module. Each one used to carry its own inline script, and
-// five copies of a banner is five things to forget on the next page: this test
-// is the gate instead, and it fails CI when a signed-in page stops carrying the
-// one shared script or when the shared script stops reading the endpoint's own
-// words rather than carrying its own copy.
+// Why a shared asset and not five inline scripts. The signed-in pages in
+// public/ are static assets (cloudflare.config.ts), so they load the one file
+// as a module. get-started.html is already a Vite module and the Lighthouse
+// budget allows only one script resource, so that page imports the same file
+// into its bundle. This test fails CI when a signed-in page drops the banner
+// or when the shared script stops reading the endpoint's own words.
 //
 // What the gate proves, in order:
 //   1. The banner's words are the module's (src/account-close.js), and the one
@@ -63,6 +62,11 @@ const SIGNED_IN_PAGES = [
   { name: "starter.html", url: new URL("starter.html", PUBLIC_DIR) },
   { name: "get-started.html", url: new URL("../get-started.html", import.meta.url) },
 ];
+
+// The three public/ pages load /close-banner.js themselves. get-started.html
+// already has a module, so it imports that same file from src/get-started.js.
+const STATIC_SIGNED_IN = SIGNED_IN_PAGES.filter((page) => page.name !== "get-started.html");
+const GET_STARTED_JS = new URL("../src/get-started.js", import.meta.url);
 
 // The pages that are deliberately left out, named here so the exclusion is a
 // decision on the record and not an omission: adding one of these to the banner
@@ -223,6 +227,7 @@ test("the shared banner script reads the endpoint's words and shows the date and
 });
 
 test("every signed-in page carries the banner element and loads the one shared script", () => {
+  const scriptSrcs = /<script\b[^>]*\bsrc="([^"]+)"/g;
   for (const { name, url } of SIGNED_IN_PAGES) {
     const html = readFileSync(url, "utf8");
     // The banner element, hidden until the endpoint says the account is
@@ -238,12 +243,6 @@ test("every signed-in page carries the banner element and loads the one shared s
       `${name} must have a slot for the banner sentence`,
     );
     assert.match(html, /id="close-banner-cancel"/, `${name} must have the cancel link`);
-    // One shared script, loaded by the URL the asset layer serves.
-    assert.match(
-      html,
-      /<script src="\/close-banner\.js" defer><\/script>/,
-      `${name} must load the one shared banner script`,
-    );
     // No second copy: a page that inlined its own banner script would be the
     // drift this shared asset exists to prevent.
     assert.doesNotMatch(
@@ -251,7 +250,32 @@ test("every signed-in page carries the banner element and loads the one shared s
       /id="close-banner-what"[\s\S]*?function renderCloseBanner/,
       `${name} must not carry its own copy of the banner script`,
     );
+    // Lighthouse's script:count budget is 1 (lighthouserc.json). A second
+    // src is a second resource and fails verify, which is why get-started
+    // cannot load /close-banner.js next to its own module.
+    const srcs = [...html.matchAll(scriptSrcs)].map((match) => match[1]);
+    assert.ok(srcs.length <= 1, `${name} must not load more than one script resource (${srcs})`);
   }
+  for (const { name, url } of STATIC_SIGNED_IN) {
+    const html = readFileSync(url, "utf8");
+    assert.match(
+      html,
+      /<script type="module" src="\/close-banner\.js"><\/script>/,
+      `${name} must load the one shared banner script`,
+    );
+  }
+  const getStarted = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    getStarted,
+    /src="\/close-banner\.js"/,
+    "get-started.html already has a module; a second src fails the Lighthouse script-count budget",
+  );
+  const renderer = readFileSync(GET_STARTED_JS, "utf8");
+  assert.match(
+    renderer,
+    /import ["']\.\.\/public\/close-banner\.js["']/,
+    "get-started.js must import the shared banner so the first-run bundle carries it",
+  );
 });
 
 test("the pages that are not a signed-in account's carry no banner", () => {
@@ -298,13 +322,9 @@ test("the shared script is one served file, and the public tree carries it", () 
     readdirSync(PUBLIC_DIR).includes("close-banner.js"),
     "public/close-banner.js must be committed; the pages load it by that path",
   );
-  // It is a plain script, not a module: a page loads it with `defer` and no
-  // type, and a module would need a type="module" the pages do not carry.
-  assert.doesNotMatch(
-    bannerScript,
-    /^\s*export\s/m,
-    "the shared script is a classic script, not a module",
-  );
+  // The static pages load it as type=module, and get-started.js imports it, so
+  // it is a module. The empty export is that mark; the IIFE is still the body.
+  assert.match(bannerScript, /^export \{\};$/m, "the shared script is a module");
   // No copy of the banner's own sentence lives in the script: it is the
   // payload's words. A literal sentence here would be the second source the
   // shared asset exists to remove.
@@ -312,6 +332,21 @@ test("the shared script is one served file, and the public tree carries it", () 
     bannerScript,
     /This account closes on/,
     "the script must not carry the banner sentence; the payload does",
+  );
+});
+
+test("the Lighthouse script-count budget is still one, so get-started cannot add a second src", () => {
+  // CI runs lhci before npm test. A second <script src> on get-started.html is
+  // what failed verify on this branch: the page already loads its renderer.
+  const budgets = JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"))
+    .ci.assert.assertions;
+  assert.deepEqual(budgets["resource-summary.script:count"], ["error", { maxNumericValue: 1 }]);
+  assert.match(
+    JSON.stringify(
+      JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8")),
+    ),
+    /get-started\.html/,
+    "the budget is measured on get-started.html",
   );
 });
 
@@ -412,7 +447,11 @@ function runBannerScript(fetch) {
       return byId.get(id) ?? null;
     },
   };
-  runInContext(bannerScript, createContext({ document, window, fetch }));
+  // The file is a module (`export {}`) so get-started.js can import it. The
+  // vm script context rejects that line, and the IIFE is the body this test
+  // runs, so the empty export is stripped here and nowhere else.
+  const script = bannerScript.replace(/\nexport \{\};\s*$/u, "\n");
+  runInContext(script, createContext({ document, window, fetch }));
   return { banner, what, cancel };
 }
 
