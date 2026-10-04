@@ -569,6 +569,32 @@ test("gate 6: the suite is one command, and CI runs that command", () => {
     /test\/standin-search\.test\.mjs/,
     "the stand-in 100k search proof still runs",
   );
+  const skipMatch = pkg.scripts.test.match(/--test-skip-pattern '([^']+)'/);
+  const nameMatch = pkg.scripts.test.match(/--test-name-pattern '([^']+)'/);
+  assert.ok(skipMatch, "the skip pattern is a quoted regex the suite can parse");
+  assert.ok(nameMatch, "the name pattern is a quoted regex the suite can parse");
+  assert.equal(
+    nameMatch[1],
+    skipMatch[1],
+    "the second pass runs the same proofs the first pass skipped",
+  );
+  const speedNameRe = new RegExp(skipMatch[1]);
+  const speedNames = [
+    ...read("test/search.test.mjs").matchAll(/^test\("([^"]+)"/gm),
+    ...read("test/standin-search.test.mjs").matchAll(/^test\("([^"]+)"/gm),
+  ]
+    .map((m) => m[1])
+    .filter((name) => speedNameRe.test(name));
+  assert.equal(
+    speedNames.length,
+    2,
+    `the skip pattern must match exactly the two search speed proofs, got ${JSON.stringify(speedNames)}`,
+  );
+  assert.match(
+    read(".github/workflows/ci.yml"),
+    /node-version:\s*"24"/,
+    "CI is on Node 24, which has --test-skip-pattern",
+  );
   assert.match(
     read("test/search.test.mjs"),
     /SEARCH_BUDGET_MS = 1000/,
