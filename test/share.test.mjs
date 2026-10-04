@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import { createApp } from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import {
   base64url,
@@ -1410,4 +1411,12 @@ test("the shipped upload page carries the module's words and endpoints", () => {
   // No script files and no inline secrets: one inline script, nothing fetched
   // from another origin.
   assert.ok(!/<script src=/.test(page), "the page is one inline script");
+});
+
+// The handlers answer DELETE (revoke), but a route the app does not register is
+// a 405 before any handler runs, so `drive share --revoke` could never work.
+test("the app routes DELETE for share and request links, so a revoke reaches its handler", () => {
+  const routes = createApp().routes.map((r) => `${r.method} ${r.path}`);
+  assert.ok(routes.includes("DELETE /api/share"), "DELETE /api/share is not registered");
+  assert.ok(routes.includes("DELETE /api/request"), "DELETE /api/request is not registered");
 });
