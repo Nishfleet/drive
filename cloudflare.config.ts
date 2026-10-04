@@ -28,7 +28,18 @@ export default defineConfig({
       // share link served by the Worker (src/share.js
       // handleShareFileRequest); the rest of the site is still straight from
       // the asset layer.
-      runWorkerFirst: ["/api/*", "/s/*"],
+      //
+      // /v1/* is the api Worker's family, on this same host (drive#156/#341,
+      // #342): the CLI posts it to the one APIBase it posts /api/* to, so the
+      // Worker that answers that address has to be the one that receives it.
+      // It forwards the request over a service binding (src/index.js) rather
+      // than serving it, so the api Worker's own gate, limits and words answer
+      // it. The binding itself is not declared here yet: Cloudflare fails this
+      // Worker's deploy against a service binding whose target Worker does not
+      // exist, and the api Worker is a separate deployable that no deploy ships
+      // until its deploy step lands, so until then /v1/* is the closed door
+      // src/index.js answers rather than a family that pretends to be routed.
+      runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
     // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
@@ -118,6 +129,12 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
+      // drive issue #386: the founding-member offer switch. A Worker var, not
+      // a code change and not a secret: "1" keeps the offer open, "0" closes
+      // it. Closing it never changes accounts that already hold the flag
+      // (src/founding.js). The health check does not probe it: a string is
+      // not a reachable dependency, and a missing var is treated as open.
+      FOUNDING_OFFER_OPEN: bindings.text("1"),
       // drive issue #28: bound the waitlist endpoint. Five sign-ups a
       // minute per client IP is far above a person's pace and far below
       // what a script needs to enumerate addresses or fill the table.

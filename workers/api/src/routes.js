@@ -33,6 +33,23 @@ import {
 } from "./team-routes.js";
 
 /**
+ * The one family the api Worker serves, and the prefix the site Worker
+ * forwards on the one base the CLI posts to (drive#156/#341, #342). Every
+ * route below lives under it — the walk in test/index.test.js checks the
+ * registry against it — so the site Worker's route (src/index.js) and its
+ * assets config (cloudflare.config.ts) are pinned against this one value
+ * rather than a second spelling of "/v1" drifting free of the routes that
+ * serve it.
+ *
+ * The one route that does not live under it, POST /api/keys/revoke, is the
+ * exception that walk carries on its own (drive#354): `drive logout` calls it
+ * with the key the rclone config holds, so it cannot want a session and the
+ * site Worker forwards it to this one ahead of its deny-by-default
+ * /api/* gate, which is the only /api/* route that reaches this dispatcher.
+ */
+export const API_PREFIX = "/v1";
+
+/**
  * The auth rules a route may carry. The account gate is deny by default:
  * `public` is the only way out, so a route that forgets its rule, or spells
  * one wrong, is treated as an account route and answers 401 without a

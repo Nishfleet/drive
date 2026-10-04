@@ -91,9 +91,6 @@
       <Custom Action="CreateLoginTask" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
       <Custom Action="DeleteLoginTask" Before="RemoveFiles" Condition="(REMOVE~=&quot;ALL&quot;) OR (Upgrade=1)" />
     </InstallExecuteSequence>
-    <InstallUISequence>
-      <Custom Action="CreateLoginTask" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
-    </InstallUISequence>
   </Package>
 
   <Fragment>

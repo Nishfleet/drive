@@ -8,12 +8,15 @@
 // so a swap that ran on one Worker instance is the row the next instance
 // sees. The storage-side revoke / swap is still the vendor's key API (#173);
 // until then a minted session expires on its own and the row here is what
-// makes the api's own storage API refuse a write immediately.
+// makes the api's own storage API refuse a write immediately. Drive#173 (2026-10-03)
+// measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
+// is the whole of the withdrawal there.
 
 import { BILLING_CONFIG } from "../../../src/billing.js";
 import { READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
+import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { mintTtlSeconds } from "./keyprovider.js";
+import { bucketForAccount, mintTtlSeconds } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
 /**
@@ -117,7 +120,7 @@ function digestsEqual(left, right) {
  * one Worker instance is the row the cap swap on the next instance reads.
  *
  * @param {D1Database} db
- * @param {{now?: () => number, keyProvider?: {mint: (scope: KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ * @param {{now?: () => number, keyProvider?: import("./keyprovider.js").KeyProvider}} [options]
  */
 /**
  * Move one row's window forward: the later of the expiry this call computed and
@@ -158,7 +161,7 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 
 /**
  * @param {D1Database} db
- * @param {{now?: () => number, keyProvider?: {mint: (scope: import("./keyprovider.js").KeyScope) => Promise<{accessKeyId: string, secret: string, sessionToken?: string, expiresIn?: number}>}}} [options]
+ * @param {{now?: () => number, keyProvider?: import("./keyprovider.js").KeyProvider}} [options]
  */
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -264,6 +267,24 @@ export function createD1DeviceStore(db, options = {}) {
       sessionToken: null,
       expiresIn: null,
     };
+  }
+
+  /**
+   * Withdraw one credential at the provider, so a revoked row is also a
+   * credential that stops working (drive#371). On a provider whose model is
+   * the vendor's own key API this is `remove_access_key`; on the STS path the
+   * credential is a bounded session and there is nothing to withdraw, which
+   * is why the call is the provider's to make rather than assumed here. A
+   * provider that refuses is not swallowed: the api's own row is already
+   * revoked (the caller is refused at once), and the refusal is thrown so the
+   * failure is visible rather than read as a clean revoke.
+   * @param {string} accessKeyId
+   */
+  async function revokeCredentialAtProvider(accessKeyId) {
+    if (inner === undefined || typeof inner.revoke !== "function") {
+      return;
+    }
+    await inner.revoke(accessKeyId);
   }
 
   const store = {
@@ -474,10 +495,31 @@ export function createD1DeviceStore(db, options = {}) {
     setAccountState,
 
     /**
-     * A KeyProvider bound to one account, so `mint(scope)` can persist the
-     * row without the caller smuggling an account id through the scope.
+     * Set the founding flag once, when this account becomes paying. The
+     * parsed Worker var is the second argument, so a closed offer cannot
+     * silently default open inside the store.
      * @param {string} accountId
-     * @returns {KeyProvider}
+     * @param {boolean} offerOpen
+     */
+    markPaying(accountId, offerOpen) {
+      return markAccountPaying(db, accountId, { offerOpen, now: now() });
+    },
+
+    /**
+     * @param {string} accountId
+     * @returns {Promise<boolean>}
+     */
+    async isFounding(accountId) {
+      const result = await accountFounding(db, accountId);
+      return result.founding;
+    },
+
+    /**
+     * A KeyProvider bound to one account, so `mint(scope)` can persist the
+     * row without the caller smuggling an account id through the scope. The
+     * answer is the api's own row-shaped one, key id included.
+     * @param {string} accountId
+     * @returns {import("./keyprovider.js").AccountKeyProvider}
      */
     keyProviderFor(accountId) {
       return {
@@ -537,7 +579,8 @@ export function createD1DeviceStore(db, options = {}) {
             keyId,
             accountId,
           );
-          if (!row) {
+          const device = deviceFromRow(row);
+          if (device === null) {
             throw new Error(`No key ${keyId} on this account to revoke.`);
           }
           await run(
@@ -547,6 +590,10 @@ export function createD1DeviceStore(db, options = {}) {
             keyId,
             accountId,
           );
+          // The api's row is revoked; the vendor's credential is withdrawn
+          // in the same request, so a revoked key does not keep working at
+          // the storage server until something else expires it (drive#371).
+          await revokeCredentialAtProvider(device.accessKeyId);
         },
 
         /**
@@ -563,9 +610,17 @@ export function createD1DeviceStore(db, options = {}) {
           if (device === null) {
             throw new Error(`No key ${keyId} on this account to swap.`);
           }
+          // The old credential is withdrawn at the vendor before the
+          // replacement is minted: a cap swap that left the old key live at
+          // the storage server would not cap anything (drive#371).
+          await revokeCredentialAtProvider(device.accessKeyId);
           const credential = await mintCredential({
             prefix: device.prefix,
             capabilities: READ_ONLY_CAPABILITIES,
+            // The cap swap keeps the key inside the account's own bucket, so
+            // the replacement credential is limited to the same boundary the
+            // old one was (drive#371).
+            bucket: bucketForAccount(accountId),
           });
           // The swap keeps the row's own lifetime and its own id: the hour
           // restarts on the new credential, and the key a person sees listed

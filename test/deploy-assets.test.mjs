@@ -24,8 +24,13 @@ import { createServer } from "node:http";
 import { extname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import worker from "../src/index.js";
+import { failureMessage } from "../src/messages.js";
 import { DOC_PAGES } from "../src/render-docs.js";
 import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
+import apiWorker, { dispatch } from "../workers/api/src/index.js";
+import { createMemoryStore } from "../workers/api/src/keystore.js";
+import { API_PREFIX } from "../workers/api/src/routes.js";
 
 /** @param {string} path @returns {string} */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -185,14 +190,15 @@ test("the site's own asset files ship, and the API is left to the Worker", () =>
       `${absoluteUrl(path)} is a path src/seo.js declares and public/ does not carry (${assetFileFor(path)})`,
     );
   }
-  // The asset layer's own contract (cloudflare.config.ts): /api/* and /s/* run
-  // the Worker, everything else is served from the assets. The docs live under
-  // /docs/, which is asset territory, so nothing has to route them.
+  // The asset layer's own contract (cloudflare.config.ts): /api/*, /s/* and
+  // the api Worker's /v1/* family run the Worker, everything else is served
+  // from the assets. The docs live under /docs/, which is asset territory, so
+  // nothing has to route them.
   const config = read("cloudflare.config.ts");
   assert.match(
     config,
-    /runWorkerFirst: \["\/api\/\*", "\/s\/\*"\]/,
-    "the asset layer serves /docs/* as files: runWorkerFirst must stay the API and share-link prefixes only",
+    /runWorkerFirst: \["\/api\/\*", "\/s\/\*", "\/v1\/\*"\]/,
+    "the asset layer serves /docs/* as files: runWorkerFirst must be the API, share-link and api-Worker prefixes only",
   );
   // get-started.html is a built Vite entry from the repo root (issue #70), so
   // it is not in public/; every other committed file there is one cf build
@@ -292,4 +298,344 @@ test("the pages the issue names are served from the shipped directory", async ()
   } finally {
     await site.close();
   }
+});
+
+// ------------------------------------- the api Worker's family on this one host
+//
+// One APIBase, two Workers (drive#156/#341, #342). The CLI posts /v1/* to the
+// same base it posts /api/* to (cmd/drive/api.go), and the Worker that answers
+// that address is the site Worker, so the family has to reach it — which is
+// what the assets config above does — and be forwarded to the api Worker over
+// the service binding (src/index.js). The api Worker is a separate deployable
+// that no deploy ships yet, so the binding is absent until it does; these four
+// checks are the whole contract in between.
+
+/** An edge limit that allows, which is the shape the device routes call.
+ * @returns {{limit(options: {key: string}): Promise<{success: boolean}>}}
+ */
+function allowAll() {
+  return { limit: async () => ({ success: true }) };
+}
+
+const workerCtx = { waitUntil() {}, passThroughOnException() {} };
+
+// The site Worker's own fetch, driven the way the platform drives it.
+// `worker.fetch` is optional on the ExportedHandler type, so both calls go
+// through these casts rather than restating a signature the tests would then
+// have to keep true by hand.
+const siteFetch =
+  /** @type {(request: Request, env?: unknown, ctx?: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
+    /** @type {unknown} */ (worker.fetch)
+  );
+
+/**
+ * The api Worker's one route outside its /v1 family, forwarded from this
+ * Worker's own route table ahead of the account gate (drive#354). Spelled here
+ * as a literal, like every other path in src/index.js, and pinned against both
+ * modules that serve it by this file and by workers/api/test/index.test.js.
+ */
+const REVOKE_PATH = "/api/keys/revoke";
+
+/**
+ * One site request, with the asset layer stubbed the way test/account-gate
+ * stubs it (a 200 for anything that reaches the assets), so a request that fell
+ * through to the asset layer instead of being answered is visible.
+ * @param {Request} request
+ * @param {Record<string, unknown>} [env] the bindings under test
+ */
+function siteRequest(request, env = {}) {
+  return siteFetch(
+    request,
+    { ASSETS: { fetch: async () => new Response("asset", { status: 200 }) }, ...env },
+    workerCtx,
+  );
+}
+
+/** The api Worker's own fetch, driven with the bindings its routes read.
+ * @type {(request: Request, env: unknown) => Promise<Response>}
+ */
+const apiFetch = /** @type {(request: Request, env: unknown) => Promise<Response>} */ (
+  /** @type {unknown} */ (apiWorker.fetch)
+);
+
+test("the site Worker mounts the api registry's own family", async () => {
+  // The prefix is the api registry's (workers/api/src/routes.js API_PREFIX,
+  // the value every path in that registry starts with), so the site Worker's
+  // route cannot drift from the routes the api Worker actually serves. Hono's
+  // own registry is read here, the way test/account-gate.test.mjs reads it,
+  // rather than matched as source text.
+  const { createApp } = await import("../src/index.js");
+  const mounted = createApp()
+    .routes.map((route) => route.path)
+    .filter((path) => path.startsWith(`${API_PREFIX}/`));
+  assert.deepEqual(
+    mounted,
+    [`${API_PREFIX}/*`],
+    `src/index.js must mount ${API_PREFIX}/* and nothing else, so the CLI's one APIBase reaches exactly the api Worker's family`,
+  );
+});
+
+test("a /v1/* request crosses the service binding unchanged", async () => {
+  // The forwarding half: the request the CLI sends is the request the api
+  // Worker receives. Method, path, query, credential and body all carry over
+  // untouched, so the api Worker's own gate, limits and words decide the answer
+  // and this side cannot have rewritten the credential out from under them.
+  /** @type {Request|null} */
+  let seen = null;
+  const response = await siteRequest(
+    new Request("https://drive.test/v1/keys/k_1?dry=1", {
+      method: "DELETE",
+      headers: { authorization: "Bearer probe" },
+      body: JSON.stringify({ scope: "u/acct-a/" }),
+    }),
+    {
+      API: {
+        fetch: (/** @type {Request} */ request) => {
+          seen = request;
+          return Promise.resolve(Response.json({ ok: true }, { status: 202 }));
+        },
+      },
+    },
+  );
+  assert.equal(response.status, 202, "the api Worker's own status is the caller's status");
+  assert.ok(seen, "the request must reach the binding");
+  const forwarded = /** @type {Request} */ (seen);
+  assert.equal(forwarded.method, "DELETE");
+  assert.equal(new URL(forwarded.url).pathname, "/v1/keys/k_1", "the path is not rewritten");
+  assert.equal(new URL(forwarded.url).search, "?dry=1", "the query is not dropped");
+  assert.equal(
+    forwarded.headers.get("authorization"),
+    "Bearer probe",
+    "the caller's own credential must reach the api Worker's account gate",
+  );
+  assert.equal(
+    await forwarded.text(),
+    JSON.stringify({ scope: "u/acct-a/" }),
+    "the body is carried over",
+  );
+});
+
+test("a deployment with no api binding is a closed door, not an open one", async () => {
+  // drive-api is not deployed yet, so no binding exists: the family answers its
+  // closed door instead of falling through to the asset layer, which would
+  // serve the stubbed asset layer's 200 to a CLI that is trying to sign in.
+  const response = await siteRequest(
+    new Request("https://drive.test/v1/device/code", { method: "POST" }),
+  );
+  assert.equal(response.status, 503, "no binding means the family is not served");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "the closed door speaks the one failure table's words (src/messages.js)",
+  );
+});
+
+test("a binding that fails answers the one failure table's words", async () => {
+  // A service Worker that throws mid sign-in: the family must not answer a
+  // stack, or the asset layer's 404, or a bare Hono string. app.onError
+  // (src/index.js) already maps an error raised anywhere on this app to the
+  // message table's one sentence, and this is the check that holds the
+  // property the caller actually sees when the api Worker is unreachable
+  // behind the binding.
+  const response = await siteRequest(new Request("https://drive.test/v1/health"), {
+    API: {
+      fetch: () => Promise.reject(new Error("the api Worker threw")),
+    },
+  });
+  assert.equal(response.status, 500, "a throwing dependency is an error status, not an open one");
+  assert.deepEqual(
+    await response.json(),
+    { error: failureMessage("unexpected") },
+    "the message table speaks, whatever failed underneath it",
+  );
+});
+
+test("one host answers both families: the api Worker behind the binding", async () => {
+  // The proof this issue asks for, at the level a worker can prove it: the
+  // site's own route table, a service binding, and the api Worker's own
+  // dispatcher behind it. The binding is injected, because no deployment has
+  // produced one — drive-api is not deployed, and a real binding fails this
+  // Worker's own deploy until it is — so what this proves is that the two
+  // Workers compose through this route table, not that the live host answers.
+  const env = {
+    API: {
+      fetch: (/** @type {Request} */ request) =>
+        apiFetch(request, {
+          DRIVE_DB: null,
+          DEVICE_RATE_LIMITER: allowAll(),
+          DEVICE_GLOBAL_RATE_LIMITER: allowAll(),
+        }),
+    },
+  };
+  const opened = await siteRequest(
+    new Request("https://drive.test/v1/device/code", {
+      method: "POST",
+      headers: { "cf-connecting-ip": "198.51.100.7" },
+    }),
+    env,
+  );
+  assert.equal(opened.status, 200, "the device flow runs behind the site's route");
+  const body = await opened.json();
+  assert.ok(body.userCode.length > 0, "the api Worker minted the code the CLI shows");
+  assert.match(String(body.verificationUri), /\/v1\/device\/approve$/);
+  // And the family's liveness route, reachable only over this host for the
+  // same reason, answers from the api Worker.
+  const live = await siteRequest(new Request("https://drive.test/v1/health"), env);
+  assert.equal(live.status, 200);
+  assert.equal((await live.json()).ok, true);
+});
+
+test("this Worker mounts one /api/* route ahead of the gate, and it is the revoke (drive#354)", async () => {
+  // The hole the forwarding makes in the deny-by-default /api/* gate, pinned
+  // in the route table itself: this namespace carries the gate's own mount and
+  // exactly one more, and that one is the api registry's single route outside
+  // its /v1 family. Hono runs the first matching handler, so the order is the
+  // security property and this walk is what keeps the two apart.
+  const { createApp } = await import("../src/index.js");
+  const routes = createApp().routes;
+  // The account lane's own mounts: the gate, the browser-CSRF one and the one
+  // forwarded route. Compared as paths, because that is the table that decides
+  // order; a middlewares array is a library detail.
+
+  // The account lane's own mounts, as paths, in the order Hono runs them: the
+  // forwarded route, the gate, and the account lane's own CSRF middleware.
+  const lane = routes
+    .filter((r) => r.method === "ALL" && r.path.startsWith("/api/"))
+    .map((r) => r.path);
+  assert.deepEqual(lane, [REVOKE_PATH, "/api/*", "/api/files/*"]);
+  const forward = routes.findIndex((r) => r.path === REVOKE_PATH);
+  const gate = routes.findIndex((r) => r.method === "ALL" && r.path === "/api/*");
+  assert.ok(
+    forward !== -1 && gate !== -1 && forward < gate,
+    "the revoke is mounted ahead of the gate",
+  );
+  // And there is one forward, not two: the revoke and the /v1/* family go to the
+  // api Worker through the same handler, so neither can be changed alone.
+  const v1Forward = routes.find((r) => r.path === `${API_PREFIX}/*`);
+  assert.ok(v1Forward, `the site Worker must forward ${API_PREFIX}/*`);
+  assert.equal(routes[forward].handler, v1Forward.handler, "one forward serves both families");
+});
+
+test("POST /api/keys/revoke reaches the api Worker through the one host (drive#354)", async () => {
+  // The issue's headline, at the level a worker can prove it: the api
+  // registry's one route outside its /v1 family (`drive logout` posts it with
+  // the key the rclone config holds, so no session exists to gate on) is
+  // forwarded from the site's own route table over the service binding, ahead
+  // of the deny-by-default /api/* gate that used to answer it 401. The binding
+  // is injected for the same reason the /v1/* end-to-end test injects one:
+  // drive-api is not deployed, and a real binding fails this Worker's own
+  // deploy until it is.
+  //
+  // First the forwarding half: the request the CLI sends is the request the api
+  // Worker receives — method, path and the caller's own Basic credential
+  // unchanged — so the api Worker's own gate and words decide the answer.
+  /** @type {Request|null} */
+  let seen = null;
+  const answered = await siteRequest(
+    new Request(`https://drive.test${REVOKE_PATH}`, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa("k_test:not-the-secret")}` },
+    }),
+    {
+      API: {
+        fetch: (/** @type {Request} */ request) => {
+          seen = request;
+          return Promise.resolve(new Response(null, { status: 204 }));
+        },
+      },
+    },
+  );
+  assert.equal(answered.status, 204, "the api Worker's own status is the caller's status");
+  assert.ok(seen, "the request must reach the binding");
+  const forwarded = /** @type {Request} */ (seen);
+  assert.equal(forwarded.method, "POST");
+  assert.equal(new URL(forwarded.url).pathname, REVOKE_PATH, "the path is not rewritten");
+  assert.equal(
+    forwarded.headers.get("authorization"),
+    `Basic ${btoa("k_test:not-the-secret")}`,
+    "the presented key reaches the api Worker that checks it",
+  );
+
+  // No binding: the same closed door the /v1/* family answers, not the gate's
+  // 401 and not the asset layer's 200.
+  const closed = await siteRequest(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST" }),
+  );
+  assert.equal(closed.status, 503, "no binding means the route is not served");
+  assert.deepEqual(
+    await closed.json(),
+    { error: failureMessage("unexpected") },
+    "the closed door speaks the one failure table's words (src/messages.js)",
+  );
+
+  // A throwing binding is the message table's one sentence, the same property
+  // the /v1/* family holds.
+  const threw = await siteRequest(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST" }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+    },
+  );
+  assert.equal(threw.status, 500);
+  assert.deepEqual(await threw.json(), { error: failureMessage("unexpected") });
+
+  // The round trip the CLI makes, through the site's route table and the api
+  // Worker's own dispatcher behind it: a key that works, revoked over this
+  // host, then refused by the storage call that used it. The dispatcher is
+  // driven directly (dispatch below) with the api Worker's own stand-in store,
+  // because that is the shape a deployment without a database serves — and
+  // because the device sign-in that mints the CLI's key is the api Worker's own
+  // flow, proved in workers/api/test/key-revoke.test.js. What this test is
+  // about is the route the site forwards.
+  const store = createMemoryStore({ now: () => 0 });
+  const key = await store.mintKey({ id: "acct_revoke" }, { kind: "agent", name: "claude" });
+  const basic = { authorization: `Basic ${btoa(`${key.accessKeyId}:${key.secret}`)}` };
+  const withApiStore = {
+    API: {
+      fetch: (/** @type {Request} */ request) =>
+        dispatch(request, {
+          env: { db: null },
+          db: null,
+          store,
+          accounts: null,
+          account: null,
+          now: () => 0,
+        }),
+    },
+  };
+  const storage = `https://drive.test/v1/storage/list?path=${encodeURIComponent(key.prefix)}`;
+
+  // The key works on the storage lane the one host also fronts.
+  const alive = await siteRequest(new Request(storage, { headers: basic }), withApiStore);
+  assert.equal(alive.status, 200, "the minted key works on the one host before the revoke");
+
+  // `drive logout` posts the revoke to the same host, in this Worker's own
+  // /api/* namespace, and the forwarding above gets it to the api Worker.
+  const revoked = await siteRequest(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST", headers: basic }),
+    withApiStore,
+  );
+  assert.equal(revoked.status, 204, "the presented key revoked itself through the one host");
+  assert.equal(revoked.headers.get("cache-control"), "no-store");
+
+  // And the same key is refused by the same lane afterwards.
+  const dead = await siteRequest(new Request(storage, { headers: basic }), withApiStore);
+  assert.equal(dead.status, 401, "the revoked key is dead on the one host");
+  assert.equal(
+    (await dead.json()).error,
+    "This key was revoked or is not valid.",
+    "the api Worker's own words answer, not a page from the site",
+  );
+
+  // No credentials at all is the api Worker's own 401 — never the site gate's,
+  // and never a site page naming a route.
+  const noKey = await siteRequest(
+    new Request(`https://drive.test${REVOKE_PATH}`, { method: "POST" }),
+    withApiStore,
+  );
+  assert.equal(noKey.status, 401);
+  assert.equal(
+    (await noKey.json()).error,
+    "Provide the storage key to revoke as HTTP Basic credentials.",
+  );
 });

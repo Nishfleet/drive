@@ -12,7 +12,13 @@
 // stock S3, so the endpoint, region, bucket and root credential are the whole
 // of the difference; pointing this at iDrive e2 or B2 uses the same code
 // (`DRIVE_STANDIN_ENDPOINT` + the credential variables), but a real account's
-// bucket is the vendor's to configure and that is #173's step, not this test's.
+// bucket has to be configured first. It was, on 2026-10-03 (drive#173), and
+// the real run then stops in `provisionBucket`: iDrive e2 refuses every
+// notification destination ARN (`400 InvalidArgument`), because its
+// destinations are registered in the vendor's console, not through the bucket
+// API. So a real-account proof runs against the bucket as configured, and the
+// notification half of the done-when is read off the vendor's console — the
+// measured answers are in docs/build-spec.md.
 //
 // Keys are minted the way the product mints them: through the api Worker's own
 // POST /v1/keys route, which hands the scope to the storage endpoint as an STS
@@ -62,7 +68,8 @@ import { startMinioStandin } from "./minio-standin.mjs";
 // images were taken down at the end of 2025 and its GitHub repo is archived;
 // this image is the archived Bitnami package of that release, which is a stock
 // server with the three things step 1 needs (versioning, lifecycle rules and
-// bucket notifications). It is a stand-in: iDrive e2 replaces it in #173.
+// bucket notifications). It is a stand-in: a real vendor's bucket is the
+// credential swap away, and drive#173 measured one (iDrive e2, 2026-10-03).
 // `test/minio-standin.mjs` pins it and starts it.
 const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-standin";
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";

@@ -190,14 +190,17 @@ export function createS3Client(config) {
  * version that is no longer current is kept `hiddenVersionDays` days and then
  * gone, and a delete marker left on a file nobody re-saves is gone with it.
  *
- * Server-side encryption is NOT set here. It is the provider's own bucket
- * setting (SSE-B2 in the spec), not a property the stand-in can host: a stock
- * S3 server refuses SSE-S3 without a KMS (measured 2026-10-01 against the
- * pinned stand-in: 501 "KMS is not configured"). It is configured with the
- * vendor on the real bucket in #173, with no code change here.
+ * Server-side encryption is the one setting a stock S3 stand-in cannot host:
+ * MinIO refuses SSE-S3 outright (501 "KMS is not configured", measured
+ * 2026-10-01). It is the primary provider's own bucket setting — iDrive e2
+ * takes the stock call: `AES256` was set on the real bucket and read back
+ * 2026-10-03 (drive#173) — so the deployment that is on a vendor that takes
+ * it passes `sse: "AES256"`, the stand-in leaves it off, and the two are one
+ * stock PUT away from each other. A bucket is provisioned once per customer
+ * (drive#371), so this is what sign-up asks the bucket for.
  * @param {ReturnType<typeof createS3Client>} client
- * @param {{bucket: string, notificationQueueArn?: string, hiddenVersionDays?: number}} config
- * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null}>}
+ * @param {{bucket: string, notificationQueueArn?: string, hiddenVersionDays?: number, sse?: "AES256"}} config
+ * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null, encryption: S3Response|null}>}
  */
 export async function provisionBucket(client, config) {
   const { bucket, notificationQueueArn, hiddenVersionDays = 1 } = config;
@@ -255,7 +258,45 @@ export async function provisionBucket(client, config) {
     );
   }
 
-  return { versioning, lifecycle, notification };
+  // SSE-S3, the stock bucket-encryption call. Only sent when the deployment
+  // names it: a stock S3 stand-in refuses it, and the vendor that takes it
+  // (iDrive e2, measured drive#173) is the one whose deployment names it.
+  let encryption = null;
+  if (config.sse !== undefined) {
+    const encryptionBody =
+      `<ServerSideEncryptionConfiguration><Rule>` +
+      `<ApplyServerSideEncryptionWithS3EncryptionByDefault>` +
+      `<SSEAlgorithm>${config.sse}</SSEAlgorithm>` +
+      `</ApplyServerSideEncryptionWithS3EncryptionByDefault>` +
+      `</Rule></ServerSideEncryptionConfiguration>`;
+    encryption = ok(
+      "set the bucket's server-side encryption",
+      await client.send("PUT", {
+        bucket,
+        query: { encryption: "" },
+        headers: { "content-type": "application/xml" },
+        body: encryptionBody,
+      }),
+    );
+  }
+
+  return { versioning, lifecycle, notification, encryption };
+}
+
+/**
+ * The bucket's server-side encryption, read back: the algorithm the bucket
+ * actually applies, or an empty string when it applies none. Read back rather
+ * than taken from the PUT's status, the same rule readBucketConfig follows.
+ * @param {ReturnType<typeof createS3Client>} client
+ * @param {{bucket: string}} config
+ * @returns {Promise<string>}
+ */
+export async function readBucketEncryption(client, config) {
+  const answer = await client.send("GET", {
+    bucket: config.bucket,
+    query: { encryption: "" },
+  });
+  return unescapeXml(tagValue(answer.text, "SSEAlgorithm") ?? "");
 }
 
 /**
