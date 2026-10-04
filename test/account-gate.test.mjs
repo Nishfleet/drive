@@ -20,6 +20,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { handleUsageRequest, USAGE_ENDPOINT } from "../src/billing.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { CAP_ENDPOINT } from "../src/cap.js";
@@ -128,6 +129,12 @@ const ACCOUNT_ROUTES = [
   // classifies the path so a GET without an account is also 401.
   `${STARTER_ENDPOINT}`,
   `${STARTER_ENDPOINT}/`,
+  // drive issue #235: close account. The person types their email, keys go
+  // at once, files after 30 days. Same gate as every other account write.
+  `${CLOSE_ENDPOINT}`,
+  `${CLOSE_ENDPOINT}/`,
+  `${CLOSE_CANCEL_ENDPOINT}`,
+  `${CLOSE_CANCEL_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -202,6 +209,9 @@ test("every route src/index.js registers is either public or behind the gate", a
         path.startsWith(REWIND_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
+        path.startsWith(STARTER_ENDPOINT) ||
+        path.startsWith(CLOSE_ENDPOINT) ||
+        path.startsWith(CLOSE_CANCEL_ENDPOINT) ||
         path === HEALTH_PATH,
       `${path} is registered but not classified; add it to PUBLIC_ROUTES or ACCOUNT_ROUTES`,
     );
@@ -236,6 +246,8 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(BRANCHES_ENDPOINT) ||
         route.startsWith(REWIND_ENDPOINT) ||
         route.startsWith(STARTER_ENDPOINT) ||
+        route.startsWith(CLOSE_ENDPOINT) ||
+        route.startsWith(CLOSE_CANCEL_ENDPOINT) ||
         route.startsWith(SHARE_ENDPOINT) ||
         route.startsWith(REQUEST_ENDPOINT),
       `${route} must be a route the Worker really serves`,

@@ -37,7 +37,7 @@ The account gate resolves `Authorization: Bearer <device token>` through the key
 
 ## Exporting your own data
 
-`GET /v1/export` (drive#34) answers with the caller's own account data: the account row, the account's keys, the file-name index (`file_index`) and the version history (`file_versions`). It is a read and nothing else — it deletes nothing and revokes nothing; the two lifecycle items that do (`accounts.state` closing and signing out every device) are customer-data deletion, are reserved, and are not this route.
+`GET /v1/export` (drive#34) answers with the caller's own account data: the account row, the account's keys, the file-name index (`file_index`) and the version history (`file_versions`). It is a read and nothing else — it deletes nothing and revokes nothing. Closing the account (`POST /api/account/close` on the site Worker, drive#235) is the route that moves `accounts.state` to `closed`, revokes every key at once, and deletes files after 30 days.
 
 Three rules hold the route to the account it was asked about:
 

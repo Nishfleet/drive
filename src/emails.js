@@ -1,11 +1,9 @@
-// The five transactional emails drive sends.  docs/build-spec.md ("Nothing
-// missing", the vault's 2026-09-30 review) names them exactly: "Surprises
-// about money or limits | Emails: welcome, 80% of cap, read-only reached,
-// payment failed, monthly receipt with the 'you saved' line".  The copy lives
-// here so the api Worker, the meter and the billing webhook read one source,
-// and test/emails.test.mjs pins the sentences, the numbers and the two "you
-// saved" baselines from drive#39 rather than letting a later run quietly
-// reword a customer's inbox.
+// The transactional emails drive sends. docs/build-spec.md names the money
+// ones (welcome, 80% of cap, read-only reached, payment failed, monthly
+// receipt) and "Keys and safety" names the close ones (day 0 and day 25).
+// The copy lives here so the api Worker, the meter, the billing webhook and
+// the close cron read one source, and test/emails.test.mjs pins the sentences
+// rather than letting a later run quietly reword a customer's inbox.
 //
 // Plain data and pure renderers only -- no Worker or DOM imports -- so
 // node --test exercises every template without a runtime, the same shape as
@@ -261,6 +259,87 @@ export function monthlyReceiptTemplate(data = {}) {
   return finish({ subject, lines, html_lines, saved });
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {number}
+ */
+function requireDays(value, name) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new TypeError(`${name} must be a whole number of days, got ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+function requireDay(value, name) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new TypeError(`${name} must be an ISO date (YYYY-MM-DD), got ${String(value)}`);
+  }
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// 6) Account closed -- day 0 receipt. { graceDays, reminderDays, purgeOn }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function accountClosedTemplate(data = {}) {
+  const graceDays = requireDays(data.graceDays, "graceDays");
+  const reminderDays = requireDays(data.reminderDays, "reminderDays");
+  const purgeOn = requireDay(data.purgeOn, "purgeOn");
+  const left = graceDays - reminderDays;
+  const subject = "Your Drive account is closed";
+  const lines = [
+    "Your Drive account is closed.",
+    "",
+    "Every key was revoked at once. Your files stay for now.",
+    "",
+    `They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.`,
+    "",
+    "You can cancel until then: open the usage page, type your email, and choose Cancel closing.",
+  ];
+  const html_lines = [
+    "<p>Your Drive account is closed.</p>",
+    "<p>Every key was revoked at once. Your files stay for now.</p>",
+    `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
+    "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
+// ---------------------------------------------------------------------------
+// 7) Close reminder -- day 25. { graceDays, reminderDays, purgeOn }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function accountCloseReminderTemplate(data = {}) {
+  const graceDays = requireDays(data.graceDays, "graceDays");
+  const reminderDays = requireDays(data.reminderDays, "reminderDays");
+  const purgeOn = requireDay(data.purgeOn, "purgeOn");
+  const left = graceDays - reminderDays;
+  const subject = `Your Drive files will be deleted in ${left} days`;
+  const lines = [
+    `Your Drive files will be deleted in ${left} days, on ${purgeOn}.`,
+    "",
+    "Your account is closed and every key is already revoked.",
+    "",
+    "You can still cancel: open the usage page, type your email, and choose Cancel closing.",
+  ];
+  const html_lines = [
+    `<p>Your Drive files will be deleted in ${left} days, on ${purgeOn}.</p>`,
+    "<p>Your account is closed and every key is already revoked.</p>",
+    "<p>You can still cancel: open the usage page, type your email, and choose Cancel closing.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
 // ---------------------------------------------------------------------------
 // Shared tail: sign-off, text/HTML assembly, and the shape every send reads.
 // ---------------------------------------------------------------------------
@@ -285,6 +364,8 @@ export const EMAIL_KINDS = Object.freeze([
   "read-only",
   "payment-failed",
   "monthly-receipt",
+  "account-closed",
+  "account-close-reminder",
 ]);
 
 /**
@@ -296,6 +377,8 @@ const TEMPLATES = Object.freeze({
   "read-only": readOnlyTemplate,
   "payment-failed": paymentFailedTemplate,
   "monthly-receipt": monthlyReceiptTemplate,
+  "account-closed": accountClosedTemplate,
+  "account-close-reminder": accountCloseReminderTemplate,
 });
 
 /**

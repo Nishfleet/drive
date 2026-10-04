@@ -93,13 +93,15 @@ function authed(body, extra = {}) {
 // The five kinds
 // ---------------------------------------------------------------------------
 
-test("the five emails are the five the spec names", () => {
+test("the emails include the spec's money kinds and the close kinds", () => {
   assert.deepEqual(EMAIL_KINDS, [
     "welcome",
     "cap-warning",
     "read-only",
     "payment-failed",
     "monthly-receipt",
+    "account-closed",
+    "account-close-reminder",
   ]);
 });
 
@@ -258,6 +260,9 @@ function dataFor(kind) {
       return { amountUsd: 23.5 };
     case "monthly-receipt":
       return receiptData();
+    case "account-closed":
+    case "account-close-reminder":
+      return { graceDays: 30, reminderDays: 25, purgeOn: "2026-11-03" };
     default:
       throw new Error(`no test data for ${kind}`);
   }
@@ -725,6 +730,8 @@ test("a body the template cannot be built from is a 400, not a 502", async () =>
     ["cap-warning", {}], // no cap
     ["read-only", {}], // no cap
     ["payment-failed", {}], // no amount
+    ["account-closed", {}], // no grace window
+    ["account-close-reminder", { graceDays: 30 }], // no reminder or date
   ]) {
     const res = await handleSendEmailRequest(authed({ to: "person@example.com", kind, data }), env);
     assert.equal(res.status, 400, `kind: ${kind}`);

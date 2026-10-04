@@ -17,9 +17,11 @@ import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { accountFounding, markAccountPaying } from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
-import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForAccount, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
+
+const CLOSE_CRON_LIMIT = 100;
 
 /**
  * @typedef {import("./keystore.js").Device} Device
@@ -242,6 +244,220 @@ export function createD1DeviceStore(db, options = {}) {
    */
   async function setAccountState(accountId, state) {
     await run(db, "UPDATE accounts SET state = ?1 WHERE id = ?2", state, accountId);
+  }
+
+  /**
+   * @param {unknown} row
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
+   */
+  function closeStateFromRow(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+    const r = /** @type {Record<string, unknown>} */ (row);
+    if (typeof r.id !== "string" || r.id === "") {
+      return null;
+    }
+    return {
+      id: r.id,
+      email: typeof r.email === "string" ? r.email : "",
+      state: typeof r.state === "string" ? r.state : "active",
+      closedAt: r.closed_at === null || r.closed_at === undefined ? null : Number(r.closed_at),
+      reminderSentAt:
+        r.reminder_sent_at === null || r.reminder_sent_at === undefined
+          ? null
+          : Number(r.reminder_sent_at),
+      closeMailSentAt:
+        r.close_mail_sent_at === null || r.close_mail_sent_at === undefined
+          ? null
+          : Number(r.close_mail_sent_at),
+      purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+    };
+  }
+
+  /**
+   * @param {string} accountId
+   */
+  async function getCloseState(accountId) {
+    return closeStateFromRow(
+      await first(
+        db,
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
+        accountId,
+      ),
+    );
+  }
+
+  /**
+   * One statement that kills every live key on one account. Close (drive#235)
+   * and sign-out-every-device (drive#236) both call this; the public store
+   * method wraps it as `{revoked: n}` so callers never pass a raw id.
+   * @param {string} accountId
+   */
+  async function revokeLiveKeys(accountId) {
+    const at = nowSeconds(now());
+    const result = await run(
+      db,
+      "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    return Number(/** @type {{meta?: {changes?: number}}} */ (result).meta?.changes ?? 0);
+  }
+
+  /**
+   * Close the account: `state` becomes `closed`, `closed_at` is stamped once,
+   * and every live key is revoked. A second close keeps the original stamp so
+   * the 30-day window cannot be restarted by retrying.
+   * @param {{id: string, email?: string}} account
+   * @param {number} atSeconds
+   */
+  async function closeAccountRow(account, atSeconds) {
+    const existing = await getCloseState(account.id);
+    const email = account.email ?? existing?.email ?? "";
+    await run(
+      db,
+      `INSERT INTO accounts (id, email, created_at, state, closed_at)
+       VALUES (?1, ?2, ?3, 'closed', ?3)
+       ON CONFLICT(id) DO UPDATE SET
+         state = 'closed',
+         email = CASE WHEN excluded.email = '' THEN accounts.email ELSE excluded.email END,
+         closed_at = CASE
+           WHEN accounts.state = 'closed' AND accounts.closed_at IS NOT NULL
+           THEN accounts.closed_at
+           ELSE excluded.closed_at
+         END`,
+      account.id,
+      email,
+      atSeconds,
+    );
+    await revokeLiveKeys(account.id);
+    const written = await getCloseState(account.id);
+    if (written === null) {
+      throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
+    }
+    return { ...written, alreadyClosed: written.closedAt !== atSeconds };
+  }
+
+  /**
+   * @param {string} accountId
+   */
+  async function cancelClose(accountId) {
+    const existing = await getCloseState(accountId);
+    if (existing === null || existing.state !== "closed" || existing.closedAt === null) {
+      throw new TypeError("close-not-closed");
+    }
+    if (existing.purgedAt !== null) {
+      throw new TypeError("close-already-purged");
+    }
+    await run(
+      db,
+      `UPDATE accounts
+         SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
+             close_mail_sent_at = NULL
+       WHERE id = ?1`,
+      accountId,
+    );
+    const written = await getCloseState(accountId);
+    if (written === null) {
+      throw new Error(`cancelClose left no accounts row for ${accountId}`);
+    }
+    return written;
+  }
+
+  /**
+   * @param {number} atSeconds
+   */
+  async function listDueReminder(atSeconds) {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND reminder_sent_at IS NULL
+           AND purged_at IS NULL
+           AND closed_at <= ?1
+         LIMIT ?2`,
+      atSeconds,
+      CLOSE_CRON_LIMIT,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * @param {number} atSeconds
+   */
+  async function listDuePurge(atSeconds) {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND purged_at IS NULL
+           AND closed_at <= ?1
+         LIMIT ?2`,
+      atSeconds,
+      CLOSE_CRON_LIMIT,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * Closed accounts whose day-0 receipt never landed, so the nightly pass
+   * can send it. No time floor: a close that stamped `closed` and then
+   * failed to mail is due on the next run.
+   */
+  async function listDueCloseMail() {
+    const rows = await all(
+      db,
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+         WHERE state = 'closed'
+           AND closed_at IS NOT NULL
+           AND close_mail_sent_at IS NULL
+           AND purged_at IS NULL
+         LIMIT ?1`,
+      CLOSE_CRON_LIMIT,
+    );
+    return rows.map(closeStateFromRow).filter((row) => row !== null);
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markReminderSent(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET reminder_sent_at = ?1 WHERE id = ?2 AND reminder_sent_at IS NULL",
+      atSeconds,
+      accountId,
+    );
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markCloseMailSent(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET close_mail_sent_at = ?1 WHERE id = ?2 AND close_mail_sent_at IS NULL",
+      atSeconds,
+      accountId,
+    );
+  }
+
+  /**
+   * @param {string} accountId
+   * @param {number} atSeconds
+   */
+  async function markPurged(accountId, atSeconds) {
+    await run(
+      db,
+      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      atSeconds,
+      accountId,
+    );
   }
 
   /**
@@ -485,15 +701,7 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeAllKeys(account) {
-      const changed = await run(
-        db,
-        "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
-        nowSeconds(now()),
-        account.id,
-      );
-      return {
-        revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
-      };
+      return { revoked: await revokeLiveKeys(account.id) };
     },
 
     /**
@@ -633,6 +841,15 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     setAccountState,
+    getCloseState,
+    closeAccount: closeAccountRow,
+    cancelClose,
+    listDueReminder,
+    listDuePurge,
+    listDueCloseMail,
+    markReminderSent,
+    markCloseMailSent,
+    markPurged,
 
     /**
      * The account's month so far, in the shape usageSummary() reads, for the

@@ -10,6 +10,9 @@ the live site.
 
 ## 2026-10-04
 
+- Closing an account revokes every key at once, keeps files for 30 days, emails
+  on day 0 and day 25, and lets the person cancel until then by typing their
+  email on the usage page.
 - A public savings calculator on the pricing page: enter a size, see this
   month's bill beside our own flat-plan ceiling. The number is
   `monthBillCents`, so it cannot drift from the invoice. No rival names or
