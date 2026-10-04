@@ -35,8 +35,11 @@ jobs:
       - name: Install rclone (the stock tool the S3 stand-in serves)
         run: |
           curl -sSO https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip -q rclone-current-linux-amd64.zip
-          sudo install -m 0755 rclone-*/rclone /usr/local/bin/rclone
+          unzip -qo rclone-current-linux-amd64.zip
+          # No sudo on the self-hosted runners, so install per job.
+          install -D -m 0755 rclone-*/rclone "$RUNNER_TEMP/bin/rclone"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
           rclone version
       # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
       # as they actually ship. `npm run build` writes the same static-asset
@@ -70,8 +73,11 @@ jobs:
       - name: Install rclone (the stock tool the mount drives)
         run: |
           curl -sSO https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip -q rclone-current-linux-amd64.zip
-          sudo install -m 0755 rclone-*/rclone /usr/local/bin/rclone
+          unzip -qo rclone-current-linux-amd64.zip
+          # No sudo on the self-hosted runners, so install per job.
+          install -D -m 0755 rclone-*/rclone "$RUNNER_TEMP/bin/rclone"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
           rclone version
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
