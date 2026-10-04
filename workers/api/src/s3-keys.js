@@ -12,13 +12,16 @@
 //
 // The mint is STS `AssumeRole` with a session policy, which is stock S3, so
 // the endpoint, region, bucket and master credential are the whole of the
-// configuration difference between the local stand-in, iDrive e2 and B2.
+// configuration difference between the local stand-in and a provider that
+// mints this way. MinIO and Backblaze B2 do; iDrive e2 refuses `AssumeRole`
+// outright (403 AccessDenied, measured 2026-10-03, drive#173), so its bucket
+// settings come from this module but its keys cannot.
 //
 // Revoking a minted key is deliberately not here: a temporary S3 credential
 // cannot be withdrawn before it expires, so the provider is built with a
 // bounded session and the store still refuses a revoked key on its own
 // storage API. Withdrawing the credential at the provider is the vendor's key
-// API and lands with iDrive e2 (issue #173).
+// API, which iDrive e2 does not expose over S3 (measured, drive#173).
 
 import { createS3Client, ok, S3Error, tagValue } from "./s3.js";
 
@@ -132,9 +135,9 @@ export function policyForScope(scope, bucket) {
  * @property {number} [sessionSeconds] how long a minted credential lives
  * @property {string} [sessionName]
  * @property {string} [roleArn] the ARN the provider's STS wants in the
- *   AssumeRole call. MinIO and B2 do not need one; AWS-compatible providers
- *   such as iDrive e2 may. Omitted when unset (#173 verifies against the
- *   real provider and sets it if needed).
+ *   AssumeRole call. MinIO does not need one. Drive#173 measured iDrive e2
+ *   (2026-10-03) and a role ARN is no help there: its STS refuses AssumeRole
+ *   outright, so no scoped key can be minted on it at all.
  * @property {typeof fetch} [fetchImpl]
  */
 

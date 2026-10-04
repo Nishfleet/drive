@@ -144,7 +144,9 @@ never reads the agent's answer:
 
 The stand-in is anonymous (no `--auth-key`), like the repo's own: a key minted
 and enforced by a storage endpoint is the STS work in `workers/api/src/s3-keys.js`,
-and its real-vendor proof is #173. That is the one part of "the key is scoped"
+and drive#173 measured that work against the real vendor (2026-10-03): iDrive e2
+does not mint at all, so the seat moves to B2 and the proof repeats there. That
+is the one part of "the key is scoped"
 this stand-in cannot carry, and it is why the check above is a prefix check.
 
 **Warning: a model under test gets the eval host's own shell.**

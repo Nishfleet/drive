@@ -28,7 +28,18 @@ export default defineConfig({
       // share link served by the Worker (src/share.js
       // handleShareFileRequest); the rest of the site is still straight from
       // the asset layer.
-      runWorkerFirst: ["/api/*", "/s/*"],
+      //
+      // /v1/* is the api Worker's family, on this same host (drive#156/#341,
+      // #342): the CLI posts it to the one APIBase it posts /api/* to, so the
+      // Worker that answers that address has to be the one that receives it.
+      // It forwards the request over a service binding (src/index.js) rather
+      // than serving it, so the api Worker's own gate, limits and words answer
+      // it. The binding itself is not declared here yet: Cloudflare fails this
+      // Worker's deploy against a service binding whose target Worker does not
+      // exist, and the api Worker is a separate deployable that no deploy ships
+      // until its deploy step lands, so until then /v1/* is the closed door
+      // src/index.js answers rather than a family that pretends to be routed.
+      runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
     // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the

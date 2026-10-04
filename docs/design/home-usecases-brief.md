@@ -15,7 +15,8 @@ each with the command that ran it and the figure the run measured.
    video = two commands + two figures; 3D = one command + open/save) —
    no equal repeated card grid.
 3. **Caveat footer** — source of the figures, the stand-in label, the
-   date, and the open checks (iDrive e2 real storage #173; Mac-side
+   date, and the open checks (the primary storage provider after drive#173
+   moved the seat off iDrive e2; Mac-side
    Finder/Final Cut).
 
 ## Above-fold
