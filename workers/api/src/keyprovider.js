@@ -274,6 +274,22 @@ export function checkedTeamRole(role) {
 }
 
 /**
+ * The prefix every key on one team gets: `t/<teamId>/`, whatever the role.
+ *
+ * Both roles share it, which is what makes a team revoke a prefix statement
+ * rather than a per-key walk: a reader's and a writer's key on the same team
+ * carry the same prefix, so one `WHERE prefix = ?` covers them. The two callers
+ * that revoke by team read it from here instead of writing the literal, so a
+ * change to the shape of the prefix cannot leave a revoke filtering on a
+ * string the mint no longer writes.
+ * @param {string} teamId
+ * @returns {string}
+ */
+export function teamPrefix(teamId) {
+  return `t/${checkedTeamId(teamId)}/`;
+}
+
+/**
  * The scope a team member's key gets: the team prefix `t/<teamId>/` and the
  * capabilities their role carries. The id is checked before it goes in the
  * prefix for the same reason scopeFor() checks the account id: a `..` or a
@@ -285,7 +301,7 @@ export function checkedTeamRole(role) {
 export function teamScopeFor(role, teamId) {
   const checked = checkedTeamRole(role);
   return {
-    prefix: `t/${checkedTeamId(teamId)}/`,
+    prefix: teamPrefix(teamId),
     capabilities: TEAM_ROLE_CAPABILITIES[checked],
     bucket: bucketForTeam(teamId),
   };

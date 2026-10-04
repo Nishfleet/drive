@@ -125,10 +125,11 @@ export async function removeMemberRoute(request, ctx) {
     return errorResponse(404, "No such member on this team.");
   }
   // The removed member's team keys die here, in the same request the owner
-  // removed them: `revokeTeamKeys` marks each device row the member holds on
-  // this team revoked, and the storage write/list routes refuse a revoked key
-  // from the next request on. Without a minute of propagation this is the
-  // whole guarantee — there is no cache between the row and the answer.
+  // removed them: `revokeTeamKeys` writes the revoke to the bound device row
+  // (D1, when the deployment binds one) and marks this isolate's copy, and the
+  // storage write/list routes refuse a revoked key from the next request on —
+  // on any isolate, because the row is what `authenticate` reads for a key
+  // this isolate did not revoke itself (drive#408).
   const revoked = await ctx.store.revokeTeamKeys(result.accountId, ctx.params.teamId);
   return new Response(null, {
     status: 204,

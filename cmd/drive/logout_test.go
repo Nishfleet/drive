@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -801,5 +802,258 @@ func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 		if _, err := os.Stat(present); err != nil {
 			t.Errorf("%s was deleted but logout failed: %v", present, err)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// drive logout --all: sign every device signed in to this account out
+// (drive#236, the standalone action #34's owner resolved: sign out every
+// device, separate from closing the account).
+// ---------------------------------------------------------------------------
+
+// fakeAccountRevoker stands in for the api Worker's DELETE /v1/keys route. It
+// records what the CLI asked and, when it is told to, fails — the two states
+// the account-wide half has to tell apart.
+type fakeAccountRevoker struct {
+	err   error
+	calls int
+	// home is checked at call time: the account-wide revoke has to run while the
+	// credentials file that holds the token is still on disk, because that
+	// token IS the credential the route authenticates with.
+	home string
+	t    *testing.T
+}
+
+func (f *fakeAccountRevoker) RevokeAllKeys() error {
+	f.t.Helper()
+	f.calls++
+	if f.home != "" {
+		if _, err := os.Stat(CredentialsPath(f.home)); err != nil {
+			f.t.Errorf("the account-wide revoke must run while the credentials file is still readable: %v", err)
+		}
+	}
+	return f.err
+}
+
+// signedInDeviceHome is a home with both halves of a signed-in device: the rclone
+// config holding the storage key, and the credentials file holding the api
+// base and the device token that DELETE /v1/keys authenticates with.
+func signedInDeviceHome(t *testing.T) string {
+	t.Helper()
+	home := configOnlyHome(t)
+	creds := Credentials{APIBase: "https://api.test", DeviceToken: "test-token"}
+	if err := SaveCredentials(home, creds); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// The confirm step is the acceptance: `--all` on its own says what it would do
+// and changes nothing. Without this gate an account-wide revoke is one flag
+// away on the way to an ordinary logout, and the cost of running it by accident
+// is every other signed-in machine needing to sign in again.
+func TestLogoutAllAsksToConfirmAndChangesNothingWithoutYes(t *testing.T) {
+	home := signedInDeviceHome(t)
+	account := &fakeAccountRevoker{home: home, t: t}
+
+	out := captureStdout(t, func() {
+		err := runLogout([]string{"--home", home, "--all", "--api", "https://api.test"})
+		if err == nil {
+			t.Fatal("drive logout --all without --yes must refuse")
+			return
+		}
+		if kind := failureKind(err); kind != "signout-everywhere-unconfirmed" {
+			t.Errorf("failure kind = %q, want signout-everywhere-unconfirmed", kind)
+		}
+	})
+
+	if account.calls != 0 {
+		t.Errorf("the account was revoked %d time(s) without --yes; the confirm step must gate the call, not just warn about it", account.calls)
+	}
+	// The warning names the whole thing, not just this device, because that is
+	// the part a person cannot undo by signing in again.
+	for _, want := range []string{"EVERY device", "every other one"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the warning does not say %q:\n%s", want, out)
+		}
+	}
+	// And the device is untouched: nothing was revoked and nothing deleted.
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Errorf("the local key was deleted by an unconfirmed --all: %v", err)
+	}
+}
+
+// The confirmed run: the account goes first, while the token that proves which
+// account it is still exists, and this device's own local sign-out follows.
+func TestLogoutAllRevokesTheAccountThenSignsThisDeviceOut(t *testing.T) {
+	home := signedInDeviceHome(t)
+	account := &fakeAccountRevoker{home: home, t: t}
+	ks := testRevoker(t, home)
+
+	if err := LogoutEveryDevice("linux", home, false, &fakeTokenRevoker{}, ks, account); err != nil {
+		t.Fatalf("drive logout --all: %v", err)
+	}
+	if account.calls != 1 {
+		t.Errorf("account-wide revokes = %d, want exactly 1", account.calls)
+	}
+	// The storage key was still revoked the ordinary way afterwards, because
+	// the account-wide route already turned it off and this device's own
+	// logout asks about its own key anyway. One call, no second guess.
+	if got := ks.count(); got != 1 {
+		t.Errorf("this device's key revoke attempts = %d, want 1", got)
+	}
+	for _, gone := range []string{
+		RcloneConfigPath(home),
+		DefaultConfigDir(home),
+		DefaultCacheDir(home),
+	} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after drive logout --all", gone)
+		}
+	}
+}
+
+// An account-wide revoke that fails must not be followed by the local
+// sign-out: the account is unchanged, so signing this machine out would print
+// a clean logout over an account that is still signed in everywhere else.
+func TestLogoutAllStopsBeforeTheLocalSignOutWhenTheAccountRevokeFails(t *testing.T) {
+	home := signedInDeviceHome(t)
+	account := &fakeAccountRevoker{err: errors.New("the api Worker answered 503"), home: home, t: t}
+
+	err := LogoutEveryDevice("linux", home, false, &fakeTokenRevoker{}, testRevoker(t, home), account)
+	if err == nil {
+		t.Fatal("a failed account-wide revoke must not report a logout")
+	}
+	if kind := failureKind(err); kind != "signout-everywhere-failed" {
+		t.Errorf("failure kind = %q, want signout-everywhere-failed", kind)
+	}
+	if !strings.Contains(err.Error(), "No device was signed out") {
+		t.Errorf("the failure does not say what was left alone: %v", err)
+	}
+	// The device is exactly as it was, so the person can simply run it again.
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Errorf("the local key was deleted after a failed account-wide revoke: %v", err)
+	}
+	if _, err := os.Stat(CredentialsPath(home)); err != nil {
+		t.Errorf("the credentials file was deleted after a failed account-wide revoke: %v", err)
+	}
+}
+
+// The ordering the whole function exists for. The account-wide revoke takes
+// this device's key with it like any other, so the upload queue has to be
+// checked FIRST: asking afterwards would leave a person with files still queued
+// on a machine that can no longer upload them, and a command that then refuses
+// to clear the queue.
+func TestLogoutAllRefusesQueuedUploadsBeforeItRevokesTheAccount(t *testing.T) {
+	home := signedInDeviceHome(t)
+	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
+	account := &fakeAccountRevoker{home: home, t: t}
+
+	err := LogoutEveryDevice("linux", home, false, &fakeTokenRevoker{}, testRevoker(t, home), account)
+	if err == nil {
+		t.Fatal("queued uploads must still refuse an account-wide logout")
+	}
+	if kind := failureKind(err); kind != "uploads-stuck" {
+		t.Errorf("failure kind = %q, want uploads-stuck", kind)
+	}
+	if account.calls != 0 {
+		t.Errorf("the account was revoked with %d file(s) still queued; the queue must be asked first", account.calls)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Errorf("the local key was deleted over a queued upload: %v", err)
+	}
+
+	// --force is the person's call to discard the queue, exactly as in a plain
+	// logout, and once it is given the account-wide revoke proceeds.
+	account2 := &fakeAccountRevoker{home: home, t: t}
+	if err := LogoutEveryDevice("linux", home, true, &fakeTokenRevoker{}, testRevoker(t, home), account2); err != nil {
+		t.Fatalf("drive logout --all --force: %v", err)
+	}
+	if account2.calls != 1 {
+		t.Errorf("account-wide revokes with --force = %d, want 1", account2.calls)
+	}
+}
+
+// No signed-in account on this device is not a reason to sign this machine out
+// on its own: that is what `drive logout` is for, and running it here would
+// leave every other device live — the opposite of what --all means.
+func TestLogoutAllRefusesWhenNoAccountIsSignedInHere(t *testing.T) {
+	home := configOnlyHome(t)
+
+	err := LogoutEveryDevice("linux", home, false, &fakeTokenRevoker{}, testRevoker(t, home), nil)
+	if err == nil {
+		t.Fatal("--all with no signed-in account must refuse, not fall back to a local logout")
+	}
+	if kind := failureKind(err); kind != "signout-everywhere-no-account" {
+		t.Errorf("failure kind = %q, want signout-everywhere-no-account", kind)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Errorf("the local key was deleted by a refused --all: %v", err)
+	}
+}
+
+// --yes is the answer to --all's confirm step. Given on its own it is a
+// question about nothing, and saying so beats quietly ignoring a flag a person
+// typed on purpose.
+func TestYesWithoutAllIsRefused(t *testing.T) {
+	home := signedInDeviceHome(t)
+
+	err := runLogout([]string{"--home", home, "--yes", "--api", "https://api.test"})
+	if err == nil {
+		t.Fatal("--yes without --all must be refused")
+	}
+	if kind := failureKind(err); kind != "confirm-without-all" {
+		t.Errorf("failure kind = %q, want confirm-without-all", kind)
+	}
+	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
+		t.Errorf("the local key was deleted by a refused --yes: %v", err)
+	}
+}
+
+// RevokeAllKeys has to hit the collection route with the device token, because
+// the token is the only thing that says which account gets signed out: the
+// route takes no id that could name another account.
+func TestRevokeAllKeysUsesTheCollectionRouteAndTheBearerToken(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("authorization")
+		if r.ContentLength > 0 {
+			t.Errorf("the account-wide revoke sent a %d byte body; the route takes none", r.ContentLength)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewAPIClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RevokeAllKeys(); err != nil {
+		t.Fatalf("RevokeAllKeys: %v", err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/v1/keys" {
+		t.Errorf("revoke sent %s %s, want DELETE /v1/keys", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer test-token" {
+		t.Errorf("revoke sent authorization %q, want the device token", gotAuth)
+	}
+}
+
+// A 401 is NOT the state this call wants. RevokeDeviceToken reads it as "this
+// token is already dead", which is right there and wrong here: a dead token
+// means the account was never signed out, so a 401 must be a failure that stops
+// the local half rather than a clean "already done".
+func TestRevokeAllKeysDoesNotReadA401AsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client, err := NewAPIClient(server.URL, "dead-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RevokeAllKeys(); err == nil {
+		t.Fatal("a 401 must not read as an account that is already signed out")
 	}
 }

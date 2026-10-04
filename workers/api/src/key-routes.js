@@ -9,6 +9,7 @@
 // (build step 1, drive#2), and presents them with HTTP Basic. That route is
 // `auth: "public"` because the key itself is the whole credential; there is
 // no signed-in account to gate on.
+import { failureMessage } from "../../../src/messages.js";
 import { errorResponse, json, readJsonObject } from "./http.js";
 import { authorizePath } from "./keystore.js";
 
@@ -81,10 +82,54 @@ export async function revokeKeyRoute(request, ctx) {
   if (request.method !== "DELETE") {
     return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
   }
-  const result = await Promise.resolve(ctx.store.revokeKey(ctx.account, ctx.params.keyId));
+  const result = await ctx.store.revokeKey(ctx.account, ctx.params.keyId);
   if ("error" in result) {
     return errorResponse(404, "No such key on this account.");
   }
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+}
+
+/**
+ * DELETE /v1/keys — sign the account out of every device at once (drive#34,
+ * slice drive#236, the decision `nish3451` resolved in the issue on 2026-10-03:
+ * a standalone "sign out every device" action, separate from account closing).
+ *
+ * What it revokes, and why both halves: every live key in `devices` for the
+ * resolved account and every live device token in `device_tokens` for it. The
+ * key is what opens the storage API and the token is what opens the account
+ * gate, so a device that lost only one of the two would still hold half a
+ * way in — a tool whose key is dead but whose token still answers 200 on
+ * `/v1/keys` can mint itself a new key. One call, one account, both halves.
+ *
+ * The account comes from the gate, never from the request: the route takes no
+ * body and no path parameter, so there is no id a caller could substitute and
+ * another account's rows are not reachable from here at all — the same rule
+ * `GET /v1/export` follows for the same reason. The counts the stores return
+ * are read back off the row change, so what a caller is told is what actually
+ * went dead.
+ *
+ * The answer is 204 with no body, the same answer every other revoke on this
+ * registry gives: the caller asked for a state and got it, and the state is
+ * the same whatever the counts were. Nothing about the account is echoed back.
+ * @param {Request} request
+ * @param {{store: KeyStore, account: {id: string, name: string}}} ctx
+ */
+export async function revokeAllKeysRoute(request, ctx) {
+  if (request.method !== "DELETE") {
+    return errorResponse(405, "That method is not allowed here.", { allow: "DELETE" });
+  }
+  // The account id is the one filter on both statements below. A request that
+  // reached a handler with no account id is the gate's 401, already answered;
+  // the check is written rather than assumed so a direct handler call cannot
+  // revoke every row in the table.
+  if (typeof ctx.account?.id !== "string" || ctx.account.id === "") {
+    return errorResponse(401, "Sign in to sign out of every device.");
+  }
+  // Keys first, tokens second: a key is the credential that opens the storage
+  // API, so if the second half fails for any reason the keys are already dead
+  // and nothing is left holding a way in.
+  await ctx.store.revokeAllKeys(ctx.account);
+  await ctx.store.signin.revokeAllDeviceTokens(ctx.account);
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 
@@ -119,6 +164,13 @@ export async function renewKeyRoute(request, ctx) {
     if (result.error === "revoked") {
       return errorResponse(409, "That key is revoked, so its hour cannot be restarted.");
     }
+    // The key is at its own agent cap (drive issue #171), so the store took its
+    // write powers away in the same call and will not restart an hour on a
+    // credential it has withdrawn. The next step is a new key from `drive
+    // init`, and nothing about the key is lost: it is still listed, read-only.
+    if (result.error === "capped") {
+      return errorResponse(409, failureMessage("agent-cap-reached"));
+    }
     return errorResponse(404, "No such key on this account.");
   }
   return json(result.device);
@@ -150,7 +202,9 @@ export async function revokePresentedKeyRoute(request, ctx) {
   if (device === null) {
     return errorResponse(401, "This key was revoked or is not valid.");
   }
-  const result = ctx.store.revokeKey({ id: device.accountId }, device.id);
+  // `revokeKey` is a promise in both of its arms (drive#402), so this awaits
+  // rather than reading `"error" in` off a Promise object.
+  const result = await ctx.store.revokeKey({ id: device.accountId }, device.id);
   if ("error" in result) {
     return errorResponse(404, "No such key on this account.");
   }
