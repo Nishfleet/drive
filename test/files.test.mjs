@@ -1099,7 +1099,11 @@ test("the Worker routes the page's API to the files handler", async () => {
   });
 
   // A path that is not an API still comes from the asset layer.
-  const filesAsset = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
+  const filesAsset = await workerFetch(
+    new Request("https://drive.test/files"),
+    { ASSETS: assets },
+    ctx,
+  );
   assert.equal(await filesAsset.text(), "asset");
 });
 
@@ -1174,8 +1178,14 @@ test("the page wears the site's header, with room for the view strip", () => {
   assert.ok(tabs, "the page lays the tab strip out as a strip");
   const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
   const above = Number.parseInt(tabs.match(/padding-top:\s*(\d+)px/)?.[1] ?? "0", 10);
-  assert.ok(above >= 20, `the strip needs 20px of clear space under the header, it has ${above}px (acceptance: 25px)`);
-  assert.ok(gap >= 8, `the tabs need 8px of room between them, the gap is ${gap}px (acceptance: 8px)`);
+  assert.ok(
+    above >= 20,
+    `the strip needs 20px of clear space under the header, it has ${above}px (acceptance: 25px)`,
+  );
+  assert.ok(
+    gap >= 8,
+    `the tabs need 8px of room between them, the gap is ${gap}px (acceptance: 8px)`,
+  );
   const tab = rules("tabs button").find((rule) => rule.includes("padding:"));
   const pad = tab?.match(/padding:\s*(\d+)px\s+(\d+)px/);
   assert.ok(pad, "each tab carries its own padding");

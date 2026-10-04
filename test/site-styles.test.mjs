@@ -28,7 +28,7 @@ const PUBLIC_DIR = new URL("../public/", import.meta.url);
 const PAGES = [
   ...readdirSync(PUBLIC_DIR)
     .filter((name) => name.endsWith(".html"))
-    .map((name) => /** @type {Array<[string, URL]>} */ ([`public/${name}`, new URL(name, PUBLIC_DIR)])),
+    .map((name) => /** @type {[string, URL]} */ ([`public/${name}`, new URL(name, PUBLIC_DIR)])),
   ["get-started.html", new URL("../get-started.html", import.meta.url)],
 ];
 
@@ -72,16 +72,13 @@ const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
 const CHROME_OVERRIDES = new Map([
   [
     "public/files.html",
-    new Map([[".masthead", new Set(['margin', 'padding', 'border-bottom'])], [".wordmark", new Set(['font-size'])]]),
-  ] ,
-  [
-    "public/starter.html",
-    new Map([[".wordmark", new Set(['font-size'])]]),
-  ] ,
-  [
-    "public/signin.html",
-    new Map([[".masthead", new Set(['padding'])]]),
-  ]
+    new Map([
+      [".masthead", new Set(["margin", "padding", "border-bottom"])],
+      [".wordmark", new Set(["font-size"])],
+    ]),
+  ],
+  ["public/starter.html", new Map([[".wordmark", new Set(["font-size"])]])],
+  ["public/signin.html", new Map([[".masthead", new Set(["padding"])]])],
 ]);
 
 // The shared file's own header rules. Pages may restate only the
@@ -110,19 +107,19 @@ function selectorsIn(css) {
   // Commas inside () or [] (e.g. :is(a, b)) are not selector separators.
   for (const [, selector] of commentsRemoved(css).matchAll(/([^}{]+)\{/g)) {
     let depth = 0;
-    let cur = '';
+    let cur = "";
     for (const ch of selector) {
-      if (ch === '(' || ch === '[') depth++;
-      else if (ch === ')' || ch === ']') depth--;
-      else if (ch === ',' && depth === 0) {
-        const trimmed = cur.trim().replace(/\s+/g, ' ');
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (ch === "," && depth === 0) {
+        const trimmed = cur.trim().replace(/\s+/g, " ");
         if (trimmed) found.add(trimmed);
-        cur = '';
+        cur = "";
         continue;
       }
       cur += ch;
     }
-    const trimmed = cur.trim().replace(/\s+/g, ' ');
+    const trimmed = cur.trim().replace(/\s+/g, " ");
     if (trimmed) found.add(trimmed);
   }
   return found;
