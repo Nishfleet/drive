@@ -16,6 +16,7 @@ import {
   CONTROL_OR_BACKSLASH,
   CONTROL_OR_SLASH,
   createMemoryStore,
+  createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
   FILES_ENDPOINT,
@@ -41,6 +42,7 @@ import {
   scopeStore,
   sortEntries,
   splitEntries,
+  storageBucketForKey,
   TRASH_PATH,
   trashName,
   trashRows,
@@ -50,6 +52,8 @@ import {
 } from "../src/files.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 // The first-run page is a Vite entry at the repo root (issue #70), not a
@@ -1006,6 +1010,167 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   assert.match(urls[1].url, /\/drive\/u\/acct-a\/note.txt$/);
   await b.read("/holiday.jpg");
   assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
+});
+
+test("the Files page names the same bucket the key provider mints into", () => {
+  assert.equal(storageBucketForKey("u/acct_a1/note.txt"), bucketForAccount("acct_a1"));
+  assert.equal(storageBucketForKey("u/acct_a1/"), "drv-acct-a1");
+  assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
+  assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
+  assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+/**
+ * Fake S3 that namespaces objects by bucket, so a write into account A's
+ * bucket cannot appear in B's listing. Keys are `${bucket}/${objectKey}`.
+ * @param {Map<string, string>} objects
+ * @param {string[]} seen
+ * @returns {typeof fetch}
+ */
+function accountBucketFetch(objects, seen) {
+  return async (url, init = {}) => {
+    const method = init.method || "GET";
+    const parsed = new URL(String(url));
+    const segments = decodeURIComponent(parsed.pathname)
+      .split("/")
+      .filter((segment) => segment !== "");
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} ${bucket}/${key}${parsed.search}`);
+    if (method === "PUT") {
+      objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    if (method === "DELETE") {
+      objects.delete(`${bucket}/${key}`);
+      return new Response(null, { status: 204 });
+    }
+    if (parsed.search.includes("list-type=2")) {
+      const inBucket = new Map(
+        [...objects.entries()]
+          .filter(([name]) => name.startsWith(`${bucket}/`))
+          .map(([name, body]) => [name.slice(bucket.length + 1), body]),
+      );
+      return rcloneListResponse(inBucket, parsed.search, { bucket });
+    }
+    const stored = objects.get(`${bucket}/${key}`);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+}
+
+test("GET /api/files lists a file written into the account's own bucket, and the other account cannot see it", async () => {
+  // drive#460: Finder writes through a key limited to drv-<id>. The Files
+  // page used the old shared bucket, so those files never showed. This is
+  // the request path src/index.js uses: handleFilesRequest + scopeStore over
+  // one S3 store that picks the bucket from the key.
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  const store = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl: accountBucketFetch(objects, seen),
+  });
+  const a = { id: "acct-a", name: "A" };
+  const b = { id: "acct-b", name: "B" };
+  const bucketA = bucketForAccount(a.id);
+  const bucketB = bucketForAccount(b.id);
+  /** @param {string} suffix */
+  const filesUrl = (suffix) => `https://drive.test${FILES_ENDPOINT}${suffix}`;
+  const uploaded = await handleFilesRequest(
+    new Request(`${filesUrl("/upload")}?path=%2F&name=from-finder.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "saved in Finder",
+    }),
+    store,
+    a,
+  );
+  assert.equal(uploaded.status, 201);
+  assert.deepEqual([...objects.keys()], [`${bucketA}/u/acct-a/from-finder.txt`]);
+
+  const listed = await handleFilesRequest(new Request(`${filesUrl("?path=/")}`), store, a);
+  assert.equal(listed.status, 200);
+  /** @type {{rows: Array<{name: string}>}} */
+  const mine = await listed.json();
+  assert.deepEqual(
+    mine.rows.map((row) => row.name),
+    ["from-finder.txt"],
+  );
+
+  const downloaded = await handleFilesRequest(
+    new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+    store,
+    a,
+  );
+  assert.equal(downloaded.status, 200);
+  assert.equal(await downloaded.text(), "saved in Finder");
+
+  const otherList = await handleFilesRequest(new Request(`${filesUrl("?path=/")}`), store, b);
+  assert.equal(otherList.status, 200);
+  assert.deepEqual((await otherList.json()).rows, []);
+  const otherRead = await handleFilesRequest(
+    new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+    store,
+    b,
+  );
+  assert.equal(otherRead.status, 404);
+
+  const deleted = await handleFilesRequest(
+    new Request(filesUrl("/delete"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/from-finder.txt" }),
+    }),
+    store,
+    a,
+    now,
+  );
+  assert.equal(deleted.status, 200);
+  const restored = await handleFilesRequest(
+    new Request(filesUrl("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/from-finder.txt" }),
+    }),
+    store,
+    a,
+    now,
+  );
+  assert.equal(restored.status, 200);
+  assert.equal(
+    await (
+      await handleFilesRequest(
+        new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+        store,
+        a,
+      )
+    ).text(),
+    "saved in Finder",
+  );
+
+  for (const request of seen) {
+    if (request.includes(`${bucketA}/`)) {
+      assert.ok(!request.includes(`${bucketB}/`), `A must never name B's bucket: ${request}`);
+    }
+    if (request.includes(`${bucketB}/`)) {
+      assert.ok(!request.includes(`${bucketA}/`), `B must never name A's bucket: ${request}`);
+    }
+  }
+  assert.ok(
+    seen.some((request) => request.includes(`${bucketA}/`)),
+    `A's calls must name ${bucketA}: ${JSON.stringify(seen)}`,
+  );
+  assert.ok(
+    seen.some((request) => request.includes(`${bucketB}/`)),
+    `B's calls must name ${bucketB}: ${JSON.stringify(seen)}`,
+  );
 });
 
 test("the S3 stand-in follows the continuation token, so a folder is never truncated at 1,000", async () => {

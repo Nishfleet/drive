@@ -152,6 +152,7 @@ h2 {
 .command code {
   font-family: var(--mono);
   font-size: clamp(17px, 2.4vw, 21px);
+  white-space: pre-wrap;
 }
 
 button {
@@ -272,7 +273,23 @@ th {
     <a href="/">Pricing</a>
     <a href="/get-started" aria-current="page">Get started</a>
     <a href="/usage">Usage</a>
-    <a href="/signin">Sign in</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
+    <noscript>
+      <!-- Not Django: POST /api/signin refuses a cross-site post
+           (isSameOriginRequest). A token in the markup would protect nothing. -->
+      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+      <form method="POST" action="/api/signin">
+        <input type="hidden" name="step" value="signout">
+        <button type="submit">Sign out</button>
+      </form>
+      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+      <form method="POST" action="/api/signin">
+        <input type="hidden" name="step" value="signout-all">
+        <button type="submit">Sign out everywhere</button>
+      </form>
+    </noscript>
+    <button type="button" id="nav-signout" hidden>Sign out</button>
+    <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
   <main>
@@ -288,7 +305,12 @@ th {
     <section id="install-heading" aria-labelledby="install-heading-title">
       <h2 id="install-heading-title">Install, one line</h2>
       <ul class="install" id="install-lines">
-        <!-- Filled by get-started.js from src/status.js -->
+        <!-- Filled by get-started.js from src/status.js. One empty row per
+             system holds the list's height, so the rows the script writes
+             push nothing down (the CLS budget in lighthouserc.json). -->
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
+        <li><span class="os">&nbsp;</span><code>&nbsp;</code></li>
       </ul>
     </section>
 

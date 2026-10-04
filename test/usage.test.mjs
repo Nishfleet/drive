@@ -26,8 +26,11 @@ import {
   USAGE_HISTORY_DAYS,
   usageSummary,
 } from "../src/billing.js";
+import { CAP_ENDPOINT } from "../src/cap.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
+import { PRICE } from "../src/pricing.js";
+import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
 import { UPLOAD_LABEL, uploadProgress } from "../src/status.js";
 import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
@@ -118,6 +121,22 @@ test("the summary carries the raw sizes and the finished labels both surfaces sh
   });
   assert.equal(withoutCard.labels.cap, "$1.00", "no card means writes stop at the free $1");
   assert.equal(withoutCard.labels.accountCap, "$12.00", "the account's own cap is untouched");
+});
+
+test("until a card is really on file the cost label says no charge has been made", () => {
+  // drive#417: no card on file means no charge has been made, so both surfaces
+  // (the page and `drive usage`) say that instead of a $10 bill. The money
+  // itself is untouched — monthBillCents() still works the membership out and
+  // billCents still carries it — only the word shown changes.
+  const withoutCard = month(400, { cardOnFile: false });
+  assert.equal(withoutCard.cardOnFile, false);
+  assert.equal(withoutCard.labels.cost, PRICE.noChargeYet);
+  assert.equal(withoutCard.billCents.totalCents, 1000, "the bill arithmetic is unchanged");
+  assert.equal(month(400).cardOnFile, true, "the default every caller but the endpoint sends");
+  assert.equal(month(400).labels.cost, "$10.00");
+  // A truthy value that is not `true` is not a card on file, so the label
+  // cannot drift between two callers that spell yes two ways.
+  assert.equal(month(400, { cardOnFile: "on" }).cardOnFile, false);
 });
 
 test("the downloads label is bytes used against the free 3x, from the same config", () => {
@@ -245,6 +264,13 @@ test("`drive usage` prints the four lines the spec names", () => {
   }
 });
 
+test("`drive usage` prints the no-charge line for a card-less month", () => {
+  // drive#417: the CLI is the page's second surface, so it prints the same
+  // honest word rather than the $10 a card-less account cannot be charged.
+  const lines = usageLines(month(400, { cardOnFile: false }));
+  assert.equal(lines[3], `${USAGE_LABELS.cost}: ${PRICE.noChargeYet}`);
+});
+
 test("the usage lines refuse anything but a summary, never printing NaN", () => {
   assert.throws(() => usageLines(null), TypeError);
   assert.throws(() => usageLines(undefined), TypeError);
@@ -291,13 +317,31 @@ test("the usage endpoint answers the empty month with the page's shape", async (
     "storedNow",
   ]);
   assert.equal(body.labels.storedNow, "0 B");
-  assert.equal(body.labels.cost, "$10.00");
+  assert.equal(body.cardOnFile, false);
+  // drive#417: an account with no card on file has had no charge taken, so the
+  // page and the CLI are told that rather than presented with a bill. The cap
+  // line is the account's own, unchanged by the card flag: only the charge
+  // word moves.
+  assert.equal(body.labels.cost, PRICE.noChargeYet);
   assert.equal(body.labels.cap, "$12.00");
   // The page renders these strings, so none of them may be NaN or undefined.
   for (const value of Object.values(body.labels)) {
     assert.equal(typeof value, "string");
     assert.doesNotMatch(value, /NaN|undefined/);
   }
+});
+
+test("an account with a card on file is shown the bill it is charged", async () => {
+  // The other half of drive#417: the honest no-charge label is for the
+  // card-less month alone. A real card on file is the membership bill the one
+  // bill function works out, on both surfaces.
+  const withCard = await handleUsageRequest(new Request("https://drive.test/api/usage"), {
+    ...account,
+    cardOnFile: true,
+  }).json();
+  assert.equal(withCard.cardOnFile, true);
+  assert.equal(withCard.labels.cost, "$10.00");
+  assert.equal(withCard.billCents.totalCents, 1000, "the one bill function's own total");
 });
 
 test("the Worker routes the usage read and the page's endpoint is that route", async () => {
@@ -334,6 +378,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "billUsd",
     "cap",
     "capLine",
+    "cardOnFile",
     "ceilingUsd",
     "downloads",
     "gbMonths",
@@ -482,6 +527,10 @@ const PAGE_IDS = Object.freeze([
   "upload-line",
   "cap-slider",
   "cap-value",
+  "cap-note",
+  "cap-save",
+  "cap-saved",
+  "cap-saving",
   "close-what",
   "close-next",
   "close-closed-what",
@@ -495,6 +544,9 @@ const PAGE_IDS = Object.freeze([
   "cancel-email",
   "close-submit",
   "cancel-submit",
+  "nav-signin",
+  "nav-signout",
+  "nav-signout-all",
 ]);
 
 /**
@@ -677,6 +729,7 @@ test("the empty chart is a state with a next step, not a blank panel", () => {
   assert.match(page, /chartEl\.hidden = true;/);
   assert.match(page, /chartFigureEl\.hidden = true;/);
   assert.match(page, /storageEmptyEl\.hidden = false;/);
+  assert.match(page, /typeof summary\.cardOnFile !== "boolean"/);
   // The chart is described for a screen reader, not left as an unlabelled box,
   // in whole GB rather than raw rollup decimals.
   assert.match(page, /setAttribute\(\s*"aria-label"/);
@@ -740,6 +793,49 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);
 });
 
+test("no bill is shown as if charged while no card is on file", async () => {
+  // drive#417: until a card is really on file the page hides the invoice rows
+  // rather than presenting a bill nobody was charged, and the cost line it does
+  // show is the no-charge sentence the endpoint sends. The regex is the source
+  // gate; the run is the page's own script against a real summary.
+  assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
+  const cardless = runPage({
+    ...usageSummary({
+      gbMinutes: 0,
+      peakGb: 0,
+      storedGb: 0,
+      storedDaily: [],
+      downloadBytes: 0,
+      averageStoredGb: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      cardOnFile: false,
+    }),
+    uploadLine: null,
+  });
+  await settle();
+  assert.equal(elementOf(cardless.elements, "cost").textContent, PRICE.noChargeYet);
+  assert.equal(elementOf(cardless.elements, "bill-lines").hidden, true);
+
+  const charged = runPage({
+    ...usageSummary({
+      gbMinutes: 0,
+      peakGb: 0,
+      storedGb: 0,
+      storedDaily: [],
+      downloadBytes: 0,
+      averageStoredGb: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      cardOnFile: true,
+    }),
+    uploadLine: null,
+  });
+  await settle();
+  assert.equal(elementOf(charged.elements, "cost").textContent, "$10.00");
+  assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
+});
+
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
   // The thumb is the account's cap (labels.accountCap, the account's own
   // setting), not the card-less cap writes stop at, and the range tops out at
@@ -750,8 +846,71 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
     /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.ceilingUsd, cap\.capUsd\)\)\);/,
   );
   assert.match(page, /<label for="cap-slider">Monthly cap, in dollars<\/label>/);
-  // It is a display, not a control, until the accounts store lands (#2).
-  assert.match(page, /id="cap-slider"[^>]*disabled/);
+  // Nothing writes the slider's own value out of the page: the endpoint's
+  // dollar values arrive finished, so a page-side "$12.34" would be a second
+  // copy of the one formatter.
+  assert.doesNotMatch(page, /capValueEl\.textContent = `\$/);
+});
+
+test("the cap is a control, not a readout, and it saves through the api", async () => {
+  // The accounts store is live (drive issue #2), so #421 asks for the write
+  // itself: the slider is enabled, a button appears when it has a number worth
+  // keeping, and the number goes to the one route `drive cap` writes.
+  assert.equal(CAP_ENDPOINT, "/api/cap");
+  assert.ok(
+    page.includes(`const CAP_ENDPOINT = "${CAP_ENDPOINT}";`),
+    "the page must write to the endpoint src/cap.js names",
+  );
+  // The slider ships usable: the signed-out state is what disables it, which
+  // is the gate (drive#73) rather than a not-yet-implemented placeholder.
+  assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
+  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.match(page, /capSlider\.addEventListener\("input"/);
+  assert.match(page, /capSaveEl\.addEventListener\("click"/);
+  // The write: the same body `drive cap` sends, and the answer's own sentence
+  // is the confirmation, so the page writes no cap words of its own.
+  assert.match(page, /body: JSON\.stringify\(\{ amount \}\)/);
+  assert.match(page, /capSavedEl\.textContent = payload/);
+  // The signed-out state still disables it: an account on this browser is what a
+  // write needs, so a page with none cannot move a cap.
+  assert.match(page, /capSlider\.disabled = true;\s*capSaveEl\.hidden = true;/);
+  // A save in flight when the session ends has no answer left to wait for, so
+  // its two hints sleep with the slider.
+  assert.match(page, /capSavingEl\.hidden = true;\s*capSavedEl\.hidden = true;/);
+  // A worker's sentence left under the slider would answer a number the person
+  // has since moved on from, so the input that shows the button returns the
+  // note to its own words.
+  assert.match(
+    page,
+    /capSaveEl\.hidden = false;\s*capNoteWhatEl\.textContent = CAP_NOTE\.what;\s*capNoteNextEl\.textContent = CAP_NOTE\.next;/,
+  );
+  // A minute's read does not move the slider back out from under the person
+  // moving it, and the saved line is the endpoint's own sentence.
+  assert.match(
+    page,
+    /if \(capSaveEl\.hidden\) \{\s*capSlider\.value = String\(cap\.capUsd\);\s*\}/,
+  );
+  // Visual feedback while the POST is in flight, so the slider's
+  // disabled state is not the only signal that the save is happening.
+  assert.match(page, /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/);
+  // The note under the slider is the one pair src/usage.js pins
+  // (USAGE_LABELS.capNote). The page is a static asset and cannot import it,
+  // so the words are repeated, and this is what keeps the repeat honest: a
+  // drifted line would leave a person reading the api's words in one place and
+  // a copy of them in another.
+  const note = vm.runInNewContext(
+    `${page.slice(
+      page.indexOf("const CAP_NOTE = {"),
+      page.indexOf("};", page.indexOf("const CAP_NOTE = {")) + 2,
+    )}CAP_NOTE;`,
+  );
+  // JSON, because the page's words are read out of a fresh vm context and a
+  // deepStrictEqual across realms fails on the prototype rather than the text.
+  assert.equal(JSON.stringify(note), JSON.stringify(USAGE_LABELS.capNote));
+  // The line that used to say a cap "arrives with accounts" is gone: a slider
+  // that can be moved makes that sentence false, and nothing on the page says
+  // the cap is out of reach (drive#421).
+  assert.doesNotMatch(page, /arrives with accounts/);
 });
 
 test("the pages' mastheads read as one navigation", () => {
@@ -759,8 +918,11 @@ test("the pages' mastheads read as one navigation", () => {
   // nav (usage, get-started and the Web Files page since drive#425) list Your
   // files, Pricing, Get started, Usage, Sign in in that order (the Web Files
   // link leads since #48 merged, and Sign in closes it since drive#10), and
-  // each marks itself. The pricing page's masthead is its wordmark alone — its
-  // links are its footer nav, which is issue #11's and is checked below.
+  // each marks itself. Sign out is a button, not a link, so a signed-out
+  // browser and a browser with no script still see the five links; JS swaps
+  // Sign in for Sign out when the account is there (drive#423). The pricing
+  // page's masthead is its wordmark alone — its links are its footer nav,
+  // which is issue #11's and is checked below.
   const nav = [
     '<a href="/files"',
     '<a href="/"',
@@ -797,6 +959,53 @@ test("the pages' mastheads read as one navigation", () => {
     const here = CURRENT.get(name);
     assert.ok(here, `${name} has a current-page link of its own to check`);
     assert.match(header, here, `${name} marks itself in the header with aria-current`);
+    assert.match(
+      header,
+      /id="nav-signin">Sign in<\/a>/,
+      `${name} keeps Sign in as the signed-out default`,
+    );
+    assert.match(
+      header,
+      new RegExp(`id="nav-signout" hidden>${SIGNIN_COPY.signOut}</button>`),
+      `${name} carries Sign out, hidden until the session is there`,
+    );
+    assert.match(
+      header,
+      new RegExp(`id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`),
+      `${name} carries Sign out everywhere, hidden until the session is there`,
+    );
+    assert.match(
+      header,
+      /<noscript>/,
+      `${name} keeps a Sign out form for a browser with no script`,
+    );
+    assert.match(header, /name="step" value="signout"/, `${name}'s form posts the sign-out step`);
+    assert.match(
+      header,
+      /name="step" value="signout-all"/,
+      `${name}'s form posts sign-out everywhere`,
+    );
+  }
+  // The posts live in each page's own script. get-started.html is a Vite
+  // entry, so its script is src/get-started.js rather than an inline block.
+  const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  for (const [name, source] of [
+    ["usage.html", page],
+    ["files.html", filesPage],
+    ["get-started.js", getStartedJs],
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}"`),
+      `${name} posts sign-out to the sign-in route`,
+    );
+    assert.match(source, /postSignout\("signout"\)/, `${name} posts the sign-out step`);
+    assert.match(source, /postSignout\("signout-all"\)/, `${name} posts sign-out everywhere`);
+    assert.match(
+      source,
+      /\.disabled = true/,
+      `${name} sleeps the button while the post is in flight`,
+    );
   }
   // The pricing page keeps its own footer nav; its masthead is issue #11's, and
   // this issue only adds the usage page.
@@ -916,6 +1125,13 @@ test("the usage page shows the queue a device reported, through the Worker's own
     `paused line ${paused.uploadLine} does not lead with the paused word`,
   );
   assert.equal(paused.uploadLine, uploadProgress({ ...queue, paused: true }).label);
+
+  // drive#417: the account the Worker signs in has no accounts row yet, so no
+  // card is on file and the read says no charge has been made rather than
+  // showing the membership bill as if it had been taken.
+  const cardless = await (await read()).json();
+  assert.equal(cardless.cardOnFile, false);
+  assert.equal(cardless.labels.cost, PRICE.noChargeYet);
 
   // A report the freshness window has passed reads as no queue rather than as a
   // stale line, so the page hides the line instead of freezing a number.

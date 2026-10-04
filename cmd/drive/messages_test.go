@@ -125,7 +125,7 @@ func TestErrorPathsHaveANextStep(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"missing-config", func() error { _, err := LoadStorageConfig("", "", "", "", "", ""); return err }()},
+		{"missing-config", func() error { _, err := LoadStorageConfig("", "", "", "", "", "", StorageConfig{}); return err }()},
 		{"no-rclone", func() error { _, err := ResolveRclone("rclone-that-is-not-installed"); return err }()},
 		{"unknown-tool", func() error { _, err := toolByName("not-a-tool"); return err }()},
 		{"uploads-stuck", Logout("linux", home, false, nil, noAPIKeyStore{})},

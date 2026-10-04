@@ -36,7 +36,15 @@ import {
   signinClosedBody,
   signinEmailFailedBody,
 } from "../src/signin.js";
-import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import {
+  createTestAuth,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+  TEST_SECRET,
+} from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -58,6 +66,7 @@ const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "ut
  * the two Better Auth settings and the test mailer standing in for the EMAIL
  * binding. Every claim about a real sign-in below runs through this.
  * @typedef {{limit: (options: {key: string}) => Promise<{success: boolean}>, calls?: Array<{key: string}>}} SigninLimiterFake
+ * @param {{migrations?: readonly string[]}} [options]
  * @returns {ReturnType<typeof createTestAuth> & {env: {
  *   ASSETS: {fetch: () => Response},
  *   DRIVE_DB: unknown,
@@ -68,8 +77,8 @@ const spec = readFileSync(new URL("../docs/build-spec.md", import.meta.url), "ut
  *   SIGNIN_GLOBAL_RATE_LIMITER?: SigninLimiterFake,
  * }}}
  */
-function dispatchEnv() {
-  const made = createTestAuth();
+function dispatchEnv(options = {}) {
+  const made = createTestAuth(options);
   const sent = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -250,6 +259,78 @@ test("sign-up without a card is refused and mails nothing", async () => {
   assert.equal(made.sent.length, 0, "a refused sign-up mails nothing");
 });
 
+test("every new-account path requires the card step (drive#417)", async () => {
+  // The one claim issue #417 makes about sign-up: no path opens a new account
+  // without the card step, and the answer comes from the server. Each path is
+  // driven the way the Worker's own dispatch (this file's workerFetch) takes
+  // it, against the real Better Auth database.
+  const made = dispatchEnv();
+  // 1. The email path: a first-time address with no card on file is refused,
+  // and no link is mailed, because the request never reaches the mailer.
+  // A body that names no card field at all is the same refusal (fail closed),
+  // so a client that drops the checkbox cannot open the account either. The
+  // raw JSON body below is the one this file's post() helper would otherwise
+  // fill in for, so the field is absent exactly as a client that sends none
+  // would send it.
+  for (const body of [
+    { step: "start", method: "email", email: "new@example.com", card: false },
+    { step: "start", method: "email", email: "new@example.com", card: "off" },
+  ]) {
+    const response = await workerFetch(post(body), made.env);
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.deepEqual(await response.json(), { error: SIGNIN_COPY.needCard });
+  }
+  const noCardField = await workerFetch(
+    post(JSON.stringify({ step: "start", method: "email", email: "new@example.com" })),
+    made.env,
+  );
+  assert.equal(noCardField.status, 400, "a start with no card field is refused");
+  assert.deepEqual(await noCardField.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 0, "a refused sign-up path mails nothing");
+  // The refusal is server side, not a screen: after the refusals the database
+  // holds no user row for the address, so nothing about the account exists.
+  const row = await made.db
+    .prepare('select id from "user" where email = ?')
+    .bind("new@example.com")
+    .first();
+  assert.equal(row, null, "no user row was written for a refused sign-up");
+  // 2. The OAuth paths: Google and GitHub are the screen's buttons, and each
+  // is a closed door, so neither can open a new account behind the card step.
+  for (const method of ["google", "github"]) {
+    const response = await workerFetch(post({ step: "start", method }), made.env);
+    assert.equal(response.status, 503, `${method} is a closed door, not a new account`);
+    assert.deepEqual(await response.json(), signinClosedBody());
+    assert.equal(response.headers.get("set-cookie"), null, `${method} sets no session`);
+  }
+  assert.equal(made.sent.length, 0, "a closed sign-in mails nothing");
+  // 3. The email path WITH the card step is the one that opens the account, so
+  // the gate above is the card and not the address: the same first-time email
+  // now signs up, and the link leaves by email.
+  const withCard = await workerFetch(
+    post({ step: "start", method: "email", email: "new@example.com", card: true }),
+    made.env,
+  );
+  assert.equal(withCard.status, 202, "the card step is what opens the new account");
+  assert.equal((await withCard.json()).ok, true);
+  assert.equal(made.sent.length, 1, "the sign-up link leaves by email");
+  // The no-JavaScript form is the page's own path, so it is held to the same
+  // gate: an unchecked checkbox posts no card field.
+  const form = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/signin`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+      },
+      body: new URLSearchParams({ step: "start", method: "email", email: "form@example.com" }),
+    }),
+    made.env,
+  );
+  assert.equal(form.status, 400, "the form path is refused with no card step");
+  assert.deepEqual(await form.json(), { error: SIGNIN_COPY.needCard });
+  assert.equal(made.sent.length, 1, "the refused form post mailed nothing more");
+});
+
 test("a request that did not come from the site is refused before anything is mailed", async () => {
   const made = dispatchEnv();
   const cross = post(
@@ -298,8 +379,8 @@ test("the three methods the spec's screen names are the three it accepts", () =>
   // one thing this request must name.
   assert.ok("error" in readSigninRequest({ step: "start", email: "you@example.com" }));
   assert.ok("error" in readSigninRequest());
-  // The two steps are the route's, documented above each endpoint.
-  assert.deepEqual([...SIGNIN_STEPS], ["start", "signout"]);
+  // The three steps are the route's, documented above each endpoint.
+  assert.deepEqual([...SIGNIN_STEPS], ["start", "signout", "signout-all"]);
 });
 
 test("the OAuth methods are a closed door, not a 202 for a redirect to nowhere", async () => {
@@ -656,6 +737,175 @@ test("sign-out through the route revokes the session the cookie names", async ()
   assert.equal(after.status, 401, "the old cookie is not a session after sign-out");
 });
 
+test("sign-out everywhere revokes keys, device tokens, and the browser session", async () => {
+  // drive#423: the website's Sign out everywhere is the same two writes
+  // DELETE /v1/keys runs, then this browser's session. A second account's
+  // rows stay live.
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const mine = await signIn(made, "mine@example.com");
+  const theirs = await signIn(made, "theirs@example.com");
+  const now = 1_800_000_000_000;
+  const devices = createD1DeviceStore(made.db, { now: () => now });
+  await devices.put({
+    id: "key_mine",
+    accountId: mine.account.id,
+    name: "laptop",
+    kind: "device",
+    accessKeyId: "ak_mine",
+    secretHash: "hash_mine",
+    prefix: `u/${mine.account.id}/`,
+    capabilities: ["list", "read"],
+    createdAt: now,
+    lastSeenAt: null,
+    revokedAt: null,
+    expiresAt: null,
+    ttlSeconds: null,
+  });
+  await devices.put({
+    id: "key_theirs",
+    accountId: theirs.account.id,
+    name: "pi",
+    kind: "device",
+    accessKeyId: "ak_theirs",
+    secretHash: "hash_theirs",
+    prefix: `u/${theirs.account.id}/`,
+    capabilities: ["list", "read"],
+    createdAt: now,
+    lastSeenAt: null,
+    revokedAt: null,
+    expiresAt: null,
+    ttlSeconds: null,
+  });
+  const signinStore = createD1DeviceSigninStore(made.db, { now: () => now });
+  const myCode = await signinStore.requestDeviceCode({ name: "Nish's MacBook" });
+  const myApproved = await signinStore.approveDeviceCode(myCode.userCode, mine.account);
+  assert.equal(myApproved.accountId, mine.account.id);
+  const myPolled = await signinStore.pollDeviceCode(myCode.deviceCode);
+  assert.equal(myPolled.status, "approved");
+  const myToken = /** @type {{deviceToken: string}} */ (/** @type {unknown} */ (myPolled))
+    .deviceToken;
+  const theirCode = await signinStore.requestDeviceCode({ name: "Nish's Pi" });
+  await signinStore.approveDeviceCode(theirCode.userCode, theirs.account);
+  const theirPolled = await signinStore.pollDeviceCode(theirCode.deviceCode);
+  assert.equal(theirPolled.status, "approved");
+  const theirToken = /** @type {{deviceToken: string}} */ (/** @type {unknown} */ (theirPolled))
+    .deviceToken;
+  assert.notEqual(await signinStore.accountForDeviceToken(myToken), null);
+  assert.notEqual(await signinStore.accountForDeviceToken(theirToken), null);
+  const again = await signIn(made, "mine@example.com");
+  assert.notEqual(again.cookie, mine.cookie, "a second browser has its own session");
+
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: TEST_BASE_URL, cookie: mine.cookie },
+      body: JSON.stringify({ step: "signout-all" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 200, "sign-out everywhere answers ok");
+  assert.deepEqual(await out.json(), { ok: true, step: "signout-all" });
+
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: mine.cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the browser session is gone");
+  const otherBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: again.cookie } }),
+    made.env,
+  );
+  assert.equal(otherBrowser.status, 401, "the other browser session is gone");
+  const theirBrowser = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie: theirs.cookie } }),
+    made.env,
+  );
+  assert.notEqual(theirBrowser.status, 401, "another account's browser session stays live");
+
+  const mineRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get("key_mine");
+  assert.ok(mineRow !== undefined);
+  assert.notEqual(mineRow.revoked_at, null, "this account's key is revoked");
+  const theirsRow = made.db.sqlite
+    .prepare("SELECT revoked_at FROM devices WHERE id = ?")
+    .get("key_theirs");
+  assert.ok(theirsRow !== undefined);
+  assert.equal(theirsRow.revoked_at, null, "another account's key stays live");
+  assert.equal(
+    await signinStore.accountForDeviceToken(myToken),
+    null,
+    "this account's token is dead",
+  );
+  assert.notEqual(
+    await signinStore.accountForDeviceToken(theirToken),
+    null,
+    "another account's token stays live",
+  );
+});
+
+test("a no-JavaScript sign-out form posts and lands on the sign-in page", async () => {
+  const made = dispatchEnv();
+  const { cookie } = await signIn(made, "form@example.com");
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: new URLSearchParams({ step: "signout" }),
+    }),
+    made.env,
+  );
+  assert.equal(out.status, 302, "a form post is a redirect, not a JSON body");
+  assert.equal(out.headers.get("location"), SIGNIN_PATH);
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "the form's sign-out ended the session");
+});
+
+test("sign-out everywhere still ends this session when the key store fails", async () => {
+  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const { cookie } = await signIn(made, "partial@example.com");
+  const db = made.db;
+  const failing = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (/** @type {string} */ sql) => {
+          if (/UPDATE\s+devices/i.test(String(sql))) {
+            throw new Error("devices store down");
+          }
+          return target.prepare(sql);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const out = await workerFetch(
+    new Request(`${TEST_BASE_URL}${SIGNIN_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: TEST_BASE_URL,
+        cookie,
+      },
+      body: JSON.stringify({ step: "signout-all" }),
+    }),
+    { ...made.env, DRIVE_DB: failing },
+  );
+  assert.equal(out.status, 503, "a partial everywhere is not reported as ok");
+  assert.deepEqual(await out.json(), { error: failureMessage("storage-down") });
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/first-run-status`, { headers: { cookie } }),
+    made.env,
+  );
+  assert.equal(after.status, 401, "this browser is signed out even when keys stay live");
+});
+
 // --------------------------------------------------------- per-IP rate limit
 
 test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
@@ -859,6 +1109,9 @@ test("an address the library refuses is a 400, not a closed door", async () => {
 
 test("the page carries every string from src/signin.js verbatim", () => {
   for (const [name, value] of Object.entries(SIGNIN_COPY)) {
+    // Sign out copy is the signed-in menu (drive#423), pinned on the three
+    // pages that carry it by test/usage.test.mjs, not on the sign-in screen.
+    if (name === "signOut" || name === "signOutEverywhere") continue;
     assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
   }
   // The endpoints, from the modules, never typed into the page a second time.

@@ -1,6 +1,7 @@
 drive - a Finder drive for people and their agents
 
 Usage:
+  drive login [flags]     connect this machine to your account and write its storage settings
   drive init [flags]      mount the drive, start it at login, and connect your agent tools
   drive agents [flags]                list agent tools and whether the drive is connected
   drive agents connect <tool> [flags]   connect one agent tool to the drive
@@ -15,6 +16,7 @@ Usage:
   drive unmount [flags]    stop the mount and the login item
   drive offline <path>...  keep a file or folder on this computer (also --list)
   drive online [path]...   let the disk go again; with no argument, all of it
+  drive prefetch [flags]   fetch what an app will open next, before it asks (login item)
   drive uninstall [flags]  stop the mount, remove the login item, keep the files
   drive status [flags]     is it working, what is waiting, how much am I spending
   drive pause [flags]      stop the bytes leaving the device; survives a restart
@@ -34,7 +36,7 @@ Usage:
   drive update [flags]     replace this binary with the latest release
   drive version            print the version
 
-Install, one line per system, then run drive init:
+Install, one line per system, then run drive login and drive init:
   macOS                   brew install drive
   Linux, Debian or Ubuntu  sudo apt install drive
   Linux, Fedora or RHEL    sudo dnf install drive
@@ -83,6 +85,9 @@ Mount flags:
 Mount flags work on drive init too: init mounts the drive first, then
 connects the agent tools, so one command takes a machine from nothing to a
 mounted drive.
+
+Login flags:
+  --api    drive api base URL (env DRIVE_API_URL, default the live site)
 
 Init flags:
   --api    drive api base URL (env DRIVE_API_URL), for each agent tool's own key

@@ -99,6 +99,23 @@ body {
   color: var(--ink-soft);
 }
 
+/* Sign out is an action, not a place, so it is a button. It has to read as
+   the other menu items or it looks bolted on. The no-script path is a form
+   that posts the same step, so the form itself must not add a box. */
+.masthead form {
+  display: inline;
+  margin: 0;
+}
+
+.masthead button {
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
 /* The page you are on, in the menu. Declared here so a page takes the shared
    header with it, as the Web Files page took its own markup until drive#425. */
 .masthead a[aria-current="page"] {

@@ -17,8 +17,8 @@ import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
   INSTALL_LINES,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
@@ -33,7 +33,7 @@ import {
  * @returns {string}
  */
 export function installCommand() {
-  return INSTALL_COMMAND;
+  return FIRST_RUN_COMMAND;
 }
 
 /**
@@ -544,8 +544,12 @@ async function poll() {
   if (!response.ok) {
     // A 401 is the waiting state, not an unreachable service: the account
     // gate answered, so the service is up. connectionStateForStatus owns the
-    // mapping and both arms are states this page renders.
+    // mapping and both arms are states this page renders. A 401 is also the
+    // signed-out menu: this browser has no account, so Sign in stays.
     showConnection(connectionStateForStatus(response.status));
+    if (response.status === 401) {
+      showSessionNav(false);
+    }
     return;
   }
   let payload;
@@ -561,6 +565,7 @@ async function poll() {
   }
   try {
     render(payload);
+    showSessionNav(true);
   } catch {
     // Every fetch and every body read above is guarded, and so is the render:
     // this poll runs on a timer and on every tab that comes back, so a payload
@@ -607,6 +612,59 @@ function wireCopyButton() {
   });
 }
 
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A 200 from the status poll flips it to Sign
+// out and Sign out everywhere; a 401 flips it back.
+const SIGNIN_ENDPOINT = "/api/signin";
+
+/**
+ * @param {boolean} signedIn
+ */
+function showSessionNav(signedIn) {
+  required("nav-signin").hidden = signedIn;
+  required("nav-signout").hidden = !signedIn;
+  required("nav-signout-all").hidden = !signedIn;
+}
+
+/**
+ * @param {"signout"|"signout-all"} step
+ */
+async function postSignout(step) {
+  const signout = required("nav-signout");
+  const everywhere = required("nav-signout-all");
+  if (signout instanceof HTMLButtonElement) signout.disabled = true;
+  if (everywhere instanceof HTMLButtonElement) everywhere.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
+    return;
+  }
+  window.location.reload();
+}
+
+function wireSessionNav() {
+  required("nav-signout").addEventListener("click", () => {
+    void postSignout("signout");
+  });
+  required("nav-signout-all").addEventListener("click", () => {
+    void postSignout("signout-all");
+  });
+}
+
 function start() {
   renderSteps();
   renderEmptyStates();
@@ -614,6 +672,7 @@ function start() {
   renderCommand();
   renderConnection();
   wireCopyButton();
+  wireSessionNav();
 
   // poll() owns its own failures: every fetch and every body read is guarded
   // and renders the unreachable state, so it cannot reject. The `void` says

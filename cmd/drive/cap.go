@@ -54,6 +54,11 @@ func runCap(args []string) error {
 		return errFlagParse
 	}
 	amount := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	// An empty argument list is all that is refused here. The amount itself
+	// goes to the Worker as typed, because parseCapUsd() is the one parser
+	// (src/cap.js): a Go copy of it would refuse an amount the Worker accepts
+	// — "$20" is one, the dollar sign is stripped there — and a fast-fail
+	// before the POST would answer a different question than the api does.
 	if amount == "" {
 		return fmt.Errorf("a spending cap is a dollar amount like 20 or 12.50. Run: drive cap 20")
 	}
@@ -94,7 +99,7 @@ func runCap(args []string) error {
 	// Mount.Restart was already required above; a credential with restart
 	// false never reaches here.
 	if cred := answer.Credential; cred != nil && cred.AccessKeyID != "" && cred.Secret != "" {
-		cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret)
+		cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret, storageFromDisk(home))
 		if err != nil {
 			return fmt.Errorf("restart the mount: %w", err)
 		}
@@ -119,7 +124,7 @@ func runCap(args []string) error {
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}
-	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey)
+	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey, storageFromDisk(home))
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}

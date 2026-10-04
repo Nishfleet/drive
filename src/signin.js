@@ -48,7 +48,9 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
+import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS, sessionAccount } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -160,6 +162,10 @@ export const SIGNIN_COPY = Object.freeze({
   notOpen: NOT_OPEN,
   inviteNote:
     "This screen is for an invited account. Without an invite, join the waitlist on the pricing page.",
+  // The signed-in menu (drive#423): the same words on every page that carries
+  // the site's header, so a person who is in sees how to leave, never Sign in.
+  signOut: "Sign out",
+  signOutEverywhere: "Sign out everywhere",
 });
 
 /**
@@ -185,18 +191,22 @@ export function signinEmailFailedBody() {
 }
 
 /**
- * The two steps a sign-in post can be. Anything else is refused, so a typo in
- * a field name cannot read as a request to start a sign-in.
+ * The three steps a sign-in post can be. Anything else is refused, so a typo in
+ * a field name cannot read as a request to start a sign-in. `signout-all` is
+ * the website's door to the same two store writes `DELETE /v1/keys` runs for
+ * `drive logout --all` (keys, then device tokens), then every browser session
+ * for this account, then this browser's cookies.
  */
-export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
+export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
 
 /**
- * A checked sign-in post: the start step, the sign-out step, or the one error
- * sentence the route returns as a 400. The two steps carry a `step` literal so
+ * A checked sign-in post: the start step, a sign-out step, or the one error
+ * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
  * @typedef {{step: "start", method: string, email?: string, card?: unknown}
  *   | {step: "signout"}
+ *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
  */
 
@@ -221,6 +231,9 @@ export function readSigninRequest(body) {
     // is the whole request, and a person with no session is already signed
     // out.
     return { step: "signout" };
+  }
+  if (step === "signout-all") {
+    return { step: "signout-all" };
   }
   return readStart(fields);
 }
@@ -302,10 +315,13 @@ function readStart(body) {
  *   POST /api/signin  {"step":"start","method":"email","email":"you@example.com"}
  *   POST /api/signin  {"step":"start","method":"google"}   (and "github")
  *   POST /api/signin  {"step":"signout"}
+ *   POST /api/signin  {"step":"signout-all"}
  *
  * The start step answers 202 and never the link: the link leaves by email or
  * not at all. The sign-out step revokes the session and clears its cookies, so
- * a shared machine leaves nothing behind.
+ * a shared machine leaves nothing behind. `signout-all` does that after it
+ * revokes every live key, every live device token, and every browser session
+ * on the account, which is what the website's "Sign out everywhere" posts.
  *
  * @param {Request} request
  * @param {SigninEnv} env
@@ -353,7 +369,8 @@ export async function handleSigninRequest(request, env) {
   }
   let body;
   const contentType = request.headers.get("content-type") ?? "";
-  if (contentType.includes("application/x-www-form-urlencoded")) {
+  const fromForm = contentType.includes("application/x-www-form-urlencoded");
+  if (fromForm) {
     // The no-JavaScript path: a plain <form> posts form-encoded fields, not
     // JSON. The fields are the same ones the JSON path reads, so the route
     // accepts the form it documents rather than answering a 400 to a browser
@@ -378,22 +395,65 @@ export async function handleSigninRequest(request, env) {
   if (!auth) {
     return json(signinClosedBody(), 503);
   }
-  if (read.step === "signout") {
+  if (read.step === "signout" || read.step === "signout-all") {
+    // Sign out everywhere first, while the session still names the account:
+    // keys, device tokens, then every browser session row for this account,
+    // which is what the menu's words promise. A request with no session is
+    // already signed out everywhere it could name, so it skips the stores
+    // and still answers ok. A store that cannot finish does not report
+    // success: this browser is still signed out (below), and the body says
+    // the rest did not complete.
+    /** @type {string | null} */
+    let everywhereError = null;
+    if (read.step === "signout-all") {
+      const account = await sessionAccount(request, auth);
+      if (account !== null) {
+        const db = env.DRIVE_DB;
+        if (db === undefined || db === null || typeof db !== "object") {
+          everywhereError = failureMessage("drive-not-configured");
+        } else {
+          try {
+            await createD1DeviceStore(db).revokeAllKeys(account);
+            await createD1DeviceSigninStore(db).revokeAllDeviceTokens(account);
+            // Better Auth's own adapter, not a hand-written delete against
+            // its table. Its revoke-sessions endpoint would do the same, but
+            // it demands a fresh session, so a day-old sign-in could not
+            // sign out everywhere.
+            await (await auth.$context).internalAdapter.deleteUserSessions(account.id);
+          } catch (_error) {
+            everywhereError = failureMessage("storage-down");
+          }
+        }
+      }
+    }
     // Better Auth's own sign-out: the session row is deleted and the cookies
-    // are cleared, so a later request carrying the same cookie reads as
-    // signed out rather than trusting a token the database has forgotten. A
-    // library failure here is not a 500 for a person who only asked to leave:
-    // no cookie is set and the answer says signed out, which is what a browser
-    // with a dead session already is.
+    // are cleared. For a plain sign-out, a library failure is not a 500 for a
+    // person who only asked to leave. For sign-out everywhere the rows above
+    // are already gone, so a throw here still leaves every session dead.
+    /** @type {Record<string, string[]>} */
+    let cookies = {};
     try {
       const signedOut = await auth.api.signOut({
         headers: request.headers,
         asResponse: true,
       });
-      return json({ ok: true, step: "signout" }, 200, cookieHeaders(signedOut));
-    } catch {
-      return json({ ok: true, step: "signout" }, 200);
+      cookies = cookieHeaders(signedOut);
+    } catch (_error) {
+      if (read.step === "signout") {
+        return fromForm ? redirect(SIGNIN_PATH) : json({ ok: true, step: "signout" }, 200);
+      }
+      if (everywhereError === null) {
+        everywhereError = failureMessage("unexpected");
+      }
     }
+    if (everywhereError !== null) {
+      return fromForm
+        ? redirect(`${SIGNIN_PATH}?error=unexpected`, cookies)
+        : json({ error: everywhereError }, 503, cookies);
+    }
+    return fromForm
+      ? redirect(SIGNIN_PATH, cookies)
+      : json({ ok: true, step: read.step }, 200, cookies);
   }
   // Google and GitHub land on the closed door before the library is asked:
   // their client ids and secrets are Nish's credentials, so there is no client

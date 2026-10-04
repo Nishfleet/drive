@@ -34,7 +34,8 @@
 //                               port is read back from the server's log
 //   DRIVE_STANDIN_IMAGE         container image (default: the pinned MinIO)
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  root credential
-//   DRIVE_STANDIN_BUCKET        bucket (default drive-meter-standin)
+//   DRIVE_STANDIN_BUCKET        bucket, over the signed-in account's own
+//                               (default drv-<accountId>)
 //   DRIVE_STANDIN_REGION        region (default us-east-1)
 //   DRIVE_STANDIN_ENGINE        force docker or podman
 //
@@ -53,13 +54,19 @@ import { parseListVersions } from "../src/files.js";
 import worker from "../src/index.js";
 import { BYTES_PER_GB, reconcileMeter, runMeterCron } from "../src/meter.js";
 import { dispatch } from "../workers/api/src/index.js";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createMemoryStore } from "../workers/api/src/keystore.js";
 import { createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import { createS3KeyProvider } from "../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 
-const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? "drive-meter-standin";
+// No bucket is named at module level: the bucket this proof provisions is the
+// account's own (`drv-<accountId>`, keyprovider.js `bucketForAccount`),
+// because the key the proof writes with is scoped to it and to nothing else
+// (drive#371, drive#462). The account signs in below, so its bucket is known
+// then. DRIVE_STANDIN_BUCKET still overrides it for a caller pointing at a
+// stand-in that is already provisioned.
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 // 0 asks the kernel for a free port; the stand-in logs the one it bound and
 // `startMinioStandin` reads it back. A number reserved by binding, closing and
@@ -240,22 +247,15 @@ test(
     region: REGION,
     credentials: { accessKeyId: ROOT_ACCESS_KEY, secretAccessKey: ROOT_SECRET_KEY },
   });
-  const provisioned = await provisionBucket(root, {
-    bucket: BUCKET,
-    notificationQueueArn: NOTIFICATION_ARN,
-    hiddenVersionDays: 1,
-  });
-  t.diagnostic(
-    `provisioned ${BUCKET} at ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}, notifications to ${receiver.url}`,
-  );
 
-  // The account, signed in and given a key exactly as a device would get one,
-  // so every call below is scoped by the endpoint and not by this test.
+  // The account signs in before any bucket is provisioned, so the bucket it
+  // owns is known when the bucket is made. The key this proof writes with is
+  // scoped to the account's own bucket, so the events the meter reads are
+  // events that bucket delivered (drive#371, drive#462).
   const keyStore = createMemoryStore({
     keyProvider: createS3KeyProvider({
       endpoint,
       region: REGION,
-      bucket: BUCKET,
       masterAccessKeyId: ROOT_ACCESS_KEY,
       masterSecretAccessKey: ROOT_SECRET_KEY,
     }),
@@ -267,6 +267,16 @@ test(
   const signedIn = /** @type {{account: {id: string}, deviceToken: string}} */ (
     /** @type {unknown} */ (poll)
   );
+  const BUCKET = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(signedIn.account.id);
+  const provisioned = await provisionBucket(root, {
+    bucket: BUCKET,
+    notificationQueueArn: NOTIFICATION_ARN,
+    hiddenVersionDays: 1,
+  });
+  t.diagnostic(
+    `provisioned ${BUCKET} at ${endpoint}: versioning ${provisioned.versioning.status}, lifecycle ${provisioned.lifecycle.status}, notification ${provisioned.notification?.status}, notifications to ${receiver.url}`,
+  );
+
   const minted = await dispatch(
     new Request("https://api.example/v1/keys", {
       method: "POST",
@@ -431,7 +441,7 @@ test(
   // learns a hide from the provider's own version listing, through the nightly
   // reconciler (build step 5, #59) - which is why the event stream alone
   // cannot answer this proof.
-  const reconciled = await reconcileMeter(db, signedListingStore(client), Date.now());
+  const reconciled = await reconcileMeter(db, signedListingStore(client, BUCKET), Date.now());
   t.diagnostic(
     `the reconciler walked the provider's listing: inserted=${reconciled.inserted} hidden=${reconciled.hidden} marked=${reconciled.marked}`,
   );
@@ -481,14 +491,16 @@ test(
  * The reconciler only calls listVersions; the other methods are stubs that
  * throw if reached, which would indicate a bug in the reconciler.
  * @param {ReturnType<typeof createS3Client>} client
+ * @param {string} bucket the bucket the listed prefix lives in, which is the
+ *   account's own
  */
-function signedListingStore(client) {
+function signedListingStore(client, bucket) {
   return {
     /** @param {string} path */
     async listVersions(path) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const response = await client.send("GET", {
-        bucket: BUCKET,
+        bucket,
         query: { versions: "", prefix },
       });
       if (response.status !== 200) {

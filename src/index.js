@@ -36,6 +36,7 @@ import {
   FILES_ENDPOINT,
   handleFilesRequest,
   scopeStore,
+  storageBucketForKey,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
@@ -149,29 +150,39 @@ function isPublic(pathname) {
   });
 }
 
-// One store per Worker isolate, holding every account's files under its own
-// prefix. With no storage configured the in-memory store holds what the page
-// uploaded this run, so the Web Files page is real in dev and in the tests;
-// FILES_S3_ENDPOINT and FILES_S3_BUCKET point the same handlers at
-// `rclone serve s3` instead. The real scoped-key adapter lands with #2 behind
-// the same FileStore interface. Both are plain stores over storage keys: the
-// account prefix and the isolation between accounts are scopeStore's job
-// (src/files.js), so an adapter never has to know about an account.
+// One store per Worker isolate. With no storage configured the in-memory
+// store holds what the page uploaded this run, so the Web Files page is real
+// in dev and in the tests. An S3 endpoint (FILES_S3_ENDPOINT, or the same
+// IDRIVE_S3_ENDPOINT the api Worker uses) points the same handlers at storage;
+// each account's objects live in that account's own bucket (`drv-<id>`,
+// storageBucketForKey / bucketForAccount), which is the same name a Finder
+// key is minted into (drive#371 / #460). The account prefix is still
+// scopeStore's job (src/files.js).
 /** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
 /**
- * The `rclone serve s3` stand-in's two config vars (drive issue #1's build
- * host). They are set in the environment of a local dev run, never declared
- * as bindings in cloudflare.config.ts: the deployed Worker has no S3 stand-in,
- * and a declared binding would also have to be probed by the health check
- * (test/health.test.mjs) when there is nothing to probe. So they are read off
- * the worker's own env as the optional pair the dev-only path takes, and the
- * env is widened with exactly that pair and nothing else.
+ * Storage config vars. They are set per deployment, never declared as
+ * bindings in cloudflare.config.ts: a declared secret is required at deploy,
+ * and the Files page already answers from the in-memory store when they are
+ * unset. The names match the api Worker's iDrive pair so the site Worker can
+ * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
+ * pair a local `rclone serve s3` still uses.
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
  * @param {Env} env
- * @returns {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}}
+ * @returns {StorageEnv}
  */
 function devStorage(env) {
-  return /** @type {Env & {FILES_S3_ENDPOINT?: string, FILES_S3_BUCKET?: string}} */ (env);
+  return /** @type {StorageEnv} */ (env);
 }
 
 /**
@@ -244,14 +255,33 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const dev = devStorage(env);
-    filesStore =
-      dev.FILES_S3_ENDPOINT && dev.FILES_S3_BUCKET
-        ? createS3Store({
-            endpoint: dev.FILES_S3_ENDPOINT,
-            bucket: dev.FILES_S3_BUCKET,
-          })
-        : createMemoryStore();
+    const storage = devStorage(env);
+    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    if (endpoint) {
+      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
+      const secretAccessKey =
+        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
+      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
+      const signed =
+        typeof accessKeyId === "string" &&
+        accessKeyId !== "" &&
+        typeof secretAccessKey === "string" &&
+        secretAccessKey !== "" &&
+        typeof region === "string" &&
+        region !== "";
+      filesStore = createS3Store({
+        endpoint,
+        bucketFor: storageBucketForKey,
+        ...(signed
+          ? {
+              region,
+              credentials: { accessKeyId, secretAccessKey },
+            }
+          : {}),
+      });
+    } else {
+      filesStore = createMemoryStore();
+    }
   }
   return filesStore;
 }
@@ -583,9 +613,17 @@ export function createApp() {
     const account = c.get("account");
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
+    let cardOnFile = false;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
-      capUsd = await createD1DeviceStore(c.env.DRIVE_DB).getCapUsd(account.id);
+      const store = createD1DeviceStore(c.env.DRIVE_DB);
+      capUsd = await store.getCapUsd(account.id);
+      // The card on file is the accounts row's own stamp, read the same way as
+      // the cap (drive#417). Until it is really on file the usage page says no
+      // charge has been made and shows no bill, instead of the $10 membership
+      // line a card-less account would look like it had been charged. It is
+      // the display flag alone: the cap line and the write cap are unchanged.
+      cardOnFile = await store.cardAdded(account.id);
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -596,7 +634,7 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd },
+      { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
     );
   });
