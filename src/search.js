@@ -339,13 +339,93 @@ export async function reconcileIndex(db, store, account, options = {}) {
 // rebuild, so no caller can clear the index without repopulating it.
 
 /**
+ * A body with a reader for the byte length the store is about to write.
+ *
+ * A search must show the size the file list shows, and the wrapper below
+ * writes the row after the store has read the body, so every shape `write`
+ * accepts is measured here: bytes, a Blob and a string already know their
+ * length, and the upload path's stream is counted as it flows past, because
+ * `BodyInit` carries no length a store would answer one back (drive#426).
+ *
+ * No whole body is buffered, and no second request is made: the bytes the
+ * store already has to read are counted on the way through. Each length is
+ * read before the store does, because a store is free to detach the buffer it
+ * was handed. A body we cannot measure is a bug rather than a row to write
+ * with a size of 0, so it is named.
+ * @param {BodyInit|null|undefined} body
+ * @returns {{body: BodyInit, bytes: () => number}}
+ */
+function countedBody(body) {
+  if (body === null || body === undefined) {
+    // A request with no body at all stores an empty object; an empty byte
+    // array is that same zero bytes, and the one shape the store's own
+    // `write` type accepts.
+    return { body: new Uint8Array(0), bytes: () => 0 };
+  }
+  if (typeof body === "string") {
+    const length = new TextEncoder().encode(body).byteLength;
+    return { body, bytes: () => length };
+  }
+  if (typeof Blob !== "undefined" && body instanceof Blob) {
+    const { size } = body;
+    return { body, bytes: () => size };
+  }
+  if (ArrayBuffer.isView(body)) {
+    const { byteLength } = body;
+    return { body, bytes: () => byteLength };
+  }
+  if (body instanceof ArrayBuffer) {
+    const { byteLength } = body;
+    return { body, bytes: () => byteLength };
+  }
+  if (
+    typeof ReadableStream !== "undefined" &&
+    body instanceof ReadableStream &&
+    typeof TransformStream !== "undefined"
+  ) {
+    let seen = 0;
+    let ended = false;
+    const counted = body.pipeThrough(
+      new TransformStream({
+        /** @param {Uint8Array|string} chunk
+         * @param {TransformStreamDefaultController} controller */
+        transform(chunk, controller) {
+          seen +=
+            typeof chunk === "string"
+              ? new TextEncoder().encode(chunk).byteLength
+              : chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+        // The one moment the source has nothing left: a store that stops
+        // reading before then stored fewer bytes than `seen` counts, so the
+        // count is only a size once the stream has ended.
+        flush() {
+          ended = true;
+        },
+      }),
+    );
+    return {
+      body: counted,
+      bytes() {
+        if (!ended) {
+          throw new Error(
+            `the store finished a write after ${seen} of its bytes, and an unfinished body has no size`,
+          );
+        }
+        return seen;
+      },
+    };
+  }
+  throw new TypeError(
+    `a file index row needs a byte count, and a body of ${Object.prototype.toString.call(body)} has none — only bytes, a Blob, a string or a stream carries one`,
+  );
+}
+
+/**
  * Wraps a FileStore so a write or a remove keeps the index current — the
  * "storage event" feed the spec names, in the one place every write path
  * already goes through. Reads and listings are untouched, and the wrapper
- * never lists, so no request pays for a walk. A write stores the path and
- * name now; size and modified time are filled by the nightly reconciler,
- * because the stream has already been handed to the store by the time the
- * wrapper runs.
+ * never lists, so no request pays for a walk.
  *
  * Position matters, and it is the one thing to get right: the write comes from
  * `scopeStore` (src/files.js), so the key this wrapper is handed is
@@ -367,15 +447,32 @@ export function withIndex(store, db, account, now = () => Date.now()) {
   return {
     ...store,
     /** @param {string} key
-     * @param {BodyInit} body
+     * @param {BodyInit|null|undefined} body
      * @param {string} contentType */
     async write(key, body, contentType) {
-      await write(key, body, contentType);
+      // The row the search reads is written after the store has read the body,
+      // and the body is counted on the way through (a stream carries no length
+      // a store would answer back), so a file is searchable with the size and
+      // the date the file list shows — not zero and nothing until the nightly
+      // walk corrects them (drive#426). The body is one a store writes: bytes,
+      // a Blob, a string, a stream, or nothing at all. A `BodyInit` outside
+      // that set carries no length, and it is refused by name rather than
+      // indexed as a size of 0.
+      const counted = countedBody(body);
+      await write(key, counted.body, contentType);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;
       }
-      await db.batch(upsertStatements(db, [fileRow(account, path, {}, now())]));
+      // One instant for both meanings: the date the row shows as the file's
+      // own, and the date the row was written. It is taken after the store
+      // returned, which is as close to the object's own timestamp as a
+      // wrapper gets without a second request for a HEAD — the same second a
+      // folder listing renders.
+      const at = now();
+      await db.batch(
+        upsertStatements(db, [fileRow(account, path, { size: counted.bytes(), modified: at }, at)]),
+      );
     },
     /** @param {string} key */
     async remove(key) {
