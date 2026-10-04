@@ -5,24 +5,53 @@
  * What a key may do. `delete` is the only difference between a person's device
  * key and every agent-facing key (docs/build-spec.md, "Keys and safety").
  * @typedef {"list"|"read"|"write"|"delete"} Capability
- * @typedef {{prefix: string, capabilities: ReadonlyArray<Capability>}} KeyScope
+ * @typedef {{prefix: string, capabilities: ReadonlyArray<Capability>, bucket?: string}} KeyScope
  *
  * The secret is shown once and never stored by the api. `expiresAt` is the
  * epoch second the credential stops working at, or null when the kind never
  * expires: the caller (the CLI) shows it, and the store enforces it.
  * @typedef {{keyId: string, accessKeyId: string, secret: string, sessionToken?: string|null, expiresIn?: number|null, expiresAt?: number|null}} MintedKey
  *
+ * What a mint answers with: the credential, and nothing else. `keyId`, the
+ * api's own name for the row, is the store's to give, not the vendor's.
+ * @typedef {{accessKeyId: string, secret: string, sessionToken?: string|null, expiresIn?: number|null, expiresAt?: number|null, [name: string]: unknown}} MintedCredential
+ *
+ * What an account-bound provider answers with: the credential plus the api's
+ * own id for the row that now holds its hash. A raw storage provider persists
+ * no rows, so it has no id to hand back, which is why this is a type of its
+ * own rather than KeyProvider with an optional field (drive#371).
+ * @typedef {{mint: (scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedKey>, revoke?: (keyId: string) => Promise<unknown>, swapToReadOnly?: (keyId: string) => Promise<MintedKey>}} AccountKeyProvider
+ *
  * @typedef {object} KeyProvider
- * @property {(scope: KeyScope) => Promise<MintedKey>} mint
- * @property {(keyId: string) => Promise<void>} revoke
- * @property {(keyId: string) => Promise<MintedKey>} swapToReadOnly Replaces a
+ * @property {(scope: KeyScope, options?: {expiresAt?: number|null}) => Promise<MintedCredential>} mint
+ *   `options.expiresAt` is the epoch second a credential bounded by a clock
+ *   stops at, and a provider whose vendor expires keys takes it
+ * @property {(keyId: string) => Promise<void>} [revoke] withdraws the
+ *   credential at the provider, so a revoked row is also a key that stops
+ *   working (drive#371). A provider whose credential is bounded anyway — an STS
+ *   session — has no revoke, and its caller checks for one rather than
+ *   assuming it.
+ * @property {(keyId: string) => Promise<MintedKey>} [swapToReadOnly] Replaces a
  *   write-capable key with a read-only one on the same prefix (cap reached).
+ *   Optional because the api's own store mints the replacement itself and only
+ *   needs the provider's mint: the boundary a swap keeps is the bucket, which
+ *   the store rebuilds from the account id rather than asking the vendor.
  */
 
 /** @typedef {"device"|"agent"|"s3"|"branch"} KeyKind */
-
 /** @type {ReadonlyArray<KeyKind>} */
 export const KEY_KINDS = ["device", "agent", "s3", "branch"];
+
+/**
+ * The bucket name prefix every customer's own bucket carries, and the one a
+ * team's carries (drive#371). One bucket per account, one per team: the vendor
+ * allows unlimited buckets (measured 2026-10-03, drive#173), and a key limited
+ * to a bucket is a key the storage server refuses outside that bucket — which
+ * is the guarantee the old `u/<id>/` prefix could not give on iDrive e2, the
+ * one vendor measured that cannot scope a key to a folder.
+ */
+export const ACCOUNT_BUCKET_PREFIX = "drv-";
+export const TEAM_BUCKET_PREFIX = "drv-t-";
 
 /**
  * The one kind to capabilities table (docs/build-spec.md, "Keys and safety").
@@ -211,6 +240,27 @@ function checkedTeamId(teamId) {
 }
 
 /**
+ * The bucket one account's files live in: `drv-<accountId>`. The id is checked
+ * with the same rule the prefix uses, so a bucket name cannot be built from an
+ * id that would have been refused as a prefix, and the bucket and the prefix a
+ * scope carries always name the same customer.
+ * @param {unknown} accountId
+ * @returns {string}
+ */
+export function bucketForAccount(accountId) {
+  return `${ACCOUNT_BUCKET_PREFIX}${checkedAccountId(accountId)}`;
+}
+
+/**
+ * The bucket one team's shared drive lives in: `drv-t-<teamId>` (drive#371).
+ * @param {unknown} teamId
+ * @returns {string}
+ */
+export function bucketForTeam(teamId) {
+  return `${TEAM_BUCKET_PREFIX}${checkedTeamId(teamId)}`;
+}
+
+/**
  * @param {unknown} role
  * @returns {TeamRole}
  */
@@ -237,6 +287,7 @@ export function teamScopeFor(role, teamId) {
   return {
     prefix: `t/${checkedTeamId(teamId)}/`,
     capabilities: TEAM_ROLE_CAPABILITIES[checked],
+    bucket: bucketForTeam(teamId),
   };
 }
 
@@ -258,7 +309,8 @@ export function checkedBranchName(name) {
  * branch name are checked before they are placed in the prefix: a branch name
  * like `../../x` or `a/b`, or an account id with a slash in it, would build a
  * prefix pointing outside the account's own folder, and this is the one place
- * that would let it.
+ * that would let it. The bucket is built from that same checked id, because
+ * the bucket is now the boundary (drive#371).
  * @param {KeyKind} kind
  * @param {string} accountId
  * @param {{name?: string}} [options] `name` is the branch name for branch keys.
@@ -269,6 +321,9 @@ export function scopeFor(kind, accountId, options = {}) {
     throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
   }
   const home = `u/${checkedAccountId(accountId)}/`;
+  // A branch is a folder inside the account's own bucket, so its key is
+  // limited to the account's bucket like every other kind's (drive#371).
+  const bucket = bucketForAccount(accountId);
   const capabilities = CAPABILITIES_BY_KIND[kind];
   if (kind === "branch") {
     if (options === null || typeof options !== "object") {
@@ -280,7 +335,8 @@ export function scopeFor(kind, accountId, options = {}) {
     return {
       prefix: `${home}.branches/${checkedBranchName(options.name)}/`,
       capabilities,
+      bucket,
     };
   }
-  return { prefix: home, capabilities };
+  return { prefix: home, capabilities, bucket };
 }
