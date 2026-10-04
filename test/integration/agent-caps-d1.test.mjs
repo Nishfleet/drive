@@ -314,7 +314,6 @@ test("the renew route refuses at the cap, in the message table's own words", asy
   const ok = await renewKeyRoute(request(), { store, account, params: { keyId: key.keyId } });
   assert.equal(ok.status, 200);
 
-  const row = rowIn(sqlite, "SELECT daily_requests FROM agent_caps WHERE key_id = ?1", key.keyId);
   sqlite.prepare("UPDATE agent_caps SET daily_requests = 0 WHERE key_id = ?1").run(key.keyId);
 
   // At the cap the same route is a 409 naming what happened, in the one table's
@@ -324,8 +323,9 @@ test("the renew route refuses at the cap, in the message table's own words", asy
   assert.equal(JSON.parse(await refused.text()).error, failureMessage("agent-cap-reached"));
   assert.deepEqual(await store.renewKey(account, key.keyId), { error: "capped" });
   assert.equal(
-    row.daily_requests,
-    1000,
+    rowIn(sqlite, "SELECT daily_requests FROM agent_caps WHERE key_id = ?1", key.keyId)
+      .daily_requests,
+    0,
     "the configured limit was kept, not overwritten by the count",
   );
 });
@@ -342,6 +342,11 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
   // instant is already dead when a real request arrives (issue #106's expiry
   // rule, which this file does not change).
   const mintingClock = fixedClock();
+  // The Worker builds its store on Date.now (index.js `now: Date.now`), so the
+  // mint has to be on that same clock or the key is already past its hour. A
+  // pinned 2026-09-30 instant would die on arrival. The daily limit below is 0
+  // after the first write, so a UTC midnight between the two requests cannot
+  // reset the counter and let the second write through.
   mintingClock.at(Date.now());
   // The bindings the cap needs, and nothing else: the api Worker reads only
   // `DRIVE_DB` on the path these requests take.
@@ -364,7 +369,7 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
 
   const first = await apiWorker.fetch(write("u/acct_fetch/one.md"), env);
   assert.equal(first.status, 201, "the Worker's own request path writes under the cap");
-  sqlite.prepare("UPDATE agent_caps SET daily_requests = 1 WHERE key_id = ?1").run(minted.keyId);
+  sqlite.prepare("UPDATE agent_caps SET daily_requests = 0 WHERE key_id = ?1").run(minted.keyId);
   // The request that passes the count is refused: the cap bites on the path
   // that authenticated it, so the row is read-only by the time the write is
   // checked and the object is not stored.

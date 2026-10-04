@@ -80,11 +80,13 @@ export async function readAgentCaps(db, accountId, keyId) {
  * Count this request against its key's own day and read the counter back.
  *
  * The read and the write are two statements, so two simultaneous requests can
- * each read the same count and each write one more: the counter can lose a
- * request at a boundary, never gain one. Losing one is the safe direction for
- * a cap — the day's true count is at most what the row says, and a key that is
- * one request over is refused rather than let through. The count that decides
- * the answer is the number this returns, so the write and the decision agree.
+ * each read the same count and each write one more. The counter can under-count
+ * at a day boundary too: a stale `day_key` resets to 0+1 instead of N+1. Both
+ * are the safe direction for a cap — the day's true count is at most what the
+ * row says, and a key that is one request over is refused rather than let
+ * through. The count never gains a request it did not see. The count that
+ * decides the answer is the number this returns, so the write and the decision
+ * agree.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {string} keyId
@@ -118,6 +120,11 @@ export async function stampAgentRequest(db, accountId, keyId, at) {
  * The cap's answer for one key at one instant, counting this request against
  * the day first. Null for any key the caps do not cover, so the caller has one
  * branch instead of a kind check of its own.
+ *
+ * The request is stamped before the month is read, so a usage read that fails
+ * still leaves the request counted. That is the same safe direction as the
+ * counter itself: over-counting a request that was not served, never letting a
+ * served request through uncounted.
  *
  * The month's metered usage is read per request rather than cached: it is one
  * indexed aggregate over `usage_minutes` (the same query the usage page runs),

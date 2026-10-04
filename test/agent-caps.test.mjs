@@ -70,6 +70,7 @@ test("a fresh agent key is capped by default, and the default is the account's",
   // this second is already capped rather than uncapped until a first sweep.
   assert.deepEqual(agentCaps({}), defaults);
   assert.deepEqual(agentCaps(undefined), defaults);
+  assert.deepEqual(agentCaps(null), defaults);
 });
 
 test("the monthly cap asks the account cap's own function, so the number is the invoice's", () => {
@@ -167,6 +168,8 @@ test("the day key is a UTC day, so a cap means one number from any machine", () 
   assert.throws(() => dayKey(/** @type {any} */ ("nope")), TypeError);
   assert.throws(() => agentCapStatus(agent(10, { at: /** @type {any} */ ("nope") })), TypeError);
   assert.throws(() => agentCapStatus(/** @type {any} */ (null)), TypeError);
+  assert.throws(() => agentCapStatus(/** @type {any} */ ({ at: AT })), TypeError);
+  assert.throws(() => agentCaps(/** @type {any} */ ("nope")), TypeError);
 });
 
 test("a limit or a count the row cannot carry is a data error, not a different cap", () => {

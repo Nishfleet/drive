@@ -164,8 +164,12 @@ export function agentCapStatus(agent) {
   if (typeof agent !== "object" || agent === null) {
     throw new TypeError(`agentCapStatus needs an agent object, got ${String(agent)}`);
   }
+  const usage = agent.usage;
+  if (typeof usage !== "object" || usage === null) {
+    throw new TypeError(`agentCapStatus needs usage {gbMinutes, peakGb}, got ${String(usage)}`);
+  }
   const caps = agentCaps(agent.caps);
-  const counted = capStatus(agent.usage.gbMinutes, agent.usage.peakGb, caps.monthlyCapUsd);
+  const counted = capStatus(usage.gbMinutes, usage.peakGb, caps.monthlyCapUsd);
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({
@@ -196,18 +200,22 @@ export function agentCapStatus(agent) {
  * direction a cap has to fail in. A limit the row *does* carry is held to its
  * type: a half-written row is a data error to surface, not a value to quietly
  * round into a different cap than the one that was set.
- * @param {{monthly_cap_usd?: unknown, daily_requests?: unknown}} [row]
+ * @param {{monthly_cap_usd?: unknown, daily_requests?: unknown}|null} [row]
  * @returns {{monthlyCapUsd: number, dailyRequests: number}}
  */
 export function agentCaps(row = {}) {
+  const caps = row === null || row === undefined ? {} : row;
+  if (typeof caps !== "object") {
+    throw new TypeError(`agentCaps needs a row object, got ${String(row)}`);
+  }
   const monthly =
-    row.monthly_cap_usd === undefined || row.monthly_cap_usd === null
+    caps.monthly_cap_usd === undefined || caps.monthly_cap_usd === null
       ? DEFAULT_AGENT_CAPS.monthlyCapUsd
-      : checkedUsd(row.monthly_cap_usd, "monthly_cap_usd");
+      : checkedUsd(caps.monthly_cap_usd, "monthly_cap_usd");
   const daily =
-    row.daily_requests === undefined || row.daily_requests === null
+    caps.daily_requests === undefined || caps.daily_requests === null
       ? DEFAULT_AGENT_CAPS.dailyRequests
-      : checkedCount(row.daily_requests, "daily_requests");
+      : checkedCount(caps.daily_requests, "daily_requests");
   return Object.freeze({ monthlyCapUsd: monthly, dailyRequests: daily });
 }
 
