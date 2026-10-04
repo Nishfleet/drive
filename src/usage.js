@@ -37,12 +37,12 @@ export const USAGE_LABELS = Object.freeze({
   downloadsHint: `Free up to ${BILLING_CONFIG.freeDownloadMultiplier}× the month's average stored size`,
   cost: "Cost so far",
   cap: "Your cap",
-  // The cap's own sentence. Until the accounts store lands (issue #2) the
-  // slider on the page shows the cap in force; changing it from the page is
-  // part of that store, and the page says so rather than pretending.
+  // The cap's own sentence. The accounts store is live (drive issue #2), so
+  // the slider on the usage page is a control: `next` is what a person does
+  // with it, and the page's own save button carries the same sentence.
   capNote: Object.freeze({
     what: "At the cap the drive goes read-only; nothing is ever deleted.",
-    next: "Changing the cap from this page arrives with accounts.",
+    next: "Move the slider, then choose Save cap.",
   }),
   // The empty month's chart, before the meter or the account store lands
   // (issues #6 and #2). An empty chart is a state with a next step, never a

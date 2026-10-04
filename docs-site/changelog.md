@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-04
 
+- The usage page's spending cap is now a control and not a readout: move the
+  slider, choose Save cap, and the new cap is written through the same api
+  route `drive cap` writes. The page's confirmation is the api's own cap line,
+  and an error names what to do next in plain words instead of a command.
 - Membership copy: $10 a month, storage use counts toward it, founding members
   keep $5, and sign-up asks for a card because there is no free tier.
 - Closing an account revokes every key at once, keeps files for 30 days, emails

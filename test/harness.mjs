@@ -49,6 +49,44 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0017_account_close.sql",
 ]);
 
+/**
+ * Every `drive/` migration, in the order the production Worker applies them.
+ *
+ * `DRIVE_MIGRATIONS` above is the subset the cap-mount tests need, and it is
+ * deliberately short. A request that reads the month's usage — which the cap
+ * write does, because the answer carries `capLine` — needs `0005_meter` and
+ * `0006_usage_stored_bytes` as well, and a test that only reads a row could
+ * not see that. This list is the whole schema, so a test built on it cannot
+ * discover a table that production has is missing here.
+ *
+ * A test that asserts a cap really is stored reads the row back through this
+ * list rather than through the harness's default one (drive issue #421).
+ */
+export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
+  "drive/0002_file_index.sql",
+  "drive/0003_branches.sql",
+  "drive/0004_agent_undo.sql",
+  "drive/0005_better_auth.sql",
+  "drive/0005_meter.sql",
+  "drive/0006_share_links.sql",
+  "drive/0006_usage_stored_bytes.sql",
+  "drive/0007_device_codes.sql",
+  "drive/0008_teams.sql",
+  "drive/0009_upload_request_caps.sql",
+  "drive/0010_accounts_devices.sql",
+  "drive/0011_rate_limit.sql",
+  "drive/0012_branch_snapshot_kv.sql",
+  "drive/0012_agent_key_ttl.sql",
+  "drive/0013_billing_pushes.sql",
+  "drive/0014_device_queues.sql",
+  "drive/0015_branch_row_id.sql",
+  "drive/0016_founding.sql",
+  "drive/0017_account_close.sql",
+  "drive/0017_agent_caps_drop_month_key.sql",
+  "drive/0017_drop_branches_snapshot.sql",
+  "drive/0018_agent_caps_drop_month_spend.sql",
+]);
+
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */

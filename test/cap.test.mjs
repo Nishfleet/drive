@@ -743,8 +743,10 @@ test("drive cap takes a dollar amount and nothing else", () => {
       `rejects ${String(bad)}`,
     );
   }
-  // The error tells the person what to type, not just that the input was bad.
-  assert.throws(() => parseCapUsd("abc"), /Run: drive cap 20/);
+  // The error tells the person what to type next, in words that hold on either
+  // surface: the usage page's slider sends the same request, so it cannot end
+  // in a command only the CLI can run (drive#421).
+  assert.throws(() => parseCapUsd("abc"), /Type a number like that and save it again/);
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
@@ -848,7 +850,7 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.equal(bad.status, 400);
   const err = await bad.json();
   assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
-  assert.match(err.error, /Run: drive cap 20/);
+  assert.match(err.error, /Type a number like that and save it again/);
 
   const mangled = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -868,6 +870,22 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
     capStore,
   );
   assert.equal(anon.status, 401);
+
+  // A Worker with no account store behind it: the request is well-formed and
+  // the account is identified, so the 503 is the message table's own pair and
+  // not a sentence invented here. The cap did not move, and the next step is
+  // not to wait and retry (drive#421).
+  const unwired = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com" },
+    null,
+  );
+  assert.equal(unwired.status, 503);
+  assert.deepEqual(await unwired.json(), { error: tableMessage("cap-store-missing") });
 });
 
 test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
