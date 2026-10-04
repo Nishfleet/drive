@@ -88,7 +88,7 @@ function digestsEqual(left, right) {
  * the policy it was minted with, so the endpoint refuses what the key may not
  * do; without one (no storage configured) the credential is the stand-in the
  * api's own storage API verifies. The choice is made once, by the factory.
- * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -467,8 +467,9 @@ export function createMemoryStore(options = {}) {
      * and the credential it held dies inside the hour it had left.
      *
      * With a D1 store bound, that store answers for every key this isolate
-     * has not revoked (`revokeKey` and `renewKey` already delegate to it, for
-     * the same reason) and the rows held here are the stand-in for a
+     * has not revoked (`revokeKey`, `revokeAllKeys` and `revokeTeamKeys`
+     * already write the row before the map, and `renewKey` delegates to it
+     * for the same reason) and the rows held here are the stand-in for a
      * deployment with no database. The per-agent cap (drive issue #171) is
      * enforced in the D1 store's own authenticate, so a key minted by this
      * isolate is capped on its next request in exactly the way a key minted by
@@ -530,6 +531,15 @@ export function createMemoryStore(options = {}) {
      * marked revoked here, and the storage list/write routes refuse a revoked
      * key through the same `authenticate` the account's own revoke uses, so
      * there is no separate path where a removed member's key still works.
+     *
+     * When a D1 device store is bound (the live Worker), that store is the
+     * source of truth and its count is the answer: `authenticate` reads the
+     * row for every key this isolate has not itself revoked, so a member key
+     * whose row is never written keeps working on every other isolate — every
+     * request, not just this one's (drive#408). The map is marked as well, the
+     * same two-place rule `revokeAllKeys` follows, so the isolate that ran the
+     * removal refuses the key from its next request instead of handing a
+     * revoked credential back until the isolate dies.
      * @param {string} accountId
      * @param {string} teamId
      * @returns {Promise<number>} how many keys were revoked
@@ -540,6 +550,9 @@ export function createMemoryStore(options = {}) {
       // the capabilities, so one call names the prefix and the capability set
       // is irrelevant to the match.
       const prefix = teamScopeFor("read_only", teamId).prefix;
+      const persisted = deviceStore?.revokeTeamKeys
+        ? await deviceStore.revokeTeamKeys(accountId, teamId)
+        : null;
       let revoked = 0;
       for (const device of devices.values()) {
         if (
@@ -551,7 +564,7 @@ export function createMemoryStore(options = {}) {
           revoked++;
         }
       }
-      return revoked;
+      return persisted === null ? revoked : persisted.revoked;
     },
 
     /**
