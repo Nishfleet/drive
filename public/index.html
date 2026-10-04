@@ -59,95 +59,1631 @@
   <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
        The favicon is an inline data: URI: there is no network fetch to
        hash, so an integrity attribute would be meaningless. -->
+  <!-- drive#152: the one face preloaded is the 900 display weight the price
+       and the headings are set in, because it is the largest text in the first
+       viewport. The other five files load on use, with font-display: swap
+       (public/site.css), so no text waits for a font. Same origin, no
+       third-party request. -->
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Drive pricing page — direction A ("the bill") with the 60%-full strip grafted
-   from direction C. See docs/design/pricing-brief.md. The palette, the reset
-   and the page chrome are in the shared site stylesheet (drive #71); what is
-   left here is only what the pricing page does differently. System font stacks
-   only: no web font files, so nothing blocks first paint. */
+/* The home page, drive#152: direction B ("loud, price-first") with the
+   receipt from direction C as the "you saved" block. The palette and the three
+   faces are the --drive-* and --font-* tokens in public/site.css; this block
+   only lays the page out. Every price below is gated against src/pricing.js
+   and src/billing.js by test/pricing-copy.test.mjs and test/home-page.test.mjs,
+   and the slider asks /api/quote, so the page never works out a bill. */
 
 body {
-  padding: 0 clamp(20px, 5vw, 72px) 72px;
+  background: var(--drive-paper);
+  color: var(--drive-ink);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.5;
+  overflow-x: hidden;
 }
 
-/* The single action on the page; used by keyboard users, not mouse users. */
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--drive-ink);
+  outline-offset: 3px;
+}
+
+.dark :focus-visible,
+.site-foot :focus-visible {
+  outline-color: var(--drive-orange);
+}
+
 .skip-link:focus {
   z-index: 10;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
 }
 
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ---- masthead ----------------------------------------------------------- */
+
 .masthead {
-  max-width: 1180px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.masthead a {
+  color: var(--drive-ink);
+}
+
+.masthead .btn {
+  color: var(--drive-paper);
+}
+
+.masthead .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 76px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  min-width: 0;
 }
 
 .wordmark {
-  font-size: 28px;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 34px;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wordmark i {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--drive-ink);
+  position: relative;
+}
+
+.wordmark i::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--drive-orange);
 }
 
 .tagline {
-  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.site-nav a {
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.site-nav a:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 26px;
+  border-radius: 999px;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
+  font-weight: 600;
+  font-size: 17px;
+  text-decoration: none;
+  transition: transform 0.15s;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+}
+
+.site-nav .btn {
+  padding: 9px 18px;
   font-size: 15px;
 }
 
-main {
-  max-width: 1180px;
+.site-nav .btn:hover {
+  text-decoration: none;
 }
 
-/* ---- Price statement: the only large type on the page ------------------- */
+/* ---- hero: one loud colour field ---------------------------------------- */
 
-.price {
-  max-width: 1000px;
-  padding: clamp(36px, 7vh, 76px) 0 clamp(28px, 4vh, 48px);
+.hero {
+  background: var(--drive-orange);
+  position: relative;
+  overflow: hidden;
+  padding: 120px 0 0;
 }
 
-.price h1 {
-  margin: 0;
-  font-family: var(--serif);
-  font-weight: 600;
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(27, 23, 18, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(27, 23, 18, 0.07) 1px, transparent 1px);
+  background-size: 80px 80px;
+  pointer-events: none;
+}
+
+.hero-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 40px;
+  align-items: start;
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border: 1.5px solid var(--drive-ink);
+  border-radius: 999px;
+  font-family: var(--font-code);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.kicker::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--drive-ink);
+}
+
+.price-heading {
+  margin: 22px 0 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0 18px;
+}
+
+.price-heading .amount {
+  font-size: clamp(150px, 16vw, 236px);
+  line-height: 0.78;
   letter-spacing: -0.02em;
-  line-height: 1.02;
-  font-size: clamp(44px, 7.6vw, 92px);
 }
 
-.price h1 .amount {
-  font-variant-numeric: tabular-nums;
+.price-heading .unit {
+  font-weight: 800;
+  font-size: clamp(26px, 2.5vw, 36px);
+  line-height: 0.95;
+  text-transform: uppercase;
+  max-width: 7.5em;
+  padding-bottom: 0.15em;
 }
 
-.price h1 .unit {
+.slogan {
+  margin: 26px 0 18px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(40px, 4.4vw, 64px);
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.slogan span {
+  display: inline-block;
+  margin-top: 0.06em;
+  padding: 0.02em 0.12em 0;
+  background: var(--drive-ink);
+  color: var(--drive-orange);
+}
+
+.lede {
+  margin: 0;
+  max-width: 30em;
+  font-size: 19px;
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 18px;
+  margin: 28px 0 0;
+}
+
+.cta-note {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  max-width: 22em;
+}
+
+/* the Finder window floating on the field */
+.stage {
+  position: relative;
+  padding-top: 40px;
+}
+
+.finder {
+  width: calc(100% + 80px);
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--drive-card);
+  font-size: 13px;
+  transform: rotate(-1.4deg);
+  box-shadow:
+    0 2px 0 rgba(27, 23, 18, 0.15),
+    0 40px 80px -20px rgba(90, 25, 0, 0.55);
+}
+
+.f-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--drive-paper-deep);
+  border-bottom: 1px solid var(--drive-line);
+  font-weight: 600;
+}
+
+.dots {
+  display: flex;
+  gap: 7px;
+}
+
+.dots i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d5c9b5;
+}
+
+.f-top .dots i:first-child {
+  background: var(--drive-orange);
+}
+
+.f-body {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+}
+
+.f-side {
+  padding: 14px 10px;
+  background: var(--drive-paper-deep);
+  border-right: 1px solid var(--drive-line);
+  font-size: 12.5px;
+  color: var(--drive-ink-soft);
+}
+
+.f-side b {
   display: block;
-  font-size: 0.3em;
-  line-height: 1.2;
-  letter-spacing: 0;
-  color: var(--ink);
-  margin-top: 0.35em;
+  margin: 4px 8px 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
 }
 
-.price .sub,
-.price .free {
-  margin: 0.7em 0 0;
-  font-size: clamp(18px, 2.1vw, 22px);
+.f-side span {
+  display: block;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.f-side .on {
+  background: var(--drive-ink);
+  color: var(--drive-paper);
+  font-weight: 600;
+}
+
+.f-row {
+  display: grid;
+  grid-template-columns: 1fr 78px 96px;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 18px;
+  border-bottom: 1px solid #eee5d6;
+}
+
+.f-row.head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--drive-ink-soft);
+  border-bottom-color: var(--drive-line);
+}
+
+.f-row.hl {
+  background: var(--drive-orange-wash);
+}
+
+.nm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nm span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sz {
+  font-family: var(--font-code);
+  text-align: right;
+}
+
+.f-row.hl .sz {
+  font-weight: 700;
+  color: var(--drive-orange-ink);
+}
+
+.where {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--drive-ink-soft);
+  text-align: right;
+}
+
+.ficon {
+  position: relative;
+  flex: none;
+  width: 18px;
+  height: 22px;
+  border-radius: 3px;
+  background: var(--drive-paper-deep);
+  border: 1px solid var(--drive-line);
+}
+
+.ficon.v::after {
+  content: "";
+  position: absolute;
+  inset: 6px 5px;
+  background: var(--drive-ink);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.ficon.d {
+  background: var(--drive-ink);
+}
+
+.ficon.f {
+  background: #e9c9a6;
+  border-color: #d8b48c;
+  border-radius: 2px 6px 3px 3px;
+}
+
+.f-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--drive-paper-deep);
+  border-top: 1px solid var(--drive-line);
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  color: var(--drive-ink-soft);
+}
+
+.tag {
+  position: absolute;
+  z-index: 2;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
+  font-family: var(--font-code);
+  font-size: 13px;
+  font-weight: 700;
+  transform: rotate(2deg);
+}
+
+.tag.t1 {
+  right: -10px;
+  top: 4px;
+}
+
+.tag.t2 {
+  left: -28px;
+  top: 330px;
+  background: var(--drive-paper);
+  color: var(--drive-ink);
+  border: 2px solid var(--drive-ink);
+  transform: rotate(-3deg);
+}
+
+.term {
+  position: relative;
+  max-width: 440px;
+  margin: 58px 0 0 40px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--drive-ink);
+  color: var(--drive-term-text);
+  font-family: var(--font-code);
+  font-size: 14px;
+  transform: rotate(1deg);
+  box-shadow: 8px 8px 0 rgba(27, 23, 18, 0.25);
+}
+
+.term-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--drive-term-dim);
+}
+
+.term-bar .dots i {
+  width: 10px;
+  height: 10px;
+  background: #4d463d;
+}
+
+.term p {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr {
+  color: var(--drive-orange);
+}
+
+.ok {
+  color: var(--drive-term-ok);
+}
+
+.dim {
+  color: var(--drive-term-dim);
+}
+
+.caret {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  vertical-align: -3px;
+  background: var(--drive-orange);
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.copy {
+  padding: 2px 8px;
+  border: 1px solid #6a6157;
+  border-radius: 6px;
+  background: none;
+  color: var(--drive-term-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* the ticker under the hero */
+.ticker {
+  margin-top: 84px;
+  overflow: hidden;
+  white-space: nowrap;
+  background: var(--drive-ink);
+  color: var(--drive-orange);
+}
+
+.ticker-track {
+  display: inline-block;
+  padding: 12px 0;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 30px;
+  text-transform: uppercase;
+  animation: roll 40s linear infinite;
+}
+
+.ticker-track span {
+  margin: 0 22px;
+}
+
+.ticker-track span::after {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 44px;
+  border-radius: 50%;
+  background: var(--drive-paper);
+  vertical-align: middle;
+}
+
+@keyframes roll {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* ---- shared section bits ------------------------------------------------ */
+
+.s {
+  padding: 120px 0;
+}
+
+.eyebrow {
+  display: block;
+  margin: 0 0 16px;
+  font-family: var(--font-code);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--drive-orange-ink);
+}
+
+.big {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(48px, 7vw, 104px);
+  line-height: 0.86;
+  text-transform: uppercase;
+}
+
+.big .o {
+  color: var(--drive-orange-deep);
+}
+
+.sub {
+  margin: 22px 0 0;
+  max-width: 34em;
+  font-size: 19px;
+  color: var(--drive-ink-soft);
+}
+
+.dark {
+  background: var(--drive-ink);
+  color: var(--drive-paper);
+}
+
+.dark .eyebrow,
+.dark .big .o {
+  color: var(--drive-orange);
+}
+
+.dark .sub {
+  color: #c9bfae;
+}
+
+/* ---- Finder features: a split list, not cards --------------------------- */
+
+.feat {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: end;
+}
+
+.stat-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px;
+  margin: 48px 0 0;
+}
+
+.stat {
+  margin: 0;
+}
+
+.stat b {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 96px;
+  line-height: 0.85;
+}
+
+.stat b small {
+  margin-left: 4px;
+  font-size: 0.45em;
+}
+
+.stat span {
+  display: block;
+  max-width: 14em;
+  margin-top: 8px;
+  font-size: 15px;
+  color: var(--drive-ink-soft);
+}
+
+.flist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 2px solid var(--drive-ink);
+}
+
+.flist li {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 20px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--drive-line);
+}
+
+.flist .k {
+  padding-top: 4px;
+  font-family: var(--font-code);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--drive-orange-ink);
+}
+
+.flist h3 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.flist p {
+  margin: 4px 0 0;
+  color: var(--drive-ink-soft);
+}
+
+/* ---- Real work on the drive (drive #113) ---------------------------------
+   One column of rows, not cards: the job, the exact command that ran it, and
+   the figure the recorded run measured. */
+
+.demos {
+  padding: 0 0 120px;
+}
+
+.demos-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px 80px;
+  align-items: end;
+  margin-bottom: 36px;
+}
+
+.demos h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(36px, 4.4vw, 60px);
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.demos-lede {
+  margin: 0;
+  font-size: 17px;
+  color: var(--drive-ink-soft);
+}
+
+.demo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 8px 40px;
+  align-items: baseline;
+  padding: 22px 0;
+  border-top: 2px solid var(--drive-ink);
+}
+
+.demo-name {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.demo-command {
+  margin: 0;
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--drive-ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.demo-command b {
+  color: var(--drive-orange-ink);
+}
+
+.demo-figure {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 24px;
+}
+
+.demo-number {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 44px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.demo-number small {
+  display: block;
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--drive-ink-soft);
+}
+
+.demos-note {
+  margin: 20px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--drive-line);
+  max-width: 62em;
+  font-size: 13.5px;
+  color: var(--drive-ink-soft);
+}
+
+/* ---- agents --------------------------------------------------------------- */
+
+.ag-grid {
+  display: grid;
+  grid-template-columns: 0.9fr 1.1fr;
+  gap: 72px;
+  align-items: center;
+}
+
+.tools {
+  border: 0;
+  padding: 0;
+  margin: 34px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tools legend {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 0;
+  font-family: var(--font-code);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--drive-term-dim);
+}
+
+.tools button {
+  padding: 9px 18px;
+  border: 1.5px solid #6a6157;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--drive-paper);
+  font: 600 15px var(--font-body);
+  cursor: pointer;
+}
+
+.tools button[aria-pressed="true"] {
+  background: var(--drive-orange);
+  border-color: var(--drive-orange);
+  color: var(--drive-ink);
+}
+
+.never {
+  margin: 34px 0 0;
+  max-width: 30em;
+  padding-left: 16px;
+  border-left: 4px solid var(--drive-orange);
+  font-size: 16px;
+  color: #e8dfd0;
+}
+
+.bigterm {
+  padding: 22px 24px;
+  border-radius: 16px;
+  background: var(--drive-term);
+  color: var(--drive-term-text);
+  font-family: var(--font-code);
+  font-size: 15px;
+  line-height: 1.9;
+  box-shadow: 12px 12px 0 var(--drive-orange);
+}
+
+.bigterm .dots {
+  margin-bottom: 14px;
+}
+
+.bigterm .dots i {
+  width: 11px;
+  height: 11px;
+  background: #4d463d;
+}
+
+.bigterm p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- calculator ----------------------------------------------------------- */
+
+.calc {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 56px;
+  margin-top: 56px;
+  align-items: stretch;
+}
+
+.calc-l {
+  padding: 40px;
+  border: 2px solid var(--drive-ink);
+  border-radius: 20px;
+  background: var(--drive-card);
+}
+
+.size-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.size-row label {
+  font-weight: 600;
+}
+
+.size-row output {
+  font-family: var(--font-code);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.calc input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 14px;
+  margin: 22px 0 10px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--drive-orange) 0 var(--p, 19%),
+    var(--drive-paper-deep) var(--p, 19%)
+  );
+  cursor: pointer;
+}
+
+.calc input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--drive-ink);
+  border: 5px solid var(--drive-card);
+  box-shadow: 0 0 0 2px var(--drive-ink);
+}
+
+.calc input[type="range"]::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--drive-ink);
+  border: 5px solid var(--drive-card);
+  box-shadow: 0 0 0 2px var(--drive-ink);
+}
+
+.calc input[type="range"]:focus-visible {
+  outline: 3px solid var(--drive-ink);
+  outline-offset: 6px;
+}
+
+.ticks {
+  position: relative;
+  height: 18px;
+  font-family: var(--font-code);
+  font-size: 12px;
+  color: var(--drive-ink-soft);
+}
+
+.ticks span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.ticks span:first-child {
+  transform: none;
+}
+
+.ticks span:last-child {
+  transform: translateX(-100%);
+}
+
+.price-big {
+  display: flex;
+  align-items: flex-start;
+  margin: 40px 0 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(110px, 13vw, 200px);
+  line-height: 0.8;
+  letter-spacing: -0.02em;
+}
+
+.price-big sup {
+  margin-top: 0.06em;
+  font-size: 0.4em;
+  line-height: 1;
+}
+
+.price-big small {
+  align-self: flex-end;
+  margin: 0 0 0.3em 14px;
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0;
+  color: var(--drive-ink-soft);
+}
+
+.why {
+  min-height: 3em;
+  margin: 16px 0 0;
+  font-size: 16px;
+  color: var(--drive-ink-soft);
+}
+
+.why.is-error {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.bands {
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-code);
+  font-size: 13px;
+  border-top: 1px solid var(--drive-line);
+}
+
+.bands li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0 9px 16px;
+  border-bottom: 1px solid var(--drive-line);
+  color: var(--drive-ink-soft);
+  position: relative;
+}
+
+.bands li.on {
+  color: var(--drive-ink);
+  font-weight: 700;
+}
+
+.bands li.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 2px;
+  background: var(--drive-orange);
+}
+
+.calc-r {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+}
+
+.bars {
+  display: flex;
+  gap: 28px;
+  align-items: flex-end;
+  height: 320px;
+  padding: 0 8px;
+  border-bottom: 2px solid var(--drive-ink);
+}
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+  text-align: center;
+}
+
+.bar-col .v {
+  margin-bottom: 8px;
+  font-family: var(--font-code);
+  font-weight: 700;
+  font-size: 20px;
+}
+
+.bar-col .b {
+  border-radius: 10px 10px 0 0;
+  transition: height 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.bar-col.us .b {
+  background: var(--drive-orange);
+}
+
+.bar-col.them .b {
+  background: repeating-linear-gradient(135deg, var(--drive-ink-soft) 0 6px, #6d6457 6px 12px);
+}
+
+.bar-lbl {
+  display: flex;
+  gap: 28px;
+  padding: 10px 8px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bar-lbl span {
+  flex: 1;
+  text-align: center;
+}
+
+.save {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 40px;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.save em {
+  font-style: normal;
+  color: var(--drive-orange-deep);
+}
+
+.fine {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--drive-ink-soft);
+}
+
+/* ---- worked examples and the 60%-full strip ------------------------------ */
+
+.examples {
+  padding: 0 0 120px;
+}
+
+.ex-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px 72px;
+  align-items: start;
+}
+
+.examples h2 {
+  margin: 0 0 20px;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(36px, 4.4vw, 60px);
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.strip-bar {
+  display: flex;
+  height: 76px;
+  overflow: hidden;
+  border: 2px solid var(--drive-ink);
+  border-radius: 12px;
+  font-family: var(--font-code);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.strip-full,
+.strip-empty {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.strip-full {
+  flex: 0 0 60%;
+  background: var(--drive-orange);
+}
+
+.strip-empty {
+  flex: 1 1 40%;
+  background: repeating-linear-gradient(-45deg, transparent 0 7px, var(--drive-line) 7px 8px);
+  color: var(--drive-ink-soft);
+}
+
+.strip-caption {
+  margin: 14px 0 0;
+  font-size: 15px;
+  color: var(--drive-ink-soft);
+}
+
+.examples-list {
+  margin: 0;
+  border-top: 2px solid var(--drive-ink);
+}
+
+.example {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--drive-line);
+}
+
+.example dt {
+  font-family: var(--font-code);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.example dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--drive-ink-soft);
+}
+
+.example dd strong {
+  color: var(--drive-ink);
+}
+
+.examples-note {
+  margin: 14px 0 0;
+  font-size: 14px;
+  color: var(--drive-ink-soft);
+}
+
+/* ---- cap + the receipt ---------------------------------------------------- */
+
+.cap {
+  background: var(--drive-paper-deep);
+}
+
+.cap-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 72px;
+  align-items: center;
+}
+
+.meter-card {
+  padding: 32px;
+  border: 1px solid var(--drive-line);
+  border-radius: 18px;
+  background: var(--drive-card);
+}
+
+.meter-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.meter-top b {
+  font-family: var(--font-code);
+  font-size: 28px;
+}
+
+.meter-top b small {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--drive-ink-soft);
+}
+
+.meter {
+  position: relative;
+  height: 22px;
+  margin: 18px 0 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--drive-paper-deep);
+}
+
+.meter i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 78.3%;
+  border-radius: 999px;
+  background: var(--drive-orange);
+}
+
+.meter-note {
+  margin: 0;
+  font-size: 14px;
+  color: var(--drive-ink-soft);
+}
+
+/* The receipt (from direction C): thermal paper on the cap block, torn at the
+   foot, with a rubber stamp for the saving. Paper is the one surface that is
+   not the page's own paper, on purpose. */
+.receipt {
+  margin: 26px 12px 0;
+  padding: 26px 28px 46px;
+  background: var(--drive-card);
+  font-family: var(--font-code);
+  font-size: 14.5px;
+  box-shadow: 0 30px 50px -30px rgba(60, 45, 30, 0.45);
+  -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 24px
+    100%;
+  mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 24px 100%;
+}
+
+.r-head {
+  margin: 0 0 12px;
+  padding-bottom: 14px;
+  border-bottom: 1.5px dashed var(--drive-ink-soft);
+  text-align: center;
+}
+
+.r-shop {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.r-head small {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--drive-ink-soft);
+}
+
+.r-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.r-line .d {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.r-line .d::after {
+  content: "";
+  flex: 1;
+  min-width: 16px;
+  border-bottom: 1.5px dotted var(--drive-ink-soft);
+  transform: translateY(-4px);
+}
+
+.r-line .v {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.r-line.sub {
+  padding-top: 0;
+  font-size: 12.5px;
+  color: var(--drive-ink-soft);
+}
+
+.r-line.sub .d::after {
+  display: none;
+}
+
+.r-line.x .d,
+.r-line.x .v {
+  color: var(--drive-ink-soft);
+}
+
+.r-line.x .v {
+  text-decoration: line-through;
+  text-decoration-color: var(--drive-orange-deep);
+  text-decoration-thickness: 2px;
+}
+
+.r-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 12px 0;
+  padding: 12px 0;
+  border-top: 1.5px dashed var(--drive-ink-soft);
+  border-bottom: 1.5px dashed var(--drive-ink-soft);
+}
+
+.r-total span {
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.r-total b {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 46px;
+  line-height: 1;
+}
+
+.saved {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.stamp {
+  display: inline-block;
+  padding: 9px 13px 8px;
+  border: 3px solid var(--drive-orange-ink);
+  border-radius: 4px;
+  color: var(--drive-orange-ink);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  line-height: 1.15;
+  text-align: center;
+  text-transform: uppercase;
+  transform: rotate(-6deg);
+}
+
+.stamp big {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 32px;
+  letter-spacing: 0;
+}
+
+.saved p {
+  margin: 0;
+  max-width: 17em;
+  font-size: 12.5px;
+  color: var(--drive-ink-soft);
+}
+
+.r-foot {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--drive-ink-soft);
+}
+
+/* ---- membership ----------------------------------------------------------- */
+
+.member {
+  background: var(--drive-orange);
+}
+
+.mem-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 64px;
+  align-items: center;
+}
+
+.member .eyebrow,
+.member .sub {
+  color: var(--drive-ink);
+}
+
+.member .big .o {
+  display: inline-block;
+  padding: 0.04em 0.1em 0;
+  line-height: 0.9;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
+}
+
+.founding {
+  margin: 14px 0 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.mem-list {
+  margin: 30px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 2px solid var(--drive-ink);
+}
+
+.mem-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(27, 23, 18, 0.3);
+  font-weight: 600;
+}
+
+.mem-list b {
+  font-family: var(--font-code);
+  white-space: nowrap;
+}
+
+.five {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(170px, 22vw, 320px);
+  line-height: 0.78;
+  letter-spacing: -0.03em;
+}
+
+.five sup {
+  margin-top: 0.06em;
+  font-size: 0.36em;
+}
+
+.five small {
+  align-self: flex-end;
+  max-width: 7em;
+  margin: 0 0 0.5em 12px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+/* ---- FAQ and Business ----------------------------------------------------- */
+
+.faq-grid {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: 72px;
+}
+
+details {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--drive-line);
+}
+
+details:first-child {
+  border-top: 2px solid var(--drive-ink);
+}
+
+summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::after {
+  content: "+";
+  font-family: var(--font-code);
+  font-size: 24px;
+  line-height: 1;
+  color: var(--drive-orange-ink);
+}
+
+details[open] summary::after {
+  content: "\2212";
+}
+
+details p {
+  margin: 10px 0 0;
+  max-width: 36em;
+  color: var(--drive-ink-soft);
+}
+
+.business {
+  margin-top: 96px;
+  padding-top: 40px;
+  border-top: 2px solid var(--drive-ink);
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: 24px 72px;
+}
+
+.business h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 44px;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.business p {
+  margin: 0;
   max-width: 34em;
 }
 
-.price .free {
-  color: var(--accent);
+.talk {
+  display: inline-block;
+  margin-top: 14px;
   font-weight: 600;
+  text-underline-offset: 4px;
 }
 
-/* ---- The one real action ------------------------------------------------ */
-
 .waitlist {
-  margin-top: clamp(26px, 3.4vh, 40px);
-  max-width: 620px;
+  margin-top: 22px;
+  max-width: 560px;
 }
 
 .field-label {
   display: block;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--ink-faint);
   margin-bottom: 6px;
+  font-family: var(--font-code);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--drive-ink-soft);
 }
 
 .field-row {
@@ -156,38 +1692,33 @@ main {
   gap: 10px;
 }
 
-.field-row input[type="email"],
-.field-row input[type="number"] {
-  flex: 1 1 260px;
+.field-row input {
+  flex: 1 1 240px;
   min-width: 0;
-  padding: 13px 14px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--drive-ink);
+  border-radius: 999px;
+  background: var(--drive-card);
+  color: var(--drive-ink);
   font: inherit;
   font-size: 16px;
-  color: var(--ink);
-  background: var(--paper-raised);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
 }
 
-.field-row input[type="email"]::placeholder {
-  color: var(--ink-faint);
+.field-row input::placeholder {
+  color: var(--drive-ink-soft);
 }
 
 .field-row button {
   flex: 0 0 auto;
-  padding: 13px 22px;
+  padding: 12px 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
   font: inherit;
   font-size: 16px;
   font-weight: 600;
-  color: var(--paper-raised);
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
   cursor: pointer;
-}
-
-.field-row button:hover {
-  background: #16304f;
 }
 
 .field-row button:disabled {
@@ -198,382 +1729,272 @@ main {
 .form-note {
   margin: 10px 0 0;
   font-size: 14px;
-  color: var(--ink-soft);
+  color: var(--drive-ink-soft);
 }
 
 .form-note.is-error {
-  color: #8c2f1d;
+  color: var(--bad);
   font-weight: 600;
 }
 
 .form-note.is-done {
-  color: var(--accent);
+  color: var(--good);
   font-weight: 600;
 }
 
-/* The two pages of the site, side by side under the waitlist. */
-.footer-nav {
-  display: flex;
-  gap: 18px;
-  margin: 10px 0 0;
-  font-size: 14px;
+/* ---- footer --------------------------------------------------------------- */
+
+.site-foot {
+  padding: 72px 0 40px;
+  background: var(--drive-ink);
+  color: var(--drive-paper);
 }
 
-.footer-nav a {
-  color: var(--ink-soft);
-}
-
-/* ---- The strip: what you actually pay for ------------------------------- */
-
-.strip {
-  margin: 0;
-  padding-bottom: clamp(32px, 5vh, 56px);
-}
-
-.strip-bar {
-  display: flex;
-  width: 100%;
-  height: 76px;
-  border: 1px solid var(--ink);
-  border-radius: 3px;
-  overflow: hidden;
-  font-family: var(--mono);
-  font-size: 13px;
-  letter-spacing: 0.01em;
-}
-
-.strip-full,
-.strip-empty {
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  min-width: 0;
-}
-
-.strip-full {
-  flex: 0 0 60%;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.strip-empty {
-  flex: 1 1 40%;
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent 0 7px,
-    var(--rule) 7px 8px
-  );
-  color: var(--ink-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.strip-caption {
-  margin: 12px 0 0;
-  max-width: 62em;
-  color: var(--ink-soft);
-  font-size: 15px;
-}
-
-/* ---- Real work on the drive (drive #113) --------------------------------
-
-The three demos are one column of rows, not three equal cards: each row is a
-named job, the exact command that ran it, and the figure the recorded run
-measured. The video row carries two figures because a scrub is a second read.
-Nothing here is a badge or a logo; the proof is the command and its number. */
-
-.demos {
-  border-top: 1px solid var(--rule);
-  padding: clamp(30px, 4.5vh, 52px) 0 clamp(30px, 4.5vh, 48px);
-}
-
-.demos h2 {
-  margin: 0 0 8px;
-  font-family: var(--serif);
-  font-weight: 600;
-  font-size: clamp(26px, 3.4vw, 36px);
-  letter-spacing: -0.01em;
-}
-
-.demos-lede {
-  margin: 0 0 clamp(20px, 3vh, 30px);
-  max-width: 46em;
-  font-size: 17px;
-  color: var(--ink-soft);
-}
-
-.demo {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px clamp(18px, 3vw, 40px);
-  padding: clamp(16px, 2.4vh, 22px) 0;
-  border-top: 1px solid var(--ink);
-}
-
-/* The command is the evidence, so it keeps the full row under the name. */
-.demo-command,
-.demo-figure {
-  grid-column: 1 / -1;
-}
-
-.demo-name {
-  margin: 0;
-  font-family: var(--sans);
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.demo-command {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.demo-command b {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.demo-figure {
-  margin: 0;
+.foot-top {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 20px;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 32px;
 }
 
-.demo-number {
-  font-family: var(--mono);
-  font-size: clamp(26px, 3.6vw, 34px);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--accent);
-}
-
-.demo-number small {
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--ink-soft);
-}
-
-.demos-note {
-  margin: clamp(18px, 2.6vh, 26px) 0 0;
-  max-width: 60em;
-  font-size: 14px;
-  color: var(--ink-soft);
-}
-
-/* ---- Worked examples ---------------------------------------------------- */
-
-.examples {
-  border-top: 1px solid var(--rule);
-  padding: clamp(28px, 4vh, 44px) 0 clamp(30px, 4.5vh, 52px);
-}
-
-.examples h2,
-.columns h2 {
-  margin: 0 0 16px;
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 700;
+.foot-big {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(56px, 9vw, 140px);
+  line-height: 0.85;
   text-transform: uppercase;
-  letter-spacing: 0.11em;
-  color: var(--ink-faint);
 }
 
-.examples-list {
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 0 clamp(20px, 3vw, 40px);
-  border-top: 1px solid var(--ink);
+.foot-big span {
+  color: var(--drive-orange);
 }
 
-.example {
-  /* The value is a sentence now (drive#430), so it sits under its label and
-     reads left to right, the way a sentence is read. It used to hang right of
-     the label in mono, which only worked while it was two figures and an
-     arrow. */
-  display: block;
-  padding: 15px 0;
-  border-bottom: 1px solid var(--rule);
+.site-foot .btn {
+  background: var(--drive-orange);
+  color: var(--drive-ink);
 }
 
-.example dt {
-  font-size: 16px;
-}
-
-.example dd {
-  margin: 5px 0 0;
-  /* The sentence reads in the page's text face, and the money figures inside
-     it keep tabular numerals so the four rows line up. */
+.foot-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px 28px;
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid #3d362d;
   font-size: 15px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.45;
-  color: var(--ink-soft);
-  white-space: normal;
 }
 
-.examples-note {
-  margin: 18px 0 0;
-  font-size: 15px;
-  color: var(--ink-soft);
-  max-width: 56em;
+.foot-nav nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
 }
 
-/* ---- Savings calculator (drive issue #14) -------------------------------- */
-
-.calculator {
-  margin: clamp(28px, 4vh, 44px) 0 0;
-  max-width: 620px;
-}
-
-.calculator h2 {
-  margin: 0 0 8px;
-  font-family: var(--serif);
-  font-size: clamp(22px, 2.6vw, 28px);
-  font-weight: 600;
-}
-
-.calculator-lede {
-  margin: 0 0 16px;
-  font-size: 16px;
-  color: var(--ink-soft);
-  max-width: 34em;
-}
-
-/* ---- Three columns, one of them a person -------------------------------- */
-
-.columns {
-  border-top: 1px solid var(--rule);
-  padding-top: clamp(28px, 4vh, 44px);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
-  gap: clamp(24px, 3.5vw, 52px);
-}
-
-.columns ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.columns li {
-  padding: 11px 0 11px 20px;
-  border-top: 1px solid var(--rule);
-  position: relative;
-  font-size: 16px;
-}
-
-.columns li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 20px;
-  width: 8px;
-  height: 2px;
-  background: var(--accent);
-}
-
-.columns p {
-  margin: 0;
-  font-size: 16px;
-}
-
-.business {
-  border-left: 1px solid var(--rule);
-  padding-left: clamp(20px, 3vw, 44px);
-}
-
-.talk {
-  display: inline-block;
-  margin-top: 16px;
-  padding: 11px 18px;
-  border: 1px solid var(--ink);
-  border-radius: 3px;
-  color: var(--ink);
-  font-weight: 600;
-  font-size: 16px;
+.foot-nav a {
   text-decoration: none;
 }
 
-.talk:hover {
-  background: var(--ink);
-  color: var(--paper-raised);
+.foot-nav a:hover {
+  color: var(--drive-orange);
 }
 
-.footer {
-  max-width: 1180px;
-  margin: clamp(40px, 6vh, 72px) auto 0;
-  color: var(--ink-soft);
-  font-size: 14px;
-}
-
-.footer p {
+.foot-nav p {
   margin: 0;
+  max-width: 34em;
+  color: var(--drive-term-dim);
 }
 
-@media (max-width: 720px) {
-  body {
-    font-size: 16px;
+/* ---- narrower screens ----------------------------------------------------- */
+
+@media (max-width: 1000px) {
+  .hero-grid,
+  .feat,
+  .ag-grid,
+  .calc,
+  .ex-grid,
+  .cap-grid,
+  .mem-grid,
+  .faq-grid,
+  .business,
+  .demos-head {
+    grid-template-columns: 1fr;
+    gap: 40px;
   }
 
-  .price h1 {
-    line-height: 1.06;
+  .finder {
+    width: 100%;
+    transform: rotate(-1deg);
+  }
+
+  .tag.t1 {
+    right: 6px;
+  }
+
+  .tag.t2 {
+    left: 6px;
+    top: auto;
+    bottom: 150px;
+  }
+
+  .stage {
+    padding-top: 20px;
+  }
+
+  .term {
+    margin: 40px 0 0;
+    transform: none;
+  }
+
+  .demo {
+    grid-template-columns: 1fr;
+  }
+
+  .demo-figure {
+    justify-content: flex-start;
+  }
+
+  .tagline {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .wrap {
+    padding: 0 16px;
+  }
+
+  .s {
+    padding: 80px 0;
+  }
+
+  .demos,
+  .examples {
+    padding-bottom: 80px;
+  }
+
+  .hide-m {
+    display: none;
+  }
+
+  .site-nav {
+    gap: 16px;
+  }
+
+  .hero {
+    padding-top: 96px;
+  }
+
+  .kicker {
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    padding: 6px 12px;
+  }
+
+  .price-heading .amount {
+    font-size: min(44vw, 180px);
+  }
+
+  .f-body {
+    grid-template-columns: 1fr;
+  }
+
+  .f-side,
+  .where {
+    display: none;
+  }
+
+  .f-row {
+    grid-template-columns: 1fr 64px;
+    padding: 9px 12px;
+  }
+
+  .stage {
+    padding-top: 34px;
+  }
+
+  .tag.t1 {
+    top: -6px;
+  }
+
+  .term {
+    font-size: 12.5px;
+  }
+
+  .ticker {
+    margin-top: 56px;
+  }
+
+  .ticker-track {
+    font-size: 22px;
+  }
+
+  .stat-pair {
+    gap: 28px;
+  }
+
+  .stat b {
+    font-size: 72px;
+  }
+
+  .flist li {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .bigterm {
+    font-size: 13px;
+    box-shadow: 8px 8px 0 var(--drive-orange);
+  }
+
+  .calc-l {
+    padding: 24px 20px;
+  }
+
+  .bars {
+    height: 240px;
+  }
+
+  .bands li {
+    flex-direction: column;
+    gap: 0;
   }
 
   .strip-bar {
     height: 64px;
+    font-size: 13px;
+  }
+
+  .meter-card {
+    padding: 22px;
+  }
+
+  .receipt {
+    margin: 22px 0 0;
+    padding: 22px 18px 42px;
+    font-size: 13.5px;
+  }
+
+  .saved {
     flex-direction: column;
+    align-items: flex-start;
   }
 
-  .strip-full,
-  .strip-empty {
-    flex: 0 0 auto;
-    padding: 0 12px;
-    height: 32px;
+  .five {
+    font-size: 140px;
   }
 
-  .strip-empty {
-    flex: 1 1 auto;
-  }
-
-  .business {
-    border-left: 0;
-    padding-left: 0;
-    border-top: 1px solid var(--rule);
-    padding-top: 20px;
-  }
-
-  .field-row input[type="email"],
-  .field-row input[type="number"],
+  .field-row input,
   .field-row button {
     flex: 1 1 100%;
   }
 }
 
-/* An example is a label with a sentence under it at every width now
-   (drive#430), so there is no narrow-phone rule left to add: the only thing a
-   phone needs is the sentence at reading size. */
-@media (max-width: 520px) {
-  .example dd {
-    font-size: 16px;
-  }
-}
-
 /* Drive#92: the one place the reduced-motion reset reaches a rule that would
-   otherwise win on specificity, so it is spelled with !important on
-   purpose. public/files.html has the same block, with the same comment. */
+   otherwise win on specificity, so it is spelled with !important on purpose.
+   It stops the ticker, the caret and the bar transitions. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -583,152 +2004,334 @@ Nothing here is a badge or a logo; the proof is the command and its number. */
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to the price</a>
+
   <header class="masthead">
-    <span class="wordmark">Drive</span>
-    <span class="tagline">A Finder drive for people and their agents</span>
+    <div class="wrap">
+      <div class="brand">
+        <a class="wordmark" href="/" aria-label="drive home"><i aria-hidden="true"></i>drive</a>
+        <span class="tagline">A Finder drive for people and their agents</span>
+      </div>
+      <nav class="site-nav" aria-label="Site">
+        <a class="hide-m" href="#calculator">Pricing</a>
+        <a class="hide-m" href="/docs/">Docs</a>
+        <a class="hide-m" href="/get-started">Get started</a>
+        <a href="/signin">Sign in</a>
+        <a class="btn" href="/signin">Start 7 days free</a>
+      </nav>
+    </div>
   </header>
 
-  <main>
-    <section class="price" aria-labelledby="price-heading">
-      <h1 id="price-heading">
-        <span class="amount">2¢</span>
-        <span class="unit">per GB, billed by the&nbsp;minute</span>
-      </h1>
-      <p class="sub">Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
-      <p class="free">$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</p>
-      <p class="free">Join now and keep $5 a month for good.</p>
-
-      <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-    <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
-        <label class="field-label" for="email">Email</label>
-        <div class="field-row">
-          <input id="email" name="email" type="email" required
-                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
-          <input type="hidden" name="source" value="pricing-page">
-          <button type="submit">Join the waitlist</button>
+  <main id="main">
+    <section class="hero" aria-labelledby="price-heading">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="kicker">For Mac &amp; Linux &middot; big files &middot; AI agents</p>
+          <h1 class="price-heading" id="price-heading">
+            <span class="amount">2¢</span>
+            <span class="unit">per GB, billed by the&nbsp;minute</span>
+          </h1>
+          <p class="slogan">Terabytes in Finder.<br><span>Never over $12&nbsp;a&nbsp;TB.</span></p>
+          <p class="lede">A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
+          <div class="cta-row">
+            <a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a>
+            <p class="cta-note">$0 for the first 7 days. Card at sign-up. Cancel in the trial and you pay $0.</p>
+          </div>
         </div>
-        <p class="form-note" id="form-note" role="status" aria-live="polite">The drive is not open yet. One email when it is.</p>
-      </form>
-      <nav class="footer-nav" aria-label="Drive">
-        <a href="/signin">Sign in</a>
-        <a href="/get-started">Get started</a>
-        <a href="/">Pricing</a>
-      </nav>
-      <noscript><p class="form-note">Submitting the form joins the waitlist without JavaScript.</p></noscript>
-    </section>
 
-    <section class="calculator" id="calculator" aria-labelledby="calculator-heading">
-      <h2 id="calculator-heading">What a month would cost</h2>
-      <p class="calculator-lede">Enter how much you store. The bill is our metered price, capped at our own flat-plan ceiling.</p>
-      <form id="quote" class="waitlist" action="/api/quote" method="get">
-        <label class="field-label" for="quote-tb">TB you keep all month</label>
-        <div class="field-row">
-          <input id="quote-tb" name="tb" type="number" min="0" max="10000" step="0.1" required
-                 inputmode="decimal" value="1">
-          <button type="submit">See the bill</button>
+        <div class="stage">
+          <span class="tag t1" aria-hidden="true">38 GB in Finder</span>
+          <div class="finder" role="img" aria-label="A Finder window with drive in the sidebar. It holds a 38 GB dataset, two 5 GB videos and a 212 GB archive, all online, and one folder kept offline. Almost nothing is on the local disk.">
+            <div class="f-top"><span class="dots"><i></i><i></i><i></i></span><span>drive</span></div>
+            <div class="f-body">
+              <div class="f-side">
+                <b>FAVOURITES</b>
+                <span>Desktop</span><span>Downloads</span>
+                <b>LOCATIONS</b>
+                <span class="on">drive</span>
+                <span>Macintosh HD</span>
+              </div>
+              <div>
+                <div class="f-row head"><span>Name</span><span class="sz">Size</span><span class="where">On this Mac</span></div>
+                <div class="f-row hl"><span class="nm"><i class="ficon d"></i><span>dataset-v3.parquet</span></span><span class="sz">38 GB</span><span class="where">online</span></div>
+                <div class="f-row"><span class="nm"><i class="ficon v"></i><span>raw-footage-0412.mov</span></span><span class="sz">5.1 GB</span><span class="where">online</span></div>
+                <div class="f-row"><span class="nm"><i class="ficon v"></i><span>raw-footage-0413.mov</span></span><span class="sz">4.8 GB</span><span class="where">online</span></div>
+                <div class="f-row"><span class="nm"><i class="ficon f"></i><span>client-archive-2025</span></span><span class="sz">212 GB</span><span class="where">online</span></div>
+                <div class="f-row"><span class="nm"><i class="ficon f"></i><span>edit-this-week</span></span><span class="sz">61 GB</span><span class="where">kept offline</span></div>
+              </div>
+            </div>
+            <div class="f-foot"><span>5 items</span><span>almost nothing on local disk</span></div>
+          </div>
+          <span class="tag t2" aria-hidden="true">plays in 274 ms</span>
+          <div class="term">
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="copy" type="button" data-copy="drive init" aria-label="Copy the command drive init">copy</button></div>
+            <p><span class="pr">$</span> drive init</p>
+            <p class="ok">signed in &middot; drive mounted in Finder</p>
+            <p><span class="pr">$</span> <span class="caret" aria-hidden="true"></span></p>
+          </div>
         </div>
-        <p class="form-note" id="quote-note" role="status" aria-live="polite">Enter a size to see this month's bill beside our flat-plan ceiling.</p>
-      </form>
-      <noscript><p class="form-note">Without JavaScript the form returns the same numbers as JSON from /api/quote.</p></noscript>
-    </section>
-
-    <section class="strip" aria-label="You pay only for what you store">
-      <div class="strip-bar" role="img"
-           aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing extra">
-        <span class="strip-full">60% full &middot; $12</span>
-        <span class="strip-empty">empty &middot; $0</span>
       </div>
-      <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month: $12 of storage. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+
+      <div class="ticker" aria-hidden="true">
+        <div class="ticker-track">
+          <span>7 days free</span><span>2¢ a GB</span><span>billed by the minute</span><span>$12 a TB ceiling</span><span>$8 a TB past 1.5 TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>7 days free</span><span>2¢ a GB</span><span>billed by the minute</span><span>$12 a TB ceiling</span><span>$8 a TB past 1.5 TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="s" id="finder" aria-labelledby="finder-heading">
+      <div class="wrap feat">
+        <div>
+          <p class="eyebrow">It is just a drive in Finder</p>
+          <h2 class="big" id="finder-heading">Huge files.<br><span class="o">Tiny</span> disk.</h2>
+          <p class="sub">Your files live online and open as if they are on the Mac. Drag in, double-click, scrub the timeline.</p>
+          <div class="stat-pair">
+            <p class="stat"><b>274<small>ms</small></b><span>until a 5 GB video starts playing, measured on real storage</span></p>
+            <p class="stat"><b>1.02<small>s</small></b><span>from install to your first file</span></p>
+          </div>
+        </div>
+        <ul class="flist">
+          <li><span class="k">offline</span><div><h3>Keep a folder offline</h3><p>It stays on the Mac, and syncs back after.</p></div></li>
+          <li><span class="k">share</span><div><h3>Share link in one step</h3><p>It expires in 7 days and shows how many times it was downloaded.</p></div></li>
+          <li><span class="k">restore</span><div><h3>Recently deleted</h3><p>Deleted by mistake? Open Recently deleted and press Restore.</p></div></li>
+          <li><span class="k">mac + linux</span><div><h3>macOS and Linux</h3><p>It shows up in Finder and in Linux file managers. Windows is not ready yet.</p></div></li>
+        </ul>
+      </div>
     </section>
 
     <section class="demos" aria-labelledby="demos-heading">
-      <h2 id="demos-heading">Real work on the drive</h2>
-      <p class="demos-lede">Three jobs a person already does, each one run through the mounted drive folder and timed. The command beside each figure is the command that produced it.</p>
-      <div class="demo">
-        <h3 class="demo-name">An agent reads and edits your files</h3>
-        <p class="demo-command"><b>$</b> claude --print "read notes/brief.md and edit notes/todo.md"<br>run in the mounted drive folder, one turn</p>
-        <p class="demo-figure"><span class="demo-number">9.01 s <small>whole turn</small></span></p>
+      <div class="wrap">
+        <div class="demos-head">
+          <h2 id="demos-heading">Real work on the drive</h2>
+          <p class="demos-lede">Three jobs a person already does, each one run through the mounted drive folder and timed. The command beside each figure is the command that produced it.</p>
+        </div>
+        <div class="demo">
+          <h3 class="demo-name">An agent reads and edits your files</h3>
+          <p class="demo-command"><b>$</b> claude --print "read notes/brief.md and edit notes/todo.md"<br>run in the mounted drive folder, one turn</p>
+          <p class="demo-figure"><span class="demo-number">9.01 s <small>whole turn</small></span></p>
+        </div>
+        <div class="demo">
+          <h3 class="demo-name">A 5 GB video opens and scrubs</h3>
+          <p class="demo-command"><b>$</b> ffmpeg -i Drive/media/cut.mp4 -frames:v 1 first.png<br><b>$</b> ffmpeg -ss 1493 -i Drive/media/cut.mp4 -frames:v 1 scrub.png</p>
+          <p class="demo-figure"><span class="demo-number">0.26 s <small>first frame</small></span><span class="demo-number">0.37 s <small>scrub to 24:53</small></span></p>
+        </div>
+        <div class="demo">
+          <h3 class="demo-name">A Blender scene opens and saves back</h3>
+          <p class="demo-command"><b>$</b> blender --background Drive/models/part.blend --python-expr "bpy.ops.wm.save_mainfile()"</p>
+          <p class="demo-figure"><span class="demo-number">0.48 s <small>open</small></span><span class="demo-number">0.51 s <small>save back</small></span></p>
+        </div>
+        <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
       </div>
-      <div class="demo">
-        <h3 class="demo-name">A 5 GB video opens and scrubs</h3>
-        <p class="demo-command"><b>$</b> ffmpeg -i Drive/media/cut.mp4 -frames:v 1 first.png<br><b>$</b> ffmpeg -ss 1493 -i Drive/media/cut.mp4 -frames:v 1 scrub.png</p>
-        <p class="demo-figure"><span class="demo-number">0.26 s <small>first frame</small></span><span class="demo-number">0.37 s <small>scrub to 24:53</small></span></p>
+    </section>
+
+    <section class="s dark" id="agents" aria-labelledby="agents-heading">
+      <div class="wrap ag-grid">
+        <div>
+          <p class="eyebrow">For your agents</p>
+          <h2 class="big" id="agents-heading">One command.<br><span class="o">Every agent.</span></h2>
+          <p class="sub">Give Claude Code, Codex, Cursor, Gemini or Kiro the same drive you use. One command for each tool.</p>
+          <fieldset class="tools">
+            <legend>Pick your tool</legend>
+            <button type="button" data-agent="claude" aria-pressed="true">Claude Code</button>
+            <button type="button" data-agent="codex" aria-pressed="false">Codex</button>
+            <button type="button" data-agent="cursor" aria-pressed="false">Cursor</button>
+            <button type="button" data-agent="gemini" aria-pressed="false">Gemini</button>
+            <button type="button" data-agent="kiro" aria-pressed="false">Kiro</button>
+          </fieldset>
+          <p class="never">Agent keys can list, read and write. They can never delete.</p>
+        </div>
+        <div class="bigterm" aria-live="polite">
+          <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <p><span class="pr">$</span> drive init</p>
+          <p class="ok">signed in &middot; drive mounted</p>
+          <p><span class="pr">$</span> drive agents connect <span id="agent-id">claude</span></p>
+          <p class="ok"><span id="agent-name">Claude Code</span> connected to drive</p>
+          <p class="dim">  can: list &middot; read &middot; write</p>
+          <p class="dim">  cannot: delete</p>
+        </div>
       </div>
-      <div class="demo">
-        <h3 class="demo-name">A Blender scene opens and saves back</h3>
-        <p class="demo-command"><b>$</b> blender --background Drive/models/part.blend --python-expr "bpy.ops.wm.save_mainfile()"</p>
-        <p class="demo-figure"><span class="demo-number">0.48 s <small>open</small></span><span class="demo-number">0.51 s <small>save back</small></span></p>
+    </section>
+
+    <section class="s" id="calculator" aria-labelledby="calculator-heading">
+      <div class="wrap">
+        <p class="eyebrow">Price</p>
+        <h2 class="big" id="calculator-heading">Slide it. <span class="o">Watch it stay small.</span></h2>
+        <p class="sub">Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
+        <div class="calc">
+          <form class="calc-l" id="quote" action="/api/quote" method="get">
+            <div class="size-row">
+              <label for="quote-gb">How much you keep all month</label>
+              <output id="quote-size" for="quote-gb">1 TB</output>
+            </div>
+            <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note">
+            <div class="ticks" aria-hidden="true"><span style="left:0">50 GB</span><span style="left:19.2%">1 TB</span><span style="left:39.4%">2 TB</span><span style="left:100%">5 TB</span></div>
+            <p class="price-big"><sup>$</sup><span id="quote-bill">12</span><small>a month</small></p>
+            <p class="why" id="quote-note" role="status" aria-live="polite">1 TB kept all month: $12.00 this month. Flat-plan ceiling: $12.00.</p>
+            <ul class="bands">
+              <li data-band="membership"><span>Up to 500 GB</span><span>the $10 membership covers it</span></li>
+              <li data-band="plateau" class="on"><span>500 GB to 1.5 TB</span><span>2¢ a GB, never over $12</span></li>
+              <li data-band="slope"><span>Past 1.5 TB</span><span>$8 a TB</span></li>
+            </ul>
+            <noscript><p class="form-note">Without JavaScript, <button type="submit">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
+          </form>
+          <div class="calc-r" id="usual-plans" data-usual-plans="1000:15,2000:27,5000:63">
+            <div>
+              <div class="bars" aria-hidden="true">
+                <div class="bar-col us"><span class="v" id="bar-us-v">$12</span><div class="b" id="bar-us" style="height:74%"></div></div>
+                <div class="bar-col them"><span class="v" id="bar-them-v">$15</span><div class="b" id="bar-them" style="height:92.6%"></div></div>
+              </div>
+              <div class="bar-lbl" aria-hidden="true"><span>drive</span><span id="bar-them-label">The usual 1 TB plan</span></div>
+            </div>
+            <p class="save" id="quote-save">You keep <em>$3</em> a month.</p>
+            <p class="fine">The usual plan elsewhere is $15 a month for 1&nbsp;TB, even billed yearly. 2&nbsp;TB is $27, and 5&nbsp;TB is $63. Our figure is this month's bill for the size held all month, never above our own flat-plan ceiling.</p>
+          </div>
+        </div>
       </div>
-      <p class="demos-note">Measured 2026-10-02 on the Linux build machine, through the mounted drive over a local S3-compatible storage stand-in: the product's own mount flags, rclone's stock mount. The video was written and read back through the same mount, so its two figures are reads the mount's own cache serves; a cold-read number is an open check. The real iDrive e2 account (issue #173) and the Mac-side halves (a Finder window, Final Cut) are open checks, not numbers here. Reproduce with <code>node --test test/home-demos.test.mjs</code>.</p>
     </section>
 
     <section class="examples" aria-labelledby="examples-heading">
-      <h2 id="examples-heading">Worked examples</h2>
-      <dl class="examples-list">
-        <div class="example">
-          <dt>500 GB for 3 days</dt>
-          <dd>about $1 of storage, and you pay the <strong>$10</strong> membership.</dd>
+      <div class="wrap ex-grid">
+        <div>
+          <h2 id="examples-heading">Worked examples</h2>
+          <div class="strip-bar" role="img"
+               aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing extra">
+            <span class="strip-full">60% full &middot; $12</span>
+            <span class="strip-empty">empty &middot; $0</span>
+          </div>
+          <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month: $12 of storage. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
         </div>
-        <div class="example">
-          <dt>800 GB kept all month</dt>
-          <dd>$12 of storage, and you pay <strong>$12</strong>.</dd>
+        <div>
+          <dl class="examples-list">
+            <div class="example">
+              <dt>500 GB for 3 days</dt>
+              <dd>about $1 of storage, and you pay the <strong>$10</strong> membership.</dd>
+            </div>
+            <div class="example">
+              <dt>800 GB kept all month</dt>
+              <dd>$12 of storage, and you pay <strong>$12</strong>.</dd>
+            </div>
+            <div class="example">
+              <dt>2 TB kept all month</dt>
+              <dd>$16 of storage, and you pay <strong>$16</strong>.</dd>
+            </div>
+            <div class="example">
+              <dt>5 TB kept all month</dt>
+              <dd>$40 of storage, and you pay <strong>$40</strong>.</dd>
+            </div>
+          </dl>
+          <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
+          <p class="examples-note">Version history is not in version 1.</p>
         </div>
-        <div class="example">
-          <dt>2 TB kept all month</dt>
-          <dd>$16 of storage, and you pay <strong>$16</strong>.</dd>
-        </div>
-        <div class="example">
-          <dt>5 TB kept all month</dt>
-          <dd>$40 of storage, and you pay <strong>$40</strong>.</dd>
-        </div>
-      </dl>
-      <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
-      <p class="examples-note">Version history is not in version 1.</p>
+      </div>
     </section>
 
-    <section class="columns" aria-label="What you get and what it costs">
-      <div class="column">
-        <h2>What you get</h2>
-        <ul>
-          <li>Your files in Finder, on macOS and Linux, streaming on demand</li>
-          <li>Your disk never fills up; the cache is capped at a size you choose</li>
-          <li>A folder your agents can read and write, where a delete can be undone</li>
-          <li>A safe copy of any folder for an agent to work in, which you approve or throw away</li>
-          <li>A spending cap you set; at the cap the drive goes read-only and nothing is deleted</li>
-        </ul>
+    <section class="s cap" id="cap" aria-labelledby="cap-heading">
+      <div class="wrap cap-grid">
+        <div>
+          <p class="eyebrow">No surprise bills</p>
+          <h2 class="big" id="cap-heading">A cap that<br><span class="o">stops writes,</span><br>not files.</h2>
+          <p class="sub">Your spending cap starts at $12. When you reach it, new writes stop and nothing is deleted. Raise it when you want.</p>
+        </div>
+        <div>
+          <div class="meter-card">
+            <div class="meter-top"><span>This month</span><b>$9.40 <small>of $12 cap</small></b></div>
+            <div class="meter" aria-hidden="true"><i></i></div>
+            <p class="meter-note">At $12, writes stop. Every file stays.</p>
+          </div>
+          <article class="receipt" id="receipt" aria-labelledby="receipt-heading">
+            <p class="r-head"><span class="r-shop" id="receipt-heading">drive</span><small>1 TB, kept all month</small></p>
+            <div class="r-line"><span class="d">Storage, 2¢ a GB</span><span class="v" data-receipt="ours">$12.00</span></div>
+            <div class="r-line sub"><span class="d">never more than $12 a TB</span></div>
+            <div class="r-line x"><span class="d">The usual 1 TB plan, billed yearly</span><span class="v" data-receipt="usual">$15.00</span></div>
+            <div class="r-total"><span>THIS MONTH</span><b>$12.00</b></div>
+            <div class="saved">
+              <p class="stamp">You saved<big data-receipt="saved">$3.00</big></p>
+              <p>This month you saved $3 against the usual 1&nbsp;TB plan.</p>
+            </div>
+            <p class="r-foot">BILLED BY THE MINUTE &middot; MACOS + LINUX</p>
+          </article>
+        </div>
       </div>
-      <div class="column">
-        <h2>What it costs</h2>
-        <ul>
-          <li>2¢ per GB, billed by the minute, pay only for what you store</li>
-          <li>$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</li>
-          <li>Join now and keep $5 a month for good.</li>
-          <li>Downloads free up to 3&times; what you store, then 1¢ per GB</li>
-        </ul>
+    </section>
+
+    <section class="s member" id="membership" aria-labelledby="membership-heading">
+      <div class="wrap mem-grid">
+        <div>
+          <p class="eyebrow">Founding members</p>
+          <h2 class="big" id="membership-heading">Keep <span class="o">$5</span><br>for good.</h2>
+          <p class="sub">$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</p>
+          <p class="founding">Join now and keep $5 a month for good.</p>
+          <ul class="mem-list">
+            <li><span>Membership</span><b>$10 a month</b></li>
+            <li><span>Storage use counts toward it</span><b>up to 500 GB</b></li>
+            <li><span>Regular members, first month</span><b>50% off</b></li>
+            <li><span>First 7 days</span><b>$0</b></li>
+            <li><span>Cancel during the trial</span><b>you pay $0</b></li>
+          </ul>
+          <div class="cta-row"><a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a></div>
+        </div>
+        <p class="five"><sup>$</sup>5<small>a month, for good</small></p>
       </div>
-      <div class="column business">
-        <h2>Business</h2>
-        <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
-        <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
+    </section>
+
+    <section class="s" id="faq" aria-labelledby="faq-heading">
+      <div class="wrap">
+        <div class="faq-grid">
+          <div>
+            <p class="eyebrow">Questions</p>
+            <h2 class="big" id="faq-heading">Short<br>answers.</h2>
+          </div>
+          <div>
+            <details open><summary>What does "billed by the minute" mean?</summary><p>You pay 2¢ per GB a month, counted for the minutes you hold the data. The bill never goes above $12 a TB, and past 1.5 TB it is $8 a TB.</p></details>
+            <details><summary>Can my agents wreck my files?</summary><p>No. Agent keys can list, read and write. They can never delete.</p></details>
+            <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $12. When you reach it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
+            <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
+          </div>
+        </div>
+
+        <section class="business" aria-labelledby="business-heading">
+          <h2 id="business-heading">Business</h2>
+          <div>
+            <p>The same storage price, plus single sign-on (planned), one company bill split by team, and priority support.</p>
+            <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
+            <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+            <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
+              <label class="field-label" for="email">Work email</label>
+              <div class="field-row">
+                <input id="email" name="email" type="email" required
+                       placeholder="you@example.com" autocomplete="email" spellcheck="false">
+                <input type="hidden" name="source" value="business">
+                <button type="submit">Send</button>
+              </div>
+              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email and we write back about a company account.</p>
+            </form>
+            <noscript><p class="form-note">The form sends without JavaScript too.</p></noscript>
+          </div>
+        </section>
       </div>
     </section>
   </main>
 
-  <footer class="footer">
-    <p>macOS and Linux. A drive folder, not a shared link. We need a card at sign-up because there is no free tier.</p>
+  <footer class="site-foot">
+    <div class="wrap">
+      <div class="foot-top">
+        <p class="foot-big">Terabytes,<br><span>2¢ a GB.</span></p>
+        <a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a>
+      </div>
+      <div class="foot-nav">
+        <nav aria-label="Footer">
+          <a href="#calculator">Pricing</a>
+          <a href="/docs/">Docs</a>
+          <a href="/signin">Sign in</a>
+          <a href="/get-started">Get started</a>
+        </nav>
+        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier.</p>
+      </div>
+    </div>
   </footer>
 
   <script>
-// Waitlist form submit. Without JavaScript the form still posts to
-// /api/waitlist, so this only upgrades the response from a page reload to an
-// inline confirmation. It must never fail silently: every path writes a line
-// into the live region the markup already provides.
-const form = document.getElementById("waitlist");
-const note = document.getElementById("form-note");
-const emailInput = document.getElementById("email");
-const sourceInput = form.elements.namedItem("source");
-const submit = form.querySelector("button[type=submit]");
-
 // The two failure strings this page can show without a server reply. They are
 // the same words as src/messages.js ("offline" and "unexpected"); this file is
 // a static asset and cannot import the module, so test/messages.test.mjs reads
@@ -736,16 +2339,25 @@ const submit = form.querySelector("button[type=submit]");
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 
+// ---- Business contact form ------------------------------------------------
+// Without JavaScript the form still posts to /api/waitlist, so this only
+// upgrades the response from a page reload to an inline confirmation. It must
+// never fail silently: every path writes a line into the live region.
+const form = document.getElementById("waitlist");
+const note = document.getElementById("form-note");
+const emailInput = document.getElementById("email");
+const sourceInput = form.elements.namedItem("source");
+const submit = form.querySelector("button[type=submit]");
+
 function say(message, kind) {
   note.textContent = message;
   note.classList.toggle("is-error", kind === "error");
   note.classList.toggle("is-done", kind === "done");
 }
 
-// "Talk to us" is the same real action as the form, tagged so the waitlist row
-// records which column the person came from. preventDefault is load-bearing:
-// without it the anchor's own fragment navigation to #waitlist moves focus
-// away from the field the handler just focused.
+// "Talk to us" is the same real action as the form, tagged so the row records
+// where the person came from. preventDefault is load-bearing: without it the
+// anchor's own fragment navigation moves focus away from the field.
 for (const link of document.querySelectorAll("[data-waitlist-source]")) {
   link.addEventListener("click", (event) => {
     event.preventDefault();
@@ -758,29 +2370,21 @@ for (const link of document.querySelectorAll("[data-waitlist-source]")) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   submit.disabled = true;
-  say("Joining the waitlist…", "pending");
+  say("Sending…", "pending");
   // The only safe text this page may show on failure: the table's own
-  // fallback, replaced by one of our constants or by the server's
-  // table-built message. The raw Error message is never shown (drive#28).
+  // fallback, replaced by one of our constants or by the server's table-built
+  // message. The raw Error message is never shown (drive#28).
   let userMessage = UNEXPECTED_MESSAGE;
   try {
-    // Captured before reset(): the server no longer echoes source, because
-    // the reply must be the same whether the address is new or already on
-    // the list (drive#28).
     const sentSource = sourceInput.value;
     let response;
     try {
       response = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          email: emailInput.value.trim(),
-          source: sentSource,
-        }),
+        body: JSON.stringify({ email: emailInput.value.trim(), source: sentSource }),
       });
     } catch (networkError) {
-      // fetch rejects only when the browser cannot reach the network at all;
-      // that is the offline message, never the raw failure text.
       userMessage = OFFLINE_MESSAGE;
       throw networkError;
     }
@@ -788,9 +2392,6 @@ form.addEventListener("submit", async (event) => {
     try {
       payload = await response.json();
     } catch (parseError) {
-      // A non-JSON reply (an error page, a captive portal) is not something
-      // this page can explain; the table's fallback is shown and the raw text
-      // stays out of the live region.
       userMessage = UNEXPECTED_MESSAGE;
       throw parseError;
     }
@@ -804,72 +2405,150 @@ form.addEventListener("submit", async (event) => {
       return;
     }
     // One confirmation for every accepted address: the server answers the
-    // same whether or not it was already on the list, so this page cannot
-    // and must not say which it was (drive#28).
-    say("You are on the list. One email when the drive is ready.", "done");
+    // same whether or not it was already on file (drive#28).
+    say("Thanks. We will write back to that address.", "done");
     form.reset();
     sourceInput.value = sentSource;
   } catch (error) {
-    // The raw error goes to the console; the live region only ever shows a
-    // message built from the table.
-    console.error("waitlist: signup failed", error);
+    console.error("contact: send failed", error);
     say(userMessage, "error");
   } finally {
     submit.disabled = false;
   }
 });
 
+// ---- The slider -------------------------------------------------------------
+// Every figure comes from GET /api/quote, which is quoteForStoredTb() in
+// src/billing.js: monthBillCents(), the invoice's own function. The page does
+// no bill arithmetic. The usual-plan figures are the data attribute
+// test/home-page.test.mjs pins to rivalMonthlyUsd() in src/pricing.js.
 const quoteForm = document.getElementById("quote");
+const range = document.getElementById("quote-gb");
+const sizeOut = document.getElementById("quote-size");
+const billOut = document.getElementById("quote-bill");
 const quoteNote = document.getElementById("quote-note");
-const quoteTb = document.getElementById("quote-tb");
-const quoteSubmit = quoteForm.querySelector("button[type=submit]");
+const saveOut = document.getElementById("quote-save");
+const usualPlans = document
+  .getElementById("usual-plans")
+  .dataset.usualPlans.split(",")
+  .map((pair) => pair.split(":").map(Number));
+const quotes = new Map();
+let latest = 0;
+let timer;
+
+const sizeLabel = (gb) => (gb >= 1000 ? `${Number((gb / 1000).toFixed(2))} TB` : `${gb} GB`);
+const dollars = (usd) => (Number.isInteger(usd) ? String(usd) : usd.toFixed(2));
 
 function sayQuote(message, kind) {
   quoteNote.textContent = message;
   quoteNote.classList.toggle("is-error", kind === "error");
-  quoteNote.classList.toggle("is-done", kind === "done");
 }
 
-quoteForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  quoteSubmit.disabled = true;
-  sayQuote("Working it out…", "pending");
-  let userMessage = UNEXPECTED_MESSAGE;
-  try {
+function show(gb, quote) {
+  const [planGb, planUsd] = usualPlans.find(([size]) => gb <= size) ?? usualPlans.at(-1);
+  billOut.textContent = dollars(quote.billUsd);
+  sayQuote(
+    `${sizeLabel(gb)} kept all month: ${quote.labels.bill} this month. Flat-plan ceiling: ${quote.labels.ceiling}.`,
+  );
+  // Which line of the price table this size falls on. These are the band
+  // edges printed above, not a bill: the figures come from the quote.
+  const band = gb <= 500 ? "membership" : gb <= 1500 ? "plateau" : "slope";
+  for (const li of document.querySelectorAll(".bands li")) {
+    li.classList.toggle("on", li.dataset.band === band);
+  }
+  const top = Math.max(planUsd, quote.billUsd) * 1.08;
+  document.getElementById("bar-us").style.height = `${(quote.billUsd / top) * 100}%`;
+  document.getElementById("bar-them").style.height = `${(planUsd / top) * 100}%`;
+  document.getElementById("bar-us-v").textContent = `$${dollars(quote.billUsd)}`;
+  document.getElementById("bar-them-v").textContent = `$${planUsd}`;
+  document.getElementById("bar-them-label").textContent = `The usual ${planGb / 1000} TB plan`;
+  const kept = Math.round((planUsd - quote.billUsd) * 100) / 100;
+  saveOut.innerHTML =
+    kept > 0 ? `You keep <em>$${dollars(kept)}</em> a month.` : "Same price, billed by the minute.";
+}
+
+async function fetchQuote(gb) {
+  const ticket = ++latest;
+  let quote = quotes.get(gb);
+  if (!quote) {
     let response;
     try {
-      response = await fetch(`/api/quote?tb=${encodeURIComponent(quoteTb.value.trim())}`);
-    } catch (networkError) {
-      userMessage = OFFLINE_MESSAGE;
-      throw networkError;
+      response = await fetch(`/api/quote?gb=${gb}`);
+    } catch (error) {
+      console.error("quote: request failed", error);
+      if (ticket === latest) sayQuote(OFFLINE_MESSAGE, "error");
+      return;
     }
     let payload;
     try {
       payload = await response.json();
-    } catch (parseError) {
-      userMessage = UNEXPECTED_MESSAGE;
-      throw parseError;
-    }
-    if (!response.ok) {
-      sayQuote(
-        typeof payload.error === "string" && payload.error.length > 0
-          ? payload.error
-          : UNEXPECTED_MESSAGE,
-        "error",
-      );
+    } catch (error) {
+      console.error("quote: reply was not JSON", error);
+      if (ticket === latest) sayQuote(UNEXPECTED_MESSAGE, "error");
       return;
     }
-    sayQuote(
-      `This month: ${payload.labels.bill}. Flat-plan ceiling: ${payload.labels.ceiling}.`,
-      "done",
-    );
-  } catch (error) {
-    console.error("quote: request failed", error);
-    sayQuote(userMessage, "error");
-  } finally {
-    quoteSubmit.disabled = false;
+    if (!response.ok) {
+      if (ticket === latest) {
+        sayQuote(
+          typeof payload.error === "string" && payload.error.length > 0
+            ? payload.error
+            : UNEXPECTED_MESSAGE,
+          "error",
+        );
+      }
+      return;
+    }
+    quote = payload;
+    quotes.set(gb, quote);
   }
+  if (ticket === latest) show(gb, quote);
+}
+
+range.addEventListener("input", () => {
+  const gb = Number(range.value);
+  sizeOut.textContent = sizeLabel(gb);
+  range.style.setProperty("--p", `${((gb - range.min) / (range.max - range.min)) * 100}%`);
+  clearTimeout(timer);
+  timer = setTimeout(() => fetchQuote(gb), 120);
 });
+
+quoteForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  fetchQuote(Number(range.value));
+});
+
+// ---- Agent picker and the copy button --------------------------------------
+const agentNames = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  gemini: "Gemini",
+  kiro: "Kiro",
+};
+const agentButtons = document.querySelectorAll("[data-agent]");
+for (const button of agentButtons) {
+  button.addEventListener("click", () => {
+    for (const other of agentButtons) {
+      other.setAttribute("aria-pressed", String(other === button));
+    }
+    document.getElementById("agent-id").textContent = button.dataset.agent;
+    document.getElementById("agent-name").textContent = agentNames[button.dataset.agent];
+  });
+}
+
+for (const button of document.querySelectorAll("[data-copy]")) {
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      button.textContent = "copied";
+    } catch {
+      button.textContent = "select it";
+    }
+    setTimeout(() => {
+      button.textContent = "copy";
+    }, 1500);
+  });
+}
   </script>
 </body>
 </html>
