@@ -10,6 +10,11 @@ the live site.
 
 ## 2026-10-05
 
+- New pricing: pay only for what you store. {{RATE}}, never more than
+  {{MAX_PER_TB}} per TB, and no minimum. The $10 membership, the first
+  month at half price and the old ceiling are gone. Founding members pay half
+  of both numbers for good.
+
 - After `drive login`, every command reads the api address it saved, so
   `drive init`, `drive cap` and `drive share` work without `DRIVE_API_URL`.
   Login prints `Signed in as` plus the email. Opening the approve link while
@@ -131,9 +136,8 @@ the live site.
 ## 2026-09-30
 
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.
-- The bill ceiling: the metered cost cut off at a flat {{CEILING_FLOOR}} until
-  the drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB. This replaced the
-  older per-TB caps.
+- The bill ceiling: the metered cost cut off at a flat $12 until the drive
+  passes 1.5 TB, then $8 a TB. This replaced the older per-TB caps.
 - The membership: storage use counts toward it, and a card is needed at
   sign-up because there is no free tier. Downloads over
   {{FREE_DOWNLOAD_MULTIPLE}} times what you store are charged at

@@ -474,7 +474,7 @@ func UploadLabel(q Pending) string {
 type UsageSummary struct {
 	MeteredUsd float64 `json:"meteredUsd"`
 	BillUsd    float64 `json:"billUsd"`
-	CeilingUsd float64 `json:"ceilingUsd"`
+	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
 	Cap        struct {
 		CapUsd       float64 `json:"capUsd"`

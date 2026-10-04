@@ -31,7 +31,7 @@ import {
   dayKey,
   monthKey,
 } from "../../../src/agentcaps.js";
-import { BYTES_PER_GB, monthUsageThrough } from "../../../src/meter.js";
+import { monthUsageThrough } from "../../../src/meter.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
@@ -145,9 +145,9 @@ export async function agentCapGate(db, device, at) {
   const today = await stampAgentRequest(db, device.accountId, device.id, time);
   const usage = await monthUsageThrough(db, device.accountId, time);
   return agentCapStatus({
-    // The peak arrives as bytes from the meter and is divided here by the
-    // meter's own GB, so the gigabyte `capStatus` counts is the meter's.
-    usage: { gbMinutes: usage.gbMinutes, peakGb: usage.peakBytes / BYTES_PER_GB },
+    // The bill reads only the month's GB-minutes (drive#463), so that is
+    // all the cap counts.
+    usage: { gbMinutes: usage.gbMinutes },
     caps: caps ?? undefined,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count

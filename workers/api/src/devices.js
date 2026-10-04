@@ -921,10 +921,11 @@ export function createD1DeviceStore(db, options = {}) {
       if (!Number.isFinite(gbMinutes) || gbMinutes < 0) {
         throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
       }
+      // The peak is the size the drive holds now (the page's "stored now"); the
+      // bill itself reads only the GB-minutes (drive#463).
       const peakGb = storedGb(peak.peakBytes);
       return {
         gbMinutes,
-        peakGb,
         storedGb: peakGb,
         storedDaily: [],
         downloadBytes: 0,

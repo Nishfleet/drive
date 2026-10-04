@@ -576,7 +576,6 @@ export async function handleCapRequest(request, account, capStore) {
       ? await capStore.monthUsage(account.id, { capUsd: usd })
       : {
           gbMinutes: 0,
-          peakGb: 0,
           storedGb: 0,
           storedDaily: [],
           downloadBytes: 0,

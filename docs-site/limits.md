@@ -67,9 +67,8 @@ would rather you read it here than find out in week three.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.
-- **The bill ceiling.** The metered cost is cut off at a flat
-  {{CEILING_FLOOR}} until the drive passes 1.5 TB, then {{CEILING_PER_TB}} for
-  each TB after, so a full drive cannot surprise you.
+- **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
+  store, so a full drive cannot surprise you.
 - **Agents cannot delete.** An agent key cannot remove a file; only a person
   can, and a person's delete is restorable.
 - **A branch is a real copy.** `drive branch` copies every byte of the folder,
@@ -88,4 +87,4 @@ would rather you read it here than find out in week three.
 ## Next
 
 - [Security](/security) — who can see your files.
-- [Pricing and your bill](/pricing) — the rate and the ceiling.
+- [Pricing and your bill](/pricing) — the rate and the maximum.

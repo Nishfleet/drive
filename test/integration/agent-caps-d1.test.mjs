@@ -242,7 +242,7 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   const account = { id: "acct_month", name: "Month drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-  // 2 TB held for a whole month bills $16 against the drive's own $12 cap, so
+  // 2 TB held for a whole month bills $20 against the drive's own $12 cap, so
   // the agent's key is over the moment the key is used.
   meterAMonthOf(sqlite, account.id, 2000);
   assert.equal((await writeAt(store, key, "/u/acct_month/over.md")).status, 403);

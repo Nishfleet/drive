@@ -13,10 +13,11 @@ import {
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyCeilingUsd,
+  monthlyMaximumUsd,
 } from "../src/billing.js";
 import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
+import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { PAGES, SITE } from "../src/seo.js";
 
@@ -35,12 +36,12 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
 // The price numbers, worked out the way the invoice works them out: a month
-// that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
-// the same gb. Nothing in these tests types a dollar figure.
+// that stored `tb` terabytes all month is gb x 43,800 GB-minutes, whose
+// average is the same gb. Nothing in these tests types a dollar figure.
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
+  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH });
 }
 
 /** @param {number} amount */
@@ -134,18 +135,16 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The rate, both halves of the ceiling, the free credit and the cap, each
+  // The headline, the rule, no minimum, founding pricing and the cap, each
   // read from the one config the invoice reads.
-  assert.ok(page.includes("2¢ per GB"), "the pricing page must state the rate");
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine]) {
+    assert.ok(page.includes(line), `the pricing page must state "${line}"`);
+  }
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.floorUsd)),
-    "the pricing page must state the ceiling floor",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the pricing page must state the maximum per TB",
   );
-  assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the pricing page must state the per-TB ceiling",
-  );
-  assert.ok(page.includes("$10 a month membership"), "the pricing page must state the membership");
+  assert.doesNotMatch(page, /membership|ceiling/i, "the pricing page must not name the old rule");
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the pricing page must state the default cap",
@@ -154,17 +153,17 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
 
 test("every worked example on the pricing page is the invoice's own arithmetic", () => {
   const page = shipped("pricing.md");
-  for (const tb of [0.8, 1.3, 2, 5]) {
+  for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyCeilingUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
-  // ceiling exists for, so the page cannot quietly drop the ceiling.
+  // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
     meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
-    "2 TB metered must be more than 2 TB billed, or the ceiling is not being applied",
+    "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });
 
@@ -287,8 +286,8 @@ test("the changelog opens today and every entry is a real line", () => {
   const page = shipped("changelog.md");
   assert.match(page, /## \d{4}-\d{2}-\d{2}/, "the changelog must open with a date heading");
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the changelog must state the ceiling it recorded",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the changelog must state the maximum it recorded",
   );
 });
 
@@ -635,7 +634,7 @@ test("the README describes the drive and points at the docs", () => {
     "the README must not still be the template stub",
   );
   assert.match(readme, /^# Drive$/m, "the README must name the product");
-  assert.match(readme, /2¢ per GB a month/, "the README must state the rate");
+  assert.ok(readme.includes(PRICE.headline), "the README must state the price");
   for (const page of DOC_PAGES) {
     assert.ok(readme.includes(`${SITE.origin}${page.url}`), `the README must point at ${page.url}`);
   }

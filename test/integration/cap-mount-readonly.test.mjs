@@ -83,14 +83,13 @@ const MOUNT_FLAGS = [
   "128k",
 ];
 
-// Usage that counts at $16 a month (2 TB peak), so a $12 cap is over it and a
-// $20 cap is under it: the same month flips the cap the way a real month does,
+// Usage that counts at $20 a month (2 TB on average), so a $12 cap is over it
+// and a $25 cap is under it: the same month flips the cap the way a real month does,
 // with no change to the usage itself. Verified against capStatus directly in
 // the first test below, so the numbers here cannot drift into a month that
 // does not straddle the cap.
 const STRADDLING_MONTH = Object.freeze({
   gbMinutes: 2000 * 43_800,
-  peakGb: 2000,
   storedGb: 2000,
   storedDaily: [],
   downloadBytes: 0,
@@ -99,7 +98,7 @@ const STRADDLING_MONTH = Object.freeze({
   cardAdded: true,
 });
 const CAP_BEFORE = 12;
-const CAP_AFTER = 20;
+const CAP_AFTER = 25;
 
 const REGION = "us-east-1";
 /** rclone 1.71 is on PATH in CI and on the VPS. */
@@ -656,7 +655,7 @@ async function proof(t, workDir) {
     { usage: raisedMonth, keys: await store.listCapKeys(account.id) },
     store.keyProviderFor(account.id),
   );
-  assert.equal(raised.state, "active", "the same month under a $20 cap is active");
+  assert.equal(raised.state, "active", "the same month under a $25 cap is active");
   assert.equal(raised.mount.restart, true, "and the restore restarts the mount too");
   await store.setAccountState(account.id, raised.state);
   assert.equal(raised.applied.length, 1, "the read-only key is the one replaced on the restore");
@@ -749,19 +748,13 @@ async function proof(t, workDir) {
 }
 
 test("the straddling month really does straddle the cap", async () => {
-  // The proof above reads a $12 cap as over the month and a $20 cap as under
-  // it. If a pricing change moved the ceiling, that would silently stop being
+  // The proof above reads a $12 cap as over the month and a $25 cap as under
+  // it. If a pricing change moved the maximum, that would silently stop being
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
   const { capStatus } = await import("../../src/billing.js");
-  assert.equal(
-    capStatus(STRADDLING_MONTH.gbMinutes, STRADDLING_MONTH.peakGb, CAP_BEFORE).state,
-    "read_only",
-  );
-  assert.equal(
-    capStatus(STRADDLING_MONTH.gbMinutes, STRADDLING_MONTH.peakGb, CAP_AFTER).state,
-    "active",
-  );
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_BEFORE).state, "read_only");
+  assert.equal(capStatus(STRADDLING_MONTH.gbMinutes, CAP_AFTER).state, "active");
 });
 
 test("the cap swap on a real mount: read-only, no file lost, writing again after the raise", async (t) => {

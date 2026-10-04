@@ -9,16 +9,12 @@
 // The price itself is not declared here: src/pricing.js is the one price
 // source, and BILLING below is built from PRICE so the tags, the JSON-LD and
 // llms.txt render the same numbers and sentences the page does (issue #23).
-// The rule (docs/spec.md and docs/build-spec.md, "Bill ceiling", Nish
-// 2026-09-30, issue #29):
+// The rule (drive#463, Nish 2026-10-04): pay only for what you store.
 //
-//     bill = min(metered, max($12, $8 x peak TB))
+//     bill = min(2¢ x avg GB, $10 x max(1, avg TB))
 //
-// where the metered rate is 2¢/GB-month billed by the minute. Read that as a
-// plateau, not as per-TB caps: the cap is a flat $12 until the stored size
-// passes 1.5 TB, and only then does it rise at $8 for each TB. So 800 GB bills
-// min(16, 12) = $12, 1.6 TB bills min(32, 12.80) = $12.80, 2 TB bills
-// min(40, 16) = $16, and 5 TB bills min(100, 40) = $40.
+// So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
+// bills $30. No minimum and no plans.
 import { PRICE } from "./pricing.js";
 
 const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
@@ -26,25 +22,22 @@ const SITE_NAME = "Drive";
 const SITE_TITLE = `Drive — ${PRICE.titleLine}`;
 // The same sentence the page's own meta description already carries, so the
 // search result, the share card and the page agree word for word.
-const SITE_DESCRIPTION = `A Finder drive for people and their agents. ${PRICE.ceiling}`;
+const SITE_DESCRIPTION = `A Finder drive for people and their agents. ${PRICE.headline}`;
 
 export const BILLING = Object.freeze({
   // The metered rate, in US dollars per GB per month. Carried as a string
   // because that is the form schema.org documents for a price, so it renders
   // identically in the config, in the inline JSON-LD and to a validator.
   rateUsdPerGbMonth: PRICE.rateUsdPerGbMonth.toFixed(2),
-  // The cap is max(capFloorUsd, capUsdPerTb x TB): a flat floor until the
-  // stored size passes capFloorUsd / capUsdPerTb TB, then a per-TB slope. The
-  // names say plateau and slope so no reader takes them for per-TB caps.
-  capFloorUsd: PRICE.capFloorUsd,
-  capUsdPerTb: PRICE.capUsdPerTb,
-  // Both sentences come from the one price source, so one edit moves the tags,
-  // the JSON-LD and llms.txt together.
-  ceiling: PRICE.ceiling,
-  membershipLine: PRICE.membershipLine,
+  // The maximum for each TB stored, never less than one TB's worth.
+  maxUsdPerTb: PRICE.maxUsdPerTb,
+  // Every sentence comes from the one price source, so one edit moves the
+  // tags, the JSON-LD and llms.txt together.
+  headline: PRICE.headline,
+  noMinimumLine: PRICE.noMinimumLine,
   foundingLine: PRICE.foundingLine,
-  // The ceiling as arithmetic, for the offer description and llms.txt. Stated
-  // in words as well as symbols because a crawler reads prose, not a formula.
+  // The rule in words, for the offer description and llms.txt, because a
+  // crawler reads prose, not a formula.
   rule: PRICE.rule,
 });
 
@@ -159,10 +152,10 @@ export function absoluteUrl(path) {
 /**
  * The JSON-LD for the pricing page, as a JS object. schema.org's
  * SoftwareApplication carries the price, so a Rich Results test and an
- * AI-answer crawler read the same ceiling the prose states.
+ * AI-answer crawler read the same maximum the prose states.
  *
  * On the shape: a metered product has no single product price, so `price` is
- * the bill ceiling for one TB-month rather than the 2¢ rate. A bare 0.02 in
+ * the maximum for one TB-month rather than the 2¢ rate. A bare 0.02 in
  * `price` would be read as "this whole product costs two cents", which is the
  * opposite of the page. UnitPriceSpecification carries the unit, and the
  * description carries the full rule, so nothing in the markup is a bare number
@@ -186,7 +179,7 @@ export function absoluteUrl(path) {
  * }}
  */
 export function softwareApplicationLd() {
-  const price = BILLING.capFloorUsd.toFixed(2);
+  const price = BILLING.maxUsdPerTb.toFixed(2);
   return {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -206,7 +199,7 @@ export function softwareApplicationLd() {
         priceCurrency: "USD",
         unitText: "TB-month",
       },
-      description: `${BILLING.ceiling} ${BILLING.rule}`,
+      description: `${BILLING.headline} ${BILLING.rule}`,
     },
   };
 }

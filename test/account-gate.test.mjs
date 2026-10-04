@@ -970,7 +970,7 @@ test("the usage read is behind the same gate", async () => {
   assert.equal(handleUsageRequest(new Request("https://drive.test/api/usage"), null).status, 401);
   const signedIn = handleUsageRequest(new Request("https://drive.test/api/usage"), ACCOUNT_A);
   assert.equal(signedIn.status, 200);
-  assert.equal((await signedIn.json()).billUsd, 10);
+  assert.equal((await signedIn.json()).billUsd, 0, "an empty month bills $0: no minimum");
 });
 
 // -------------------------------------------------------------- the cap write

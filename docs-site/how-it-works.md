@@ -74,13 +74,12 @@ and cannot do.
 ## How the bill is counted
 
 The meter counts every GB you keep, by the minute. At the end of the month the
-rate is {{RATE}} on the month's GB-months, and that number is cut off at the
-ceiling: a flat {{CEILING_FLOOR}} until the drive passes 1.5 TB, then
-{{CEILING_PER_TB}} a TB. {{MEMBERSHIP}} Downloads are counted
+rate is {{RATE}} on the month's GB-months, and the bill is never more than
+{{MAX_PER_TB}} for each TB. {{NO_MINIMUM}} Downloads are counted
 separately. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).
 
 ## Next
 
 - [Quickstart](/quickstart) — five steps to a mounted drive.
-- [Pricing and your bill](/pricing) — the rate and the ceiling.
+- [Pricing and your bill](/pricing) — the rate and the maximum.

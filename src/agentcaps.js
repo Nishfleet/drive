@@ -148,7 +148,7 @@ function checkedUsd(value, name) {
  * cheap.
  *
  * @param {{
- *   usage: {gbMinutes: number, peakGb: number},
+ *   usage: {gbMinutes: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
  *   requestsToday?: number,
  *   day?: string,
@@ -166,10 +166,10 @@ export function agentCapStatus(agent) {
   }
   const usage = agent.usage;
   if (typeof usage !== "object" || usage === null) {
-    throw new TypeError(`agentCapStatus needs usage {gbMinutes, peakGb}, got ${String(usage)}`);
+    throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
-  const counted = capStatus(usage.gbMinutes, usage.peakGb, caps.monthlyCapUsd);
+  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd);
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({
