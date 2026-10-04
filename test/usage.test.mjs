@@ -457,6 +457,40 @@ test("the empty chart is a state with a next step, not a blank panel", () => {
   assert.match(page, /at most \$\{Math\.round\(largest\)\} GB/);
 });
 
+test("a new account's month says it is empty instead of showing a blank area", () => {
+  // The bug (drive issue #427): the status slot in "This month" is reserved from
+  // the first paint, and a reachable read hid it, so a drive with nothing stored
+  // showed a heading over empty space above a chart with nothing to draw.
+  // The words are USAGE_LABELS.monthEmpty's, so the page cannot drift from the
+  // module the way its other copy cannot.
+  assert.equal(USAGE_LABELS.monthEmpty.what, "Nothing stored yet.");
+  assert.match(page, /what: "Nothing stored yet\."/);
+  assert.match(page, new RegExp(`next: ${JSON.stringify(USAGE_LABELS.monthEmpty.next)}`));
+  // Both sentences are complete: what says the state, next says what to do, the
+  // same shape every empty state in the product has (src/status.js, #32).
+  assert.match(USAGE_LABELS.monthEmpty.what, /\.$/);
+  assert.match(USAGE_LABELS.monthEmpty.next, /\.$/);
+  assert.match(USAGE_LABELS.monthEmpty.next, /drive folder/);
+  // The empty month is what fills the slot, and it is its own state: not an
+  // error, not signed out, and not the same sentence as the chart's own note.
+  assert.match(page, /function sayMonthEmpty\(\)/);
+  assert.match(
+    page,
+    /function sayMonthEmpty\(\)[\s\S]*?statusEl\.dataset\.state = "empty";[\s\S]*?statusEl\.hidden = false;\n\}/,
+  );
+  // The status it needs is the month's own: no stored day to draw. A month that
+  // stored and then emptied itself still has history, and keeps the normal
+  // reachable read.
+  assert.match(page, /if \(summary\.storedDaily\.length === 0\) \{\s*sayMonthEmpty\(\);/);
+  // The chart's own note stays where it is, under the chart it replaces, so the
+  // page does not say the same thing twice in two boxes.
+  assert.match(page, /<div class="empty" id="storage-empty" hidden>/);
+  assert.notEqual(USAGE_LABELS.monthEmpty.what, USAGE_LABELS.storageEmpty.what);
+  // It goes away again on the next read that has something to show: the status
+  // is hidden on every reachable read before the empty month puts it back.
+  assert.match(page, /function sayReachable\(\) \{\s*statusEl\.hidden = true;/);
+});
+
 test("no month is painted before a read has landed", () => {
   // The readouts ship empty, not as $0.00: a month that has not been read must
   // not look like a priced month of zeros, and the empty chart sits inside the
