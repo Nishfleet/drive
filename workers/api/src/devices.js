@@ -846,8 +846,19 @@ export function createD1DeviceStore(db, options = {}) {
      */
     async cardAdded(accountId) {
       const row = await first(db, "SELECT card_added_at FROM accounts WHERE id = ?1", accountId);
-      const at = /** @type {{card_added_at?: unknown} | null} */ (row)?.card_added_at;
-      return typeof at === "number" && Number.isFinite(at) && at > 0;
+      if (!row || typeof row !== "object") {
+        return false;
+      }
+      const at = /** @type {{card_added_at: unknown}} */ (row).card_added_at;
+      if (at === null || at === undefined) {
+        return false;
+      }
+      if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) {
+        throw new TypeError(
+          `accounts.card_added_at must be a unix second or null, got ${String(at)}`,
+        );
+      }
+      return true;
     },
 
     /**

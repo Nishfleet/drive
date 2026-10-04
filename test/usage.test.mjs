@@ -789,11 +789,47 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);
 });
 
-test("no bill is shown as if charged while no card is on file", () => {
+test("no bill is shown as if charged while no card is on file", async () => {
   // drive#417: until a card is really on file the page hides the invoice rows
   // rather than presenting a bill nobody was charged, and the cost line it does
-  // show is the no-charge sentence the endpoint sends.
+  // show is the no-charge sentence the endpoint sends. The regex is the source
+  // gate; the run is the page's own script against a real summary.
   assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
+  const cardless = runPage({
+    ...usageSummary({
+      gbMinutes: 0,
+      peakGb: 0,
+      storedGb: 0,
+      storedDaily: [],
+      downloadBytes: 0,
+      averageStoredGb: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      cardOnFile: false,
+    }),
+    uploadLine: null,
+  });
+  await settle();
+  assert.equal(elementOf(cardless.elements, "cost").textContent, PRICE.noChargeYet);
+  assert.equal(elementOf(cardless.elements, "bill-lines").hidden, true);
+
+  const charged = runPage({
+    ...usageSummary({
+      gbMinutes: 0,
+      peakGb: 0,
+      storedGb: 0,
+      storedDaily: [],
+      downloadBytes: 0,
+      averageStoredGb: 0,
+      capUsd: BILLING_CONFIG.defaultCapUsd,
+      cardAdded: true,
+      cardOnFile: true,
+    }),
+    uploadLine: null,
+  });
+  await settle();
+  assert.equal(elementOf(charged.elements, "cost").textContent, "$10.00");
+  assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
 });
 
 test("the cap slider shows the account's own cap, over the range a cap can take", () => {
