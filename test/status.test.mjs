@@ -559,10 +559,23 @@ test("the page's Devices table has a last-sync column and its empty states", () 
 });
 
 // The page's install block is the one place it names a system: the renderer
-// fills #install-lines from the module, so a shell that carried one row itself
-// would be a second copy of the module's words.
-test("the shell carries an empty install list for the renderer to fill", () => {
-  assert.match(shell, /<ul class="install" id="install-lines">\s*<!--[^>]*-->\s*<\/ul>/);
+// fills #install-lines from the module, so a shell that carried one row's
+// words itself would be a second copy of the module's words. The shell does
+// carry one wordless row per system, because rows that appear only when the
+// script runs push the steps below them down after first paint, and that
+// layout shift broke the CLS budget (lighthouserc.json) on main.
+test("the shell carries one wordless install row per system for the renderer to fill", () => {
+  const list = shell.match(/<ul class="install" id="install-lines">([\s\S]*?)<\/ul>/);
+  assert.ok(list, "the shell must carry #install-lines");
+  const rows = list[1].replace(/<!--[\s\S]*?-->/g, "").match(/<li>[\s\S]*?<\/li>/g) ?? [];
+  assert.equal(rows.length, INSTALL_LINES.length, "one placeholder row per system");
+  for (const row of rows) {
+    assert.equal(
+      row,
+      '<li><span class="os">&nbsp;</span><code>&nbsp;</code></li>',
+      "a placeholder row has the rendered row's shape and no words",
+    );
+  }
   assert.match(
     readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8"),
     /required\("install-lines"\)\.replaceChildren/,
