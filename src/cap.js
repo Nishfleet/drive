@@ -418,8 +418,12 @@ function capShapeError(given) {
   // cap 20" answered a person holding the slider with a command they have no
   // way to run, and "save it again" answered a terminal with a page's words
   // (drive#421). The one sentence has to read right at both.
+  // JSON.stringify keeps the culprit delimited: without it an empty amount
+  // reads "got ." and "20 dollars" reads as if the whole thing were what the
+  // person typed. The quotes are also what the api's 400 body carries, so the
+  // CLI prints what the Worker said rather than a reworded copy of it.
   return (
-    `A spending cap is a dollar amount like 20 or 12.50, got ${given}. ` +
+    `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
     "Type a number like that again."
   );
 }
@@ -488,14 +492,12 @@ export async function handleCapRequest(request, account, capStore) {
   if (!isSameOriginRequest(request)) {
     // A specific line rather than the generic one: "try again in a moment"
     // would be advice to retry a request that is always refused, and the one
-    // next step is to do it from the drive page.
-    return new Response(
-      JSON.stringify({ error: "You can only change a spending cap from the drive page." }),
-      {
-        status: 403,
-        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-      },
-    );
+    // next step is to do it from the drive page. The words are the one message
+    // table's, the way every other user-facing failure sentence in this repo
+    // is (drive#421).
+    return jsonCapError(failureMessage("cap-from-page"), 403, {
+      "cache-control": "no-store",
+    });
   }
   /** @type {unknown} */
   let body;
@@ -544,10 +546,8 @@ export async function handleCapRequest(request, account, capStore) {
           capUsd: usd,
           cardAdded: true,
         };
-  const report = await enforceCap(
-    { usage, keys: await capStore.listCapKeys(account.id) },
-    capStore.keyProviderFor(account.id),
-  );
+  const keys = await capStore.listCapKeys(account.id);
+  const report = await enforceCap({ usage, keys }, capStore.keyProviderFor(account.id));
   await capStore.setAccountState(account.id, report.state);
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
@@ -617,12 +617,21 @@ function swapCredential(report) {
  * @param {string} message
  * @param {number} status
  */
-function jsonCapError(message, status) {
+/**
+ * @param {string} message
+ * @param {number} status
+ * @param {Record<string, string>} [extraHeaders]
+ */
+function jsonCapError(message, status, extraHeaders) {
+  // no-store on every answer here: a cap write is a money and key state, and a
+  // shared cache holding one account's 400 would answer another account's 400
+  // with it. The origin gate's 403 and the store-missing 503 carry it too.
   return new Response(JSON.stringify({ error: message }), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      ...extraHeaders,
     },
   });
 }

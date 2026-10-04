@@ -1034,6 +1034,11 @@ test("a signed-in browser's cap write passes; a forged cross-site one is refused
     "sec-fetch-site": "cross-site",
   });
   assert.equal(forged.status, 403);
+  // The words are the one message table's, and the next step names the page
+  // the write is allowed from rather than a retry that always fails.
+  assert.deepEqual(await forged.json(), {
+    error: failureMessage("cap-from-page"),
+  });
   // Nothing moved: the cap the person set is still the cap in force.
   assert.equal(storedCapCents(), 2000, "a refused cross-site write must leave the cap alone");
 

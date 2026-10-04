@@ -614,9 +614,13 @@ function saySignedOut(message) {
   statusEl.hidden = false;
   bodyEl.hidden = true;
   // An account on this browser is what a write needs, so a signed-out page
-  // cannot move a cap: the slider and the button that saves it both sleep.
+  // cannot move a cap: the slider and the button that saves it both sleep, and
+  // a save that was in flight when the session ended has no answer left to
+  // wait for, so its two hints sleep with them.
   capSlider.disabled = true;
   capSaveEl.hidden = true;
+  capSavingEl.hidden = true;
+  capSavedEl.hidden = true;
 }
 
 function sayReachable() {
@@ -869,7 +873,14 @@ capSlider.addEventListener("input", () => {
   // A chosen number is not a saved number: the button is there to make it one,
   // so it appears the moment the slider leaves the cap in force and stays
   // until the save lands or this page's own read catches up with it.
+  //
+  // The note goes back to its own words at the same time. A worker's sentence
+  // left sitting under the slider after it was read would answer a number the
+  // person has since changed, and it is the one line on this page that names
+  // an amount the person did not choose.
   capSaveEl.hidden = false;
+  capNoteWhatEl.textContent = CAP_NOTE.what;
+  capNoteNextEl.textContent = CAP_NOTE.next;
 });
 capSaveEl.addEventListener("click", () => {
   saveCap();
