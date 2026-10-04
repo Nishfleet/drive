@@ -61,6 +61,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
  *
  * A test that asserts a cap really is stored reads the row back through this
  * list rather than through the harness's default one (drive issue #421).
+ *
+ * The order is `wrangler d1 migrations apply`'s own, which is the order the
+ * names sort in, so a test cannot pass on a schema production builds in
+ * another order: `0012_agent_key_ttl.sql` lands before
+ * `0012_branch_snapshot_kv.sql` here exactly as the filenames sort.
  */
 export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0002_file_index.sql",
@@ -75,8 +80,8 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0009_upload_request_caps.sql",
   "drive/0010_accounts_devices.sql",
   "drive/0011_rate_limit.sql",
-  "drive/0012_branch_snapshot_kv.sql",
   "drive/0012_agent_key_ttl.sql",
+  "drive/0012_branch_snapshot_kv.sql",
   "drive/0013_billing_pushes.sql",
   "drive/0014_device_queues.sql",
   "drive/0015_branch_row_id.sql",

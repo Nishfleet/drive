@@ -748,6 +748,15 @@ test("drive cap takes a dollar amount and nothing else", () => {
   // in a command only the CLI can run, and it cannot name a page a terminal
   // user cannot see (drive#421).
   assert.throws(() => parseCapUsd("abc"), /Type a number like that again/);
+  // Zero is a cap, and the usage page's slider offers it (min="0"), so the
+  // api has to take it: a page that offered a number the Worker refused would
+  // answer the number the page itself put there (drive#421).
+  assert.equal(parseCapUsd("0"), 0);
+  assert.equal(parseCapUsd("0.00"), 0);
+  // The culprit stays delimited, so an empty amount and a stray word do not
+  // read as part of the sentence.
+  assert.throws(() => parseCapUsd(""), /got ""\./);
+  assert.throws(() => parseCapUsd("20 dollars"), /got "20 dollars"\./);
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
