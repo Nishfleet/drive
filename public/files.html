@@ -511,11 +511,38 @@ dialog.viewer::backdrop {
       <a href="/">Pricing</a>
       <a href="/get-started">Get started</a>
       <a href="/usage">Usage</a>
-      <a href="/signin">Sign in</a>
+      <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
     </header>
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
   </div>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
   <nav class="tabs" aria-label="Views">
     <button type="button" id="tab-files" aria-pressed="true">Files</button>
     <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
@@ -666,6 +693,7 @@ function showSignedOut(message) {
   signedOutWhat.textContent = message;
   signedOut.hidden = false;
   uploadButton.disabled = true;
+  showSessionNav(false);
 }
 
 // The other half of the sign-in panel: a read that succeeds proves this
@@ -675,6 +703,7 @@ function showSignedOut(message) {
 function showSignedIn() {
   signedOut.hidden = true;
   uploadButton.disabled = false;
+  showSessionNav(true);
 }
 
 // One reporter for a caught failure, so a caller in the middle of an action
@@ -1114,7 +1143,65 @@ tabDeleted.addEventListener("click", () => {
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
 
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A successful files read flips it to Sign out
+// and Sign out everywhere; a 401 flips it back. The posts go to the same
+// /api/signin steps the route already serves.
+const SIGNIN_ENDPOINT = "/api/signin";
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    say("You look offline. Check your connection and try again.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      payload = {};
+    }
+    say(payload.error || "That did not work. Try again in a moment.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+
 refresh();
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

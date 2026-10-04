@@ -421,6 +421,41 @@ const IDRIVE_RESELLER_API = "https://api.idrivee2.com/api/reseller/v1";
  * The half-configured stub matches the KeyProvider shape (`mint`, `revoke`,
  * `swapToReadOnly`) so a later cap swap hits the same refusal, not a missing
  * method.
+ */
+
+/**
+ * The endpoint and region `drive login` writes into this device's storage
+ * settings. The account's own bucket comes from the mint's scope
+ * (`keyprovider.js` `scopeFor`), not from a shared deployment bucket.
+ * @param {{[key: string]: unknown}} env
+ * @returns {{endpoint: string, region: string}|undefined}
+ */
+export function storageLocationFromEnv(env) {
+  if (typeof env.STORAGE_ENDPOINT === "string" && env.STORAGE_ENDPOINT !== "") {
+    return {
+      endpoint: env.STORAGE_ENDPOINT,
+      region:
+        typeof env.STORAGE_REGION === "string" && env.STORAGE_REGION !== ""
+          ? env.STORAGE_REGION
+          : "us-east-1",
+    };
+  }
+  if (typeof env.IDRIVE_E2_API_TOKEN === "string" && env.IDRIVE_E2_API_TOKEN !== "") {
+    return {
+      endpoint:
+        typeof env.IDRIVE_S3_ENDPOINT === "string" && env.IDRIVE_S3_ENDPOINT !== ""
+          ? env.IDRIVE_S3_ENDPOINT
+          : "https://s3.eu-west-3.idrivee2.com",
+      region:
+        typeof env.IDRIVE_S3_REGION === "string" && env.IDRIVE_S3_REGION !== ""
+          ? env.IDRIVE_S3_REGION
+          : "eu-west-3",
+    };
+  }
+  return undefined;
+}
+
+/**
  * @param {{[key: string]: unknown}} env
  * @returns {ReturnType<typeof s3KeyProviderFromEnv>|ReturnType<typeof createIdriveKeyProvider>|null}
  */
@@ -532,6 +567,7 @@ function storeFor(env) {
     keyStore = createMemoryStore({
       signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
       keyProvider: keyProviderFor(env) ?? undefined,
+      storage: storageLocationFromEnv(env),
       // Teams are D1-backed for the same reason (drive#20): a team and its
       // members must survive the isolate that created them, because "the owner
       // removes a member and the key stops working" is a claim about the next

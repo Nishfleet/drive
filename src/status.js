@@ -19,6 +19,16 @@ import { failureMessage } from "./messages.js";
 // about what the one command is.
 export const INSTALL_COMMAND = "drive init";
 
+// The command that connects this machine to the account before `drive init`
+// runs: it opens the browser, mints the machine's key and writes the storage
+// settings, so init needs no pasted keys (drive issue #415).
+export const LOGIN_COMMAND = "drive login";
+
+// The two lines the Get started box shows, in the order they run: log in,
+// then set up. The install line for each system sits above the box
+// (INSTALL_LINES), so the box only carries the drive's own commands.
+export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
+
 // The one line that puts the command on a machine, one row per system, shown
 // above INSTALL_COMMAND so a new person sees what to paste before they are told
 // what to paste it into (drive issue #428). These are the same three lines the
@@ -32,13 +42,11 @@ export const INSTALL_LINES = Object.freeze([
   Object.freeze({ os: "Linux, Fedora or RHEL", line: "sudo dnf install drive" }),
 ]);
 
-// What the page walks through, in order. The CLI is not shipped yet
-// (cmd/drive lands with build step 2), so the first two steps describe what
-// `drive init` does rather than a second install path.
+// What the page walks through, in order: log in, approve, watch it flip.
 export const FIRST_RUN_STEPS = Object.freeze([
   {
-    title: "Run the command",
-    body: `Paste ${INSTALL_COMMAND} into the terminal on the Mac you want the drive on.`,
+    title: "Log in and set up",
+    body: `Paste these two commands into the terminal on the Mac you want the drive on:\n${FIRST_RUN_COMMAND}`,
   },
   {
     title: "Sign in in the browser",
@@ -75,7 +83,7 @@ export const SYNCED_WINDOW_MS = 15 * 60 * 1000;
 export const CONNECTION_COPY = Object.freeze({
   waiting: {
     what: "Waiting for this Mac to sign in.",
-    next: `Run ${INSTALL_COMMAND} in your terminal. This page updates on its own.`,
+    next: `Run ${LOGIN_COMMAND} in your terminal. This page updates on its own.`,
   },
   connected: {
     what: "Connected. Your drive is mounted on this Mac.",
@@ -94,7 +102,7 @@ export const CONNECTION_COPY = Object.freeze({
 export const EMPTY_STATES = Object.freeze({
   devices: {
     what: "No other devices yet.",
-    next: "Run drive init on another Mac, then sign in.",
+    next: "Run drive login on another Mac, then sign in.",
   },
   activity: {
     what: "Nothing has synced yet.",

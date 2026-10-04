@@ -99,7 +99,7 @@ func runCap(args []string) error {
 	// Mount.Restart was already required above; a credential with restart
 	// false never reaches here.
 	if cred := answer.Credential; cred != nil && cred.AccessKeyID != "" && cred.Secret != "" {
-		cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret)
+		cfg, err := LoadStorageConfig("", "", "", "", "", cred.Secret, storageFromDisk(home))
 		if err != nil {
 			return fmt.Errorf("restart the mount: %w", err)
 		}
@@ -124,7 +124,7 @@ func runCap(args []string) error {
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}
-	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey)
+	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey, storageFromDisk(home))
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}

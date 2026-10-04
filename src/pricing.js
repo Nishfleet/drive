@@ -134,6 +134,13 @@ export function buildPrice({
     noMinimumLine: "No minimum. No plans.",
     // Founding copy never names the 1,000 or a count (drive#386).
     foundingLine: `Founding member pricing: half price for good, ${centsWords(foundingRateCents)} per GB and never more than $${foundingMax} per TB.`,
+    // drive#417: until a card is really on file the usage page says no charge has
+    // been made and shows no bill as if charged. `monthBillCents()` still works
+    // the bill out (money, untouched); this is the word the page and the CLI
+    // print instead for a card-less month, so the two cannot disagree. A stored
+    // `card_added_at` (accounts.row) is the record a card is on file; real
+    // capture waits on the Dodo key (#325).
+    noChargeYet: "No charge has been made. There is no card on file yet.",
     needCard: `We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about ${centsWords(20 * rateCents)} a month.`,
     // The whole rule in words, for the examples note, the offer description
     // and llms.txt.

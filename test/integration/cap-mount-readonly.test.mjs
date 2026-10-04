@@ -58,6 +58,7 @@ import { promisify } from "node:util";
 
 import { dollarsToCapCents, enforceCap } from "../../src/cap.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { bucketForAccount } from "../../workers/api/src/keyprovider.js";
 import { createS3Client, provisionBucket } from "../../workers/api/src/s3.js";
 import { createS3KeyProvider } from "../../workers/api/src/s3-keys.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
@@ -329,9 +330,13 @@ async function proof(t, workDir) {
   const suffix = randomBytes(6).toString("hex");
   const rootAccessKey = `drivecap${suffix}`;
   const rootSecretKey = randomBytes(24).toString("hex");
-  const bucket = "drive-cap-mount";
   const account = { id: `acct_${suffix}`, email: `cap-${suffix}@example.com` };
   const prefix = `u/${account.id}/`;
+  // The account's own bucket (`drv-<accountId>`, keyprovider.js
+  // `bucketForAccount`, drive#371): every credential this proof mints is
+  // scoped to it by the storage server, and the cap swap has to keep the
+  // replacement inside it (drive#462).
+  const bucket = bucketForAccount(account.id);
 
   const standin = await startMinioStandin(
     {
@@ -366,7 +371,6 @@ async function proof(t, workDir) {
   const keyProvider = createS3KeyProvider({
     endpoint: standin.endpoint,
     region: REGION,
-    bucket,
     masterAccessKeyId: rootAccessKey,
     masterSecretAccessKey: rootSecretKey,
   });
@@ -396,6 +400,7 @@ async function proof(t, workDir) {
   const deviceCredential = await keyProvider.mint({
     prefix,
     capabilities: ["list", "read", "write", "delete"],
+    bucket,
   });
   const deviceKey = {
     keyId: `key_device_${suffix}`,

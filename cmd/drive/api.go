@@ -57,9 +57,13 @@ type MintedKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
 	Secret       string   `json:"secret"`
+	SessionToken string   `json:"sessionToken,omitempty"`
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
 	ExpiresAt    *int64   `json:"expiresAt"`
+	Endpoint     string   `json:"endpoint,omitempty"`
+	Bucket       string   `json:"bucket,omitempty"`
+	Region       string   `json:"region,omitempty"`
 }
 
 // Account is the account a device token belongs to.
@@ -232,8 +236,15 @@ func SignIn(client *APIClient, deviceName string, out io.Writer) (string, Accoun
 	if err != nil {
 		return "", Account{}, err
 	}
+	page := code.VerificationURIComplete
+	if page == "" {
+		page = code.VerificationURI
+	}
 	fmt.Fprintf(out, "Approve this device in the browser:\n  %s\n  code: %s\n",
-		code.VerificationURI, code.UserCode)
+		page, code.UserCode)
+	if err := openURL(page); err != nil {
+		fmt.Fprintln(out, "Could not open the browser. Open that page.")
+	}
 	fmt.Fprintln(out, "Waiting for approval.")
 
 	interval := time.Duration(code.Interval) * time.Second
@@ -453,6 +464,13 @@ type Credentials struct {
 	DeviceToken string `json:"deviceToken"`
 	AccountID   string `json:"accountId"`
 	AccountName string `json:"accountName"`
+	Endpoint    string `json:"endpoint,omitempty"`
+	Bucket      string `json:"bucket,omitempty"`
+	Prefix      string `json:"prefix,omitempty"`
+	Region      string `json:"region,omitempty"`
+	DownloadURL string `json:"downloadUrl,omitempty"`
+	AccessKeyID string `json:"accessKeyId,omitempty"`
+	KeyID       string `json:"keyId,omitempty"`
 }
 
 // CredentialsPath is the signed-in device's own file. It is next to the rclone

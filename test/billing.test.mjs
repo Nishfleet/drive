@@ -301,7 +301,13 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   const body = await response.json();
   assert.equal(body.billUsd, 0, "no minimum: an empty month bills nothing");
   assert.equal(body.saved, null, "an empty month has no line to show");
+  // An account this handler was told nothing about has no card on file
+  // (drive#417): the cost label says no charge has been made rather than
+  // showing the membership as a bill. The cap line is the account's own and is
+  // unchanged (the write cap is a separate flag), so only the charge word moves.
   assert.equal(body.cap.capUsd, BILLING_CONFIG.defaultCapUsd);
+  assert.equal(body.cardOnFile, false);
+  assert.equal(body.labels.cost, PRICE.noChargeYet);
 
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
@@ -411,6 +417,31 @@ test("the usage page and the cap check read this one function", () => {
       bill.storageCents / 100,
     );
   }
+});
+
+test("a card-less month shows no charge, and the money is untouched", () => {
+  // drive#417: no card on file means no charge has been taken, so the summary
+  // carries the no-charge sentence as its cost label. What it does not do is
+  // change the bill: monthBillCents() still works the month out, billCents and
+  // billUsd still carry it, and cardOnFile is the one flag the page hides the
+  // invoice rows on.
+  const usage = {
+    gbMinutes: fullMonthGbMinutes(400),
+    storedGb: 400,
+    storedDaily: [],
+    downloadBytes: 0,
+    averageStoredGb: 400,
+    capUsd: BILLING_CONFIG.defaultCapUsd,
+  };
+  const summary = usageSummary(usage);
+  assert.equal(summary.cardOnFile, false, "an unset card state is not a card on file");
+  assert.equal(summary.labels.cost, PRICE.noChargeYet);
+  assert.equal(summary.billUsd, 8, "the one bill function's number is unchanged");
+  assert.equal(summary.billCents.totalCents, 800);
+  // A card on file still shows the bill, and the write-cap basis is its own
+  // flag: a card-less account is shown no charge while its cap line is
+  // untouched (see the usage endpoint's own test).
+  assert.equal(usageSummary({ ...usage, cardOnFile: true }).labels.cost, usd(800));
 });
 
 test("account 1,000 is founding while the offer is open, account 1,001 is not", () => {

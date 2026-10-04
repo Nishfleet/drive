@@ -312,9 +312,36 @@ h2 {
     <a href="/">Pricing</a>
     <a href="/get-started">Get started</a>
     <a href="/usage" aria-current="page">Usage</a>
-    <a href="/signin">Sign in</a>
+      <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
   <main>
     <section aria-labelledby="usage-heading">
       <h1 id="usage-heading">Usage</h1>
@@ -613,6 +640,7 @@ function saySignedOut(message) {
   statusEl.querySelector(".next").textContent = "";
   statusEl.hidden = false;
   bodyEl.hidden = true;
+  showSessionNav(false);
   // An account on this browser is what a write needs, so a signed-out page
   // cannot move a cap: the slider and the button that saves it both sleep, and
   // a save that was in flight when the session ended has no answer left to
@@ -625,6 +653,7 @@ function saySignedOut(message) {
 
 function sayReachable() {
   statusEl.hidden = true;
+  showSessionNav(true);
   // `sayReachable` is the neutral reset: it also clears whatever status state a
   // previous render left on the shared slot (empty, unreachable, signed-out),
   // so only this call's own state — a fresh `sayMonthEmpty` when the month is
@@ -732,7 +761,8 @@ function render(summary) {
     (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
     typeof summary.billCents !== "object" ||
     summary.billCents === null ||
-    !Array.isArray(summary.billCents.lines)
+    !Array.isArray(summary.billCents.lines) ||
+    typeof summary.cardOnFile !== "boolean"
   ) {
     sayUnreachable();
     return;
@@ -775,7 +805,11 @@ function render(summary) {
     row.append(dt, dd);
     billLinesEl.append(row);
   }
-  billLinesEl.hidden = summary.billCents.lines.length === 0;
+  // Until a card is really on file the page shows no bill at all
+  // (drive#417): a card-less month has no charge on it, so the cost line above
+  // is the no-charge sentence and the invoice rows stay hidden rather than
+  // looking like a bill that was taken.
+  billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
   // The upload-progress line is the Worker's own words, so the page sets what
   // it was sent and hides the line when there is no queue to report.
@@ -928,6 +962,58 @@ document.addEventListener("visibilitychange", () => {
     readMonth();
   }
 });
+
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A successful usage read flips it to Sign out
+// and Sign out everywhere; a 401 flips it back. The posts go to the same
+// /api/signin steps the route already serves.
+const SIGNIN_ENDPOINT = "/api/signin";
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    sayUnreachable();
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

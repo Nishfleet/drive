@@ -60,7 +60,7 @@ func TestRemoteForTrimsPrefix(t *testing.T) {
 func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
-	if _, err := LoadStorageConfig("", "", "", "", "", ""); err == nil {
+	if _, err := LoadStorageConfig("", "", "", "", "", "", StorageConfig{}); err == nil {
 		t.Fatal("expected an error when no storage config is given")
 	} else if !strings.Contains(err.Error(), "missing its storage settings") {
 		t.Fatalf("unexpected error text: %v", err)
@@ -71,7 +71,7 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "", "", "", secret)
+	c, err := LoadStorageConfig("http://x", "b", "", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://x", "b", "p", "", "", secret)
+	c, err := LoadStorageConfig("http://x", "b", "p", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "", secret)
+	c, err := LoadStorageConfig("http://from-flag", "b", "p", "", "", secret, StorageConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
 	t.Setenv("DRIVE_S3_SESSION_TOKEN", "envsessiontoken")
 
-	c, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret")
+	c, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{})
 	if err != nil {
 		t.Fatalf("LoadStorageConfig: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
 	// A deployment with permanent credentials sets nothing, and that is not a
 	// missing value: it is the shape of every non-scoped key.
 	t.Setenv("DRIVE_S3_SESSION_TOKEN", "")
-	c, err = LoadStorageConfig("", "", "", "", "", "drivetestsecret")
+	c, err = LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{})
 	if err != nil {
 		t.Fatalf("LoadStorageConfig without a session token: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestLoadStorageConfigRejectsASessionTokenThatWouldInjectAnOption(t *testing
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "DRIVETESTACCESSKEY")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "drivetestsecret")
 	t.Setenv("DRIVE_S3_SESSION_TOKEN", "tok\nno_check_certificate = true")
-	if _, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret"); err == nil {
+	if _, err := LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{}); err == nil {
 		t.Fatal("got nil error for a session token that would inject an rclone option")
 	} else if !strings.Contains(err.Error(), "session token") {
 		t.Errorf("got %q, want it to name the session token", err)
@@ -464,7 +464,7 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 			// the flag, which wins over env.
 			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", c.AccessKey)
 			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", c.SecretKey)
-			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.DownloadURL, c.SecretKey); err == nil {
+			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.DownloadURL, c.SecretKey, StorageConfig{}); err == nil {
 				t.Fatal("want an error for a value that breaks out of its config line")
 			}
 		})
@@ -476,7 +476,7 @@ func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
 	for _, prefix := range []string{"", "/", "u/1", "/u/1/branches/", "u/1/...hidden"} {
-		if _, err := LoadStorageConfig("http://x", "b", prefix, "", "", "s"); err != nil {
+		if _, err := LoadStorageConfig("http://x", "b", prefix, "", "", "s", StorageConfig{}); err != nil {
 			t.Errorf("prefix %q rejected: %v", prefix, err)
 		}
 	}

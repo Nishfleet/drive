@@ -20,6 +20,7 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
+import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 // The page under test is the shipped asset, byte for byte, because that is
@@ -274,4 +275,135 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     true,
     "the listing is still on screen after the download",
   );
+});
+
+test("signed in, the files menu shows Sign out and signing out ends the session", {
+  skip: existsSync(CHROME) ? false : "Chrome is not installed",
+}, async (t) => {
+  // drive#423: the top menu said Sign in while signed in. This is the real
+  // browser run of the changed flow: a signed-in files page shows Sign out,
+  // a click posts the existing sign-out step, and the old cookie is dead.
+  const made = createTestAuth();
+  const { cookie } = await signIn(made, "leaver@example.com");
+  const pass = {
+    async limit() {
+      return { success: true };
+    },
+  };
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: TEST_BASE_URL,
+    SIGNIN_RATE_LIMITER: pass,
+    SIGNIN_GLOBAL_RATE_LIMITER: pass,
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const workerFetch =
+    /** @type {(request: Request, env?: unknown, ctx?: unknown) => Promise<Response>} */ (
+      /** @type {unknown} */ (worker.fetch)
+    );
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", TEST_BASE_URL);
+    if (url.pathname === "/" || url.pathname === "/files") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(page);
+      return;
+    }
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(request.headers)) {
+      if (["host", "connection", "content-length", "accept-encoding"].includes(name)) continue;
+      headers.set(name, Array.isArray(value) ? value.join(", ") : (value ?? ""));
+    }
+    headers.set("cookie", cookie);
+    // The browser's Origin is this loopback server; the Worker sees
+    // https://drive.test. Rewrite so the sign-out post is same-origin the
+    // way a real page on the site is.
+    headers.set("origin", TEST_BASE_URL);
+    headers.set("sec-fetch-site", "same-origin");
+    const isBody = request.method !== "GET" && request.method !== "HEAD";
+    const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
+      method: request.method,
+      headers,
+      body: isBody ? /** @type {BodyInit} */ (Readable.toWeb(request)) : undefined,
+      ...(isBody ? { duplex: "half" } : {}),
+    });
+    workerFetch(workerRequest, env, ctx).then(
+      async (answer) => {
+        response.writeHead(answer.status, Object.fromEntries(answer.headers));
+        response.end(Buffer.from(await answer.arrayBuffer()));
+      },
+      (error) => {
+        response.writeHead(500).end(String(error));
+      },
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object", "the server must bind a port");
+  const origin = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (address).port}`;
+  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
+  let puppeteer;
+  try {
+    ({ default: puppeteer } = await import("puppeteer-core"));
+  } catch {
+    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
+    return;
+  }
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
+  t.after(async () => {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const chrome = await browser.newPage();
+  await chrome.goto(`${origin}/files`, { waitUntil: "networkidle0" });
+  await chrome.waitForFunction(() => {
+    const signout = document.getElementById("nav-signout");
+    return signout instanceof HTMLElement && !signout.hidden;
+  });
+  const menu = await chrome.evaluate(() => {
+    const signin = document.getElementById("nav-signin");
+    const signout = document.getElementById("nav-signout");
+    const everywhere = document.getElementById("nav-signout-all");
+    return {
+      signin:
+        signin instanceof HTMLElement ? { hidden: signin.hidden, text: signin.textContent } : null,
+      signout:
+        signout instanceof HTMLElement
+          ? { hidden: signout.hidden, text: signout.textContent }
+          : null,
+      everywhere:
+        everywhere instanceof HTMLElement
+          ? { hidden: everywhere.hidden, text: everywhere.textContent }
+          : null,
+    };
+  });
+  assert.equal(menu.signin?.hidden, true, "Sign in is gone while signed in");
+  assert.equal(menu.signout?.hidden, false, "Sign out is on the menu while signed in");
+  assert.equal(menu.signout?.text, SIGNIN_COPY.signOut);
+  assert.equal(
+    menu.everywhere?.hidden,
+    false,
+    "Sign out everywhere is on the menu while signed in",
+  );
+  assert.equal(menu.everywhere?.text, SIGNIN_COPY.signOutEverywhere);
+
+  const clicked = await chrome.evaluate(() => {
+    const signout = document.getElementById("nav-signout");
+    if (!(signout instanceof HTMLElement)) return false;
+    signout.click();
+    return true;
+  });
+  assert.equal(clicked, true, "the page must render Sign out");
+  await chrome.waitForSelector("#signed-out:not([hidden])", { timeout: 5000 });
+  const after = await workerFetch(
+    new Request(`${TEST_BASE_URL}${FILES_ENDPOINT}`, { headers: { cookie } }),
+    env,
+    ctx,
+  );
+  assert.equal(after.status, 401, "the old cookie is not a session after Sign out");
 });

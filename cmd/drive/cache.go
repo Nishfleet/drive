@@ -102,7 +102,7 @@ func setCacheMax(home, maxSize, rclone string) error {
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}
-	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey)
+	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey, storageFromDisk(home))
 	if err != nil {
 		return fmt.Errorf("restart the mount: %w", err)
 	}
