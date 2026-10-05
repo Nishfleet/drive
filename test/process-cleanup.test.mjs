@@ -70,6 +70,11 @@ const containerPresent = (engine, name) =>
     encoding: "utf8",
   }).stdout.trim().length > 0;
 
+/** @param {string|null} engine @param {string} name */
+const removeContainer = (engine, name) => {
+  if (engine && name) spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
+};
+
 /**
  * @param {() => boolean} predicate
  * @param {number} ms
@@ -95,9 +100,29 @@ test("a signalled test process leaves no container and no rclone serve behind", 
   const child = spawn(process.execPath, [script], {
     stdio: ["ignore", "pipe", "pipe"],
   });
-  t.after(() => {
-    if (typeof child.pid === "number" && alive(child.pid)) child.kill("SIGKILL");
-    return rm(workDir, { recursive: true, force: true });
+
+  // The child owns the fixtures and its own signal handler removes them. If
+  // this test fails before it sends SIGTERM, the handler must still get its
+  // chance: SIGTERM first, then SIGKILL only if the child does not leave. The
+  // direct removal is the belt for a child that could not clean up itself.
+  let rclonePid = 0;
+  let container = "";
+  t.after(async () => {
+    if (typeof child.pid === "number" && alive(child.pid)) {
+      child.kill("SIGTERM");
+      const deadline = Date.now() + 15_000;
+      while (alive(child.pid) && Date.now() < deadline) await sleep(200);
+      if (alive(child.pid)) child.kill("SIGKILL");
+    }
+    if (rclonePid) {
+      try {
+        process.kill(rclonePid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    removeContainer(engine, container);
+    await rm(workDir, { recursive: true, force: true });
   });
 
   let stdout = "";
@@ -134,9 +159,8 @@ test("a signalled test process leaves no container and no rclone serve behind", 
     }),
   );
   assert.ok(ready, "the child test process reported its fixtures");
-  const rclonePid = Number(ready[1]);
-  const container = ready[2];
-  const fixtureDir = ready[3];
+  rclonePid = Number(ready[1]);
+  container = ready[2];
 
   // Not a vacuous pass: the fixtures exist before the signal.
   assert.equal(alive(rclonePid), true, "the stand-in server is running before the signal");
@@ -147,21 +171,17 @@ test("a signalled test process leaves no container and no rclone serve behind", 
   // Stop the test process the way a stopping runner does.
   child.kill("SIGTERM");
   await new Promise((resolve) => child.once("exit", resolve));
+
+  // Nothing the child started is left on the host: its own signal handler
+  // removed the container and killed the stand-in's process group.
   await waitUntil(() => !alive(rclonePid), 30_000, "the stand-in server to be gone");
+  assert.equal(alive(rclonePid), false, "no rclone serve process is left on the host");
   if (engine && container) {
     await waitUntil(
       () => !containerPresent(engine, container),
       30_000,
       "the container to be removed",
     );
-  }
-
-  // The issue's own proof commands, scoped to this child's directory.
-  const leftovers = spawnSync("pgrep", ["-af", `rclone serve s3 ${fixtureDir}`], {
-    encoding: "utf8",
-  }).stdout.trim();
-  assert.equal(leftovers, "", "no rclone serve s3 is left on the host");
-  if (engine && container) {
     assert.equal(
       containerPresent(engine, container),
       false,

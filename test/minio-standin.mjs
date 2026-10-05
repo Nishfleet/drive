@@ -54,25 +54,37 @@ function installSignalHandlers() {
   const shutdownSignals = /** @type {[NodeJS.Signals, number][]} */ ([
     ["SIGTERM", 143],
     ["SIGINT", 130],
+    ["SIGHUP", 129],
   ]);
   for (const [signal, code] of shutdownSignals) {
     process.on(signal, () => {
-      for (const container of liveContainers) {
-        removeContainer(container);
-      }
-      liveContainers.clear();
-      for (const child of liveChildren) {
-        killTracked(child, "SIGKILL");
-      }
-      liveChildren.clear();
+      sweep();
       process.exit(code);
     });
   }
+  // `exit` is the belt for a run that ends any other way and never reached a
+  // t.after. It is synchronous, which is all a spawnSync-based sweep needs.
+  process.on("exit", sweep);
+}
+
+// Remove every live container and kill every tracked process. Both sets hold
+// only what is still running, so this is safe to run twice.
+function sweep() {
+  for (const container of liveContainers) {
+    removeContainer(container);
+  }
+  liveContainers.clear();
+  for (const child of liveChildren) {
+    killTracked(child, "SIGKILL");
+  }
+  liveChildren.clear();
 }
 
 /**
  * Kill a child and, when it leads its own process group, every process in that
- * group. The fallback covers a process that is not a group leader.
+ * group. The fallback covers a process that is not a group leader. Callers
+ * reach this only through `liveChildren`, which drops a child on its `exit`
+ * event, so a recycled pid is never in the set to be killed by mistake.
  * @param {import("node:child_process").ChildProcess | null | undefined} child
  * @param {NodeJS.Signals} [signal]
  */

@@ -34,7 +34,12 @@ func signalProcessGroup(cmd *exec.Cmd, grace time.Duration) error {
 	case <-done:
 	case <-time.After(grace):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(grace):
+			// A child wedged in an uninterruptible state never reaps; do not
+			// hold the whole test binary on it.
+		}
 	}
 	return err
 }

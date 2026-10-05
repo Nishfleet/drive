@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -505,23 +506,46 @@ func waitForPort(t testing.TB, port string) {
 // SIGTERM by a stopping runner (drive#659).
 var testProcesses sync.Map
 
+// processStops makes stopping a stand-in exactly once. Two callers can reach
+// the same *exec.Cmd — its t.Cleanup and TestMain's signal handler — and more
+// than one caller of os.Process.Wait on one process corrupts the wait.
+var processStops sync.Map // *exec.Cmd -> *processStop
+
+type processStop struct {
+	once sync.Once
+	err  error
+}
+
+// stopProcess stops one tracked stand-in once, and never signals a process it
+// has already reaped. The entry stays in processStops for the whole run, so a
+// later sweep on the same *exec.Cmd is a no-op even after the OS has recycled
+// the pid (a stale kill would hit an unrelated process group).
+func stopProcess(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	testProcesses.Delete(cmd.Process.Pid)
+	value, _ := processStops.LoadOrStore(cmd, &processStop{})
+	stop := value.(*processStop)
+	stop.once.Do(func() {
+		stop.err = signalProcessGroup(cmd, 5*time.Second)
+	})
+	return stop.err
+}
+
 // trackTestProcess registers a started stand-in so both t.Cleanup and the
 // shutdown handler stop it. The group kill is what reaches the server and
 // anything it started.
 func trackTestProcess(tb testing.TB, cmd *exec.Cmd) {
 	tb.Helper()
-	pid := cmd.Process.Pid
-	testProcesses.Store(pid, cmd)
-	tb.Cleanup(func() {
-		testProcesses.Delete(pid)
-		_ = signalProcessGroup(cmd, 5*time.Second)
-	})
+	testProcesses.Store(cmd.Process.Pid, cmd)
+	tb.Cleanup(func() { stopProcess(cmd) })
 }
 
 // stopTestProcesses stops every stand-in a test is still running.
 func stopTestProcesses() {
 	testProcesses.Range(func(_, value any) bool {
-		_ = signalProcessGroup(value.(*exec.Cmd), 5*time.Second)
+		stopProcess(value.(*exec.Cmd))
 		return true
 	})
 }
@@ -1066,6 +1090,10 @@ func TestMain(m *testing.M) {
 	notifyShutdown(stopping)
 	go func() {
 		<-stopping
+		// A second SIGTERM must be able to end the process at once: give up
+		// the notify channel so the default handler takes over, then run the
+		// bounded cleanup below.
+		signal.Stop(stopping)
 		stopTestProcesses()
 		benchTeardown()
 		if builtBinDir != "" {

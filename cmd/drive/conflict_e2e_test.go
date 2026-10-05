@@ -388,7 +388,7 @@ type standinRestart struct {
 
 // stop takes the storage away.
 func (r *standinRestart) stop() error {
-	if err := signalProcessGroup(r.serve, 5*time.Second); err != nil {
+	if err := stopProcess(r.serve); err != nil {
 		return fmt.Errorf("take the storage away: %w", err)
 	}
 	return nil
