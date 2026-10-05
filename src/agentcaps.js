@@ -151,7 +151,7 @@ function checkedUsd(value, name) {
  * call usageSummary() makes.
  *
  * @param {{
- *   usage: {gbMinutes: number},
+ *   usage: {gbMinutes: number, downloadBytes?: number, averageStoredGb?: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
  *   requestsToday?: number,
  *   day?: string,
@@ -173,11 +173,17 @@ export function agentCapStatus(agent) {
   }
   const caps = agentCaps(agent.caps);
   // The month the cap counts is the calendar month `at` falls in (drive#531).
+  // The whole bill, downloads included, the same way the account's own cap
+  // counts it (drive#496).
   const counted = capStatus(
     usage.gbMinutes,
     minutesInMonth(agent.at),
     caps.monthlyCapUsd,
     BILLING_CONFIG,
+    {
+      downloadBytes: usage.downloadBytes,
+      averageStoredGb: usage.averageStoredGb,
+    },
   );
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
