@@ -924,6 +924,14 @@ test("a shared file can never act as a page on our origin", async () => {
       /text\/html/,
       `${name} must not be served as a page`,
     );
+    // drive#657: an SVG renders as a document with navigable links, so the
+    // link hands it over as a download; a text page is served as text/plain,
+    // which no browser renders as a page, and keeps opening inline.
+    assert.equal(
+      opened.headers.get("content-disposition"),
+      name === "logo.svg" ? 'attachment; filename="logo.svg"' : "inline",
+      `${name} leaves with the disposition its served type earns`,
+    );
     assert.equal(
       await opened.text(),
       name === "report.html" ? "<script>alert(1)</script>" : "<svg onload=alert(1)></svg>",

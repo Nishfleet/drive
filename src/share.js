@@ -55,6 +55,7 @@ import {
   etagMatches,
   joinPath,
   previewContentType,
+  previewDisposition,
   safeFileName,
   scopeStore,
   TRASH_PATH,
@@ -1046,10 +1047,12 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * unknown type as octet-stream, and an .html named as text/html does not come
  * back as a page. The header pair is the same one the preview path carries:
  * nosniff honors the type above, and the sandbox policy gives a document an
- * opaque origin with no script of its own — which is what keeps an uploaded
- * .svg from acting as a page on our origin when the link is opened directly.
- * A picture or a PDF still opens in the tab, which is what "a link that opens
- * the file" means.
+ * opaque origin with no script of its own. The disposition is
+ * previewDisposition()'s: a picture, a PDF and plain text still open in the
+ * tab, which is what "a link that opens the file" means, while the one type
+ * that can still act as a document — an .svg, whose links navigate — leaves as
+ * an attachment, so a link can never hand a stranger a rendered document on
+ * our address to phish a password from (drive#657).
  * @param {string} path the shared file's drive path, for the type's kind
  * @param {string} contentType the type the store reported
  * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
@@ -1062,7 +1065,7 @@ function shareHeaders(path, contentType, extra = {}) {
   /** @type {Record<string, string>} */
   const headers = {
     "content-type": previewContentType(path, contentType),
-    "content-disposition": "inline",
+    "content-disposition": previewDisposition(path.split("/").pop() || "", contentType),
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
     "content-security-policy": "sandbox",

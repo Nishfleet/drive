@@ -52,8 +52,15 @@ export const CONTROL_OR_SLASH = new RegExp(
   `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
   "g",
 );
-/** The listing, download, upload and restore API. */
+/** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
+/**
+ * Where the page's media elements read their bytes. It is the preview URL with
+ * one difference: a picture is served inline here so the page can draw it, and
+ * the direct-open preview URL serves the one type that can act as a document —
+ * an .svg — as an attachment instead. See previewDisposition() (drive#657).
+ */
+export const FILES_EMBED_ENDPOINT = `${FILES_ENDPOINT}/embed`;
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
 export const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
@@ -183,9 +190,11 @@ export function isPreviewable(kind) {
 // rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
 // and media keeps its own type only when it matches its kind. Anything else is
 // octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
-// uploaded .svg is still an image in the page's <img>, but opening the preview
-// URL directly gets it a sandboxed document instead of our origin.
+// in readRequest() (nosniff, and a sandboxed preview) covers the rest, and
+// previewDisposition() below takes the one type that can still act as a
+// document — an .svg, whose links navigate — out of the direct-open preview
+// and a share link, while the page's <img> reads it inline from the embed URL
+// (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
@@ -217,6 +226,31 @@ export function previewContentType(name, storedContentType = "") {
     return "application/octet-stream";
   }
   return stored || "application/octet-stream";
+}
+
+/**
+ * How an inline preview leaves: inline for every type a browser draws as a
+ * picture, a player, a PDF or plain text, and an attachment for the one type
+ * that can still act as a document — an SVG, which a browser renders as a
+ * styled document whose links navigate. An SVG therefore leaves the
+ * direct-open preview URL and a share link as a download, so a link can never
+ * hand a stranger a rendered document on our address to phish a password
+ * from; the page's own <img> reads the same bytes inline from the embed URL
+ * (drive#657).
+ * @param {string} name
+ * @param {string} [storedContentType]
+ * @returns {string}
+ */
+export function previewDisposition(name, storedContentType = "") {
+  if (previewContentType(name, storedContentType) !== "image/svg+xml") {
+    return "inline";
+  }
+  // A header value cannot carry a control character or a backslash, and
+  // safeFileName() strips both (and a stray slash); the quotes go too, so the
+  // filename cannot end the quoted-string early. validatePath() already
+  // refuses those characters on the way in, and this keeps the function safe
+  // on its own (drive#657).
+  return `attachment; filename="${safeFileName(name).replace(/"/g, "")}"`;
 }
 
 // ---------------------------------------------------------------- the words
@@ -2404,8 +2438,18 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
   }
-  if (route === `${FILES_ENDPOINT}/download` || route === `${FILES_ENDPOINT}/preview`) {
-    return readRequest(request, url, scoped, route.endsWith("download"));
+  if (
+    route === `${FILES_ENDPOINT}/download` ||
+    route === `${FILES_ENDPOINT}/preview` ||
+    route === FILES_EMBED_ENDPOINT
+  ) {
+    return readRequest(
+      request,
+      url,
+      scoped,
+      route.endsWith("download"),
+      route === FILES_EMBED_ENDPOINT,
+    );
   }
   if (route === `${FILES_ENDPOINT}/upload`) {
     return uploadRequest(request, url, scoped, account, options);
@@ -2457,6 +2501,7 @@ export function joinPath(folder, name) {
  *   GET  /api/files?view=deleted      Recently deleted
  *   GET  /api/files/download?path=…   the bytes, as an attachment
  *   GET  /api/files/preview?path=…    the bytes, inline, for the viewer
+ *   GET  /api/files/embed?path=…      the bytes, inline, for the page's media
  *   POST /api/files/upload?path=/&name=…   the request body is the file
  *   POST /api/files/delete  {path}    move a file to Recently deleted
  *   POST /api/files/restore {path}    put it back where it was
@@ -2540,9 +2585,12 @@ async function listRequest(request, url, store, now) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {boolean} download
+ * @param {boolean} [embed] the page's media URL: serve inline when a media
+ *   element asked for it, and otherwise the attachment previewDisposition()
+ *   sends a document-capable type out with
  * @returns {Promise<Response>}
  */
-async function readRequest(request, url, store, download) {
+async function readRequest(request, url, store, download, embed = false) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return plain("Method not allowed. GET a file.", 405);
   }
@@ -2554,6 +2602,16 @@ async function readRequest(request, url, store, download) {
   // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
   const name = drivePath.split("/").pop() || "";
+  // The embed URL is for the page's own <img>, <video> and <audio> only. A
+  // navigation to it — a top-level open, or an <iframe> — falls back to the
+  // direct-open preview's disposition, so the embed URL is never a way around
+  // the download an SVG leaves with (drive#657). Sec-Fetch-Dest is the
+  // browser's own statement of what asked for the bytes.
+  const destination = String(request.headers.get("sec-fetch-dest") || "")
+    .trim()
+    .toLowerCase();
+  const embedded =
+    embed && (destination === "image" || destination === "video" || destination === "audio");
   /**
    * The headers every 200/206/HEAD answer carries, from the type the store
    * named. One builder for all three, so the two safety headers below cannot
@@ -2565,16 +2623,22 @@ async function readRequest(request, url, store, download) {
     /** @type {Record<string, string>} */
     const headers = {
       // The bytes leave as a file: an attachment to download, and an inline
-      // preview the page renders in a media element. Neither is a document on
-      // our origin, and the two headers below keep it that way when the preview
-      // URL is opened directly: nosniff honors the type above, and the sandbox
-      // policy gives a document an opaque origin with no script of its own.
+      // preview the page renders in a media element. The embed URL is inline
+      // for a media element only; the direct-open preview URL, and a
+      // navigation to the embed URL, send the one document-capable type (an
+      // SVG) as an attachment instead, so a top-level open downloads it.
+      // Neither is a document on our origin, and the two headers below keep it
+      // that way when the preview URL is opened directly: nosniff honors the
+      // type above, and the sandbox policy gives a document an opaque origin
+      // with no script of its own.
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
       "content-disposition": download
         ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-        : "inline",
+        : embedded
+          ? "inline"
+          : previewDisposition(name || "", contentType),
       "x-content-type-options": "nosniff",
       "cache-control": "private, no-store",
       // What a player or a resuming downloader may ask for next: one slice.
