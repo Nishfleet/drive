@@ -919,18 +919,29 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The account close cron is its own waitUntil (drive#565), registered
+      // before the reconcile runs: a reconcileMeter throw used to leave every
+      // close receipt, reminder and purge undone for that night, and the
+      // purge is resumable now, so the two trips have nothing to say to each
+      // other. Its own per-account catches mean only a whole-cron failure
+      // (D1 down) rejects here, and a failed trigger is the honest signal
+      // for that: the next night retries everything it did not finish.
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        await runAccountCloseCron({
-          db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
-          store: storeFor(env),
-          email: env.EMAIL,
-          mailFrom: secrets.MAIL_FROM ?? "",
-          now: event.scheduledTime,
-        });
+        context.waitUntil(
+          runAccountCloseCron({
+            db: env.DRIVE_DB,
+            devices: createD1DeviceStore(env.DRIVE_DB),
+            store,
+            email: env.EMAIL,
+            mailFrom: secrets.MAIL_FROM ?? "",
+            now: event.scheduledTime,
+          }).catch((error) => {
+            throw new Error(`the account close cron failed: ${error.message}`);
+          }),
+        );
       }
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
