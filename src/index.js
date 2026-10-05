@@ -75,6 +75,14 @@ import {
   signedInAccount,
   unauthorizedResponse,
 } from "./status.js";
+import {
+  BALANCE_ENDPOINT,
+  BILLING_WEBHOOK_PATH,
+  handleBalanceRequest,
+  handleBillingWebhook,
+  handleTopUpRequest,
+  TOPUP_ENDPOINT,
+} from "./topup.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -128,6 +136,10 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 //     upload request, where the token in the query is the whole proof.
 //   - /api/quote: the public savings calculator (drive issue #14). It quotes
 //     the price for a size, not an account, so it has no session to need.
+//   - /api/billing/webhook: Dodo's signed payment webhook (drive#586). The
+//     Standard Webhooks signature over the raw body is the gate
+//     (src/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
+//     it answers 503, a closed door.
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
@@ -139,7 +151,20 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${REQUEST_ENDPOINT}/info`,
   `${REQUEST_ENDPOINT}/upload`,
   QUOTE_ENDPOINT,
+  BILLING_WEBHOOK_PATH,
 ]);
+
+/**
+ * The Dodo settings this Worker reads, none of them declared bindings: each is
+ * unset until Nish sets the live account up (#325), and every route that needs
+ * one answers a closed door without it. DODO_FETCH is the tests' recorder.
+ * @param {Env} env
+ */
+function dodoEnv(env) {
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch}} */ (
+    /** @type {unknown} */ (env)
+  );
+}
 
 /** @param {string} pathname */
 function isPublic(pathname) {
@@ -501,6 +526,7 @@ export function createApp() {
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
   app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
+  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -642,6 +668,23 @@ export function createApp() {
     );
   });
 
+  // The prepaid balance (drive#586): the balance and recent ledger lines, and
+  // a top-up's checkout. The balance is credited only by the signed webhook
+  // below, never by this route or the checkout's redirect.
+  app.get(BALANCE_ENDPOINT, (c) =>
+    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
+  app.post(TOPUP_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handleTopUpRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
+      productId: dodo.DODO_TOPUP_PRODUCT_ID,
+      fetch: dodo.DODO_FETCH,
+    });
+  });
+
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
   // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
@@ -737,6 +780,15 @@ export function createApp() {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
+    }),
+  );
+
+  // Dodo's signed payment webhook (drive#586): credits a top-up, records a
+  // refund. Public, because the signature is the proof.
+  app.post(BILLING_WEBHOOK_PATH, (c) =>
+    handleBillingWebhook(c.req.raw, {
+      db: c.env.DRIVE_DB,
+      secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
     }),
   );
 

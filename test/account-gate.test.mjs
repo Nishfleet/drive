@@ -34,6 +34,7 @@ import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
@@ -136,6 +137,12 @@ const ACCOUNT_ROUTES = [
   `${CLOSE_ENDPOINT}/`,
   `${CLOSE_CANCEL_ENDPOINT}`,
   `${CLOSE_CANCEL_ENDPOINT}/`,
+  // drive#586: the prepaid balance and a top-up's checkout. Money on the
+  // account, so the same gate as the usage read.
+  `${BALANCE_ENDPOINT}`,
+  `${BALANCE_ENDPOINT}/`,
+  `${TOPUP_ENDPOINT}`,
+  `${TOPUP_ENDPOINT}/`,
 ];
 // The routes that serve a stranger on purpose, from a bearer token instead of
 // a session. Each probe carries a token-shaped value, because the handler's
@@ -242,6 +249,8 @@ test("every route src/index.js registers is either public or behind the gate", a
         route.startsWith(FILES_ENDPOINT) ||
         route.startsWith(USAGE_ENDPOINT) ||
         route.startsWith(CAP_ENDPOINT) ||
+        route.startsWith(BALANCE_ENDPOINT) ||
+        route.startsWith(TOPUP_ENDPOINT) ||
         route.startsWith(STATUS_ENDPOINT) ||
         route.startsWith(SEARCH_ENDPOINT) ||
         route.startsWith(BRANCHES_ENDPOINT) ||

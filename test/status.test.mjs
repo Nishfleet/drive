@@ -481,6 +481,25 @@ test("a signed-out person cannot describe or create the starter", async () => {
   assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
 });
 
+test("a signed-out person cannot read the balance or open a top-up", async () => {
+  // drive#586: the balance and the top-up checkout are money on an account,
+  // so the gate answers 401 before either handler runs, and no checkout opens.
+  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const balance = await workerFetch(new Request("https://drive.test/api/balance"), env);
+  assert.equal(balance.status, 401, "a signed-out balance read answers 401");
+  assert.deepEqual(await balance.json(), { error: failureMessage("unauthorized") });
+  const topUp = await workerFetch(
+    new Request("https://drive.test/api/topup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount_usd: 10 }),
+    }),
+    env,
+  );
+  assert.equal(topUp.status, 401, "a signed-out top-up answers 401");
+  assert.deepEqual(await topUp.json(), { error: failureMessage("unauthorized") });
+});
+
 test("the pricing page links to the first-run page", () => {
   // The first-run page is what a person sees after sign-up; without a link it
   // is a page nothing reaches. Every such link sits outside the waitlist form
