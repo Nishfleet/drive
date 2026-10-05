@@ -48,7 +48,7 @@ test("the card's body is exactly the current price, from the one price source", 
     PRICE.headlineAmount,
     PRICE.rateUnit,
     PRICE.maxLine,
-    PRICE.noMinimumLine,
+    PRICE.noPlansLine,
   ]);
 });
 

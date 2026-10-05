@@ -137,7 +137,7 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
   // The headline, the rule, no minimum and the cap, each
   // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine]) {
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.noPlansLine]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
