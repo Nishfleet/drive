@@ -350,6 +350,29 @@ async function liveQueueFor(env, account) {
   return createD1QueueStore(env.DRIVE_DB).latest(account.id);
 }
 
+// The account's live devices (drive issue #556), read from the same `devices`
+// rows the api Worker's key store writes: the first-run page used to be told
+// "waiting" for every account, because this route carried no device rows at
+// all, so nothing it answered could ever say connected. Built per request from
+// the binding like liveQueueFor, for the same reason: a machine that just
+// signed in is the row the next poll reads, on whichever instance the poll
+// lands on. Whether a device reads as connected is not decided here — the
+// window is src/status.js `connectionStatus`'s own — so this one function fills
+// the payload and the rule stays in the module the page and the CLI already
+// read. No database means no device has signed in yet: the empty list, the
+// same answer as an account whose machine has not.
+/**
+ * @param {Env} env
+ * @param {{id: string}} account
+ * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+ */
+async function liveDevicesFor(env, account) {
+  if (!env.DRIVE_DB) {
+    return [];
+  }
+  return createD1DeviceStore(env.DRIVE_DB).listLive(account);
+}
+
 // The owner's spending-cap state for the public upload routes, read from the
 // same src/billing.js summary the usage page shows, and resolved per account so
 // the cap answered is always the one belonging to the account that minted the
@@ -522,14 +545,18 @@ export function createApp() {
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
   // header; the gate above already answered an anonymous caller 401.
 
-  // The first-run page's live flip (issue #32, #45). The third argument is
-  // the queue a device on this account reported, read from the row the api
-  // Worker's report route wrote (drive issue #318): #308 made it an argument
-  // to the handler, and the read is the one line that fills it.
+  // The first-run page's live flip (issue #32, #45, #556). The third
+  // argument is the queue a device on this account reported, read from the row
+  // the api Worker's report route wrote (drive issue #318): #308 made it an
+  // argument to the handler, and the read is the one line that fills it. The
+  // fourth is the account's live device rows, which are what let the page say
+  // connected at all: until #556 this route carried none, so the hard-coded
+  // "waiting" it answered was the only answer it had.
   app.get(STATUS_ENDPOINT, async (c) => {
     const account = c.get("account");
     const upload = account ? await liveQueueFor(c.env, account) : null;
-    return handleFirstRunStatusRequest(c.req.raw, account, upload);
+    const devices = account ? await liveDevicesFor(c.env, account) : [];
+    return handleFirstRunStatusRequest(c.req.raw, account, upload, devices);
   });
 
   // Search reads only the D1 file index (issue #18), behind the account gate.
