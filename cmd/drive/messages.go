@@ -192,6 +192,14 @@ var messageTable = map[string][2]string{
 		"The upload queue could not be read ({1}).",
 		"Leave the mount running so queued files keep uploading, then run `drive status` again in a moment.",
 	},
+	"upload-failing": {
+		"A save has failed to upload {1} times and is still retrying.",
+		"Read the storage error in {2}, fix it, then the save goes up on its own; nothing already saved is lost.",
+	},
+	"cache-over-cap": {
+		"Unsent saves have filled the local cache past its {1} limit, because {2}.",
+		"Let the uploads finish, or run `drive resume` if the drive is paused; nothing already saved is lost.",
+	},
 	"folder-silent": {
 		"The drive folder did not answer within {1}.",
 		"Read {2}, then run `drive unmount` and `drive mount` again.",
@@ -243,6 +251,14 @@ var messageTable = map[string][2]string{
 	"import-failed": {
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
+	},
+	"import-cache-full": {
+		"The import did not start: the drive's cache is full, so new saves can't upload.",
+		"Run `drive status` to see what is waiting and why, then import again once the uploads catch up.",
+	},
+	"import-cache-unknown": {
+		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
+		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
 }
 

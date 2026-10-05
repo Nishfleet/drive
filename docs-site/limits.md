@@ -54,10 +54,12 @@ would rather you read it here than find out in week three.
   adds a byte to your bill.
 - **Directory listing.** A folder of a million files is not instant to open in
   the Finder.
-- **Your disk holds a cache, and it is capped.** Your disk never fills up; the
-  cache is capped at a size you choose. What is on disk is the parts of your
-  files you have already opened. It grows to at most {{CACHE_LIMIT}}, and the
-  drive always keeps at least {{CACHE_FLOOR}} of your disk free.
+- **Your disk holds a cache, and it is capped.** What is on disk is the parts
+  of your files you have already opened. It grows to at most {{CACHE_LIMIT}},
+  and the drive always keeps at least {{CACHE_FLOOR}} of your disk free. The
+  cap covers only what has already uploaded: a save waiting to go up stays on
+  disk past the cap until it uploads, so uploads that are paused or behind can
+  use more disk than the cap.
   {{CACHE_COMMANDS}}; a file waiting to upload is never cleared. Files you keep
   offline stay on this computer, count toward that limit, and `drive status`
   shows the same cache use.

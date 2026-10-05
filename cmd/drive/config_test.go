@@ -177,7 +177,7 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 			"--vfs-write-back 5s",
 			"--vfs-cache-max-size 20G",
 			"--dir-cache-time 5s",
-			"--vfs-read-chunk-size 128M",
+			"--vfs-read-chunk-size " + vfsReadChunkSizeValue,
 			"--vfs-read-chunk-streams 2",
 			"--buffer-size 32M",
 			"--transfers 4",
@@ -196,8 +196,8 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 		if args := p.Args(); !hasArgPair(args, "--vfs-read-ahead", "128k") {
 			t.Errorf("%s: --vfs-read-ahead and 128k are not adjacent args:\n%v", tc.goos, args)
 		}
-		if args := p.Args(); !hasArgPair(args, "--vfs-read-chunk-size", "128M") {
-			t.Errorf("%s: --vfs-read-chunk-size and 128M are not adjacent args:\n%v", tc.goos, args)
+		if args := p.Args(); !hasArgPair(args, "--vfs-read-chunk-size", vfsReadChunkSizeValue) {
+			t.Errorf("%s: --vfs-read-chunk-size and %s are not adjacent args:\n%v", tc.goos, vfsReadChunkSizeValue, args)
 		}
 		if args := p.Args(); !hasArgPair(args, "--buffer-size", "32M") {
 			t.Errorf("%s: --buffer-size and 32M are not adjacent args:\n%v", tc.goos, args)
@@ -341,6 +341,18 @@ func hasArgPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// argValue returns the value argv carries for flag, or the empty string when
+// the flag is absent. Tests use it to read a mount flag the product set and
+// hold its number to a bound.
+func argValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // A scoped storage credential is an STS session: the access key, the secret
