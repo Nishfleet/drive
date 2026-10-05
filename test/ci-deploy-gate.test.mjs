@@ -79,3 +79,43 @@ test("the deploy checks the live version and health, and rolls back on failure",
     DEPLOY.lastIndexOf("- name:") === DEPLOY.indexOf("- name: Roll back the Worker version"),
   );
 });
+
+// drive#660: a pull request skips the jobs its files cannot affect, and the
+// required checks still report. A workflow-level `paths:` would leave `verify`
+// and `go` pending forever; a job skipped by `if:` reports success. Each job
+// fails open: when `changes` did not succeed (skipped on merge_group and push,
+// or broken), the job runs, so the merge queue always tests everything.
+test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", () => {
+  assert.doesNotMatch(onBlock(CI), /paths(-ignore)?:/, "no workflow-level paths filter");
+  assert.match(CI, /^ {4}if: github\.event_name == 'pull_request'$/m, "changes runs only on PRs");
+  for (const job of ["verify", "go"]) {
+    const body = new RegExp(
+      `^ {2}${job}:\\n((?: {4}.*\\n|\\n)+?)(?= {4}runs-on:| {4}steps:)`,
+      "m",
+    ).exec(CI)?.[1];
+    assert.ok(body, `${job} job found`);
+    assert.match(body, /needs: changes/);
+    const cond = body.replace(/\s+/g, " ");
+    assert.match(
+      cond,
+      /!cancelled\(\) && \(needs\.changes\.result != 'success' \|\|/,
+      `${job} fails open`,
+    );
+  }
+  // A misspelt output reads as "", which would skip a job on every PR, so
+  // every output a job reads must be one `changes` declares.
+  const declared = new Set(
+    [...CI.matchAll(/^ {6}(\w+): \$\{\{ steps\.(?:every|some)\.outputs\.\1 \}\}$/gm)].map(
+      (m) => m[1],
+    ),
+  );
+  const consumed = [...CI.matchAll(/needs\.changes\.outputs\.(\w+)/g)].map((m) => m[1]);
+  for (const name of ["node", "node_extra", "go", "go_extra", "site", "site_extra"]) {
+    assert.ok(declared.has(name), `changes declares ${name}`);
+    assert.ok(consumed.includes(name), `a job or step reads ${name}`);
+  }
+  for (const name of consumed) assert.ok(declared.has(name), `${name} is a declared output`);
+  const uses = [...CI.matchAll(/uses:\s*dorny\/paths-filter@(\S+)/g)].map((m) => m[1]);
+  assert.ok(uses.length > 0, "the stock dorny/paths-filter does the classifying");
+  for (const ref of uses) assert.match(ref, /^[0-9a-f]{40}$/, "pinned by commit SHA");
+});
