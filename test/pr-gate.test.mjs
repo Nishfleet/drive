@@ -69,7 +69,7 @@ const ctx = { waitUntil() {}, passThroughOnException() {} };
 // every call. It is built once because src/index.js caches the files store per
 // isolate (one module-level `filesStore`), and that cache IS the wiring under
 // test — a second world would silently reuse the first one's store.
-/** @type {Promise<{env: Record<string, unknown>, a: {cookie: string, account: {id: string}}, b: {cookie: string, account: {id: string}}, seen: string[], restore: () => void}> | undefined} */
+/** @type {Promise<{env: Record<string, unknown>, a: {cookie: string, account: {id: string}}, b: {cookie: string, account: {id: string}}, seen: string[]}> | undefined} */
 let world;
 /** The one live-Worker world gates 2 and 2b share. */
 const liveFilesWorld = () => {
@@ -83,20 +83,31 @@ const liveFilesWorld = () => {
     // "reached another account's bucket" is a real 404 in that namespace, and a
     // listing is answered per bucket so one account's rows are the only rows
     // its own request can bring back.
-    /** @type {Map<string, string>} */
+    /** @type {Map<string, Uint8Array<ArrayBuffer>>} */
     const objects = new Map();
     /** @type {typeof fetch} */
     const server = async (url, init = {}) => {
       const method = init.method || "GET";
       const { pathname, search } = new URL(String(url));
-      const segments = decodeURIComponent(pathname)
+      // The store percent-encodes the key once and this recorder is the thing
+      // that answers, so the segments are decoded here exactly once: decoding
+      // the whole pathname first would run a second decode over any segment
+      // that itself holds a literal `%`, and a real name could.
+      const segments = pathname
         .split("/")
-        .filter((segment) => segment !== "");
+        .filter((segment) => segment !== "")
+        .map((segment) => decodeURIComponent(segment));
       const bucket = segments[0] ?? "";
       const key = segments.slice(1).join("/");
       seen.push(`${method} ${bucket}/${key}${search}`);
       if (method === "PUT") {
-        objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+        // A body is bytes until it is proved otherwise: text() would replace a
+        // non-UTF-8 sequence with U+FFFD and the store would hold bytes a
+        // download can never get back.
+        objects.set(
+          `${bucket}/${key}`,
+          new Uint8Array(await new Response(init.body).arrayBuffer()),
+        );
         return new Response(null, { status: 200 });
       }
       if (search.includes("list-type=2")) {
@@ -113,9 +124,11 @@ const liveFilesWorld = () => {
         : new Response("no key", { status: 404 });
     };
     // createS3Store takes its fetch at construction (`fetchImpl = fetch`), so
-    // the stub has to stand while src/index.js builds its store. It is put
-    // back the moment the world is built, and every later call still reaches
-    // the recorder through the reference the store captured.
+    // the stub has to stand while src/index.js builds its store. The finally
+    // puts the real fetch back even when the warm-up request throws, so a
+    // failure here cannot leave a recorder as the process-wide fetch for every
+    // test after this one. Every later store call still reaches the recorder
+    // through the reference the store captured.
     const realFetch = globalThis.fetch;
     globalThis.fetch = server;
     const env = {
@@ -126,15 +139,26 @@ const liveFilesWorld = () => {
       FILES_S3_ENDPOINT: "https://s3.test",
     };
     // One request so storeFor(env) builds and captures the recording fetch.
-    await workerFetch(
-      new Request(`https://drive.test${FILES_ENDPOINT}?path=%2F`, {
-        headers: { cookie: a.cookie },
-      }),
-      env,
-      ctx,
+    try {
+      await workerFetch(
+        new Request(`https://drive.test${FILES_ENDPOINT}?path=%2F`, {
+          headers: { cookie: a.cookie },
+        }),
+        env,
+        ctx,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    // The restore above happens only in the finally, so this assertion is what
+    // keeps it there: delete the finally and the recorder stays installed for
+    // every test after this one, and this line is what turns that red.
+    assert.equal(
+      globalThis.fetch,
+      realFetch,
+      "the recording fetch is not left as the process-wide fetch",
     );
-    globalThis.fetch = realFetch;
-    return { env, a, b, seen, restore: () => (globalThis.fetch = realFetch) };
+    return { env, a, b, seen };
   })();
   return world;
 };
@@ -460,28 +484,65 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   // reach storage — the rule the two removed source-text assertions used to
   // claim (drive#621).
   const live = await liveFilesWorld();
-  const before = live.seen.length;
-  const response = await workerFetch(
-    new Request(`https://drive.test${FILES_ENDPOINT}?path=%2Fphotos`, {
-      headers: { cookie: live.a.cookie, "x-drive-account": live.b.account.id },
-    }),
-    live.env,
-    ctx,
+  /** @param {Request} request */
+  const callsAfter = async (request) => {
+    const from = live.seen.length;
+    await workerFetch(request, live.env, ctx);
+    return live.seen.slice(from);
+  };
+  // The same rule on a read and on a listing, not only on the listing the walk
+  // above already makes: both carry a caller-supplied account header naming the
+  // other account, and every storage call each makes names only the session's
+  // own prefix. The download asks for a key that does not exist yet, so the
+  // store still records the GET it makes and answers 404; the key in that
+  // request is what this checks, not the response.
+  /**
+   * Every storage call names the session's own account prefix and no other one.
+   * @param {{cookie: string, account: {id: string}}} asWho the signed-in account
+   * @param {string[]} calls the calls the request made
+   */
+  const assertOwnPrefixOnly = (asWho, calls) => {
+    const own = `u/${asWho.account.id}/`;
+    const other = asWho === live.a ? `u/${live.b.account.id}/` : `u/${live.a.account.id}/`;
+    assert.ok(calls.length > 0, "the request reached storage, so the account was resolved");
+    for (const call of calls) {
+      const request = decodeURIComponent(call);
+      assert.ok(request.includes(own), `the session's account owns the prefix: ${call}`);
+      assert.ok(
+        !request.includes(other),
+        `a header the caller sent must never name another account: ${call}`,
+      );
+    }
+  };
+  // The same rule on a read and on a listing, not only on the listing the walk
+  // above already makes: both carry a caller-supplied account header naming the
+  // other account, and every storage call each makes names only the session's
+  // own prefix. The download asks for a key that does not exist yet, so the
+  // store still records the GET it makes and answers 404; the key in that
+  // request is what this checks, not the response.
+  const spoofed = { cookie: live.a.cookie, "x-drive-account": live.b.account.id };
+  assertOwnPrefixOnly(
+    live.a,
+    await callsAfter(
+      new Request(`https://drive.test${FILES_ENDPOINT}?path=%2Fphotos`, { headers: spoofed }),
+    ),
   );
-  assert.equal(response.status, 200, "the signed-in account reads its own folder");
-  const calls = live.seen.slice(before);
-  assert.ok(calls.length > 0, "the request reached storage, so the account was resolved");
-  for (const call of calls) {
-    const read = decodeURIComponent(call);
-    assert.ok(
-      read.includes(`u/${live.a.account.id}/`),
-      `the session's account owns the prefix: ${call}`,
-    );
-    assert.ok(
-      !read.includes(`u/${live.b.account.id}`),
-      `a header the caller sent must never name another account: ${call}`,
-    );
-  }
+  assertOwnPrefixOnly(
+    live.a,
+    await callsAfter(
+      new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fnotes%2Ftrip.txt`, {
+        headers: spoofed,
+      }),
+    ),
+  );
+  assertOwnPrefixOnly(
+    live.b,
+    await callsAfter(
+      new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fnotes%2Ftrip.txt`, {
+        headers: { cookie: live.b.cookie, "x-drive-account": live.a.account.id },
+      }),
+    ),
+  );
 });
 
 test("gate 2b: Files page and share reads use the account's own bucket", async () => {
@@ -592,13 +653,25 @@ test("gate 2b: Files page and share reads use the account's own bucket", async (
   };
   /** @param {string} request @param {{id: string}} who */
   const ownBucket = (request, who) => {
-    const bucket = request.split(" ")[1].split("/")[0];
-    // The vendor-facing name the key provider mints for this one account, so a
-    // bucket that is merely "some drv- bucket" cannot pass: it has to be the
-    // signed-in account's own.
+    const target = request.split(" ").slice(1).join(" ");
+    const [pathPart, searchPart = ""] = target.split("?");
+    const bucket = pathPart.split("/")[0];
+    const key = pathPart.split("/").slice(1).join("/");
+    // A list names the account in its `prefix` query, a read or a write names
+    // it in the key itself. Both are already decoded (the recorder decodes the
+    // path once and URLSearchParams decodes the query), so this reads the
+    // account out of whichever the call used, checks it is the signed-in one,
+    // and then derives the expected bucket with the module's own picker
+    // (storageBucketForKey) instead of a copy of the name format written here
+    // (drive#621).
+    const namesAccount = new URLSearchParams(searchPart).get("prefix") ?? key;
+    assert.ok(
+      namesAccount.startsWith(`u/${who.id}/`),
+      `the storage call names the signed-in account's own prefix: ${request}`,
+    );
     assert.equal(
       bucket,
-      `drv-${who.id.toLowerCase().replace(/_/g, "-")}`,
+      storageBucketForKey(namesAccount),
       `the bucket is the signed-in account's own: ${request}`,
     );
     return bucket;
@@ -692,12 +765,24 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
 // ------------------------------------------------ 4. no secret, anywhere
 
 test("gate 4: nothing tracked carries a token", () => {
-  // This used to also assert that .github/workflows/ci.yml mentions gitleaks,
-  // which proves the word is in the workflow file and nothing about the code
-  // (drive#621). The gate that matters is below: it reads every tracked file
-  // and fails on a token-shaped literal, so a secret in code, config, data or
-  // docs is a red run whether or not gitleaks is wired beside it. The scan
-  // itself is CI's job, pinned by digest in .github/workflows/ci.yml.
+  // The wiring half: the scan has to run in CI, and the deleted
+  // `assert.match(ci, /gitleaks/)` proved only that the word was somewhere in
+  // the file — it passed with the step's action repointed or unpinned. This
+  // asserts the step itself and its digest, because a workflow change that
+  // drops or repoints the scan is exactly the regression to catch, and it is
+  // the one half of this gate a behaviour test cannot run (drive#621).
+  const ci = read(".github/workflows/ci.yml");
+  assert.match(
+    ci,
+    /uses:\s*docker:\/\/ghcr\.io\/gitleaks\/gitleaks:v[\d.]+@sha256:[a-f0-9]{64}/,
+    "every PR runs the pinned gitleaks scan",
+  );
+  // The behaviour half: every tracked file a page, a Worker or the CLI ships
+  // or runs, code, config, data and docs alike. A token in a log line or a
+  // message string is a tracked file like any other, so the scan covers the
+  // same set gitleaks does rather than only the HTML. This is the rule this
+  // gate's acceptance names, and a token-shaped literal turns it red whether
+  // or not the CI scan is wired beside it.
   const SECRET_LITERALS = [
     /\bsk-[A-Za-z0-9]{8,}/,
     /\bgh[pousr]_[A-Za-z0-9]{8,}/,
