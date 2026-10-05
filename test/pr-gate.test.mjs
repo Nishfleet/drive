@@ -101,10 +101,10 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["src/status.js", /export async function signedInAccount\(request, store\)/],
-    ["src/files.js", /export function createS3Store\(config\)/],
+    ["src/file-store-s3.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
-    ["src/files.js", /const toKey = \(path\) => \{/],
+    ["src/file-store.js", /const toKey = \(path\) => \{/],
     ["src/billing.js", /export function monthBillCents\(/],
     ["src/messages.js", /export function failureMessage\(key\)/],
   ];
@@ -223,7 +223,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // The files route's account comes from the one gate, never from a header the
   // caller sends: the storage prefix is applied by scopeStore from the account
   // the gate resolved, and nothing in the request can name it (issue #73).
-  assert.match(srcFile("files.js"), /export function scopeStore\(store, account\)/);
+  assert.match(srcFile("file-store.js"), /export function scopeStore\(store, account\)/);
   assert.ok(!index.includes("x-drive-account"), "no caller-supplied account header");
 });
 
@@ -374,7 +374,7 @@ test("gate 2b: Files page and share reads use the account's own bucket", async (
   // the boundary the key provider already uses. A file written the way Finder
   // writes (into drv-<id>) must show on GET /api/files for that account and
   // must be unreachable from the other account's bucket.
-  assert.match(srcFile("files.js"), /export function storageBucketForKey\(/);
+  assert.match(srcFile("file-store-s3.js"), /export function storageBucketForKey\(/);
   assert.match(srcFile("index.js"), /bucketFor:\s*storageBucketForKey/);
   assert.doesNotMatch(srcFile("index.js"), /bucket:\s*(dev|storage)\.FILES_S3_BUCKET/);
   const objects = new Map();
