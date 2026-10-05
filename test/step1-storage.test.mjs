@@ -47,7 +47,7 @@
 
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
@@ -230,6 +230,11 @@ test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
   assert.match(s3, /from "aws4fetch"/);
 });
 
+function reportSkip(name, reason) {
+  const report = process.env.DRIVE_PROOF_REPORT;
+  if (report) appendFileSync(report, `${name}: ${reason}\n`);
+}
+
 test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event", async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
     return t.skip("the stand-in starts in a container; only Linux runners are covered here");
@@ -263,6 +268,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
         t,
       );
   if (standin === null) {
+    reportSkip("s3-standin", "no container engine for the S3 stand-in");
     t.diagnostic(
       "no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT, so there is no stand-in to prove against",
     );

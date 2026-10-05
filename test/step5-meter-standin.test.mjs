@@ -46,6 +46,7 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
@@ -202,6 +203,11 @@ function providerDayGbMinutes(versions, day) {
 // node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
 const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
 
+function reportSkip(name, reason) {
+  const report = process.env.DRIVE_PROOF_REPORT;
+  if (report) appendFileSync(report, `${name}: ${reason}\n`);
+}
+
 test("a full day of GB-minutes matches the storage provider's own report within 1%", {
   timeout: STANDIN_TEST_TIMEOUT_MS,
 }, async (t) => {
@@ -235,6 +241,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
         t,
       );
   if (standin === null) {
+    reportSkip("s3-standin", "no container engine for the S3 stand-in");
     t.diagnostic("no docker or podman on this host and no DRIVE_STANDIN_ENDPOINT");
     return t.skip("no container engine for the S3 stand-in");
   }

@@ -34,9 +34,10 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -619,9 +620,23 @@ async function blendDemo(mountDir, t) {
  * only done when every demo that could run did, so a partial run never
  * overwrites a complete record with fewer measurements.
  *
+ * The record a run produces is written to a temporary directory, never over
+ * the committed file: a test that writes into a tracked file leaves the
+ * repository dirty, and that dirt lands in whatever commit a contributor
+ * makes next (drive#582). The committed record is replaced only on purpose,
+ * by naming it: DRIVE_DEMOS_DOC=docs/demos.md re-records it.
+ *
+ * A run that is not re-recording still proves something, by diffing the rows
+ * of what it just recorded against the rows docs/demos.md carries. The
+ * figures are not compared: every run times differently, and a wall-clock
+ * ratchet is test/speed-ratchet.test.mjs's own gate. A demo that gained or
+ * lost a row is the failure worth catching here, because the page would
+ * print a card the record does not describe.
+ *
  * @param {{source: string, date: string, commit: string, measurements: Measurement[]}} record
+ * @returns {Promise<string>} the file the record was written to
  */
-function writeDemosDoc(record) {
+async function writeDemosDoc(record) {
   const lines = [
     "# Home-page demos: the three recorded runs",
     "",
@@ -658,11 +673,18 @@ function writeDemosDoc(record) {
     "on issue #113 as an open check, never estimated here.",
     "",
   );
-  writeFileSync(DEMOS_DOC, lines.join("\n"));
+  // An explicit DRIVE_DEMOS_DOC is the re-record path (the name is relative to
+  // the repository root, the one place a record belongs); anything else is a
+  // proof run and its record goes to a temp directory it cleans up after
+  // itself.
+  const reRecording = Boolean(process.env.DRIVE_DEMOS_DOC);
+  const dir = reRecording ? "" : await mkdtemp(path.join(tmpdir(), "drive-demos-"));
+  const target = reRecording ? path.resolve(REPO_ROOT, /** @type {string} */ (process.env.DRIVE_DEMOS_DOC)) : path.join(dir, "demos.md");
+  writeFileSync(target, lines.join("\n"));
   // The writer checks the rows it just wrote: the page test reads this file with
   // the row pattern, so a row the pattern cannot see would be a recorded figure
   // that never reaches the page and that no assertion anywhere notices.
-  const rows = readFileSync(DEMOS_DOC, "utf8").match(/^\| `(\S+)` \|.*?\|\s*[\d.]+ s \|$/gm) ?? [];
+  const rows = readFileSync(target, "utf8").match(/^\| `(\S+)` \|.*?\|\s*[\d.]+ s \|$/gm) ?? [];
   assert.equal(
     rows.length,
     record.measurements.length,
@@ -674,6 +696,53 @@ function writeDemosDoc(record) {
       `the record carries ${m.name}`,
     );
   }
+  if (!reRecording) {
+    assertSameDemoRows(DEMOS_DOC, rows);
+    await rm(dir, { recursive: true, force: true });
+  }
+  return target;
+}
+
+/**
+ * The demo rows of the committed record beside the rows a fresh run produced.
+ * The same demos, in the same order, or the run fails with both lists in the
+ * message: a demo added or dropped has to reach docs/demos.md in the same
+ * commit that changed the code, or the page's cards and the record disagree.
+ * @param {string} committedDoc
+ * @param {string[]} rows the rows the fresh run wrote
+ */
+function assertSameDemoRows(committedDoc, rows) {
+  /** @param {string} text @returns {string[]} */
+  const demoNames = (text) => [...text.matchAll(/^\| `(\S+)` \|/gm)].map((m) => m[1]);
+  const fresh = demoNames(rows.join("\n"));
+  let committed;
+  try {
+    committed = demoNames(readFileSync(committedDoc, "utf8"));
+  } catch {
+    assert.fail(
+      `${committedDoc} is missing, so there is no committed record to diff against; re-record it with DRIVE_DEMOS_DOC=docs/demos.md`,
+    );
+  }
+  assert.deepEqual(
+    fresh,
+    committed,
+    `this run recorded ${fresh.join(", ") || "no rows"} but docs/demos.md carries ${
+      committed.join(", ") || "no rows"
+    }; if the demos changed, re-record the file in the same commit (DRIVE_DEMOS_DOC=docs/demos.md)`,
+  );
+}
+
+/**
+ * One line per named proof that skipped, written when CI asks for it
+ * (DRIVE_PROOF_REPORT). CI counts these and fails on a proof whose tool the
+ * runner has, so a skipped proof is a number in the log and not a silence
+ * (drive#582). Unset locally, so a developer's machine skips honestly.
+ * @param {string} name
+ * @param {string} reason
+ */
+function reportSkip(name, reason) {
+  const report = process.env.DRIVE_PROOF_REPORT;
+  if (report) appendFileSync(report, `${name}: ${reason}\n`);
 }
 
 /** @returns {string} */
@@ -737,6 +806,7 @@ async function proof(t, workDir) {
     // The result file is written here too: a skip is an answer, and the retry
     // outside a namespace must read it rather than run the same gates again.
     reportResult("skipped", `this host cannot run ${names}`);
+    reportSkip("home-page-demos", `no runnable demo on this host (${names})`);
     t.skip(
       `this host cannot run ${names}, so no record was written; docs/demos.md keeps the last complete run`,
     );
@@ -776,13 +846,14 @@ async function proof(t, workDir) {
   const groups = new Set(measurements.map((m) => m.name.split("-")[0]));
   const complete = groups.has("agent") && groups.has("video") && groups.has("blend");
   if (complete) {
-    writeDemosDoc({
+    const written = await writeDemosDoc({
       source: cfg.source,
       date: today(),
       commit: commit(),
       measurements,
     });
-    t.diagnostic(`wrote ${DEMOS_DOC} with ${measurements.length} measurements`);
+    const kept = written === DEMOS_DOC ? " (docs/demos.md re-recorded)" : ", the committed record untouched";
+    t.diagnostic(`wrote ${written} with ${measurements.length} measurements${kept}`);
   } else if (measurements.length > 0) {
     t.diagnostic(
       `a partial run (${[...groups].join(", ")}) is not a full record; docs/demos.md was left as it is`,
@@ -796,6 +867,7 @@ async function proof(t, workDir) {
   // complete run recorded, and the page's own gate keeps them in step.
   if (measurements.length === 0) {
     reportResult("skipped", "no demo could run on this host");
+    reportSkip("home-page-demos", "no demo could run on this host");
     t.skip("this host has no ffmpeg, no Blender and no agent CLI, so no demo could be run here");
     return "skipped";
   }
@@ -938,6 +1010,21 @@ test("the home page's demo section renders the recorded numbers and the date", (
   // No rival words on the new section: the scan test covers the whole tree,
   // and this one names the failure on the page itself.
   assert.doesNotMatch(page, /SpaceFS|Space AI/i, "the demos section uses our words");
+});
+
+test("the committed record's rows are the rows a fresh run would write", () => {
+  // The diff a complete run performs (drive#582) is proved here without one:
+  // this host has no Blender, so a full record never runs, but the guard
+  // itself can run against the committed record. Both directions count.
+  const committed = readFileSync(DEMOS_DOC, "utf8");
+  const rows = committed.match(/^\| `(\S+)` \|.*?\|\s*[\d.]+ s \|$/gm) ?? [];
+  assert.ok(rows.length >= 5, `docs/demos.md carries ${rows.length} demo rows, want at least the five known ones`);
+  assertSameDemoRows(DEMOS_DOC, rows);
+  // A recorder that wrote a row the committed record does not have, or
+  // dropped one, must fail the diff: the page's cards and the record are
+  // one thing, and a run that proves otherwise has to be able to say so.
+  const drifted = [...rows.slice(0, 2), "| `new-demo` | a demo the record does not describe | 1.00 s |"];
+  assert.throws(() => assertSameDemoRows(DEMOS_DOC, drifted), /this run recorded/);
 });
 
 test("the three home-page demos run on a drive folder and record their numbers", async (t) => {

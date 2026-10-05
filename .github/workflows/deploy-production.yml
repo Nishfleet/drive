@@ -170,15 +170,12 @@ jobs:
             echo "::warning::health not checked: no Access service token on the production environment (drive#520)"
             exit 0
           fi
-          # The token goes to curl in a private file, never in its arguments.
-          headers="$RUNNER_TEMP/access-headers"
-          trap 'rm -f "$headers"' EXIT
-          (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
-            "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers")
-          body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
-            https://drive-pricing.nishant345.workers.dev/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
-          printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
-            { echo "::error::/api/health is not ok: $body"; exit 1; }
+          # The smoke is a repo script (src/deploy-smoke.js), not inline
+          # shell: its retries, its Access headers and its ok:true check
+          # are one file a test runs against stub routes (drive#582,
+          # test/deploy-smoke.test.mjs). The token reaches it through the
+          # environment only, never argv and never a written file.
+          node src/deploy-smoke.js || { echo "::error::/api/health did not answer 200 with ok:true"; exit 1; }
           echo "health ok"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

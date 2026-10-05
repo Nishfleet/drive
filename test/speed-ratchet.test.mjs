@@ -11,13 +11,27 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+/**
+ * One line per named proof that skipped, written when CI asks for it
+ * (DRIVE_PROOF_REPORT): the workflow's "Named proofs that skipped" step counts
+ * them and fails on a proof whose tool the runner has, so a skip is a number
+ * in the build log and not a silence (drive#582). Unset locally, so a
+ * developer's machine still skips honestly and quietly.
+ * @param {string} name
+ * @param {string} reason
+ */
+function reportSkip(name, reason) {
+  const report = process.env.DRIVE_PROOF_REPORT;
+  if (report) appendFileSync(report, `${name}: ${reason}\n`);
+}
 
 const ROWS = [
   "file-open",
@@ -167,6 +181,7 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
   try {
     bin = execFileSync("which", ["hyperfine"], { encoding: "utf8" }).trim();
   } catch {
+    reportSkip("hyperfine-ratchet", "hyperfine is not installed");
     t.skip("hyperfine is not installed; the synthetic sleep test above still holds");
     return;
   }
