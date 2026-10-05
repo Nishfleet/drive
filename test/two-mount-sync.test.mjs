@@ -50,6 +50,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { killTracked, spawnTracked } from "./minio-standin.mjs";
 
 const run = promisify(execFile);
 // The mount subcommand and the mount-detection tool differ by platform (the
@@ -265,13 +266,13 @@ async function startStandin(dir) {
   // below and the two rclone configs in the temp work dir. It is not a real
   // credential and never leaves the test.
   const port = await freePort();
-  const server = spawn(
+  const server = spawnTracked(
     rcloneBin,
     ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`, "--auth-key", `${accessKey},${secretKey}`],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   let stderr = "";
-  server.stderr.on("data", (chunk) => {
+  server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
   const deadline = Date.now() + 20_000;
@@ -285,7 +286,7 @@ async function startStandin(dir) {
       if (Date.now() > deadline) {
         // Kill it before throwing, or a stand-in that never listened would
         // outlive this function and hold its directory open.
-        server.kill("SIGTERM");
+        killTracked(server);
         throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
       }
       await sleep(300);
@@ -299,7 +300,7 @@ async function startStandin(dir) {
     secretKey,
     source: "local rclone serve s3 stand-in",
     stop: () => {
-      server.kill("SIGTERM");
+      killTracked(server);
       return Promise.resolve();
     },
   };

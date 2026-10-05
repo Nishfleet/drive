@@ -14,9 +14,111 @@
 // Nothing about the credential is on argv: the engine forwards the environment
 // names with `-e NAME` (no value), so the values come from the process
 // environment and never from the command line.
+//
+// The stand-in and the `rclone serve s3` servers a test starts are also
+// tracked here so a run that is stopped by a signal leaves neither behind
+// (drive#659): `node --test` never runs `t.after` when the process is
+// terminated, so the SIGTERM/SIGINT handlers below remove the containers and
+// kill the process groups on that path. `t.after` is still the normal teardown.
 
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+
+/**
+ * Every container the stand-in has started and still has to remove, keyed by
+ * name, with the volume it owns.
+ * @type {Set<{engine: string, name: string, volume: string}>}
+ */
+const liveContainers = new Set();
+/**
+ * Every fixture process a test started in its own process group, so a signalled
+ * run can kill the group rather than the process alone.
+ * @type {Set<import("node:child_process").ChildProcess>}
+ */
+const liveChildren = new Set();
+let signalHandlersInstalled = false;
+
+/** @param {{engine: string, name: string, volume: string}} container */
+function removeContainer(container) {
+  spawnSync(container.engine, ["rm", "-f", container.name], { stdio: "ignore" });
+  spawnSync(container.engine, ["volume", "rm", "-f", container.volume], { stdio: "ignore" });
+}
+
+function installSignalHandlers() {
+  if (signalHandlersInstalled) {
+    return;
+  }
+  signalHandlersInstalled = true;
+  // The exit code is the shell's 128 + signal number, so a run a runner
+  // stopped reads as stopped and not as a pass that finished cleanly.
+  const shutdownSignals = /** @type {[NodeJS.Signals, number][]} */ ([
+    ["SIGTERM", 143],
+    ["SIGINT", 130],
+  ]);
+  for (const [signal, code] of shutdownSignals) {
+    process.on(signal, () => {
+      for (const container of liveContainers) {
+        removeContainer(container);
+      }
+      liveContainers.clear();
+      for (const child of liveChildren) {
+        killTracked(child, "SIGKILL");
+      }
+      liveChildren.clear();
+      process.exit(code);
+    });
+  }
+}
+
+/**
+ * Kill a child and, when it leads its own process group, every process in that
+ * group. The fallback covers a process that is not a group leader.
+ * @param {import("node:child_process").ChildProcess | null | undefined} child
+ * @param {NodeJS.Signals} [signal]
+ */
+export function killTracked(child, signal = "SIGTERM") {
+  if (!child || typeof child.pid !== "number") {
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+/**
+ * Track an already-running process (a browser a test started) so a signalled
+ * run kills it too. A null child (a browser that reports no process handle) is
+ * a no-op.
+ * @param {import("node:child_process").ChildProcess | null | undefined} child
+ * @returns {import("node:child_process").ChildProcess | null | undefined}
+ */
+export function trackProcess(child) {
+  if (child && typeof child.pid === "number") {
+    liveChildren.add(child);
+    child.once("exit", () => liveChildren.delete(child));
+    installSignalHandlers();
+  }
+  return child;
+}
+
+/**
+ * Spawn a fixture in its own process group and track it, so teardown and the
+ * signal handler both reach the server and anything it started.
+ * @param {string} command @param {string[]} args
+ * @param {import("node:child_process").SpawnOptions} [options]
+ * @returns {import("node:child_process").ChildProcess}
+ */
+export function spawnTracked(command, args, options = {}) {
+  return /** @type {import("node:child_process").ChildProcess} */ (
+    trackProcess(spawn(command, args, { ...options, detached: true }))
+  );
+}
 
 /** The pinned stock server; `DRIVE_STANDIN_IMAGE` replaces it. */
 export const MINIO_IMAGE =
@@ -95,11 +197,15 @@ export async function startMinioStandin({ name, environment, port }, t) {
   const volume = `${name}-data`;
   spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
   spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
+  const tracked = { engine, name, volume };
+  liveContainers.add(tracked);
+  installSignalHandlers();
   const child = spawn(
     engine,
     [
       "run",
       "-d",
+      "--rm",
       "--name",
       name,
       "--user",
@@ -121,8 +227,8 @@ export async function startMinioStandin({ name, environment, port }, t) {
     },
   );
   t.after(() => {
-    spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
-    spawnSync(engine, ["volume", "rm", "-f", volume], { stdio: "ignore" });
+    liveContainers.delete(tracked);
+    removeContainer(tracked);
   });
   let stderr = "";
   child.stderr.on("data", (chunk) => {
