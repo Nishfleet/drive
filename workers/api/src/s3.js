@@ -171,6 +171,14 @@ export function createS3Client(config) {
 }
 
 /**
+ * How many days a hidden version (an overwritten copy, or the file behind a
+ * delete marker) stays in a bucket before the lifecycle rule removes it. The
+ * docs read this value (src/keys.js `storagePowersFor`), so a page cannot
+ * promise a longer undo window than the bucket keeps (drive#502).
+ */
+export const HIDDEN_VERSION_DAYS = 1;
+
+/**
  * The bucket build step 1 asks for: versioning on, hidden versions kept for a
  * day, and the event notifications pointed at the api Worker. Idempotent, so
  * a run that configures an existing bucket is not a failure.
@@ -192,7 +200,7 @@ export function createS3Client(config) {
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null, encryption: S3Response|null}>}
  */
 export async function provisionBucket(client, config) {
-  const { bucket, notificationQueueArn, hiddenVersionDays = 1 } = config;
+  const { bucket, notificationQueueArn, hiddenVersionDays = HIDDEN_VERSION_DAYS } = config;
 
   const created = await client.send("PUT", { bucket });
   if (created.status !== 200 && tagValue(created.text, "Code") !== "BucketAlreadyOwnedByYou") {
