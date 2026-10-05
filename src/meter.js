@@ -535,8 +535,9 @@ const NOT_TRASH_SQL = `NOT (
 // The rows an hour reads (drive#519): live versions created before the hour
 // ends, from the partial `file_versions_live` index, and versions hidden at or
 // after `hiddenFrom` and created before the hour ends, from the partial
-// `file_versions_hidden_at` index (migrations/drive/0026_meter_scale.sql and
-// 0023). The two halves cannot overlap (a row is either live or hidden), so
+// `file_versions_hidden_at` index (migrations/drive/0026_meter_scale.sql, whose
+// SQL is `IF NOT EXISTS` so a re-run under a new name is a no-op, and 0023).
+// The two halves cannot overlap (a row is either live or hidden), so
 // UNION ALL is the same row set the old `hidden_at IS NULL OR hidden_at >= ?1`
 // read, and neither half walks the hidden history. That OR left SQLite no
 // index to plan with: with no statistics it walked the whole table in
