@@ -21,6 +21,7 @@ import {
   BILLING_CONFIG,
   handleQuoteRequest,
   handleUsageRequest,
+  minutesInMonth,
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
   usageSummary,
@@ -418,6 +419,7 @@ async function liveDevicesFor(env, account) {
 function capStateFor(_accountId) {
   const empty = usageSummary({
     gbMinutes: 0,
+    monthMinutes: minutesInMonth(Date.now()),
     storedGb: 0,
     storedDaily: [],
     downloadBytes: 0,

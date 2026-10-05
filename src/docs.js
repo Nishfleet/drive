@@ -19,10 +19,10 @@
 import {
   BILLING_CONFIG,
   GB_PER_TB,
-  MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
+  QUOTE_MONTH_MINUTES,
 } from "./billing.js";
 import { INSTALL_LINES } from "./install-lines.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
@@ -39,11 +39,13 @@ export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}
 /**
  * The metered cost of a month, in dollars, before the maximum: the rate on the
  * month's GB-months. This is the "meter" column of the worked example, and it
- * is the same function the usage page and `drive usage` read.
+ * is the same function the usage page and `drive usage` read. The worked
+ * examples are held for a 31-day month (QUOTE_MONTH_MINUTES), the month the
+ * old fixed divisor over-billed (drive#531).
  * @param {number} gbMinutes
  */
 export function meteredUsdFor(gbMinutes) {
-  return meteredMonthlyBillUsd(gbMinutes);
+  return meteredMonthlyBillUsd(gbMinutes, QUOTE_MONTH_MINUTES);
 }
 
 /**
@@ -61,7 +63,7 @@ export const BILL_EXAMPLES = Object.freeze(
     return Object.freeze({
       tb,
       stored: `${tb} TB`,
-      metered: dollars(meteredUsdFor(gb * MINUTES_PER_MONTH)),
+      metered: dollars(meteredUsdFor(gb * QUOTE_MONTH_MINUTES)),
       maximum: dollars(monthlyMaximumUsd(gb)),
       bill: dollars(bill.billUsd),
     });

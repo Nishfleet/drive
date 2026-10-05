@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
+import { BILLING_CONFIG, meteredMonthlyBillUsd } from "../src/billing.js";
 import { createS3Store } from "../src/files.js";
 import worker from "../src/index.js";
 import {
@@ -150,21 +150,24 @@ test("the meter's GB is decimal, and a month of the free credit's GB is exactly 
 
   // A month of whole minutes at that size: ONE version of the credit's GB,
   // written at the month's first instant and live to the end of it, so its
-  // GB-minutes are the credit's GB x 43,800 and the bill for them is the $1.
-  const monthEnd = midnight() + MINUTES_PER_MONTH * MINUTE_MS;
+  // GB-minutes are the credit's GB x the month's minutes and the bill for
+  // them is the $1. A 30-day month here: the bill divides by the calendar
+  // month's own minutes (drive#531).
+  const MONTH_MINUTES = 30 * 1440;
+  const monthEnd = midnight() + MONTH_MINUTES * MINUTE_MS;
   const version = { sizeBytes: freeGb * GB, createdAt: midnight(), hiddenAt: null };
-  const hours = Math.round(MINUTES_PER_MONTH / 60);
+  const hours = Math.round(MONTH_MINUTES / 60);
   // The meter's whole-minute total for that month, summed hour by hour, is
-  // the credit's GB x 43,800 with no rounding drift (each hour books 60 whole
-  // minutes, and 43,800 of them is the average month the spec divides by).
+  // the credit's GB x the month's minutes with no rounding drift (each hour
+  // books 60 whole minutes, and the month's minutes are what the bill divides by).
   let total = 0;
   for (let h = 0; h < hours; h += 1) {
     total += versionGbMinutesInHour(version, midnight() + h * 60 * MINUTE_MS, monthEnd);
   }
-  assert.equal(total, freeGb * MINUTES_PER_MONTH, "a whole month of whole minutes is exact");
+  assert.equal(total, freeGb * MONTH_MINUTES, "a whole month of whole minutes is exact");
   // And that total, through the ONE function the invoice reads, is the $1
   // free credit: the meter and the bill cannot disagree about the free month.
-  assert.equal(meteredMonthlyBillUsd(total), BILLING_CONFIG.freeMonthlyUsd);
+  assert.equal(meteredMonthlyBillUsd(total, MONTH_MINUTES), BILLING_CONFIG.freeMonthlyUsd);
   // The rolled-up total for the same month (the integer-unit sum the SQL
   // stores, one version at a time) agrees, so a month's billing is the same
   // whether the invoice reads the rollup or the per-version arithmetic.

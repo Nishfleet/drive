@@ -16,7 +16,7 @@
 //   - settleBalance: after a draw, the "$2 left" email (once per crossing) and
 //     the auto top-up (off by default; at most one started per day).
 
-import { monthBillCents } from "./billing.js";
+import { minutesInMonth, monthBillCents } from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import {
@@ -135,6 +135,7 @@ async function drawFor(db, accountId, hour, now) {
   const usage = await monthUsageThrough(db, accountId, hour);
   const bill = monthBillCents({
     gbMinutes: usage.gbMinutes,
+    monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
     averageStoredGb: usage.averageStoredGb,
   });
