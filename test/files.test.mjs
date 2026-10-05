@@ -968,14 +968,10 @@ function moveRecorder(inner, big, onCopy) {
      * @param {string} from
      * @param {string} to
      * @param {number} [size]
-     * @param {{ifMatch?: string|null}} [options]
+     * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
      */
     async copy(from, to, size, options) {
-      calls.push(
-        `copy ${from} ${to} ${size}${
-          typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : ""
-        }`,
-      );
+      calls.push(`copy ${from} ${to} ${size}${guardText(options)}`);
       const done = await inner.copy(from, to, size, options);
       if (onCopy) {
         await onCopy();
@@ -1017,17 +1013,11 @@ function beforeCopyRecorder(inner, beforeCopy, calls = []) {
       return inner.write(path, body, contentType);
     },
     async remove(path, options) {
-      calls.push(
-        `remove ${path}${typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : ""}`,
-      );
+      calls.push(`remove ${path}${guardText(options)}`);
       return inner.remove(path, options);
     },
     async copy(from, to, size, options) {
-      calls.push(
-        `copy ${from} ${to} ${size}${
-          typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : ""
-        }`,
-      );
+      calls.push(`copy ${from} ${to} ${size}${guardText(options)}`);
       // The save lands in the window the issue names: the route has listed the
       // destination, and the copy has not written yet.
       await beforeCopy();
@@ -1037,6 +1027,35 @@ function beforeCopyRecorder(inner, beforeCopy, calls = []) {
       return inner.listVersions(path);
     },
   };
+}
+
+/**
+ * How a recorded call's guard reads, so one printed form covers every shape a
+ * call can carry. A copy asked to land on an empty path prints `if empty` and a
+ * copy asked to hold a listing's ETag prints `if <etag>`, so a test reading the
+ * log can tell a guard from no guard — the difference between "the restore
+ * checked" and "the restore copied blind" (drive issue #605).
+ * @param {{ifMatch?: string|null|undefined, ifAbsent?: boolean}} [options]
+ * @returns {string}
+ */
+function guardText(options) {
+  if (options?.ifAbsent === true) {
+    return " if empty";
+  }
+  return typeof options?.ifMatch === "string" ? ` if ${options.ifMatch}` : "";
+}
+
+/**
+ * The ETag for these bytes, the same hex SHA-256 the memory store's
+ * `memoryEtag` produces, in the one form a listing and a HEAD can both carry.
+ * A fake storage answers both from a plain string with it, so the route's
+ * comparison sees the same string on both sides of the guard it is being
+ * tested through (drive issue #605).
+ * @param {string} body
+ * @returns {string}
+ */
+function etagFor(body) {
+  return createHash("sha256").update(body).digest("hex");
 }
 
 /**
@@ -1110,7 +1129,7 @@ test("delete and restore move a 200 MB object by copying it in the storage, not 
     `remove u/1/big.iso if ${live}`,
     `list u/1/.trash/big.iso`,
     "list u/1/",
-    `copy u/1/.trash/${trash} u/1/big.iso ${big}`,
+    `copy u/1/.trash/${trash} u/1/big.iso ${big} if empty`,
     `remove u/1/.trash/${trash} if ${parkedEtag}`,
   ]);
   assert.ok(await scoped.read("/big.iso"));
@@ -1244,7 +1263,7 @@ test("a restore that finds nothing at the live path is still held to it being em
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
   assert.ok(
-    moved.calls.some((entry) => entry.startsWith("copy ") && !entry.includes(" if ")),
+    moved.calls.some((entry) => entry.startsWith("copy ") && entry.endsWith(" if empty")),
     `the copy asked to land on an empty path, got ${JSON.stringify(moved.calls)}`,
   );
   const live = await scoped.read("/notes.md");
@@ -1294,11 +1313,14 @@ test("a restore with nothing at the live path still puts the file back", async (
   const live = await scoped.read("/notes.md");
   assert.ok(live);
   assert.equal(await new Response(live.body).text(), "the old text");
-  // The copy carried no guard, because the route's listing found nothing at
-  // the destination to name.
+  // The copy was held to the destination staying empty, because the route's
+  // listing found nothing there to name: a guard, and a different one from the
+  // ETag a path with a file on it is held to.
   assert.ok(
-    moved.calls.some((entry) => entry.startsWith("copy u/1/.trash/") && entry.endsWith(" 12")),
-    `the copy ran unguarded, got ${JSON.stringify(moved.calls)}`,
+    moved.calls.some(
+      (entry) => entry.startsWith("copy u/1/.trash/") && entry.endsWith(" 12 if empty"),
+    ),
+    `the copy was held to an empty destination, got ${JSON.stringify(moved.calls)}`,
   );
 });
 
@@ -1385,6 +1407,117 @@ test("a delete the S3 store refuses answers 409, and the file is not lost", asyn
   const parked = trashStorePath(trashName("/notes.md", now));
   assert.ok(objects.has(`u/acct-a${parked}`), "the parked copy is in the store");
   assert.ok(objects.has(liveKey), "the key the store refused is still there");
+});
+
+test("a restore the S3 store would put over a saved file answers 409 and keeps both", async () => {
+  // The whole restore on the adapter the deployed Worker uses, because the
+  // memory store's guard cannot reach the window this is about: nothing is
+  // awaited between its comparison and its write, and a real HEAD to a storage
+  // is a round-trip a save can land inside. So the store under the route here
+  // is one whose guard answers from a HEAD, and the save lands between that
+  // answer and the copy (drive issue #605).
+  const parkedKey = `u/acct-a${trashStorePath(trashName("/notes.md", now))}`;
+  const liveKey = "u/acct-a/notes.md";
+  /** @type {Map<string, string>} */
+  const objects = new Map([
+    [parkedKey, "the parked text"],
+    // The live path still holds the bytes the restore's listing will name. The
+    // save lands in the store below, between that listing and the guard's HEAD,
+    // which is the window the issue is about.
+    [liveKey, "the file that was there when the restore started"],
+  ]);
+  /** @type {string[]} */
+  const requests = [];
+  let listed = false;
+  /** @type {typeof fetch} */
+  const fetchImpl = async (input, init = {}) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const key = decodeURIComponent(new URL(request.url).pathname).slice("/drive/".length);
+    const source = request.headers.get("x-amz-copy-source");
+    const prefix = new URL(request.url).searchParams.get("prefix");
+    requests.push(`${request.method} ${key} ?${prefix}`);
+    if (request.method === "GET" && prefix !== null && prefix === "u/acct-a/") {
+      listed = true;
+    }
+    if (request.method === "GET" && prefix !== null) {
+      // The listing asks with a delimiter, so a key deeper than the prefix comes
+      // back as a CommonPrefix, not a Contents row — the same shape a real S3
+      // answers, and the one the store's own parser expects. Returning a
+      // Contents row here instead would prove nothing, because the store would
+      // never see it the way it sees a real answer.
+      const deeper = [...objects.keys()].filter(
+        (candidate) => candidate.startsWith(prefix) && candidate.slice(prefix.length).includes("/"),
+      );
+      const rows = [...objects.keys()]
+        .filter(
+          (candidate) =>
+            candidate.startsWith(prefix) && !candidate.slice(prefix.length).includes("/"),
+        )
+        .map(
+          (candidate) =>
+            `<Contents><Key>${candidate}</Key><Size>${objects.get(candidate)?.length ?? 0}</Size><ETag>"${etagFor(objects.get(candidate) ?? "")}"</ETag><LastModified>2026-10-06T00:00:00.000Z</LastModified></Contents>`,
+        )
+        .join("");
+      const prefixes = deeper
+        .map(
+          (candidate) =>
+            `<CommonPrefixes><Prefix>${candidate.slice(0, candidate.indexOf("/", prefix.length) + 1)}</Prefix></CommonPrefixes>`,
+        )
+        .join("");
+      return new Response(
+        `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${rows}${prefixes}</ListBucketResult>`,
+        { status: 200 },
+      );
+    }
+    if (request.method === "HEAD") {
+      // The save lands now, in the round-trip between the route's listing and
+      // the guard's read of the same key. The guard is answered with the save's
+      // ETag, so it differs from the listing's and the copy is refused. This is
+      // the window, on the adapter the deployed Worker uses.
+      if (listed) {
+        objects.set(liveKey, "the save that landed while the restore ran");
+      }
+      return new Response(null, {
+        status: 200,
+        headers: { etag: `"${etagFor(objects.get(liveKey) ?? "")}"` },
+      });
+    }
+    if (request.method === "PUT" && source !== null) {
+      objects.set(key, objects.get(decodeURIComponent(source).slice("/drive/".length)) ?? "");
+      return new Response('<CopyObjectResult><ETag>"copied"</ETag></CopyObjectResult>', {
+        status: 200,
+      });
+    }
+    if (request.method === "DELETE") {
+      // Every conditional delete is answered with the bytes it no longer has,
+      // the way a storage answers an If-Match the key has moved past.
+      return new Response(null, { status: 412 });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const store = createS3Store({ endpoint: "https://s3.test", bucket: "drive", fetchImpl });
+  const acct = { id: "acct-a", name: "A" };
+
+  // The route lists the destination, the save is at that path, and the copy's
+  // guard reads it. The listing and the guard disagree on purpose — the
+  // listing carried the ETag the file had when the restore started, and the
+  // guard sees the save that replaced it — which is the refusal under test.
+  const response = await handleFilesRequest(moveCall("/restore", "/notes.md"), store, acct, now);
+  assert.equal(
+    response.status,
+    409,
+    `status was ${response.status}, requests ${JSON.stringify(requests)}`,
+  );
+  assert.equal((await response.json()).error, failureMessage("restore-file-changed"));
+  // Nothing was copied over the save: the guard refused before the PUT.
+  assert.ok(
+    !requests.some((entry) => entry === `PUT ${liveKey}`),
+    `the refused restore never wrote over the save, got ${JSON.stringify(requests)}`,
+  );
+  // Both copies are where they were: the save at the live path, the parked file
+  // still parked.
+  assert.equal(objects.get(liveKey), "the save that landed while the restore ran");
+  assert.equal(objects.get(parkedKey), "the parked text");
 });
 
 test("a copy the S3 store would put over a changed destination is refused", async () => {
@@ -1484,7 +1617,7 @@ test("a save that lands between the guard's HEAD and the copy is overwritten, an
   assert.deepEqual(
     requests,
     ["HEAD u/acct-a/notes.md", "PUT u/acct-a/notes.md"],
-    "the guard did run, and the copy followed it unguarded",
+    "the guard did run, and the copy followed it as its own separate call",
   );
   // The bytes the guard read are the bytes the copy replaced. The guard did its
   // job as far as the API allows: it is a read, and a read is not a lock.
