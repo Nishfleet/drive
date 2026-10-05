@@ -35,9 +35,10 @@ jobs:
   deploy:
     name: deploy
     # A red, cancelled or skipped CI run never matches. `event == 'push'` keeps
-    # a merge-queue or pull-request CI run from deploying.
+    # a merge-queue or pull-request CI run from deploying. A hand start deploys
+    # main only, so a branch that never passed CI cannot reach production.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     runs-on: [self-hosted, Linux, X64] # own VPS runners: hosted minutes ran out 2026-10-03 and hosted jobs are refused for billing
@@ -122,9 +123,11 @@ jobs:
             echo "::warning::health not checked: no Access service token on the production environment (drive#520)"
             exit 0
           fi
-          body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
-            -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
-            -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+          # The token goes to curl in a private file, never in its arguments.
+          headers="$RUNNER_TEMP/access-headers"
+          (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
+            "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers")
+          body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
             https://drive-pricing.nishant345.workers.dev/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
           printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
             { echo "::error::/api/health is not ok: $body"; exit 1; }
@@ -137,8 +140,10 @@ jobs:
           PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}
       - name: Roll back the Worker version
         # Stock Workers rollback: a new deployment of the previous version at
-        # 100%. Runs when anything after the upload failed.
-        if: failure() && steps.ship.outcome == 'success'
+        # 100%. Runs when any step after the live version was read failed,
+        # including a deploy that timed out after Cloudflare took the upload.
+        # When the old version is still live this changes nothing.
+        if: failure() && steps.live.outcome == 'success'
         run: |
           npx cf workers deployments create --worker drive-pricing --strategy percentage \
             --versions "[{\"version_id\":\"$PREVIOUS_VERSION\",\"percentage\":100}]"

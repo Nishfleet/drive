@@ -45,7 +45,7 @@ test("deploy starts from a successful CI run on a main push, never from push", (
   const cond = /^ {4}if: >-\n((?: {6}.*\n)+)/m.exec(job)?.[1].replace(/\s+/g, " ").trim();
   assert.equal(
     cond,
-    "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')",
+    "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')",
   );
   assert.match(DEPLOY, /ref: \$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/);
 });
@@ -55,8 +55,14 @@ test("the deploy checks the live version and health, and rolls back on failure",
   assert.match(DEPLOY, /id: live\n/);
   assert.match(DEPLOY, /id: ship\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
-  assert.match(DEPLOY, /CF-Access-Client-Id: \$CF_ACCESS_CLIENT_ID/);
-  assert.match(DEPLOY, /if: failure\(\) && steps\.ship\.outcome == 'success'/);
+  assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
+  assert.match(DEPLOY, /-H "@\$headers"/);
+  assert.doesNotMatch(
+    DEPLOY,
+    /-H "CF-Access-Client-Secret: \$/,
+    "the token never sits in curl's arguments",
+  );
+  assert.match(DEPLOY, /if: failure\(\) && steps\.live\.outcome == 'success'/);
   assert.match(
     DEPLOY,
     /cf workers deployments create --worker drive-pricing --strategy percentage/,
