@@ -142,7 +142,8 @@
         if (cap === null) return false;
         // The figure, in either form the page's own sentence allows: "$20"
         // or "20 dollars".
-        const named = new RegExp(`\\$${cap[1]}\\b|\\b${cap[1]} dollars\\b`);
+        const fig = cap[1].replace(/\./g, "\\.");
+        const named = new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`);
         return named.test(output);
 
 - description: how the bill is counted for a file I keep for a week
@@ -197,7 +198,7 @@
         if (row === undefined) return false;
         const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
         if (cells.length < 4) return false;
-        const bill = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "");
+        const bill = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "").replace(/\./g, "\\.");
         // The figure, in either form the page's own row allows: "$10" or
         // "10 dollars".
         return new RegExp(`\\$${bill}\\b|\\b${bill} dollars\\b`).test(output);
@@ -218,7 +219,8 @@
         const page = String(context.vars.docs_pricing || "");
         const ceiling = /Never more than \$(\d+(?:\.\d+)?) per TB/.exec(page);
         if (ceiling === null) return false;
-        return new RegExp(`\\$${ceiling[1]}\\b|\\b${ceiling[1]} dollars\\b`).test(output);
+        const fig = ceiling[1].replace(/\./g, "\\.");
+        return new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`).test(output);
 
 - description: when downloads start costing money
   vars:

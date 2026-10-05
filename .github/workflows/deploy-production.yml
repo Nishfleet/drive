@@ -79,14 +79,21 @@ jobs:
         # score. A run by hand (workflow_dispatch) records a fresh score for
         # a release that cannot wait for Monday.
         run: |
-          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion // "none")"')
+          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion,createdAt --jq '.[0] // empty | "\(.status) \(.createdAt) \(.conclusion // "none")"')
           if [ -z "$latest" ]; then
             echo "::warning::no agent eval run has completed yet; the score gate is not armed"
           else
-            status=${latest% *}
-            conclusion=${latest#* }
+            read -r status created conclusion <<<"$latest"
             if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
               echo "::error::the newest agent eval run on main concluded $conclusion; the held-out score is under the pass bar, so the release stops here (drive#526)"
+              exit 1
+            fi
+            # A green score goes stale when the weekly clock stops (a runner
+            # offline, the schedule disabled): fail loud after two missed
+            # Mondays instead of shipping on an old score.
+            age_days=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
+            if [ "$age_days" -gt 14 ]; then
+              echo "::error::the newest agent eval run on main is $age_days days old; run agent-eval.yml by hand (workflow_dispatch) for a fresh score (drive#526)"
               exit 1
             fi
             echo "agent eval gate: newest run on main is $status/$conclusion"
