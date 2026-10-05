@@ -96,7 +96,7 @@ removes the item, so the drive does not start at the next login.
 drive status
 ```
 
-Storage is metered from the moment the mount starts. {{NO_MINIMUM}}
+Storage is metered from the moment the mount starts. {{NO_PLANS}}
 [Pricing and your bill](/pricing) has the maximum and four
 worked sizes.
 
