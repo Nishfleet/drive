@@ -946,6 +946,11 @@ test("a month metered without a single stored-bytes mark is refused, never bille
     "a fully measured month reads its peak",
   );
   // The unreadable one: the marks go, the metered minutes stay.
+  //
+  // Between these two cases the reader exercises both facts
+  // MONTH_UNMEASURED_SQL reads, so neither half of the refusal can regress
+  // unnoticed: a withheld mark with the hours still there (unmarked_hour), and
+  // no hours at all (live_version).
   sqlite(meteredDb).prepare("UPDATE usage_minutes SET stored_bytes = 0").run();
   await assert.rejects(
     () => monthUsageRollup(meteredDb.db, ACCOUNT, from, monthEnd("2026-09")),
