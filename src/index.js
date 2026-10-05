@@ -931,6 +931,18 @@ export function createApp() {
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[pricing] request failed:", err.message, err.stack, err);
+    // drive#584: a browser that asked for a page gets the site's own 5xx page,
+    // so a failure deep in the Worker still looks like the site. An API caller
+    // keeps the one failure table's JSON, so a CLI never has to parse HTML.
+    const accept = c.req.header("accept") ?? "";
+    if (accept.includes("text/html") && !c.req.path.startsWith("/api/") && c.env.ASSETS) {
+      const errorUrl = new URL(c.req.url);
+      errorUrl.pathname = "/500.html";
+      errorUrl.search = "";
+      return c.env.ASSETS.fetch(new Request(errorUrl, { headers: c.req.raw.headers }))
+        .then((asset) => new Response(asset.body, { status: 500, headers: asset.headers }))
+        .catch(() => c.json({ error: failureMessage("unexpected") }, 500));
+    }
     return c.json({ error: failureMessage("unexpected") }, 500);
   });
 

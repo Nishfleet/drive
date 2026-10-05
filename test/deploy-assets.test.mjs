@@ -295,6 +295,11 @@ test("the pages the issue names are served from the shipped directory", async ()
       [SITE.llmsPath, "text/plain"],
       [SITE.sitemapPath, "application/xml"],
       [SEO_DOC_PAGES[0].path, "text/html"],
+      // drive#584: the trust pages the launch checklist names, and the site's
+      // own 5xx page. Each is a public/ asset the deploy copies verbatim.
+      ["/accessibility.html", "text/html"],
+      ["/status.html", "text/html"],
+      ["/500.html", "text/html"],
     ]) {
       const response = await fetch(`${site.origin}${path}`);
       assert.equal(response.status, 200, `${path} must be served from public/`);
@@ -304,6 +309,14 @@ test("the pages the issue names are served from the shipped directory", async ()
         `${path} answered content-type ${type}, expected ${contentType}`,
       );
       assert.ok((await response.text()).length > 0, `${path} served an empty body`);
+    }
+    // The new pages are reachable: the served copy of each links both, so a
+    // person who lands on one can reach the other.
+    for (const path of ["/accessibility.html", "/status.html"]) {
+      const html = await (await fetch(`${site.origin}${path}`)).text();
+      for (const link of ["/accessibility", "/status"]) {
+        assert.ok(html.includes(`href="${link}"`), `${path} must link ${link}`);
+      }
     }
     // The served sitemap is the committed one, byte for byte: the deploy ships
     // what main carries, not a stale copy from an earlier build.
@@ -467,6 +480,27 @@ test("a binding that fails answers the one failure table's words", async () => {
     { error: failureMessage("unexpected") },
     "the message table speaks, whatever failed underneath it",
   );
+});
+
+test("a browser that asked for a page gets the site's 5xx page, not JSON", async () => {
+  // drive#584: app.onError serves public/500.html when the request carries a
+  // text/html Accept, so a person following a link does not land on a bare
+  // JSON body. The JSON caller's answer above must not change, so this is the
+  // page side of the same failure.
+  const page = read("public/500.html");
+  const response = await siteRequest(
+    new Request("https://drive.test/v1/health", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    }),
+    {
+      API: { fetch: () => Promise.reject(new Error("the api Worker threw")) },
+      ASSETS: { fetch: async () => new Response(page, { status: 200 }) },
+    },
+  );
+  assert.equal(response.status, 500, "a failed page request is still a 500");
+  const body = await response.text();
+  assert.match(body, /That did not work/, "the browser gets the site's own words");
+  assert.ok(!body.trimStart().startsWith("{"), "a browser is not handed JSON");
 });
 
 test("one host answers both families: the api Worker behind the binding", async () => {

@@ -4,6 +4,10 @@
 // link them, the four owner facts stay marked placeholders in one place
 // each, the pages state the real price and the real storage provider, and
 // security.txt points at the support page.
+//
+// drive#584 adds the accessibility and status pages to the same list, plus the
+// three operator runbooks, the site's own 5xx page, and the sub-processor list
+// on the security page. Those are pinned at the end of this file.
 
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -196,4 +200,56 @@ test("the report and support paths are real pages, and security.txt points at su
   const expires = securityTxt.match(/^Expires: (\S+)$/m);
   assert.ok(expires, "security.txt must carry Expires (RFC 9116)");
   assert.ok(Date.parse(expires[1]) > Date.now(), "security.txt has expired: move Expires on");
+});
+
+// drive#584: the launch checklist's own items.
+
+test("security.txt carries every RFC 9116 field, with an expiry under a year", () => {
+  const securityTxt = readPublic(".well-known/security.txt");
+  for (const field of ["Contact", "Expires", "Preferred-Languages", "Canonical", "Policy"]) {
+    assert.match(
+      securityTxt,
+      new RegExp(`^${field}: \\S`, "m"),
+      `security.txt must carry ${field}`,
+    );
+  }
+  const expiresLine = securityTxt.match(/^Expires: (\S+)$/m);
+  assert.ok(expiresLine, "security.txt must carry Expires as an RFC 3339 timestamp");
+  const expires = Date.parse(expiresLine[1]);
+  assert.ok(Number.isFinite(expires), "Expires must be an RFC 3339 timestamp");
+  assert.ok(expires > Date.now(), "security.txt has expired: move Expires on");
+  // RFC 9116 recommends less than a year, so a reader re-reads the file instead
+  // of trusting a stale contact forever. 366 days leaves the leap day alone.
+  const underAYear = 366 * 24 * 60 * 60 * 1000;
+  assert.ok(
+    expires - Date.now() <= underAYear,
+    "Expires must be under a year out, not a date nobody will revisit",
+  );
+});
+
+test("the security page names every sub-processor the privacy policy names", () => {
+  const security = readRepo("docs-site/security.md");
+  for (const name of ["Cloudflare", "iDrive e2", "Dodo Payments"]) {
+    assert.ok(security.includes(name), `the security page must name ${name} (drive#584)`);
+  }
+  // The privacy policy stays the full record: the security page points at it.
+  assert.match(security, /privacy policy/);
+});
+
+test("the launch checklist's runbooks ship with words in them", () => {
+  for (const name of ["incident", "secrets-rotation", "restore"]) {
+    const path = `docs/runbooks/${name}.md`;
+    assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), `${path} must ship`);
+    const body = readRepo(path);
+    assert.match(body, /^# /m, `${path} must lead with a heading`);
+    assert.ok(body.trim().length > 200, `${path} must carry the procedure, not a stub`);
+  }
+});
+
+test("the site's own 5xx page ships as a noindex asset", () => {
+  const html = readPublic("500.html");
+  assert.match(html, /<meta name="robots" content="noindex">/);
+  assert.match(html, /That did not work/);
+  const sitemap = readPublic("sitemap.xml");
+  assert.equal(sitemap.includes("/500.html"), false, "the 5xx page is not a destination");
 });

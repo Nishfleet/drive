@@ -12,6 +12,19 @@ account we hold, and a folder on your machine shows them to you. The
 [privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) lists every company that handles your data. Every device and every agent tool gets its own key, and a key can
 only do what its kind of key is allowed to do. Keys are yours to revoke.
 
+## Sub-processors
+
+Three companies handle data for the drive. The
+[privacy policy](https://drive-pricing.nishant345.workers.dev/privacy) is the
+full record, with what each one stores and where:
+
+- **Cloudflare** — the site, the API, downloads, the account database and email.
+  Cloudflare's global network.
+- **iDrive e2** — the object storage that holds your files and their old
+  versions. Paris, France (region eu-west-3).
+- **Dodo Payments** — card payments, refunds, and the card itself. We never hold
+  a card number.
+
 ## What each key can do
 
 {{KEY_TABLE}}
