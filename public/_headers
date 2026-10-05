@@ -1,0 +1,25 @@
+# Static-asset response headers (drive issue #527).
+#
+# Cloudflare Workers Static Assets reads this file at upload and applies each
+# block to the matching paths; it is stock, so no Worker code and no custom
+# middleware decide a header. drive#506 adds the security headers (CSP,
+# frame-ancestors, nosniff, Referrer-Policy, HSTS) to this same file.
+#
+# The cache blocks are the site's own speed budget made real. Every file whose
+# name carries a content hash — the VitePress chunks under /docs/assets/ and
+# the site's own Vite output under /assets/ — is safe to keep for a year in
+# the browser and in Cloudflare's edge, because a new build writes a new name.
+# The faces under /fonts/ are versioned by family, weight and subset in the
+# filename, so the same holds for them.
+#
+# The HTML pages are deliberately absent from these rules. They are named, not
+# hashed, so a one-year immutable cache would pin a person to a stale pricing
+# page for a year.
+/docs/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable

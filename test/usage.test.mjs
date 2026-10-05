@@ -526,6 +526,7 @@ const PAGE_IDS = Object.freeze([
   "bill-lines",
   "downloads-line",
   "upload-line",
+  "cap-amount",
   "cap-slider",
   "cap-value",
   "cap-note",
@@ -844,15 +845,37 @@ test("the cap slider shows the account's own cap, over the range a cap can take"
   // setting), not the card-less cap writes stop at, and the range tops out at
   // the month's maximum: a cap above that is not a real choice.
   assert.match(page, /capValueEl\.textContent = labels\.accountCap;/);
-  assert.match(
-    page,
-    /capSlider\.max = String\(Math\.ceil\(Math\.max\(summary\.maximumUsd, cap\.capUsd\)\)\);/,
-  );
-  assert.match(page, /<label for="cap-slider">Monthly cap, in dollars<\/label>/);
+  assert.match(page, /capCeiling\(Math\.max\(summary\.maximumUsd, cap\.capUsd\)\);/);
   // Nothing writes the slider's own value out of the page: the endpoint's
   // dollar values arrive finished, so a page-side "$12.34" would be a second
   // copy of the one formatter.
   assert.doesNotMatch(page, /capValueEl\.textContent = `\$/);
+});
+
+// drive#527: the cap had one control, a slider whose ceiling was the month's
+// maximum, so the page could never ask for a cap above that ceiling. The fix
+// is a labelled whole-dollar number field beside it, and the ceiling now
+// follows the number a person types.
+test("the cap has a labelled whole-dollar number input that the page reads", () => {
+  assert.match(
+    page,
+    /<label for="cap-amount">Monthly cap, in whole dollars<\/label>\s*<input type="number" id="cap-amount" min="0" step="1"/,
+  );
+  // Both controls carry one number, so neither can disagree with the other.
+  assert.match(page, /const capAmount = document\.getElementById\("cap-amount"\);/);
+  assert.match(page, /function capCeiling\(usd\)[\s\S]*capAmount\.max = String\(whole\);/);
+  assert.match(page, /function capWhole\(usd\)[\s\S]*capAmount\.value = String\(whole\);/);
+  // The typed number is what gets saved, and it becomes the ceiling, so a cap
+  // above the month's maximum is reachable (the old slider's fixed max was
+  // exactly why it was not).
+  assert.match(page, /async function saveCap\(\) \{\s*const amount = capAmount\.value;/);
+  assert.match(
+    page,
+    /capAmount\.addEventListener[\s\S]*capCeiling\(typed\);\s*capSlider\.value = String\(typed\);/,
+  );
+  assert.match(page, /capSlider\.addEventListener[\s\S]*capAmount\.value = capSlider\.value;/);
+  // A half-typed field never snaps the slider to a number nobody chose.
+  assert.match(page, /if \(capAmount\.value === "" \|\| !Number\.isFinite\(typed\)\) \{\s*return;/);
 });
 
 test("the cap is a control, not a readout, and it saves through the api", async () => {
@@ -868,7 +891,7 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
   assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
   assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
-  assert.match(page, /capSlider\.addEventListener\("input"/);
+  assert.match(page, /capAmount\.addEventListener\("input"/);
   assert.match(page, /capSaveEl\.addEventListener\("click"/);
   // The write: the same body `drive cap` sends, and the answer's own sentence
   // is the confirmation, so the page writes no cap words of its own.
@@ -887,12 +910,9 @@ test("the cap is a control, not a readout, and it saves through the api", async 
     page,
     /capSaveEl\.hidden = false;\s*capNoteWhatEl\.textContent = CAP_NOTE\.what;\s*capNoteNextEl\.textContent = CAP_NOTE\.next;/,
   );
-  // A minute's read does not move the slider back out from under the person
-  // moving it, and the saved line is the endpoint's own sentence.
-  assert.match(
-    page,
-    /if \(capSaveEl\.hidden\) \{\s*capSlider\.value = String\(cap\.capUsd\);\s*\}/,
-  );
+  // A minute's read does not move the cap controls back out from under the
+  // person moving them, and the saved line is the endpoint's own sentence.
+  assert.match(page, /if \(capSaveEl\.hidden\) \{\s*capWhole\(cap\.capUsd\);\s*\}/);
   // Visual feedback while the POST is in flight, so the slider's
   // disabled state is not the only signal that the save is happening.
   assert.match(page, /<p class="hint" id="cap-saving" role="status" hidden>Saving…<\/p>/);

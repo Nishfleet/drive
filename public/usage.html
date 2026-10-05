@@ -427,14 +427,16 @@ h2 {
       <section aria-labelledby="cap-heading">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
-          <label for="cap-slider">Monthly cap, in dollars</label>
-          <input type="range" id="cap-slider" min="0" max="12" step="0.01" value="12" aria-describedby="cap-note">
+          <label for="cap-amount">Monthly cap, in whole dollars</label>
+          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note">
+          <label for="cap-slider">Or move the slider</label>
+          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note">
           <p class="cap-value" id="cap-value"></p>
           <button type="button" id="cap-save" hidden>Save cap</button>
         </div>
         <div class="empty" id="cap-note">
           <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
-          <p class="next" id="cap-note-next">Move the slider, then choose Save cap.</p>
+          <p class="next" id="cap-note-next">Type the cap or move the slider, then choose Save cap.</p>
         </div>
         <p class="hint" id="cap-saved" role="status" hidden></p>
         <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
@@ -526,6 +528,7 @@ const costEl = document.getElementById("cost");
 const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
 const uploadLineEl = document.getElementById("upload-line");
+const capAmount = document.getElementById("cap-amount");
 const capSlider = document.getElementById("cap-slider");
 const capValueEl = document.getElementById("cap-value");
 const capSaveEl = document.getElementById("cap-save");
@@ -583,7 +586,7 @@ function sayCapError(note) {
 // read that follows paints the cap now in force. No money is worked out here
 // and no sentence is written here.
 async function saveCap() {
-  const amount = capSlider.value;
+  const amount = capAmount.value;
   capSlider.disabled = true;
   capSaveEl.disabled = true;
   capSavingEl.hidden = false;
@@ -819,13 +822,37 @@ function render(summary) {
   capValueEl.textContent = labels.accountCap;
   // The slider shows the cap in force, over the range that cap can take: the
   // month's maximum or the cap, whichever is larger, in whole dollars.
-  capSlider.max = String(Math.ceil(Math.max(summary.maximumUsd, cap.capUsd)));
+  capCeiling(Math.max(summary.maximumUsd, cap.capUsd));
   // A person who has moved the slider is not moved back: the minute's read
   // would otherwise throw away the amount they just picked, so it paints the
   // value only while no save is waiting.
   if (capSaveEl.hidden) {
-    capSlider.value = String(cap.capUsd);
+    capWhole(cap.capUsd);
   }
+}
+
+// The cap is whole dollars on this page (drive#527). Both controls carry the
+// same number: cap-amount is what a person types, cap-slider is the same
+// number they can drag, and whichever one they touch becomes the other. The
+// old slider alone could never reach above the month's maximum, because that
+// maximum was its ceiling; the typed number carries the ceiling with it, so
+// the page can now ask for any cap the person names.
+//
+// A cap with cents in force (say $12.50) reads as its next whole dollar in the
+// two controls. The exact amount is the sentence above them — the endpoint's
+// own `capLine`, painted as cap-value — and neither control is armed until a
+// person touches one, so a cents cap is never quietly rounded up.
+function capCeiling(usd) {
+  const whole = Math.max(0, Math.ceil(Number(usd)));
+  capAmount.max = String(whole);
+  capSlider.max = String(whole);
+  return whole;
+}
+
+function capWhole(usd) {
+  const whole = capCeiling(usd);
+  capAmount.value = String(whole);
+  capSlider.value = String(whole);
 }
 
 function showCloseError(el, message) {
@@ -904,19 +931,37 @@ closeFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
   postClose(closeTarget, document.getElementById("close-email").value, closeErrorEl);
 });
+capAmount.addEventListener("input", () => {
+  // The typed number is the ceiling: the slider follows it up so the drag can
+  // reach what was typed, and an empty or half-typed field leaves the slider
+  // alone rather than snapping it to a number nobody chose.
+  const typed = Number(capAmount.value);
+  if (capAmount.value === "" || !Number.isFinite(typed)) {
+    return;
+  }
+  capCeiling(typed);
+  capSlider.value = String(typed);
+  showCapSave();
+});
 capSlider.addEventListener("input", () => {
+  capAmount.value = capSlider.value;
+  showCapSave();
+});
+// The two controls share one note, because there is one unsaved cap between
+// them and one sentence that describes it.
+function showCapSave() {
   // A chosen number is not a saved number: the button is there to make it one,
-  // so it appears the moment the slider leaves the cap in force and stays
+  // so it appears the moment the controls leave the cap in force and stays
   // until the save lands or this page's own read catches up with it.
   //
   // The note goes back to its own words at the same time. A worker's sentence
-  // left sitting under the slider after it was read would answer a number the
-  // person has since changed, and it is the one line on this page that names
-  // an amount the person did not choose.
+  // left sitting under the controls after it was read would answer a number
+  // the person has since changed, and it is the one line on this page that
+  // names an amount the person did not choose.
   capSaveEl.hidden = false;
   capNoteWhatEl.textContent = CAP_NOTE.what;
   capNoteNextEl.textContent = CAP_NOTE.next;
-});
+}
 capSaveEl.addEventListener("click", () => {
   saveCap();
 });

@@ -15,9 +15,16 @@
 //
 // So 200 GB bills $4, 500 GB to 1 TB bills $10, 1.5 TB bills $15 and 3 TB
 // bills $30. No minimum and no plans.
+
+// The one site address (drive#527). cmd/drive/site.json is the single file
+// that holds it: the CLI embeds it (//go:embed in login.go), the docs config
+// imports it, and this module is where the site's own metadata reads it from.
+// test/seo.test.mjs then holds every shipped file to the value, so a domain
+// move is one edit rather than a sweep of ten files.
+import site from "../cmd/drive/site.json" with { type: "json" };
 import { PRICE } from "./pricing.js";
 
-const SITE_ORIGIN = "https://drive-pricing.nishant345.workers.dev";
+const SITE_ORIGIN = site.origin;
 const SITE_NAME = "Drive";
 const SITE_TITLE = `Drive — ${PRICE.titleLine}`;
 // The same sentence the page's own meta description already carries, so the
