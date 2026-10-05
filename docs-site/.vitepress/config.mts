@@ -42,6 +42,7 @@ export default defineConfig({
   // The pricing page is the canonical entry point; the docs are the reference
   // behind it. Cross-linking keeps the two reading as one product.
   head: [
+    ["link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }],
     ["link", { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/llms-full.txt` }],
     [
       "link",
@@ -54,6 +55,20 @@ export default defineConfig({
       },
     ],
   ],
+  // A wide table must scroll inside its own box at 375px instead of widening
+  // the page (drive#546). VitePress's own table_open rule gives the table
+  // tabindex="0"; chain it and wrap the table in the scroll container. The
+  // table keeps display: table (theme/site.css) so its cells stay aligned.
+  markdown: {
+    config(md) {
+      const open = md.renderer.rules.table_open;
+      const close = md.renderer.rules.table_close;
+      md.renderer.rules.table_open = (tokens, idx, options, env, self) =>
+        `<div class="table-wrap">${open ? open(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)}`;
+      md.renderer.rules.table_close = (tokens, idx, options, env, self) =>
+        `${close ? close(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)}</div>`;
+    },
+  },
   themeConfig: {
     nav: [
       { text: "Pricing", link: `${SITE_ORIGIN}/` },

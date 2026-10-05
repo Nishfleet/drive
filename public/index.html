@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — 2¢ per GB, never more than $10 per TB</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
@@ -56,9 +57,6 @@
   }
 }
   </script>
-  <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity
-       The favicon is an inline data: URI: there is no network fetch to
-       hash, so an integrity attribute would be meaningless. -->
   <!-- drive#152: the one face preloaded is the 900 display weight the price
        and the headings are set in, because it is the largest text in the first
        viewport. The other five files load on use, with font-display: swap
@@ -152,6 +150,7 @@ a {
 }
 
 .tagline {
+  color: var(--drive-ink);
   font-size: 14px;
   font-weight: 600;
 }
