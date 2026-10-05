@@ -680,8 +680,11 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // email binding can only be exercised by really sending mail (only the
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
-  // absence fails closed at the intake (src/meter.js) instead of at the probe.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN"]);
+  // absence fails closed at the intake (src/meter.js) instead of at the probe,
+  // and the reindex queue is only produced on by the nightly cron (drive#566),
+  // whose failure is a failed trigger rather than a customer request that
+  // could answer 503; a probe would have to enqueue a real walk to find out.
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "REINDEX_QUEUE"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,

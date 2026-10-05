@@ -62,6 +62,7 @@ import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
   indexAccounts,
+  REINDEX_SEND_BATCH,
   reconcileIndex,
   SEARCH_ENDPOINT,
   withIndex,
@@ -1017,17 +1018,104 @@ export default {
     // `all_rows=0` (cf d1 query, colo AMS), so there is no open row left
     // whose JSON the sweep could still move. Dropping the column is #339.
 
+    // The nightly reindex trip (drive#566). The cron only enqueues, one
+    // message per account, and the `queue` handler below does the walk. The
+    // serial walk this replaced ran inside one cron invocation, so a drive
+    // with more accounts than the invocation could visit left every account
+    // after it unsearchable, and one account's D1 error ended the walk for
+    // every account behind it. The queue gives each account its own retry
+    // budget, and the account list comes from `accounts` (indexAccounts), so
+    // the run cannot be narrowed by whatever the index happens to hold.
     context.waitUntil(
       (async () => {
         if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
-        for (const account of await indexAccounts(env.DRIVE_DB)) {
-          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+        if (!env.REINDEX_QUEUE) {
+          throw new Error("the nightly reindex needs the reindex queue binding");
+        }
+        const messages = (await indexAccounts(env.DRIVE_DB)).map((account) => ({
+          body: { accountId: account.id },
+        }));
+        // Chunks of 100, because sendBatch takes at most that many per call
+        // (REINDEX_SEND_BATCH), and one rejected oversized call would be the
+        // whole night's reindex lost.
+        for (let start = 0; start < messages.length; start += REINDEX_SEND_BATCH) {
+          await env.REINDEX_QUEUE.sendBatch(messages.slice(start, start + REINDEX_SEND_BATCH));
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);
       }),
+    );
+  },
+
+  /**
+   * Consumes the reindex queue, one message per invocation (`maxBatchSize: 1`,
+   * the trigger in cloudflare.config.ts). The walk is the slow, fallible part
+   * of the reindex, and one account per invocation is what keeps a
+   * 100,000-file drive inside the invocation's budget and a broken account
+   * from spending a sibling's retry budget.
+   *
+   * Every message is answered by name — `ack()` or `retry()` — rather than by
+   * a throw: with per-message acknowledgement a throw after the first message
+   * would claim a failure for messages already rebuilt, and a retry is the one
+   * honest answer for a walk that did not finish. After the trigger's
+   * `maxRetries` the platform drops the message, and the next night's cron
+   * enqueues the account again, so a message can be lost for a day at most.
+   *
+   * The swap inside `reconcileIndex` makes the retry safe to repeat: a walk
+   * that died before the swap left the account's rows as the last good
+   * rebuild left them, so retrying re-walks and swaps again, never
+   * re-deletes-then-dies (drive#566).
+   *
+   * @param {MessageBatch<{accountId: string}>} batch
+   * @param {Env} env
+   * @param {ExecutionContext} context
+   * @param {import("./files.js").FileStore} [store] the storage store,
+   *   injectable so the reindex's own tests hand one in, the same way
+   *   `scheduled` takes one
+   * @returns {Promise<void>}
+   */
+  async queue(batch, env, context, store = storeFor(env)) {
+    // waitUntil rather than await, the same shape the close cron runs under:
+    // the runtime keeps the invocation alive until the walks settle, and the
+    // per-message answers below are read from that promise.
+    context.waitUntil(
+      Promise.all(
+        batch.messages.map(async (message) => {
+          const body = message.body;
+          const accountId =
+            typeof body === "object" && body !== null && typeof body.accountId === "string"
+              ? body.accountId
+              : "";
+          if (accountId === "") {
+            // A message with no account id can never become walkable, so a
+            // retry would burn the budget and drop anyway; the log line is
+            // the record, and tomorrow's cron sends a well-formed message.
+            console.error("search: a reindex message carried no account id");
+            message.ack();
+            return;
+          }
+          if (!env.DRIVE_DB) {
+            console.error("search: the reindex queue ran without the file index database");
+            message.retry();
+            return;
+          }
+          const account = { id: accountId };
+          try {
+            await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+            // The walk finished, so the message is done. Retrying a finished
+            // walk would only run it again.
+            message.ack();
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            console.error(`search: the reindex for account ${accountId} failed: ${reason}`);
+            // A failed walk is retried from the top: the swap is a single
+            // transaction, so a retry cannot see a half-written index.
+            message.retry();
+          }
+        }),
+      ),
     );
   },
 };
