@@ -522,11 +522,62 @@ test("preview: an uploaded page is never a page on our origin", async () => {
   assert.equal(previewContentType("clip.mp4", "text/html"), "text/plain; charset=utf-8");
   assert.equal(previewContentType("song.mp3", ""), "application/octet-stream");
   assert.equal(previewContentType("picture.png", ""), "application/octet-stream");
-  assert.equal(previewContentType("archive.zip", "application/zip"), "application/zip");
+  // An allowlist, not a pass-through: the XML document family keeps its claimed
+  // type out of the response entirely (issue #548).
+  assert.equal(
+    previewContentType("page.xhtml", "application/xhtml+xml"),
+    "application/octet-stream",
+  );
+  assert.equal(previewContentType("page.xsl", "application/xslt+xml"), "application/octet-stream");
+  assert.equal(previewContentType("page.rdf", "application/rdf+xml"), "application/octet-stream");
+  assert.equal(
+    previewContentType("formula.mml", "application/mathml+xml"),
+    "application/octet-stream",
+  );
+  assert.equal(previewContentType("form.mht", "multipart/related"), "application/octet-stream");
+  // The XML family named as text or its own extension stays text/plain, which
+  // is on the allowlist and cannot render as a document.
+  assert.equal(previewContentType("page.xml", "application/xml"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("page.xml", "text/xml"), "text/plain; charset=utf-8");
+  // An image claim on an image kind stays inline: image/* is the allowlist's
+  // own entry, and the sandboxed preview is what keeps it from acting as a
+  // full page (the residual risk is tracked in a follow-up issue).
+  assert.equal(previewContentType("art.svgz", "image/svg+xml"), "image/svg+xml");
+  assert.equal(previewContentType("archive.zip", "application/zip"), "application/octet-stream");
   assert.throws(
     () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),
     TypeError,
   );
+});
+
+test("preview: the XML document family and multipart/related leave as a download", async () => {
+  // issue #548: an XHTML, XSLT, RDF, MathML or multipart/related upload served
+  // inline would put a rendered document — "Your session expired, sign in
+  // here" — on our own domain, under a preview URL or through a share link.
+  // Neither the stored claim nor the extension may open the allowlist.
+  const { call, upload } = drive();
+  const uploads = [
+    ["page.xhtml", "application/xhtml+xml"],
+    ["page.xsl", "application/xslt+xml"],
+    ["page.rdf", "application/rdf+xml"],
+    ["formula.mml", "application/mathml+xml"],
+    ["form.mht", "multipart/related"],
+  ];
+  for (const [name, type] of uploads) {
+    await upload("/", name, "<html>sign in here</html>", type);
+  }
+  for (const [name] of uploads) {
+    const response = await call(new Request(api(`/preview?path=%2F${encodeURIComponent(name)}`)));
+    assert.equal(response.status, 200, name);
+    assert.equal(response.headers.get("content-type"), "application/octet-stream", name);
+    assert.equal(
+      response.headers.get("content-disposition"),
+      `attachment; filename="${name}"`,
+      name,
+    );
+    assert.equal(response.headers.get("content-security-policy"), "sandbox", name);
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff", name);
+  }
 });
 
 test("preview: an SVG leaves the direct-open URL as a download and the embed URL as a picture", async () => {
