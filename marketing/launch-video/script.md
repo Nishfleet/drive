@@ -33,7 +33,7 @@ No music. The video ships silent, so there is no track licence to clear.
 
 ## Screens
 
-The six product frames are real screenshots of the Drive web pages, captured from
+The five product frames are real screenshots of the Drive web pages, captured from
 `public/index.html` served locally (the production site is behind Cloudflare
 Access). Captures are 1920x1080 with the page ticker hidden so no frozen
 animation appears in the stills.
