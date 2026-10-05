@@ -13,7 +13,7 @@
 // drive` cannot resolve after a release; the derived lines are the ones that
 // can.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { INSTALL_LINES } from "../src/install-lines.js";
 
@@ -123,12 +123,13 @@ test("install lines in the docs, help and page are generated from .goreleaser.ya
 });
 
 test("the release workflow on v* tags runs stock goreleaser with signing and notarize blocks", () => {
-  const release = read(".github/workflows/release.yml");
+  const release = read("installer/release.yml");
   const ci = read(".github/workflows/ci.yml");
   assert.match(release, /tags:\n\s+- "v\*"/, "a v* tag starts the release");
   assert.match(release, /^\s+distribution: goreleaser$/m, "stock goreleaser, not goreleaser-pro");
   assert.match(release, /name: Import GPG key/, "the workflow has its own signing block");
   assert.match(release, /--skip=sign/, "unsigned pre-releases skip GPG when the key is missing");
+  assert.match(release, /NOTARIZE:/, "the workflow has its own notarize block");
   assert.match(release, /MACOS_NOTARY_ISSUER_ID/, "notarize env is the stock goreleaser names");
   assert.match(cfg, /^signs:/m, ".goreleaser.yaml signs checksums when a key exists");
   assert.match(cfg, /^notarize:/m, ".goreleaser.yaml notarize stays off until NOTARIZE=true");
@@ -136,7 +137,16 @@ test("the release workflow on v* tags runs stock goreleaser with signing and not
   assert.ok(action, "ci.yml pins goreleaser-action by SHA");
   assert.ok(
     release.includes(`goreleaser/goreleaser-action@${action[1]}`),
-    "release.yml must pin the same goreleaser-action SHA ci.yml already uses",
+    "installer/release.yml must pin the same goreleaser-action SHA ci.yml already uses",
   );
   assert.match(release, /cache: false/, "a publishing job must not reuse a Go module cache");
+  // A worker token cannot create .github/workflows/release.yml (fleet-ops#105).
+  // Once a coordinator copies it, the two files must stay the same.
+  if (existsSync(new URL("../.github/workflows/release.yml", import.meta.url))) {
+    assert.equal(
+      read(".github/workflows/release.yml"),
+      release,
+      ".github/workflows/release.yml must match installer/release.yml",
+    );
+  }
 });

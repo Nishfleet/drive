@@ -129,15 +129,12 @@ jobs:
           install-go: false
       # The release config stays valid: goreleaser fails `check` on a
       # deprecated key, so a stale config shows up on the PR, not on a tag.
-      # NOTARIZE=false matches release.yml: check must not need secrets.
       - name: goreleaser check
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: "v2.18.2"
           args: check
-        env:
-          NOTARIZE: "false"
       # A per-run path: the self-hosted runners share one /tmp.
       - run: go build -o "$RUNNER_TEMP/drive" ./cmd/drive
       # The Windows jobs run only by hand (windows-msi.yml, drive#486), so the

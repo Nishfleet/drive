@@ -5,9 +5,15 @@
 # for Nish. Hosted macOS minutes are refused (drive#486), so this job is the
 # same self-hosted Linux runner CI uses; goreleaser cross-compiles darwin.
 #
+# This file is the one copy a worker token can land (drive#509, fleet-ops#105).
+# GitHub refuses an App without `workflows` permission from creating
+# `.github/workflows/release.yml`. A coordinator copies this file there;
+# test/packaging.test.mjs fails if that copy drifts from this one.
+#
 # GPG import and the MACOS_* env vars are the signing and notarize blocks.
-# SKIP_SIGN / NOTARIZE flip the matching .goreleaser.yaml templates, because
-# an empty GitHub secret is still "set" and would otherwise fail the release.
+# `--skip=sign` runs when the GPG import step is skipped. NOTARIZE stays
+# false when MACOS_SIGN_P12 is empty, because an empty GitHub secret is still
+# "set" and would otherwise fail the release.
 
 name: Release
 
