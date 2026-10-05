@@ -76,10 +76,10 @@ export default defineWorker({
     // Each binding needs its own namespace: Cloudflare wants a positive
     // integer string unique per account, and a namespace another binding
     // already uses fails the deploy with 10021. The site Worker holds 1001
-    // (waitlist), 1002/1003 (sign-in) and 1004/1005 (request-upload), so the
-    // api Worker's pair is 1006/1007. Both configs are one minute, the
-    // waitlist's period, so one number describes every rate limit on this
-    // account.
+    // (waitlist), 1002/1003 (sign-in), 1004/1005 (request-upload) and 1008
+    // (share download), so the api Worker's pair is 1006/1007. Both configs
+    // are one minute, the waitlist's period, so one number describes every
+    // rate limit on this account.
     DEVICE_RATE_LIMITER: bindings.rateLimit({
       namespace: "1006",
       simple: { limit: 60, period: 60 },

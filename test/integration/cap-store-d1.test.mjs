@@ -23,7 +23,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MINUTES_PER_MONTH } from "../../src/billing.js";
+import { minutesInMonth } from "../../src/billing.js";
 import {
   dollarsToCapCents,
   enforceCap,
@@ -89,8 +89,10 @@ test("enforceCap swaps a write key to read-only on the real rows, and a raise re
   });
   const minted = { keyId: "key_device" };
 
+  // 2 TB held all of a 30-day month (drive#531: the month's own minutes).
   const month = {
-    gbMinutes: 2000 * 43800,
+    gbMinutes: 2000 * 30 * 1440,
+    monthMinutes: 30 * 1440,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,
@@ -327,7 +329,7 @@ test("drive cap below the month already counted swaps on the real rows", async (
          (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
        VALUES (?, ?, ?, ?, 0, ?)`,
     )
-    .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+    .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
 
   const swapped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -386,7 +388,7 @@ test("the cap read counts the one bill for every account, on the real schema", a
            (account_id, hour, gb_minutes_live, stored_bytes, download_bytes, rolled_up_at)
          VALUES (?, ?, ?, ?, 0, ?)`,
       )
-      .run(account.id, monthStart(at), 2000 * MINUTES_PER_MONTH, 2000 * 1e9, at);
+      .run(account.id, monthStart(at), 2000 * minutesInMonth(at), 2000 * 1e9, at);
   }
 
   for (const account of [first, second]) {

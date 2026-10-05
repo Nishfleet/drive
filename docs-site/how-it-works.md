@@ -61,17 +61,23 @@ the drive keep working, because reads come the other way.
 ## Versions
 
 {{VERSION_HISTORY}} Saving a file again replaces it, and no
-command lists the versions that were there before. A delete can be undone
-through the storage provider's own versions. {{NOT_OPEN}} See
+command lists the versions that were there before. {{NOT_OPEN}} See
 [Limits](/limits) for what is not in version 1.
 
 ## Restore
 
-Deleting a file moves it aside rather than erasing it, and a delete can be
-undone. The `drive restore` command is not in the CLI yet — see
-[Limits](/limits) — but an agent cannot delete at all, so an agent's
-mistake cannot cost you a file. See [Agents](/agents) for what a key can
-and cannot do.
+Deleting a file on the Files page does not erase it. It moves to Recently
+deleted and stays there for 30 days, the meter stops counting it the same
+hour, and you can put it back yourself: open your drive in the browser, press
+the **Recently deleted** tab, find the file, and press **Restore**. After 30
+days the file is removed for good.
+
+A delete made anywhere else — `rm` in the mounted folder, an rclone command,
+or an S3 client with a storage key — does not pass through Recently deleted.
+The storage keeps the previous copy for one day and removes it after. To get
+such a file back, leave your email in the form on the [landing page](/)
+within that day; we reply and put it back. {{AGENT_DELETE}} See
+[Agents](/agents) for what a key can and cannot do.
 
 ## How the bill is counted
 

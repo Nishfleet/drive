@@ -1,0 +1,112 @@
+# The agent eval on a clock (drive#526).
+#
+# Until this file the eval never ran in CI: a run needs the held-out split
+# and the fleet proxy, both of which live on the own VPS runners, and it
+# spends the fleet's eval budget. This job runs the full `npm run
+# eval:agents` against the held-out split, records the held-out score per
+# provider in the run summary, and fails when a provider's score is under
+# the pass bar. deploy-production.yml reads the newest completed run on
+# main: a red score blocks the next release. Run it by hand
+# (workflow_dispatch) for a release that cannot wait for the Monday run.
+name: Agent eval
+
+on:
+  schedule:
+    # Mondays 03:20 UTC. Off the hour: the runner's own crons bunch at :00.
+    - cron: "20 3 * * 1"
+  workflow_dispatch: {} # a release that cannot wait for the Monday run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-eval
+  cancel-in-progress: false # a run records the score the release gate reads
+
+jobs:
+  held-out:
+    name: held-out split and pass bar
+    runs-on: [self-hosted, Linux, X64] # the split and the worker key are on these runners only
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          # No cache on own runners (same as ci.yml): npm's cache is already
+          # on this disk.
+          package-manager-cache: false
+      - run: npm ci
+      - name: Install the pinned eval tools (promptfoo and the Inspect venv)
+        run: |
+          npm ci --prefix evals/agents
+          npm run eval:agents:install
+      - name: Run the eval on the held-out split
+        # The split and the worker key live on the runner host, outside the
+        # repo: the split so the hill-climber (#223) cannot read it from a
+        # checkout, the key so no secret sits in this file. The key is read
+        # into the one env var the eval tools read and is never printed.
+        # The end-state suite runs in the stock container sandbox its
+        # compose.yaml declares; Inspect fails the run when Docker is broken
+        # instead of falling back to a shell on the host (drive#526).
+        run: |
+          OPENAI_API_KEY="$(<"$HOME/.config/fleet-ops/litellm-keys/worker")"
+          export OPENAI_API_KEY
+          # Not a prefix chain (OPENAI_API_KEY="$K" FLEET_API_KEY="$OPENAI_API_KEY"):
+          # a prefix expansion sees the variable's old value, so the fleet
+          # model's key would read empty (shellcheck SC2097/SC2098).
+          FLEET_API_KEY="$OPENAI_API_KEY"
+          export FLEET_API_KEY
+          export FLEET_BASE_URL="http://127.0.0.1:4000/v1"
+          export INSPECT_EVAL_MODEL="openai-api/fleet/worker-capable"
+          export DRIVE_EVAL_SPLIT="$HOME/.local/share/drive/eval-holdout.yaml"
+          npm run eval:agents
+      - name: Score the held-out split against the pass bar
+        env:
+          # A provider clears the bar at nine in ten held-out answers. The
+          # 2026-10-03 scores sit at 97.92% (cheap) and 95.83% (capable), so
+          # the bar passes today's pair and one flaky answer, and a whole
+          # grader or price regression — six tasks of sixteen grading the
+          # wrong figure — craters far below it.
+          HELDOUT_PASS_BAR: "90"
+        run: |
+          node -e '
+            const fs = require("fs");
+            const out = JSON.parse(fs.readFileSync("evals/agents/results/latest.json", "utf8"));
+            const bar = Number(process.env.HELDOUT_PASS_BAR);
+            const rows = out.results.results;
+            if (!Array.isArray(rows) || rows.length === 0) {
+              console.error("no scored rows in evals/agents/results/latest.json");
+              process.exit(1);
+            }
+            const byProvider = new Map();
+            for (const row of rows) {
+              const label = (row.provider && (row.provider.label || row.provider.id)) || "unknown";
+              const acc = byProvider.get(label) || { pass: 0, total: 0 };
+              acc.total += 1;
+              if (row.success) acc.pass += 1;
+              byProvider.set(label, acc);
+            }
+            const lines = [
+              "## Agent eval: the held-out split against the pass bar",
+              "",
+              "| provider | held-out | score | bar " + bar + "% |",
+              "| --- | --- | --- | --- |",
+            ];
+            let red = false;
+            for (const [label, acc] of byProvider) {
+              const pct = (100 * acc.pass) / acc.total;
+              const ok = pct >= bar;
+              red = red || !ok;
+              lines.push("| " + label + " | " + acc.pass + "/" + acc.total + " | " + pct.toFixed(2) + "% | " + (ok ? "pass" : "BELOW BAR") + " |");
+            }
+            const summary = lines.join("\n") + "\n";
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+            process.stdout.write(summary);
+            if (red) {
+              console.error("a provider scored under the " + bar + "% pass bar; the release gate will block on this run");
+              process.exit(1);
+            }
+          '
