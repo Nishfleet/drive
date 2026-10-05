@@ -31,7 +31,6 @@ import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { billingPushGap, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
-  createMemoryStore,
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
@@ -176,14 +175,16 @@ function isPublic(pathname) {
   });
 }
 
-// One store per Worker isolate. With no storage configured the in-memory
-// store holds what the page uploaded this run, so the Web Files page is real
-// in dev and in the tests. An S3 endpoint (FILES_S3_ENDPOINT, or the same
-// IDRIVE_S3_ENDPOINT the api Worker uses) points the same handlers at storage;
+// One S3 store per Worker isolate. An S3 endpoint (FILES_S3_ENDPOINT, or the
+// same IDRIVE_S3_ENDPOINT the api Worker uses) points the handlers at storage;
 // each account's objects live in that account's own bucket (`drv-<id>`,
 // storageBucketForKey / bucketForAccount), which is the same name a Finder
 // key is minted into (drive#371 / #460). The account prefix is still
-// scopeStore's job (src/files.js).
+// scopeStore's job (src/files.js). A deployment with no endpoint answers 503
+// rather than an in-memory store that vanishes with the isolate (drive#505).
+// Tests that need the in-memory stand-in import createMemoryStore themselves
+// and set env[TEST_FILES_STORE]; production never does.
+export const TEST_FILES_STORE = Symbol("drive.testFilesStore");
 /** @type {import("./files.js").FileStore|undefined} */
 let filesStore;
 /**
@@ -213,12 +214,17 @@ function devStorage(env) {
 
 /**
  * The close handlers' dependencies, or null when this deployment has no
- * customer database. A missing database is a 503 from the route, not an
- * in-memory close that would vanish on the next isolate.
+ * customer database or no storage endpoint. A missing database or store is a
+ * 503 from the route, not an in-memory close that would vanish on the next
+ * isolate (drive#505).
  * @param {Env} env
  */
 function closeDepsFor(env) {
   if (!env.DRIVE_DB) {
+    return null;
+  }
+  const store = storeFor(env);
+  if (!store) {
     return null;
   }
   const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
@@ -226,7 +232,7 @@ function closeDepsFor(env) {
     devices: createD1DeviceStore(env.DRIVE_DB, {
       keyProvider: keyProviderFor(env) ?? undefined,
     }),
-    store: storeFor(env),
+    store,
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
     now: () => Date.now(),
@@ -279,39 +285,58 @@ function forwardToApi(c) {
 
 /**
  * @param {Env} env
- * @returns {import("./files.js").FileStore}
+ * @returns {import("./files.js").FileStore | null}
  */
 function storeFor(env) {
+  const injected = /** @type {{[key: symbol]: import("./files.js").FileStore | undefined}} */ (
+    env
+  )[TEST_FILES_STORE];
+  if (injected) {
+    return injected;
+  }
   if (!filesStore) {
     const storage = devStorage(env);
     const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
-    if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
-      const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
-      filesStore = createS3Store({
-        endpoint,
-        bucketFor: storageBucketForKey,
-        ...(signed
-          ? {
-              region,
-              credentials: { accessKeyId, secretAccessKey },
-            }
-          : {}),
-      });
-    } else {
-      filesStore = createMemoryStore();
+    if (!endpoint) {
+      console.error("files: no storage endpoint is set, so this deployment cannot serve files");
+      return null;
     }
+    const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
+    const secretAccessKey =
+      storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
+    const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
+    const signed =
+      typeof accessKeyId === "string" &&
+      accessKeyId !== "" &&
+      typeof secretAccessKey === "string" &&
+      secretAccessKey !== "" &&
+      typeof region === "string" &&
+      region !== "";
+    filesStore = createS3Store({
+      endpoint,
+      bucketFor: storageBucketForKey,
+      ...(signed
+        ? {
+            region,
+            credentials: { accessKeyId, secretAccessKey },
+          }
+        : {}),
+    });
   }
   return filesStore;
+}
+
+/**
+ * Run a files-backed route, or answer 503 when this deployment has no store.
+ * @param {DriveContext} c
+ * @param {(store: import("./files.js").FileStore) => Response | Promise<Response>} run
+ */
+function withFileStore(c, run) {
+  const store = storeFor(c.env);
+  if (!store) {
+    return c.json({ error: failureMessage("drive-not-configured") }, 503);
+  }
+  return run(store);
 }
 
 // One link store over the customer database, built per request from the
@@ -628,9 +653,10 @@ export function createApp() {
   /** @param {DriveContext} c */
   const starterHandler = (c) => {
     const account = c.get("account");
+    const store = account ? storeFor(c.env) : null;
     return handleStarterRequest(
       c.req.raw,
-      account ? scopeStore(storeFor(c.env), account) : null,
+      account && store ? scopeStore(store, account) : null,
       account,
     );
   };
@@ -774,24 +800,36 @@ export function createApp() {
   // the owner's side and stand behind the gate; the token-carrying child
   // routes are public and registered below.
   app.get(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
   app.post(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
   // DELETE revokes a link (`drive share --revoke`); the handler answers it,
   // but a route that is not registered is a 405 before the handler runs.
   app.delete(SHARE_ENDPOINT, (c) =>
-    handleShareRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
   app.get(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
   app.post(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
   app.delete(REQUEST_ENDPOINT, (c) =>
-    handleRequestRequest(c.req.raw, storeFor(c.env), linksFor(c.env), c.get("account")),
+    withFileStore(c, (store) =>
+      handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
+    ),
   );
 
   // ----------------------------------------------------------- public routes
@@ -819,17 +857,19 @@ export function createApp() {
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
-    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+    withFileStore(c, (store) => handleShareFileRequest(c.req.raw, store, linksFor(c.env))),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
     handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
-    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
-      ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
-      linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
-      db: c.env.DRIVE_DB,
-    }),
+    withFileStore(c, (store) =>
+      handleRequestUploadRequest(c.req.raw, store, linksFor(c.env), capStateFor, {
+        ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
+        linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
+        db: c.env.DRIVE_DB,
+      }),
+    ),
   );
 
   // Dodo's signed payment webhook (drive#586): credits a top-up, records a
@@ -923,7 +963,7 @@ export default {
    *   in the runtime's fetch
    * @returns {Promise<void>}
    */
-  async scheduled(event, env, context, store = storeFor(env)) {
+  async scheduled(event, env, context, store) {
     // The meter's trip. The controller carries the schedule string the
     // trigger fired for (event.cron), so a run on the meter's schedule does
     // the meter's work and nothing else.
@@ -1006,6 +1046,10 @@ export default {
       }
       return;
     }
+    const files = store ?? storeFor(env);
+    if (!files) {
+      throw new Error("the nightly jobs need a storage endpoint");
+    }
     // The meter's nightly trip. Awaited for the same reason: a repair that
     // failed must be a failed trigger, not a run that reported success having
     // fixed nothing. The store is the one every account-scoped handler uses;
@@ -1025,7 +1069,7 @@ export default {
           runAccountCloseCron({
             db: env.DRIVE_DB,
             devices: createD1DeviceStore(env.DRIVE_DB),
-            store,
+            store: files,
             email: env.EMAIL,
             mailFrom: secrets.MAIL_FROM ?? "",
             now: event.scheduledTime,
@@ -1034,7 +1078,7 @@ export default {
           }),
         );
       }
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      await reconcileMeter(env.METER_DB, files, event.scheduledTime);
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
@@ -1049,7 +1093,7 @@ export default {
           throw new Error("the nightly reindex needs the file index database");
         }
         for (const account of await indexAccounts(env.DRIVE_DB)) {
-          await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
+          await reconcileIndex(env.DRIVE_DB, scopeStore(files, account), account);
         }
       })().catch((error) => {
         throw new Error(`the nightly reindex failed: ${error.message}`);

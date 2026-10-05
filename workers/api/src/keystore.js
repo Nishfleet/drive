@@ -87,8 +87,9 @@ function digestsEqual(left, right) {
  * `keyProvider` is where a minted key's credential comes from (build step 1,
  * drive#2). With one, the credential is the storage endpoint's own, scoped by
  * the policy it was minted with, so the endpoint refuses what the key may not
- * do; without one (no storage configured) the credential is the stand-in the
- * api's own storage API verifies. The choice is made once, by the factory.
+ * do. Without one the credential is the stand-in the api's own storage API
+ * verifies — tests call this factory that way; production storeFor refuses to
+ * build a store without a provider (drive#505).
  * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
  */
 export function createMemoryStore(options = {}) {
@@ -121,8 +122,9 @@ export function createMemoryStore(options = {}) {
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
     if (keyProvider === undefined) {
-      // No storage configured: the stand-in credential the api's own storage
-      // API knows, and nothing outside the Worker has ever seen.
+      // Tests: no storage configured, so the stand-in credential the api's
+      // own storage API knows. Production never reaches this branch
+      // (workers/api/src/index.js storeFor requires a key provider).
       credential = {
         accessKeyId: newId("ak"),
         secret: newId("sk"),

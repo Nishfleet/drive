@@ -13,7 +13,7 @@
 // is createS3Store, which speaks plain S3 to `rclone serve s3`
 // (`rclone serve s3 /srv/drive`); the real iDrive e2 / B2 adapter swaps in
 // behind the same four-method interface when #2 lands. createMemoryStore is the
-// test and no-configuration stand-in, and renders every state for a screenshot.
+// test stand-in: production storeFor never builds it (drive#505).
 
 import { AwsClient } from "aws4fetch";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
@@ -834,9 +834,9 @@ async function memoryEtag(bytes) {
 }
 
 /**
- * The in-memory stand-in: one Map of path to bytes. The tests use it and the
- * page runs on it with no storage configured, so every screen renders and
- * every state is exercised without a bucket.
+ * The in-memory stand-in: one Map of path to bytes. Tests use it so every
+ * screen renders and every state is exercised without a bucket. Production
+ * never builds this store (src/index.js storeFor, drive#505).
  * @returns {FileStore}
  */
 export function createMemoryStore() {

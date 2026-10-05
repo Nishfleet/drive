@@ -24,7 +24,7 @@ import {
 } from "../src/account-close.js";
 import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
 import { createMemoryStore as createFileStore, scopeStore } from "../src/files.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { createMemoryStore as createKeyStore } from "../workers/api/src/keystore.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
@@ -444,6 +444,7 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
     BETTER_AUTH_URL: "https://drive.test",
     EMAIL: email,
     MAIL_FROM,
+    [TEST_FILES_STORE]: createFileStore(),
   };
   const status = await workerFetch(
     new Request(`https://drive.test${CLOSE_ENDPOINT}`, { headers: { cookie } }),

@@ -19,7 +19,8 @@ import { test } from "node:test";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
-import worker from "../src/index.js";
+import { createMemoryStore } from "../src/files.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -271,6 +272,7 @@ test("the Worker's gate reads Better Auth's session, not a cookie the browser ch
     SIGNIN_MAIL: (link) => {
       made.sent.push(link);
     },
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "gated@example.com");
   for (const path of ["/api/files", "/api/usage", "/api/first-run-status"]) {

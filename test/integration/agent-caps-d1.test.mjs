@@ -26,7 +26,7 @@ import { failureMessage } from "../../src/messages.js";
 import { BYTES_PER_GB } from "../../src/meter.js";
 import { readAgentCaps, stampAgentRequest } from "../../workers/api/src/agent-caps.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
-import apiWorker from "../../workers/api/src/index.js";
+import apiWorker, { TEST_KEY_STORE } from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
@@ -454,10 +454,9 @@ test("the renew route refuses at the cap, in the message table's own words", asy
 
 test("the whole Worker fetch is capped, not only a route called by hand", async () => {
   // The one test through `export default { fetch }`, because that is where a
-  // deployment's store is built: a cap proved on a hand-called handler would
-  // not survive a request that arrives through the Worker itself. The key is
-  // minted over the same database from another store instance, which is the
-  // stand-in for the isolate that mints it and the one that answers.
+  // deployment's store is built. Tests inject the in-memory store on
+  // TEST_KEY_STORE; production fetch never builds one without DRIVE_DB, a key
+  // provider and a storage endpoint (drive#505).
   const { sqlite, db } = makeMeteredDB();
   // The mint is on the Worker's own clock, because the key's hour is measured
   // against the same one the requests come in on: a key minted at a pinned
@@ -470,13 +469,17 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
   // after the first write, so a UTC midnight between the two requests cannot
   // reset the counter and let the second write through.
   mintingClock.at(Date.now());
-  // The bindings the cap needs, and nothing else: the api Worker reads only
-  // `DRIVE_DB` on the path these requests take.
+  const store = storeOver(db, mintingClock);
+  // Tests inject the store production fetch would refuse to invent. DRIVE_DB
+  // is still bound, because the cap counters live on it.
   const env = /** @type {import("../../workers/api/src/index.js").ApiEnv} */ (
-    /** @type {unknown} */ ({ DRIVE_DB: db })
+    /** @type {unknown} */ ({
+      DRIVE_DB: db,
+      [TEST_KEY_STORE]: store,
+    })
   );
   const account = { id: "acct_fetch", name: "Fetch drive" };
-  const minted = await storeOver(db, mintingClock).mintKey(account, {
+  const minted = await store.mintKey(account, {
     kind: "agent",
     name: "claude",
   });

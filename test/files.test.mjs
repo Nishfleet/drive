@@ -70,8 +70,8 @@ const now = Date.parse("2026-09-30T12:00:00.000Z");
 // without it.
 const account = Object.freeze({ id: "1", name: "Your drive" });
 
-// One drive per test, and the same store the Worker builds, so every route runs
-// against real bytes rather than a stub.
+// One drive per test, against the in-memory store tests import. Production
+// never builds that store (src/index.js storeFor, drive#505).
 function drive() {
   const store = createMemoryStore();
   // The handler scopes this store to the signed-in account, so the test reads

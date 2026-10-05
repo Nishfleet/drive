@@ -27,7 +27,7 @@ import { CAP_ENDPOINT } from "../src/cap.js";
 import { isSameOriginRequest } from "../src/email-send.js";
 import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker from "../src/index.js";
+import worker, { TEST_FILES_STORE } from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
@@ -177,6 +177,9 @@ function anonymous(request) {
       DRIVE_DB: createTestD1(),
       REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
       REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+      // Tests inject the in-memory files store. Production never builds it
+      // (src/index.js storeFor, drive#505).
+      [TEST_FILES_STORE]: createMemoryStore(),
     },
     ctx,
   );
@@ -530,6 +533,7 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   /** @param {string|null} cookie @param {string} path */
   const call = (cookie, path) =>
@@ -659,6 +663,7 @@ test("sign-out revokes the session the cookie names", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: makeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: makeLimiter(),
+    [TEST_FILES_STORE]: createMemoryStore(),
   };
   const { cookie } = await signIn(made, "leaver@example.com");
   const before = await workerFetch(
