@@ -1089,7 +1089,7 @@ export function createD1DeviceStore(db, options = {}) {
       const at = now();
       const month = await monthUsageThrough(db, accountId, at);
       // The peak is the size the drive holds now (the page's "stored now"); the
-// The peak is the size the drive holds now (the page's "stored now"); the
+      // The peak is the size the drive holds now (the page's "stored now"); the
       // bill itself reads only the GB-minutes (drive#463). The average the free
       // download allowance follows is the month's own average, worked out from
       // the GB-minutes over that month's minutes (`gbMonths`, billing.js) and
@@ -1104,7 +1104,7 @@ export function createD1DeviceStore(db, options = {}) {
         monthMinutes: minutesInMonth(at),
         storedGb: peakGb,
         storedDaily: [],
-downloadBytes: month.downloadBytes,
+        downloadBytes: month.downloadBytes,
         averageStoredGb: averageGb,
         capUsd: options.capUsd,
         cardAdded: true,

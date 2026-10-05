@@ -338,7 +338,7 @@ export async function pushBillingHours(db, hours, options = {}) {
         gbMinutes: usage.gbMinutes,
         monthMinutes: minutesInMonth(hour),
         downloadBytes: usage.downloadBytes,
-// The free download allowance follows the same average the storage
+        // The free download allowance follows the same average the storage
         // price reads, derived here from the month's GB-minutes rather than
         // from the hour's stored-bytes marks (drive#535): a file saved six
         // times in one hour marks one size, and its average is one size too.

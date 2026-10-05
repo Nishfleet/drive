@@ -207,7 +207,8 @@ export const FAQ = Object.freeze([
     answer: [
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
-      "{{NO_PLANS}} {{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered. Bills under {{CHARGE_THRESHOLD}} roll into the next month, and the card is charged when the balance reaches {{CHARGE_THRESHOLD}}.",
+      "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
+      "{{VERSION_MINIMUM}} You add money first, and storage and downloads are drawn from your balance as they are metered.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),

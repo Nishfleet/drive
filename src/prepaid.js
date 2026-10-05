@@ -16,7 +16,7 @@
 //   - settleBalance: after a draw, the "$2 left" email (once per crossing) and
 //     the auto top-up (off by default; at most one started per day).
 
-import { minutesInMonth, monthBillCents } from "./billing.js";
+import { gbMonths, minutesInMonth, monthBillCents } from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import {
@@ -247,7 +247,10 @@ async function drawFor(db, accountId, hour, now) {
     gbMinutes: usage.gbMinutes,
     monthMinutes: minutesInMonth(hour),
     downloadBytes: usage.downloadBytes,
-    averageStoredGb: usage.averageStoredGb,
+    // The allowance's average is the same one conversion the storage line
+    // makes (drive#535): the GB-minutes over the month's minutes, not an
+    // average of the hour's marks, which counted a save again and again.
+    averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
   });
   const from = monthStart(hour);
   const sum = await db

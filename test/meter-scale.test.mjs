@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { gbMonths, minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -330,7 +330,9 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       downloadBytes: usage.downloadBytes,
-      averageStoredGb: usage.averageStoredGb,
+      // The same average the draw passes (drive#535): derived from the
+      // GB-minutes, not read off the hours.
+      averageStoredGb: gbMonths(usage.gbMinutes, minutesInMonth(hour)),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */
