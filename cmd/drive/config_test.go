@@ -39,6 +39,9 @@ func TestRcloneConfigRendersS3Remote(t *testing.T) {
 	if strings.Contains(got, "no_check_bucket") {
 		t.Errorf("a permanent key can HeadBucket, so no_check_bucket must stay off:\n%s", got)
 	}
+	if strings.Contains(got, "secret_access_key") || strings.Contains(got, testStorage().SecretKey) {
+		t.Errorf("rclone.conf must not carry the storage secret:\n%s", got)
+	}
 }
 
 func TestRemoteForTrimsPrefix(t *testing.T) {
@@ -113,7 +116,7 @@ func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 			t.Errorf("runMount(%q) = nil, want the refusal", args)
 			continue
 		}
-		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.conf"} {
+		for _, want := range []string{"--secret-key is not accepted", "DRIVE_S3_SECRET_ACCESS_KEY", "--secret-key-stdin", "rclone.env"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("runMount(%q) error %q is missing %q", args, err, want)
 			}
@@ -273,6 +276,7 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 		"--buffer-size 32M",
 		"--transfers 4",
 		"WantedBy=default.target",
+		"EnvironmentFile=/home/test/.config/drive/rclone.env",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("systemd unit missing %q:\n%s", want, unit)
@@ -280,6 +284,9 @@ func TestSystemdUnitCarriesTheRclonePlan(t *testing.T) {
 	}
 	// rclone has no `umount` subcommand; stopping is rclone's own SIGTERM
 	// handling, which is what systemd sends by default.
+	if strings.Contains(unit, "Environment=") {
+		t.Errorf("systemd unit has an Environment= line; the secret belongs in EnvironmentFile=:\n%s", unit)
+	}
 	if strings.Contains(unit, "ExecStop") {
 		t.Errorf("systemd unit has an ExecStop line rclone cannot run:\n%s", unit)
 	}
@@ -451,10 +458,13 @@ func TestRcloneConfigRedactedHidesBothKeys(t *testing.T) {
 	if strings.Contains(got, c.AccessKey) || strings.Contains(got, c.SecretKey) {
 		t.Errorf("redacted config still carries a key:\n%s", got)
 	}
-	for _, want := range []string{"access_key_id = <redacted>", "secret_access_key = <redacted>", c.Endpoint} {
+	for _, want := range []string{"access_key_id = <redacted>", c.Endpoint} {
 		if !strings.Contains(got, want) {
 			t.Errorf("redacted config missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "secret_access_key") {
+		t.Errorf("redacted config still names the storage secret:\n%s", got)
 	}
 }
 
@@ -661,10 +671,26 @@ func TestReadSecretKeyFromTheEnvironment(t *testing.T) {
 	}
 }
 
-func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
+func TestReadSecretKeyFromTheEnvFile(t *testing.T) {
+	home := t.TempDir()
+	cfg := testStorage()
+	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
+	got, err := ReadSecretKey(RcloneConfigPath(home), false, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("ReadSecretKey: %v", err)
+	}
+	if got != cfg.SecretKey {
+		t.Errorf("secret = %q, want %q from rclone.env", got, cfg.SecretKey)
+	}
+}
+
+func TestReadSecretKeyFromALegacyRcloneConf(t *testing.T) {
 	home := t.TempDir()
 	path := RcloneConfigPath(home)
-	if err := WriteFileAtomic(path, []byte(RcloneConfig(testStorage())), 0o600); err != nil {
+	if err := WriteFileAtomic(path, []byte("[drive]\nsecret_access_key = leftover-secret\naccess_key_id = AK\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "")
@@ -672,8 +698,8 @@ func TestReadSecretKeyFromTheConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSecretKey: %v", err)
 	}
-	if want := testStorage().SecretKey; got != want {
-		t.Errorf("secret = %q, want %q from the config file", got, want)
+	if got != "leftover-secret" {
+		t.Errorf("secret = %q, want the leftover rclone.conf line", got)
 	}
 }
 
@@ -724,8 +750,8 @@ func TestParseRcloneConfigIgnoresOtherRemotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a malformed line in another remote must not refuse the file: %v", err)
 	}
-	if got.AccessKey != testStorage().AccessKey || got.SecretKey != testStorage().SecretKey {
-		t.Errorf("parsed %+v, want the drive remote's key", got)
+	if got.AccessKey != testStorage().AccessKey {
+		t.Errorf("parsed %+v, want the drive remote's access key", got)
 	}
 }
 
@@ -761,9 +787,11 @@ func TestParseRcloneConfigReadsBackWhatRcloneConfigWrites(t *testing.T) {
 		t.Fatalf("ParseRcloneConfig: %v", err)
 	}
 	want := testStorage()
-	if got.AccessKey != want.AccessKey || got.SecretKey != want.SecretKey ||
-		got.Endpoint != want.Endpoint || got.Region != want.Region {
+	if got.AccessKey != want.AccessKey || got.Endpoint != want.Endpoint || got.Region != want.Region {
 		t.Errorf("round trip = %+v, want the fields RcloneConfig wrote", got)
+	}
+	if got.SecretKey != "" {
+		t.Errorf("rclone.conf still carries the storage secret %q", got.SecretKey)
 	}
 }
 

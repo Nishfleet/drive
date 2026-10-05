@@ -183,7 +183,7 @@ func rcProgressLines(home string, on bool) (string, string) {
 	if !on {
 		return "", ""
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		return "", "per file: unknown. Next: run `drive status` again in a moment."
 	}
@@ -343,7 +343,7 @@ func transfersLine(home string, on bool) string {
 		}
 		return transfersNotMounted
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		if Paused(home) {
 			return "transfers: " + pausedLabel
@@ -506,7 +506,7 @@ func queueWhy(on, outOfSpace, paused bool, q Pending) string {
 // question asked of the kernel.
 func cacheIsFull(home string, on bool) bool {
 	if on {
-		c, err := mountRCClient()
+		c, err := mountRCClient(home)
 		if err == nil {
 			ctx, cancel := rcCtx()
 			defer cancel()

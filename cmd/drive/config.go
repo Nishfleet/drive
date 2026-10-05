@@ -140,6 +140,15 @@ func DefaultCacheDir(home string) string  { return filepath.Join(home, ".cache",
 func RcloneConfigPath(home string) string {
 	return filepath.Join(DefaultConfigDir(home), "rclone.conf")
 }
+
+// RcloneEnvPath is the 0600 EnvironmentFile the mount writes for rclone:
+// the remote-control user/password and the storage secret as rclone's own
+// RCLONE_CONFIG_<REMOTE>_* variables. systemd reads it with EnvironmentFile=;
+// launchd gets the same values as EnvironmentVariables in a 0600 plist. The
+// secret does not sit in rclone.conf (drive#498).
+func RcloneEnvPath(home string) string {
+	return filepath.Join(DefaultConfigDir(home), "rclone.env")
+}
 func LaunchdPlistPath(home string) string {
 	return filepath.Join(home, "Library", "LaunchAgents", LaunchdLabel+".plist")
 }
@@ -158,7 +167,7 @@ const (
 	LaunchdLabel = "com.nishfleet.drive"
 	// PrefetchLaunchdLabel is the second login item that warms the next folder
 	// after a listing (issue #227). The mount item stays rclone: a login item
-	// has no DRIVE_S3_* environment, and the keys live in rclone.conf.
+	// has no DRIVE_S3_* environment, and the storage secret lives in rclone.env.
 	PrefetchLaunchdLabel = "com.nishfleet.drive.prefetch"
 	// SystemdUnitName is the systemd user unit on Linux (step 3).
 	SystemdUnitName = "drive-mount.service"
@@ -174,6 +183,17 @@ const (
 // user on the machine for as long as the process lives.
 const secretEnvName = "DRIVE_S3_SECRET_ACCESS_KEY"
 
+// rclone's own environment names for the mount process (rclone.org/docs
+// "Environment Variables"): --rc-user/--rc-pass become RCLONE_RC_USER /
+// RCLONE_RC_PASS, and a config key on the drive remote becomes
+// RCLONE_CONFIG_DRIVE_<KEY>. The systemd unit is 0644, so these live in the
+// 0600 EnvironmentFile rather than an Environment= line in the unit.
+const (
+	rcloneRCUserEnv = "RCLONE_RC_USER"
+	rcloneRCPassEnv = "RCLONE_RC_PASS"
+	rcloneSecretEnv = "RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY"
+)
+
 // secretWays names every safe way to hand the storage secret to `drive mount`,
 // in the order a caller should reach for them, with the config file this run
 // would read. It is printed by the error that refuses the flag it replaced, so
@@ -183,12 +203,12 @@ const secretEnvName = "DRIVE_S3_SECRET_ACCESS_KEY"
 // change exists to keep it out of.
 func secretWays(configPath string) string {
 	return fmt.Sprintf(`the storage secret is not accepted on the command line; put it in
-  1. the config file %s (mode 0600)
+  1. the 0600 env file %s
   2. the environment: DRIVE_S3_SECRET_ACCESS_KEY
   3. --secret-key-stdin, from a redirect or a pipe, as in
      drive mount --secret-key-stdin < secret-file
      or  pass show drive/s3-secret | drive mount --secret-key-stdin
-where the secret is never in the command line, the shell history or ps`, configPath)
+where the secret is never in the command line, the shell history or ps`, rcloneEnvPathBeside(configPath))
 }
 
 // maxSecretBytes bounds what a pipe can hand over. A storage secret is one
@@ -197,19 +217,19 @@ where the secret is never in the command line, the shell history or ps`, configP
 const maxSecretBytes = 64 << 10
 
 // ReadSecretKey resolves the storage secret from the safe sources and only
-// from those (issue #75). The three sources are a pipe, the environment, and
-// the config file this CLI itself wrote, and there is no fourth: no flag, so
-// the secret can never be read out of /proc/<pid>/cmdline or out of a shell
-// history file, which is the finding this issue opened with.
+// from those (issue #75, drive#498). The sources are a pipe, the environment,
+// the 0600 rclone.env this CLI wrote, and a leftover secret line in rclone.conf
+// from before #498. There is no flag: the secret can never be read out of
+// /proc/<pid>/cmdline or a shell history file.
 //
 // The order is fixed, not negotiable: an explicit --secret-key-stdin wins over
-// the environment, the environment wins over the config file. So a pipe that
-// carries nothing is an error rather than a quiet fall-through to the
-// environment — someone who asked for the secret to come from the pipe and
+// the environment, the environment wins over rclone.env, rclone.env wins over
+// rclone.conf. So a pipe that carries nothing is an error rather than a quiet
+// fall-through — someone who asked for the secret to come from the pipe and
 // piped nothing has made a mistake, and reading the environment instead would
 // mount with a credential they did not choose and did not see.
 //
-// configPath is the config file to fall back to, and an absent file is not an
+// configPath is the rclone.conf beside rclone.env, and an absent file is not an
 // error (there is no key on this machine yet). wantStdin says the caller piped
 // a secret in, and a pipe that carries nothing is a mistake rather than a
 // missing value: a silent empty secret would mount with no credential and fail
@@ -278,6 +298,11 @@ func ReadSecretKey(configPath string, wantStdin bool, stdin io.Reader) (string, 
 	}
 	if configPath == "" {
 		return "", nil
+	}
+	if secret, err := secretFromEnvFile(rcloneEnvPathBeside(configPath)); err != nil {
+		return "", err
+	} else if secret != "" {
+		return secret, nil
 	}
 	c, err := ParseRcloneConfig(configPath)
 	if err != nil {
@@ -396,7 +421,8 @@ func ParseRcloneConfig(path string) (StorageConfig, error) {
 // loudly when a required value is missing. Endpoint, bucket and keys are
 // config, not code: the same binary talks to the local stand-in or to iDrive e2.
 // storageFromDisk is what `drive login` wrote: credentials hold the location,
-// rclone.conf holds the key pair. Empty when this machine has not logged in.
+// rclone.env holds the storage secret, rclone.conf holds the access key and
+// endpoint. Empty when this machine has not logged in.
 func storageFromDisk(home string) StorageConfig {
 	var c StorageConfig
 	if creds, err := LoadCredentials(home); err == nil {
@@ -409,10 +435,18 @@ func storageFromDisk(home string) StorageConfig {
 	}
 	parsed, err := ParseRcloneConfig(RcloneConfigPath(home))
 	if err != nil {
+		if secret, envErr := secretFromEnvFile(RcloneEnvPath(home)); envErr == nil && secret != "" {
+			c.SecretKey = secret
+		}
 		return c
 	}
 	c.AccessKey = firstNonEmpty(c.AccessKey, parsed.AccessKey)
 	c.SecretKey = parsed.SecretKey
+	if c.SecretKey == "" {
+		if secret, envErr := secretFromEnvFile(RcloneEnvPath(home)); envErr == nil {
+			c.SecretKey = secret
+		}
+	}
 	c.SessionToken = parsed.SessionToken
 	c.Endpoint = firstNonEmpty(c.Endpoint, parsed.Endpoint)
 	c.Region = firstNonEmpty(c.Region, parsed.Region)
@@ -520,7 +554,9 @@ func firstNonEmpty(vals ...string) string {
 
 // RcloneConfig renders the drive-managed rclone config file. The remote is an
 // S3 backend pointed at this device's storage endpoint and key; s3v4 is the
-// stock signature version every S3-compatible provider accepts.
+// stock signature version every S3-compatible provider accepts. The storage
+// secret is not a line in this file (drive#498): rclone reads it from
+// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY at mount time.
 //
 // A scoped key is an STS session, and rclone signs it with the session token
 // (issue #241): the line is written only when the credential carries one,
@@ -540,7 +576,6 @@ func RcloneConfig(c StorageConfig) string {
 	b.WriteString("type = s3\n")
 	b.WriteString("provider = Other\n")
 	fmt.Fprintf(&b, "access_key_id = %s\n", c.AccessKey)
-	fmt.Fprintf(&b, "secret_access_key = %s\n", c.SecretKey)
 	if c.SessionToken != "" {
 		fmt.Fprintf(&b, "session_token = %s\n", c.SessionToken)
 		fmt.Fprintf(&b, "no_check_bucket = true\n")
@@ -550,18 +585,144 @@ func RcloneConfig(c StorageConfig) string {
 	return b.String()
 }
 
-// RcloneConfigRedacted renders the same config for display, with both keys
-// replaced by a placeholder. `drive mount --dry-run` prints this, so a dry run
-// on a shared screen or in a terminal transcript can never leak the device's
-// secret key. The real config is still written 0600 by Mount.
+// RcloneConfigRedacted renders the same config for display, with the access
+// key replaced by a placeholder. `drive mount --dry-run` prints this, so a dry
+// run on a shared screen or in a terminal transcript can never leak the
+// device's keys. The storage secret is not a line in rclone.conf (drive#498).
 func RcloneConfigRedacted(c StorageConfig) string {
 	r := c
 	r.AccessKey = "<redacted>"
-	r.SecretKey = "<redacted>"
+	r.SecretKey = ""
 	if r.SessionToken != "" {
 		r.SessionToken = "<redacted>"
 	}
 	return RcloneConfig(r)
+}
+
+// rcloneEnvPathBeside is rclone.env next to the rclone.conf path ReadSecretKey
+// already holds, so the two files stay a pair without a second home argument.
+func rcloneEnvPathBeside(configPath string) string {
+	if configPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(configPath), "rclone.env")
+}
+
+// RCAuth is the random user and password the mount generates for rclone's
+// remote control. They live in rclone.env (mode 0600) and are what --rc-user /
+// --rc-pass and the one rc client send (drive#498).
+type RCAuth struct {
+	User string
+	Pass string
+}
+
+// WriteRcloneEnv writes the 0600 EnvironmentFile rclone and systemd read: the
+// remote-control user/password (hex, so they need no quoting) and the storage
+// secret as rclone's own RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY. An empty rc
+// user (login, before the first mount) writes only the secret.
+func WriteRcloneEnv(home string, c StorageConfig, rcUser, rcPass string) error {
+	var b strings.Builder
+	if rcUser != "" {
+		fmt.Fprintf(&b, "%s=%s\n", rcloneRCUserEnv, rcUser)
+		fmt.Fprintf(&b, "%s=%s\n", rcloneRCPassEnv, rcPass)
+	}
+	if c.SecretKey != "" {
+		fmt.Fprintf(&b, "%s=%s\n", rcloneSecretEnv, systemdEnvQuote(c.SecretKey))
+	}
+	if b.Len() == 0 {
+		return nil
+	}
+	return WriteFileAtomic(RcloneEnvPath(home), []byte(b.String()), 0o600)
+}
+
+// ReadRCAuth reads the remote-control user and password from rclone.env.
+func ReadRCAuth(home string) (RCAuth, error) {
+	vals, err := parseRcloneEnvFile(RcloneEnvPath(home))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return RCAuth{}, nil
+		}
+		return RCAuth{}, err
+	}
+	return RCAuth{User: vals[rcloneRCUserEnv], Pass: vals[rcloneRCPassEnv]}, nil
+}
+
+func secretFromEnvFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	vals, err := parseRcloneEnvFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return vals[rcloneSecretEnv], nil
+}
+
+func parseRcloneEnvFile(path string) (map[string]string, error) {
+	if err := checkSecretFileMode(path); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("%s: not a KEY=VALUE line", path)
+		}
+		out[strings.TrimSpace(name)] = unquoteEnvValue(strings.TrimSpace(value))
+	}
+	return out, nil
+}
+
+// systemdEnvQuote quotes a value for systemd's EnvironmentFile and for this
+// CLI's own parser: double quotes, with \, ", $ and ` escaped, so a storage
+// secret cannot break out of its line.
+func systemdEnvQuote(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range v {
+		switch r {
+		case '\\', '"', '$', '`':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func unquoteEnvValue(v string) string {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return v
+	}
+	var b strings.Builder
+	escaped := false
+	for _, r := range v[1 : len(v)-1] {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	return b.String()
 }
 
 // WriteFileAtomic writes data to path via a sibling temp file and rename, with
