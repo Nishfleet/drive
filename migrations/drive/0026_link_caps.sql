@@ -1,3 +1,10 @@
+-- Numbered 0026 (drive issue #715): this file landed on main as
+-- 0025_link_caps.sql beside 0025_meter_scale.sql, so no deploy ever applied
+-- the 0025 name — every commit holding it failed the migrations test and the
+-- deploy ships only CI-green heads. Renaming the never-applied file keeps
+-- prefix 0025 single-file instead of grandfathering a second 0025 in
+-- ALLOWED_DUPLICATES (test/migrations.test.mjs).
+--
 -- Phase 1 of link caps and pruning (drive issue #549, from the read-only
 -- audit of main at 2f62b7a). Additive only: two new columns, each with a
 -- DEFAULT or nullable, so the previous Worker version that does not name them

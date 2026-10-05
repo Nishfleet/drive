@@ -34,8 +34,8 @@ const REQUEST_TOKEN = "cap-request-token-aaaa";
 
 test("the real migrations add the two additive cap columns", () => {
   assert.ok(
-    MIGRATION_FILES.includes("0025_link_caps.sql"),
-    "0025_link_caps.sql is missing from the migration set",
+    MIGRATION_FILES.includes("0026_link_caps.sql"),
+    "0026_link_caps.sql is missing from the migration set",
   );
   const { sqlite } = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
 
@@ -54,7 +54,7 @@ test("the real migrations add the two additive cap columns", () => {
   assert.equal(bytes.dflt_value, null, "a NULL cap keeps its meaning");
 
   const migration = readFileSync(
-    new URL("../../migrations/drive/0025_link_caps.sql", import.meta.url),
+    new URL("../../migrations/drive/0026_link_caps.sql", import.meta.url),
     "utf8",
   );
   const sql = migration.replace(/--[^\n]*/g, "");
