@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { FILES_ENDPOINT } from "../src/files.js";
+import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../src/files.js";
 import worker from "../src/index.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
@@ -132,8 +132,7 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   const downloads = mkdtempSync(join(tmpdir(), "drive-files-page-"));
 
   // The drive repo pins every dependency in package.json, so the browser
-  // driver is a declared devDependency rather than something @lhci/cli drags
-  // in for its own Lighthouse run. Without it this import fails and the proof
+  // driver is a declared devDependency. Without it this import fails and the proof
   // fails with it: a skipped browser test is a main that goes red with no
   // message that says why.
   const { default: puppeteer } = await import("puppeteer-core");
@@ -239,8 +238,8 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   );
   assert.equal(
     await chrome.$eval("#viewer-body img", (img) => img.getAttribute("src")),
-    `${FILES_ENDPOINT}/preview?path=%2Fholiday.jpg`,
-    "the image is served from the preview route",
+    `${FILES_EMBED_ENDPOINT}?path=%2Fholiday.jpg`,
+    "the image is served from the embed route, which always opens a picture inline",
   );
   await closeViewer();
 

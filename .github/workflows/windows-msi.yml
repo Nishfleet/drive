@@ -48,6 +48,16 @@ permissions:
 env:
   RCLONE_RELEASE: "v1.75.1"
   RCLONE_WINDOWS_AMD64_SHA256: "200eb602c126d82aa38b51e0f6b9ae837473ff99b51278d3f6f837574c494d6e"
+  # WinFsp's own release, pinned to a tag, for both jobs. The MSI is
+  # downloaded from WinFsp's own GitHub release at build time and never
+  # vendored. WINFSP_MSI_SHA256 is the digest of that exact asset, checked
+  # after the download: WiX v4's MsiPackage has no Hash attribute (the compiler
+  # rejects it), so this is where the payload's integrity is pinned, and
+  # Burn's own Authenticode check on the downloaded MSI is the second pin.
+  # A WinFsp upgrade is a visible diff of both values.
+  WINFSP_VERSION: "2.1.25156"
+  WINFSP_MSI_URL: "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
+  WINFSP_MSI_SHA256: "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -87,10 +97,9 @@ jobs:
       - name: Install WinFsp (the driver rclone mount needs on Windows)
         shell: pwsh
         run: |
-          $release = Invoke-RestMethod https://api.github.com/repos/winfsp/winfsp/releases/latest
-          $asset = $release.assets | Where-Object { $_.name -like '*.msi' } | Select-Object -First 1
-          if (-not $asset) { throw 'the WinFsp release carries no .msi asset' }
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile winfsp.msi
+          Invoke-WebRequest -Uri $env:WINFSP_MSI_URL -OutFile winfsp.msi
+          $got = (Get-FileHash -Path winfsp.msi -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:WINFSP_MSI_SHA256) { throw "WinFsp's MSI digest is $got, not the pinned one" }
           Start-Process msiexec.exe -Wait -ArgumentList '/i', 'winfsp.msi', '/qn'
           $bin = Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'
           if (-not (Test-Path (Join-Path $bin 'winfsp-x64.dll'))) { throw 'WinFsp did not install its driver' }
@@ -111,16 +120,6 @@ jobs:
     timeout-minutes: 40
     env:
       GO_VERSION: "1.24"
-      # WinFsp's own release, pinned to a tag. The MSI is downloaded from
-      # WinFsp's own GitHub release at build time and never vendored.
-      # WINFSP_MSI_SHA256 is the digest of that exact asset, checked after the
-      # download: WiX v4's MsiPackage has no Hash attribute (the compiler
-      # rejects it), so this is where the payload's integrity is pinned, and
-      # Burn's own Authenticode check on the downloaded MSI is the second pin.
-      # A WinFsp upgrade is a visible diff of both values.
-      WINFSP_VERSION: "2.1.25156"
-      WINFSP_MSI_URL: "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
-      WINFSP_MSI_SHA256: "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
       # Where Drive's own package lands. installer/drive.wxs puts INSTALLFOLDER
       # under ProgramFiles6432Folder, which on the x64 package this job builds
       # is C:\Program Files (x86) - the same 32-bit folder WinFsp itself uses

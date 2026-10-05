@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html"
@@ -64,6 +66,16 @@ type MountPlan struct {
 	// host, and the host counts the bytes, so a mount that did not point at
 	// it would serve reads nobody bills.
 	DownloadURL string
+	// RCUser and RCPass are the random remote-control credentials this
+	// mount generated. Empty on a plan that has not been prepared for a
+	// real start (tests of the public flags). Args() passes them as
+	// --rc-user/--rc-pass; the systemd unit leaves them out of ExecStart
+	// and puts them in the 0600 EnvironmentFile instead (drive#498).
+	RCUser string
+	RCPass string
+	// SecretKey is the storage secret passed at mount time through
+	// RCLONE_CONFIG_DRIVE_SECRET_ACCESS_KEY, never written into rclone.conf.
+	SecretKey string
 }
 
 // VFSArgs are the stock rclone VFS flags this product mounts with. The docs
@@ -190,6 +202,66 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 	}
 }
 
+// prepareMountAuth generates the remote-control user and password, stores
+// them with the storage secret in rclone.env (mode 0600), and puts them on
+// the plan so Args() and the login item can pass --rc-user/--rc-pass (or,
+// for systemd, EnvironmentFile=).
+func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
+	user, pass, err := generateRCAuth()
+	if err != nil {
+		return err
+	}
+	p.RCUser = user
+	p.RCPass = pass
+	p.SecretKey = c.SecretKey
+	return WriteRcloneEnv(home, c, user, pass)
+}
+
+func generateRCAuth() (user, pass string, err error) {
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", "", fmt.Errorf("generate rclone rc password: %w", err)
+	}
+	return hex.EncodeToString(buf[:16]), hex.EncodeToString(buf[16:]), nil
+}
+
+func rcloneProcessEnv(p MountPlan) []string {
+	env := os.Environ()
+	if p.RCUser != "" {
+		env = overrideEnv(env, rcloneRCUserEnv, p.RCUser)
+		env = overrideEnv(env, rcloneRCPassEnv, p.RCPass)
+	}
+	if p.SecretKey != "" {
+		env = overrideEnv(env, rcloneSecretEnv, p.SecretKey)
+	}
+	return env
+}
+
+func overrideEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+func rcloneEnvRedacted(p MountPlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s=<redacted>\n", rcloneRCUserEnv)
+	fmt.Fprintf(&b, "%s=<redacted>\n", rcloneRCPassEnv)
+	fmt.Fprintf(&b, "%s=<redacted>\n", rcloneSecretEnv)
+	return b.String()
+}
+
+func rcClientForMount(p MountPlan) *rcClient {
+	c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+	c.user, c.pass = p.RCUser, p.RCPass
+	return c
+}
+
 // deviceEnvName is the environment variable that carries the device name
 // (issue #30). The flag is the person's own command; the environment is
 // what the login item (launchd, systemd) carries forward.
@@ -225,12 +297,12 @@ func ConflictStagingDir(home string) string {
 const rcAddrEnvName = "DRIVE_RC_ADDR"
 
 // RCAddr is the loopback address the mount's remote control binds.
-// rclone's remote control is unauthenticated by design, so it binds to
-// loopback only and never to a wildcard: the background fill, the
+// rclone's remote control is authenticated (drive#498), and it still binds
+// to loopback only and never to a wildcard: the background fill, the
 // conflict guard and `drive status` all reach this one address. A
 // DRIVE_RC_ADDR that is not a loopback address is refused and the shipped
-// address is used, because a wildcard bind would put an unauthenticated
-// control port on the network.
+// address is used, because a wildcard bind would put a control port on the
+// network.
 func RCAddr() string {
 	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
 		if IsLoopbackAddr(set) {
@@ -242,8 +314,8 @@ func RCAddr() string {
 }
 
 // IsLoopbackAddr reports whether addr is a loopback host:port. The remote
-// control is unauthenticated (rclone's own design), so anything that would
-// bind off the machine is refused rather than used.
+// control binds loopback even with a password (drive#498), so anything that
+// would bind off the machine is refused rather than used.
 func IsLoopbackAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -269,8 +341,19 @@ func mountDirFor(goos, home string) string {
 	return DefaultMountDir(home)
 }
 
-// Args is the full rclone argument vector, in the order the docs show.
+// Args is the full rclone argument vector, in the order the docs show. When
+// RCUser is set it includes --rc-user/--rc-pass, which is what a foreground
+// or detached rclone process gets. The systemd unit uses loginItemArgs so the
+// password is not copied into a 0644 file.
 func (p MountPlan) Args() []string {
+	return p.args(true)
+}
+
+func (p MountPlan) loginItemArgs() []string {
+	return p.args(false)
+}
+
+func (p MountPlan) args(includeRCAuth bool) []string {
 	args := []string{
 		p.Subcommand,
 		p.Remote,
@@ -287,8 +370,13 @@ func (p MountPlan) Args() []string {
 		// conflict guard reads this device's own upload queue and the
 		// object's hash at a path (conflict_guard.go), and how `drive
 		// status` reports the cache. It is one address for all of them.
-		"--rc", "--rc-addr", p.RCAddr, "--rc-no-auth",
+		// --rc-user/--rc-pass are rclone's own auth (drive#498); without
+		// them config/dump returns the storage secret to any local process.
+		"--rc", "--rc-addr", p.RCAddr,
 	)
+	if includeRCAuth && p.RCUser != "" {
+		args = append(args, "--rc-user", p.RCUser, "--rc-pass", p.RCPass)
+	}
 	// The download host, when one is configured (issue #58). It is the S3
 	// provider's own flag --s3-download-url, the one rclone's docs list for
 	// "tell the backend where downloads can be fetched from", so reads on the
@@ -342,6 +430,20 @@ func LaunchdPlist(p MountPlan) string {
 	b.WriteString("\t<key>KeepAlive</key>\n\t<true/>\n")
 	fmt.Fprintf(&b, "\t<key>StandardOutPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
 	fmt.Fprintf(&b, "\t<key>StandardErrorPath</key>\n\t<string>%s</string>\n", html.EscapeString(p.LogPath))
+	if p.RCUser != "" || p.SecretKey != "" {
+		// The plist is written 0600 (the launchd equivalent of systemd's
+		// EnvironmentFile): EnvironmentVariables carry the rc password and
+		// the storage secret, so they never sit in a 0644 file (drive#498).
+		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
+		if p.RCUser != "" {
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneRCUserEnv, html.EscapeString(p.RCUser))
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneRCPassEnv, html.EscapeString(p.RCPass))
+		}
+		if p.SecretKey != "" {
+			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", rcloneSecretEnv, html.EscapeString(p.SecretKey))
+		}
+		b.WriteString("\t</dict>\n")
+	}
 	b.WriteString("</dict>\n</plist>\n")
 	return b.String()
 }
@@ -359,13 +461,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=%s
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, p.Remote, systemdCommandLine(p))
+`, p.Remote, systemdEscapeArg(filepath.Join(filepath.Dir(p.ConfigPath), "rclone.env")), systemdCommandLine(p))
 }
 
 // systemdCommandLine renders the rclone argument vector the way systemd reads
@@ -374,7 +477,7 @@ WantedBy=default.target
 // doubled for its %-specifier expansion). CommandLine stays shell-shaped for
 // human display only.
 func systemdCommandLine(p MountPlan) string {
-	parts := append([]string{p.RcloneBin}, p.Args()...)
+	parts := append([]string{p.RcloneBin}, p.loginItemArgs()...)
 	for i, a := range parts {
 		parts[i] = systemdEscapeArg(a)
 	}
@@ -469,8 +572,11 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		p.MountDir = letter
 		return mountWindows(p, home, c, foreground, dryRun)
 	}
-	item := []byte(LoginItem(goos, p))
 	itemPath := LoginItemPath(goos, home)
+	itemMode := os.FileMode(0o644)
+	if goos == "darwin" {
+		itemMode = 0o600
+	}
 	// The mount dir is created only once the plan is real: --dry-run writes
 	// nothing at all, and prints the config with both keys redacted.
 	driveBin, exeErr := os.Executable()
@@ -480,7 +586,10 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	prefetchItem := []byte(PrefetchLoginItem(goos, driveBin, home))
 	prefetchPath := PrefetchLoginItemPath(goos, home)
 	if dryRun {
+		p.RCUser, p.RCPass = "<redacted>", "<redacted>"
+		item := []byte(LoginItem(goos, p))
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
+		fmt.Printf("--- %s ---\n%s", RcloneEnvPath(home), rcloneEnvRedacted(p))
 		fmt.Printf("--- %s ---\n%s", itemPath, item)
 		fmt.Printf("--- %s ---\n%s", prefetchPath, prefetchItem)
 		fmt.Printf("--- would run ---\n%s\n", p.CommandLine())
@@ -494,6 +603,10 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
 			"this mount can carry in a conflict filename")
 	}
+	if err := prepareMountAuth(home, &p, c); err != nil {
+		return err
+	}
+	item := []byte(LoginItem(goos, p))
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return failDetail("drive-folder", err, p.MountDir)
 	}
@@ -501,7 +614,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
 		return err
 	}
-	if err := WriteFileAtomic(itemPath, item, 0o644); err != nil {
+	if err := WriteFileAtomic(itemPath, item, itemMode); err != nil {
 		return err
 	}
 	if err := WriteFileAtomic(prefetchPath, prefetchItem, 0o644); err != nil {
@@ -603,6 +716,7 @@ func startLinuxMountDetached(p MountPlan) error {
 	cmd := exec.Command(rclonePath, p.Args()...)
 	cmd.Stdout = log
 	cmd.Stderr = log
+	cmd.Env = rcloneProcessEnv(p)
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("rclone mount: %w", err)
@@ -623,6 +737,7 @@ func mountForeground(p MountPlan, home string) error {
 	cmd := exec.Command(rclonePath, p.Args()...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = rcloneProcessEnv(p)
 	// Start the child first, so the signal handler below never sees a nil
 	// Process: a SIGINT between Notify and Run would otherwise panic.
 	if err := cmd.Start(); err != nil {
@@ -649,7 +764,7 @@ func mountForeground(p MountPlan, home string) error {
 		// of the mount, so the loop's first pass waits for the mount to appear
 		// (the same proof `drive mount` already makes) instead of racing it.
 		_, _ = MountedDir(p.GOOS, p.MountDir)
-		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		c := rcClientForMount(p)
 		for err := range RunFillLoop(fillCtx, c, home, p.MountDir) {
 			fmt.Fprintf(os.Stderr, "drive: background fill: %v\n", err)
 		}
@@ -661,7 +776,7 @@ func mountForeground(p MountPlan, home string) error {
 	conflictCtx, cancelConflict := context.WithCancel(context.Background())
 	go func() {
 		_, _ = MountedDir(p.GOOS, p.MountDir)
-		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		c := rcClientForMount(p)
 		for err := range RunConflictLoop(conflictCtx, p.Device, p.MountDir, p.StagingDir, c) {
 			fmt.Fprintf(os.Stderr, "drive: conflict guard: %v\n", err)
 		}
@@ -677,7 +792,7 @@ func mountForeground(p MountPlan, home string) error {
 	queueCtx, cancelQueue := context.WithCancel(context.Background())
 	go func() {
 		_, _ = MountedDir(p.GOOS, p.MountDir)
-		c := newRCClient(p.RcloneBin, p.RCAddr, p.Remote)
+		c := rcClientForMount(p)
 		for err := range RunQueueReportLoop(queueCtx, c, home) {
 			fmt.Fprintf(os.Stderr, "drive: queue report: %v\n", err)
 		}

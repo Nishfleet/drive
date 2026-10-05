@@ -101,6 +101,9 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
+	if err := WriteRcloneEnv(home, cfg, "", ""); err != nil {
+		return err
+	}
 	who := accountLabel(account)
 	if who == "" {
 		fmt.Fprintln(out, "Signed in. Storage settings written. Run `drive init` to mount.")

@@ -42,6 +42,20 @@ const USUAL_PLAN = Object.freeze({
   extraStepUsd: 6,
 });
 
+// The prepaid balance (drive#586, Nish 2026-10-05: "pay as you go with minimum
+// top ups at $10"). The customer adds money first and usage is drawn from the
+// balance at the rate above. These are the only numbers the top-up, the
+// low-balance email and the account page read, so they cannot disagree.
+//
+// maxTopUpUsd is a guard on one checkout, not a limit on the balance: a typo
+// of $10000 for $100 is refused before the customer reaches the card form.
+export const PREPAID = Object.freeze({
+  minTopUpUsd: 10,
+  topUpPresetsUsd: Object.freeze([10, 25, 50]),
+  lowBalanceUsd: 2,
+  maxTopUpUsd: 1000,
+});
+
 /**
  * Whole cents from a dollar rate, or a throw: a rate that is not a whole
  * number of cents would put a headline on the page the meter does not charge.
@@ -93,8 +107,10 @@ export function buildPrice({
   // Where the rate reaches the maximum: 500 GB at 2 cents and $10.
   const reachesMaxGb = Math.round((max * 100) / rateCents);
   const rateText = `${rateCents}¢`;
-  const leadLine = "Pay only for what you store.";
-  const rateLine = `${centsWords(rateCents)} per GB.`;
+  // drive#586: prepaid. The lead names the smallest top-up, read from
+  // PREPAID, so the headline and the checkout cannot name different amounts.
+  const leadLine = `Add $${PREPAID.minTopUpUsd} or more.`;
+  const rateLine = `Pay ${centsWords(rateCents)} per GB from your balance.`;
   const maxLine = `Never more than $${max} per TB.`;
   return Object.freeze({
     // The metered rate, in US dollars per GB per month, billed by the minute.
@@ -118,7 +134,9 @@ export function buildPrice({
     rateUnit: "per GB a month",
     // The browser-tab and share-card title: the brand and the one-line price.
     titleLine: `${rateText} per GB, never more than $${max} per TB`,
-    noMinimumLine: "No minimum. No plans.",
+    // drive#586 retired "No minimum": a top-up is $10 or more. The balance is
+    // kept until it is used.
+    noPlansLine: "No plans. Your balance never expires.",
     // drive#417: until a card is really on file the usage page says no charge has
     // been made and shows no bill as if charged. `monthBillCents()` still works
     // the bill out (money, untouched); this is the word the page and the CLI
@@ -126,7 +144,7 @@ export function buildPrice({
     // `card_added_at` (accounts.row) is the record a card is on file; real
     // capture waits on the Dodo key (#325).
     noChargeYet: "No charge has been made. There is no card on file yet.",
-    needCard: `We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about ${centsWords(20 * rateCents)} a month.`,
+    needCard: `We need a card at sign-up because there is no free tier. Your first $${PREPAID.minTopUpUsd} top-up opens storage. 20 GB draws about ${centsWords(20 * rateCents)} a month from your balance.`,
     // The whole rule in words, for the examples note, the offer description
     // and llms.txt.
     rule: `You pay ${centsWords(rateCents)} per GB a month until the bill reaches $${max}, at ${sizeWords(reachesMaxGb)}. From ${sizeWords(reachesMaxGb)} to 1 TB the bill stays $${max}. Above 1 TB you never pay more than $${max} for each TB, counted to the GB.`,
@@ -165,17 +183,3 @@ export function usualPlanMonthlyUsd(tb, plan = PRICE.usualPlan) {
   const steps = Math.ceil(extraGb / (plan.extraStepTb * GB_PER_TB));
   return plan.monthlyUsd + steps * plan.extraStepUsd;
 }
-
-// The prepaid balance (drive#586, Nish 2026-10-05: "pay as you go with minimum
-// top ups at $10"). The customer adds money first and usage is drawn from the
-// balance at the rate above. These are the only numbers the top-up, the
-// low-balance email and the account page read, so they cannot disagree.
-//
-// maxTopUpUsd is a guard on one checkout, not a limit on the balance: a typo
-// of $10000 for $100 is refused before the customer reaches the card form.
-export const PREPAID = Object.freeze({
-  minTopUpUsd: 10,
-  topUpPresetsUsd: Object.freeze([10, 25, 50]),
-  lowBalanceUsd: 2,
-  maxTopUpUsd: 1000,
-});
