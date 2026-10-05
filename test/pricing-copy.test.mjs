@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { billingConfigFor, monthlyBillForStoredTb } from "../core/billing.js";
-import { buildPrice, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
+import { buildPrice, PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import { BILLING, SITE, softwareApplicationLd } from "../core/seo.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -62,7 +62,7 @@ const PUBLIC_FILES = [
 /** @type {Array<[string, string]>} */
 const publicTexts = PUBLIC_FILES.map((file) => [
   file,
-  // A docs marker ({{NO_MINIMUM}}) renders from PRICE, which the tests above
+  // A docs marker ({{NO_PLANS}}) renders from PRICE, which the tests above
   // check, so the marker's own name is not copy.
   readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
     .replaceAll("&nbsp;", " ")
@@ -70,10 +70,13 @@ const publicTexts = PUBLIC_FILES.map((file) => [
 ]);
 
 test("the headline is the issue's sentence, from config", () => {
+  // drive#586: prepaid. The lead names the smallest top-up from PREPAID, so
+  // the headline and the checkout cannot disagree on it.
   assert.equal(
     PRICE.headline,
-    "Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
+    "Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.",
   );
+  assert.equal(PRICE.leadLine, `Add $${PREPAID.minTopUpUsd} or more.`);
   assert.equal(PRICE.headline, `${PRICE.leadLine} ${PRICE.rateLine} ${PRICE.maxLine}`);
   // The page sets the sentence as three lines in the h1, in this order.
   const h1 = words.slice(words.indexOf("<h1"), words.indexOf("</h1>"));
@@ -91,11 +94,19 @@ test("the headline is the issue's sentence, from config", () => {
   assert.ok(h1.indexOf(PRICE.rateLine) < h1.indexOf(PRICE.maxLine));
 });
 
-test("no minimum and no plans sit under the headline", () => {
+test("no plans and a balance that never expires sit under the headline", () => {
   const headline = words.indexOf("</h1>");
-  const noMinimum = words.indexOf(PRICE.noMinimumLine);
-  assert.equal(PRICE.noMinimumLine, "No minimum. No plans.");
-  assert.ok(noMinimum > headline, "No minimum. No plans. must follow the headline");
+  const noPlans = words.indexOf(PRICE.noPlansLine);
+  assert.equal(PRICE.noPlansLine, "No plans. Your balance never expires.");
+  assert.ok(noPlans > headline, "the no-plans line must follow the headline");
+});
+
+test("the card line says the first top-up opens storage, with no old minimum", () => {
+  // drive#586: a card is needed, and the first $10 top-up opens storage. The
+  // old "There is no minimum" claim is false once a top-up is $10 or more.
+  assert.ok(PRICE.needCard.includes(`Your first $${PREPAID.minTopUpUsd} top-up opens storage.`));
+  assert.doesNotMatch(PRICE.needCard, /no minimum/i);
+  assert.match(PRICE.needCard, /no free tier/);
 });
 
 test("the formula edges, as the bill computes them", () => {
@@ -266,7 +277,7 @@ test("the worked-example helpers fail closed on a size that cannot be billed", (
 test("copy, meta tags and llms.txt all render from the one price source", () => {
   assert.equal(BILLING.headline, PRICE.headline, "seo.js must reuse the config's sentence");
   assert.equal(BILLING.rule, PRICE.rule);
-  assert.equal(BILLING.noMinimumLine, PRICE.noMinimumLine);
+  assert.equal(BILLING.noPlansLine, PRICE.noPlansLine);
   assert.equal(SITE.description.endsWith(PRICE.headline), true);
   assert.ok(page.includes(`<title>Drive — ${PRICE.titleLine}</title>`));
   const descriptionMetas = new Set([
@@ -287,7 +298,7 @@ test("copy, meta tags and llms.txt all render from the one price source", () => 
   }
   // llms.txt, twice: the summary line and the Pricing section.
   assert.equal(llms.split(PRICE.headline).length - 1, 2, "llms.txt must carry the headline twice");
-  for (const line of [PRICE.rule, PRICE.noMinimumLine, PRICE.needCard]) {
+  for (const line of [PRICE.rule, PRICE.noPlansLine, PRICE.needCard]) {
     assert.ok(llms.includes(line), `llms.txt must carry "${line}"`);
   }
   const jsonLd = page.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);

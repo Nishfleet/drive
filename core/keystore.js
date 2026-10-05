@@ -29,6 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
+import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
@@ -53,25 +54,6 @@ export {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 };
-
-/**
- * Constant-time string comparison for two equal-length hex digests. A plain
- * `===` on a secret hash leaks, through timing, how many leading characters
- * were right; the lengths here are fixed by SHA-256, so the loop is a full
- * comparison either way.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
-}
 
 /**
  * The stand-in key and object store. One instance per Worker isolate
@@ -540,7 +522,10 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+        // The one compare in http.js. A device is stored only as the hash of
+        // its secret, so both sides here are hashes: the stored one, and the
+        // hash of the secret this request presented.
+        if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }
         const at = nowSeconds(now());

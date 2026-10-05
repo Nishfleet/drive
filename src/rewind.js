@@ -34,6 +34,7 @@
 // module already has, and the gate test/account-gate.test.mjs walks.
 
 import { RECENTLY_DELETED_DAYS } from "../core/files.js";
+import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
 import {
@@ -53,24 +54,6 @@ export const REWIND_ENDPOINT = "/api/rewind";
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message

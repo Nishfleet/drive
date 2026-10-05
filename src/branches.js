@@ -47,6 +47,7 @@
 // a branch key prefix can never accept a different shape of name.
 
 import { BRANCHES_PATH, scopeStore, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
@@ -172,24 +173,6 @@ export const BRANCHES_ENDPOINT = "/api/branches";
  * definition of where branches live (the `.branches` folder), not two.
  */
 export const BRANCHES_ROOT = BRANCHES_PATH;
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message

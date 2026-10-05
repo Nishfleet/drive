@@ -7,18 +7,15 @@
 // are never written.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { claimCardFingerprint } from "../../core/abuse-guards.js";
-import { makeMeteredDB } from "../d1-sqlite.mjs";
+import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
-const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
 test("the real migrations add the three nullable abuse-guard columns", () => {
-  assert.ok(migrationFiles.includes("0019_abuse_guards.sql"), "0019_abuse_guards.sql is missing");
+  assert.ok(MIGRATION_FILES.includes("0019_abuse_guards.sql"), "0019_abuse_guards.sql is missing");
   const { sqlite } = makeMeteredDB();
   for (const name of ["card_fingerprint", "founding_reserved", "first_charged_at"]) {
     const row = sqlite

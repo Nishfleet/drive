@@ -17,7 +17,7 @@ import {
   quoteForStoredTb,
 } from "../core/billing.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
-import { usualPlanMonthlyUsd } from "../core/pricing.js";
+import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -111,7 +111,7 @@ test("the Worker serves GET /api/quote with no account", async () => {
 test("the pricing page has the calculator, the shipped headline, and no rival names in it", () => {
   assert.match(page, /id="calculator"/);
   assert.match(page, new RegExp(`action="${QUOTE_ENDPOINT}"`));
-  assert.match(page, /2 cents per GB\./);
+  assert.ok(page.includes(PRICE.headline), "the page must carry the shipped headline");
   // The new default spending cap is $20 (#464), so the ban narrows to the
   // dropped per-TB headline.
   assert.doesNotMatch(page, /\$20 (per|a) TB/, "the dropped $20 per TB headline must stay gone");

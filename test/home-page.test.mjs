@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { monthlyBillForStoredTb, quoteForStoredTb } from "../core/billing.js";
 import { DEFAULT_CAP_USD } from "../core/cap-default.js";
-import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
+import { PREPAID, PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
@@ -88,11 +88,14 @@ test("one h1, a main landmark, a skip link and a reduced-motion reset", () => {
 
 test("the main action is Get drive, to /signin, with a true pay-as-you-go line", () => {
   assert.match(html, /<a class="btn" href="\/signin">Get drive/);
+  // drive#586: prepaid. The line names the smallest top-up and what 200 GB
+  // draws from it.
   const cta = html.match(
-    /<p class="cta-note">Add a card, store 200&nbsp;GB, pay \$(\d+) a month\.<\/p>/,
+    /<p class="cta-note">Add \$(\d+), store 200&nbsp;GB, and it draws \$(\d+) a month\.<\/p>/,
   );
-  assert.ok(cta, "the hero carries the card-and-200-GB line");
-  assert.equal(Number(cta[1]), monthlyBillForStoredTb(0.2).billUsd);
+  assert.ok(cta, "the hero carries the top-up-and-200-GB line");
+  assert.equal(Number(cta[1]), PREPAID.minTopUpUsd);
+  assert.equal(Number(cta[2]), monthlyBillForStoredTb(0.2).billUsd);
   // No trial, no membership, no first-month discount (drive#463).
   for (const stale of [/days free/i, /trial/i, /membership/i, /first month/i, /\$12/, /ceiling/i]) {
     assert.doesNotMatch(html, stale);

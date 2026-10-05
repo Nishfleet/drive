@@ -24,6 +24,7 @@
 // moves this page and the pricing page together.
 
 import { validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { agentCannotDeleteSentence } from "./docs.js";
@@ -240,23 +241,6 @@ export async function createStarter(store) {
     created.push(file.path);
   }
   return { created, kept };
-}
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @returns {Response}
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS },
-  });
 }
 
 /**

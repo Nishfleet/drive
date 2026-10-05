@@ -2,6 +2,7 @@
 // so node --test can exercise every branch without a running runtime.
 
 import isEmail from "validator/lib/isEmail.js";
+import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
@@ -9,13 +10,6 @@ export const SOURCES = ["pricing-page", "business"];
 
 const MAX_EMAIL_LENGTH = 254;
 const MAX_BODY_BYTES = 4096;
-
-class BodyTooLargeError extends Error {
-  constructor() {
-    super("body too large");
-    this.name = "BodyTooLargeError";
-  }
-}
 
 /**
  * Returns { email, source } or { error }.
@@ -95,66 +89,6 @@ export async function recordSignup(db, signup) {
     throw new Error(`waitlist insert reported a conflict for ${signup.email} but no row exists`);
   }
   return { already: true, row: row(existing) };
-}
-
-/**
- * @param {unknown} body
- * @param {number} status
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      ...headers,
-    },
-  });
-}
-
-// Two layers, because either alone is bypassable: a declared content-length
-// is checked first so an oversized body is rejected without being read at
-// all, and the stream is counted as it arrives so a request that declares
-// nothing (or lies about a smaller size) is stopped at the same limit.
-/**
- * @param {Request} request
- * @param {number} maxBytes
- * @returns {Promise<Uint8Array>}
- */
-async function readLimitedBody(request, maxBytes) {
-  const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const length = Number(declared);
-    if (Number.isFinite(length) && length > maxBytes) {
-      throw new BodyTooLargeError();
-    }
-  }
-  const stream = request.body;
-  if (stream === null) {
-    return new Uint8Array(0);
-  }
-  const reader = stream.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new BodyTooLargeError();
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }
 
 /**

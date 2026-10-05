@@ -14,6 +14,13 @@
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
 import { decodeNotificationKey } from "./event-routes.js";
+import {
+  BodyTooLargeError,
+  bearerToken,
+  json,
+  readLimitedBody,
+  tokensMatch,
+} from "./http.js";
 import { accountPrefix, scopeStore } from "./files.js";
 //
 // Three jobs, in the order the issue lists them:
@@ -1032,15 +1039,10 @@ export const EVENT_ACTIONS = Object.freeze({
 
 // A batch of 1000 events at a realistic size sits well under this, and a
 // request over it is refused without being read, the same two layers
-// src/waitlist.js uses (declared length first, counted stream second).
+// src/waitlist.js uses (declared length first, counted stream second); the
+// reader itself lives in workers/api/src/http.js next to the other request
+// readers (drive#618).
 const MAX_EVENT_BODY_BYTES = 256 * 1024;
-
-class EventBodyTooLargeError extends Error {
-  constructor() {
-    super("event body too large");
-    this.name = "EventBodyTooLargeError";
-  }
-}
 
 /**
  * The fields a storage notification record is recognised by. Holding one of
@@ -1480,68 +1482,6 @@ export async function recordEvents(db, events, now = Date.now()) {
 // storage.
 export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 
-// The header a stock bucket can actually send. MinIO's own notify webhook
-// sets `Authorization` to `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` and
-// cannot send a header of its own (there is no `MINIO_NOTIFY_WEBHOOK_HEADERS_*`
-// variable), so a rule configured the way the vendor's docs show arrives with
-// a bearer token and no x-drive-event-token (measured 2026-10-02 against the
-// pinned stand-in). Both are the same secret; this endpoint accepts either, so
-// the vendor's own event rule works without a custom-header capability MinIO
-// does not have.
-/** @param {string|undefined|null} header */
-export function bearerToken(header) {
-  if (typeof header !== "string") {
-    return null;
-  }
-  const [scheme, value] = /** @type {[string, string]} */ (header.split(" "));
-  if (scheme === undefined || value === undefined || scheme.toLowerCase() !== "bearer") {
-    return null;
-  }
-  return value;
-}
-
-/**
- * Compares a presented token with the configured one without leaking the
- * secret through timing. Both sides are hashed with SHA-256 first, so the
- * compare runs over two always-equal-length digests: a longer or shorter
- * presentation reveals nothing, and the byte compare is the runtime's own
- * constant-time one (crypto.subtle.timingSafeEqual, a Workers API) where the
- * runtime provides it, and an accumulator with no byte-count exit over those
- * same equal-length digests where it does not.
- * @param {unknown} presented
- * @param {unknown} configured
- */
-export async function tokensMatch(presented, configured) {
-  if (typeof presented !== "string" || typeof configured !== "string") {
-    return false;
-  }
-  if (presented === "" || configured === "") {
-    return false;
-  }
-  const encoder = new TextEncoder();
-  const [left, right] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(presented)),
-    crypto.subtle.digest("SHA-256", encoder.encode(configured)),
-  ]);
-  // crypto.subtle.timingSafeEqual is a Workers API, so the generated runtime
-  // types know it and the DOM ones do not; the cast is the platform difference,
-  // and the accumulator below is the answer on a runtime without it.
-  const subtle =
-    /** @type {SubtleCrypto & {timingSafeEqual?: (a: ArrayBuffer, b: ArrayBuffer) => boolean}} */ (
-      crypto.subtle
-    );
-  if (typeof subtle.timingSafeEqual === "function") {
-    return subtle.timingSafeEqual(left, right);
-  }
-  const a = new Uint8Array(left);
-  const b = new Uint8Array(right);
-  let difference = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    difference |= a[i] ^ b[i];
-  }
-  return difference === 0;
-}
-
 /**
  * Handles POST /api/storage-events: one event or a provider batch, stored
  * through the dedup. Always returns a Response; never echoes a stored path,
@@ -1573,7 +1513,15 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   }
   if (
     !(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken)) &&
-    !(await tokensMatch(bearerToken(request.headers.get("authorization")), eventToken))
+    // The header a stock bucket can actually send. MinIO's own notify webhook
+    // sets `Authorization` to `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` and
+    // cannot send a header of its own (there is no `MINIO_NOTIFY_WEBHOOK_HEADERS_*`
+    // variable), so a rule configured the way the vendor's docs show arrives with
+    // a bearer token and no x-drive-event-token (measured 2026-10-02 against the
+    // pinned stand-in). Both are the same secret; this endpoint accepts either, so
+    // the vendor's own event rule works without a custom-header capability MinIO
+    // does not have.
+    !(await tokensMatch(bearerToken(request), eventToken))
   ) {
     // One sentence, no echo of what was presented: a wrong token is a caller
     // with a stale or misconfigured event rule, and its text is not a hint.
@@ -1588,7 +1536,7 @@ export async function handleStorageEventRequest(request, db, eventToken) {
       return json({ error: "The request body is not valid JSON." }, 400);
     }
   } catch (error) {
-    if (error instanceof EventBodyTooLargeError) {
+    if (error instanceof BodyTooLargeError) {
       return json({ error: "That event was too large to accept." }, 413);
     }
     console.error("meter: could not read the event body", error);
@@ -1656,64 +1604,6 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     );
   }
   return json({ ok: true, stored, deduped }, 200);
-}
-
-/**
- * @param {unknown} body
- * @param {number} status
- */
-function json(body, status) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
-}
-
-// Same two layers as src/waitlist.js: a declared content-length is checked
-// before the body is read at all, and the stream is counted as it arrives so
-// a request that declares nothing, or lies about a smaller size, stops at the
-// same limit.
-/**
- * @param {Request} request
- * @param {number} maxBytes
- * @returns {Promise<Uint8Array>}
- */
-async function readLimitedBody(request, maxBytes) {
-  const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const length = Number(declared);
-    if (Number.isFinite(length) && length > maxBytes) {
-      throw new EventBodyTooLargeError();
-    }
-  }
-  const stream = request.body;
-  if (stream === null) {
-    return new Uint8Array(0);
-  }
-  const reader = stream.getReader();
-  /** @type {Uint8Array[]} */
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new EventBodyTooLargeError();
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }
 
 // The schedule the hourly meter runs on: 5 past the hour, after the hour has

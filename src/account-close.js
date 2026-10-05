@@ -9,6 +9,7 @@
 
 import { sendEmail } from "../core/email-send.js";
 import { scopeStore } from "../core/files.js";
+import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
@@ -44,19 +45,6 @@ export const CLOSE_COPY = Object.freeze({
   pendingWhat: "This account closes on {purgeOn}. Your files stay visible until then.",
   pendingCancel: "Cancel closing",
 });
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- */
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
 
 /**
  * @param {unknown} value

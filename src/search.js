@@ -22,6 +22,7 @@
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
 import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 
 /** One account's file store, the shape src/files.js exports and every helper
@@ -507,24 +508,6 @@ export async function indexAccounts(db) {
 }
 
 // ---------------------------------------------------------------- the route
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message
