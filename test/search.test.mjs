@@ -722,6 +722,28 @@ test("1,000,000 files: a search returns in under one second and reads only its m
     `plan uses the trigram index: ${plan}`,
   );
   assert.doesNotMatch(plan, /SCAN file_index\b/, `file_index is never scanned: ${plan}`);
+  // This is the rows-read bound, as a structural fact about the plan rather
+  // than a count the test guesses at. Every `file_index` access the search
+  // makes is a SEARCH by the (account_id, path) primary key inside a
+  // CORRELATED SCALAR SUBQUERY, and SQLite evaluates a correlated subquery
+  // only for a row of the outer result that survived the LIMIT. So the number
+  // of `file_index` rows one search reads is two per returned row (the size and
+  // the date) and is bounded by the LIMIT — never by the account size, which
+  // is the whole of the cost this migration removes. A `SCAN file_index` here
+  // (or an access by any index other than the primary key) would reintroduce
+  // the per-account scan, so both are asserted against.
+  const fileIndexAccesses = plan
+    .split(" | ")
+    .filter((detail) => /\bfile_index\b/.test(detail) && !/file_index_fts/.test(detail));
+  assert.ok(fileIndexAccesses.length > 0, "the search reads size and date from file_index");
+  for (const access of fileIndexAccesses) {
+    assert.match(access, /CORRELATED SCALAR SUBQUERY|SEARCH/, `bounded access: ${access}`);
+    assert.match(
+      access,
+      /SEARCH file_index USING INDEX sqlite_autoindex_file_index_1 \(account_id=\? AND path=\?\)/,
+      `file_index is reached only by its primary key: ${access}`,
+    );
+  }
 
   const timed = await searchDrive(db, ACCOUNT, "file-0999999", { now: () => performance.now() });
   // The bar is a realistic search: a term that names the file the person is
