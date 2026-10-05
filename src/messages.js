@@ -303,6 +303,19 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "The payment page did not open, and nothing was charged.",
     next: "Try again in a minute.",
   }),
+  // The prepaid balance is $0 or less, so uploads and new writes pause
+  // (drive#586). Reads, downloads and restore keep working, and nothing is
+  // deleted. The same words on the web, in the CLI and in an agent key error.
+  "balance-empty": Object.freeze({
+    what: "Your balance is $0, so uploads are paused. Your files are safe and downloads keep working.",
+    next: "Top up to keep adding files.",
+  }),
+  // The same pause seen by a stranger on a public upload page: they cannot top
+  // up someone else's drive, so they are told who can act.
+  "upload-paused-balance": Object.freeze({
+    what: "This drive is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the

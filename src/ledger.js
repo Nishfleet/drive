@@ -30,6 +30,9 @@ export const MAX_TOP_UP_CENTS = PREPAID.maxTopUpUsd * 100;
 /** The balance at or under which the low-balance email goes out, in cents. */
 export const LOW_BALANCE_CENTS = PREPAID.lowBalanceUsd * 100;
 
+/** The page where a person adds money: every "Top up" prompt links here. */
+export const TOP_UP_PAGE = "/usage";
+
 /**
  * @typedef {"topup"|"usage"|"refund"|"adjustment"} LedgerKind
  * @typedef {{
@@ -360,7 +363,21 @@ export async function creditTopUp(db, payment) {
     )
     .bind(Math.floor(at / 1000), customerId, payment.accountId)
     .run();
-  return { credited: inserted, balanceCents: await balanceCents(db, payment.accountId) };
+  const balance = await balanceCents(db, payment.accountId);
+  if (inserted) {
+    // Money landed: a started auto top-up is finished, and a balance back over
+    // $2 re-arms the "$2 left" email for the next crossing (drive#586).
+    await db
+      .prepare(
+        `UPDATE accounts
+            SET auto_topup_started_at = NULL,
+                low_balance_notified_at = CASE WHEN ?1 > ?2 THEN NULL ELSE low_balance_notified_at END
+          WHERE id = ?3`,
+      )
+      .bind(balance, LOW_BALANCE_CENTS, payment.accountId)
+      .run();
+  }
+  return { credited: inserted, balanceCents: balance };
 }
 
 /**

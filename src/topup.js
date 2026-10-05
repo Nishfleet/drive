@@ -26,7 +26,7 @@
 // checkout route answers 503 with the message table's words.
 
 import { resolveDodoUrl } from "./dodo.js";
-import { isSameOriginRequest } from "./email-send.js";
+import { isSameOriginRequest, sendEmail } from "./email-send.js";
 import {
   balanceCents,
   creditTopUp,
@@ -35,6 +35,7 @@ import {
   MIN_TOP_UP_CENTS,
   recentLedger,
   recordRefund,
+  TOP_UP_PAGE,
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { PREPAID } from "./pricing.js";
@@ -212,7 +213,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -255,7 +256,7 @@ export async function handleBillingWebhook(request, deps) {
     return json({ error: "The webhook body is not a Dodo event." }, 400);
   }
   if (event.type === "payment.succeeded") {
-    return creditFromEvent(deps.db, data, now);
+    return creditFromEvent(deps.db, data, now, deps);
   }
   if (event.type === "refund.succeeded") {
     return refundFromEvent(deps.db, data, now);
@@ -267,8 +268,9 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
+ * @param {{email?: unknown, mailFrom?: string}} mail
  */
-async function creditFromEvent(db, data, now) {
+async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
   if (metadata?.purpose !== TOPUP_PURPOSE) {
     return json({ ok: true, ignored: "not a top-up" });
@@ -313,7 +315,58 @@ async function creditFromEvent(db, data, now) {
     customerId: typeof customer?.customer_id === "string" ? customer.customer_id : null,
     now,
   });
+  if (credited.credited) {
+    // A receipt only when money moved, and only once: a replayed event
+    // credits nothing and so mails nothing (drive#586, supersedes #572).
+    await sendTopUpReceipt(db, {
+      accountId,
+      amountCents,
+      balanceCents: credited.balanceCents,
+      auto: metadata.source === "auto",
+      mail,
+    });
+  }
   return json({ ok: true, credited: credited.credited });
+}
+
+/**
+ * Mails the top-up receipt. The credit is already written, so a failed send
+ * is logged loudly and does not fail the webhook: answering an error would
+ * make the provider retry an event that now credits nothing and so would
+ * never send the receipt either.
+ * @param {D1Database} db
+ * @param {{accountId: string, amountCents: number, balanceCents: number, auto: boolean, mail: {email?: unknown, mailFrom?: string}}} receipt
+ */
+async function sendTopUpReceipt(db, receipt) {
+  if (!receipt.mail.email || !receipt.mail.mailFrom) {
+    console.error("billing webhook: no receipt sent, because mail is not set up", `account=${receipt.accountId}`);
+    return;
+  }
+  try {
+    const row = /** @type {{email?: unknown}|null} */ (
+      await db.prepare("SELECT email FROM accounts WHERE id = ?1").bind(receipt.accountId).first()
+    );
+    if (typeof row?.email !== "string" || row.email === "") {
+      console.error("billing webhook: no receipt sent, because the account has no email", `account=${receipt.accountId}`);
+      return;
+    }
+    await sendEmail(receipt.mail.email, {
+      to: row.email,
+      from: receipt.mail.mailFrom,
+      kind: "top-up-receipt",
+      data: {
+        amountUsd: receipt.amountCents / 100,
+        balanceUsd: Math.max(0, receipt.balanceCents) / 100,
+        auto: receipt.auto,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "billing webhook: the top-up receipt failed to send",
+      `account=${receipt.accountId}`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 /**
@@ -416,7 +469,7 @@ export async function handleTopUpRequest(request, account, deps) {
       body: JSON.stringify({
         product_cart: [{ product_id: productId, quantity: 1, amount: cents }],
         ...(customer ? { customer } : {}),
-        return_url: `${origin}/usage?topup=done`,
+        return_url: `${origin}${TOP_UP_PAGE}?topup=done`,
         metadata: { purpose: TOPUP_PURPOSE, account_id: account.id },
       }),
     });

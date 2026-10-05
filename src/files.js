@@ -26,6 +26,7 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
+import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
 
@@ -1658,9 +1659,10 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database}} [options] the customer database, so the 1 TB
- *   pre-charge storage limit (drive#464) can read stored bytes. Tests that
- *   do not pass a database skip that check.
+ * @param {{db?: D1Database, prepaidPause?: boolean}} [options] the customer
+ *   database, so the 1 TB pre-charge storage limit (drive#464) can read
+ *   stored bytes, and whether the pause at a $0 balance is on (drive#586).
+ *   Tests that do not pass a database skip both checks.
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -1880,7 +1882,7 @@ async function readRequest(request, url, store, download) {
  * @param {URL} url
  * @param {FileStore} store
  * @param {{id: string}} account
- * @param {{db?: D1Database}} [options]
+ * @param {{db?: D1Database, prepaidPause?: boolean}} [options]
  * @returns {Promise<Response>}
  */
 async function uploadRequest(request, url, store, account, options = {}) {
@@ -1897,6 +1899,12 @@ async function uploadRequest(request, url, store, account, options = {}) {
   }
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
+  if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
+    // The prepaid balance is empty (drive#586): the upload pauses, and only
+    // the upload. Listing, downloads, deletes and restores never come here.
+    // 402, so a client can tell "add money" from every other refusal.
+    return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
+  }
   if (options.db) {
     const stored = await accountStoredBytes(options.db, account.id);
     const header = Number(request.headers.get("content-length") ?? "");
