@@ -748,7 +748,12 @@ test("done when: a real file opens from a share link, logged out", async () => {
 
   // No cookie, no account, no Authorization header: exactly what a logged-out
   // browser sends to a link someone pasted it.
-  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
+  const opened = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(opened.status, 200);
   assert.equal(opened.headers.get("content-type"), "image/jpeg");
   assert.equal(opened.headers.get("content-disposition"), "inline");
@@ -911,7 +916,12 @@ test("a shared file can never act as a page on our origin", async () => {
   for (const [name, token] of Object.entries(byName)) {
     const made = await (await share(`/${name}`, { token })).json();
     assert.equal(made.share.url, `https://drive.test${SHARE_LINK_PREFIX}/${token}`);
-    const opened = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
     assert.equal(opened.status, 200, `share ${name}`);
     assert.equal(
       opened.headers.get("x-content-type-options"),
@@ -945,7 +955,12 @@ test("done when: a revoked link returns 404", async () => {
   assert.equal(live.status, 200);
 
   await revoke(TOKEN);
-  const revoked = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
+  const revoked = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(revoked.status, 404);
   assert.equal(await revoked.text(), failureMessage("link-not-found"));
   assert.equal(revoked.headers.get("cache-control"), "no-store");
@@ -1614,7 +1629,12 @@ test("a share link answers a still-valid If-None-Match with 304 and no download"
   await upload("/", "song.mp3", "0123456789", "audio/mpeg");
   const made = await (await share("/song.mp3", { token: TOKEN })).json();
 
-  const first = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
+  const first = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(first.status, 200);
   const etag = first.headers.get("etag");
   assert.ok(etag, "the share answers carries an etag to re-validate with");
