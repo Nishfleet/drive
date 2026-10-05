@@ -2387,7 +2387,7 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   assert.equal(
     await meterWorker.scheduled(
       { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-      { METER_DB: db },
+      { METER_DB: db, DRIVE_DB: db },
     ),
     undefined,
   );

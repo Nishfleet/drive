@@ -294,6 +294,67 @@ test("preChargeOverLimitAccounts answers the unpaid accounts past 1 TB of live b
   ]);
 });
 
+test("the sweep's number is the web read's number on the same rows", async () => {
+  // drive#536, the drift guard: the web save refuses against accountStoredBytes
+  // and the sweep caps against its own grouped read, so if one of them ever
+  // grew a filter the other does not share, a mount would stay unbounded on an
+  // account the page already refuses. Both reads build from the same
+  // live-versions fragments (src/abuse-guards.js), and this proves they answer
+  // the same thing about the same rows, hidden versions included.
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "over");
+  await insertAccount(db, "mixed");
+  await insertAccount(db, "paid");
+  await insertAccount(db, "gone", { state: "closed" });
+  db.insertVersion({
+    accountId: "over",
+    fileId: "file-over",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 10,
+    createdAt: NOW,
+  });
+  db.insertVersion({
+    accountId: "mixed",
+    fileId: "file-mixed",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES + 20,
+    createdAt: NOW,
+  });
+  // A hidden version is not stored now, so it must count for neither read.
+  db.insertVersion({
+    accountId: "mixed",
+    fileId: "file-hidden",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES * 4,
+    createdAt: NOW,
+    hiddenAt: NOW,
+  });
+  db.insertVersion({ accountId: "mixed", fileId: "file-small", sizeBytes: 40, createdAt: NOW });
+  db.insertVersion({
+    accountId: "paid",
+    fileId: "file-paid",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES * 4,
+    createdAt: NOW,
+  });
+  stampFirstCharge(sqlite, "paid", NOW);
+  db.insertVersion({
+    accountId: "gone",
+    fileId: "file-gone",
+    sizeBytes: PRE_CHARGE_STORAGE_LIMIT_BYTES * 4,
+    createdAt: NOW,
+  });
+
+  const overLimit = await preChargeOverLimitAccounts(db);
+  const answered = new Map(overLimit.map((row) => [row.accountId, row.storedBytes]));
+  assert.deepEqual([...answered.keys()].sort(), ["mixed", "over"]);
+  for (const [accountId, storedBytes] of answered) {
+    assert.equal(await accountStoredBytes(db, accountId), storedBytes, accountId);
+  }
+  assert.equal(await accountStoredBytes(db, "mixed"), PRE_CHARGE_STORAGE_LIMIT_BYTES + 60);
+  // The accounts the limit no longer applies to are out of the sweep's answer,
+  // while the web read still counts their bytes: the eligibility filter is the
+  // sweep's, and the sum is the shared part.
+  assert.equal(await accountStoredBytes(db, "paid"), PRE_CHARGE_STORAGE_LIMIT_BYTES * 4);
+  assert.equal(await accountStoredBytes(db, "gone"), PRE_CHARGE_STORAGE_LIMIT_BYTES * 4);
+});
+
 test("claiming a card stamps card_added_at and nothing else about the price", async () => {
   const { db, sqlite } = makeMeteredDB();
   await insertAccount(db, "acct");
@@ -697,4 +758,23 @@ test("the hourly trigger itself takes an over-limit unpaid account's key read-on
   const row = sqlite.prepare("SELECT * FROM devices WHERE id = ?1").get(minted.keyId);
   assert.deepEqual(JSON.parse(String(row.capabilities)), ["list", "read"]);
   assert.deepEqual(JSON.parse(String(row.capped_from)), ["list", "read", "write", "delete"]);
+});
+
+test("the hourly trip fails when the binding the sweep needs is gone", async () => {
+  // drive#536: a trip that skipped the sweep because DRIVE_DB was absent would
+  // report the hour rolled with every over-limit account still writing
+  // through its key, so the binding is required here and its absence fails the
+  // trigger for Cloudflare to retry (src/index.js scheduled).
+  const { db } = makeMeteredDB();
+  const worker = /** @type {{scheduled(event: unknown, env?: unknown): Promise<unknown>}} */ (
+    /** @type {unknown} */ (workerModule)
+  );
+  await assert.rejects(
+    () =>
+      worker.scheduled(
+        { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
+        { METER_DB: db },
+      ),
+    /DRIVE_DB/,
+  );
 });

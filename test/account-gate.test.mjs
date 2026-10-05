@@ -515,9 +515,8 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   //
   // The mailer is how this test reads the link that left by email: the token is
   // never in a reply, so the mail is the only place it can be seen, which is
-  // the whole point of the flow. The whole schema, because the account routes
-  // read the stored bytes off the live `file_versions` rows (drive#536).
-  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  // the whole point of the flow.
+  const made = createTestAuth();
   const emailed = made.sent;
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
