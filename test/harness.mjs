@@ -59,6 +59,9 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // `agent_caps` so `monthly_cap_usd` is nullable with no default, then clears
   // the 0004 default (12.0) off the rows that never chose a cap.
   "drive/0021_agent_caps_nullable_cap.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0022_cap_notices.sql",
 ]);
 
 /**
@@ -102,10 +105,17 @@ export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
   "drive/0017_agent_caps_drop_month_key.sql",
   "drive/0017_drop_branches_snapshot.sql",
   "drive/0018_agent_caps_drop_month_spend.sql",
+  // Abuse guards (drive#464): the upload lane reads first_charged_at for the
+  // 1 TB pre-charge limit, so a web upload on the full schema needs it.
+  "drive/0019_abuse_guards.sql",
+  "drive/0020_account_purge_cursor.sql",
+  "drive/0020_balance_ledger.sql",
   // The per-agent monthly cap's schema default, cleared (drive#534). The cap
   // tests read this row, so the subset carries the file that makes the column
   // nullable and clears the 0004 default.
   "drive/0021_agent_caps_nullable_cap.sql",
+  // The cap notices the hourly walk sends (drive#496).
+  "drive/0022_cap_notices.sql",
 ]);
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
