@@ -16,6 +16,21 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import {
+  computeHiddenAt,
+  decodeEntities,
+  nextContinuationToken,
+  nextVersionMarkers,
+  parseListVersions,
+  tagValue,
+  versionMarkers,
+} from "./s3-listing.js";
+
+// The listing parser itself now lives in src/s3-listing.js, which the api
+// Worker reads too (drive issue #504: one parser, decoded, for both Workers).
+// These re-exports keep the names every caller already imports from here.
+export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
+
 import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { contentMd5, createS3Client, provisionBucket } from "../workers/api/src/s3.js";
@@ -617,8 +632,7 @@ export function restorableUntil(deletedAt) {
  * @typedef {{body: ReadableStream|null, contentType: string, size: number,
  *   etag?: string|null, status?: number, contentRange?: string,
  *   contentLength?: number}|null} FileRead
- * @typedef {{b2FileId: string, path: string, sizeBytes: number,
- *   createdAt: number, hiddenAt: number|null, deletedAt: number|null}} StorageVersion
+ * @typedef {import("./s3-listing.js").S3VersionRow} StorageVersion
  * One version of one stored file, in the provider's own listing: the version
  * id the meter keys `file_versions` on, the key it lives at, its size in
  * bytes, and the instants its life begins and stops. The meter's reconciler
@@ -1841,7 +1855,7 @@ export function createS3Store(config) {
         }
         const xml = await response.text();
         for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-          const key = unescapeXmlText(tagValue(match[1], "Key"));
+          const key = decodeEntities(tagValue(match[1], "Key"));
           if (key !== "") {
             keys.push(key);
           }
@@ -1906,7 +1920,7 @@ export function createS3Store(config) {
       }
       const xml = await response.text();
       for (const match of xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)) {
-        const key = unescapeXmlText(tagValue(match[1], "Key"));
+        const key = decodeEntities(tagValue(match[1], "Key"));
         const code = tagValue(match[1], "Code");
         throw new Error(`storage batch delete refused "${key}" with ${code || "an error"}`);
       }
@@ -1986,6 +2000,8 @@ export function createS3Store(config) {
     async listVersions(path) {
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const versions = [];
+      /** @type {Array<{path: string, at: number}>} */
+      const markers = [];
       let keyMarker = null;
       let versionMarker = null;
       let seen = null;
@@ -2002,11 +2018,20 @@ export function createS3Store(config) {
           throw new Error(`storage version list failed with ${response.status}`);
         }
         const xml = await response.text();
+        // Rows and delete markers are collected from every page and the stops
+        // are computed once, here, over the whole list: a version's stop is the
+        // next version of its own key, and that pair can sit on two different
+        // pages, so a per-page pass would bill an old version as still live
+        // (drive issue #504). The markers are decoded with the rows, so a key
+        // that pages on through an escaped character comes back the way the
+        // account wrote it.
         versions.push(...parseListVersions(xml));
-        keyMarker = tagValue(xml, "NextKeyMarker");
-        versionMarker = tagValue(xml, "NextVersionIdMarker");
+        markers.push(...versionMarkers(xml));
+        const next = nextVersionMarkers(xml);
+        keyMarker = next.keyMarker;
+        versionMarker = next.versionMarker;
         if (keyMarker === "" || versionMarker === "") {
-          return versions;
+          return computeHiddenAt(versions, markers);
         }
         if (`${keyMarker}\u0000${versionMarker}` === seen) {
           throw new Error(
@@ -2207,14 +2232,17 @@ export function parseListObjects(xml, prefix, path, options = {}) {
   const entries = [];
   const common = /<CommonPrefixes>\s*<Prefix>([\s\S]*?)<\/Prefix>\s*<\/CommonPrefixes>/g;
   for (const match of xml.matchAll(common)) {
-    const name = match[1].slice(prefix.length).replace(/\/$/, "");
+    // S3 escapes the XML characters in every listing element, so a folder
+    // named `a&b` is answered as `a&amp;b`; the folder this page shows is
+    // the name the account wrote (drive issue #504).
+    const name = decodeEntities(match[1]).slice(prefix.length).replace(/\/$/, "");
     if (name) {
       entries.push({ name, path: `${path === "/" ? "" : path}/${name}`, kind: "folder" });
     }
   }
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const block = match[1];
-    const name = tagValue(block, "Key").slice(prefix.length);
+    const name = decodeEntities(tagValue(block, "Key")).slice(prefix.length);
     if (!name || (name.includes("/") && !options.deep)) {
       continue;
     }
@@ -2237,90 +2265,6 @@ export function parseListObjects(xml, prefix, path, options = {}) {
 }
 
 /**
- * S3 answers a ListObjectVersions as XML; this turns its two shapes
- * (`<Version>` and the `<DeleteMarker>` that hid one) into the version rows
- * the reconciler reads. A version is hidden at the instant the next version of
- * the same key began, and a delete marker is that hide for the key's newest
- * version; the listing is newest first, so one pass collects the times and a
- * second assigns each version its stop. Kept small and separate so a test can
- * feed it a captured S3 response without a bucket.
- * @param {string} xml
- * @returns {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>}
- */
-export function parseListVersions(xml) {
-  if (typeof xml !== "string") {
-    throw new TypeError("parseListVersions needs the XML body");
-  }
-  /** @type {Array<{b2FileId: string, path: string, sizeBytes: number, createdAt: number, hiddenAt: number|null, deletedAt: number|null}>} */
-  const versions = [];
-  // Delete markers, keyed by the key they ended: the instant the version below
-  // them stopped being live.
-  const markers = new Map();
-  for (const match of xml.matchAll(/<DeleteMarker>([\s\S]*?)<\/DeleteMarker>/g)) {
-    const block = match[1];
-    const key = tagValue(block, "Key");
-    const at = Date.parse(tagValue(block, "LastModified"));
-    if (key !== "" && Number.isFinite(at)) {
-      const earliest = markers.get(key);
-      if (earliest === undefined || at < earliest) {
-        markers.set(key, at);
-      }
-    }
-  }
-  for (const match of xml.matchAll(/<Version>([\s\S]*?)<\/Version>/g)) {
-    const block = match[1];
-    const path = tagValue(block, "Key");
-    const b2FileId = tagValue(block, "VersionId");
-    const createdAt = Date.parse(tagValue(block, "LastModified"));
-    if (path === "" || b2FileId === "" || !Number.isFinite(createdAt)) {
-      // A version with no key, no id or no time cannot be compared with a row
-      // and cannot be billed; naming it is better than a silent drop.
-      throw new Error("S3 listed a version without a key, a version id or a time");
-    }
-    versions.push({
-      b2FileId,
-      path,
-      sizeBytes: Number(tagValue(block, "Size") || 0),
-      createdAt,
-      hiddenAt: null,
-      deletedAt: null,
-    });
-  }
-  // Newest first as S3 answers: each version's stop is the newest start among
-  // the later versions of its own key, and the key's newest version is hidden
-  // by a delete marker when one names it.
-  for (const version of versions) {
-    let hiddenAt = markers.get(version.path) ?? null;
-    for (const other of versions) {
-      if (other.path === version.path && other.createdAt > version.createdAt) {
-        if (hiddenAt === null || other.createdAt < hiddenAt) {
-          hiddenAt = other.createdAt;
-        }
-      }
-    }
-    version.hiddenAt = hiddenAt;
-  }
-  return versions;
-}
-
-/**
- * The text inside one tag of an S3 listing: indexOf rather than a pattern built
- * from a string, and the three tags it is called with are S3's own.
- * @param {string} block
- * @param {string} tag
- * @returns {string}
- */
-function tagValue(block, tag) {
-  const open = block.indexOf(`<${tag}>`);
-  if (open === -1) {
-    return "";
-  }
-  const from = open + tag.length + 2;
-  const close = block.indexOf(`</${tag}>`, from);
-  return close === -1 ? "" : block.slice(from, close).trim();
-}
-
-/**
  * Text for inside one XML element, with the characters XML reserves escaped.
  * A storage key can carry `<` or `&` (validatePath allows both), and a Delete
  * body that sends them raw is a parse error on the provider side.
@@ -2329,39 +2273,6 @@ function tagValue(block, tag) {
  */
 function escapeXmlText(text) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
-/**
- * The inverse, for the text an S3 XML answer carries back in `<Key>` values.
- * `&quot;` and `&apos;` never appear in element text, but they unescape
- * cleanly all the same; `&amp;` is replaced last so `&amp;lt;` reads `<`.
- * @param {string} text
- * @returns {string}
- */
-function unescapeXmlText(text) {
-  return text
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'")
-    .replaceAll("&amp;", "&");
-}
-
-/**
- * The token that fetches the page after this one, or null when the listing is
- * the last page. S3 caps one ListObjectsV2 answer at 1,000 keys and says so by
- * returning `<NextContinuationToken>`; without it a folder is truncated at the
- * cap and the caller cannot tell. An empty element counts as no next page, so a
- * server that sends the tag empty ends the loop rather than asking for "".
- * @param {string} xml
- * @returns {string|null}
- */
-export function nextContinuationToken(xml) {
-  if (typeof xml !== "string") {
-    throw new TypeError("nextContinuationToken needs the XML body");
-  }
-  const token = tagValue(xml, "NextContinuationToken");
-  return token === "" ? null : token;
 }
 
 /**
