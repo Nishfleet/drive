@@ -342,23 +342,39 @@ function walkFiles(dir, files = []) {
  */
 function builtDocsFiles() {
   const docsDir = join(root, "public/docs");
-  let entries;
   try {
-    entries = readdirSync(docsDir, { withFileTypes: true });
+    readdirSync(docsDir, { withFileTypes: true });
   } catch {
     throw new Error("public/docs was not built; run `npm run docs:build` first (npm test does)");
   }
+  // Not walkFiles(): walkFiles skips the generated public/docs tree, which is
+  // exactly the tree this list needs. A local walk that keeps TEXT_EXT and
+  // recurses, so a nested build output (assets, subpages) is scanned too and
+  // a rival name in it fails the scan like a top-level one would.
+  /** @type {{rel: string, text: string}[]} */
   const files = [];
-  for (const ent of entries) {
-    if (!ent.isFile() || !TEXT_EXT.has(extname(ent.name))) {
-      continue;
+  /** @param {string} dir */
+  const walk = (dir) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      if (ent.isSymbolicLink()) {
+        continue;
+      }
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!ent.isFile() || !TEXT_EXT.has(extname(ent.name))) {
+        continue;
+      }
+      const raw = readFileSync(full, "utf8");
+      // The built HTML carries VitePress comments; the customer copy is what
+      // renders, so comments are stripped the same way scanTree strips them.
+      const text = extname(ent.name) === ".html" ? stripMarkupComments(raw) : raw;
+      files.push({ rel: relative(root, full), text });
     }
-    const raw = readFileSync(join(docsDir, ent.name), "utf8");
-    // The built HTML carries VitePress comments; the customer copy is what
-    // renders, so comments are stripped the same way scanTree strips them.
-    const text = extname(ent.name) === ".html" ? stripMarkupComments(raw) : raw;
-    files.push({ rel: `public/docs/${ent.name}`, text });
-  }
+  };
+  walk(docsDir);
   return files;
 }
 

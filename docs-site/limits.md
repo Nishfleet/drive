@@ -21,8 +21,10 @@ would rather you read it here than find out in week three.
   keeps the details in its Other ways section.
 - **We cannot yet prove the drive end to end on a Mac.** We can test a Mac
   only on a GitHub macOS runner or by hand, so what we have measured end to
-  end is Linux. The drive itself mounts read-write on a Mac; what we cannot
-  do yet is measure it there the way we measure Linux.
+  end is Linux. The Mac mount code is in the CLI and is built for macOS
+  (`cmd/drive/mount.go` takes the macOS path at `goos == "darwin"`), but we
+  have not run the measured suite on a Mac, so treat read-write on a Mac as
+  untested.
 - **No `restore` command yet.** A delete from the Files page is restorable for
   30 days in Recently deleted; a delete made any other way is recoverable for
   one day by asking us. `drive restore` is not in the CLI.

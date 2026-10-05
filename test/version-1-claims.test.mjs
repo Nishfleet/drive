@@ -251,4 +251,20 @@ test("the download charge is marked planned, not sold as live", () => {
       `${surface} sells the download charge as live`,
     );
   }
+  // The negative above cannot bite on an authored page: the price reaches a
+  // reader through the {{DOWNLOAD_RATE}} marker, so the literal "then 1¢ per
+  // GB." is absent from the source whether the sentence ships or not. The
+  // built page is where the marker is resolved, so the sell-it-as-live guard
+  // is asserted there, where a regression would really be customer text.
+  const builtPricing = read("public/docs/pricing.html");
+  assert.doesNotMatch(
+    builtPricing,
+    /then 1¢ per GB\.(?!.)/,
+    "the built pricing page sells the download charge as live",
+  );
+  assert.match(
+    builtPricing,
+    /not metered yet[^<]{0,140}\(planned\)/s,
+    "the built pricing page must keep the planned marker next to the download price",
+  );
 });

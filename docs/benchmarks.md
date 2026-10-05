@@ -72,9 +72,9 @@ the issue named for those four bandwidths.
 | install-to-mounted | install-to-first-file | 6-step quickstart, about five minutes - a rival's quickstart, checked 2026-09-30 | 1.02 s (real, iDrive e2 eu-west-3, 1154 Mbps, 2026-10-04, commit d0aaf45) | win |
 | mount-ready | ready | 6-step quickstart, about five minutes - a rival's quickstart, checked 2026-09-30 | 208 ms (real, iDrive e2 eu-west-3, 1154 Mbps, 2026-10-04, commit d0aaf45) | win |
 | cli-cold-start | version | not published - a rival's benchmark page, checked 2026-09-30 | 4 ms (real Linux VPS run, CLI talks to no storage, 2026-10-04, commit d0aaf45) | win |
-| cross-machine-new-file | sync | says a new file shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 10.2 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
-| cross-machine-edit | sync | says a new file shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 5.33 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
-| cross-machine-delete | sync | says a new file shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 4.89 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
+| cross-machine-new-file | sync | says a change shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 10.2 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
+| cross-machine-edit | sync | says a change shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 5.33 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
+| cross-machine-delete | sync | says a change shows up on every connected device within seconds, no figure - a rival's site, checked 2026-09-30 | 4.89 s (real, iDrive e2 eu-west-3, 1154 Mbps, two mounts on this host, 2026-10-04, commit d0aaf45) | win |
 
 ## Mac
 

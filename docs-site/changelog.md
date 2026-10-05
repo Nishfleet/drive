@@ -8,6 +8,12 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-06
+
+- The pages now say only what version 1 does. Downloads are not metered yet, so
+  there is no charge to describe, and macOS and Linux are the ready platforms.
+  While sign-up stays by invite, the "Get drive" buttons open the waitlist.
+
 ## 2026-10-05
 
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
