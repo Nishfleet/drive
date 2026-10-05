@@ -24,6 +24,7 @@ import {
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
 } from "./billing.js";
+import { INSTALL_LINES } from "./install-lines.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
@@ -296,6 +297,9 @@ export function markerValues(extra = {}) {
     // Limits page rules out.
     VERSION_HISTORY: VERSION_HISTORY,
     NOT_OPEN: NOT_OPEN,
+    INSTALL_MACOS: INSTALL_LINES[0].line,
+    INSTALL_DEBIAN: INSTALL_LINES[1].line,
+    INSTALL_FEDORA: INSTALL_LINES[2].line,
     ...extra,
   };
 }

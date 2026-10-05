@@ -11,6 +11,7 @@
 // which node --test provides.
 
 import { sessionAccount } from "./auth.js";
+import { INSTALL_LINES } from "./install-lines.js";
 import { failureMessage } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
@@ -38,16 +39,10 @@ export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
 
 // The one line that puts the command on a machine, one row per system, shown
 // above INSTALL_COMMAND so a new person sees what to paste before they are told
-// what to paste it into (drive issue #428). These are the same three lines the
-// Quickstart leads with, kept here so the page and the docs cannot disagree.
-// They name the package manager and nothing else: the tap, the module path and
-// the Windows installer name are the details the docs keep in their "Other
-// ways" section, and test/own-words.test.mjs fails a page that carries one.
-export const INSTALL_LINES = Object.freeze([
-  Object.freeze({ os: "macOS", line: "brew install drive" }),
-  Object.freeze({ os: "Linux, Debian or Ubuntu", line: "sudo apt install drive" }),
-  Object.freeze({ os: "Linux, Fedora or RHEL", line: "sudo dnf install drive" }),
-]);
+// what to paste it into (drive issue #428). Re-exported from install-lines.js,
+// which is the one table test/packaging.test.mjs holds to .goreleaser.yaml
+// (drive#509). A short `brew install drive` cannot resolve after a release.
+export { INSTALL_LINES };
 
 // What the page walks through, in order: log in, approve, check it works. The
 // third step names STATUS_COMMAND rather than promising this page a flip,
