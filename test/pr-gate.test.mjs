@@ -745,7 +745,10 @@ test("gate 3: input is validated at the edge and a file never answers as a page"
   const download = await call(
     new Request(`https://drive.test${FILES_ENDPOINT}/download?path=%2Fpage.html`),
   );
-  assert.equal(download.headers.get("content-disposition"), 'attachment; filename="page.html"');
+  assert.equal(
+    download.headers.get("content-disposition"),
+    "attachment; filename=\"page.html\"; filename*=UTF-8''page.html",
+  );
   const preview = await call(
     new Request(`https://drive.test${FILES_ENDPOINT}/preview?path=%2Fpage.html`),
   );

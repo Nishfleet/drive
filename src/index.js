@@ -575,7 +575,8 @@ export function createApp() {
   // account gate so an anonymous request is its 401, not a 403: the gate is
   // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
   // Go CLI) is not a browser, so it passes this check and the account gate
-  // is what holds it.
+  // is what holds it. /api/starter is a write route under this one rule
+  // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
