@@ -71,17 +71,17 @@
     - type: javascript
       value: "/drive status/.test(output)"
 
-- description: what an agent tool's key can do, and the one thing it cannot
+- description: what an agent tool's key can do, and how long its delete can be undone
   vars:
     task: >
-      I am about to connect an agent to my drive. What can its key do, and what
-      can it never do? I want the rule, not the reassurance.
+      I am about to connect an agent to my drive. What can its key do, and if
+      it deletes a file, can I get it back? I want the rule, not the reassurance.
     source: docs-site/agents.md, "What an agent key can do"
   assert:
     - type: javascript
       value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
-      value: "/cannot delete|cannot remove|can never (carry )?delete|never delete/i.test(output)"
+      value: "/(1|one) day/i.test(output) && /recently deleted|put it back|undo/i.test(output)"
 
 - description: take one agent tool off the drive and leave the others
   vars:
@@ -131,8 +131,20 @@
       What is the default spending cap on a new drive, in dollars?
     source: docs-site/security.md, "The spending cap" (the rendered page carries {{DEFAULT_CAP}})
   assert:
+    # drive#526: the figure is read from the page the agent was handed, which
+    # the docs render fills from src/cap-default.js, so a re-price moves the
+    # grader with the page. A literal here failed 2026-10-05: it still expected
+    # the retired $12 an agent key's cap default used to be (drive#534).
     - type: javascript
-      value: "/(12|twelve) dollars|\\$12/i.test(output)"
+      value: |
+        const page = String(context.vars.docs_security || "");
+        const cap = /The default cap is \$(\d+(?:\.\d+)?)\./.exec(page);
+        if (cap === null) return false;
+        // The figure, in either form the page's own sentence allows: "$20"
+        // or "20 dollars".
+        const fig = cap[1].replace(/\./g, "\\.");
+        const named = new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`);
+        return named.test(output);
 
 - description: how the bill is counted for a file I keep for a week
   vars:
@@ -175,17 +187,42 @@
       would the ceiling have been?
     source: docs-site/pricing.md, "The bill worked out"
   assert:
+    # drive#526: the bill is read from the worked table on the page the agent
+    # was handed, which src/docs.js builds from the one bill function, so the
+    # grader cannot name a figure the invoice would not. A literal here named
+    # the retired $12 for 800 GB, which bills $10.
     - type: javascript
-      value: "/(12|twelve) dollars|\\$12/i.test(output)"
+      value: |
+        const page = String(context.vars.docs_pricing || "");
+        const row = page.split("\n").find((line) => /^\| 0\.8 TB \|/.test(line));
+        if (row === undefined) return false;
+        const cells = row.split("|").map((cell) => cell.trim()).filter(Boolean);
+        if (cells.length < 4) return false;
+        const figure = cells[3].replace(/[$,]/g, "").replace(/\.00$/, "");
+        if (!/^\d+(\.\d+)?$/.test(figure)) return false;
+        const bill = figure.replace(/\./g, "\\.");
+        // The figure, in either form the page's own row allows: "$10" or
+        // "10 dollars".
+        return new RegExp(`\\$${bill}\\b|\\b${bill} dollars\\b`).test(output);
 
 - description: is there a free tier, and what sign-up needs from me
   vars:
     task: >
       Is anything free every month, and do I need a card to sign up?
-    source: docs-site/pricing.md, "The membership"
+    source: docs-site/pricing.md, "Founding members" (no free tier, card); docs-site/pricing.md, "The maximum" (the per-TB ceiling)
   assert:
+    # drive#526: the ceiling is read from the page the agent was handed, which
+    # the docs render fills from src/pricing.js, rather than typed here. The
+    # task pointed at a "The membership" section that no longer exists.
     - type: javascript
-      value: "/no free tier/i.test(output) && /card/i.test(output) && /10 dollars|\\$10/i.test(output)"
+      value: "/no free tier/i.test(output) && /card/i.test(output)"
+    - type: javascript
+      value: |
+        const page = String(context.vars.docs_pricing || "");
+        const ceiling = /Never more than \$(\d+(?:\.\d+)?) per TB/.exec(page);
+        if (ceiling === null) return false;
+        const fig = ceiling[1].replace(/\./g, "\\.");
+        return new RegExp(`\\$${fig}\\b|\\b${fig} dollars\\b`).test(output);
 
 - description: when downloads start costing money
   vars:
@@ -295,7 +332,7 @@
     source: docs/build-spec.md, "Keys and safety"
   assert:
     - type: javascript
-      value: "/cannot delete|cannot remove/i.test(output) && /branch/i.test(output)"
+      value: "/whole drive/i.test(output) && /branch/i.test(output)"
 
 - description: mount and save a file
   metadata:
