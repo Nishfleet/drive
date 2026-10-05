@@ -858,6 +858,19 @@ func TestStockHostnameGetsASuffix(t *testing.T) {
 	}
 }
 
+func TestStockHostnameWithLocalSuffixGetsASuffix(t *testing.T) {
+	// macOS can answer os.Hostname() with the mDNS name
+	// ("MacBook-Air.local"), which must trigger the same suffix as the
+	// bare model name or two such Macs share one device name again.
+	if !isStockHostname("MacBook-Air.local") {
+		t.Fatal("isStockHostname(\"MacBook-Air.local\") = false, want true")
+	}
+	got := stockedHostname("MacBook-Air.local")
+	if !strings.HasPrefix(got, "MacBook-Air-") || strings.Contains(got, ".local") {
+		t.Fatalf("stockedHostname(\"MacBook-Air.local\") = %q, want MacBook-Air-<4 characters>", got)
+	}
+}
+
 func TestChosenHostnameIsLeftAlone(t *testing.T) {
 	for _, host := range []string{
 		"Nish's MacBook",
@@ -898,8 +911,13 @@ func TestDeviceNameFlagWinsOverTheHostname(t *testing.T) {
 	if got := deviceName("  ", "MacBook-Air"); !strings.HasPrefix(got, "MacBook-Air-") {
 		t.Errorf("deviceName with a blank flag = %q, want the stock hostname suffixed", got)
 	}
-	if got := deviceName("", "Nish's MacBook"); got != "Nish's MacBook" {
-		t.Errorf("deviceName with a chosen hostname = %q, want it untouched", got)
+	if got := deviceName("", "Nish's MacBook"); got != "Nish-s-MacBook" {
+		t.Errorf("deviceName with a chosen hostname = %q, want the sanitized \"Nish-s-MacBook\"", got)
+	}
+	// The sign-in name and the mount's conflict name are one name: the
+	// mount sanitizes through DefaultDeviceName -> SanitizeDevice.
+	if got, want := deviceName("", "Nish's MacBook"), SanitizeDevice(stockedHostname("Nish's MacBook")); got != want {
+		t.Errorf("deviceName = %q, mount conflict name = %q, want one name", got, want)
 	}
 	if got := deviceName("", ""); got != "this device" {
 		t.Errorf("deviceName with no hostname = %q, want \"this device\"", got)

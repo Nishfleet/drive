@@ -179,6 +179,19 @@ func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 // approval page (the device-code request) and on the device
 // key, so the account and the drive agree on what the machine
 // is called.
+func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
+	// --device flows into DRIVE_DEVICE (main.go), and sign-in must
+	// answer to the same name the mount carries.
+	t.Setenv(deviceEnvName, "studio")
+	if got := envDeviceName(); got != "studio" {
+		t.Fatalf("envDeviceName() = %q, want the DRIVE_DEVICE value", got)
+	}
+	t.Setenv(deviceEnvName, "")
+	if got := envDeviceName(); strings.TrimSpace(got) == "" {
+		t.Fatal("envDeviceName() with DRIVE_DEVICE unset = \"\", want the hostname fallback")
+	}
+}
+
 func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
 	api := newFakeAPI()
 	server := httptest.NewServer(api)

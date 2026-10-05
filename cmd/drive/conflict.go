@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // The conflict rule (drive issue #30).
@@ -129,13 +130,16 @@ var stockHostnames = []string{
 // isStockHostname reports whether hostname is one macOS ships rather than
 // one a person chose: a bare model name, or the same name with the
 // number macOS adds when the model name is already taken on the network
-// ("MacBook-Air-2").
+// ("MacBook-Air-2"). macOS can report the local hostname with a ".local"
+// suffix when the resolver answers with the mDNS name, so that suffix is
+// stripped before the comparison.
 func isStockHostname(hostname string) bool {
+	base := strings.TrimSuffix(strings.TrimSpace(hostname), ".local")
 	for _, model := range stockHostnames {
-		if hostname == model {
+		if base == model {
 			return true
 		}
-		if rest, ok := strings.CutPrefix(hostname, model+"-"); ok && isDigits(rest) {
+		if rest, ok := strings.CutPrefix(base, model+"-"); ok && isDigits(rest) {
 			return true
 		}
 	}
@@ -160,10 +164,11 @@ func isDigits(s string) bool {
 // (issue #561). The suffix is a disambiguator, not a credential, and
 // `drive login --device` replaces it with the name the person chose.
 func stockedHostname(hostname string) string {
-	if !isStockHostname(hostname) {
+	base := strings.TrimSuffix(strings.TrimSpace(hostname), ".local")
+	if !isStockHostname(base) {
 		return hostname
 	}
-	return hostname + "-" + machineSuffix()
+	return base + "-" + machineSuffix()
 }
 
 // machineSuffix is the short, stable tail that tells two stock-named
@@ -172,10 +177,20 @@ func stockedHostname(hostname string) string {
 // /etc/machine-id; a machine with neither (a container) falls back to
 // its hostname, which is stable for this machine too. Four hex digits
 // are a display disambiguator, not a key: two machines whose ids hash
-// alike stay one name until the person names one with --device.
+// alike stay one name until the person names one with --device. The
+// value is memoized for the process lifetime: machineID spawns a process
+// on macOS, and every conflict copy asks for the suffix.
+var (
+	machineSuffixOnce sync.Once
+	machineSuffixID   string
+)
+
 func machineSuffix() string {
-	sum := sha256.Sum256([]byte(machineID()))
-	return hex.EncodeToString(sum[:])[:4]
+	machineSuffixOnce.Do(func() {
+		sum := sha256.Sum256([]byte(machineID()))
+		machineSuffixID = hex.EncodeToString(sum[:])[:4]
+	})
+	return machineSuffixID
 }
 
 // machineID is this machine's own identifier, read from the OS. It is
@@ -200,8 +215,14 @@ func platformMachineID() string {
 	switch runtime.GOOS {
 	case "darwin":
 		// ioreg is macOS's own registry reader; the platform UUID is
-		// unique to this Mac and survives a reinstall of the OS.
-		out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+		// unique to this Mac and survives a reinstall of the OS. It lives
+		// in /usr/sbin, which a minimal PATH can leave out, so the absolute
+		// path is preferred and the bare name is only a fallback.
+		iorg := "/usr/sbin/ioreg"
+		if _, err := os.Stat(iorg); err != nil {
+			iorg = "ioreg"
+		}
+		out, err := exec.Command(iorg, "-rd1", "-c", "IOPlatformExpertDevice").Output()
 		if err != nil {
 			return ""
 		}

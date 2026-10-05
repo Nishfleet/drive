@@ -211,6 +211,12 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 // rclone keeps answering the CLI's own rc calls with the credentials in that
 // file, and a plain re-run can then skip the restart. Only a first mount, or
 // one after a login that cleared them, mints a new pair.
+// prepareMountAuth sets the remote-control credentials on the plan and
+// writes them to rclone.env. The credentials are minted at sign-in and
+// reused here, so a plain re-run writes the same bytes and the running
+// rclone's rc credentials keep working; a rotated storage secret arrives
+// through the config and makes the bytes differ, which the caller counts
+// as a changed plan (issue #561).
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
 	auth, err := ReadRCAuth(home)
 	if err != nil {
@@ -647,13 +653,34 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	// A re-run that would write exactly what is already on disk must not
 	// restart the login item: a restart stops the running rclone, so it
 	// unmounts a live drive under open files (issue #561). When nothing
-	// changed and the drive is up, the run says so and touches nothing.
-	// A stopped drive still starts: an unchanged plan is not a reason to
-	// leave a mount down.
-	if !envChanged && mountWritesUnchanged(writes) && driveIsMounted(goos, home) {
-		fmt.Printf("Mount already running at %s\n", p.MountDir)
-		excludeTransientFromBackup(goos, p)
-		return nil
+	// changed and the drive is up, the run says so and leaves the mount
+	// alone. A stopped drive still starts: an unchanged plan is not a
+	// reason to leave a mount down.
+	if !envChanged && mountWritesUnchanged(writes) {
+		up, probeErr := mountState(goos, home)
+		skipRestart := false
+		switch {
+		case probeErr != nil:
+			// A probe that cannot answer is not an answer. A wedged FUSE
+			// mount is exactly what makes the probe time out, and a restart
+			// would unmount that live mount under open files, so an
+			// inconclusive probe leaves the mount alone rather than risk it.
+			fmt.Fprintf(os.Stderr, "note: could not check whether the drive is mounted (%v); leaving the mount alone\n", probeErr)
+			skipRestart = true
+		case up:
+			fmt.Printf("Mount already running at %s\n", p.MountDir)
+			skipRestart = true
+		}
+		if skipRestart {
+			// The mount is up (or the probe could not say), but the prefetch
+			// sidecar can still be down after a partial boot. Starting it is
+			// idempotent and does not touch the mount.
+			if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
+				fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
+			}
+			excludeTransientFromBackup(goos, p)
+			return nil
+		}
 	}
 	for _, w := range writes {
 		if err := WriteFileAtomic(w.path, w.data, w.mode); err != nil {
@@ -695,27 +722,24 @@ type mountWrite struct {
 }
 
 // mountWritesUnchanged reports whether every file in writes is already
-// on disk with exactly the bytes this run would write. A re-run of
-// `drive init` or `drive mount` with the same plan is the common case,
-// and it is the case where restarting the login item would break open
-// files (issue #561).
+// on disk with exactly the bytes this run would write and the mode it
+// would set. A re-run of `drive init` or `drive mount` with the same
+// plan is the common case, and it is the case where restarting the
+// login item would break open files (issue #561). A mode that drifted
+// (the config and the login item carry the storage secret, so both are
+// 0600) is a change too: the run repairs it.
 func mountWritesUnchanged(writes []mountWrite) bool {
 	for _, w := range writes {
+		info, err := os.Stat(w.path)
+		if err != nil || info.Mode().Perm() != w.mode.Perm() {
+			return false
+		}
 		onDisk, err := os.ReadFile(w.path)
 		if err != nil || !bytes.Equal(onDisk, w.data) {
 			return false
 		}
 	}
 	return true
-}
-
-// driveIsMounted reports whether the drive is mounted at the plan's
-// mount dir. A probe that cannot answer is not an answer: the caller
-// treats it as "not up" and starts the login item, which is the
-// action that was always taken.
-func driveIsMounted(goos, home string) bool {
-	up, err := mountState(goos, home)
-	return err == nil && up
 }
 
 // mountState reports whether the drive is mounted at the mount dir
@@ -780,7 +804,7 @@ func writeCacheTag(cacheDir string) error {
 		return failDetail("cache-tag", err, cacheDir)
 	}
 	if err := WriteFileAtomic(filepath.Join(cacheDir, "CACHEDIR.TAG"), []byte(cacheDirTag), 0o644); err != nil {
-		return failDetail("cache-tag", err)
+		return failDetail("cache-tag", err, cacheDir)
 	}
 	return nil
 }
@@ -803,7 +827,7 @@ func excludeTransientFromBackup(goos string, p MountPlan) {
 			continue
 		}
 		if out, err := exec.Command("tmutil", "addexclusion", dir).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s", dir, err, out)
+			fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s\n", dir, err, out)
 		}
 	}
 }

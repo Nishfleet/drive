@@ -34,15 +34,23 @@ func openBrowser(raw string) error {
 // the person gave (--device), else the hostname — and a hostname that
 // is a stock model name (a new Mac's "MacBook-Air", which every Mac
 // of that model shares) carries a short machine suffix, so two such
-// Macs are two devices in the account, not one (issue #561).
+// Macs are two devices in the account, not one (issue #561). The
+// result is sanitized the way the mount sanitizes its conflict name
+// (DefaultDeviceName -> SanitizeDevice), so the name the account shows
+// and the name a conflict copy carries are one name.
 func deviceName(flag, hostname string) string {
 	if set := strings.TrimSpace(flag); set != "" {
-		return set
+		if name := SanitizeDevice(set); name != "" {
+			return name
+		}
 	}
 	if strings.TrimSpace(hostname) == "" {
 		return "this device"
 	}
-	return stockedHostname(hostname)
+	if name := SanitizeDevice(stockedHostname(hostname)); name != "" {
+		return name
+	}
+	return "this device"
 }
 
 // osHostname is the machine's own hostname, or "" when the OS gives

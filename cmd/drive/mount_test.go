@@ -28,6 +28,7 @@ package main
 // proofs already do (issue #62; two-mount-sync.test.mjs).
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -987,6 +988,57 @@ func TestMountSkipsRestartWhenNothingChanged(t *testing.T) {
 	// re-run, not just the first one.
 	if got, err := os.ReadFile(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil || string(got) != cacheDirTag {
 		t.Fatalf("CACHEDIR.TAG after the re-run = (%q, %v), want the shipped tag", got, err)
+	}
+}
+
+func TestMountLeavesRcloneEnvByteIdentical(t *testing.T) {
+	home := t.TempDir()
+	mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(RcloneEnvPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The skip path only fires when the re-run writes the same bytes,
+	// so the env writer must be deterministic. If it ever writes a
+	// timestamp or reorders its keys, this test fails and the fix is
+	// known dead rather than silently never skipping.
+	if !bytes.Equal(first, second) {
+		t.Fatalf("rclone.env changed between two identical mounts:\n%s\n---\n%s", first, second)
+	}
+}
+
+func TestMountRepairsAModeThatDrifted(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The config carries the storage secret and is written 0600. A mode
+	// that drifted is a change the re-run must repair, not skip.
+	configPath := RcloneConfigPath(home)
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a mount with a drifted config mode took %d start actions, want a restart", *starts)
+	}
+	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode after the repair = (%v, %v), want 0600", info, err)
 	}
 }
 
