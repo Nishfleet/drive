@@ -361,3 +361,35 @@ test("one provider refusal does not stop the other keys, and a retry finishes th
   assert.equal(rowRevokedAt(first.keyId), NOW);
   assert.equal(server.live(), 0);
 });
+
+test("a key the vendor kept cannot open the api once its account is closed", async () => {
+  const { db } = makeMeteredDB();
+  const server = storageServer();
+  const clock = () => NOW_MS;
+  const provider = {
+    ...server.provider,
+    async revoke() {
+      throw new Error("remove_access_key: the vendor is down");
+    },
+  };
+  const devices = createD1DeviceStore(db, { now: clock, keyProvider: provider });
+  const store = createMemoryStore({
+    now: clock,
+    signin: createD1DeviceSigninStore(db, { now: clock }),
+    keyProvider: provider,
+    deviceStore: devices,
+  });
+  const account = { id: "acct_closed_key", name: "Closed", email: "closed-key@example.com" };
+  const neighbour = { id: "acct_open_key", name: "Open", email: "open-key@example.com" };
+  const key = await store.mintKey(account, { kind: "agent", name: "laptop" });
+  const theirs = await store.mintKey(neighbour, { kind: "agent", name: "pi" });
+  assert.equal((await devices.authenticate(key.accessKeyId, key.secret))?.id, key.keyId);
+
+  await assert.rejects(devices.closeAccount(account, NOW), /refused to withdraw 1 key/);
+  // The row is still live for the retry, but the account is closed, so the
+  // api's own key login refuses it.
+  assert.equal(await devices.authenticate(key.accessKeyId, key.secret), null);
+  assert.equal(await store.authenticate(key.accessKeyId, key.secret), null);
+  // An account that never closed (no accounts row at all) still logs in.
+  assert.equal((await devices.authenticate(theirs.accessKeyId, theirs.secret))?.id, theirs.keyId);
+});

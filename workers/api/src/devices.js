@@ -812,9 +812,17 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<Device|null>}
      */
     async authenticate(accessKeyId, secret) {
+      // A closed account's key is refused here whatever its own row says: the
+      // close revokes every row, but a key the vendor refused to withdraw
+      // keeps its row live for the retry (revokeAccountCredentials), and that
+      // row must not open the api in the meantime. An account with no
+      // `accounts` row has never closed, so the outer join keeps it.
       const row = await first(
         db,
-        "SELECT * FROM devices WHERE b2_key_id = ?1 AND revoked_at IS NULL",
+        `SELECT devices.* FROM devices
+           LEFT JOIN accounts ON accounts.id = devices.account_id
+          WHERE devices.b2_key_id = ?1 AND devices.revoked_at IS NULL
+            AND (accounts.state IS NULL OR accounts.state != 'closed')`,
         accessKeyId,
       );
       const device = deviceFromRow(row);

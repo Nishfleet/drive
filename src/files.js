@@ -1341,7 +1341,7 @@ export function createS3Store(config) {
           // the request open. A truncated folder is the one failure this file
           // exists to prevent, so it is named instead of returned.
           throw new Error(
-            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+            "storage list repeated continuation-token; the folder is not fully listed",
           );
         }
         seen = token;
@@ -1395,7 +1395,7 @@ export function createS3Store(config) {
         }
         if (token === seen) {
           throw new Error(
-            `storage list repeated continuation-token "${token}" for ${prefix}; the folder is not fully listed`,
+            "storage list repeated continuation-token; the folder is not fully listed",
           );
         }
         seen = token;
