@@ -50,7 +50,10 @@
 //     argument for the same reason (drive issue #506): src/share.js answers
 //     503 without SHARE_DOWNLOAD_RATE_LIMITER rather than serve an unbounded
 //     public download, so a deploy that lost it is an outage this endpoint
-//     names.
+//     names. The share and upload-request mint routes are the same argument
+//     for the same reason (drive issue #549): src/share.js answers 503 without
+//     SHARE_MINT_RATE_LIMITER or REQUEST_MINT_RATE_LIMITER rather than let one
+//     account mint links without bound.
 //
 //   - The branch snapshot namespace. A branch's snapshot moved out of the D1
 //     row into KV (drive issue #252), so every diff and every approve reads this
@@ -135,6 +138,8 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "REQUEST_UPLOAD_RATE_LIMITER",
   "REQUEST_UPLOAD_LINK_RATE_LIMITER",
   "SHARE_DOWNLOAD_RATE_LIMITER",
+  "SHARE_MINT_RATE_LIMITER",
+  "REQUEST_MINT_RATE_LIMITER",
   "BRANCH_SNAPSHOTS",
 ]);
 
@@ -417,6 +422,8 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "REQUEST_UPLOAD_RATE_LIMITER",
     "REQUEST_UPLOAD_LINK_RATE_LIMITER",
     "SHARE_DOWNLOAD_RATE_LIMITER",
+    "SHARE_MINT_RATE_LIMITER",
+    "REQUEST_MINT_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (

@@ -216,6 +216,20 @@ export default defineConfig({
         namespace: "1008",
         simple: { limit: 60, period: 60 },
       }),
+      // The two mint routes (drive issue #549): POST /api/share and POST
+      // /api/request each get their own bound, on top of the per-account cap
+      // of 50 open links the handlers enforce. 30 a minute per IP is far
+      // above an owner clicking "Share" and far below a script minting tokens
+      // to walk. Namespaces 1009/1010 continue the 1001–1008 series; a reused
+      // namespace fails the deploy with 10021.
+      SHARE_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1009",
+        simple: { limit: 30, period: 60 },
+      }),
+      REQUEST_MINT_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1010",
+        simple: { limit: 30, period: 60 },
+      }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the
       // binding is restricted by the domains onboarded for sending, and

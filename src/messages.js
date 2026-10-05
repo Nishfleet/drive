@@ -164,6 +164,26 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "Set a whole number of bytes for this page's cap.",
     next: "Pick a whole number of at least 1.",
   }),
+  // The owner's drive holds as many open links as one account may keep (drive
+  // issue #549): 50 share links or 50 upload pages. The cap is by count, not
+  // bytes, so the next step is to revoke one rather than to wait.
+  "too-many-links": Object.freeze({
+    what: "You have as many open links as one account can keep.",
+    next: "Revoke a link you no longer need, then make this one.",
+  }),
+  // A share link has served its per-link byte cap (drive issue #549): the
+  // file's own size times 30. The owner sets no cap on a public link, so the
+  // one next step is to ask for a fresh one.
+  "download-link-cap": Object.freeze({
+    what: "This link has handed out as much of the file as it can.",
+    next: "Ask the person who shared it for a new link.",
+  }),
+  // An upload-request drop named a file longer than the 255-character cap
+  // (drive issue #549). Nothing was stored; the next step is a shorter name.
+  "upload-name-too-long": Object.freeze({
+    what: "That file name is too long for this drive.",
+    next: "Rename the file to 255 characters or fewer and drop it again.",
+  }),
   // A cross-site request a page made on the visitor's behalf, refused by
   // request.referrer and Origin together; the same-origin rule in
   // src/email-send.js is the pattern this words.
