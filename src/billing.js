@@ -646,6 +646,10 @@ function formatUsd(usd) {
  * gbMonths, storedDaily) and the finished labels for every number, so the
  * static page renders strings instead of repeating the arithmetic. The
  * labels are the same strings `drive usage` prints.
+ *
+ * `usage.foundingMember` (drive#488) is the account's founding flag, read off
+ * its accounts row by the caller. It is optional: absent reads as full price,
+ * the safe direction, and `monthBillCents` derives the founding half from it.
  * @param {unknown} usage
  * @param {BillingConfig} [config]
  */

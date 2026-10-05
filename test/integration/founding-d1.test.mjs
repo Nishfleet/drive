@@ -126,11 +126,14 @@ test("account 1000 is founding on the real schema and 1001 is not", async () => 
   );
 });
 
-test("one founding month bills the same on the push, the usage page and the cap", async () => {
-  // The three reads drive#488 wires must count one number. The same 2 TB month,
-  // on the same real row, is $10 everywhere: the hourly push, the usage page's
-  // own bill function (with the flag the route supplies), and the cap read that
-  // enforceCap decides on. Full price would have been $20.
+test("the founding flag halves the same month on the push, the usage page and the cap", async () => {
+  // The three reads drive#488 wires must count the founding half. The month is
+  // held uniformly (one hour carries the whole month) so the push's metered
+  // average (monthUsageThrough) and the cap's peak-as-average (monthUsage) are
+  // the same size: what this pins is the founding flag on each read, not that
+  // the two rollups agree on an uneven month. Full price would have been $20,
+  // and a paying row at this size is asserted alongside so the half is a
+  // measured comparison, not a typed constant.
   const { db, sqlite } = makeMeteredDB();
   const store = createD1DeviceStore(db, { now: () => NOW });
   const account = { id: "acct-equality", email: "equality@example.com" };
@@ -197,6 +200,11 @@ test("one founding month bills the same on the push, the usage page and the cap"
     monthBillCents({ gbMinutes, averageStoredGb, foundingMember: month.foundingMember }).totalCents,
     pushCents,
     "the cap's own bill function returns the same number",
+  );
+  assert.equal(
+    monthBillCents({ gbMinutes, averageStoredGb, foundingMember: false }).totalCents,
+    2000,
+    "the same month at full price is $20, so the half is measured",
   );
   assert.equal(capReport.state, "active", "the $15 cap sees $10, not $20");
   assert.ok(pushCents < 2000, "full price would have been $20");

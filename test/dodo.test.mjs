@@ -423,7 +423,6 @@ test("a founding flip after a full-price push sends 0, never a negative unit", a
   });
   const second = recorder.calls[1].payload.events[0].metadata.amount_units;
   assert.equal(second, 0, "the founding bill is below what was already pushed");
-  assert.ok(second >= 0, "Dodo never receives a negative unit");
   assert.equal(
     sqlite.prepare("SELECT amount_units FROM billing_pushes WHERE hour = ?1").get(hour1)
       .amount_units,

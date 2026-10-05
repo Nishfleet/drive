@@ -259,6 +259,11 @@ export async function pushBillingHours(db, hours, options = {}) {
   let running = new Map();
   /** @type {number|null} */
   let runningMonth = null;
+  // The founding flag is read once per account per call, not once per
+  // (account, hour): a 720-hour catch-up would otherwise hit the accounts row
+  // 720 times for one answer that cannot change mid-call (drive#488).
+  /** @type {Map<string, boolean>} */
+  const foundingFlags = new Map();
   /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, event: Record<string, unknown>}>} */
   const pending = [];
 
@@ -279,7 +284,11 @@ export async function pushBillingHours(db, hours, options = {}) {
       // agent key cap uses (drive#482): a row that is gone reads as full price,
       // which is the safe direction for a bill. A NULL flag (not yet decided)
       // is full price too, never a discount nobody granted.
-      const foundingMember = await accountFoundingFlag(db, accountId);
+      let foundingMember = foundingFlags.get(accountId);
+      if (foundingMember === undefined) {
+        foundingMember = await accountFoundingFlag(db, accountId);
+        foundingFlags.set(accountId, foundingMember);
+      }
       const usage = await monthUsageThrough(db, accountId, hour);
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
