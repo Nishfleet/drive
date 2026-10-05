@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BILLING_CONFIG, MINUTES_PER_MONTH, meteredMonthlyBillUsd } from "../src/billing.js";
 import { createS3Store, TRASH_PURGE_SCHEDULE } from "../src/files.js";
 import worker from "../src/index.js";
@@ -56,7 +57,6 @@ import {
   versionGbMinutesInHour,
   versionLifetimeMinutes,
 } from "../src/meter.js";
-import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
