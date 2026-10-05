@@ -10,13 +10,13 @@
 // hour mint a second event id, would charge twice; both are refused here.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { monthBillCents } from "../src/billing.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
   billingPushGap,
+  DODO_API_HOSTS,
   DODO_EVENT_NAME,
   DODO_INGEST_PATH,
   DODO_TEST_INGEST_URL,
@@ -135,14 +135,14 @@ test("the ingest URL is Dodo test mode, never live", () => {
   assert.equal(DODO_TEST_INGEST_URL, "https://test.dodopayments.com/events/ingest");
   assert.equal(DODO_TEST_INGEST_URL.includes("live.dodopayments.com"), false);
   assert.equal(DODO_EVENT_NAME, "drive.usage");
-  // The source itself must never carry the live host — only env can set it
-  // (drive issue #323, owner comment 2026-10-03T06:35Z).
-  const src = readFileSync(new URL("../src/dodo.js", import.meta.url), "utf8");
-  assert.equal(
-    src.includes("live.dodopayments.com"),
-    false,
-    "the module must not name the live host",
-  );
+  // Live mode is a decision in the environment, never in the code: with no
+  // base URL the module answers the test host (drive issue #323, owner comment
+  // 2026-10-03T06:35Z). The proof used to be that this file never mentions the
+  // live host; drive issue #576 replaced the dodopayments.com suffix with an
+  // exact match, and an exact match has to name what it matches, so the proof
+  // is the default instead — the live host is on the list, nothing selects it.
+  assert.deepEqual([...DODO_API_HOSTS], ["test.dodopayments.com", "live.dodopayments.com"]);
+  assert.equal(resolveIngestUrl(undefined), DODO_TEST_INGEST_URL);
 });
 
 test("resolveIngestUrl defaults to test mode when no base is given", () => {
@@ -168,6 +168,44 @@ test("resolveIngestUrl refuses a key to a non-https or non-Dodo host", () => {
   assert.throws(() => resolveIngestUrl("https://evil.example.com"), /dodopayments\.com/);
   // @ts-expect-error a number is the wrong type on purpose: the guard is under test
   assert.throws(() => resolveIngestUrl(123), /must be a string/);
+});
+
+test("the key goes to the two Dodo API hosts and no other name", () => {
+  // Every one of these is refused by name, not by shape (drive issue #576).
+  // The first three are the look-alikes a suffix match waved through; the rest
+  // are real dodopayments.com names that are not API hosts, and the two forms
+  // whose authority is not only a host name at all.
+  const refused = [
+    "https://evil-dodopayments.com",
+    "https://notdodopayments.com",
+    "https://dodopayments.com.evil.example",
+    "https://dodopayments.com",
+    "https://marketing.dodopayments.com",
+    "https://api.dev.dodopayments.com",
+    "https://user@test.dodopayments.com",
+    "https://test.dodopayments.com:8443",
+  ];
+  for (const baseUrl of refused) {
+    assert.throws(
+      () => resolveIngestUrl(baseUrl),
+      /must be test\.dodopayments\.com or live\.dodopayments\.com/,
+      `${baseUrl} must not carry the key`,
+    );
+  }
+});
+
+test("a host name is case-insensitive, so an upper-cased one still resolves", () => {
+  // The check lower-cases before it compares, so this is the test host and not
+  // a look-alike (drive issue #576). The URL keeps the case it was configured
+  // with, which is what the host is resolved from.
+  assert.equal(
+    resolveIngestUrl("https://TEST.DODOPAYMENTS.COM"),
+    `https://TEST.DODOPAYMENTS.COM${DODO_INGEST_PATH}`,
+  );
+  assert.equal(
+    resolveIngestUrl("https://LIVE.DODOPAYMENTS.COM"),
+    `https://LIVE.DODOPAYMENTS.COM${DODO_INGEST_PATH}`,
+  );
 });
 
 test("a baseUrl option pushes to the configured host, not the hard-coded one", async () => {
