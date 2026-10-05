@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- An agent key the app makes for you is capped at the published $20 a month,
+  not the $12 an old schema default had been setting on its row. The daily
+  count also adds each request in the database itself, so a tool sending many
+  requests at once counts every one instead of about one.
 - Abuse guards: one active account per card, 1 TB storage until the first
   charge, spending cap default $20, and a founding slot reserved at the card
   step.

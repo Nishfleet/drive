@@ -18,10 +18,13 @@
 // statement that tried fails at SQL, and the column checks in this file name
 // them gone.
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { agentCaps } from "../../src/agentcaps.js";
 import { failureMessage } from "../../src/messages.js";
 import { BYTES_PER_GB } from "../../src/meter.js";
-import { readAgentCaps } from "../../workers/api/src/agent-caps.js";
+import { readAgentCaps, stampAgentRequest } from "../../workers/api/src/agent-caps.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import apiWorker from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
@@ -144,9 +147,14 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   );
   assert.equal(stamped.day_key, "2026-09-30");
   assert.equal(stamped.day_requests, 1);
-  // A new row takes the migration's own defaults, so a key that has never been
-  // configured is capped rather than uncapped.
-  assert.equal(stamped.monthly_cap_usd, 12);
+  // A new row is written with no cap of its own (drive#534): 0004 declared
+  // `monthly_cap_usd REAL NOT NULL DEFAULT 12.0`, and migration 0020 rebuilds
+  // the table so the column is nullable and has no default. NULL is the whole
+  // point — the reader's own default ($20, src/cap-default.js) then applies, so
+  // a key that has never been configured is capped at the documented $20 rather
+  // than the table's old $12.
+  assert.equal(stamped.monthly_cap_usd, null);
+  assert.equal(agentCaps(stamped).monthlyCapUsd, 20);
   assert.equal(stamped.daily_requests, 1000);
   // There is no second ledger beside the meter, not even an empty one: the
   // columns one would live in were dropped (drive#401), so the row this read
@@ -158,6 +166,64 @@ test("an agent request under the cap writes, and the day it spent is stamped", a
   assert.equal(
     rowIn(sqlite, "SELECT day_requests FROM agent_caps WHERE key_id = ?1", key.keyId).day_requests,
     2,
+  );
+});
+
+test("a row stamped by the store is capped at the code default, not the old $12", async () => {
+  // The bug (drive#534): 0004 declared `monthly_cap_usd REAL NOT NULL DEFAULT
+  // 12.0`, and `stampAgentRequest` inserts without naming the column, so every
+  // key the store created was capped at $12.0 while the documented default is
+  // $20. Migration 0020 makes the column nullable with no default and the
+  // backfill clears the 12.0, so this row carries NULL and the reader's $20
+  // applies. 1.5 TB for a whole month bills a regular account $15: over $12,
+  // under $20, so the write distinguishes the two defaults on the real schema.
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_default", name: "Default drive" };
+  const key = await store.mintKey(account, { kind: "agent", name: "claude" });
+  meterAMonthOf(sqlite, account.id, 1.5);
+  assert.equal(
+    (await writeAt(store, key, "/u/acct_default/under.md")).status,
+    201,
+    "$15 is under the $20 code default: the old $12 default would have refused it",
+  );
+  const stamped = rowIn(
+    sqlite,
+    "SELECT monthly_cap_usd, day_requests FROM agent_caps WHERE key_id = ?1",
+    key.keyId,
+  );
+  assert.equal(stamped.monthly_cap_usd, null, "the store's row carries no cap of its own");
+  assert.equal(stamped.day_requests, 1);
+  // Past the $20 default the same key is refused: the default is a real cap,
+  // not an absent one. 3 TB is $30, clear of the $20 ceiling.
+  sqlite
+    .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
+    .run(account.id, 3000 * MINUTES_PER_MONTH);
+  assert.equal((await writeAt(store, key, "/u/acct_default/at.md")).status, 403);
+});
+
+test("50 simultaneous stamps count 50, not one", async () => {
+  // The bug (drive#534): the old code read the counter in JavaScript, added one
+  // and wrote the absolute value back. N simultaneous requests from one key
+  // each read the same count and each wrote the same count+1, so the day
+  // advanced by about one. The increment is SQL's own now (`day_requests =
+  // CASE ... agent_caps.day_requests + 1`), so each statement reads the row the
+  // previous one left. A runaway agent's 1,000-a-day bound does not hold
+  // otherwise.
+  const { sqlite, db } = makeMeteredDB();
+  const account = "acct_concurrent";
+  const keyId = "key_concurrent";
+  await Promise.all(Array.from({ length: 50 }, () => stampAgentRequest(db, account, keyId, AT)));
+  assert.equal(
+    rowIn(
+      sqlite,
+      "SELECT day_requests FROM agent_caps WHERE account_id = ?1 AND key_id = ?2",
+      account,
+      keyId,
+    ).day_requests,
+    50,
+    "every one of the 50 stamps counted",
   );
 });
 
@@ -289,11 +355,14 @@ test("a founding account's agent key counts the account's half, at the real sche
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
   // The flag the cap reads is the account's own (#386), on the accounts
-  // row: the same 2 TB that 403s a regular account bills a founding one $10
-  // (drive#482), under the $12 cap, so the write goes through.
+  // row: the same 2 TB that bills a regular account $20 (at the cap) bills a
+  // founding one $10, under the $20 default, so the write goes through
+  // (drive#482).
   sqlite
     .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
     .run(account.id, "");
+  // 2 TB held for a whole month bills a founding account $10: half the $20 a
+  // regular account pays, and well under the $20 default cap.
   meterAMonthOf(sqlite, account.id, 2000);
   assert.equal((await writeAt(store, key, "/u/acct_founder/under.md")).status, 201);
   assert.deepEqual(
@@ -304,11 +373,13 @@ test("a founding account's agent key counts the account's half, at the real sche
     ),
     ["list", "read", "write"],
   );
-  // 3 TB is $15 on a founding account, past the $12 cap, so the cap still
-  // bites: the flag halves what the account pays, not what it is bounded by.
+  // 5 TB is $25 on a founding account, past the $20 default cap, so the cap
+  // still bites: the flag halves what the account pays, not what it is bounded
+  // by. (3 TB would be $15 now, under the $20 the schema default no longer
+  // overrides.)
   sqlite
     .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
-    .run(account.id, 3000 * MINUTES_PER_MONTH);
+    .run(account.id, 5000 * MINUTES_PER_MONTH);
   assert.equal((await writeAt(store, key, "/u/acct_founder/over.md")).status, 403);
 });
 
@@ -436,6 +507,81 @@ test("the whole Worker fetch is capped, not only a route called by hand", async 
     rowIn(sqlite, "SELECT day_requests FROM agent_caps WHERE key_id = ?1", minted.keyId)
       .day_requests,
     2,
+  );
+});
+
+test("migration 0020 clears the old 0004 default and leaves a set cap alone", () => {
+  // The bug (drive#534): 0004 declared `monthly_cap_usd REAL NOT NULL DEFAULT
+  // 12.0`, and the store's INSERT never names the column, so the 12 landed on
+  // every row the store created. 0020 rebuilds the table nullable with no
+  // default and clears exactly the rows still carrying the 0004 default. The
+  // backfill is exact: no statement in this repo ever writes this column, so a
+  // 12.0 here is 0004's default and nothing else, and a hand-set value is kept.
+  const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
+    .filter((name) => name.endsWith(".sql"))
+    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+  const capIndex = migrationFiles.indexOf("0020_agent_caps_nullable_cap.sql");
+  assert.ok(capIndex >= 0, "0020_agent_caps_nullable_cap.sql is missing");
+  const read = (/** @type {string} */ name) =>
+    readFileSync(new URL(`../../migrations/drive/${name}`, import.meta.url), "utf8");
+
+  const sqlite = new DatabaseSync(":memory:");
+  for (const name of migrationFiles.slice(0, capIndex)) {
+    sqlite.exec(read(name));
+  }
+  /** @param {string} sql */
+  const one = (sql) => {
+    const row = sqlite.prepare(sql).get();
+    assert.ok(row, "the row is in D1");
+    return /** @type {Record<string, any>} */ (row);
+  };
+  // The schema 0004 left: the column is NOT NULL and its default is 12.0, and a
+  // store write with no cap is therefore capped at 12.
+  const before = one(
+    "SELECT * FROM pragma_table_info('agent_caps') WHERE name = 'monthly_cap_usd'",
+  );
+  assert.equal(before.notnull, 1, "0004's column is NOT NULL");
+  assert.equal(String(before.dflt_value), "12.0", "0004's default is 12.0");
+  sqlite
+    .prepare("INSERT INTO agent_caps (account_id, key_id) VALUES (?1, ?2)")
+    .run("acct-default", "key-default");
+  sqlite
+    .prepare("INSERT INTO agent_caps (account_id, key_id, monthly_cap_usd) VALUES (?1, ?2, ?3)")
+    .run("acct-set", "key-set", 7.5);
+  assert.equal(
+    one("SELECT monthly_cap_usd FROM agent_caps WHERE key_id = 'key-default'").monthly_cap_usd,
+    12,
+    "the old default lands on a row the store writes",
+  );
+
+  sqlite.exec(read("0020_agent_caps_nullable_cap.sql"));
+
+  // The column is nullable with no default now, so the reader's own $20
+  // applies. The rows survived the rebuild: the defaulted row is NULL, and the
+  // hand-set 7.5 is untouched.
+  const after = one("SELECT * FROM pragma_table_info('agent_caps') WHERE name = 'monthly_cap_usd'");
+  assert.equal(after.notnull, 0, "the column is nullable now");
+  assert.equal(String(after.dflt_value), "NULL", "and carries no default");
+  assert.equal(
+    one("SELECT monthly_cap_usd FROM agent_caps WHERE key_id = 'key-default'").monthly_cap_usd,
+    null,
+    "the 0004 default is cleared",
+  );
+  assert.equal(
+    one("SELECT monthly_cap_usd FROM agent_caps WHERE key_id = 'key-set'").monthly_cap_usd,
+    7.5,
+    "a cap a person set is kept",
+  );
+  assert.deepEqual(
+    sqlite
+      .prepare("SELECT account_id, key_id FROM agent_caps ORDER BY account_id")
+      .all()
+      .map((row) => [row.account_id, row.key_id]),
+    [
+      ["acct-default", "key-default"],
+      ["acct-set", "key-set"],
+    ],
+    "the primary key and both rows survived the rebuild",
   );
 });
 
