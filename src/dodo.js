@@ -222,6 +222,7 @@ export function isDodoUrl(value) {
     parsed.protocol === "https:" &&
     parsed.username === "" &&
     parsed.password === "" &&
+    parsed.port === "" &&
     (host === "dodopayments.com" || host.endsWith(".dodopayments.com"))
   );
 }

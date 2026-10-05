@@ -214,7 +214,7 @@ export function paymentFailedTemplate(data = {}) {
   const { amountUsd } = data;
   const amount = requireMoney(amountUsd, "amountUsd");
   const subject = "Your last payment did not go through";
-  const portalLine = `Update your card here: ${PORTAL_URL}`;
+  const portalLine = `Update your card: ${PORTAL_URL}`;
   const lines = [
     `We could not charge ${usd(amount)}.`,
     "",
@@ -226,7 +226,7 @@ export function paymentFailedTemplate(data = {}) {
   const html_lines = [
     `<p>We could not charge ${usd(amount)}.</p>`,
     "<p>Your files are safe and your drive is still working. Update your card in the billing portal and we will try again.</p>",
-    `<p>Update your card here: <a href="${PORTAL_URL}">${PORTAL_URL}</a></p>`,
+    `<p>Update your card: <a href="${PORTAL_URL}">${PORTAL_URL}</a></p>`,
     "<p>If the card is not fixed, the drive will go read-only at your spending cap. Nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });

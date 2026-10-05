@@ -6,11 +6,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DODO_TEST_BASE_URL } from "../src/dodo.js";
+import { DODO_TEST_BASE_URL, isDodoUrl } from "../src/dodo.js";
 import { paymentFailedTemplate } from "../src/emails.js";
 import { failureMessage } from "../src/messages.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "../src/portal.js";
 import { absoluteUrl } from "../src/seo.js";
+import { USAGE_LABELS } from "../src/usage.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 const ACCOUNT = { id: "acc-portal", email: "portal@example.com" };
@@ -144,7 +145,30 @@ test("a refused or failed session answers the provider-failed words and redirect
   }
 });
 
-test("the portal refuses a non-GET request and a signed-out caller", async () => {
+test("the portal's usage-page anchor text is the usage table's own wording", async () => {
+  // The page is static HTML and the label lives in USAGE_LABELS, so nothing
+  // joins them. test/usage.test.mjs pins the other direction (every label
+  // appears in the page); this pins this one anchor's words to the label, so
+  // the link and the table cannot drift into two different sentences.
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  assert.ok(
+    page.includes(`>${USAGE_LABELS.cardPortal}</a>`),
+    "the usage page's card-portal anchor must carry the table's own wording",
+  );
+});
+
+test("a URL with user credentials is not a Dodo URL, and neither is one with a port", () => {
+  // isDodoUrl is the pin the redirect leans on, so its two quiet gaps are
+  // closed and tested here rather than left to a reader: a credential in the
+  // URL is a phishing shape, and a port is a way to name a host the pin does
+  // not otherwise check.
+  assert.equal(isDodoUrl("https://user:pass@dodopayments.com/p"), false);
+  assert.equal(isDodoUrl("https://dodopayments.com:8443/p"), false);
+  assert.equal(isDodoUrl("https://dodopayments.com"), true);
+});
+
+test("the portal is a closed door on a method the route does not serve", async () => {
   const db = await dbWithAccount("cus_saved");
   const post = await handlePortalRequest(
     new Request(`${ORIGIN}${PORTAL_ENDPOINT}`, { method: "POST" }),

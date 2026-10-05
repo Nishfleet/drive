@@ -17,6 +17,11 @@ import { unauthorizedResponse } from "./status.js";
 
 export const PORTAL_ENDPOINT = "/api/billing/portal";
 
+// How long the provider has to answer the customer-portal session request
+// before the route gives the failure words. Long enough for a slow checkout
+// API, short enough that a hung call does not ride out the platform deadline.
+const DODO_PORTAL_TIMEOUT_MS = 10_000;
+
 /**
  * A plain-text answer, the same shape the read paths use (src/files.js). The
  * portal's non-redirect answers are prose a person reads, not a JSON body a
@@ -86,6 +91,12 @@ export async function handlePortalRequest(request, account, deps) {
     response = await fetchImpl(sessionUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}` },
+      // The platform's own request deadline is the backstop, but a provider
+      // that hangs would hold this Worker until then; a hung session opens no
+      // portal and can only be answered with the failure words, so the call
+      // is given a deadline of its own (the same reason src/health.js bounds a
+      // slow D1 query with AbortSignal.timeout()).
+      signal: AbortSignal.timeout(DODO_PORTAL_TIMEOUT_MS),
     });
   } catch (error) {
     // Named, never swallowed: the operator reads this line to learn why the
