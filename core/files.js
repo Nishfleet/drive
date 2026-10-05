@@ -2313,10 +2313,13 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
- * @param {{db?: D1Database, prepaidPause?: boolean}} [options] the customer
- *   database, so the 1 TB pre-charge storage limit (drive#464) can read
- *   stored bytes, and whether the pause at a $0 balance is on (drive#586).
- *   Tests that do not pass a database skip both checks.
+ * @param {{db?: D1Database, prepaidPause?: boolean, accountState?: (id: string) => Promise<"active"|"read_only"|"closed">}} [options]
+ *   the customer database, so the 1 TB pre-charge storage limit (drive#464)
+ *   can read stored bytes, whether the pause at a $0 balance is on
+ *   (drive#586), and the account's own state, so a read-only drive refuses a
+ *   web write (drive#496). Tests that do not pass a database skip the first
+ *   two checks; tests that do not pass a resolver are answering for a drive
+ *   that is not read-only.
  */
 export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
@@ -2327,6 +2330,34 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
+  // Only the three routes that change the drive carry the cap's read-only
+  // rule. The decision is by route, not by method, so a mislabelled method on
+  // a listing still cannot smuggle a write through. The cross-site rule is the
+  // app-wide CSRF middleware's (src/index.js).
+  const stateChanging =
+    route === `${FILES_ENDPOINT}/upload` ||
+    route === `${FILES_ENDPOINT}/delete` ||
+    route === `${FILES_ENDPOINT}/restore`;
+  // The cap makes the whole web write lane read-only (drive#496). The account
+  // row's own `state`, saved by the hourly walk (src/cap.js), is the rule: at
+  // the cap it is `read_only` and a signed-in person cannot write through the
+  // page either. Reads are untouched — a read-only drive is readable by
+  // definition, and the cap deletes nothing.
+  //
+  // The CSRF middleware runs first, so a cross-site POST to a read-only drive
+  // still gets the cross-site answer and not a message about a cap the
+  // stranger has no business knowing. A closed account is refused the same
+  // way: it is not writable either, and its files are on their way out.
+  //
+  // No resolver means no cap state to read (a deployment with no DRIVE_DB, or
+  // a unit test driving the handler directly), so the lane is writable and the
+  // account gate above is what holds it.
+  if (stateChanging && typeof options.accountState === "function") {
+    const state = await options.accountState(account.id);
+    if (state === "read_only" || state === "closed") {
+      return json({ error: failureMessage("cap-reached") }, 403);
+    }
+  }
   const scoped = scopeStore(store, account);
   if (route === FILES_ENDPOINT) {
     return listRequest(request, url, scoped, now);
