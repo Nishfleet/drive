@@ -79,6 +79,26 @@ test("the real migrations apply cleanly, in filename order", () => {
   for (const table of ["file_versions", "usage_minutes", "events_seen", "meter_rollup_state"]) {
     assert.ok(tables.includes(table), `table ${table} was not created`);
   }
+  // The renamed file keeps its objects in the applied set (drive issue #717):
+  // two PRs both took prefix 0025 and the prefix gate rejects that, so one file
+  // moved to 0026. A rename that dropped the file, or renamed it out of the
+  // folder, would take its tables and index out of the real schema and this
+  // test would fail here rather than in production, where D1 still tracks the
+  // file by its old name.
+  assert.ok(
+    MIGRATION_FILES.includes("0026_meter_scale.sql"),
+    "0026_meter_scale.sql is missing from the migration set",
+  );
+  for (const table of ["meter_account_rerolls", "prepaid_draw_marks"]) {
+    assert.ok(tables.includes(table), `table ${table} (0026_meter_scale.sql) was not created`);
+  }
+  assert.equal(
+    sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1")
+      .get("file_versions_live")?.name,
+    "file_versions_live",
+    "0026_meter_scale.sql's live index is missing from the real schema",
+  );
   // The columns the meter's arithmetic assumes: epoch milliseconds in
   // INTEGER columns, sizes and bytes in INTEGER columns, and the fraction of
   // a GB-minute in a REAL one. A timestamp stored as TEXT would make the
