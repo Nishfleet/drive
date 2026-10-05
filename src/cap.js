@@ -106,7 +106,7 @@ export const SPEND_CAP_REASON = "spend-cap";
  * freeze and null on a raise -- because the row the swap leaves live is the
  * row a give-back pass (drive#656) reads to prove which cap did this. Absent
  * and null are the same claim: no reason recorded.
- * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason?: string|null}} CapKey
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason?: string}} CapKey
  */
 
 /**
@@ -390,7 +390,7 @@ export async function applyCapSwap(plan, provider) {
     // names the cap that took the key down; a raise names nothing, and the
     // store writes that as no reason recorded (drive#661). A hand-built plan
     // that leaves the field out is the same as a raise's null here.
-    const reason = /** @type {{cappedReason?: string|null}} */ (swap).cappedReason;
+    const reason = /** @type {{cappedReason?: string}} */ (swap).cappedReason;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
         // The provider's own swap is handed the keyId and the swap's own

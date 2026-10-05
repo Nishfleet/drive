@@ -94,9 +94,11 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // applied -- the harness runs the real migrations, so this is the whole fix.
   // Numbered 0024, not the 0022 the issue proposed: 0022_nightly_sizes.sql is
   // already on the drive database, and a second 0022 sorts before it in the
-  // full-filename sort wrangler uses. 0025_link_caps.sql is after it
-  // in the filename sort, so this file is still before the sweep
-  // migration it waits for.
+  // full-filename sort wrangler uses. This file is 0024, so wrangler's
+  // filename sort applies it before any 0025+ sweep migration (drive#655)
+  // that may write on this column. The array order here differs from
+  // wrangler's sort (0025_link_caps.sql is listed first), but the two
+  // migrations touch different tables so array order is harmless in tests.
   "drive/0024_capped_reason.sql",
 ]);
 
