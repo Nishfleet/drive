@@ -260,14 +260,18 @@ export function createApp() {
   return app;
 }
 
-const app = createApp();
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
 
 /**
  * The Worker entry. One app per isolate, the same shape the api Worker uses
- * (workers/api/src/index.js appFor): the router is compiled once and every
- * request is dispatched onto it.
+ * (workers/api/src/index.js appFor): the router is compiled once, on the first
+ * fetch, and every request is dispatched onto it.
  * @type {ExportedHandler<DlContext & {platform?: ExecutionContext}>}
  */
 export default {
-  fetch: (request, env, ctx) => app.fetch(request, /** @type {DlContext} */ (env), ctx),
+  fetch: (request, env, ctx) => {
+    if (app === undefined) app = createApp();
+    return app.fetch(request, /** @type {DlContext} */ (env), ctx);
+  },
 };

@@ -920,10 +920,12 @@ export function createApp() {
   return app;
 }
 
-// One app per isolate. createApp takes no env and closes over no request, so
-// the compiled router is safe to share across fetches (same shape as the api
-// Worker's appFor cache).
-const app = createApp();
+// One app per isolate, built on the first fetch: createApp takes no env and
+// closes over no request, so the compiled router is safe to share across
+// fetches (the api Worker's appFor cache, minus the table key), and a
+// construction failure fails that request, not the isolate's boot.
+/** @type {ReturnType<typeof createApp> | undefined} */
+let app;
 
 // Static assets serve the pricing page, the first-run page, the Web Files page
 // and the usage page; only /api/*, /s/* and the api Worker's /v1/* reach this
@@ -936,6 +938,7 @@ const app = createApp();
  */
 export default {
   async fetch(request, env) {
+    if (app === undefined) app = createApp();
     return app.fetch(request, env);
   },
 
