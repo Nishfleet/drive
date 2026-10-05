@@ -59,6 +59,7 @@ import {
   TRASH_PATH,
   validatePath,
 } from "./files.js";
+import { balanceCents } from "./ledger.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -1268,7 +1269,7 @@ export async function handleRequestInfoRequest(request, links, capState, options
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
  * @param {unknown} capState
- * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, db?: D1Database, prepaidPause?: boolean}} [options]
  */
 export async function handleRequestUploadRequest(request, files, links, capState, options = {}) {
   const now = options.now ?? Date.now();
@@ -1313,6 +1314,16 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // The owner's cap is the owner's rule; a stranger gets the table's words
     // and no write happens. Nothing is deleted, here or at the cap.
     return json({ error: failureMessage("upload-paused-at-cap") }, 403);
+  }
+  if (
+    options.db &&
+    options.prepaidPause &&
+    (await balanceCents(options.db, record.accountId)) <= 0
+  ) {
+    // The owner's prepaid balance is empty (drive#586). The stranger cannot
+    // top up someone else's drive, so they are told who can act, and the body
+    // is never read.
+    return json({ error: failureMessage("upload-paused-balance") }, 403);
   }
   const sized = await takeUploadBody(request, record);
   if (sized.error !== undefined) {

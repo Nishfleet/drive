@@ -39,6 +39,10 @@ function dataFor(kind) {
   if (kind === "account-closed" || kind === "account-close-reminder") {
     return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
   }
+  // drive#586: the prepaid emails, both auto top-up states, so the gates
+  // read every sentence a customer can be sent.
+  if (kind === "top-up-receipt") return { amountUsd: 25, balanceUsd: 31.5, auto: true };
+  if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null };
   throw new Error(`no test data for ${kind}`);
 }
 
