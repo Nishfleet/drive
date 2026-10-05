@@ -968,30 +968,35 @@ export async function recordDownloadBytes(db, accountId, bytes, now) {
 }
 
 /**
- * Every account that has a stored version. Not on the rollup's path any more
- * - the rollup groups its own per-hour read by account - so this is a
- * read-only helper the nightly reconciler (#59) and operator tooling can use
- * to enumerate who the meter is billing. It is deliberately NOT bounded by
- * the hours being rolled: a version created long ago and still live
- * (hidden_at NULL) has minutes in every hour, so an account filter keyed on
- * recent created_at would drop exactly the accounts with standing storage.
- * The (account_id, created_at) index makes this an index-only DISTINCT.
+ * Every account, read straight off the `accounts` table - the one list of who
+ * the drive serves, maintained by sign-up and the closed-account purge. The
+ * nightly reconciler (#59) and operator tooling enumerate through it instead
+ * of a DISTINCT scan over `file_versions`: the scan read every version row
+ * ever stored on every nightly run, which is the meter's own share of the
+ * growth problem this drive has (drive issue #564), and it listed an account
+ * only once a version existed, which the reconciler never needed - an account
+ * with no versions reconciles to nothing in one empty provider listing. An
+ * account row with no versions is now walked once a night and costs one
+ * listing that comes back empty.
+ *
+ * It is deliberately NOT bounded by recent activity: a version created long
+ * ago and still live (hidden_at NULL) has minutes in every hour, so an
+ * account filter keyed on recent sign-up dates would drop exactly the
+ * accounts with standing storage.
  * @param {D1Database} db
  * @returns {Promise<string[]>}
  */
 export async function listMeteredAccounts(db) {
-  const result = await db
-    .prepare("SELECT DISTINCT account_id FROM file_versions ORDER BY account_id")
-    .all();
+  const result = await db.prepare("SELECT id FROM accounts ORDER BY id").all();
   return (result.results || []).map((row) => {
-    // Not a skipped row and not a silent filter: a version with no account
+    // Not a skipped row and not a silent filter: an account row with no id
     // cannot be billed to anyone, and quietly rolling past it would leave
     // storage that no rollup ever accounts for. The trigger fails, the
     // operator sees why, and the row is fixed at the source.
-    if (typeof row.account_id !== "string" || row.account_id === "") {
-      throw new TypeError("file_versions has a row with no account_id");
+    if (typeof row.id !== "string" || row.id === "") {
+      throw new TypeError("accounts has a row with no id");
     }
-    return row.account_id;
+    return row.id;
   });
 }
 
@@ -1745,6 +1750,143 @@ export async function runMeterCron(db, now = Date.now()) {
     .bind(at - EVENTS_SEEN_RETENTION_MS)
     .run();
   return { from, through, hours, accounts, gbMinutes };
+}
+
+// --- Retention: hidden versions leave the ledger (drive issue #564) -----
+
+/**
+ * How long a hidden version's row stays. The number is two clocks added, plus
+ * margin: a deleted file can be restored for 30 days (RECENTLY_DELETED_DAYS
+ * in src/files.js), and a provider keeps a hidden version listed for up to 30
+ * days of its own (docs/build-spec.md "Old versions"), so a row dropped
+ * inside either window could come back as a reconciler insert with its hours
+ * re-rolled. Five days of margin sit on top of the larger clock, and the
+ * prune runs nightly after the reconciler, so a row leaves only when every
+ * summarising rollup is long since booked and no provider listing can
+ * resurrect it.
+ */
+export const VERSION_RETENTION_DAYS = 35;
+const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
+
+const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
+  WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
+// The partial index that predicate reads (migrations/drive/
+// 0023_file_versions_hidden_at.sql), so the nightly delete is a range read
+// over hidden rows and not a full-table scan on the meter's fastest grower
+// (drive issue #564, in-run review). It is partial because the predicate's
+// other half is `hidden_at IS NOT NULL`, so the index holds only the rows a
+// prune can reach, and inserting a live row pays nothing for it.
+
+/**
+ * Delete the `file_versions` rows the ledger no longer needs, and only those:
+ * rows hidden more than VERSION_RETENTION_DAYS ago. The table is the meter's
+ * fastest grower - every upload, overwrite and delete is a row, and a hidden
+ * row stops billing the hour after it stops - so without this the table grows
+ * one way forever, and every DISTINCT scan and full read over it gets slower
+ * with data that can never bill again.
+ *
+ * The guard before the delete is the "after summarising them" half of the
+ * rule. The watermark (`meter_rollup_state.rolled_through`) is the newest
+ * hour whose rows every version's minutes have been recomputed into, so a
+ * prune may only run once the watermark covers the cutoff's hour: before
+ * that, deleting a row deletes hours no `usage_minutes` row yet holds, and
+ * the ledger would bill less than the drive stored. A deployment that has
+ * never rolled has no watermark, and nothing is deleted - the next nightly
+ * run tries again.
+ *
+ * Resurrection is closed on both ends: the reconciler runs before this on the
+ * same nightly trip, and it can only re-insert a version the provider still
+ * lists, which no provider does past 30 days. A fossil that did come back
+ * re-books hours the rollup recomputes to the same numbers (the rollup
+ * overwrites, it never adds), and the next night's prune deletes it again -
+ * self-healing, not compounding.
+ * @param {D1Database|undefined} db
+ * @param {number|Date|string} now the run instant
+ * @returns {Promise<{pruned: number, cutoff: number, skipped: string|null}>}
+ */
+export async function pruneHiddenVersions(db, now = Date.now()) {
+  if (!db) {
+    throw new Error("meter retention: METER_DB binding is not configured");
+  }
+  const at = toMillis(now, "now");
+  const cutoff = at - VERSION_RETENTION_MS;
+  const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
+  const rolledThrough = stampMillis(mark?.rolled_through);
+  if (rolledThrough === null || rolledThrough < hourStart(cutoff)) {
+    return {
+      pruned: 0,
+      cutoff,
+      skipped: "the rollup watermark has not covered the cutoff hour yet",
+    };
+  }
+  const result = await db.prepare(PRUNE_VERSIONS_SQL).bind(cutoff).run();
+  if (typeof result.meta?.changes !== "number") {
+    throw new TypeError("the retention delete reported no change count");
+  }
+  return { pruned: result.meta.changes, cutoff, skipped: null };
+}
+
+const NIGHTLY_SIZES_WRITE_SQL = `INSERT INTO nightly_sizes
+  (day, recorded_at, file_version_rows, file_version_bytes, usage_minute_rows, file_index_rows)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+  ON CONFLICT(day) DO UPDATE SET
+    recorded_at = excluded.recorded_at,
+    file_version_rows = excluded.file_version_rows,
+    file_version_bytes = excluded.file_version_bytes,
+    usage_minute_rows = excluded.usage_minute_rows,
+    file_index_rows = excluded.file_index_rows`;
+
+/**
+ * One size row for one UTC day: the numbers the database-growth decision
+ * watches (drive issue #564, the trigger recorded in docs/spec.md). The
+ * nightly trip writes it and prints it, so an operator reading Worker logs
+ * sees the growth line once a day and the `nightly_sizes` table keeps every
+ * day's row to compare against. The counts are whole-table aggregates - the
+ * very kind of scan the retention prune above exists to keep cheap - paid
+ * once a night, against tables the prune keeps bounded. They are exact on
+ * purpose, because the trigger in docs/spec.md that decides on the split
+ * acts on the number itself, so the scan is the accepted price of a
+ * decision-grade figure and the split it triggers takes the scans back to one
+ * account's share. A retried run upserts the same day's row rather than
+ * doubling it.
+ * @param {D1Database|undefined} db
+ * @param {number|Date|string} now the run instant
+ * @returns {Promise<{day: string, recordedAt: number, fileVersionRows: number,
+ *   fileVersionBytes: number, usageMinuteRows: number, fileIndexRows: number}>}
+ */
+export async function recordNightlySizes(db, now = Date.now()) {
+  if (!db) {
+    throw new Error("nightly sizes: METER_DB binding is not configured");
+  }
+  const at = toMillis(now, "now");
+  const day = new Date(at).toISOString().slice(0, 10);
+  const versions = await db
+    .prepare(
+      "SELECT COUNT(*) AS row_count, COALESCE(SUM(size_bytes), 0) AS byte_total FROM file_versions",
+    )
+    .first();
+  const minutes = await db.prepare("SELECT COUNT(*) AS row_count FROM usage_minutes").first();
+  const index = await db.prepare("SELECT COUNT(*) AS row_count FROM file_index").first();
+  const sizes = {
+    day,
+    recordedAt: at,
+    fileVersionRows: Number(versions?.row_count ?? 0),
+    fileVersionBytes: Number(versions?.byte_total ?? 0),
+    usageMinuteRows: Number(minutes?.row_count ?? 0),
+    fileIndexRows: Number(index?.row_count ?? 0),
+  };
+  await db
+    .prepare(NIGHTLY_SIZES_WRITE_SQL)
+    .bind(
+      sizes.day,
+      sizes.recordedAt,
+      sizes.fileVersionRows,
+      sizes.fileVersionBytes,
+      sizes.usageMinuteRows,
+      sizes.fileIndexRows,
+    )
+    .run();
+  return sizes;
 }
 
 // --- The nightly reconciler (drive issue #59) ------------------------

@@ -27,7 +27,7 @@
 
 import { json } from "../workers/api/src/http.js";
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
-import { isSameOriginRequest, sendEmail } from "./email-send.js";
+import { sendEmail } from "./email-send.js";
 import {
   balanceCents,
   creditTopUp,
@@ -433,9 +433,6 @@ export async function handleTopUpRequest(request, account, deps) {
   if (!account) return unauthorizedResponse();
   if (request.method !== "POST") {
     return json({ error: "Method not allowed." }, 405);
-  }
-  if (!isSameOriginRequest(request)) {
-    return json({ error: failureMessage("cross-site") }, 403);
   }
   /** @type {Record<string, unknown>|null} */
   let body = null;

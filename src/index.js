@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
@@ -29,7 +28,7 @@ import {
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
-import { handleSendEmailRequest } from "./email-send.js";
+import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
 import {
   createMemoryStore,
   createS3Store,
@@ -37,6 +36,7 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
+  storageVarsFromEnv,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -46,7 +46,9 @@ import {
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
   reconcileMeter,
+  recordNightlySizes,
   runMeterCron,
   toMillis,
 } from "./meter.js";
@@ -202,18 +204,9 @@ let filesStore;
  * and the Files page already answers from the in-memory store when they are
  * unset. The names match the api Worker's iDrive pair so the site Worker can
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
- * @typedef {Env & {
- *   FILES_S3_ENDPOINT?: string,
- *   FILES_S3_BUCKET?: string,
- *   FILES_S3_REGION?: string,
- *   FILES_S3_ACCESS_KEY_ID?: string,
- *   FILES_S3_SECRET_ACCESS_KEY?: string,
- *   IDRIVE_S3_ENDPOINT?: string,
- *   IDRIVE_S3_REGION?: string,
- *   IDRIVE_S3_ACCESS_KEY_ID?: string,
- *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
- * }} StorageEnv
+ * pair a local `rclone serve s3` still uses. The typedef's one definition is
+ * src/files.js's, beside the one reader of the vars.
+ * @typedef {import("./files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */
@@ -293,27 +286,23 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    // The four storage vars read through src/files.js's one reader, the same
+    // read provisionAccountBucket makes at the sign-in verify step, so the
+    // store and the provisioning cannot name two endpoints.
+    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
     if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
       const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
+        accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
       filesStore = createS3Store({
         endpoint,
         bucketFor: storageBucketForKey,
         ...(signed
           ? {
               region,
-              credentials: { accessKeyId, secretAccessKey },
+              credentials: {
+                accessKeyId: /** @type {string} */ (accessKeyId),
+                secretAccessKey: /** @type {string} */ (secretAccessKey),
+              },
             }
           : {}),
       });
@@ -451,8 +440,9 @@ function capStateFor(_accountId) {
 // It is registered on "/api/*" alone and its own isPublic() check skips the
 // public routes declared above, so the two public POST routes keep the repo's
 // own same-origin rule (src/waitlist.js, src/email-send.js) and the token
-// lanes keep their tokens. The browser-facing write lane under /api/files
-// additionally takes Hono's built-in csrf() middleware below.
+// lanes keep their tokens. One CSRF middleware on /api/* then covers every
+// other write: the two public POSTs keep their handler copies, and every
+// other non-GET is refused here before the handler runs.
 //
 // @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
 async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hono").Next} */ next) {
@@ -474,29 +464,36 @@ async function accountGate(/** @type {DriveContext} */ c, /** @type {import("hon
   await next();
 }
 
-// Hono's own csrf() refuses a request with neither Origin nor Sec-Fetch-Site
-// before a custom origin/secFetchSite handler is consulted (its undefined
-// short-circuit returns false), which would refuse curl and the Go CLI — the
-// callers the repo's same-origin rule deliberately lets through, because a
-// caller that sends no browser header is not a browser and the account gate
-// is what holds it (src/email-send.js isSameOriginRequest, load-bearing in
-// src/files.js for the three state-changing routes). So the built-in
-// middleware runs only when a browser evidence header is present; a
-// non-browser request falls straight through to the handler, whose own
-// same-origin check answers with the product's sentence rather than a bare
-// "Forbidden". The browser case is still Hono's middleware deciding.
-const browserCsrf = csrf({
-  origin: (origin, c) => origin === new URL(c.req.url).origin,
-  secFetchSite: (site) => site === "same-origin",
-});
+// One CSRF rule for every non-GET /api/* route. The check is the repo's
+// same-origin function (src/email-send.js): a caller with no Origin and no
+// Sec-Fetch-Site (curl, the Go CLI) is not a browser, so it passes and the
+// account gate is what holds it; a browser that names another origin, or
+// Origin: null without Sec-Fetch-Site: same-origin, is refused with the
+// message table's cross-site words. Hono's built-in csrf() only inspects
+// form content-types, so a JSON POST would slip past it — the copies this
+// replaced were already covering that, and this middleware is that same
+// rule once, in front of every write.
+//
+// The two public POSTs keep their own handler copies (waitlist sign-up and
+// the token-gated send lane) and are skipped here so those sentences stay
+// the product's, not a second generic 403.
+const CSRF_EXEMPT_PATHS = new Set(["/api/waitlist", SEND_EMAIL_PATH]);
 /**
- * Hono's csrf(), run only when a browser evidence header is present.
+ * Same-origin CSRF on every write except the two public POSTs that keep
+ * their own handler copies.
  * @type {import("hono").MiddlewareHandler<{Bindings: Env, Variables: DriveVariables}>}
  */
-const csrfWhenBrowser = (c, next) =>
-  c.req.header("origin") === undefined && c.req.header("sec-fetch-site") === undefined
-    ? next()
-    : browserCsrf(c, next);
+const csrfWhenBrowser = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+    return next();
+  }
+  const path = c.req.path.replace(/\/+$/, "") || "/";
+  if (CSRF_EXEMPT_PATHS.has(path)) return next();
+  if (!isSameOriginRequest(c.req.raw)) {
+    return c.json({ error: failureMessage("cross-site") }, 403);
+  }
+  return next();
+};
 
 /** @param {DriveContext} c */
 const filesHandler = (c) => {
@@ -549,19 +546,13 @@ export function createApp() {
   // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
 
-  // Same-origin / CSRF protection on the browser-facing write lane, with
-  // Hono's built-in csrf() middleware. It is registered on the account-gated
-  // files lane so an anonymous request is its 401, not a 403: the gate is the
-  // outer rule. It covers exactly the requests a cross-site page can forge —
-  // a form-encoded or multipart POST to the account routes — and reads no
-  // header the CLI cannot send: a caller with no Origin and no Sec-Fetch-Site
-  // (curl, the Go CLI) is not a browser, so it passes this check and the
-  // account gate is what holds it.
-  app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
-  app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
-  app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
-  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
-  app.use(AUTO_TOPUP_ENDPOINT, csrfWhenBrowser);
+  // Same-origin / CSRF protection on every non-GET /api/* route except the
+  // two public POSTs that keep their handler copies. Registered after the
+  // account gate so an anonymous request is its 401, not a 403: the gate is
+  // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
+  // Go CLI) is not a browser, so it passes this check and the account gate
+  // is what holds it.
+  app.use("/api/*", csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -843,7 +834,9 @@ export function createApp() {
   // The logged-out side of a share/request token (issue #19). The token in
   // the path or query is the whole proof; an expired or revoked one is 404.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
-    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env)),
+    handleShareFileRequest(c.req.raw, storeFor(c.env), linksFor(c.env), {
+      ipLimiter: c.env.SHARE_DOWNLOAD_RATE_LIMITER,
+    }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
     handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
@@ -1033,6 +1026,24 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // Retention (drive issue #564): the reconciler has finished its
+      // repairs, so the prune sees the row set the provider listings have
+      // already agreed with, and a version the provider still lists is never
+      // deleted from under it. A skipped prune is reported, not thrown: the
+      // hours the cutoff needs are still being booked by the hourly rollup,
+      // and the next nightly run tries again. The rows the prune would have
+      // deleted keep being summed into usage_minutes meanwhile, so skipping
+      // loses nothing but the space.
+      const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
+      if (pruned.skipped !== null) {
+        console.log(`meter retention: skipped, ${pruned.skipped}`);
+      } else {
+        console.log(
+          `meter retention: pruned=${pruned.pruned} hidden rows before ` +
+            `${new Date(pruned.cutoff).toISOString()}`,
+        );
+      }
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         context.waitUntil(
@@ -1048,7 +1059,17 @@ export default {
           }),
         );
       }
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The nightly size row (drive issue #564): the growth numbers the
+      // spec's decision watches, written to nightly_sizes and printed here,
+      // where an operator reading Worker logs sees one line a day. Awaited
+      // like everything else on this trip: a size row that failed must be a
+      // failed run, not a silent gap in the table.
+      const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
+      console.log(
+        `nightly sizes: day=${sizes.day} ` +
+          `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
+          `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
+      );
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
