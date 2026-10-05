@@ -216,6 +216,7 @@ function closeDepsFor(env) {
         fetch: secrets.DODO_FETCH ?? globalThis.fetch,
         baseUrl: secrets.DODO_BASE_URL,
         now: charge.now,
+        eventKey: "close",
       }),
   };
 }
@@ -957,6 +958,7 @@ export default {
               fetch: secrets.DODO_FETCH ?? globalThis.fetch,
               baseUrl: secrets.DODO_BASE_URL,
               now: charge.now,
+              eventKey: charge.eventKey,
             }),
         });
       }

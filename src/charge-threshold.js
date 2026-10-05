@@ -12,6 +12,18 @@ export const CHARGE_THRESHOLD_CENTS = 500;
 export const CHARGE_MAX_MONTHS = 12;
 export const CHARGE_COPY = "Your card will be charged when this reaches $5.";
 export const CHARGE_RECEIPT_COPY = "Your balance reached $5, and we charged your card.";
+// The receipt's first sentence names why the card was charged, so a $1 bill
+// charged at close or after 12 months never claims it reached $5.
+export const CHARGE_REASON_COPY = Object.freeze({
+  threshold: "Your balance reached $5, and we charged your card",
+  "max-months": "Your balance rolled over for 12 months, so we charged your card",
+  close: "You closed your account, so we charged your card",
+});
+export const CHARGE_REASON_SUBJECT = Object.freeze({
+  threshold: CHARGE_RECEIPT_COPY,
+  "max-months": "Your balance rolled over for 12 months, and we charged your card.",
+  close: "We charged your card for the balance left on your closed account.",
+});
 
 /**
  * The UTC month-start of an instant, in epoch milliseconds. Same arithmetic

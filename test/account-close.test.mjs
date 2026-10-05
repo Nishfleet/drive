@@ -292,6 +292,38 @@ test("closing with $0.40 owed charges the card before the close receipt", async 
     /charged your card/i,
   );
   assert.match(/** @type {{subject: string}} */ (world.email.sent[1]).subject, /closed/i);
+  assert.doesNotMatch(
+    /** @type {{subject: string}} */ (world.email.sent[0]).subject,
+    /reached \$5/,
+    "a 40-cent close is not a $5 receipt",
+  );
+});
+
+test("closing with no posted charge keeps the 40 cents owed and sends no receipt", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_close_nocharge", email: "nish@example.com", name: "Nish" };
+  await world.keys.mintKey(account, { kind: "device", name: "mac" });
+  await world.db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, unpaid_cents, unpaid_since)
+       VALUES (?1, ?2, ?3, 40, ?3)
+       ON CONFLICT(id) DO UPDATE SET unpaid_cents = 40, unpaid_since = excluded.unpaid_since`,
+    )
+    .bind(account.id, account.email, clock.now())
+    .run();
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "nish@example.com",
+    now: clock.now(),
+    // No Dodo key on this deploy: the charge is not posted.
+    onCharge: async () => ({ charged: false }),
+  });
+  assert.equal((await world.devices.getUnpaid(account.id)).unpaidCents, 40);
+  assert.equal(world.email.sent.length, 1, "only the close mail, no receipt");
 });
 
 test("closing refuses a typed email that is not the account's, and changes nothing", async () => {

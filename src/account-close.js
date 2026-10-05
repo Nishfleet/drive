@@ -158,16 +158,19 @@ export async function closeAccount(input) {
       });
       charged = result.charged === true;
     }
-    await input.devices.setUnpaid(input.account.id, {
-      unpaidCents: decision.unpaidCents,
-      unpaidSince: decision.unpaidSince,
-    });
+    // The balance is cleared only by a charge that was posted. A deploy with
+    // no Dodo key, or an account with no customer, keeps what it owes on the
+    // row rather than erasing it at close.
     if (charged) {
+      await input.devices.setUnpaid(input.account.id, {
+        unpaidCents: decision.unpaidCents,
+        unpaidSince: decision.unpaidSince,
+      });
       await sendEmail(input.email, {
         to: expected,
         from: input.mailFrom,
         kind: "charge-receipt",
-        data: { chargedUsd: decision.chargeCents / 100 },
+        data: { chargedUsd: decision.chargeCents / 100, reason: "close" },
       });
     }
   }

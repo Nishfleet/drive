@@ -807,3 +807,24 @@ test("chargeAccountNow posts the unpaid cents and skips when there is no custome
   const skipped = await chargeAccountNow(db, ACCOUNT, 40, { apiKey: "", fetch: recorder.fetch });
   assert.equal(skipped.charged, false);
 });
+
+test("chargeAccountNow reuses one event id for one charge key, so a retry is not a second charge", async () => {
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const recorder = recordingFetch();
+  await chargeAccountNow(db, ACCOUNT, 40, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: midnight(),
+    eventKey: "close",
+  });
+  await chargeAccountNow(db, ACCOUNT, 40, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: midnight() + HOUR_MS,
+    eventKey: "close",
+  });
+  const ids = recorder.calls.map((call) => call.payload.events[0].event_id);
+  assert.equal(ids[0], `drive:${ACCOUNT}:charge:close`);
+  assert.equal(ids[1], ids[0], "Dodo dedupes on event_id");
+});

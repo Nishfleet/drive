@@ -217,6 +217,7 @@ export function billingEventId(accountId, hour) {
  *   offerOpen?: boolean,
  *   email?: unknown,
  *   mailFrom?: string,
+ *   eventKey?: string,
  * }} PushOptions
  */
 
@@ -268,7 +269,7 @@ export async function pushBillingHours(db, hours, options = {}) {
   // 720 times for one answer that cannot change mid-call (drive#488).
   /** @type {Map<string, boolean>} */
   const foundingFlags = new Map();
-  /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, chargeCents: number, unpaidCents: number, unpaidSince: number|null, email: string, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number, event: Record<string, unknown>}>} */
+  /** @type {Array<{accountId: string, hour: number, eventId: string, amountUnits: number, chargeCents: number, chargeReason: string, unpaidCents: number, unpaidSince: number|null, email: string, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number, event: Record<string, unknown>}>} */
   const pending = [];
   /** @type {Map<string, {unpaidCents: number, unpaidSince: number|null}>} */
   const unpaidByAccount = new Map();
@@ -349,6 +350,7 @@ export async function pushBillingHours(db, hours, options = {}) {
         eventId,
         amountUnits,
         chargeCents: next.chargeCents,
+        chargeReason: next.reason,
         unpaidCents: next.unpaidCents,
         unpaidSince: next.unpaidSince,
         email: row.email,
@@ -589,7 +591,7 @@ async function customersForHour(db, hour) {
  * Monthly statement at month-end, and a $5 charge receipt when the card
  * is charged (drive#465). A missing mailer skips rather than failing the
  * ingest that already landed.
- * @param {Array<{email: string, chargeCents: number, unpaidCents: number, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number}>} batch
+ * @param {Array<{email: string, chargeCents: number, chargeReason: string, unpaidCents: number, lastHourOfMonth: boolean, monthTotalCents: number, meteredCents: number, maximumCents: number}>} batch
  * @param {PushOptions} options
  */
 async function sendBillingMail(batch, options) {
@@ -606,7 +608,7 @@ async function sendBillingMail(batch, options) {
         to: item.email,
         from: mailFrom,
         kind: "charge-receipt",
-        data: { chargedUsd: item.chargeCents / 100 },
+        data: { chargedUsd: item.chargeCents / 100, reason: item.chargeReason },
       }).catch((error) => {
         console.error(
           "billing: charge receipt failed",
@@ -698,7 +700,14 @@ export async function chargeAccountNow(db, accountId, chargeCents, options = {})
     return { charged: false };
   }
   const now = options.now === undefined ? Date.now() : toPushedAt(options.now);
-  const eventId = `drive:${accountId}:charge:${now}`;
+  // The caller's key names the one charge (close, or one retry of one
+  // failure), so a retry after a lost response reuses the event id and Dodo
+  // drops the duplicate instead of charging twice.
+  const key =
+    typeof options.eventKey === "string" && options.eventKey.length > 0
+      ? options.eventKey
+      : String(now);
+  const eventId = `drive:${accountId}:charge:${key}`;
   await ingestEvents(fetchImpl, ingestUrl, apiKey, [
     {
       event_id: eventId,

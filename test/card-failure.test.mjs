@@ -122,6 +122,7 @@ test("a successful retry on day 3 clears the failed-charge stamp", async () => {
     now: Date.parse("2026-01-04T00:00:00.000Z"),
     onRetry: async (charge) => {
       assert.equal(charge.chargeCents, 499);
+      assert.match(charge.eventKey, /^retry-\d+-day3$/, "one key per failure and retry day");
       return { charged: true };
     },
   });

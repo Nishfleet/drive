@@ -366,6 +366,16 @@ test("the charge receipt says the balance reached $5 and the card was charged", 
   assert.match(text, /running balance is now \$0\.00/);
 });
 
+test("a close or 12-month charge receipt names its own reason, never $5", () => {
+  const close = chargeReceiptTemplate({ chargedUsd: 0.4, reason: "close" });
+  assert.match(close.text, /closed your account, so we charged your card \$0\.40/);
+  assert.doesNotMatch(`${close.subject} ${close.text}`, /reached \$5/);
+  const held = chargeReceiptTemplate({ chargedUsd: 1.2, reason: "max-months" });
+  assert.match(held.text, /rolled over for 12 months, so we charged your card \$1\.20/);
+  assert.doesNotMatch(`${held.subject} ${held.text}`, /reached \$5/);
+  assert.throws(() => chargeReceiptTemplate({ chargedUsd: 1, reason: "whim" }), TypeError);
+});
+
 test("the receipt never shows a per-minute price", () => {
   // build-spec.md: "Never advertise a per-minute price". The receipt is the
   // one mail a customer keeps and forwards to their accountant.

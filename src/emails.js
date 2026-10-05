@@ -10,7 +10,7 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
-import { CHARGE_COPY, CHARGE_RECEIPT_COPY, CHARGE_THRESHOLD_CENTS } from "./charge-threshold.js";
+import { CHARGE_COPY, CHARGE_REASON_COPY, CHARGE_REASON_SUBJECT } from "./charge-threshold.js";
 
 export { DEFAULT_CAP_USD };
 
@@ -270,16 +270,24 @@ export function monthlyReceiptTemplate(data = {}) {
  */
 export function chargeReceiptTemplate(data = {}) {
   const charged = requireMoney(data.chargedUsd, "chargedUsd");
-  const threshold = usd(CHARGE_THRESHOLD_CENTS / 100);
+  // An absent reason is the $5 line, the receipt's usual cause; any other
+  // value is refused rather than guessed.
+  const reason = data.reason ?? "threshold";
+  if (reason !== "threshold" && reason !== "max-months" && reason !== "close") {
+    throw new TypeError(
+      `charge-receipt reason must be threshold, max-months or close, got ${String(reason)}`,
+    );
+  }
   const chargedLabel = usd(charged);
-  const subject = CHARGE_RECEIPT_COPY;
+  const subject = CHARGE_REASON_SUBJECT[reason];
+  const why = CHARGE_REASON_COPY[reason];
   const lines = [
-    `Your balance reached ${threshold}, and we charged your card ${chargedLabel}.`,
+    `${why} ${chargedLabel}.`,
     "",
     "This is a receipt for that charge. Your running balance is now $0.00.",
   ];
   const html_lines = [
-    `<p>Your balance reached ${threshold}, and we charged your card ${chargedLabel}.</p>`,
+    `<p>${why} ${chargedLabel}.</p>`,
     "<p>This is a receipt for that charge. Your running balance is now $0.00.</p>",
   ];
   return finish({ subject, lines, html_lines });

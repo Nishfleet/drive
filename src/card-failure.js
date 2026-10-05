@@ -83,7 +83,7 @@ export function daysSincePaymentFailed(failedAtSeconds, nowMs) {
  *   email: unknown,
  *   mailFrom: string,
  *   now: number,
- *   onRetry?: (input: {accountId: string, chargeCents: number, now: number}) => Promise<{charged: boolean}>,
+ *   onRetry?: (input: {accountId: string, chargeCents: number, now: number, eventKey: string}) => Promise<{charged: boolean}>,
  * }} input
  * @returns {Promise<{warned: number, scheduled: number, retry: number, readOnly: number}>}
  */
@@ -105,13 +105,16 @@ export async function runCardFailureCron(input) {
             accountId: row.id,
             chargeCents: row.unpaidCents,
             now: input.now,
+            eventKey: `retry-${row.paymentFailedAt}-day${days}`,
           });
           if (result.charged === true) {
-            if (typeof input.devices.clearPaymentFailed === "function") {
-              await input.devices.clearPaymentFailed(row.id);
-            }
+            // Balance first: a failed second write leaves the account on the
+            // failure list, so the next walk can still see what it owes.
             if (typeof input.devices.setUnpaid === "function") {
               await input.devices.setUnpaid(row.id, { unpaidCents: 0, unpaidSince: null });
+            }
+            if (typeof input.devices.clearPaymentFailed === "function") {
+              await input.devices.clearPaymentFailed(row.id);
             }
             continue;
           }
