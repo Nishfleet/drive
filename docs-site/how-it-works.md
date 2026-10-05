@@ -12,7 +12,7 @@ open in the apps you already use. Nothing is packed into a database or a
 proprietary container, so if you ever leave, your files come with you in the
 shape you put them in.
 
-Under the folder, the bytes live in an object store we run. You never see that
+Under the folder, the bytes live in object storage. You never see that
 layer; you see files.
 
 ## Files on demand
@@ -84,11 +84,11 @@ key can and cannot do.
 
 The meter counts every GB you keep, by the minute. At the end of the month the
 rate is {{RATE}} on the month's GB-months, and the bill is never more than
-{{MAX_PER_TB}} for each TB. {{NO_PLANS}} Downloads are counted
-separately. The numbers worked out for four sizes are on
+{{MAX_PER_TB}} for each TB. {{NO_PLANS}} Downloads are not metered yet, so
+they cost nothing today. The numbers worked out for four sizes are on
 [Pricing and your bill](/pricing).
 
 ## Next
 
-- [Quickstart](/quickstart) — five steps to a mounted drive.
+- [Quickstart](/quickstart) — six steps to a mounted drive.
 - [Pricing and your bill](/pricing) — the rate and the maximum.

@@ -11,7 +11,7 @@ same files.
 
 ## Before you start
 
-You need an invite and a machine running macOS, Linux or Windows.
+You need an invite. {{PLATFORMS}}
 {{NOT_OPEN}} Ask on the pricing page.
 
 Nothing else. One line below installs the command and everything it needs with

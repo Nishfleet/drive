@@ -25,7 +25,7 @@ Usage:
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
-  drive share <file>       make a link anyone can open, logged out (issue #19)
+  drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
   drive share --revoke <t> turn one link off (also on drive request)

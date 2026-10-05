@@ -245,6 +245,7 @@ function receiptData(overrides = {}) {
     meteredUsd: 16,
     ceilingUsd: 12,
     capped: true,
+    receiptNumber: "R-42",
     ...overrides,
   };
 }
@@ -327,6 +328,7 @@ test("a receipt is built from months that can actually happen", () => {
     meteredUsd: 12,
     ceilingUsd: 23,
     capped: false,
+    receiptNumber: "R-42",
   });
   assert.equal(uncapped.saved, "You paid $11.00 less than a flat plan");
   // 2 TB peak: meter $40, ceiling $23 (capped): bill $23, saved $17.
@@ -335,6 +337,7 @@ test("a receipt is built from months that can actually happen", () => {
     meteredUsd: 40,
     ceilingUsd: 23,
     capped: true,
+    receiptNumber: "R-42",
   });
   assert.equal(capped.saved, "Our price cap saved you $17.00");
   assert.match(capped.text, /bill for this month is \$23\.00/);
@@ -351,12 +354,38 @@ test("savedLine refuses a month with nonsense in it", () => {
   }
 });
 
-test("the receipt explains the bill is the capped meter", () => {
-  // The one line that stops "why is my bill less than my usage" tickets:
-  // the bill is min(metered, ceiling), and the ceiling is never charged.
-  const { text } = monthlyReceiptTemplate(receiptData());
-  assert.match(text, /min\(metered, ceiling\)/);
-  assert.match(text, /never charged/);
+test("the receipt explains the bill in the customer's words, with its number", () => {
+  // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
+  // The receipt says the same fact in the reader's words, with the two
+  // numbers it already has, and carries its receipt number so a customer
+  // can point at the bill. The number is the ledger entry of the draw
+  // (src/ledger.js), so the subject and body name it.
+  const { text, html, subject } = monthlyReceiptTemplate(receiptData());
+  assert.doesNotMatch(text, /min\(|ceiling\)|metered, ceiling/);
+  assert.doesNotMatch(html, /min\(|ceiling\)|metered, ceiling/);
+  assert.match(
+    text,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  assert.match(
+    html,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  assert.match(text, /Receipt R-42\./);
+  assert.match(html, /Receipt R-42\./);
+  assert.match(subject, /Your Drive receipt R-42: \$12\.00 this month/);
+});
+
+test("a receipt without its number is refused, never sent without one", () => {
+  // drive#545: the missing number was the gap. A caller that cannot name the
+  // ledger entry has a bug upstream; the template must not guess one.
+  for (const receiptNumber of [undefined, null, "", "   ", 42, {}]) {
+    assert.throws(
+      () => monthlyReceiptTemplate({ ...receiptData(), receiptNumber }),
+      TypeError,
+      `receiptNumber: ${String(receiptNumber)}`,
+    );
+  }
 });
 
 test("the receipt never shows a per-minute price", () => {
@@ -496,7 +525,14 @@ test("capped must be a real boolean, because it picks the saving's baseline", ()
       `capped: ${String(capped)}`,
     );
     assert.throws(
-      () => monthlyReceiptTemplate({ billUsd: 12, meteredUsd: 16, ceilingUsd: 23, capped }),
+      () =>
+        monthlyReceiptTemplate({
+          billUsd: 12,
+          meteredUsd: 16,
+          ceilingUsd: 23,
+          capped,
+          receiptNumber: "R-42",
+        }),
       TypeError,
       `capped: ${String(capped)}`,
     );
@@ -773,12 +809,24 @@ test("a receipt with no saving and no capped flag is a 400, not a $0 receipt", a
     authed({
       to: "person@example.com",
       kind: "monthly-receipt",
-      data: { billUsd: 12, meteredUsd: 16, ceilingUsd: 12 },
+      data: { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, receiptNumber: "R-42" },
     }),
     makeEnv(),
   );
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /capped must be true or false/);
+  // The same wrap holds for a missing receipt number (drive#545): the route
+  // answers 400 with the guard's words, and sends nothing.
+  const noNumber = await handleSendEmailRequest(
+    authed({
+      to: "person@example.com",
+      kind: "monthly-receipt",
+      data: { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true },
+    }),
+    makeEnv(),
+  );
+  assert.equal(noNumber.status, 400);
+  assert.match((await noNumber.json()).error, /receiptNumber must be a non-empty string/);
 });
 
 test("the route names the five kinds when the kind is wrong", async () => {

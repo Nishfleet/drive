@@ -15,7 +15,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { NOT_OPEN, VERSION_HISTORY, VERSION_HISTORY_PROMISES } from "../src/release-state.js";
+import { monthlyReceiptTemplate } from "../src/emails.js";
+import {
+  NOT_OPEN,
+  PLATFORMS,
+  VERSION_HISTORY,
+  VERSION_HISTORY_PROMISES,
+} from "../src/release-state.js";
 
 /**
  * @param {string} path
@@ -137,4 +143,112 @@ test("every surface named in the issue states the facts it is about", () => {
     /not open yet/i,
     "the get-started page must say the drive is not open yet",
   );
+});
+
+// ---------------------------------------------------------------------------
+// drive#545: three more facts the surfaces kept getting wrong, each pinned
+// to the code that owns it.
+// ---------------------------------------------------------------------------
+
+test("the platform list is the packaging code's, in the same words everywhere", () => {
+  // drive#545: the quickstart said "macOS, Linux or Windows" while the home
+  // page said Windows is not ready, and INSTALL_LINES (test/packaging.test.mjs
+  // holds it to the packaging files) has no Windows line. The list lives in
+  // src/release-state.js and every surface that states it states that string.
+  assert.ok(
+    shipped("quickstart").includes(PLATFORMS),
+    "the built quickstart states the platform list",
+  );
+  assert.ok(
+    !read("docs-site/quickstart.md").match(/macOS, Linux or Windows/i),
+    "the quickstart must not list Windows as an install target",
+  );
+  const index = read("public/index.html");
+  assert.ok(index.includes(PLATFORMS), "the home page states the platform list verbatim");
+  // Every sentence on the home page that names Windows denies it, so the
+  // page cannot drift back to a claim the packaging code cannot back.
+  for (const match of index.matchAll(/Windows/g)) {
+    const around = index.slice(Math.max(0, match.index - 80), match.index + 120);
+    assert.match(
+      around,
+      /not ready|not published|Not yet|planned/i,
+      `a home-page Windows mention reads as available: ...${around}...`,
+    );
+  }
+});
+
+test("the step count the surfaces quote is the quickstart's own", () => {
+  // drive#545: the docs home, how-it-works, the README and llms.txt said
+  // "five steps"; the quickstart has six. The count is read from the page's
+  // numbered headings, so a step added later fails here until every surface
+  // quotes the new count.
+  const steps = (read("docs-site/quickstart.md").match(/^## \d+\./gm) ?? []).length;
+  assert.ok(steps >= 2, `the quickstart has numbered steps, found ${steps}`);
+  const words = /** @type {Record<number, string>} */ ({
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+  });
+  const word = words[steps];
+  assert.ok(word, `no word for ${steps} steps; extend the map and the surfaces together`);
+  for (const surface of [
+    "docs-site/index.md",
+    "docs-site/how-it-works.md",
+    "README.md",
+    "public/llms.txt",
+  ]) {
+    assert.match(
+      read(surface),
+      new RegExp(`\\b${word} steps\\b`),
+      `${surface} must say the quickstart is ${word} steps`,
+    );
+  }
+});
+
+test("the monthly receipt states its facts in the customer's words, with its number", () => {
+  // drive#545: the receipt told a customer "This is min(metered, ceiling)"
+  // and carried no number. The wording is pinned here the way the other
+  // customer-facing sentences are; the number is required, and the refusal
+  // to send without one is pinned in test/emails.test.mjs through the route.
+  const { subject, text, html } = monthlyReceiptTemplate({
+    billUsd: 12,
+    meteredUsd: 16,
+    ceilingUsd: 12,
+    capped: true,
+    receiptNumber: "R-42",
+  });
+  for (const part of [subject, text, html]) {
+    assert.doesNotMatch(part, /min\(metered|ceiling\)/, "no code jargon on a customer receipt");
+  }
+  assert.match(text, /Receipt R-42\./);
+  assert.match(
+    text,
+    /Your use this month meters to \$16\.00, and the most we charge for it is \$12\.00\./,
+  );
+  assert.match(subject, /Your Drive receipt R-42/);
+});
+
+test("the download charge is marked planned, not sold as live", () => {
+  // drive#545 (the #517 extension): the pricing page, the FAQ and llms.txt
+  // advertised a 1¢ per GB download charge the meter cannot levy today --
+  // the download worker cannot run (#517), so nothing records download
+  // bytes. Until it can, the charge is stated as the plan, marked planned,
+  // on every surface that names it.
+  const surfaces = /** @type {const} */ ([
+    ["docs-site/pricing.md", /not metered yet.*?planned/s],
+    ["public/llms.txt", /not metered yet, so they are free today/],
+    ["src/docs.js", /Downloads are not metered yet, so nothing is charged for them today/],
+  ]);
+  for (const [surface, pattern] of surfaces) {
+    assert.match(read(surface), pattern, `${surface} must mark the download charge planned`);
+    assert.doesNotMatch(
+      read(surface),
+      /then 1¢ per GB\.(?!.)/,
+      `${surface} sells the download charge as live`,
+    );
+  }
 });

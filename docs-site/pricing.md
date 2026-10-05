@@ -31,9 +31,9 @@ We need a card at sign-up because there is no free tier.
 
 ## Downloads
 
-Free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
-{{DOWNLOAD_RATE}}. Bringing files down is cheap; keeping them is what you pay
-for.
+Downloads are not metered yet, so nothing is charged for them today. The plan
+is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then
+{{DOWNLOAD_RATE}} (planned).
 
 ## Version history
 

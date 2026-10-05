@@ -368,10 +368,11 @@ test("the first viewport says who it is for and what it does", () => {
 
 test("no unsourced claims appear anywhere on the page", () => {
   // The owner's review of PR #17: "We have no SOC 2, and unsourced claims
-  // are a hold." Single sign-on is marked planned where the Business box
-  // names it, since the Business tier is built after v1.
+  // are a hold." The Business box names what is not built and marks it
+  // planned in the same breath (drive#545: the team bill and priority
+  // support were sold as today's features).
   assert.equal(words.includes("SOC 2"), false, "the page must not claim a SOC 2 report");
-  assert.match(words, /single sign-on \(planned\)/);
+  assert.match(words, /single sign-on, team billing and priority support \(planned\)\./);
 });
 
 // The text of one <dd>, for the worked-example rows, as a reader sees it. The

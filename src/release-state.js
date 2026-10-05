@@ -16,6 +16,14 @@
 export const VERSION_HISTORY = "Version history is not in version 1.";
 export const NOT_OPEN = "The drive is not open yet. Sign-ups on the pricing page go to a waitlist.";
 
+// The platforms a person can install on today (drive#545). The Windows
+// install path stays out of INSTALL_LINES until a signed release is
+// published, so any surface that lists Windows as an install target
+// contradicts the packaging code. The docs pages carry this through the
+// {{PLATFORMS}} marker and the static surfaces state it in the same words;
+// the docs-truth test holds both to this constant.
+export const PLATFORMS = "Drive runs on macOS and Linux today. Windows is not ready yet.";
+
 // The phrase a surface must never use to claim a feature the product
 // does not have. A surface matching any of these fails the build. Keep
 // this list to phrases that cannot be read as anything but the

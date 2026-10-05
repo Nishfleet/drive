@@ -236,33 +236,47 @@ export function paymentFailedTemplate(data = {}) {
 
 // ---------------------------------------------------------------------------
 // 5) Monthly receipt -- this month's bill and, when there is one, the saved
-//    line. { billUsd, meteredUsd, ceilingUsd, capped }
+//    line. { billUsd, meteredUsd, ceilingUsd, capped, receiptNumber }
 // ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
 export function monthlyReceiptTemplate(data = {}) {
-  const { billUsd, meteredUsd, ceilingUsd, capped } = data;
+  const { billUsd, meteredUsd, ceilingUsd, capped, receiptNumber } = data;
   const bill = requireMoney(billUsd, "billUsd");
+  // requireMoney() both checks and types: what it hands back is the number
+  // the sentence templates below print.
+  const metered = requireMoney(meteredUsd, "meteredUsd");
+  const ceiling = requireMoney(ceilingUsd, "ceilingUsd");
+  // drive#545: a receipt a customer can point at. The number is the ledger
+  // entry the month's draw created (src/ledger.js gives every entry one),
+  // passed by the caller that sends the statement, so every receipt names
+  // the one ledger row it bills. Required, never defaulted: a receipt without
+  // a number is exactly the gap the issue found.
+  const receipt = requireText(receiptNumber, "receiptNumber");
   // savedLine()'s own check is the one that refuses a missing or non-boolean
   // `capped`, so it is passed through as read rather than defaulted here: a
   // receipt that guessed the baseline would state the wrong saving.
   const saved = savedLine({
-    meteredUsd: requireMoney(meteredUsd, "meteredUsd"),
+    meteredUsd: metered,
     billUsd: bill,
-    ceilingUsd: requireMoney(ceilingUsd, "ceilingUsd"),
+    ceilingUsd: ceiling,
     capped,
   });
-  const subject = `Your Drive receipt: ${usd(bill)} this month`;
+  const safeReceipt = escapeHtml(receipt);
+  const subject = `Your Drive receipt ${receipt}: ${usd(bill)} this month`;
   const lines = [
+    `Receipt ${receipt}.`,
+    "",
     `Your Drive bill for this month is ${usd(bill)}.`,
     "",
-    "This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.",
+    `Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.`,
   ];
   const html_lines = [
+    `<p>Receipt ${safeReceipt}.</p>`,
     `<p>Your Drive bill for this month is ${usd(bill)}.</p>`,
-    "<p>This is min(metered, ceiling): the ceiling is never charged, it only caps the bill.</p>",
+    `<p>Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.</p>`,
   ];
   if (saved) {
     lines.push("", saved);

@@ -112,6 +112,9 @@ function scanCustomerPages() {
   for (const rel of walkFiles(join(root, "docs-site"))) {
     hits.push(...internalHitsIn(rel, readFileSync(join(root, rel), "utf8")));
   }
+  for (const { rel, text } of builtDocsFiles()) {
+    hits.push(...internalHitsIn(rel, text));
+  }
   hits.push(
     ...internalHitsIn(
       "get-started.html",
@@ -328,6 +331,37 @@ function walkFiles(dir, files = []) {
   return files;
 }
 
+/**
+ * The built docs pages under public/docs (drive#545). The authored pages in
+ * docs-site/*.md are the source, but what ships is the VitePress build: the
+ * HTML, the .md twins the llms plugin emits, and llms-full.txt, which is one
+ * file holding every page. A rival name that survives authoring reaches
+ * customers through all three, so the built output is walked beside the
+ * sources. Fails with the build command when the pages are not built.
+ * @returns {{rel: string, text: string}[]}
+ */
+function builtDocsFiles() {
+  const docsDir = join(root, "public/docs");
+  let entries;
+  try {
+    entries = readdirSync(docsDir, { withFileTypes: true });
+  } catch {
+    throw new Error("public/docs was not built; run `npm run docs:build` first (npm test does)");
+  }
+  const files = [];
+  for (const ent of entries) {
+    if (!ent.isFile() || !TEXT_EXT.has(extname(ent.name))) {
+      continue;
+    }
+    const raw = readFileSync(join(docsDir, ent.name), "utf8");
+    // The built HTML carries VitePress comments; the customer copy is what
+    // renders, so comments are stripped the same way scanTree strips them.
+    const text = extname(ent.name) === ".html" ? stripMarkupComments(raw) : raw;
+    files.push({ rel: `public/docs/${ent.name}`, text });
+  }
+  return files;
+}
+
 function scanTree() {
   const hits = [];
   for (const rel of walkFiles(join(root, "public"))) {
@@ -335,6 +369,9 @@ function scanTree() {
   }
   for (const rel of walkFiles(join(root, "docs-site"))) {
     hits.push(...hitsIn(rel, readFileSync(join(root, rel), "utf8")));
+  }
+  for (const { rel, text } of builtDocsFiles()) {
+    hits.push(...hitsIn(rel, text));
   }
   for (const rel of walkFiles(join(root, "src"))) {
     if (!SRC_JS_EXT.has(extname(rel))) {

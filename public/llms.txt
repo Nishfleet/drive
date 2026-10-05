@@ -17,7 +17,7 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 - The rule: You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.
 - No plans. Your balance never expires. Storage is metered by the minute and averaged over the month.
 - We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
-- Downloads: free up to 3× what you store each month, then 1¢ per GB.
+- Downloads: not metered yet, so they are free today. The plan is 3× your stored size free, then 1¢ per GB (planned).
 - Version history is not in version 1.
 - A 1 TB drive kept 60% full bills $10 a month.
 
@@ -56,7 +56,7 @@ Every page below is one plain-words page about the drive, also served as
 Markdown: add `.md` to the address. [llms-full.txt](https://drive-pricing.nishant345.workers.dev/docs/llms-full.txt)
 holds all nine in one file.
 
-- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): five steps from nothing to a mounted drive.
+- [Quickstart](https://drive-pricing.nishant345.workers.dev/docs/quickstart.md): six steps from nothing to a mounted drive.
 - [How it works](https://drive-pricing.nishant345.workers.dev/docs/how-it-works.md): plain files, and how the bill is counted.
 - [Agents](https://drive-pricing.nishant345.workers.dev/docs/agents.md): `drive init`, and what an agent key cannot do.
 - [Pricing and your bill](https://drive-pricing.nishant345.workers.dev/docs/pricing.md): the rate, the maximum and four worked sizes.

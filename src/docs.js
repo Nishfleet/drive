@@ -27,7 +27,7 @@ import {
 import { INSTALL_LINES } from "./install-lines.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
-import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
+import { NOT_OPEN, PLATFORMS, VERSION_HISTORY } from "./release-state.js";
 import { SITE } from "./seo.js";
 
 /**
@@ -181,8 +181,8 @@ export const FAQ = Object.freeze([
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
       "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
-      "You add money first, and storage and downloads are drawn from your balance as they are metered. Files are counted for at least one hour.",
-      "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
+      "You add money first, and what you store is drawn from your balance as it is metered. Files are counted for at least one hour.",
+      "Downloads are not metered yet, so nothing is charged for them today. The plan is: free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}} (planned).",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
   }),
@@ -297,6 +297,7 @@ export function markerValues(extra = {}) {
     // Limits page rules out.
     VERSION_HISTORY: VERSION_HISTORY,
     NOT_OPEN: NOT_OPEN,
+    PLATFORMS: PLATFORMS,
     INSTALL_MACOS: INSTALL_LINES[0].line,
     INSTALL_DEBIAN: INSTALL_LINES[1].line,
     INSTALL_FEDORA: INSTALL_LINES[2].line,

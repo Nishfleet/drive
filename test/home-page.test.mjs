@@ -86,8 +86,25 @@ test("one h1, a main landmark, a skip link and a reduced-motion reset", () => {
   assert.match(html, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation: none !important/);
 });
 
-test("the main action is Get drive, to /signin, with a true pay-as-you-go line", () => {
-  assert.match(html, /<a class="btn" href="\/signin">Get drive/);
+test("the main action is Get drive, to the waitlist while sign-up is closed, with a true pay-as-you-go line", () => {
+  // drive#545: the buttons used to point at /signin, which refuses anyone
+  // without an invite. While sign-up is closed the action is the waitlist
+  // form on this page, tagged with where the person came from; the plain
+  // Sign in link keeps serving invited accounts.
+  assert.doesNotMatch(html, /<a class="btn" href="\/signin">Get drive/);
+  const buttons =
+    html.match(/<a class="btn" href="#waitlist" data-waitlist-source="[^"]+">Get drive/g) ?? [];
+  assert.ok(
+    buttons.length >= 3,
+    `the page carries the Get drive buttons to the waitlist, found ${buttons.length}`,
+  );
+  for (const source of ["nav", "hero", "footer"]) {
+    assert.match(
+      html,
+      new RegExp(`data-waitlist-source="${source}"`),
+      `the ${source} button tags its source`,
+    );
+  }
   // drive#586: prepaid. The line names the smallest top-up and what 200 GB
   // draws from it.
   const cta = html.match(
