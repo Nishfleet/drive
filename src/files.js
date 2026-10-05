@@ -1183,18 +1183,40 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
  * The storage settings a deployment carries, read in one place so the Files
  * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
  * provisioning (provisionAccountBucket below) read the same four names in the
  * same order. A second reader of these vars is a second thing to drift, the
  * same reason keyprovider-env.js is the api Worker's one reader of its own.
- * @param {{[key: string]: unknown}} env
+ * @param {StorageEnv} env
  * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
  *   secretAccessKey: string|undefined, region: string|undefined}}
  */
 export function storageVarsFromEnv(env) {
-  /** @param {unknown} value */
-  const read = (value) => (typeof value === "string" && value !== "" ? value : undefined);
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
   return {
     endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
     accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
@@ -1217,7 +1239,7 @@ export function storageVarsFromEnv(env) {
  * half a credential (the rule keyprovider-env.js states for the mint). The key
  * mint keeps its own provisioning as the safety net, and the Files page
  * answers an empty folder for a bucket that is not there yet.
- * @param {{[key: string]: unknown}} env
+ * @param {StorageEnv} env
  * @param {string} accountId
  * @param {{fetchImpl?: typeof fetch}} [options]
  * @returns {Promise<boolean>} whether the provisioning call ran

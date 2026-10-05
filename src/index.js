@@ -202,18 +202,9 @@ let filesStore;
  * and the Files page already answers from the in-memory store when they are
  * unset. The names match the api Worker's iDrive pair so the site Worker can
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
- * @typedef {Env & {
- *   FILES_S3_ENDPOINT?: string,
- *   FILES_S3_BUCKET?: string,
- *   FILES_S3_REGION?: string,
- *   FILES_S3_ACCESS_KEY_ID?: string,
- *   FILES_S3_SECRET_ACCESS_KEY?: string,
- *   IDRIVE_S3_ENDPOINT?: string,
- *   IDRIVE_S3_REGION?: string,
- *   IDRIVE_S3_ACCESS_KEY_ID?: string,
- *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
- * }} StorageEnv
+ * pair a local `rclone serve s3` still uses. The typedef's one definition is
+ * src/files.js's, beside the one reader of the vars.
+ * @typedef {import("./files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */

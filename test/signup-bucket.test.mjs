@@ -67,7 +67,7 @@ function storageEnv(made, endpoint) {
 }
 
 /**
- * @param {{to: string, url: string, step: string, method: string, email: string}} body
+ * @param {{step: string, method: string, email: string}} body
  * @param {string} [url]
  */
 const post = (body, url = `${TEST_BASE_URL}/api/signin`) =>
@@ -112,12 +112,16 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
     region: REGION,
     credentials: { accessKeyId: ROOT_ACCESS_KEY, secretAccessKey: ROOT_SECRET_KEY },
   });
-  const bucketConfig = (bucket) => readBucketConfig(root, { bucket });
-  const cookieOf = (response) =>
-    response.headers
-      .getSetCookie()
-      .map((line) => line.split(";")[0])
-      .join("; ");
+  const bucketConfig =
+    /** @param {string} bucket */
+    (bucket) => readBucketConfig(root, { bucket });
+  const cookieOf =
+    /** @param {Response} response */
+    (response) =>
+      response.headers
+        .getSetCookie()
+        .map((line) => line.split(";")[0])
+        .join("; ");
 
   // Filled in by the first subtest, read by the ones after it: the subtests
   // run in order, so the walk's account and session are the same walk.
