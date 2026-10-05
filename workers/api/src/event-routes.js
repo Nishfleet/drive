@@ -22,25 +22,7 @@
 // page; a bucket reading an XML/`{"error"}` body is not a person.
 
 import { sha256Hex } from "./db.js";
-import { errorResponse, json } from "./http.js";
-
-/**
- * Constant-time comparison of two hex digests: a plain `===` on a shared
- * secret leaks its prefix through timing, and the two lengths are fixed by
- * SHA-256.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let difference = 0;
-  for (let index = 0; index < left.length; index++) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
-}
+import { digestsEqual, errorResponse, json } from "./http.js";
 
 /**
  * One event from an S3 notification envelope, and the bucket and key it names.

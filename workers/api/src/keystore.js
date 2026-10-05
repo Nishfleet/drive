@@ -29,6 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
+import { digestsEqual } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
@@ -53,25 +54,6 @@ export {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 };
-
-/**
- * Constant-time string comparison for two equal-length hex digests. A plain
- * `===` on a secret hash leaks, through timing, how many leading characters
- * were right; the lengths here are fixed by SHA-256, so the loop is a full
- * comparison either way.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
-}
 
 /**
  * The stand-in key and object store. One instance per Worker isolate

@@ -1,4 +1,6 @@
-// Small HTTP helpers shared by every api route module.
+// Small helpers shared by every api route module: the HTTP shapes a route
+// answers with, and the constant-time digest compare the three token checks
+// run (drive#636), so a second spelling of either means a second thing.
 
 /**
  * JSON response. Never cached: every api body is per-account.
@@ -66,4 +68,39 @@ export async function readJsonObject(request) {
     return { error: "Send a JSON object." };
   }
   return { body };
+}
+
+/**
+ * Constant-time comparison of two hex SHA-256 digests. A plain `===` on a
+ * secret hash leaks, through timing, how many leading characters were right.
+ *
+ * SHA-256 fixes both lengths at 64 characters, so the loop is a full
+ * comparison either way and nothing about the answer depends on the data. The
+ * length is folded into the accumulator instead of exiting on it, and so is an
+ * empty side: a blank secret is one nobody ever set, so it fails closed rather
+ * than comparing equal to another blank one. Every input shape therefore runs
+ * the same loop over the longer of the two strings, and no byte count leaves
+ * the compare early (drive#636, the same care as drive#618).
+ *
+ * One definition for all three call sites — event-routes.js (the bucket's
+ * notification token), keystore.js and devices.js (the device secret) — so the
+ * check a stored hash earns is the same check on all of them.
+ * @param {unknown} left
+ * @param {unknown} right
+ * @returns {boolean}
+ */
+export function digestsEqual(left, right) {
+  const a = typeof left === "string" ? left : "";
+  const b = typeof right === "string" ? right : "";
+  let difference = 0;
+  if (a.length !== b.length || a === "" || b === "") {
+    difference = 1;
+  }
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    // Past the end `charCodeAt` is NaN, which every bitwise operator reads as
+    // 0, so a shorter side contributes its own length to the accumulator
+    // instead of stopping the loop.
+    difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return difference === 0;
 }

@@ -17,6 +17,7 @@ import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { digestsEqual } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -98,23 +99,6 @@ function deviceFromRow(row) {
       ? {}
       : { cappedFrom: parseCappedFrom(r.capped_from) }),
   };
-}
-
-/**
- * Constant-time hex comparison, the same loop keystore.js uses, so a secret
- * hash cannot leak through timing just because the row moved to D1.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 /**
