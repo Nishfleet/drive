@@ -22,8 +22,10 @@ const prefixOf = (name) => (name.match(/^(\d{4})/) || ["", ""])[1];
 
 // Prefixes this schema already shares, each with the number of files it
 // carries on main. They are grandfathered: production applied each under its
-// filename, so the suite leaves them and only blocks new collisions or growth
-// past the known size. A prefix absent here may be used by at most one file.
+// filename, so the suite leaves them. Growth past the known size fails on
+// purpose — a new file that shares a prefix forces a reviewed allowlist
+// update instead of a silent collision. A prefix absent here may be used by at
+// most one file.
 const ALLOWED_DUPLICATES = new Map([
   ["0005", 2], // 0005_better_auth.sql, 0005_meter.sql
   ["0006", 2], // 0006_share_links.sql, 0006_usage_stored_bytes.sql

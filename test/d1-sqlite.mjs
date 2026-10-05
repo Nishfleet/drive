@@ -18,11 +18,12 @@ import { BYTES_PER_GB } from "../src/meter.js";
 const migrationsDir = new URL("../migrations/drive/", import.meta.url);
 // The drive database's migration files in the order `wrangler d1 migrations
 // apply` uses — a full filename sort. A numeric-prefix sort (Number.parseInt)
-// is non-deterministic for this schema: several prefixes are shared by more
-// than one file (0005, 0006, 0012, 0017 and 0020 on main), both members of a
-// pair parse to the same number, and the tie is left to the filesystem. The
-// full sort is the deploy's own, so the test schema is built in the same order
-// production is. Exported once so every reader of migrations/drive/ reads it
+// is not portable here: several prefixes are shared by more than one file
+// (0005, 0006, 0012, 0017 and 0020 on main), both members of a pair parse to
+// the same number, so the comparison returns 0 and a stable sort keeps them in
+// the readdirSync order — stable on one machine, not the same across machines.
+// The full sort is the deploy's own, so the test schema is built in the same
+// order production is. Exported once so every reader of migrations/drive/ reads it
 // the same way, instead of each test re-sorting and diverging (drive issue
 // #619).
 export const MIGRATION_FILES = Object.freeze(
