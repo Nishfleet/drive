@@ -107,7 +107,7 @@ export const CONNECTION_COPY = Object.freeze({
   },
   unreachable: {
     what: "Cannot reach the drive service right now.",
-    next: `Leave this page open. It keeps checking, and ${STATUS_COMMAND} on the machine answers the same question.`,
+    next: `Leave this page open. It keeps checking, and ${STATUS_COMMAND} on the machine says whether the drive is mounted.`,
   },
 });
 

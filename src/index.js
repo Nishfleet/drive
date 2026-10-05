@@ -554,8 +554,14 @@ export function createApp() {
   // "waiting" it answered was the only answer it had.
   app.get(STATUS_ENDPOINT, async (c) => {
     const account = c.get("account");
-    const upload = account ? await liveQueueFor(c.env, account) : null;
-    const devices = account ? await liveDevicesFor(c.env, account) : [];
+    // Both reads answer the same poll, so they go together: the page asks
+    // every POLL_INTERVAL_MS and a second round-trip before the first answer
+    // is a longer wait on a page someone is watching. Neither read depends on
+    // the other.
+    const [upload, devices] = await Promise.all([
+      account ? liveQueueFor(c.env, account) : null,
+      account ? liveDevicesFor(c.env, account) : [],
+    ]);
     return handleFirstRunStatusRequest(c.req.raw, account, upload, devices);
   });
 

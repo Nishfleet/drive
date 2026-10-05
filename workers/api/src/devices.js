@@ -640,17 +640,27 @@ export function createD1DeviceStore(db, options = {}) {
      * rows are left out for the same reason as `listCapKeys`: a device whose
      * key was revoked has signed out, so it must not read as connected.
      *
+     * Only a machine's own key answers this read (kind `device`). The other
+     * kinds in this table are credentials for tools and storage, and every
+     * request one authenticates stamps `last_seen_at` on its row
+     * (devices.js `authenticate`, `renewKey`), so an agent key would flip the
+     * first-run page to "your drive is mounted on this Mac" while the machine
+     * has not signed in at all (drive issue #556). The question this read
+     * answers is the one `drive login` mints a key to answer.
+     *
      * @param {{id: string}} account
      * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
      */
     async listLive(account) {
       const devices = await liveDevices(account.id);
-      return devices.map((device) => ({
-        id: device.id,
-        name: device.name,
-        kind: device.kind,
-        lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
-      }));
+      return devices
+        .filter((device) => device.kind === "device")
+        .map((device) => ({
+          id: device.id,
+          name: device.name,
+          kind: device.kind,
+          lastSeenAt: device.lastSeenAt === null ? null : device.lastSeenAt * 1000,
+        }));
     },
 
     /**

@@ -441,6 +441,8 @@ test("the poll answers connected when one of the account's devices signed in", a
   // A clock the route cannot read is a bug to see, not a wait to show somebody
   // who has already signed in.
   assert.throws(() => firstRunState([{ lastSeenAt: "not-a-date" }]), TypeError);
+  assert.throws(() => firstRunState({ lastSeenAt: Date.now() }), TypeError);
+  assert.throws(() => firstRunState("connected"), TypeError);
 });
 
 test("a request can only prove an account through a session Better Auth minted", async () => {
@@ -1017,4 +1019,29 @@ test("the Worker reads the account's device rows into the status payload", async
   });
   const other = await (await poll()).json();
   assert.equal(other.state, "waiting", "another account's device is not this account's sign-in");
+
+  // An agent key is a credential for a tool, not for this machine: every request
+  // one authenticates stamps `last_seen_at` on its row, so a busy agent must not
+  // flip the page to "your drive is mounted on this Mac" while the Mac has not
+  // signed in at all. `listLive` answers with the machine's own key only.
+  await store.put({
+    id: "key_agent",
+    accountId: account.id,
+    name: "Coding agent",
+    kind: "agent",
+    accessKeyId: "b2_agent",
+    secretHash: "hash_agent",
+    prefix: `u/${account.id}/agents/coding/`,
+    capabilities: ["list", "write"],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: Math.floor(Date.now() / 1000),
+    revokedAt: null,
+  });
+  const agentBusy = await (await poll()).json();
+  assert.equal(
+    agentBusy.state,
+    "waiting",
+    "an agent key's requests are not this machine signing in",
+  );
+  assert.equal(isConnected(agentBusy), false);
 });
