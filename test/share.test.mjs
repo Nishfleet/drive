@@ -700,9 +700,7 @@ test("a store failure is logged, and its message is never returned", async () =>
       listAll: async () => {
         throw new Error("the share listing never runs in this test");
       },
-      stat: async () => {
-        throw new Error("the share listing never runs in this test");
-      },
+      stat: async () => null,
     };
     const { links } = drive();
     await links.requests.create(
@@ -1429,6 +1427,69 @@ test("an unnamed upload is refused before any bytes are stored", async () => {
   assert.equal(upload.status, 400);
   assert.equal((await upload.json()).error, failureMessage("upload-needs-name"));
   assert.deepEqual(await store.list("/"), []);
+});
+
+test("an upload-request drop does not overwrite an owner's file of the same name", async () => {
+  const { files, links, request, list, upload } = drive();
+  await upload("/", "notes.txt", "mine");
+  const minted = await request("/");
+  assert.equal(minted.status, 201);
+  const token = (await minted.json()).request.token;
+  const dropped = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${token}&name=notes.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "stranger",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(dropped.status, 409);
+  assert.equal((await dropped.json()).error, failureMessage("upload-name-taken"));
+  const names = (await list()).map((row) => row.name);
+  assert.deepEqual(names, ["notes.txt"]);
+  const readBack = await scopeStore(files, account).read("/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the owner's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "mine");
+});
+
+test("a failed upload-request write releases the reserved bytes", async () => {
+  const files = createMemoryStore();
+  files.write = async () => {
+    throw new Error("storage refused the write");
+  };
+  const links = createD1LinkStore(createTestD1());
+  await handleRequestRequest(
+    new Request(api(REQUEST_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folder: "/", maxBytes: 100 }),
+    }),
+    files,
+    links,
+    account,
+    { now, token: TOKEN },
+  );
+  const upload = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=fail.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "hello",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(upload.status, 500);
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, 0, "the reservation is released after a failed write");
+  assert.equal(row?.uploadCount, 0);
 });
 
 test("the owner sees what came in through a link and can close it", async () => {
