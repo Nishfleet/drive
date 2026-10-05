@@ -48,6 +48,7 @@ import {
   reconcileMeter,
   runMeterCron,
 } from "./meter.js";
+import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -718,6 +719,21 @@ export function createApp() {
     });
   });
 
+  // The card-update path the payment-failed copy points at (drive#575). A GET
+  // because it is a link a browser follows, and the answer is a 302 to the
+  // provider's customer portal rather than a JSON body. The account gate
+  // above already answered an anonymous caller 401, so a stranger never
+  // reaches a provider call.
+  app.get(PORTAL_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handlePortalRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
+      fetch: dodo.DODO_FETCH,
+    });
+  });
+
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
   // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
@@ -996,18 +1012,29 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The account close cron is its own waitUntil (drive#565), registered
+      // before the reconcile runs: a reconcileMeter throw used to leave every
+      // close receipt, reminder and purge undone for that night, and the
+      // purge is resumable now, so the two trips have nothing to say to each
+      // other. Its own per-account catches mean only a whole-cron failure
+      // (D1 down) rejects here, and a failed trigger is the honest signal
+      // for that: the next night retries everything it did not finish.
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        await runAccountCloseCron({
-          db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
-          store: storeFor(env),
-          email: env.EMAIL,
-          mailFrom: secrets.MAIL_FROM ?? "",
-          now: event.scheduledTime,
-        });
+        context.waitUntil(
+          runAccountCloseCron({
+            db: env.DRIVE_DB,
+            devices: createD1DeviceStore(env.DRIVE_DB),
+            store,
+            email: env.EMAIL,
+            mailFrom: secrets.MAIL_FROM ?? "",
+            now: event.scheduledTime,
+          }).catch((error) => {
+            throw new Error(`the account close cron failed: ${error.message}`);
+          }),
+        );
       }
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

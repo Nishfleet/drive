@@ -17,6 +17,7 @@
 
 import { AwsClient } from "aws4fetch";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { contentMd5 } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -565,6 +566,16 @@ export function restorableUntil(deletedAt) {
  *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
  * @property {(path: string) => Promise<void>} remove
+ * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
+ *   Every key under one prefix, flat: no folder entries, the hidden system
+ *   folders included, in the provider's own key order, at most `limit` keys
+ *   and never one at or before `startAfter`. The nightly purge (drive#565)
+ *   walks one account's whole key space with it, resuming after the last key
+ *   the previous batch deleted.
+ * @property {(paths: string[]) => Promise<void>} removeBatch
+ *   One delete call for up to 1,000 paths. More is refused: 1,000 is the
+ *   provider's own per-call ceiling, and a caller that chunks by it stays
+ *   inside the run's subrequest budget (drive#565).
  * @property {(from: string, to: string, size?: number) => Promise<void>} copy
  *   A copy the storage itself makes, no bytes through this Worker: `drive
  *   branch` (build step 7) is a folder copy, and a copy that streamed every
@@ -748,6 +759,19 @@ export function scopeStore(store, account) {
         ...version,
         path: toDrivePath(version.path),
       }));
+    },
+    async listKeys(path, options) {
+      const startAfter = options?.startAfter;
+      const keys = await store.listKeys(toKey(path), {
+        startAfter: startAfter === undefined ? undefined : toKey(startAfter),
+        limit: options?.limit,
+      });
+      // Every key is rewritten like any other listing: one answered from
+      // outside the prefix throws here instead of reaching the caller.
+      return keys.map(toDrivePath);
+    },
+    async removeBatch(paths) {
+      return store.removeBatch(paths.map(toKey));
     },
   };
 }
@@ -960,6 +984,33 @@ export function createMemoryStore() {
       // the bytes stay readable until the provider's own retention ends them.
       hideVersion(path, Date.now());
       objects.delete(path);
+    },
+    async listKeys(path, options = {}) {
+      // Sorted, so a batch boundary is the same boundary on the next run and
+      // a `startAfter` cursor never skips an unvisited key. The raw key scan
+      // hides nothing: the purge has to reach `.trash` and `.branches` too.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const { startAfter, limit } = options;
+      const keys = [];
+      for (const key of [...objects.keys()].sort()) {
+        if (!key.startsWith(prefix) || key === prefix) {
+          continue;
+        }
+        if (startAfter !== undefined && key <= startAfter) {
+          continue;
+        }
+        keys.push(key);
+        if (limit !== undefined && keys.length >= limit) {
+          return keys;
+        }
+      }
+      return keys;
+    },
+    async removeBatch(paths) {
+      for (const path of paths) {
+        hideVersion(path, Date.now());
+        objects.delete(path);
+      }
     },
     /**
      * Every version of every file under one drive path. The recursive walk is
@@ -1379,6 +1430,101 @@ export function createS3Store(config) {
         throw new Error(`storage delete failed with ${response.status}`);
       }
     },
+    async listKeys(path, options = {}) {
+      // Flat: no delimiter, so hidden folders (`u/<id>/.trash`) come back
+      // like any other key, which is what the purge needs. `start-after` is
+      // S3's own resume parameter: the provider applies it before paging, so
+      // it rides only the first request of the loop and the continuation
+      // token walks the rest in the same order.
+      const prefix = path.endsWith("/") ? path : `${path}/`;
+      const { startAfter, limit } = options;
+      const keys = [];
+      let token = null;
+      let seen = null;
+      for (;;) {
+        const query =
+          `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
+          (token === null && startAfter !== undefined
+            ? `&start-after=${encodeURIComponent(startAfter)}`
+            : "") +
+          (limit === undefined ? "" : `&max-keys=${limit}`) +
+          (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
+        const response = await request(`${baseFor(prefix)}${query}`);
+        if (!response.ok) {
+          throw new Error(`storage list failed with ${response.status}`);
+        }
+        const xml = await response.text();
+        for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+          const key = unescapeXmlText(tagValue(match[1], "Key"));
+          if (key !== "") {
+            keys.push(key);
+          }
+        }
+        if (limit !== undefined && keys.length >= limit) {
+          return keys.slice(0, limit);
+        }
+        token = nextContinuationToken(xml);
+        if (token === null) {
+          return keys;
+        }
+        if (token === seen) {
+          // The same repeat guard the folder listing below carries: a server
+          // answering the same token forever would hold the cron open.
+          throw new Error(
+            `storage list repeated continuation-token "${token}" for ${prefix}; the listing is not fully read`,
+          );
+        }
+        seen = token;
+      }
+    },
+    /**
+     * One DeleteObjects call for up to 1,000 keys — S3's own per-call
+     * ceiling, and the whole point for the nightly purge (drive#565): a
+     * 100,000-file account is 100 calls instead of 100,000, ten times under
+     * the run's subrequest budget instead of ten times over. The answer is
+     * checked per key, because DeleteObjects answers 200 with an <Error>
+     * block for every key the provider refused.
+     * @param {string[]} paths
+     */
+    async removeBatch(paths) {
+      if (paths.length > REMOVE_BATCH_LIMIT) {
+        throw new Error(
+          `removeBatch takes at most ${REMOVE_BATCH_LIMIT} keys, got ${paths.length}`,
+        );
+      }
+      if (paths.length === 0) {
+        return;
+      }
+      // DeleteObjects is one bucket's call: a batch that named two buckets
+      // would silently miss the second's keys, so the mix is refused.
+      const firstBucket = bucketOf(paths[0]);
+      for (const path of paths) {
+        if (bucketOf(path) !== firstBucket) {
+          throw new Error("removeBatch takes keys from one bucket");
+        }
+      }
+      const body =
+        "<Delete>" +
+        paths.map((path) => `<Object><Key>${escapeXmlText(path)}</Key></Object>`).join("") +
+        "</Delete>";
+      // S3 refuses a Delete body without a Content-MD5, the same refusal the
+      // lifecycle PUT answers, so the checksum goes with it (contentMd5, the
+      // one MD5 the repo already carries).
+      const response = await request(`${baseFor(paths[0])}/?delete`, {
+        method: "POST",
+        headers: { "content-type": "application/xml", "content-md5": await contentMd5(body) },
+        body,
+      });
+      if (!response.ok) {
+        throw new Error(`storage batch delete failed with ${response.status}`);
+      }
+      const xml = await response.text();
+      for (const match of xml.matchAll(/<Error>([\s\S]*?)<\/Error>/g)) {
+        const key = unescapeXmlText(tagValue(match[1], "Key"));
+        const code = tagValue(match[1], "Code");
+        throw new Error(`storage batch delete refused "${key}" with ${code || "an error"}`);
+      }
+    },
     /**
      * The copy `drive branch` makes (build step 7). A file at or under S3's
      * single-copy ceiling is one CopyObject; a larger file is a multipart copy,
@@ -1495,6 +1641,8 @@ export function createS3Store(config) {
  * 5 GiB is the number S3 documents and every implementation measures against.
  */
 const SINGLE_COPY_LIMIT = 5 * 1024 ** 3;
+/** The most keys one DeleteObjects call may name: S3's own ceiling. */
+const REMOVE_BATCH_LIMIT = 1000;
 /** The byte range one UploadPartCopy copies. S3's floor for a copy part is
  * 5 MiB; 16 MiB puts a 10 GB branch file at 640 requests and a 6 GB one at 384,
  * which is a request count a stand-in and a real provider both answer quickly.
@@ -1784,6 +1932,33 @@ function tagValue(block, tag) {
   const from = open + tag.length + 2;
   const close = block.indexOf(`</${tag}>`, from);
   return close === -1 ? "" : block.slice(from, close).trim();
+}
+
+/**
+ * Text for inside one XML element, with the characters XML reserves escaped.
+ * A storage key can carry `<` or `&` (validatePath allows both), and a Delete
+ * body that sends them raw is a parse error on the provider side.
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeXmlText(text) {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/**
+ * The inverse, for the text an S3 XML answer carries back in `<Key>` values.
+ * `&quot;` and `&apos;` never appear in element text, but they unescape
+ * cleanly all the same; `&amp;` is replaced last so `&amp;lt;` reads `<`.
+ * @param {string} text
+ * @returns {string}
+ */
+function unescapeXmlText(text) {
+  return text
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&amp;", "&");
 }
 
 /**

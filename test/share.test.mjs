@@ -677,6 +677,9 @@ test("a store failure is logged, and its message is never returned", async () =>
   try {
     const boom = {
       list: async () => [],
+      listKeys: async () => {
+        throw new Error("the share upload path does not walk the key space");
+      },
       read: async () => {
         throw new Error("d1: no such column: bucket_secret");
       },
@@ -684,6 +687,9 @@ test("a store failure is logged, and its message is never returned", async () =>
         throw new Error("s3 put failed for key u/acct-a/secret.txt");
       },
       remove: async () => {},
+      removeBatch: async () => {
+        throw new Error("the share upload path does not delete a batch");
+      },
       copy: async () => {
         throw new Error("the share upload path does not copy");
       },
