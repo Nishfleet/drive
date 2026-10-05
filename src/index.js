@@ -23,10 +23,9 @@ import {
   handleUsageRequest,
   QUOTE_ENDPOINT,
   USAGE_ENDPOINT,
-  usageSummary,
 } from "./billing.js";
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
-import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
+import { CAP_ENDPOINT, capStateForAccount, handleCapRequest, runCapEnforcement } from "./cap.js";
 import { handleSendEmailRequest, isSameOriginRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -409,23 +408,27 @@ async function liveDevicesFor(env, account) {
 // it reads the token owner's usage_minutes rows and answers their cap, and no
 // upload route changes.
 /**
- * The `_accountId` is the swap point's seam: the meter (issue #6) will read
- * the named account's usage_minutes rows here, and until it lands every
- * account gets the empty month the usage endpoint answers with.
+ * The resolver the public upload-request links ask about the account that owns
+ * the link (`capStateForAccount`, src/cap.js, drive#496). It is bound to the
+ * environment because the cap is in D1, so the answer for one deployment's
+ * account has to come from that deployment's rows and not from a module-level
+ * constant.
  *
- * @param {string} _accountId
+ * Before the meter, this answered the empty month for every account, so
+ * "active", and a public upload link never stopped at its owner's cap. It now
+ * reads the account's own cap and the metered month the invoice reads, which
+ * is what makes the 403 below a real refusal rather than a rehearsal.
+ *
+ * The device store is built per call rather than cached, because the
+ * resolver is handed straight to the route table and a Worker isolates globals
+ * across requests; a per-request store is also the only store that can be
+ * built for the env a particular request carries.
+ *
+ * @param {Env} env
+ * @returns {(accountId: string) => Promise<"active"|"read_only">}
  */
-function capStateFor(_accountId) {
-  const empty = usageSummary({
-    gbMinutes: 0,
-    storedGb: 0,
-    storedDaily: [],
-    downloadBytes: 0,
-    averageStoredGb: 0,
-    capUsd: BILLING_CONFIG.defaultCapUsd,
-    cardAdded: true,
-  });
-  return empty.cap.state;
+function capStateFor(env) {
+  return (accountId) => capStateForAccount(createD1DeviceStore(env.DRIVE_DB), accountId);
 }
 
 // Account-gated middleware resolves the caller once, from the request's own
@@ -495,14 +498,25 @@ const csrfWhenBrowser = async (c, next) => {
 };
 
 /** @param {DriveContext} c */
-const filesHandler = (c) => {
+const filesHandler = async (c) => {
   const account = c.get("account");
+  // The account's own state, read from the accounts row the cap saves
+  // (drive#496). The handler asks for it rather than reading D1 itself, so the
+  // write refusal below is one rule with one source and the tests can drive it
+  // with a store they control. No DRIVE_DB means no cap state to enforce, so
+  // the options carry no resolver and the account gate is what holds the route.
   return handleFilesRequest(
     c.req.raw,
     account ? withIndex(storeFor(c.env), c.env.DRIVE_DB, account) : null,
     account,
     Date.now(),
-    { db: c.env.DRIVE_DB, prepaidPause: prepaidPauseOn(c.env) },
+    c.env.DRIVE_DB
+      ? {
+          db: c.env.DRIVE_DB,
+          prepaidPause: prepaidPauseOn(c.env),
+          accountState: createD1DeviceStore(c.env.DRIVE_DB).accountState,
+        }
+      : { prepaidPause: prepaidPauseOn(c.env) },
   );
 };
 
@@ -678,6 +692,14 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
+    // The month's own metered numbers, read from the same store and the same
+    // `monthUsageThrough` the cap walk and the invoice read (drive#496). This
+    // is what turns /api/usage from an empty month into the account's real
+    // one, including the download bytes the earlier read dropped. It is null
+    // when there is no binding, so the handler falls back to the empty month
+    // rather than failing the page.
+    /** @type {Record<string, unknown>|null} */
+    let usage = null;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -688,6 +710,9 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
+      usage = /** @type {Record<string, unknown>} */ (
+        await store.monthUsage(account.id, { capUsd })
+      );
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -705,7 +730,7 @@ export function createApp() {
       : null;
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile },
+      { ...account, capUsd, cardOnFile, usage },
       await liveQueueFor(c.env, account),
       balance,
     );
@@ -753,6 +778,10 @@ export function createApp() {
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
+    // The full two-provider choice (S3, else iDrive), not the S3 one alone
+    // (drive#496): on an iDrive deployment a store wired to the S3 provider
+    // alone has no provider that can revoke at the storage side, so the swap
+    // that a cap write performs was a no-op on the drive itself.
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
@@ -838,10 +867,10 @@ export function createApp() {
     }),
   );
   app.get(`${REQUEST_ENDPOINT}/info`, (c) =>
-    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor),
+    handleRequestInfoRequest(c.req.raw, linksFor(c.env), capStateFor(c.env)),
   );
   app.post(`${REQUEST_ENDPOINT}/upload`, (c) =>
-    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor, {
+    handleRequestUploadRequest(c.req.raw, storeFor(c.env), linksFor(c.env), capStateFor(c.env), {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
@@ -950,6 +979,38 @@ export default {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
       // rollup that returned early would read as a quiet zero.
       const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
+      // The cap walk, right after the rollup and before the push (drive#496).
+      // The order is the whole point: the rollup is what makes the current
+      // hour count, so a walk that ran before it would enforce the previous
+      // hour's spend and then wait a full hour to catch up. The push is after
+      // it so the invoice for those hours is built from the same rows the cap
+      // was decided on.
+      //
+      // A cap that threw would be retried by Cloudflare with the whole
+      // trigger, rollup included, which is the same contract the rollup above
+      // has: an enforced cap that did not happen must be a failed trigger and
+      // not a quiet zero. The walk's own state saves are guarded and its
+      // notice stamps are written after the send, so a retry neither
+      // re-sends a notice that went nor un-swaps a swap that happened.
+      /** @type {ReadonlyArray<{id: string, error: unknown}>} */
+      let capFailures = [];
+      if (env.DRIVE_DB) {
+        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const cap = await runCapEnforcement({
+          store: createD1DeviceStore(env.DRIVE_DB, {
+            keyProvider: keyProviderFor(env) ?? undefined,
+          }),
+          now: event.scheduledTime,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+        });
+        if (cap.mailed > 0 || cap.readOnly > 0) {
+          console.log(
+            `cap: ${cap.readOnly} of ${cap.accounts} metered account(s) at their cap, ${cap.mailed} notice(s) sent`,
+          );
+        }
+        capFailures = cap.failures;
+      }
       // The trip's clock, once, as epoch milliseconds: runMeterCron reads
       // scheduledTime through toMillis, and the draw and settle steps below
       // take only a number, so they read the same normalised instant.
@@ -983,6 +1044,15 @@ export default {
         fetch: dodo.DODO_FETCH ?? globalThis.fetch,
         now,
       });
+      // A cap step that failed for some accounts is raised last, after every
+      // other account was decided and the hours were drawn and settled, so Cloudflare
+      // records a failed trigger and the next run retries those accounts.
+      if (capFailures.length > 0) {
+        throw new AggregateError(
+          capFailures.map((failure) => failure.error),
+          `cap: enforcement failed for ${capFailures.length} account(s)`,
+        );
+      }
       return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
