@@ -18,7 +18,7 @@
 import { AwsClient } from "aws4fetch";
 import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { contentMd5 } from "../workers/api/src/s3.js";
+import { contentMd5, createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -612,6 +612,22 @@ export function restorableUntil(deletedAt) {
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
+ *   The create-only write: it stores the bytes only when the key is not there
+ *   yet, and answers `true` when this call is the one that put them there and
+ *   `false` when something was already stored under that path. It is the
+ *   authority on which of two concurrent creates wins, because the decision
+ *   happens in one store call: a `stat` followed by a `write` is two storage
+ *   round-trips, and between them a second request can create the same key,
+ *   so both writes land and the loser silently overwrites the winner
+ *   (drive#644). A create site that must not overwrite calls this instead of
+ *   writing blind; pairing it with a pre-check `stat` is fine, and is how an
+ *   ordinary duplicate gets its 409 on backends whose PUT cannot be made
+ *   conditional — but the pre-check alone is never the answer to a race.
+ *   A store whose provider cannot make the write conditional does not pretend
+ *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
+ *   honestly offer, and its `write` for the overwrite that remains its
+ *   backstop.
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
@@ -788,6 +804,12 @@ export function scopeStore(store, account) {
     },
     async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
+    },
+    // Scoped like every other write: the destination is rewritten to this
+    // account's own key before the store sees it, so a create-only write can
+    // no more land outside the prefix than an ordinary one.
+    async writeIfAbsent(path, body, contentType) {
+      return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path) {
       return store.remove(toKey(path));
@@ -1025,6 +1047,28 @@ export function createMemoryStore() {
         etag: await memoryEtag(bytes),
       });
     },
+    async writeIfAbsent(path, body, contentType) {
+      // The bytes are read first, then two exists-checks bracket the etag:
+      // the first short-circuits an ordinary duplicate before any fingerprint
+      // is worth computing, and the second is the atomic one — it runs with
+      // nothing awaited between it and the set below, so inside one JS event
+      // loop two concurrent creates on one key cannot both see the key as
+      // absent and both land (drive#644). The winner starts a version exactly
+      // like `write`; the loser answers false without touching the live
+      // object or its versions.
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      if (objects.has(path)) {
+        return false;
+      }
+      const etag = await memoryEtag(bytes);
+      if (objects.has(path)) {
+        return false;
+      }
+      const now = Date.now();
+      startVersion(path, bytes.byteLength, now);
+      objects.set(path, { body: bytes, contentType, modified: now, etag });
+      return true;
+    },
     async remove(path) {
       // A delete hides the live version rather than forgetting it, exactly as
       // the drive's storage lifecycle does (build-spec.md "Old versions"), so
@@ -1183,6 +1227,88 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
+ * The storage settings a deployment carries, read in one place so the Files
+ * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
+ * provisioning (provisionAccountBucket below) read the same four names in the
+ * same order. A second reader of these vars is a second thing to drift, the
+ * same reason keyprovider-env.js is the api Worker's one reader of its own.
+ * @param {StorageEnv} env
+ * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
+ *   secretAccessKey: string|undefined, region: string|undefined}}
+ */
+export function storageVarsFromEnv(env) {
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
+  return {
+    endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
+    accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
+    secretAccessKey: read(env.IDRIVE_S3_SECRET_ACCESS_KEY) || read(env.FILES_S3_SECRET_ACCESS_KEY),
+    region: read(env.IDRIVE_S3_REGION) || read(env.FILES_S3_REGION),
+  };
+}
+
+/**
+ * The account's own bucket, provisioned through the one `provisionBucket`
+ * call the api Worker's key mint also makes (workers/api/src/s3.js): versioning
+ * on and the hidden-version rule set, idempotent, so a returning sign-in's
+ * second call is a no-op and an account from before this call existed catches
+ * up at its next sign-in (drive#540). The store reads and writes this same
+ * bucket by name (storageBucketForKey), so a customer who never runs
+ * `drive login` has a bucket from the minute the account does.
+ *
+ * A deployment with no storage master credential provisions nothing and
+ * answers false — no credential means no provisioning call, never a call with
+ * half a credential (the rule keyprovider-env.js states for the mint). The key
+ * mint keeps its own provisioning as the safety net, and the Files page
+ * answers an empty folder for a bucket that is not there yet.
+ * @param {StorageEnv} env
+ * @param {string} accountId
+ * @param {{fetchImpl?: typeof fetch}} [options]
+ * @returns {Promise<boolean>} whether the provisioning call ran
+ */
+export async function provisionAccountBucket(env, accountId, options = {}) {
+  const vars = storageVarsFromEnv(env);
+  if (
+    vars.endpoint === undefined ||
+    vars.accessKeyId === undefined ||
+    vars.secretAccessKey === undefined ||
+    vars.region === undefined
+  ) {
+    return false;
+  }
+  const client = createS3Client({
+    endpoint: vars.endpoint,
+    region: vars.region,
+    credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  return true;
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
@@ -1327,6 +1453,16 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // A bucket that is not there yet is an empty drive, not a failure
+          // (drive#540): a brand-new account's `drv-<id>` is created at its
+          // sign-in verify (provisionAccountBucket), and an account from before
+          // that existed — or on a deployment whose site Worker carries no
+          // storage master credential — has no bucket until a key mint creates
+          // one. S3 answers a missing bucket 404 and a missing folder 200 with
+          // no keys, so a 404 here is always the bucket.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1362,6 +1498,11 @@ export function createS3Store(config) {
         `&max-keys=${limit}` +
         (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
       const response = await request(`${baseFor(prefix)}${query}`);
+      if (response.status === 404) {
+        // The missing bucket is an empty page, not a 500 (drive#540); the
+        // long form is in `list` above.
+        return { entries: [], nextCursor: null };
+      }
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
@@ -1386,6 +1527,11 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // The missing bucket is an empty walk, not a 500 (drive#540); the
+          // long form is in `list` above.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1470,6 +1616,42 @@ export function createS3Store(config) {
       if (!response.ok) {
         throw new Error(`storage write failed with ${response.status}`);
       }
+    },
+    async writeIfAbsent(path, body, contentType) {
+      // The stock S3 create-only request: one PUT carrying If-None-Match: *,
+      // which a compliant endpoint refuses with 412 Precondition Failed when
+      // the key is already there. What THIS endpoint can honestly offer is
+      // narrower than the contract's words, and it is measured, not assumed:
+      //
+      //   - `rclone serve s3` (v1.75.1, the stand-in on the build host)
+      //     answered 200 to both the absent and the already-present PUT on
+      //     2026-10-05 — it ignores If-None-Match on a PUT — so a `true`
+      //     from that server is not a proof of create-only;
+      //   - iDrive e2, the primary vendor, was never asked: its keys are
+      //     Nish's alone, and the standing direction is to build without
+      //     them. Its answer to the header is unverified.
+      //
+      // The header still rides every call, so on any endpoint that enforces
+      // the conditional the race closes at the storage itself; where one does
+      // not, this degrades to the overwrite `write` always was, and the
+      // provider's hide-not-delete versioning stays the backstop that makes
+      // an overwrite recoverable. A caller on such an endpoint pairs a
+      // pre-check `stat` (the stranger-upload route does) so an ordinary
+      // duplicate is still refused there; only a true mid-race pair is left to
+      // this endpoint's own answer. A 412 is the only answer that proves the
+      // key was already there, so it is the only false.
+      const response = await request(urlFor(path), {
+        method: "PUT",
+        headers: { "content-type": contentType, "if-none-match": "*" },
+        body,
+      });
+      if (response.status === 412) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`storage write failed with ${response.status}`);
+      }
+      return true;
     },
     async remove(path) {
       const response = await request(urlFor(path), { method: "DELETE" });

@@ -686,6 +686,9 @@ test("a store failure is logged, and its message is never returned", async () =>
       write: async () => {
         throw new Error("s3 put failed for key u/acct-a/secret.txt");
       },
+      writeIfAbsent: async () => {
+        throw new Error("s3 put failed for key u/acct-a/secret.txt");
+      },
       remove: async () => {},
       removeBatch: async () => {
         throw new Error("the share upload path does not delete a batch");
@@ -1458,9 +1461,109 @@ test("an upload-request drop does not overwrite an owner's file of the same name
   assert.equal(await new Response(readBack.body).text(), "mine");
 });
 
+test("two uploads racing one name have exactly one winner, every run, on the store the route uses", async () => {
+  // drive#644. The old check was a stat then a write — two round-trips, and a
+  // second upload could create the same key between them, so both landed and
+  // the second silently overwrote the first. The create-only write decides at
+  // the store, so of two racing drops exactly one is 201, one is 409, the
+  // file is one upload's bytes whole, and only the winner's bytes stay
+  // counted against the link. Deterministic on one event loop, which is why
+  // it holds on every run rather than most.
+  const { files, links, request } = drive();
+  const minted = await request("/", { token: TOKEN });
+  assert.equal(minted.status, 201);
+  /** @param {string} body */
+  const drop = (body) =>
+    handleRequestUploadRequest(
+      new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=race.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      files,
+      links,
+      () => "active",
+      withLimits(),
+    );
+  const [first, second] = await Promise.all([drop("first"), drop("second-drop-is-longer")]);
+  const statuses = [first.status, second.status].sort((left, right) => left - right);
+  assert.deepEqual(statuses, [201, 409]);
+  const loser = first.status === 201 ? second : first;
+  assert.equal((await loser.json()).error, failureMessage("upload-name-taken"));
+  // Different lengths, so the count proves the winner's size stayed and the
+  // loser's reservation came back — not merely that some bytes were counted.
+  const winnerBody = first.status === 201 ? "first" : "second-drop-is-longer";
+  const readBack = await scopeStore(files, account).read("/race.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winner's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), winnerBody);
+  // The loser's reservation came back with the release, so the link counts
+  // one upload of the winner's size — not both.
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, winnerBody.length);
+  assert.equal(row?.uploadCount, 1);
+});
+
+test("a duplicate drop of a stored name is 409 even where storage cannot see a conditional write", async () => {
+  // drive#644, the reviewer's point, and the reason the route keeps its
+  // pre-check stat in front of the create-only write. On a backend that
+  // ignores If-None-Match (measured: `rclone serve s3` v1.75.1 answers 200 to
+  // both PUTs), the primitive alone would let a second drop of an already
+  // stored name overwrite the first with a 201. The pre-check keeps every
+  // ordinary duplicate a 409 on every backend; only a true mid-race pair is
+  // left to the store's own answer.
+  const files = createMemoryStore();
+  // This backend overwrites and always answers true — the measured
+  // If-None-Match-ignoring shape.
+  files.writeIfAbsent = async () => true;
+  const links = createD1LinkStore(createTestD1());
+  await links.requests.create(
+    newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
+  );
+  await scopeStore(files, account).write("/dup.txt", "first", "text/plain");
+  const second = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=dup.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "second",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(second.status, 409);
+  assert.equal((await second.json()).error, failureMessage("upload-name-taken"));
+  const readBack = await scopeStore(files, account).read("/dup.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the first drop's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+  // Nothing was reserved for a drop that never stored bytes.
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, 0);
+  assert.equal(row?.uploadCount, 0);
+});
+
+test("two racing creates on one key cannot both win at the store, scoped the way routes scope", async () => {
+  // The same guarantee one layer down, on the scoped store the upload route
+  // builds: exactly one true, and the loser's bytes are nowhere in the drive.
+  const scoped = scopeStore(createMemoryStore(), account);
+  const [first, second] = await Promise.all([
+    scoped.writeIfAbsent("/one-key.txt", "first", "text/plain"),
+    scoped.writeIfAbsent("/one-key.txt", "second", "text/plain"),
+  ]);
+  assert.deepEqual([first, second].sort(), [false, true]);
+  const names = (await scoped.list("/")).map((entry) => entry.name);
+  assert.deepEqual(names, ["one-key.txt"]);
+});
+
 test("a failed upload-request write releases the reserved bytes", async () => {
   const files = createMemoryStore();
-  files.write = async () => {
+  files.writeIfAbsent = async () => {
     throw new Error("storage refused the write");
   };
   const links = createD1LinkStore(createTestD1());
