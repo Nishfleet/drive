@@ -813,6 +813,7 @@ export function createD1DeviceStore(db, options = {}) {
       }
       if (device.revokedAt === null) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
+        await revokeCredentialAtProvider(device.accessKeyId);
       }
       return { revoked: true };
     },
@@ -873,13 +874,26 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeTeamKeys(accountId, teamId) {
+      const prefix = teamPrefix(teamId);
+      const live = await all(
+        db,
+        "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND prefix = ?2 AND revoked_at IS NULL",
+        accountId,
+        prefix,
+      );
       const changed = await run(
         db,
         "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND prefix = ?3 AND revoked_at IS NULL",
         nowSeconds(now()),
         accountId,
-        teamPrefix(teamId),
+        prefix,
       );
+      for (const row of live) {
+        const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+        if (typeof accessKeyId === "string" && accessKeyId !== "") {
+          await revokeCredentialAtProvider(accessKeyId);
+        }
+      }
       return {
         revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
       };

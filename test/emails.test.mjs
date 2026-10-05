@@ -103,6 +103,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "monthly-receipt",
     "account-closed",
     "account-close-reminder",
+    "device-approve-notice",
   ]);
 });
 
@@ -265,6 +266,8 @@ function dataFor(kind) {
     case "account-closed":
     case "account-close-reminder":
       return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+    case "device-approve-notice":
+      return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
     default:
       throw new Error(`no test data for ${kind}`);
   }

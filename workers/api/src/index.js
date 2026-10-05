@@ -399,8 +399,8 @@ let keyStoreDb;
  * `user` table on the customer database (src/auth.js built it;
  * migrations/drive/0005_better_auth.sql owns it). This is the one resolver a
  * team invite binds through, so an invite to an address a signed-in account
- * already has becomes an active membership at once, and one to a new address
- * stays `invited` until that account signs in. The email is matched
+ * already has stays pending until that person accepts, and the same call on a
+ * new address writes the same shape of row (drive#518). The email is matched
  * case-insensitively, the same fold the invite row stores, and the columns are
  * Better Auth's own, so nothing here invents an account table.
  * @param {D1Database} db

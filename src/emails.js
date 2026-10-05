@@ -374,6 +374,51 @@ function finish({ subject, lines, html_lines, saved = null }) {
   return { subject, text, html: htmlLines.join("\n"), saved };
 }
 
+function requireText(value, name) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * @param {string} text
+ */
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ---------------------------------------------------------------------------
+// 8) Device approve notice -- a signed-in owner approved a CLI. { deviceName, requestedAt }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function deviceApproveNoticeTemplate(data = {}) {
+  const deviceName = requireText(data.deviceName, "deviceName");
+  const requestedAt = requireText(data.requestedAt, "requestedAt");
+  const subject = "A device asked to connect to your drive";
+  const lines = [
+    `A device named ${deviceName} asked to connect to your drive.`,
+    "",
+    `It asked at ${requestedAt}.`,
+    "",
+    "If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.",
+  ];
+  const safeName = escapeHtml(deviceName);
+  const safeAt = escapeHtml(requestedAt);
+  const html_lines = [
+    `<p>A device named ${safeName} asked to connect to your drive.</p>`,
+    `<p>It asked at ${safeAt}.</p>`,
+    "<p>If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -383,6 +428,7 @@ export const EMAIL_KINDS = Object.freeze([
   "monthly-receipt",
   "account-closed",
   "account-close-reminder",
+  "device-approve-notice",
 ]);
 
 /**
@@ -396,6 +442,7 @@ const TEMPLATES = Object.freeze({
   "monthly-receipt": monthlyReceiptTemplate,
   "account-closed": accountClosedTemplate,
   "account-close-reminder": accountCloseReminderTemplate,
+  "device-approve-notice": deviceApproveNoticeTemplate,
 });
 
 /**

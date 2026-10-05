@@ -31,7 +31,7 @@
 // stranger to spend.
 
 import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
-import { isSameOriginRequest } from "../../../src/email-send.js";
+import { isSameOriginRequest, sendEmail } from "../../../src/email-send.js";
 import { failureMessage } from "../../../src/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { signedInAccount } from "../../../src/status.js";
@@ -142,10 +142,19 @@ function escapeHtml(text) {
 }
 
 /**
- * The approval page. A static shell with the code from the query string
- * echoed into the form, escaped; nothing else is rendered from the request.
- * @param {{userCode?: string, notice?: string}} [options]
- */ function approvePage({ userCode = "", notice = "" } = {}) {
+ * The approval page. A static shell; the code from the query string is never
+ * copied into the form (a pre-filled code is the phishing help drive#518
+ * closes). The pending device's name and time are shown when the store has
+ * them, escaped.
+ * @param {{notice?: string, deviceName?: string, requestedAt?: string}} [options]
+ */
+function approvePage({ notice = "", deviceName = "", requestedAt = "" } = {}) {
+  const deviceLine =
+    deviceName === ""
+      ? ""
+      : `<p>Device: ${escapeHtml(deviceName)}` +
+        (requestedAt === "" ? "" : `, asked at ${escapeHtml(requestedAt)}`) +
+        `</p>\n`;
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
@@ -154,10 +163,11 @@ function escapeHtml(text) {
     `<title>${APPROVE_TITLE}</title>\n</head>\n<body>\n` +
     `<main>\n<h1>${APPROVE_TITLE}</h1>\n` +
     `<p>${APPROVE_INTRO}</p>\n` +
+    deviceLine +
     (notice ? `<p role="status">${escapeHtml(notice)}</p>\n` : "") +
     `<form method="post" action="/v1/device/approve">\n` +
     `<label for="user_code">Code from the terminal</label>\n` +
-    `<input id="user_code" name="user_code" value="${escapeHtml(userCode)}" ` +
+    `<input id="user_code" name="user_code" value="" ` +
     `autocomplete="one-time-code" autocapitalize="characters" required>\n` +
     `<button type="submit">Approve</button>\n</form>\n</main>\n</body>\n</html>\n`;
   return new Response(body, {
@@ -186,11 +196,59 @@ function connectedPage() {
 
 /**
  * The page with a refusal, still a page, so a mistyped code is fixable.
- * @param {string} userCode
  * @param {string} notice
+ * @param {string} [deviceName]
+ * @param {string} [requestedAt]
  */
-function approvePageError(userCode, notice) {
-  return approvePage({ userCode, notice });
+function approvePageError(notice, deviceName = "", requestedAt = "") {
+  return approvePage({ notice, deviceName, requestedAt });
+}
+
+/**
+ * @param {import("./device-signin.js").PendingDeviceApproval|null} pending
+ * @returns {{deviceName: string, requestedAt: string}}
+ */
+function pendingPageFields(pending) {
+  if (pending === null) {
+    return { deviceName: "", requestedAt: "" };
+  }
+  return {
+    deviceName: pending.name,
+    requestedAt: new Date(pending.createdAt * 1000).toISOString(),
+  };
+}
+
+/**
+ * Mail the owner that a device asked to connect. A deployment with no EMAIL
+ * binding (the api Worker until this route mailed) skips the send so the
+ * approval still finishes; a bound mailer that refuses is not swallowed.
+ * @param {DeviceCtx} ctx
+ * @param {{id: string, name?: string, email?: string}} account
+ * @param {import("./device-signin.js").PendingDeviceApproval|null} pending
+ */
+async function sendApproveNotice(ctx, account, pending) {
+  const binding = ctx.env.EMAIL;
+  const mailFrom = ctx.env.MAIL_FROM;
+  if (binding === undefined || binding === null) {
+    return;
+  }
+  if (typeof mailFrom !== "string" || mailFrom.trim() === "") {
+    return;
+  }
+  const to = typeof account.email === "string" ? account.email.trim() : "";
+  if (to === "") {
+    return;
+  }
+  const fields = pendingPageFields(pending);
+  await sendEmail(binding, {
+    to,
+    from: mailFrom,
+    kind: "device-approve-notice",
+    data: {
+      deviceName: fields.deviceName === "" ? "a device" : fields.deviceName,
+      requestedAt: fields.requestedAt === "" ? new Date().toISOString() : fields.requestedAt,
+    },
+  });
 }
 /**
  * Reads the user code from a form post or a JSON body. The page posts a form,
@@ -366,7 +424,9 @@ export async function approvePageRoute(request, ctx) {
       },
     });
   }
-  return approvePage({ userCode });
+  const pending =
+    userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
+  return approvePage(pendingPageFields(pending));
 }
 
 /**
@@ -396,7 +456,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
     .trim()
     .toUpperCase();
   if (userCode === "") {
-    return approvePageError("", "Type the code from the terminal.");
+    return approvePageError("Type the code from the terminal.");
   }
   // The store is async (the D1 implementation is), so this must be awaited:
   // an un-awaited Promise has no `error` property, which would render the
@@ -404,6 +464,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // This is an account route, so ctx.account is guaranteed non-null by the dispatcher.
   /** @type {{id: string, name?: string, email?: string}} */
   const account = /** @type {{id: string, name?: string, email?: string}} */ (ctx.account);
+  const pending = await ctx.store.pendingDeviceApproval(userCode);
   const result = await ctx.store.approveDeviceCode(userCode, account);
   if ("error" in result) {
     const notice =
@@ -412,8 +473,10 @@ export async function approveDeviceCodeRoute(request, ctx) {
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";
-    return approvePageError(userCode, notice);
+    const fields = pendingPageFields(pending);
+    return approvePageError(notice, fields.deviceName, fields.requestedAt);
   }
+  await sendApproveNotice(ctx, account, pending);
   return connectedPage();
 }
 

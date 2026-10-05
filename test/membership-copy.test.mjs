@@ -39,6 +39,9 @@ function dataFor(kind) {
   if (kind === "account-closed" || kind === "account-close-reminder") {
     return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
   }
+  if (kind === "device-approve-notice") {
+    return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 
