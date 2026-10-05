@@ -1329,21 +1329,30 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
-  if ((await scoped.stat(path)) !== null) {
-    return json({ error: failureMessage("upload-name-taken") }, 409);
-  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
   }
+  // One create-only write, not a stat and then a write: the gap between those
+  // two calls is where a second upload slipped past the existence check and
+  // both landed, the loser silently overwriting the winner (drive#644). The
+  // store itself decides whether the key was already there, so two racing
+  // uploads cannot both win. The bytes are reserved first so a stranger cannot
+  // outrun the link total; a lost race releases them exactly like a failed
+  // write does.
+  let won;
   try {
-    // sized.body is a Uint8Array (or empty). FileStore.write already accepts
-    // any BodyInit: the memory store does `new Response(body).arrayBuffer()`,
-    // and the S3 stand-in PUTs the same body fetch accepts.
-    await scoped.write(path, sized.body, contentType);
+    // sized.body is a Uint8Array (or empty). FileStore.writeIfAbsent already
+    // accepts any BodyInit: the memory store does `new Response(body)
+    // .arrayBuffer()`, and the S3 stand-in PUTs the same body fetch accepts.
+    won = await scoped.writeIfAbsent(path, sized.body, contentType);
   } catch (cause) {
     await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
+  }
+  if (!won) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
+    return json({ error: failureMessage("upload-name-taken") }, 409);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
 }

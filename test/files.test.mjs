@@ -724,6 +724,9 @@ test("a storage failure is a 500 that names it, never a silent success", async (
     write: async () => {
       throw new Error("storage write failed with 503");
     },
+    writeIfAbsent: async () => {
+      throw new Error("storage write failed with 503");
+    },
     remove: async () => {},
     removeBatch: async () => {
       throw new Error("storage batch delete failed with 503");
@@ -1084,6 +1087,72 @@ test("the Files page names the same bucket the key provider mints into", () => {
   assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
   assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
   assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+test("the S3 store's create-only write sends If-None-Match and reads 412 as the one loss", async () => {
+  // drive#644. The create-only PUT is the stock conditional write: a request
+  // that carries If-None-Match: *, answered 412 Precondition Failed by an
+  // endpoint that enforces it when the key is already there. The fake storage
+  // answers both halves: the first call creates, the second is refused.
+  /** @type {{method: string, key: string, headers: Record<string, string>}[]} */
+  const seen = [];
+  const objects = new Map();
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const key = decodeURIComponent(String(url).split("/").at(-1) ?? "");
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const [name, value] of Object.entries(init.headers ?? {})) {
+      headers[String(name).toLowerCase()] = String(value);
+    }
+    seen.push({ method, key, headers });
+    if (method === "PUT") {
+      if (objects.has(key)) {
+        return new Response(
+          '<?xml version="1.0" encoding="UTF-8"?><Error><Code>PreconditionFailed</Code>' +
+            "<Message>At least one of the pre-conditions you specified did not hold</Message></Error>",
+          { status: 412 },
+        );
+      }
+      objects.set(key, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    const stored = objects.get(key);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+  const s3 = createS3Store({ endpoint: "http://127.0.0.1:9000", bucket: "drive", fetchImpl });
+
+  // The absent key is created, and the header rides the PUT.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "first", "text/plain"), true);
+  assert.equal(seen[0].headers["if-none-match"], "*");
+  assert.equal(seen[0].headers["content-type"], "text/plain");
+
+  // A key that is already there answers false, not an error.
+  assert.equal(await s3.writeIfAbsent("u/acct-1/notes.txt", "second", "text/plain"), false);
+  const readBack = await s3.read("u/acct-1/notes.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winning write is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+
+  // A storage failure is still a failure, not a silent loss.
+  const failing = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    fetchImpl: async () => new Response("boom", { status: 500 }),
+  });
+  await assert.rejects(
+    () => failing.writeIfAbsent("u/acct-1/x.txt", "b", "text/plain"),
+    /storage write failed with 500/,
+  );
 });
 
 /**
