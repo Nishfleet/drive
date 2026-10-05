@@ -10,9 +10,16 @@
 // and the XML the calls below read. An endpoint that answers with neither is
 // named as unrecognised rather than treated as success, because a storage
 // layer that reports success for a call it could not read is how a key ends up
-// unscoped.
+// unscoped. Listing bodies — the versions this file's restore path reads —
+// parse in src/s3-listing.js, the one S3 listing parser both Workers share
+// (drive issue #504), so a key's own characters survive the answer everywhere.
 
 import { AwsClient } from "aws4fetch";
+import {
+  decodeEntities,
+  parseVersionRows,
+  tagValue as scanTagValue,
+} from "../../../src/s3-listing.js";
 
 /**
  * An S3 answer: the status, the headers (the version id and ETag a write
@@ -46,36 +53,18 @@ export class S3Error extends Error {
 }
 
 /**
- * One tag's text from an S3 XML body, or null when the tag is absent. The
- * tags read here are the endpoint's own (Code, Message, VersionId), so an
- * indexOf scan is the whole of the parser.
+ * One tag's text from an S3 XML body, or null when the tag is absent — this
+ * file's readers branch on the missing case (`ok()` reports "Unrecognised",
+ * key minting refuses a half-built credential). The scan is the shared one
+ * (src/s3-listing.js `tagValue`, the same function the site Worker's listings
+ * read), and this adapter only turns its "not found" into null.
  * @param {string} xml
  * @param {string} tag
  * @returns {string|null}
  */
 export function tagValue(xml, tag) {
-  const open = `<${tag}>`;
-  const start = xml.indexOf(open);
-  if (start < 0) {
-    return null;
-  }
-  const end = xml.indexOf(`</${tag}>`, start + open.length);
-  return end < 0 ? null : xml.slice(start + open.length, end);
-}
-
-/**
- * The S3 XML entities a bucket name, key or message can carry. An unescaped
- * `&` in a key would otherwise make the answer unreadable as XML.
- * @param {string} text
- * @returns {string}
- */
-function unescapeXml(text) {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+  const value = scanTagValue(xml, tag);
+  return value === "" ? null : value;
 }
 
 /**
@@ -90,7 +79,7 @@ export function ok(operation, response) {
   }
   const code = tagValue(response.text, "Code") ?? "Unrecognised";
   const message = tagValue(response.text, "Message") ?? response.text.slice(0, 200);
-  throw new S3Error(operation, response.status, unescapeXml(code), unescapeXml(message));
+  throw new S3Error(operation, response.status, decodeEntities(code), decodeEntities(message));
 }
 
 /**
@@ -296,7 +285,7 @@ export async function readBucketEncryption(client, config) {
     bucket: config.bucket,
     query: { encryption: "" },
   });
-  return unescapeXml(tagValue(answer.text, "SSEAlgorithm") ?? "");
+  return decodeEntities(tagValue(answer.text, "SSEAlgorithm") ?? "");
 }
 
 /**
@@ -406,10 +395,10 @@ export async function readBucketConfig(client, config) {
     query: { notification: "" },
   });
   return {
-    versioning: unescapeXml(tagValue(versioning.text, "Status") ?? ""),
+    versioning: decodeEntities(tagValue(versioning.text, "Status") ?? ""),
     lifecycleDays: Number(tagValue(lifecycle.text, "NoncurrentDays") ?? ""),
     lifecycleDaysKnown: lifecycle.status === 200,
-    notificationArn: unescapeXml(tagValue(notification.text, "Queue") ?? ""),
+    notificationArn: decodeEntities(tagValue(notification.text, "Queue") ?? ""),
     notificationEvents: [...notification.text.matchAll(/<Event>([^<]*)<\/Event>/g)].map(
       (match) => match[1],
     ),
@@ -431,31 +420,13 @@ export async function readBucketConfig(client, config) {
 
 /**
  * The versions of a prefix, newest first as the endpoint returned them. The
- * restore path reads this to find the version a delete marker is hiding.
+ * restore path reads this to find the version a delete marker is hiding. The
+ * scan and the decode are the shared parser's (src/s3-listing.js
+ * `parseVersionRows`), re-exported here under the name this file has always
+ * given it, so a key the provider escaped in the answer reads back the way
+ * the account wrote it (drive issue #504).
  * @param {string} xml
  * @param {string} [prefix] keeps the listing to one folder
  * @returns {FileVersion[]}
  */
-export function parseListVersions(xml, prefix = "") {
-  /** @type {FileVersion[]} */
-  const versions = [];
-  const row = /<(Version|DeleteMarker)>([\s\S]*?)<\/\1>/g;
-  for (const match of xml.matchAll(row)) {
-    const block = match[2];
-    const key = tagValue(block, "Key");
-    const versionId = tagValue(block, "VersionId");
-    if (key === null || versionId === null || !key.startsWith(prefix)) {
-      continue;
-    }
-    versions.push({
-      key: unescapeXml(key),
-      versionId,
-      latest: tagValue(block, "IsLatest") === "true",
-      deleteMarker: match[1] === "DeleteMarker",
-      sizeBytes: Number(tagValue(block, "Size") ?? "0"),
-      etag: (tagValue(block, "ETag") ?? "").replace(/^"|"$/g, ""),
-      lastModified: tagValue(block, "LastModified") ?? "",
-    });
-  }
-  return versions;
-}
+export const parseListVersions = parseVersionRows;
