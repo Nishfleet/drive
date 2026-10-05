@@ -1583,14 +1583,15 @@ test("a catch-up over 48 hours with 25 accounts costs the same round trips as wi
   // The budget the trigger is designed to: three round trips per hour (the
   // hour's read - ONE statement for both the GB-minutes and the peak's
   // stored bytes, so they are one snapshot - the hour's batch, the hour's
-  // watermark) plus the three around them: the watermark read, the
-  // earliest-version read that floors a first run, and the dedup purge,
-  // whatever the customer count.
+  // watermark) plus the four around them: the watermark read, the
+  // earliest-version read that floors a first run, the dedup purge, and the
+  // read of queued one-account re-rolls (drive#519), whatever the customer
+  // count.
   assert.equal(rolled.hours, MAX_CATCHUP_HOURS);
   assert.equal(
     queries25,
-    3 * MAX_CATCHUP_HOURS + 3,
-    "three round trips per hour plus the three around them",
+    3 * MAX_CATCHUP_HOURS + 4,
+    "three round trips per hour plus the four around them",
   );
   assert.equal(rolled.accounts, 25);
   assert.equal(
@@ -2153,6 +2154,7 @@ test("a run over an account with no drift changes nothing and reports zero", asy
     inserted: 0,
     hidden: 0,
     marked: 0,
+    skipped: 0,
     earliestAffectedHour: null,
   });
   assert.equal(db.tables.usage_minutes.size, 0, "nothing rolled, nothing rewritten");
@@ -2211,6 +2213,7 @@ test("two accounts reconciled twice in a row are idempotent", async () => {
     inserted: 0,
     hidden: 0,
     marked: 0,
+    skipped: 0,
     earliestAffectedHour: null,
   });
   // The re-roll the first run set up is idempotent too: rolling twice writes
