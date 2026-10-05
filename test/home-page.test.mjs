@@ -9,7 +9,7 @@
 //    usualPlanMonthlyUsd(), and the "you keep" / "you saved" figures are the
 //    difference (drive#463).
 // 3. The slider asks /api/quote and does no bill arithmetic of its own.
-// 4. The page's founding, cap and sign-up lines use only PRICE's numbers and
+// 4. The page's cap and sign-up lines use only PRICE's numbers and
 //    DEFAULT_CAP_USD, and no trial or membership survives (drive#463, #464).
 // 5. The page keeps its accessibility and font contract: one h1, a main
 //    landmark, a reduced-motion reset, only the hero face preloaded, and no
@@ -100,13 +100,9 @@ test("the main action is Get drive, to /signin, with a true pay-as-you-go line",
   assert.ok(html.includes(PRICE.needCard), "the footer says why a card is needed");
 });
 
-test("the founding block and the cap use the price source's numbers", () => {
-  const f = PRICE.founding;
-  assert.ok(html.includes(PRICE.foundingLine));
-  assert.ok(html.includes(`<b>${f.rateCents}¢ a GB</b>`));
-  assert.ok(html.includes(`<b>$${f.maxUsdPerTb} per TB</b>`));
-  assert.ok(html.includes(`<p class="five">${f.rateCents}¢<small>`));
-  assert.doesNotMatch(html, /1,000 (paying|members|founding)/i, "never show a count");
+test("the home page carries no founding block, and the cap uses the price source's numbers", () => {
+  assert.doesNotMatch(html, /founding/i, "founding pricing is removed from the page");
+  assert.doesNotMatch(html, /1,000 (paying|members)/i, "never show a count");
   assert.ok(html.includes(`Your spending cap starts at $${DEFAULT_CAP_USD}.`));
   assert.ok(html.includes(`of $${DEFAULT_CAP_USD} cap`));
   assert.ok(html.includes(`The default cap is $${DEFAULT_CAP_USD}.`));

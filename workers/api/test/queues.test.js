@@ -44,7 +44,7 @@ test("the queue table ships in the drive migrations the tests apply", () => {
     "the queue table's migration is not in the list the tests apply",
   );
   assert.ok(
-    DRIVE_MIGRATIONS.includes("drive/0020_device_queue_reports.sql"),
+    DRIVE_MIGRATIONS.includes("drive/0022_device_queue_reports.sql"),
     "the per-device queue table's migration is not in the list the tests apply",
   );
 });

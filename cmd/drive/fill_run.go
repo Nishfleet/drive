@@ -37,15 +37,20 @@ import (
 // a fill byte to live but the cache rclone caps.
 
 // rcClient is rclone's remote control over its loopback address, reached
-// through the rclone binary itself (`rclone rc --rc-addr ...`) rather than an
-// HTTP client, so no listener of our own is added and the rc user/pass stay in
-// the one rclone config the mount already wrote.
+// through the rclone binary itself (`rclone rc --rc-addr --user --pass ...`)
+// rather than an HTTP client, so no listener of our own is added and the rc
+// user/pass stay in rclone.env (mode 0600) the mount already wrote (drive#498).
 type rcClient struct {
 	binary string
 	addr   string
 	// fs is the mounted remote, e.g. drive:bucket/u/id, which vfs/stats and
 	// vfs/refresh both take.
 	fs string
+	// user and pass are the --user/--pass rclone rc sends (the same pair
+	// --rc-user/--rc-pass set on the mount, drive#498). Empty only in tests
+	// that point at a fake rclone with no auth.
+	user string
+	pass string
 }
 
 // newRCClient builds the client for the mount's remote control. The address
@@ -83,7 +88,11 @@ type vfsStats struct {
 
 // call runs one remote-control method and decodes the reply.
 func (c *rcClient) call(ctx context.Context, method string, params map[string]string, out any) error {
-	args := []string{"rc", "--rc-addr", c.addr, method}
+	args := []string{"rc", "--rc-addr", c.addr}
+	if c.user != "" || c.pass != "" {
+		args = append(args, "--user", c.user, "--pass", c.pass)
+	}
+	args = append(args, method)
 	for k, v := range params {
 		args = append(args, k+"="+v)
 	}
@@ -134,7 +143,7 @@ func (c *rcClient) refresh(ctx context.Context, recursive bool) error {
 // loopbackRCAddr is the address the mount's remote control binds. rclone's
 // default is localhost:5572; the plan sets it explicitly so the fill loop and
 // the operator reach the same one even on a host with another rclone running.
-// localhost only: the remote control is unauthenticated by design here, and
+// localhost only: the remote control is password-protected (drive#498) and
 // it must not be reachable off the machine.
 const loopbackRCAddr = "127.0.0.1:5572"
 
@@ -343,17 +352,6 @@ func readFileTrimmed(path string) (string, error) {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	return strings.TrimSpace(string(b)), nil
-}
-
-// fillStop is a small helper the loop uses to decide whether the host is going
-// to sleep or shut down, without a select on two channels inline.
-func fillStop(stop <-chan struct{}) bool {
-	select {
-	case <-stop:
-		return true
-	default:
-		return false
-	}
 }
 
 // fillReader returns the read the fill pass does. It reads the mounted tree
@@ -596,17 +594,4 @@ func RunFillLoop(ctx context.Context, c *rcClient, home, mountDir string) <-chan
 		}
 	}()
 	return errs
-}
-
-// idleNow reads the load averages and applies the policy in one call, so the
-// loop body is the whole rule and the test drives ShouldFill directly.
-func idleNow(offline bool) (bool, error) {
-	if offline {
-		return true, nil
-	}
-	one, five, err := readLoadAverages()
-	if err != nil {
-		return false, fmt.Errorf("fill: read load average: %w", err)
-	}
-	return ShouldFill(offline, one, five), nil
 }

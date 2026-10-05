@@ -88,10 +88,6 @@ export default defineWorker({
       namespace: "1007",
       simple: { limit: 600, period: 60 },
     }),
-    // drive issue #386: the same founding-member offer switch the site Worker
-    // holds. This Worker owns the accounts row (workers/api/src/devices.js),
-    // so the write that sets the flag has to see the same var. Default open.
-    FOUNDING_OFFER_OPEN: bindings.text("1"),
     // drive#462: the iDrive e2 reseller API token, the credential that mints
     // a key limited to ONE bucket. iDrive e2 cannot scope a key to a folder
     // and its STS refuses `AssumeRole` outright (measured 2026-10-03,

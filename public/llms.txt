@@ -16,7 +16,6 @@ MCP filesystem server, or the S3 API, each with its own scoped key.
 - Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
 - The rule: You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.
 - No minimum. No plans. Storage is metered by the minute and averaged over the month.
-- Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.
 - We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.
 - Downloads: free up to 3× what you store each month, then 1¢ per GB.
 - Version history is not in version 1.
@@ -34,7 +33,9 @@ Worked examples, each kept all month, with a usual 1 TB plan beside it:
 - A drive folder that works in any app. Files stream on demand, so a 5 GB video
   opens without downloading first.
 - The cache on your disk is capped at 20G, and 1G of free space is always kept.
-  Your disk never fills up; the cache is capped at a size you choose.
+  The cap covers only what has already uploaded: a save that has not gone up
+  yet stays on disk past the cap until it uploads, so uploads that are paused or
+  behind can use more disk than the cap.
   `drive cache` shows the disk in use and the limit, `drive cache --max <size>`
   changes it, and `drive cache --clear` empties it without touching a file still
   waiting to upload. `drive status` shows the same cache use. Files you keep

@@ -45,12 +45,14 @@ import {
   EMPTY_STATES,
   FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
+  firstRunState,
   formatBytes,
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
   INSTALL_LINES,
   LOGIN_COMMAND,
   POLL_INTERVAL_MS,
+  STATUS_COMMAND,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
   SYNCED_WINDOW_MS,
@@ -59,6 +61,7 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "../src/status.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../workers/api/src/queues.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
 
@@ -85,18 +88,50 @@ const iso = (ms) => new Date(now - ms).toISOString();
 test("the box carries the login and init lines, and the steps walk through them", () => {
   assert.equal(INSTALL_COMMAND, "drive init");
   assert.equal(LOGIN_COMMAND, "drive login");
+  assert.equal(STATUS_COMMAND, "drive status");
   assert.equal(FIRST_RUN_COMMAND, `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`);
   assert.equal(FIRST_RUN_STEPS.length, 3);
   assert.match(FIRST_RUN_STEPS[0].body, /drive init/);
   assert.match(FIRST_RUN_STEPS[0].body, /drive login/);
   assert.match(FIRST_RUN_STEPS[1].body, /Approve the code/);
-  assert.match(FIRST_RUN_STEPS[2].body, /flips to connected/);
+  assert.match(FIRST_RUN_STEPS[2].body, new RegExp(STATUS_COMMAND));
   for (const step of FIRST_RUN_STEPS) {
     assert.equal(typeof step.title, "string");
     assert.ok(step.title.length > 0, "every step needs a title");
     assert.equal(typeof step.body, "string");
     assert.ok(step.body.length > 0, "every step needs a sentence");
   }
+});
+
+test("no first-run sentence promises a flip the status route cannot make", () => {
+  // Drive issue #556's last bullet. Until the api Worker is deployed (#342)
+  // nothing stamps `devices.last_seen_at`, so a page that promises the machine
+  // signing in flips the line on its own is a page someone keeps waiting at.
+  // Every sentence the page shows while it waits names the command that
+  // answers from the machine instead, and none of them promises the flip: the
+  // strings are pinned here because this is the drift that made the bug.
+  const promises =
+    /flips?\s+to\s+connected|updates\s+on\s+its\s+own|moment\s+your\s+Mac\s+signs\s+in|Nothing\s+to\s+refresh/;
+  for (const [name, entry] of Object.entries(CONNECTION_COPY)) {
+    assert.doesNotMatch(entry.next, promises, `${name}'s next promises the page a flip`);
+  }
+  // The two waiting states name the command that answers from the machine:
+  // while nothing stamps last_seen_at they are the states a person sits in.
+  for (const name of ["waiting", "unreachable"]) {
+    assert.match(
+      CONNECTION_COPY[/** @type {keyof typeof CONNECTION_COPY} */ (name)].next,
+      /drive status/,
+      `${name}'s next names the machine command`,
+    );
+  }
+  assert.doesNotMatch(FIRST_RUN_STEPS[2].body, promises, "step 3 promises the page a flip");
+  assert.match(FIRST_RUN_STEPS[2].body, /drive status/);
+  // The shipped shell's own description is the same sentence, read from the
+  // file a search engine reads rather than from the module.
+  const description = shell.match(/<meta name="description" content="([^"]*)"/i);
+  assert.ok(description, "get-started.html needs a meta description");
+  assert.doesNotMatch(description[1], promises, "the meta description promises the page a flip");
+  assert.match(description[1], /drive status/);
 });
 
 test("the page leads with one pasted install line per system", () => {
@@ -124,18 +159,8 @@ test("the page leads with one pasted install line per system", () => {
       `the install line for ${row.os} must be one package-manager invocation`,
     );
   }
-  // The detail a line cannot carry (the tap, the module path, the Windows
-  // installer name) belongs in the docs' "Other ways" section, so no customer
-  // page shows an internal name. test/own-words.test.mjs walks the pages; this
-  // is the same rule at the source of the page's copy.
-  for (const row of INSTALL_LINES) {
-    assert.doesNotMatch(row.line, /nishfleet/i, `the install line for ${row.os} must not name us`);
-    assert.doesNotMatch(
-      row.line,
-      /launchd|\/tap\//,
-      `the install line for ${row.os} must stay one line`,
-    );
-  }
+  // drive#509: the line is the one .goreleaser.yaml publishes, including the
+  // tap path. A short `brew install drive` cannot resolve after a release.
 });
 
 test("the renderer hands the page one row per system", () => {
@@ -365,6 +390,51 @@ test("a signed-in account reads waiting, and no device data leaks without one", 
   assert.equal(forgot.status, 401);
 });
 
+test("the poll answers connected when one of the account's devices signed in", async () => {
+  // Drive issue #556. The route used to answer `waiting` for every account,
+  // because it carried no device rows at all, so nothing it said could ever be
+  // connected. The state now comes from the account's device rows, through the
+  // one window `connectionStatus` uses for the page's own line, so the answer
+  // here and the answer the page draws cannot drift.
+  const account = { id: "1", name: "Your drive" };
+  const endpoint = "https://drive.test/api/first-run-status";
+  /** @param {unknown[]} devices */
+  const poll = async (devices) =>
+    await (await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)).json();
+  const seenNow = Date.now() - 30_000;
+  const seenHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  const fresh = { id: "key_1", name: "Nish's Mac", kind: "device", lastSeenAt: seenNow };
+  const stale = { id: "key_2", name: "Old Mac", kind: "device", lastSeenAt: seenHoursAgo };
+
+  // The issue's own case: a device seen 30 seconds ago, named, is connected.
+  assert.deepEqual(await poll([fresh]), { state: "connected", devices: [fresh], upload: null });
+  // An account whose machine has not signed in yet, and one whose last sign-in
+  // is hours old, both read as waiting rather than as connected.
+  assert.deepEqual(await poll([]), { state: "waiting", devices: [], upload: null });
+  assert.deepEqual(
+    await poll([{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }]),
+    {
+      state: "waiting",
+      devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }],
+      upload: null,
+    },
+  );
+  assert.deepEqual(await poll([stale]), { state: "waiting", devices: [stale], upload: null });
+  // One live device is enough, and an older one on the same account does not
+  // pull the answer back to waiting.
+  assert.equal(firstRunState([stale, fresh], Date.now()), "connected");
+
+  // The window's edge: a device seen exactly CONNECTED_WINDOW_MS ago is still
+  // connected, and one millisecond later is not.
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]), "connected");
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]), "waiting");
+  // A clock the route cannot read is a bug to see, not a wait to show somebody
+  // who has already signed in.
+  assert.throws(() => firstRunState([{ lastSeenAt: "not-a-date" }]), TypeError);
+  assert.throws(() => firstRunState({ lastSeenAt: Date.now() }), TypeError);
+  assert.throws(() => firstRunState("connected"), TypeError);
+});
+
 test("a request can only prove an account through a session Better Auth minted", async () => {
   // The sign-in flow has landed (build step 9, #10), so signedInAccount() is
   // no longer null for every caller — but it is still closed by default. With
@@ -479,6 +549,25 @@ test("a signed-out person cannot describe or create the starter", async () => {
   );
   assert.equal(create.status, 401, "a signed-out create answers 401");
   assert.deepEqual(await create.json(), { error: failureMessage("unauthorized") });
+});
+
+test("a signed-out person cannot read the balance or open a top-up", async () => {
+  // drive#586: the balance and the top-up checkout are money on an account,
+  // so the gate answers 401 before either handler runs, and no checkout opens.
+  const env = { ASSETS: { fetch: () => new Response("asset", { status: 200 }) } };
+  const balance = await workerFetch(new Request("https://drive.test/api/balance"), env);
+  assert.equal(balance.status, 401, "a signed-out balance read answers 401");
+  assert.deepEqual(await balance.json(), { error: failureMessage("unauthorized") });
+  const topUp = await workerFetch(
+    new Request("https://drive.test/api/topup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount_usd: 10 }),
+    }),
+    env,
+  );
+  assert.equal(topUp.status, 401, "a signed-out top-up answers 401");
+  assert.deepEqual(await topUp.json(), { error: failureMessage("unauthorized") });
 });
 
 test("the pricing page links to the first-run page", () => {
@@ -863,4 +952,113 @@ test("the Worker reads a device's reported queue into the status payload", async
     null,
     "a device that has not reported for a while still shows a queue",
   );
+});
+
+test("the Worker reads the account's device rows into the status payload", async () => {
+  // Drive issue #556 through the Worker's own route, not only through the
+  // handler: the poll the first-run page sends answers connected from the
+  // `devices` rows the api Worker's key store writes, over the real migrations.
+  // `drive login` mints a row with no last_seen_at on it, and it is the api
+  // Worker's own request path that stamps the clock the page reads
+  // (devices.js `renewKey`), which is what this test writes with.
+  const made = createTestAuth();
+  const { cookie, account } = await signIn(made, "mac@example.com");
+  const env = {
+    ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
+    DRIVE_DB: made.db,
+    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_URL: "https://drive.test",
+  };
+  const store = createD1DeviceStore(made.db);
+  const poll = () =>
+    workerFetch(
+      new Request("https://drive.test/api/first-run-status", { headers: { cookie } }),
+      env,
+    );
+
+  // A key that has signed in but never made a request: the row exists and
+  // carries its name, and it is not connected.
+  await store.put({
+    id: "key_mac",
+    accountId: account.id,
+    name: "Nish's Mac",
+    kind: "device",
+    accessKeyId: "b2_mac",
+    secretHash: "hash_mac",
+    prefix: `u/${account.id}/`,
+    capabilities: [],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: null,
+    revokedAt: null,
+  });
+  const minted = await (await poll()).json();
+  assert.equal(minted.state, "waiting", "a key that never made a request is not connected");
+  assert.equal(isConnected(minted), false, "the page does not read that payload as connected");
+  assert.equal(minted.devices.length, 1);
+  assert.equal(minted.devices[0].name, "Nish's Mac", "the poll carries the device's name");
+  assert.equal(minted.devices[0].lastSeenAt, null);
+
+  // The api Worker's request path stamps the row, and the next poll says
+  // connected with that name. The clock comes back in milliseconds, the unit
+  // the page compares against Date.now().
+  const renewed = await store.renewKey({ id: account.id }, "key_mac");
+  assert.ok(!("error" in renewed), `renewKey refused this key: ${JSON.stringify(renewed)}`);
+  const seen = await (await poll()).json();
+  assert.equal(seen.state, "connected", "a device seen 30 seconds ago reads as connected");
+  assert.equal(isConnected(seen), true);
+  assert.equal(seen.devices.length, 1);
+  assert.equal(seen.devices[0].name, "Nish's Mac");
+  assert.ok(
+    Math.abs(seen.devices[0].lastSeenAt - Date.now()) < 60_000,
+    `lastSeenAt ${seen.devices[0].lastSeenAt} is not a fresh epoch millisecond clock`,
+  );
+
+  // A device that signed out keeps its row and loses its answer: revoked, it is
+  // not this account's live Mac any more.
+  assert.equal("error" in (await store.revokeKey({ id: account.id }, "key_mac")), false);
+  const revoked = await (await poll()).json();
+  assert.equal(revoked.state, "waiting", "a revoked device is not connected");
+  assert.deepEqual(revoked.devices, []);
+
+  // Another account's device is never read as this account's sign-in.
+  await store.put({
+    id: "key_other",
+    accountId: "acct_other",
+    name: "Someone else's Mac",
+    kind: "device",
+    accessKeyId: "b2_other",
+    secretHash: "hash_other",
+    prefix: "u/acct_other/",
+    capabilities: [],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: Math.floor(Date.now() / 1000),
+    revokedAt: null,
+  });
+  const other = await (await poll()).json();
+  assert.equal(other.state, "waiting", "another account's device is not this account's sign-in");
+
+  // An agent key is a credential for a tool, not for this machine: every request
+  // one authenticates stamps `last_seen_at` on its row, so a busy agent must not
+  // flip the page to "your drive is mounted on this Mac" while the Mac has not
+  // signed in at all. `listLive` answers with the machine's own key only.
+  await store.put({
+    id: "key_agent",
+    accountId: account.id,
+    name: "Coding agent",
+    kind: "agent",
+    accessKeyId: "b2_agent",
+    secretHash: "hash_agent",
+    prefix: `u/${account.id}/agents/coding/`,
+    capabilities: ["list", "write"],
+    createdAt: Math.floor(Date.now() / 1000),
+    lastSeenAt: Math.floor(Date.now() / 1000),
+    revokedAt: null,
+  });
+  const agentBusy = await (await poll()).json();
+  assert.equal(
+    agentBusy.state,
+    "waiting",
+    "an agent key's requests are not this machine signing in",
+  );
+  assert.equal(isConnected(agentBusy), false);
 });

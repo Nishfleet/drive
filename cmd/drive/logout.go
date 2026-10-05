@@ -337,6 +337,13 @@ func ReadDeviceKey(home string) (*KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.SecretKey == "" {
+		if secret, envErr := secretFromEnvFile(RcloneEnvPath(home)); envErr != nil {
+			return nil, envErr
+		} else {
+			c.SecretKey = secret
+		}
+	}
 	// The parser reports what the file carries, so this is where a half-written
 	// config is refused: a key id with no secret cannot be revoked, and a secret
 	// with no id names no key.

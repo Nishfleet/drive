@@ -8,7 +8,7 @@
 // `closed`. Nothing here applies a migration to production D1.
 
 import { sendEmail } from "./email-send.js";
-import { BRANCHES_PATH, scopeStore, TRASH_PATH } from "./files.js";
+import { scopeStore } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 
 /** @typedef {import("./files.js").FileStore} FileStore */
@@ -135,7 +135,6 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
-  await input.devices.releaseFoundingReservation(input.account.id);
   if (closed.closeMailSentAt === null) {
     await sendEmail(input.email, {
       to: expected,
@@ -171,17 +170,42 @@ export async function cancelClose(input) {
   }
 }
 
+/** How many keys one purge batch deletes: the provider's own per-call ceiling. */
+export const PURGE_BATCH = 1000;
+
 /**
- * Delete every object under one account's storage prefix, including the
- * hidden `.trash` and `.branches` folders a scoped listing of `/` skips.
+ * Delete every object under one account's storage prefix, in batches of
+ * `PURGE_BATCH` keys (drive#565): one flat listing and one batch delete per
+ * batch, so a 100,000-file account is about 100 calls of each instead of
+ * 100,000 single-object deletes. The hidden `.trash` and `.branches` folders
+ * are reached the same way — a flat listing hides nothing — so the three
+ * walks the old tree recursion made are one pass here.
+ *
+ * Resumable: `startAfter` is the drive path the previous run's last batch
+ * ended on (the row's `purge_cursor`), and `saveProgress` records each new
+ * boundary the moment its batch is deleted, so a run that stops — a ceiling,
+ * a provider error, a killed isolate — loses at most the batch it was on.
+ * Returns the path the last completed batch ended on, or null when there was
+ * nothing left to delete.
  * @param {FileStore} store
  * @param {{id: string}} account
+ * @param {{startAfter?: string, saveProgress?: (cursor: string) => Promise<void>}} [options]
+ * @returns {Promise<string|null>}
  */
-export async function purgeAccountFiles(store, account) {
+export async function purgeAccountFiles(store, account, options = {}) {
   const scoped = scopeStore(store, account);
-  await removeTree(scoped, "/");
-  await removeTree(scoped, TRASH_PATH);
-  await removeTree(scoped, BRANCHES_PATH);
+  let cursor = options.startAfter;
+  for (;;) {
+    const paths = await scoped.listKeys("/", { startAfter: cursor, limit: PURGE_BATCH });
+    if (paths.length === 0) {
+      return cursor ?? null;
+    }
+    await scoped.removeBatch(paths);
+    cursor = paths[paths.length - 1];
+    if (options.saveProgress !== undefined) {
+      await options.saveProgress(cursor);
+    }
+  }
 }
 
 /**
@@ -196,23 +220,11 @@ export async function purgeAccountRecords(db, accountId) {
 }
 
 /**
- * @param {FileStore} store
- * @param {string} path
- */
-async function removeTree(store, path) {
-  const entries = await store.list(path);
-  for (const entry of entries) {
-    if (entry.kind === "folder") {
-      await removeTree(store, entry.path);
-    } else {
-      await store.remove(entry.path);
-    }
-  }
-}
-
-/**
  * Nightly pass: day-25 reminder, then day-30 file delete. Only rows whose
- * person asked to close are touched.
+ * person asked to close are touched. One account's purge failure is logged
+ * and the pass moves on (drive#565): the next account still purges and the
+ * mails still go out, and the failed account resumes from the cursor its
+ * last completed batch saved.
  * @param {{
  *   db: D1Database,
  *   devices: DeviceStore,
@@ -275,13 +287,29 @@ export async function runAccountCloseCron(input) {
     reminded += 1;
   }
   let purged = 0;
+  let purgeFailures = 0;
   for (const row of duePurge) {
-    await purgeAccountFiles(input.store, { id: row.id });
-    await purgeAccountRecords(input.db, row.id);
-    await input.devices.markPurged(row.id, at);
-    purged += 1;
+    try {
+      await purgeAccountFiles(
+        input.store,
+        { id: row.id },
+        {
+          startAfter: row.purgeCursor ?? undefined,
+          saveProgress: (cursor) => input.devices.markPurgeProgress(row.id, cursor),
+        },
+      );
+      await purgeAccountRecords(input.db, row.id);
+      await input.devices.markPurged(row.id, at);
+      purged += 1;
+    } catch (error) {
+      purgeFailures += 1;
+      console.error(
+        `account close: the purge of account ${row.id} failed after its saved cursor; it resumes next night`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
-  return { mailed, reminded, purged };
+  return { mailed, reminded, purged, purgeFailures };
 }
 
 /**

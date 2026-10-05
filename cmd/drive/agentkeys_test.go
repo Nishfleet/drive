@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,6 +22,9 @@ import (
 // fakeAPI is a stand-in api Worker: it answers the device flow and the key
 // routes, and records what the CLI sent so a test can assert the wire shape.
 type fakeAPI struct {
+	// mu guards every field: the server answers on its own goroutine while a
+	// test, standing in for the browser, approves a code on another.
+	mu           sync.Mutex
 	codes        map[string]DeviceCode // user code -> code, as the Worker holds it
 	approved     map[string]bool
 	keys         map[string]MintedKey // key id -> key
@@ -46,6 +50,8 @@ func newFakeAPI() *fakeAPI {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastAuthHdr = r.Header.Get("authorization")
 	f.lastPath = r.URL.Path
 	switch {
@@ -184,6 +190,8 @@ func TestSignInShowsTheCodeThenPollsUntilApproved(t *testing.T) {
 	// Approve from "the browser" while the terminal is polling: the first poll
 	// answers pending, the second is approved.
 	go func() {
+		api.mu.Lock()
+		defer api.mu.Unlock()
 		api.approved["dev_secret"] = true
 	}()
 	var out strings.Builder

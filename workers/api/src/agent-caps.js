@@ -32,7 +32,6 @@ import {
   dayKey,
   monthKey,
 } from "../../../src/agentcaps.js";
-import { accountFoundingFlag } from "../../../src/founding.js";
 import { monthUsageThrough } from "../../../src/meter.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
 
@@ -82,14 +81,22 @@ export async function readAgentCaps(db, accountId, keyId) {
 /**
  * Count this request against its key's own day and read the counter back.
  *
- * The read and the write are two statements, so two simultaneous requests can
- * each read the same count and each write one more. The counter can under-count
- * at a day boundary too: a stale `day_key` resets to 0+1 instead of N+1. Both
- * are the safe direction for a cap — the day's true count is at most what the
- * row says, and a key that is one request over is refused rather than let
- * through. The count never gains a request it did not see. The count that
- * decides the answer is the number this returns, so the write and the decision
- * agree.
+ * The increment is SQL's own, inside the upsert: `day_requests` becomes
+ * `day_requests + 1` when the row already carries this UTC day and `1` when it
+ * does not. The read-then-write this replaced (drive#534) read the count in
+ * JavaScript and wrote the sum back as an absolute value, so N simultaneous
+ * requests from one key each read the same count and each wrote the same
+ * count+1: the day advanced by about one, and the 1,000-a-day bound on a
+ * runaway agent did not hold. SQLite applies the upsert under the database's
+ * own lock, so each request's +1 is read against the row the previous request
+ * left rather than against a stale copy in this process.
+ *
+ * The count that decides the answer is read back from the row the statement
+ * wrote, so the write and the decision agree. Under concurrency the read-back
+ * can see a later request's count, which is the safe direction: a request that
+ * reads a count it did not add is refused rather than let through. The count
+ * never gains a request it did not see, because SQL increments by exactly one
+ * per statement and nothing here recomputes the sum.
  * @param {D1Database} db
  * @param {string} accountId
  * @param {string} keyId
@@ -98,24 +105,34 @@ export async function readAgentCaps(db, accountId, keyId) {
  */
 export async function stampAgentRequest(db, accountId, keyId, at) {
   const time = asMillis(at);
-  const row = await readAgentCaps(db, accountId, keyId);
   const day = dayKey(time);
-  const sameDay = row !== null && row.day_key === day;
-  const counted = Number(row?.day_requests ?? 0);
-  const requests = (sameDay && Number.isFinite(counted) && counted > 0 ? counted : 0) + 1;
   // The upsert writes the counter and nothing else. `monthly_cap_usd` and
-  // `daily_requests` keep whatever the table's own DEFAULT put there the first
-  // time (a person's setting, if they set one) because neither is named in
-  // this statement: a request that counts itself can never rewrite a limit.
+  // `daily_requests` keep whatever the row already carries (a person's setting,
+  // if they set one) because neither is named in this statement: a request that
+  // counts itself can never rewrite a limit. `monthly_cap_usd` is NULL on a row
+  // nobody has set a cap on, which is the code default (drive#534), and this
+  // statement leaves it that way.
+  //
+  // `agent_caps.day_key` in the CASE is the row's value before this update, so
+  // the comparison is against the day already stamped, not the one being
+  // written: same day increments, a new day starts at one.
   await db
     .prepare(
       `INSERT INTO agent_caps (account_id, key_id, day_key, day_requests, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            VALUES (?1, ?2, ?3, 1, ?4)
        ON CONFLICT (account_id, key_id)
-       DO UPDATE SET day_key = ?3, day_requests = ?4, updated_at = ?5`,
+       DO UPDATE SET
+            day_key = excluded.day_key,
+            day_requests = CASE
+              WHEN agent_caps.day_key = excluded.day_key THEN agent_caps.day_requests + 1
+              ELSE 1
+            END,
+            updated_at = excluded.updated_at`,
     )
-    .bind(accountId, keyId, day, requests, new Date(time).toISOString())
+    .bind(accountId, keyId, day, new Date(time).toISOString())
     .run();
+  const stamped = await readAgentCaps(db, accountId, keyId);
+  const requests = Number(stamped?.day_requests ?? 1);
   return { day, requests };
 }
 
@@ -134,11 +151,6 @@ export async function stampAgentRequest(db, accountId, keyId, at) {
  * and a cached month would mean a key stays uncapped for as long as the cache
  * lived, which is the failure these caps exist to stop.
  *
- * The account's founding flag is read from the accounts row, not from the caps
- * row (drive#482): the caps row is not written until this request is stamped,
- * so a brand-new key would otherwise always read as full price on the very
- * request that creates it. `accountFoundingFlag` answers not founding when the
- * row is gone, which is the safe direction for a cap.
  * @param {D1Database} db
  * @param {{accountId: string, id: string, kind?: string}} device
  * @param {number|Date} at the caller's clock, normalized once by `asMillis`
@@ -150,7 +162,6 @@ export async function agentCapGate(db, device, at) {
   }
   const time = asMillis(at);
   const caps = await readAgentCaps(db, device.accountId, device.id);
-  const founding = await accountFoundingFlag(db, device.accountId);
   const today = await stampAgentRequest(db, device.accountId, device.id, time);
   const usage = await monthUsageThrough(db, device.accountId, time);
   return agentCapStatus({
@@ -158,9 +169,6 @@ export async function agentCapGate(db, device, at) {
     // all the cap counts.
     usage: { gbMinutes: usage.gbMinutes },
     caps: caps ?? undefined,
-    // The account's founding flag (#386), so the key counts the bill a
-    // founding account is billed.
-    founding,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count
     // from one stamped on the row and left there overnight.

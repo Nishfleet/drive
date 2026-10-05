@@ -77,7 +77,7 @@ func runPause(args []string) error {
 		return nil
 	}
 	if on {
-		if err := applyPauseToMount(); err != nil {
+		if err := applyPauseToMount(home); err != nil {
 			return fmt.Errorf("could not pause the running mount: %w", err)
 		}
 	}
@@ -89,8 +89,8 @@ func runPause(args []string) error {
 	return nil
 }
 
-func applyPauseToMount() error {
-	c, err := mountRCClient()
+func applyPauseToMount(home string) error {
+	c, err := mountRCClient(home)
 	if err != nil {
 		return err
 	}
@@ -102,8 +102,8 @@ func applyPauseToMount() error {
 	return c.SetBwLimit(ctx, pausedRate)
 }
 
-func applyResumeToMount() error {
-	c, err := mountRCClient()
+func applyResumeToMount(home string) error {
+	c, err := mountRCClient(home)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func runResume(args []string) error {
 		return nil
 	}
 	if on {
-		if err := applyResumeToMount(); err != nil {
+		if err := applyResumeToMount(home); err != nil {
 			return fmt.Errorf("could not resume the running mount: %w", err)
 		}
 	}

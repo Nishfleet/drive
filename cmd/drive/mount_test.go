@@ -56,7 +56,7 @@ type hillClimbFlag struct {
 func tunableFlags() []hillClimbFlag {
 	return []hillClimbFlag{
 		{name: "vfs-read-ahead", flag: "--vfs-read-ahead", env: "VFS_READ_AHEAD", baseline: vfsReadAheadValue, candidate: "0", target: "open-time"},
-		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "32M", target: "video-start"},
+		{name: "vfs-read-chunk-size", flag: "--vfs-read-chunk-size", env: "VFS_READ_CHUNK_SIZE", baseline: vfsReadChunkSizeValue, candidate: "16M", target: "video-start"},
 		{name: "vfs-read-chunk-streams", flag: "--vfs-read-chunk-streams", env: "VFS_READ_CHUNK_STREAMS", baseline: vfsReadChunkStreamsValue, candidate: "4", target: "video-start"},
 		{name: "buffer-size", flag: "--buffer-size", env: "BUFFER_SIZE", baseline: vfsChunkStreamSize, candidate: "16M", target: "small-file-get-1mib"},
 		{name: "transfers", flag: "--transfers", env: "TRANSFERS", baseline: vfsTransfersValue, candidate: "8", target: "small-file-put-4kib"},
@@ -294,7 +294,7 @@ func (h *hillStandin) seedFolderCopies(t *testing.T, name string, nfiles, copies
 func (h *hillStandin) rclone(t *testing.T, args ...string) {
 	t.Helper()
 	cmd := exec.Command("rclone", args...)
-	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home))
+	cmd.Env = append(os.Environ(), "RCLONE_CONFIG="+RcloneConfigPath(h.home), rcloneSecretEnv+"="+h.cfg.SecretKey)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rclone %s: %v\n%s", strings.Join(args, " "), err, b)
 	}
@@ -391,6 +391,50 @@ func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestVFSReadChunkingBoundsPerFileMemory is the memory half of the mount's
+// safety flags (issue #543): rclone's parallel reader allocates one read-chunk
+// buffer per stream, so chunk size x streams is the memory one open file can
+// take. The shipped pair is 2-4 streams of 16-32 MiB and the product stays at
+// or under 128 MiB per file. The last two checks prove the bound bites: the old
+// 128M x 2 pair (the bug this fixes) trips it.
+func TestVFSReadChunkingBoundsPerFileMemory(t *testing.T) {
+	const (
+		minChunk   = 16 << 20
+		maxChunk   = 32 << 20
+		minStreams = 2
+		maxStreams = 4
+		maxPerFile = 128 << 20
+	)
+	args := VFSArgs(vfsCacheMaxValue)
+	chunk, err := parseSizeSuffix(argValue(args, "--vfs-read-chunk-size"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-size: %v", err)
+	}
+	streams, err := strconv.Atoi(argValue(args, "--vfs-read-chunk-streams"))
+	if err != nil {
+		t.Fatalf("--vfs-read-chunk-streams: %v", err)
+	}
+	if chunk < minChunk || chunk > maxChunk {
+		t.Errorf("--vfs-read-chunk-size is %d bytes, want %d..%d (issue #543)", chunk, minChunk, maxChunk)
+	}
+	if streams < minStreams || streams > maxStreams {
+		t.Errorf("--vfs-read-chunk-streams is %d, want %d..%d (issue #543)", streams, minStreams, maxStreams)
+	}
+	if got := perFileReadMemory(chunk, streams); got > maxPerFile {
+		t.Errorf("one open file can take %d bytes of read buffers (chunk x streams), want at most %d", got, maxPerFile)
+	}
+	if got := perFileReadMemory(maxChunk, maxStreams); got > maxPerFile {
+		t.Errorf("the largest pair the bound allows (%d x %d) is %d, over the %d ceiling; the bound is wrong", maxChunk, maxStreams, got, maxPerFile)
+	}
+	if perFileReadMemory(128<<20, 2) <= maxPerFile {
+		t.Error("the old 128M x 2 pair must exceed the 128 MiB ceiling, or this test cannot catch the bug it guards")
+	}
+}
+
+// perFileReadMemory is the read-buffer memory one open file can take: rclone
+// allocates one read-chunk buffer per stream.
+func perFileReadMemory(chunk int64, streams int) int64 { return chunk * int64(streams) }
 
 func TestTunedVFSValueOverride(t *testing.T) {
 	t.Setenv("DRIVE_BENCH_VFS_READ_AHEAD", "1M")

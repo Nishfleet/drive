@@ -7,8 +7,8 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
+import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
-import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -38,7 +38,6 @@ import {
   scopeStore,
   storageBucketForKey,
 } from "./files.js";
-import { accountFoundingFlag } from "./founding.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
@@ -49,6 +48,7 @@ import {
   reconcileMeter,
   runMeterCron,
 } from "./meter.js";
+import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
 import {
   handleSearchRequest,
@@ -76,6 +76,14 @@ import {
   signedInAccount,
   unauthorizedResponse,
 } from "./status.js";
+import {
+  BALANCE_ENDPOINT,
+  BILLING_WEBHOOK_PATH,
+  handleBalanceRequest,
+  handleBillingWebhook,
+  handleTopUpRequest,
+  TOPUP_ENDPOINT,
+} from "./topup.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 // The path the meter, the billing webhook and the tests post a drive email to
@@ -129,6 +137,10 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 //     upload request, where the token in the query is the whole proof.
 //   - /api/quote: the public savings calculator (drive issue #14). It quotes
 //     the price for a size, not an account, so it has no session to need.
+//   - /api/billing/webhook: Dodo's signed payment webhook (drive#586). The
+//     Standard Webhooks signature over the raw body is the gate
+//     (src/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
+//     it answers 503, a closed door.
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
@@ -140,7 +152,20 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${REQUEST_ENDPOINT}/info`,
   `${REQUEST_ENDPOINT}/upload`,
   QUOTE_ENDPOINT,
+  BILLING_WEBHOOK_PATH,
 ]);
+
+/**
+ * The Dodo settings this Worker reads, none of them declared bindings: each is
+ * unset until Nish sets the live account up (#325), and every route that needs
+ * one answers a closed door without it. DODO_FETCH is the tests' recorder.
+ * @param {Env} env
+ */
+function dodoEnv(env) {
+  return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch}} */ (
+    /** @type {unknown} */ (env)
+  );
+}
 
 /** @param {string} pathname */
 function isPublic(pathname) {
@@ -198,7 +223,9 @@ function closeDepsFor(env) {
   }
   const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
   return {
-    devices: createD1DeviceStore(env.DRIVE_DB),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
     store: storeFor(env),
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
@@ -348,6 +375,29 @@ async function liveQueueFor(env, account) {
     return null;
   }
   return createD1QueueStore(env.DRIVE_DB).latest(account.id);
+}
+
+// The account's live devices (drive issue #556), read from the same `devices`
+// rows the api Worker's key store writes: the first-run page used to be told
+// "waiting" for every account, because this route carried no device rows at
+// all, so nothing it answered could ever say connected. Built per request from
+// the binding like liveQueueFor, for the same reason: a machine that just
+// signed in is the row the next poll reads, on whichever instance the poll
+// lands on. Whether a device reads as connected is not decided here — the
+// window is src/status.js `connectionStatus`'s own — so this one function fills
+// the payload and the rule stays in the module the page and the CLI already
+// read. No database means no device has signed in yet: the empty list, the
+// same answer as an account whose machine has not.
+/**
+ * @param {Env} env
+ * @param {{id: string}} account
+ * @returns {Promise<Array<{id: string, name: string, kind: string, lastSeenAt: number|null}>>}
+ */
+async function liveDevicesFor(env, account) {
+  if (!env.DRIVE_DB) {
+    return [];
+  }
+  return createD1DeviceStore(env.DRIVE_DB).listLive(account);
 }
 
 // The owner's spending-cap state for the public upload routes, read from the
@@ -500,6 +550,7 @@ export function createApp() {
   app.use(`${FILES_ENDPOINT}/*`, csrfWhenBrowser);
   app.use(CLOSE_ENDPOINT, csrfWhenBrowser);
   app.use(CLOSE_CANCEL_ENDPOINT, csrfWhenBrowser);
+  app.use(TOPUP_ENDPOINT, csrfWhenBrowser);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base
@@ -522,14 +573,24 @@ export function createApp() {
   // methodNotAllowed middleware answers a wrong method with 405 and an Allow
   // header; the gate above already answered an anonymous caller 401.
 
-  // The first-run page's live flip (issue #32, #45). The third argument is
-  // the queue a device on this account reported, read from the row the api
-  // Worker's report route wrote (drive issue #318): #308 made it an argument
-  // to the handler, and the read is the one line that fills it.
+  // The first-run page's live flip (issue #32, #45, #556). The third
+  // argument is the queue a device on this account reported, read from the row
+  // the api Worker's report route wrote (drive issue #318): #308 made it an
+  // argument to the handler, and the read is the one line that fills it. The
+  // fourth is the account's live device rows, which are what let the page say
+  // connected at all: until #556 this route carried none, so the hard-coded
+  // "waiting" it answered was the only answer it had.
   app.get(STATUS_ENDPOINT, async (c) => {
     const account = c.get("account");
-    const upload = account ? await liveQueueFor(c.env, account) : null;
-    return handleFirstRunStatusRequest(c.req.raw, account, upload);
+    // Both reads answer the same poll, so they go together: the page asks
+    // every POLL_INTERVAL_MS and a second round-trip before the first answer
+    // is a longer wait on a page someone is watching. Neither read depends on
+    // the other.
+    const [upload, devices] = await Promise.all([
+      account ? liveQueueFor(c.env, account) : null,
+      account ? liveDevicesFor(c.env, account) : [],
+    ]);
+    return handleFirstRunStatusRequest(c.req.raw, account, upload, devices);
   });
 
   // Search reads only the D1 file index (issue #18), behind the account gate.
@@ -616,12 +677,6 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
-    // The founding flag is the same accounts row the cap and the card stamp
-    // come from (drive#488). It is read tolerantly (accountFoundingFlag): a
-    // signed-in account whose accounts row is gone reads as full price, the
-    // safe direction, rather than failing the usage page — the same way
-    // getCapUsd() and cardAdded() below already answer for a missing row.
-    let foundingMember = false;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -632,7 +687,6 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
-      foundingMember = await accountFoundingFlag(c.env.DRIVE_DB, account.id);
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -643,9 +697,41 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, foundingMember },
+      { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
     );
+  });
+
+  // The prepaid balance (drive#586): the balance and recent ledger lines, and
+  // a top-up's checkout. The balance is credited only by the signed webhook
+  // below, never by this route or the checkout's redirect.
+  app.get(BALANCE_ENDPOINT, (c) =>
+    handleBalanceRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
+  app.post(TOPUP_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handleTopUpRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
+      productId: dodo.DODO_TOPUP_PRODUCT_ID,
+      fetch: dodo.DODO_FETCH,
+    });
+  });
+
+  // The card-update path the payment-failed copy points at (drive#575). A GET
+  // because it is a link a browser follows, and the answer is a 302 to the
+  // provider's customer portal rather than a JSON body. The account gate
+  // above already answered an anonymous caller 401, so a stranger never
+  // reaches a provider call.
+  app.get(PORTAL_ENDPOINT, (c) => {
+    const dodo = dodoEnv(c.env);
+    return handlePortalRequest(c.req.raw, c.get("account"), {
+      db: c.env.DRIVE_DB,
+      apiKey: dodo.DODO_PAYMENTS_API_KEY,
+      baseUrl: dodo.DODO_BASE_URL,
+      fetch: dodo.DODO_FETCH,
+    });
   });
 
   // `drive cap <dollars>` and the usage page's cap write (drive#64). The
@@ -654,7 +740,7 @@ export function createApp() {
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
     const store = db
-      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });
@@ -743,6 +829,15 @@ export function createApp() {
       ipLimiter: c.env.REQUEST_UPLOAD_RATE_LIMITER,
       linkLimiter: c.env.REQUEST_UPLOAD_LINK_RATE_LIMITER,
       db: c.env.DRIVE_DB,
+    }),
+  );
+
+  // Dodo's signed payment webhook (drive#586): credits a top-up, records a
+  // refund. Public, because the signature is the proof.
+  app.post(BILLING_WEBHOOK_PATH, (c) =>
+    handleBillingWebhook(c.req.raw, {
+      db: c.env.DRIVE_DB,
+      secret: dodoEnv(c.env).DODO_WEBHOOK_SECRET,
     }),
   );
 
@@ -917,18 +1012,29 @@ export default {
     // `reconcileMeter` scopes it per account, so the provider listing never
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // The account close cron is its own waitUntil (drive#565), registered
+      // before the reconcile runs: a reconcileMeter throw used to leave every
+      // close receipt, reminder and purge undone for that night, and the
+      // purge is resumable now, so the two trips have nothing to say to each
+      // other. Its own per-account catches mean only a whole-cron failure
+      // (D1 down) rejects here, and a failed trigger is the honest signal
+      // for that: the next night retries everything it did not finish.
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        await runAccountCloseCron({
-          db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB),
-          store: storeFor(env),
-          email: env.EMAIL,
-          mailFrom: secrets.MAIL_FROM ?? "",
-          now: event.scheduledTime,
-        });
+        context.waitUntil(
+          runAccountCloseCron({
+            db: env.DRIVE_DB,
+            devices: createD1DeviceStore(env.DRIVE_DB),
+            store,
+            email: env.EMAIL,
+            mailFrom: secrets.MAIL_FROM ?? "",
+            now: event.scheduledTime,
+          }).catch((error) => {
+            throw new Error(`the account close cron failed: ${error.message}`);
+          }),
+        );
       }
+      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

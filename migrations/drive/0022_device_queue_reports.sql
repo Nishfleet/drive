@@ -1,4 +1,6 @@
--- Phase 1 of per-device upload-queue reports (drive issue #516). Additive
+-- Phase 1 of per-device upload-queue reports (drive issue #516). Numbered
+-- 0022 because 0020_account_purge_cursor.sql, 0020_balance_ledger.sql and
+-- 0021_agent_caps_nullable_cap.sql already sit on this database. Additive
 -- only: a new table keyed by account and device, no existing table is
 -- dropped or renamed, and every column carries a DEFAULT so the expansion
 -- cannot break the previous version of the code the instant it lands.
