@@ -7,8 +7,8 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
+import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
-import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -38,7 +38,6 @@ import {
   scopeStore,
   storageBucketForKey,
 } from "./files.js";
-import { accountFoundingFlag } from "./founding.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { failureMessage } from "./messages.js";
 import {
@@ -198,7 +197,9 @@ function closeDepsFor(env) {
   }
   const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
   return {
-    devices: createD1DeviceStore(env.DRIVE_DB),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
     store: storeFor(env),
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
@@ -616,12 +617,6 @@ export function createApp() {
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
-    // The founding flag is the same accounts row the cap and the card stamp
-    // come from (drive#488). It is read tolerantly (accountFoundingFlag): a
-    // signed-in account whose accounts row is gone reads as full price, the
-    // safe direction, rather than failing the usage page — the same way
-    // getCapUsd() and cardAdded() below already answer for a missing row.
-    let foundingMember = false;
     if (!account) return unauthorizedResponse();
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
@@ -632,7 +627,6 @@ export function createApp() {
       // line a card-less account would look like it had been charged. It is
       // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
-      foundingMember = await accountFoundingFlag(c.env.DRIVE_DB, account.id);
     }
     // The third argument is the live rclone upload queue, reported by the
     // account's device over its device token and stored in DRIVE_DB
@@ -643,7 +637,7 @@ export function createApp() {
     // one.
     return handleUsageRequest(
       c.req.raw,
-      { ...account, capUsd, cardOnFile, foundingMember },
+      { ...account, capUsd, cardOnFile },
       await liveQueueFor(c.env, account),
     );
   });
@@ -654,7 +648,7 @@ export function createApp() {
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
     const store = db
-      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });

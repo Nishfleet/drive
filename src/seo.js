@@ -42,7 +42,6 @@ export const BILLING = Object.freeze({
   // tags, the JSON-LD and llms.txt together.
   headline: PRICE.headline,
   noMinimumLine: PRICE.noMinimumLine,
-  foundingLine: PRICE.foundingLine,
   // The rule in words, for the offer description and llms.txt, because a
   // crawler reads prose, not a formula.
   rule: PRICE.rule,

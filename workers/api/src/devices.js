@@ -14,13 +14,6 @@
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import {
-  accountFounding,
-  accountFoundingFlag,
-  releaseFoundingReservation as clearFoundingReservation,
-  markAccountPaying,
-  reserveFoundingSlot,
-} from "../../../src/founding.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
@@ -295,20 +288,72 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
-   * One statement that kills every live key on one account. Close (drive#235)
-   * and sign-out-every-device (drive#236) both call this; the public store
-   * method wraps it as `{revoked: n}` so callers never pass a raw id.
+   * The one revoke that reaches every credential an account holds: each live
+   * storage key at the provider and in D1, every live device token, every live
+   * share link and every live upload request. Close (drive#235) and
+   * sign-out-every-device (drive#236) both call this, so the two cannot drift:
+   * a credential that survives one survives the other, and a credential table
+   * is added here once rather than at two call sites (drive#497).
+   *
+   * The account id is the whole filter on every statement, and it is the id
+   * the account gate resolved, so a caller can never name another account's
+   * rows. Each statement is conditional on its own `revoked_at IS NULL`, so a
+   * second call keeps the first revoke's timestamp and counts only what it
+   * actually killed.
+   *
+   * Order, and why: the live keys are read before the write so each one's
+   * provider credential can be withdrawn by the access key id its row holds;
+   * D1 is then revoked first, so the api refuses every credential from the
+   * next request on whether or not the vendor call succeeds; the vendor is
+   * last, one credential at a time. A vendor refusal is thrown after the local
+   * rows are already dead (revokeCredentialAtProvider), so the failure is
+   * visible and a retry — with no live key left — is a clean revoke.
    * @param {string} accountId
+   * @returns {Promise<number>} how many storage key rows this call killed
    */
-  async function revokeLiveKeys(accountId) {
+  async function revokeAccountCredentials(accountId) {
     const at = nowSeconds(now());
-    const result = await run(
+    const live = await all(
+      db,
+      "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND revoked_at IS NULL",
+      accountId,
+    );
+    const keys = await run(
       db,
       "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
       at,
       accountId,
     );
-    return Number(/** @type {{meta?: {changes?: number}}} */ (result).meta?.changes ?? 0);
+    await run(
+      db,
+      "UPDATE device_tokens SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    // The site Worker's share and upload-request rows (src/share.js
+    // createD1LinkStore, migrations/drive/0006_share_links.sql). A revoked
+    // link is refused by the same `revoked_at` read the single revoke writes,
+    // so a link killed here is dead on the next request to whichever isolate
+    // answers it.
+    await run(
+      db,
+      "UPDATE shares SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    await run(
+      db,
+      "UPDATE upload_requests SET revoked_at = ?1 WHERE account_id = ?2 AND revoked_at IS NULL",
+      at,
+      accountId,
+    );
+    for (const row of live) {
+      const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+      if (typeof accessKeyId === "string" && accessKeyId !== "") {
+        await revokeCredentialAtProvider(accessKeyId);
+      }
+    }
+    return Number(/** @type {{meta?: {changes?: number}}} */ (keys).meta?.changes ?? 0);
   }
 
   /**
@@ -337,7 +382,7 @@ export function createD1DeviceStore(db, options = {}) {
       email,
       atSeconds,
     );
-    await revokeLiveKeys(account.id);
+    await revokeAccountCredentials(account.id);
     const written = await getCloseState(account.id);
     if (written === null) {
       throw new Error(`closeAccount wrote no accounts row for ${account.id}`);
@@ -692,28 +737,29 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
-     * Revoke every live key one account holds: the key half of "sign out of
-     * every device" (drive#34, slice drive#236). One statement filtered on the
-     * account id the account gate resolved, so the store never reads a row it
-     * cannot name and there is no loop to leave half-done.
+     * Revoke every credential one account holds: the key half and the token,
+     * share-link and upload-request halves of "sign out of every device" and
+     * account close (drive#34, drive#236, drive#497). One account id, taken
+     * from the account gate, so the store never reads a row it cannot name and
+     * there is no loop that can leave half the account's credentials live.
      *
-     * Conditional on `revoked_at IS NULL`, so a key that is already dead keeps
-     * the first revoke's timestamp and `meta.changes` counts only the rows this
-     * call killed: an answer of `0` means every key on this account was already
-     * off, which is what makes the route's count something a person can read.
+     * Conditional on each row's own `revoked_at IS NULL`, so a key that is
+     * already dead keeps the first revoke's timestamp and the return counts
+     * only the storage key rows this call killed: an answer of `0` means every
+     * key on this account was already off, while the tokens, links and upload
+     * requests are revoked by the same call whether or not a key was left.
      *
-     * The revoked rows are refused by the same `authenticate` the single-key
-     * revoke's rows are refused by, so there is no second path where a key this
-     * call turned off still works (drive#20 already relied on that for a
-     * removed member's key, which is why this is one statement and not a new
-     * rule). Nothing is deleted: the row stays, cancelled, so an export and the
-     * devices list can still name it, and the key it held is dead from the next
-     * request.
+     * The revoked keys are refused by the same `authenticate` the single-key
+     * revoke's rows are refused by, and each one's vendor credential is
+     * withdrawn in the same call, so there is no second path where a key this
+     * call turned off still works at the storage server (drive#371). Nothing
+     * is deleted: the rows stay, cancelled, so an export and the devices list
+     * can still name them.
      * @param {{id: string}} account
      * @returns {Promise<{revoked: number}>}
      */
     async revokeAllKeys(account) {
-      return { revoked: await revokeLiveKeys(account.id) };
+      return { revoked: await revokeAccountCredentials(account.id) };
     },
 
     /**
@@ -841,9 +887,8 @@ export function createD1DeviceStore(db, options = {}) {
 
     /**
      * Whether a card is really on file for this account (drive#417), read
-     * from `accounts.card_added_at` — the one stamp `markAccountPaying`
-     * (src/founding.js) writes when the account becomes paying, and the only
-     * record a card exists. Fail closed: no accounts row and a null stamp both
+     * from `accounts.card_added_at` — the stamp the card step writes
+     * (src/abuse-guards.js), and the only record a card exists. Fail closed: no accounts row and a null stamp both
      * read as no card, because an account that cannot show a card cannot show
      * a charge either (the usage page's "no charge yet" label, src/billing.js).
      * No Dodo call happens here: real capture waits on the Dodo key (#325).
@@ -930,12 +975,6 @@ export function createD1DeviceStore(db, options = {}) {
       // The peak is the size the drive holds now (the page's "stored now"); the
       // bill itself reads only the GB-minutes (drive#463).
       const peakGb = storedGb(peak.peakBytes);
-      // The flag the cap bills on is the account's own (drive#488): without
-      // it enforceCap() counts the month at full price and stops a founding
-      // account at twice its real spend. accountFoundingFlag is the tolerant
-      // read the agent key cap uses (drive#482): a row that is gone reads as
-      // full price, the safe direction for a cap.
-      const foundingMember = await accountFoundingFlag(db, accountId);
       return {
         gbMinutes,
         storedGb: peakGb,
@@ -944,46 +983,7 @@ export function createD1DeviceStore(db, options = {}) {
         averageStoredGb: peakGb,
         capUsd: options.capUsd,
         cardAdded: true,
-        foundingMember,
       };
-    },
-
-    /**
-     * Set the founding flag once, when this account becomes paying. The
-     * parsed Worker var is the second argument, so a closed offer cannot
-     * silently default open inside the store.
-     * @param {string} accountId
-     * @param {boolean} offerOpen
-     */
-    markPaying(accountId, offerOpen) {
-      return markAccountPaying(db, accountId, { offerOpen, now: now() });
-    },
-
-    /**
-     * Reserve a founding slot at the card step. The parsed Worker var is the
-     * second argument, the same shape as markPaying.
-     * @param {string} accountId
-     * @param {boolean} offerOpen
-     */
-    reserveFounding(accountId, offerOpen) {
-      return reserveFoundingSlot(db, accountId, { offerOpen, now: now() });
-    },
-
-    /**
-     * Drop a reserved slot when the account closes before paying.
-     * @param {string} accountId
-     */
-    releaseFoundingReservation(accountId) {
-      return clearFoundingReservation(db, accountId);
-    },
-
-    /**
-     * @param {string} accountId
-     * @returns {Promise<boolean>}
-     */
-    async isFounding(accountId) {
-      const result = await accountFounding(db, accountId);
-      return result.founding;
     },
 
     /**
