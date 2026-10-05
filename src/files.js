@@ -612,6 +612,22 @@ export function restorableUntil(deletedAt) {
  *   HEAD on the preview or a share link costs a storage HEAD and not a full
  *   GET whose body is dropped (drive#570).
  * @property {(path: string, body: BodyInit, contentType: string) => Promise<void>} write
+ * @property {(path: string, body: BodyInit, contentType: string) => Promise<boolean>} writeIfAbsent
+ *   The create-only write: it stores the bytes only when the key is not there
+ *   yet, and answers `true` when this call is the one that put them there and
+ *   `false` when something was already stored under that path. It is the
+ *   authority on which of two concurrent creates wins, because the decision
+ *   happens in one store call: a `stat` followed by a `write` is two storage
+ *   round-trips, and between them a second request can create the same key,
+ *   so both writes land and the loser silently overwrites the winner
+ *   (drive#644). A create site that must not overwrite calls this instead of
+ *   writing blind; pairing it with a pre-check `stat` is fine, and is how an
+ *   ordinary duplicate gets its 409 on backends whose PUT cannot be made
+ *   conditional — but the pre-check alone is never the answer to a race.
+ *   A store whose provider cannot make the write conditional does not pretend
+ *   to: see `createS3Store`'s `writeIfAbsent` for what the S3 path can
+ *   honestly offer, and its `write` for the overwrite that remains its
+ *   backstop.
  * @property {(path: string) => Promise<void>} remove
  * @property {(path: string, options?: {startAfter?: string, limit?: number}) => Promise<string[]>} listKeys
  *   Every key under one prefix, flat: no folder entries, the hidden system
@@ -788,6 +804,12 @@ export function scopeStore(store, account) {
     },
     async write(path, body, contentType) {
       return store.write(toKey(path), body, contentType);
+    },
+    // Scoped like every other write: the destination is rewritten to this
+    // account's own key before the store sees it, so a create-only write can
+    // no more land outside the prefix than an ordinary one.
+    async writeIfAbsent(path, body, contentType) {
+      return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path) {
       return store.remove(toKey(path));
@@ -1024,6 +1046,28 @@ export function createMemoryStore() {
         modified: now,
         etag: await memoryEtag(bytes),
       });
+    },
+    async writeIfAbsent(path, body, contentType) {
+      // The bytes are read first, then two exists-checks bracket the etag:
+      // the first short-circuits an ordinary duplicate before any fingerprint
+      // is worth computing, and the second is the atomic one — it runs with
+      // nothing awaited between it and the set below, so inside one JS event
+      // loop two concurrent creates on one key cannot both see the key as
+      // absent and both land (drive#644). The winner starts a version exactly
+      // like `write`; the loser answers false without touching the live
+      // object or its versions.
+      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      if (objects.has(path)) {
+        return false;
+      }
+      const etag = await memoryEtag(bytes);
+      if (objects.has(path)) {
+        return false;
+      }
+      const now = Date.now();
+      startVersion(path, bytes.byteLength, now);
+      objects.set(path, { body: bytes, contentType, modified: now, etag });
+      return true;
     },
     async remove(path) {
       // A delete hides the live version rather than forgetting it, exactly as
@@ -1572,6 +1616,42 @@ export function createS3Store(config) {
       if (!response.ok) {
         throw new Error(`storage write failed with ${response.status}`);
       }
+    },
+    async writeIfAbsent(path, body, contentType) {
+      // The stock S3 create-only request: one PUT carrying If-None-Match: *,
+      // which a compliant endpoint refuses with 412 Precondition Failed when
+      // the key is already there. What THIS endpoint can honestly offer is
+      // narrower than the contract's words, and it is measured, not assumed:
+      //
+      //   - `rclone serve s3` (v1.75.1, the stand-in on the build host)
+      //     answered 200 to both the absent and the already-present PUT on
+      //     2026-10-05 — it ignores If-None-Match on a PUT — so a `true`
+      //     from that server is not a proof of create-only;
+      //   - iDrive e2, the primary vendor, was never asked: its keys are
+      //     Nish's alone, and the standing direction is to build without
+      //     them. Its answer to the header is unverified.
+      //
+      // The header still rides every call, so on any endpoint that enforces
+      // the conditional the race closes at the storage itself; where one does
+      // not, this degrades to the overwrite `write` always was, and the
+      // provider's hide-not-delete versioning stays the backstop that makes
+      // an overwrite recoverable. A caller on such an endpoint pairs a
+      // pre-check `stat` (the stranger-upload route does) so an ordinary
+      // duplicate is still refused there; only a true mid-race pair is left to
+      // this endpoint's own answer. A 412 is the only answer that proves the
+      // key was already there, so it is the only false.
+      const response = await request(urlFor(path), {
+        method: "PUT",
+        headers: { "content-type": contentType, "if-none-match": "*" },
+        body,
+      });
+      if (response.status === 412) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(`storage write failed with ${response.status}`);
+      }
+      return true;
     },
     async remove(path) {
       const response = await request(urlFor(path), { method: "DELETE" });
