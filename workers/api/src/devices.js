@@ -572,9 +572,7 @@ export function createD1DeviceStore(db, options = {}) {
       .bind(accountId)
       .all();
     return /** @type {Device[]} */ (
-      (result.results ?? [])
-        .map(deviceFromRow)
-        .filter((device) => device !== null)
+      (result.results ?? []).map(deviceFromRow).filter((device) => device !== null)
     );
   }
 
@@ -608,20 +606,20 @@ export function createD1DeviceStore(db, options = {}) {
     async listCapKeys(accountId) {
       const devices = await liveDevices(accountId);
       return devices.map((device) =>
-          Object.freeze({
-            keyId: device.id,
-            kind: device.kind,
-            prefix: device.prefix,
-            // The bucket this row's own prefix puts it in. A cap swap mints
-            // its replacement against this bucket (src/cap.js
-            // `applyCapSwap`), so a team key stays in the team's bucket and
-            // an account key stays in the account's, whatever the cap does
-            // (drive#462).
-            bucket: bucketForKeyPrefix(accountId, device.prefix),
-            capabilities: Object.freeze([...device.capabilities]),
-            ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
-          }),
-        );
+        Object.freeze({
+          keyId: device.id,
+          kind: device.kind,
+          prefix: device.prefix,
+          // The bucket this row's own prefix puts it in. A cap swap mints
+          // its replacement against this bucket (src/cap.js
+          // `applyCapSwap`), so a team key stays in the team's bucket and
+          // an account key stays in the account's, whatever the cap does
+          // (drive#462).
+          bucket: bucketForKeyPrefix(accountId, device.prefix),
+          capabilities: Object.freeze([...device.capabilities]),
+          ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
+        }),
+      );
     },
 
     /**

@@ -110,7 +110,8 @@ test("no first-run sentence promises a flip the status route cannot make", () =>
   // Every sentence the page shows while it waits names the command that
   // answers from the machine instead, and none of them promises the flip: the
   // strings are pinned here because this is the drift that made the bug.
-  const promises = /flips?\s+to\s+connected|updates\s+on\s+its\s+own|moment\s+your\s+Mac\s+signs\s+in|Nothing\s+to\s+refresh/;
+  const promises =
+    /flips?\s+to\s+connected|updates\s+on\s+its\s+own|moment\s+your\s+Mac\s+signs\s+in|Nothing\s+to\s+refresh/;
   for (const [name, entry] of Object.entries(CONNECTION_COPY)) {
     assert.doesNotMatch(entry.next, promises, `${name}'s next promises the page a flip`);
   }
@@ -409,11 +410,7 @@ test("the poll answers connected when one of the account's devices signed in", a
   const endpoint = "https://drive.test/api/first-run-status";
   /** @param {unknown[]} devices */
   const poll = async (devices) =>
-    (
-      await (
-        await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)
-      ).json()
-    );
+    await (await handleFirstRunStatusRequest(new Request(endpoint), account, null, devices)).json();
   const seenNow = Date.now() - 30_000;
   const seenHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
   const fresh = { id: "key_1", name: "Nish's Mac", kind: "device", lastSeenAt: seenNow };
@@ -426,7 +423,11 @@ test("the poll answers connected when one of the account's devices signed in", a
   assert.deepEqual(await poll([]), { state: "waiting", devices: [], upload: null });
   assert.deepEqual(
     await poll([{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }]),
-    { state: "waiting", devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }], upload: null },
+    {
+      state: "waiting",
+      devices: [{ id: "key_3", name: "Brand new Mac", kind: "device", lastSeenAt: null }],
+      upload: null,
+    },
   );
   assert.deepEqual(await poll([stale]), { state: "waiting", devices: [stale], upload: null });
   // One live device is enough, and an older one on the same account does not
@@ -435,14 +436,8 @@ test("the poll answers connected when one of the account's devices signed in", a
 
   // The window's edge: a device seen exactly CONNECTED_WINDOW_MS ago is still
   // connected, and one millisecond later is not.
-  assert.equal(
-    firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]),
-    "connected",
-  );
-  assert.equal(
-    firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]),
-    "waiting",
-  );
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS }]), "connected");
+  assert.equal(firstRunState([{ lastSeenAt: Date.now() - CONNECTED_WINDOW_MS - 1 }]), "waiting");
   // A clock the route cannot read is a bug to see, not a wait to show somebody
   // who has already signed in.
   assert.throws(() => firstRunState([{ lastSeenAt: "not-a-date" }]), TypeError);
@@ -987,7 +982,8 @@ test("the Worker reads the account's device rows into the status payload", async
   // The api Worker's request path stamps the row, and the next poll says
   // connected with that name. The clock comes back in milliseconds, the unit
   // the page compares against Date.now().
-  assert.equal((await store.renewKey({ id: account.id }, "key_mac")).renewed, false);
+  const renewed = await store.renewKey({ id: account.id }, "key_mac");
+  assert.ok(!("error" in renewed), `renewKey refused this key: ${JSON.stringify(renewed)}`);
   const seen = await (await poll()).json();
   assert.equal(seen.state, "connected", "a device seen 30 seconds ago reads as connected");
   assert.equal(isConnected(seen), true);

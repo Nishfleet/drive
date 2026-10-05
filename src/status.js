@@ -414,7 +414,7 @@ export function unauthorizedResponse() {
  * @param {Request} request
  * @param {{id: string, name: string}|null} [account] the signed-in account, or null when signed out
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
- * @param {unknown} [devices] the account's live device rows, or the empty list
+ * @param {unknown[]} [devices] the account's live device rows, or the empty list
  *   when none has signed in
  */
 export function handleFirstRunStatusRequest(request, account, upload = null, devices = []) {
@@ -434,8 +434,12 @@ export function handleFirstRunStatusRequest(request, account, upload = null, dev
   // #100). The value is the shape uploadProgress() accepts, and the renderer's
   // own guard turns a payload it cannot draw into its unreachable state, so no
   // second check is written here.
+  // A device that cannot be read is loud here, not silent: `firstRunState`
+  // turns a clock it cannot read into a TypeError, so a payload row that is
+  // not a device row fails the request instead of answering "waiting" to an
+  // account whose machine has signed in.
   return new Response(
-    JSON.stringify({ state: firstRunState(devices), devices: [...(devices ?? [])], upload }),
+    JSON.stringify({ state: firstRunState(devices), devices: [...devices], upload }),
     {
       status: 200,
       headers: STATUS_HEADERS,
