@@ -75,6 +75,9 @@ type updateOptions struct {
 	from string
 	// checkOnly is `--check`: report whether an update exists, install nothing.
 	checkOnly bool
+	// exe is this binary's path, used to read the version after an upgrade.
+	// Empty means os.Executable().
+	exe string
 	// lookPath finds a binary on PATH; nil means exec.LookPath.
 	lookPath func(string) (string, error)
 	// run is the install/upgrade invocation; nil means exec.Command.
@@ -112,6 +115,7 @@ func defaultLookPath(name string) (string, error) {
 func defaultRun(name string, args []string, out, errw io.Writer) error {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is a resolved package manager, the arguments are fixed strings, and exec.Command takes an argument vector, not a shell.
 	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = out
 	cmd.Stderr = errw
 	return cmd.Run()
@@ -147,7 +151,7 @@ func captureOr(fn captureRunner) captureRunner {
 
 // updateDrive is the one `drive update` run: detect the install route, ask
 // that package manager whether a newer package exists, and either report or
-// hand off the upgrade to it.
+// hand off the upgrade to it. An up-to-date machine does not run sudo.
 func updateDrive(o updateOptions) error {
 	out, errw := o.out, o.err
 	if out == nil {
@@ -169,15 +173,18 @@ func updateDrive(o updateOptions) error {
 		from = versionText()
 	}
 
+	newer, err := packageHasUpdate(kind, capture)
+	if err != nil {
+		return err
+	}
+	if !newer {
+		fmt.Fprintf(out, "drive is up to date (%s)\n", from)
+		if !o.checkOnly && (kind == routeApt || kind == routeDnf) {
+			fmt.Fprintf(out, "if a newer package is on the GitHub release, download it and run:\n  %s\n", installLine(kind))
+		}
+		return nil
+	}
 	if o.checkOnly {
-		newer, err := packageHasUpdate(kind, capture)
-		if err != nil {
-			return err
-		}
-		if !newer {
-			fmt.Fprintf(out, "drive is up to date (%s)\n", from)
-			return nil
-		}
 		fmt.Fprintf(out, "a newer drive is available via %s (this machine runs %s)\n", kind, from)
 		return nil
 	}
@@ -187,32 +194,67 @@ func updateDrive(o updateOptions) error {
 	if err := run(name, args, out, errw); err != nil {
 		return fmt.Errorf("%s: %w", kind, err)
 	}
-	fmt.Fprintf(out, "updated drive with %s (was %s)\n", kind, from)
+	to := installedVersion(o.exe, from)
+	fmt.Fprintf(out, "updated drive %s -> %s via %s\n", from, to, kind)
 	return nil
+}
+
+func installLine(kind installKind) string {
+	switch kind {
+	case routeBrew:
+		return brewInstallLine
+	case routeApt:
+		return aptInstallLine
+	case routeDnf:
+		return dnfInstallLine
+	default:
+		return ""
+	}
+}
+
+func installedVersion(exe, fallback string) string {
+	if exe == "" {
+		var err error
+		exe, err = os.Executable()
+		if err != nil {
+			return fallback
+		}
+	}
+	v, err := binaryVersionAt(exe)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 // detectInstallRoute asks brew, dpkg, rpm and winget, in that order, whether
 // they own the drive package. The first yes wins. None of them is an unknown
 // install: the error names the three lines a person pastes to put drive on a
-// supported route.
+// supported route. brew is asked for the tap cask first so a core cask named
+// `drive` cannot steal the route. apt/dnf must be on PATH because they are
+// the commands the upgrade actually runs.
 func detectInstallRoute(lookPath func(string) (string, error), capture captureRunner) (installKind, error) {
 	if _, err := lookPath("brew"); err == nil {
-		if _, err := capture("brew", []string{"list", "--cask", "drive"}); err == nil {
+		if _, err := capture("brew", []string{"list", "--cask", brewCask}); err == nil {
 			return routeBrew, nil
 		}
-		if _, err := capture("brew", []string{"list", "--cask", brewCask}); err == nil {
+		if _, err := capture("brew", []string{"list", "--cask", "drive"}); err == nil {
 			return routeBrew, nil
 		}
 	}
 	if _, err := lookPath("dpkg-query"); err == nil {
-		out, err := capture("dpkg-query", []string{"-W", "-f", "${Status}", "drive"})
-		if err == nil && strings.Contains(out, "installed") {
-			return routeApt, nil
+		if _, err := lookPath("apt"); err == nil {
+			out, err := capture("dpkg-query", []string{"-W", "-f", "${Status}", "drive"})
+			if err == nil && strings.Contains(out, "installed") {
+				return routeApt, nil
+			}
 		}
 	}
 	if _, err := lookPath("rpm"); err == nil {
-		if _, err := capture("rpm", []string{"-q", "drive"}); err == nil {
-			return routeDnf, nil
+		if _, err := lookPath("dnf"); err == nil {
+			if _, err := capture("rpm", []string{"-q", "drive"}); err == nil {
+				return routeDnf, nil
+			}
 		}
 	}
 	if _, err := lookPath("winget"); err == nil {
@@ -221,7 +263,7 @@ func detectInstallRoute(lookPath func(string) (string, error), capture captureRu
 			return routeWinget, nil
 		}
 	}
-	return routeUnknown, fmt.Errorf("drive was not installed with brew, apt, dnf or winget; install it with one of:\n  %s\n  %s\n  %s", brewInstallLine, aptInstallLine, dnfInstallLine)
+	return routeUnknown, fmt.Errorf("drive was not installed with brew, apt, dnf or winget; install it with one of:\n  %s\n  %s\n  %s\n  winget install %s", brewInstallLine, aptInstallLine, dnfInstallLine, wingetPackageID)
 }
 
 func upgradeCommand(kind installKind) (string, []string) {

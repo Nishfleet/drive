@@ -56,7 +56,7 @@ func brewBins() *fakeBin {
 	return &fakeBin{
 		present: map[string]bool{"brew": true},
 		out: map[string]string{
-			"brew list --cask drive":                  "drive",
+			"brew list --cask nish3451/tap/drive":     "drive",
 			"brew outdated --cask nish3451/tap/drive": "",
 			"brew upgrade --cask nish3451/tap/drive":  "",
 		},
@@ -66,6 +66,7 @@ func brewBins() *fakeBin {
 
 func TestUpdateHandsOffToBrew(t *testing.T) {
 	f := brewBins()
+	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
 	out := new(strings.Builder)
 	if err := updateDrive(updateOptions{
 		from:     "0.1.0",
@@ -130,9 +131,10 @@ func TestUpdateCheckOnlyBrewNewer(t *testing.T) {
 
 func TestUpdateHandsOffToApt(t *testing.T) {
 	f := &fakeBin{
-		present: map[string]bool{"dpkg-query": true},
+		present: map[string]bool{"dpkg-query": true, "apt": true},
 		out: map[string]string{
 			"dpkg-query -W -f ${Status} drive":      "install ok installed",
+			"apt list --upgradable drive":           "drive/stable 1.1.0 amd64 [upgradable from: 1.0.0]",
 			"sudo apt install --only-upgrade drive": "",
 		},
 	}
@@ -154,10 +156,13 @@ func TestUpdateHandsOffToApt(t *testing.T) {
 
 func TestUpdateHandsOffToDnf(t *testing.T) {
 	f := &fakeBin{
-		present: map[string]bool{"rpm": true},
+		present: map[string]bool{"rpm": true, "dnf": true},
 		out: map[string]string{
 			"rpm -q drive":           "drive-1.0.0-1.x86_64",
 			"sudo dnf upgrade drive": "",
+		},
+		err: map[string]error{
+			"dnf check-update drive": &exitError100{},
 		},
 	}
 	out := new(strings.Builder)
@@ -180,8 +185,9 @@ func TestUpdateHandsOffToWinget(t *testing.T) {
 	f := &fakeBin{
 		present: map[string]bool{"winget": true},
 		out: map[string]string{
-			"winget list --id Nishfleet.Drive --disable-interactivity":    "Nishfleet.Drive 1.0.0",
-			"winget upgrade --id Nishfleet.Drive --disable-interactivity": "",
+			"winget list --id Nishfleet.Drive --disable-interactivity":                     "Nishfleet.Drive 1.0.0",
+			"winget list --id Nishfleet.Drive --disable-interactivity --upgrade-available": "Nishfleet.Drive 1.0.0",
+			"winget upgrade --id Nishfleet.Drive --disable-interactivity":                  "",
 		},
 	}
 	out := new(strings.Builder)
@@ -207,7 +213,7 @@ func (e *exitError100) ExitCode() int { return 100 }
 
 func TestUpdateCheckOnlyDnfNewer(t *testing.T) {
 	f := &fakeBin{
-		present: map[string]bool{"rpm": true},
+		present: map[string]bool{"rpm": true, "dnf": true},
 		out: map[string]string{
 			"rpm -q drive": "drive-1.0.0-1.x86_64",
 		},
@@ -243,9 +249,61 @@ func TestUpdateUnknownInstallNamesTheInstallLines(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unknown install must be an error")
 	}
-	for _, line := range []string{brewInstallLine, aptInstallLine, dnfInstallLine} {
+	for _, line := range []string{brewInstallLine, aptInstallLine, dnfInstallLine, "winget install " + wingetPackageID} {
 		if !strings.Contains(err.Error(), line) {
 			t.Fatalf("error %v must name %q", err, line)
+		}
+	}
+}
+
+func TestUpdateDoesNotUpgradeWhenUpToDate(t *testing.T) {
+	f := brewBins()
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:     "v1.0.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "drive is up to date (v1.0.0)") {
+		t.Fatalf("output = %q", got)
+	}
+	for _, c := range f.ran {
+		if strings.Contains(c, "upgrade") {
+			t.Fatalf("an up-to-date machine must not upgrade, ran %v", f.ran)
+		}
+	}
+}
+
+func TestUpdateAptUpToDateNamesTheDebLine(t *testing.T) {
+	f := &fakeBin{
+		present: map[string]bool{"dpkg-query": true, "apt": true},
+		out: map[string]string{
+			"dpkg-query -W -f ${Status} drive": "install ok installed",
+			"apt list --upgradable drive":      "Listing...",
+		},
+	}
+	out := new(strings.Builder)
+	if err := updateDrive(updateOptions{
+		from:     "v1.0.0",
+		lookPath: f.lookPath,
+		run:      f.run,
+		capture:  f.capture,
+		out:      out,
+		err:      io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, aptInstallLine) {
+		t.Fatalf("output = %q, want the downloaded-deb install line", got)
+	}
+	for _, c := range f.ran {
+		if strings.Contains(c, "sudo") {
+			t.Fatalf("must not run sudo when apt has no upgrade, ran %v", f.ran)
 		}
 	}
 }
@@ -265,6 +323,7 @@ func TestUpdateDefaultsTheWriters(t *testing.T) {
 
 func TestUpdateFailsWhenUpgradeFails(t *testing.T) {
 	f := brewBins()
+	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
 	f.err["brew upgrade --cask nish3451/tap/drive"] = fmt.Errorf("brew failed")
 	err := updateDrive(updateOptions{
 		from:     "0.1.0",

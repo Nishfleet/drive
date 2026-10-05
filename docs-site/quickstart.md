@@ -107,9 +107,12 @@ drive update
 ```
 
 `drive update` asks the package manager that installed this binary (Homebrew,
-apt, dnf or winget) for the newest released package and prints the version the
-installed binary now reports. `drive update --check` says whether a newer
-version exists and changes nothing.
+apt, dnf or winget) whether a newer package exists. If one does, it hands the
+upgrade to that manager and prints the version the installed binary now
+reports. `drive update --check` says whether a newer package exists and
+changes nothing. A Linux install from a downloaded `.deb` or `.rpm` has no
+package repo, so when apt or dnf has nothing newer the command prints the
+same install line step 1 used.
 
 ## 6. Bring files in
 
