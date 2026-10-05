@@ -623,6 +623,27 @@ test("health answers 429 past its limit without probing bindings", async () => {
   assert.equal(db.calls.length, 0, "a refused poll must not run the liveness query");
 });
 
+test("health fails closed, not open, when its limiter is missing", async () => {
+  // The limiter is an operator binding like every other one. If it is absent
+  // the probe refuses with the generic 503 rather than answering a live check
+  // to an unrate-limited endpoint, and it does not run the liveness query
+  // either (drive#539).
+  const env = HEALTHY_ENV();
+  env.HEALTH_RATE_LIMITER = undefined;
+  const db = /** @type {{calls: string[]}} */ (env.WAITLIST_DB);
+  const original = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await handleHealthRequest(GET(), env);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
+  assert.equal(db.calls.length, 0, "a refused poll must not run the liveness query");
+});
+
 test("the health check never spends a real caller's rate limit quota", async () => {
   // The limiter keys real callers on their client IP (src/waitlist.js). The
   // probe has to be checked somehow and `limit()` is the only call it has, so

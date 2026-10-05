@@ -704,6 +704,12 @@ test("preview: an SVG leaves the direct-open URL as a download and the embed URL
     previewDisposition("a\r\nb.svg", "image/svg+xml"),
     "attachment; filename=\"a--b.svg\"; filename*=UTF-8''a--b.svg",
   );
+  // Half a surrogate pair would throw URIError in the encoder and turn a
+  // download into a 500; UTF-8 needs the repaired U+FFFD instead (drive#539).
+  assert.equal(
+    previewDisposition("\uD800.svg", "image/svg+xml"),
+    "attachment; filename=\"_.svg\"; filename*=UTF-8''%EF%BF%BD.svg",
+  );
 });
 
 test("upload: the bytes land in the folder it was sent to", async () => {
@@ -1717,6 +1723,30 @@ test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () =
   assert.equal(sent.headers.get("content-length"), "5", "the declared size rides the PUT");
   assert.ok(sent.body instanceof ReadableStream, "the write must not buffer the stream into bytes");
   assert.equal(await sent.text(), "chunk");
+});
+
+test("a signed stream write with no declared size is refused, not buffered", async () => {
+  // A signed S3 PUT cannot send a stream of unknown length without a
+  // Content-Length (an UNSIGNED-PAYLOAD PUT with no aws-chunked framing is
+  // answered 411), and buffering it here would put an unbounded body into
+  // isolate memory. The store refuses it so the caller declares a size
+  // (drive#539); the owner upload reads a length-less body under its own
+  // ceiling and always passes one.
+  const { createS3Store } = await import("../src/files.js");
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk"));
+      controller.close();
+    },
+  });
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucket: "drive",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+    fetchImpl: async () => new Response(null, { status: 200 }),
+  });
+  await assert.rejects(() => store.write("u/acct/a.txt", stream, "text/plain"), /contentLength/);
 });
 
 test("the S3 stand-in keys every call under the account scopeStore gave it", async () => {

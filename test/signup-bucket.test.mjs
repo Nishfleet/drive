@@ -192,7 +192,11 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
     const upload = await workerFetch(
       new Request(
         `${TEST_BASE_URL}/api/files/upload?path=${encodeURIComponent("/")}&name=${encodeURIComponent("hello.txt")}`,
-        { method: "POST", headers: { origin: TEST_BASE_URL, cookie }, body: "hello drive" },
+        {
+          method: "POST",
+          headers: { origin: TEST_BASE_URL, cookie, "content-length": "11" },
+          body: "hello drive",
+        },
       ),
       env,
     );

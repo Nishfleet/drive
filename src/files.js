@@ -69,7 +69,6 @@ export const CONTROL_OR_SLASH = new RegExp(
 /** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /**
-/**
  * Per-file ceiling on an owner upload through `/api/files/upload` (drive#539).
  * 100 MB stays under the isolate's 128 MB, so a declared size that would crash
  * the Worker is refused from Content-Length before the body is read. The public
@@ -242,13 +241,20 @@ const PREVIEW_OCTET_STREAM = "application/octet-stream";
  * @returns {string}
  */
 function attachmentDisposition(name) {
-  const cleaned = safeFileName(String(name || ""));
+  // An empty (or all-control-character) name still needs a legal disposition,
+  // and both halves must share it or a browser that reads `filename*` shows an
+  // empty name (drive#539).
+  const cleaned = safeFileName(String(name || "")) || "download";
+  // toWellFormed() repairs a lone surrogate before encodeURIComponent() sees
+  // it: half a surrogate pair would otherwise throw URIError and turn a
+  // download into a 500 (drive#539).
+  const wellFormed = cleaned.toWellFormed();
   // A header value is a ByteString: a name outside ASCII is not a legal
   // `filename=` value and Node's Response throws on it, so the fallback maps
   // such a character to `_` and the real name rides on `filename*`, which
   // browsers read.
-  const ascii = cleaned.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
-  const encoded = encodeURIComponent(cleaned).replace(
+  const ascii = wellFormed.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
+  const encoded = encodeURIComponent(wellFormed).replace(
     /[!'()*]/g,
     (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
   );
@@ -1823,8 +1829,6 @@ export function createS3Store(config) {
     async write(path, body, contentType, options = {}) {
       /** @type {Record<string, string>} */
       const headers = { "content-type": contentType };
-      /** @type {BodyInit} */
-      let payload = body;
       if (typeof options.contentLength === "number" && Number.isFinite(options.contentLength)) {
         // The caller knows the size (the owner upload carries the browser's
         // Content-Length), so the body is sent as the stream it is and the
@@ -1832,18 +1836,20 @@ export function createS3Store(config) {
         // (drive#539).
         headers["content-length"] = String(options.contentLength);
       } else if (aws !== null && body instanceof ReadableStream) {
-        // A body of unknown length cannot ride a signed S3 PUT without a
-        // Content-Length: an UNSIGNED-PAYLOAD upload with no aws-chunked
-        // framing is answered 411 Length Required (the MinIO stand-in does,
-        // measured 2026-10-05). Only a caller that did not declare a size pays
-        // this one read; every ordinary owner upload streams.
-        payload = new Uint8Array(await new Response(body).arrayBuffer());
-        headers["content-length"] = String(payload.byteLength);
+        // A signed S3 PUT cannot carry a stream with no declared size: an
+        // UNSIGNED-PAYLOAD upload with no aws-chunked framing has no length to
+        // send, and an endpoint answers 411 Length Required (the MinIO stand-in
+        // does, measured 2026-10-05). Buffering it here would put an unbounded
+        // body into isolate memory, the exact failure drive#539 exists to
+        // remove, so a caller that cannot declare a size is refused with a
+        // clear error. The owner upload reads a length-less body under its own
+        // ceiling and always passes a length.
+        throw new TypeError("a signed stream write needs a contentLength");
       }
       const response = await request(urlFor(path), {
         method: "PUT",
         headers,
-        body: payload,
+        body,
       });
       if (!response.ok) {
         throw new Error(`storage write failed with ${response.status}`);
@@ -2838,6 +2844,44 @@ async function readRequest(request, url, store, download, embed = false) {
 }
 
 /**
+ * Read a whole body stream, up to `limit` bytes, and answer its bytes and
+ * length. A stream longer than the limit is cancelled and answered `null`.
+ * This is the length-less upload fallback: a body that declares its size is
+ * streamed straight to storage and never read here (drive#539).
+ * @param {ReadableStream<Uint8Array>} stream
+ * @param {number} limit
+ * @returns {Promise<{bytes: Uint8Array<ArrayBuffer>, length: number}|null>}
+ */
+async function readWithin(stream, limit) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      length += value.byteLength;
+      if (length > limit) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, length };
+}
+
+/**
  * The listing row for one drive path: its size and its ETag, which are the two
  * facts a copy and a conditional remove need and the only two the drive has
  * without reading the bytes. The parent folder is listed rather than the file
@@ -2886,7 +2930,10 @@ async function uploadRequest(request, url, store, account, options = {}) {
   let incomingLength = null;
   if (declared !== null) {
     const length = Number(declared);
-    if (!Number.isFinite(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
+    // A whole, safe byte count: "1000.5" and a value past the safe integer
+    // range are not a legal Content-Length, and forwarding one would turn the
+    // write into a 500 instead of a clean 413 (drive#539).
+    if (!Number.isSafeInteger(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
       return json({ error: failureMessage("body-too-large") }, 413);
     }
     incomingLength = length;
@@ -2937,12 +2984,22 @@ async function uploadRequest(request, url, store, account, options = {}) {
   const body = /** @type {ReadableStream} */ (request.body);
   const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
-    await store.write(
-      path,
-      counted,
-      contentType,
-      incomingLength === null ? undefined : { contentLength: incomingLength },
-    );
+    /** @type {BodyInit} */
+    let payload = counted;
+    let contentLength = incomingLength;
+    if (contentLength === null) {
+      // The client declared no length, so there is no header to cap and no
+      // size for the signed PUT. The body is read once here, under the same
+      // ceiling, and the store is handed the size it needs; a browser upload
+      // always declares its length and streams untouched (drive#539).
+      const read = await readWithin(counted, UPLOAD_FILE_MAX_BYTES);
+      if (read === null) {
+        return json({ error: failureMessage("body-too-large") }, 413);
+      }
+      payload = read.bytes;
+      contentLength = read.length;
+    }
+    await store.write(path, payload, contentType, { contentLength });
   } catch (error) {
     if (error instanceof PreChargeLimitError) {
       return json({ error: error.message }, 403);
