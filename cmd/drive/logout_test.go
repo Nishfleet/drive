@@ -20,6 +20,9 @@ func configOnlyHome(t *testing.T) string {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(testStorage())), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := WriteRcloneEnv(home, testStorage(), "", ""); err != nil {
+		t.Fatal(err)
+	}
 	return home
 }
 
@@ -45,6 +48,9 @@ func storageWithKey(accessKey, secret string) StorageConfig {
 func writeDeviceKey(t *testing.T, home, accessKey, secret string) {
 	t.Helper()
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(storageWithKey(accessKey, secret))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRcloneEnv(home, storageWithKey(accessKey, secret), "", ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -285,16 +291,9 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 
 	port := freePort(t)
 	const accessKey, secretKey = "ACCESSKEYID", "SECRETACCESSKEY"
-	serve := exec.Command("rclone", "serve", "s3", filepath.Join(root, "data"),
+	_ = startRcloneServe(t, filepath.Join(root, "data"), port,
 		"--auth-key", accessKey+","+secretKey,
-		"--addr", "127.0.0.1:"+port,
 		"--log-level", "INFO")
-	serve.Stdout, serve.Stderr = os.Stdout, os.Stderr
-	if err := serve.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
-	waitForPort(t, port)
 
 	// Seed the stand-in so there is something in the drive to read. The seed
 	// runs after the server is up and writes through the rclone config the
@@ -313,6 +312,7 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	}
 	seedEnv := append(os.Environ(),
 		"RCLONE_CONFIG="+RcloneConfigPath(home),
+		rcloneSecretEnv+"="+secretKey,
 	)
 	seed := exec.Command("rclone", "copy", filepath.Join(dataDir, "seed.bin"),
 		"drive:"+cfg.Bucket+"/"+cfg.Prefix+"/")

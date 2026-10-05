@@ -148,15 +148,11 @@ function checkedUsd(value, name) {
  * cheap.
  *
  * The monthly half counts the account's own bill: the same monthBillCents()
- * call usageSummary() makes, on the account's founding flag. An account that
- * pays half has a key that spends half in a month (drive#482) — the flag is
- * read from the accounts row by the caller and passed in, because this module
- * holds no database.
+ * call usageSummary() makes.
  *
  * @param {{
- *   usage: {gbMinutes: number},
+ *   usage: {gbMinutes: number, downloadBytes?: number, averageStoredGb?: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
- *   founding?: boolean,
  *   requestsToday?: number,
  *   day?: string,
  *   at: number,
@@ -176,11 +172,12 @@ export function agentCapStatus(agent) {
     throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
-  // No flag means the row has not been read that way rather than "not
-  // founding": a founding account keeps the half, a fresh key keeps the full
-  // price, and anything that is not a boolean is refused by capStatus().
-  const founding = agent.founding === undefined || agent.founding === null ? false : agent.founding;
-  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG, founding);
+  // The whole bill, downloads included, the same way the account's own cap
+  // counts it (drive#496).
+  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG, {
+    downloadBytes: usage.downloadBytes,
+    averageStoredGb: usage.averageStoredGb,
+  });
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({

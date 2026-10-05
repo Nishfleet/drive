@@ -51,17 +51,19 @@ Usage:
   drive version            print the version
 
 Install, one line per system, then run drive login and drive init:
-  macOS                   brew install drive
-  Linux, Debian or Ubuntu  sudo apt install drive
-  Linux, Fedora or RHEL    sudo dnf install drive
+  macOS                   brew install nish3451/tap/drive
+  Linux, Debian or Ubuntu  sudo apt install ./drive_*.deb
+  Linux, Fedora or RHEL    sudo dnf install ./drive_*.rpm
 
-Until those packages are published, the command builds from source with the Go
-toolchain, which is the same route drive update runs:
-  go install github.com/Nishfleet/drive/cmd/drive@latest
+Linux: download the package for your CPU from the GitHub release first, then
+run the line above in that folder. Windows: winget install Nishfleet.Drive
+once a signed build is published.
+
+drive update hands off to the package manager that installed this binary
+(brew, apt, dnf or winget).
 
 Update flags:
   --check   say whether a newer release exists, install nothing
-  --go      path to the go toolchain (env DRIVE_GO, default go from PATH)
 
 Agent tools: claude, codex, cursor, gemini, kiro. Each tool is connected to the
 stock MCP filesystem server over the drive folder, using the tool's own
@@ -182,10 +184,9 @@ var commands = map[string]func([]string) error{
 }
 
 // version is the fallback when the toolchain records no module version
-// in this binary (a checkout build: go build, go run, go test). A binary
-// installed with `go install github.com/Nishfleet/drive/cmd/drive@<tag>`
-// carries that tag in its build information, and `drive version`
-// prints that instead (cmd/drive/update.go versionText).
+// in this binary (a checkout build: go build, go run, go test). A released
+// binary carries the tag goreleaser stamped, and `drive version` prints
+// that instead (cmd/drive/update.go versionText).
 var version = "0.1.0"
 
 func main() {
@@ -349,7 +350,7 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 		// falls back, because it is not a command and cannot answer.
 		if !IsLoopbackAddr(m.rcAddr) {
 			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
-				"is unauthenticated, so it binds %s only", m.rcAddr, RCAddr())
+				"binds loopback only, so it stays on this machine", m.rcAddr)
 		}
 		_ = os.Setenv(rcAddrEnvName, m.rcAddr)
 	}
