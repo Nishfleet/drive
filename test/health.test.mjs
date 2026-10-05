@@ -28,6 +28,7 @@ import {
   REQUIRED_BINDINGS,
 } from "../src/health.js";
 import worker from "../src/index.js";
+import { failureMessage } from "../src/messages.js";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -231,7 +232,10 @@ const HEALTHY_ENV = () => ({
   SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
   REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
   REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+  HEALTH_RATE_LIMITER: fakeLimiter(),
   SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+  SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+  REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
   BRANCH_SNAPSHOTS: fakeKv(),
   // The storage vars a healthy deployment carries (issue #520): without an
   // endpoint the Files handlers answer from the in-memory store, and the
@@ -272,7 +276,10 @@ test("a database that cannot answer is a 503 naming that binding", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -294,7 +301,10 @@ test("a database that never answers is a 503, not a hung probe", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -314,7 +324,10 @@ test("a missing asset layer is a 503 naming ASSETS", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   });
   assert.equal(response.status, 503);
@@ -332,7 +345,10 @@ test("an asset layer that throws is a 503 naming ASSETS", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -357,7 +373,10 @@ test("every bound D1 database is checked, not just the first", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -399,7 +418,10 @@ test("a binding that is not a database is never read as one", () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   };
   assert.deepEqual(
@@ -424,7 +446,10 @@ test("a health poll over the real binding shapes answers ok, not ASSETS", async 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -449,7 +474,10 @@ test("the asset probe is a HEAD on a path the site does not serve", async () => 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -473,7 +501,10 @@ test("no body carries a secret or an internal, healthy or not", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     EMAIL_SEND_TOKEN: "sk-a-real-looking-secret",
     MAIL_FROM: "drive@example.com",
@@ -514,7 +545,10 @@ test("the failing body is the name and nothing else", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
   });
   const body = await response.json();
@@ -567,7 +601,10 @@ test("the bound is a deadline shared by every dependency, not one per check", as
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -608,7 +645,10 @@ test("a dependency that never got its turn is named, not reported as healthy", a
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -658,6 +698,37 @@ test("the Worker routes the health path to the handler", async () => {
   assert.equal(asset.status, 200);
 });
 
+test("health answers 429 past its limit without probing bindings", async () => {
+  const env = HEALTHY_ENV();
+  env.HEALTH_RATE_LIMITER = { limit: () => Promise.resolve({ success: false }) };
+  const db = /** @type {{calls: string[]}} */ (env.WAITLIST_DB);
+  const response = await handleHealthRequest(GET(), env);
+  assert.equal(response.status, 429);
+  assert.deepEqual(await response.json(), { error: failureMessage("rate-limited") });
+  assert.equal(db.calls.length, 0, "a refused poll must not run the liveness query");
+});
+
+test("health fails closed, not open, when its limiter is missing", async () => {
+  // The limiter is an operator binding like every other one. If it is absent
+  // the probe refuses with the generic 503 rather than answering a live check
+  // to an unrate-limited endpoint, and it does not run the liveness query
+  // either (drive#539).
+  const env = HEALTHY_ENV();
+  env.HEALTH_RATE_LIMITER = undefined;
+  const db = /** @type {{calls: string[]}} */ (env.WAITLIST_DB);
+  const original = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await handleHealthRequest(GET(), env);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
+  assert.equal(db.calls.length, 0, "a refused poll must not run the liveness query");
+});
+
 test("the health check never spends a real caller's rate limit quota", async () => {
   // The limiter keys real callers on their client IP (src/waitlist.js). The
   // probe has to be checked somehow and `limit()` is the only call it has, so
@@ -681,7 +752,10 @@ test("the health check never spends a real caller's rate limit quota", async () 
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -714,7 +788,10 @@ test("the probe key is not shared, so a hammered endpoint cannot force a false 5
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -757,7 +834,7 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   // token-gated internal send route uses it), the meter's event token is a
   // secret no probe can exercise without a storage event to feed it, whose
   // absence fails closed at the intake (src/meter.js) instead of at the probe.
-  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN"]);
+  const NOT_CHECKED = new Set(["EMAIL", "METER_EVENT_TOKEN", "HEALTH_RATE_LIMITER"]);
   const exceptions = declared.filter((name) => NOT_CHECKED.has(name));
   assert.equal(
     declared.length,
@@ -794,7 +871,10 @@ test("a rate limiter that throws is a 503 naming it", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -825,7 +905,10 @@ test("a limiter that denies the probe is still healthy", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -851,7 +934,10 @@ test("a branch snapshot namespace that cannot be read is a 503 naming it", async
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       get: () => Promise.reject(new Error("kv backend exploded: token=sk-secret")),
     },
@@ -880,7 +966,10 @@ test("a namespace that answers null for the probe key is healthy", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: fakeKv(),
     IDRIVE_S3_ENDPOINT: STORAGE_ENDPOINT,
   };
@@ -905,7 +994,10 @@ test("the probe never reads a customer snapshot key", async () => {
     SIGNIN_GLOBAL_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_RATE_LIMITER: fakeLimiter(),
     REQUEST_UPLOAD_LINK_RATE_LIMITER: fakeLimiter(),
+    HEALTH_RATE_LIMITER: fakeLimiter(),
     SHARE_DOWNLOAD_RATE_LIMITER: fakeLimiter(),
+    SHARE_MINT_RATE_LIMITER: fakeLimiter(),
+    REQUEST_MINT_RATE_LIMITER: fakeLimiter(),
     BRANCH_SNAPSHOTS: {
       /** @param {string} key */
       get: (key) => {
