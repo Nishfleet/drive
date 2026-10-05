@@ -102,6 +102,10 @@ export const PAGES = Object.freeze([
   // registered here because test/seo.test.mjs requires every public HTML page
   // to be, and its copy is gated by test/og-card.test.mjs against PRICE.
   Object.freeze({ path: "/og-card.html", indexable: false }),
+  // The asset layer's 404 page (drive#458). Cloudflare serves this file for
+  // any path that is not an asset (notFoundHandling: 404-page). It is noindex
+  // and out of the sitemap: a crawler should not treat a missing URL as a page.
+  Object.freeze({ path: "/404.html", indexable: false }),
 ]);
 
 // The pages that ship as built Vite entries from the repo root, not as verbatim

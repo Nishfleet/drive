@@ -640,28 +640,49 @@ test("the README describes the drive and points at the docs", () => {
   }
 });
 
-test("the docs carry the pricing page's design tokens, not a different palette", () => {
+test("the shipped docs do not preload Inter", () => {
+  // VitePress's default theme preloads Inter. transformHtml strips those
+  // tags (drive#458 CLS). A path-shape change that lets a tag through fails
+  // here rather than shipping a 0.015 layout shift.
+  const html = shipped("index.html");
+  assert.doesNotMatch(html, /inter-/i, "the docs HTML must not preload or link Inter");
+});
+
+test("the docs carry the home page's design tokens, not a different palette", () => {
   // The site palette lives in the shared stylesheet (public/site.css, drive
-  // #71), which the pricing page links; the docs site cannot import a served
-  // asset, so the tokens are copied. This reads the shipped stylesheet and the
-  // shipped theme, so a colour edited in one place without the other fails
-  // here rather than shipping two products.
+  // #71 / #152 / #458), which the pricing page links; the docs site cannot
+  // import a served asset, so the tokens are copied. This reads the shipped
+  // stylesheet and the shipped theme, so a colour edited in one place without
+  // the other fails here rather than shipping two products.
   const page = readFileSync(new URL("../public/site.css", import.meta.url), "utf8");
   const theme = readFileSync(
     new URL("../docs-site/.vitepress/theme/site.css", import.meta.url),
     "utf8",
   );
-  for (const token of ["--paper", "--ink", "--ink-soft", "--rule", "--accent"]) {
+  for (const token of [
+    "--drive-paper",
+    "--drive-ink",
+    "--drive-ink-soft",
+    "--drive-line",
+    "--drive-orange",
+    "--drive-orange-ink",
+    "--drive-card",
+  ]) {
     const from = page.match(new RegExp(`${token}:\\s*([^;]+);`));
     assert.ok(from, `the shared stylesheet must define ${token}`);
     assert.ok(
-      theme.includes(`${token.replace("--", "--vp-")}`) ||
-        theme.includes(`#${from[1].trim().replace("#", "")}`),
-      `the docs theme must carry ${token} (${from[1].trim()}) from the pricing page`,
+      theme.includes(from[1].trim()),
+      `the docs theme must carry ${token} (${from[1].trim()}) from the home page`,
     );
   }
-  // System fonts only: the pricing page ships no web font, so the docs must
-  // not start one either.
-  assert.doesNotMatch(theme, /@font-face/);
-  assert.match(theme, /system-ui/);
+  // Same three self-hosted faces as the home page, swap, no Google Fonts.
+  assert.doesNotMatch(theme, /fonts\.(googleapis|gstatic)\.com/);
+  const faces = (theme.match(/@font-face\s*\{[\s\S]*?\}/g) ?? []).filter((face) =>
+    face.includes("url("),
+  );
+  assert.equal(faces.length, 6, "the docs theme ships the same six face files as public/site.css");
+  for (const face of faces) {
+    assert.match(face, /font-display: swap/);
+    assert.match(face, /url\("\/fonts\/[^"]+\.woff2"\)/);
+  }
 });

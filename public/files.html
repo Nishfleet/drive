@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -12,8 +12,8 @@
    come from the shared site stylesheet (drive #71); what is left here is this
    page's mobile-first shell and its own tap target. Mobile first: every action
    is a 44px tap target, the list is one column at 360px, and the viewer fills
-   the screen on a phone. System font stacks only: no web font files, so
-   nothing blocks first paint. */
+   the screen on a phone. class="drive" on <html> aliases the shared tokens
+   onto the home-page look, calmer than the public pages (docs/design/DESIGN.md). */
 
 :root {
   --tap: 44px;
@@ -384,7 +384,7 @@ dialog.viewer::backdrop {
   flex: 1 1 auto;
   min-width: 0;
   margin: 0;
-  font-family: var(--serif);
+  font-family: var(--sans);
   font-size: 19px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -505,7 +505,7 @@ dialog.viewer::backdrop {
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
   <div class="topbar">
     <header class="masthead">
-      <span class="wordmark">Drive</span>
+      <span class="wordmark"><i aria-hidden="true"></i>drive</span>
       <span class="tagline">A Finder drive for people and their agents.</span>
       <a href="/files" aria-current="page">Your files</a>
       <a href="/">Pricing</a>

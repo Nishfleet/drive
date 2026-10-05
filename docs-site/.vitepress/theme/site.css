@@ -1,48 +1,143 @@
-/* Drive docs: the pricing page's palette and type (public/index.html,
-   public/usage.html), so the docs are part of the site rather than a section
-   pasted from somewhere else. The tokens are the site's; the rules under them
-   are what VitePress's default theme needs to stop looking like a different
-   product. System font stacks only, so nothing blocks first paint. */
+/* Drive docs: the home page's palette and type (public/site.css --drive-*
+   and --font-*, drive#152 / #458), so the docs are part of the site rather
+   than a section pasted from somewhere else. The tokens are copied because
+   VitePress cannot import a served asset; test/docs.test.mjs checks each
+   colour against public/site.css, so the two cannot drift apart. The docs'
+   own numbers come from src/billing.js through src/render-docs.js, never
+   from here. */
 
 :root {
-  --vp-c-bg: #faf6ee;
-  --vp-c-bg-alt: #f3ede1;
-  --vp-c-bg-soft: #fffdf8;
-  --vp-c-bg-elv: #fffdf8;
-  --vp-c-divider: #ddd5c5;
-  --vp-c-gutter: #ddd5c5;
+  --vp-c-bg: #f5efe4;
+  --vp-c-bg-alt: #ebe3d4;
+  --vp-c-bg-soft: #fbf7f0;
+  --vp-c-bg-elv: #fbf7f0;
+  --vp-c-divider: #d8cdb9;
+  --vp-c-gutter: #d8cdb9;
 
-  --vp-c-text-1: #21201c;
-  --vp-c-text-2: #56514a;
-  --vp-c-text-3: #6f6a5f;
+  --vp-c-text-1: #1b1712;
+  --vp-c-text-2: #4a433a;
+  --vp-c-text-3: #a49a8b;
 
-  --vp-c-brand-1: #1f3a5f;
-  --vp-c-brand-2: #1f3a5f;
-  --vp-c-brand-3: #2d4d78;
-  --vp-c-brand-soft: #e6ecf3;
+  --vp-c-brand-1: #b83200;
+  --vp-c-brand-2: #e23f05;
+  --vp-c-brand-3: #ff4f12;
+  --vp-c-brand-soft: #ffe3d6;
 
   --vp-font-family-base:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --vp-font-family-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    "Instrument Sans", "Instrument Sans Fallback", "Helvetica Neue", Arial, sans-serif;
+  --vp-font-family-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --vp-font-size-base: 17px;
   --vp-line-height-base: 1.55;
 }
 
 .dark {
-  --vp-c-bg: #1c1a17;
-  --vp-c-bg-alt: #262320;
-  --vp-c-bg-soft: #2a2723;
-  --vp-c-bg-elv: #2a2723;
-  --vp-c-divider: #443f38;
-  --vp-c-gutter: #443f38;
-  --vp-c-text-1: #f3ede1;
-  --vp-c-text-2: #c9c2b5;
-  --vp-c-text-3: #a49c8d;
-  --vp-c-brand-1: #9db8d8;
-  --vp-c-brand-2: #9db8d8;
-  --vp-c-brand-3: #7d9cc2;
-  --vp-c-brand-soft: #24303f;
+  --vp-c-bg: #1b1712;
+  --vp-c-bg-alt: #2a241d;
+  --vp-c-bg-soft: #2a241d;
+  --vp-c-bg-elv: #2a241d;
+  --vp-c-divider: #4a433a;
+  --vp-c-gutter: #4a433a;
+  --vp-c-text-1: #f5efe4;
+  --vp-c-text-2: #c9bfae;
+  --vp-c-text-3: #a49a8b;
+  --vp-c-brand-1: #ff4f12;
+  --vp-c-brand-2: #ff4f12;
+  --vp-c-brand-3: #e23f05;
+  --vp-c-brand-soft: #3d2418;
+}
+
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-800-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-900-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 800;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 66.3%;
+  ascent-override: 148.6%;
+  descent-override: 32.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 900;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 70.8%;
+  ascent-override: 139.2%;
+  descent-override: 30.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 400;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans");
+  size-adjust: 100.6%;
+  ascent-override: 96.5%;
+  descent-override: 24.9%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 600;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 95.7%;
+  ascent-override: 101.4%;
+  descent-override: 26.1%;
+  line-gap-override: 0%;
 }
 
 /* The site's own measure, not VitePress's 688px: the pricing page reads at
@@ -52,8 +147,79 @@
   max-width: 44rem;
 }
 
+.VPNavBarTitle .title {
+  font-family:
+    "Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif;
+  font-weight: 900;
+  font-size: 28px;
+  letter-spacing: -0.01em;
+}
+
+/* VitePress puts has-sidebar on VPNavBar in a post-effect after first paint
+   (empty classes ref in VPNavBar.vue). That moved the nav container 0.022
+   against a 0.01 budget (drive#458). Every docs page has a sidebar, so the
+   first paint already uses that layout. */
+@media (min-width: 960px) {
+  .VPNavBar .wrapper {
+    padding: 0;
+  }
+
+  .VPNavBar .container {
+    max-width: 100%;
+  }
+
+  .VPNavBar .title {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    padding: 0 32px;
+    width: var(--vp-sidebar-width);
+    height: var(--vp-nav-height);
+    background-color: transparent;
+  }
+
+  .VPNavBar .content {
+    position: relative;
+    z-index: 1;
+    padding-right: 32px;
+    padding-left: var(--vp-sidebar-width);
+  }
+
+  .VPNavBar .divider {
+    padding-left: var(--vp-sidebar-width);
+  }
+}
+
+@media (min-width: 1440px) {
+  .VPNavBar .title {
+    padding-left: max(32px, calc((100% - (var(--vp-layout-max-width) - 64px)) / 2));
+    width: calc((100% - (var(--vp-layout-max-width) - 64px)) / 2 + var(--vp-sidebar-width) - 32px);
+  }
+
+  .VPNavBar .content {
+    padding-right: calc((100vw - var(--vp-layout-max-width)) / 2 + 32px);
+    padding-left: calc((100vw - var(--vp-layout-max-width)) / 2 + var(--vp-sidebar-width));
+  }
+
+  .VPNavBar .divider {
+    padding-left: calc((100vw - var(--vp-layout-max-width)) / 2 + var(--vp-sidebar-width));
+  }
+}
+
 .VPDoc h1 {
-  font-weight: 600;
+  font-family:
+    "Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  line-height: 0.9;
+}
+
+.VPDoc h2 {
+  font-family:
+    "Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif;
+  font-weight: 800;
   letter-spacing: -0.01em;
 }
 

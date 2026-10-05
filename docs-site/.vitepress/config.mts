@@ -36,15 +36,30 @@ export default defineConfig({
   description:
     "A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month by the minute.",
   lang: "en",
+  // The rest of the site is light-only. A docs appearance toggle would be a
+  // second look, and the inline dark-mode check shifts the first paint.
+  appearance: false,
   // The pricing page is the canonical entry point; the docs are the reference
   // behind it. Cross-linking keeps the two reading as one product.
   head: [
     ["link", { rel: "alternate", type: "text/markdown", href: `${SITE_ORIGIN}/llms-full.txt` }],
+    [
+      "link",
+      {
+        rel: "preload",
+        href: "/fonts/big-shoulders-display-latin-900-normal.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossorigin: "",
+      },
+    ],
   ],
   themeConfig: {
     nav: [
       { text: "Pricing", link: `${SITE_ORIGIN}/` },
       { text: "Docs", link: "/" },
+      { text: "Get started", link: `${SITE_ORIGIN}/get-started` },
+      { text: "Sign in", link: `${SITE_ORIGIN}/signin` },
     ],
     sidebar: [
       { text: "Quickstart", link: "/quickstart" },
@@ -75,5 +90,13 @@ export default defineConfig({
         excludeIndexPage: true,
       }),
     ],
+  },
+  // VitePress's default theme preloads Inter. The docs use the site's faces,
+  // and that extra preload was a 0.015 layout shift (drive#458, budget 0.01).
+  transformHtml(code) {
+    return code.replace(
+      /<link rel="preload" href="\/docs\/assets\/inter-[^"]*" as="font"[^>]*>/g,
+      "",
+    );
   },
 });
