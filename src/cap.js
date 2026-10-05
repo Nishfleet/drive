@@ -78,6 +78,15 @@ export const READ_ONLY_CAPABILITIES = Object.freeze(
 // (drive#77), so a kind cannot end up with different powers in two places.
 export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 
+// The one reason this phase writes on a devices row's `capped_reason`
+// (migrations/drive/0024_capped_reason.sql): this module's freeze took the key
+// down because the account's spending cap was reached (drive#661). It is
+// exported so the store, the tests and the give-back pass that reads it back
+// (drive#656) name the same word instead of three literals that can drift. The
+// sweep's `pre-charge-limit` is drive#655's to set, and the prepaid $0-balance
+// pause marks nothing at all because it freezes no key.
+export const SPEND_CAP_REASON = "spend-cap";
+
 /**
  * A key row as the cap reads it, after checkedKey() has validated its shape.
  * The same row arrives from D1 and from the tests' fakes, so the fields the
@@ -90,7 +99,14 @@ export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
  * (keyprovider.js `bucketForKeyPrefix`). A swap without one mints a scope the
  * storage provider refuses rather than a scope in some other account's bucket
  * (s3-keys.js, drive#462).
- * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null}} CapKey
+ *
+ * `cappedReason` is the one word naming which cap took the key down (drive#661),
+ * and it is optional for the same reason `cappedFrom` is: not every caller that
+ * builds a row has a reason to name. A swap carries it -- 'spend-cap' on a
+ * freeze and null on a raise -- because the row the swap leaves live is the
+ * row a give-back pass (drive#656) reads to prove which cap did this. Absent
+ * and null are the same claim: no reason recorded.
+ * @typedef {{keyId: string, kind: string, prefix: string, bucket?: string, capabilities: ReadonlyArray<string>, cappedFrom?: ReadonlyArray<string>|null, cappedReason?: string|null}} CapKey
  */
 
 /**
@@ -285,6 +301,11 @@ export function capSwapPlan(keys, cap) {
           ...(row.bucket === undefined ? {} : { bucket: row.bucket }),
           capabilities,
           cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
+          // Which cap took this key down, on the swap that froze it (drive#661):
+          // the read-only state is this module's freeze, so it names the
+          // spending cap. The raise carries null, which the store writes as
+          // "no reason recorded" and a give-back pass may widen.
+          cappedReason: state === "read_only" ? SPEND_CAP_REASON : null,
         }),
       );
     }
@@ -365,14 +386,20 @@ export async function applyCapSwap(plan, provider) {
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
+    // The reason this swap records, on the row the swap leaves live. A freeze
+    // names the cap that took the key down; a raise names nothing, and the
+    // store writes that as no reason recorded (drive#661). A hand-built plan
+    // that leaves the field out is the same as a raise's null here.
+    const reason = /** @type {{cappedReason?: string|null}} */ (swap).cappedReason;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
-        // The provider's own swap is handed the keyId alone and re-derives the
-        // scope from the row it is replacing (workers/api/src/devices.js
-        // `swapToReadOnly` mints in `bucketForKeyPrefix(accountId, prefix)`),
-        // so the bucket the row was scoped to reaches the replacement without
-        // this module having to pass it.
-        minted = await keys.swapToReadOnly(swap.keyId);
+        // The provider's own swap is handed the keyId and the swap's own
+        // reason, and it re-derives the scope from the row it is replacing
+        // (workers/api/src/devices.js `swapToReadOnly` mints in
+        // `bucketForKeyPrefix(accountId, prefix)`), so the bucket the row was
+        // scoped to reaches the replacement without this module having to pass
+        // it.
+        minted = await keys.swapToReadOnly(swap.keyId, { cappedReason: reason });
       } else {
         // Revoke first, mint second. This is the cap path, and the cap is the
         // safety limit: if the mint then fails, the account is on the safe side
@@ -382,10 +409,10 @@ export async function applyCapSwap(plan, provider) {
         // deliberate and pinned by "a provider failure is raised, never
         // swallowed" in test/cap.test.mjs.
         await keys.revoke(swap.keyId);
-        minted = await keys.mint(scope);
+        minted = await keys.mint(scope, { cappedReason: reason });
       }
     } else {
-      minted = await keys.mint(scope);
+      minted = await keys.mint(scope, { cappedReason: reason });
       await keys.revoke(swap.keyId);
     }
     applied.push(Object.freeze({ ...swap, minted }));

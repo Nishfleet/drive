@@ -1,0 +1,41 @@
+-- A reason marker on the devices row, so a give-back pass can prove which cap
+-- took a key down (drive#661). `devices.capped_from` records the POWERS a swap
+-- took, never the reason: three paths take write powers from a key, and only
+-- one of them -- the spending cap freeze (src/cap.js `enforceCap`) -- is a cap
+-- the owner set on purpose. A give-back pass that widens a key because its
+-- bytes dropped under 1 TB must not widen a key the spending cap froze on
+-- purpose (that pass is drive#656).
+--
+-- The marker is its own nullable TEXT column, not a second entry on
+-- `capped_from`: `grantedCapabilities()` in src/cap.js filters that JSON list
+-- against the key kind's own scope, so anything that is not a capability name
+-- is silently dropped. A reason stored there would vanish on the first read.
+--
+-- Expansion only, and one phase (fleet D1 expand/contract rule): the column is
+-- nullable, carries no DEFAULT, and no backfill runs, so a row written before
+-- this file reads as "no reason recorded" exactly as it reads today. Nothing is
+-- dropped, renamed or rewritten, so the previous version of the Worker runs
+-- unchanged against this schema -- its readers never name the new column and
+-- its writers never set it -- which is what keeps the fleet's auto-revert
+-- possible. D1 has no down-migrations, so this file is one-way.
+--
+-- NULL is the only value this phase writes for a raise: the freeze's reason is
+-- 'spend-cap' (the spending cap, src/cap.js), and the sweep's
+-- 'pre-charge-limit' belongs with drive#655. The prepaid $0-balance pause
+-- freezes no key at all -- `src/prepaid.js` `writesPaused()` refuses the write
+-- itself on every write -- so it marks nothing, and a row with no reason is a
+-- key nothing has capped by reason.
+--
+-- Numbered 0024 rather than the 0022 this issue first proposed:
+-- 0022_nightly_sizes.sql and 0023_file_versions_hidden_at.sql are already on
+-- the drive database, and `wrangler d1 migrations apply` walks the directory in
+-- a full-filename sort (test/d1-sqlite.mjs `orderMigrationFiles`). A second
+-- 0022 sorts BEFORE the one already applied, and a deploy that hands wrangler an
+-- unapplied migration in front of an applied one is refused outright, which
+-- takes the whole production deploy down. This file takes the next prefix past
+-- 0023 instead, and 0024 is unique, so it is last under either sort.
+--
+-- The new statement depends on nothing 0022 or 0023 wrote: it adds one column
+-- to `devices`, and both of those files touch other tables.
+
+ALTER TABLE devices ADD COLUMN capped_reason TEXT;

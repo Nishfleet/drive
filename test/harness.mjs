@@ -65,6 +65,15 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0021_agent_caps_nullable_cap.sql",
   // The prepaid draws (drive#586): low-balance and auto top-up columns.
   "drive/0021_prepaid_draws.sql",
+  // The reason marker on the devices row (drive#661): the one word naming
+  // which cap took a key down, so a give-back pass (drive#656) can prove it.
+  // Expand only, one nullable column on `devices`. `put()` writes the column
+  // on every row, so any test that writes a device row needs the migration
+  // applied -- the harness runs the real migrations, so this is the whole fix.
+  // Numbered 0024, not the 0022 the issue proposed: 0022_nightly_sizes.sql is
+  // already on the drive database, and a second 0022 sorts before it in the
+  // full-filename sort wrangler uses.
+  "drive/0024_capped_reason.sql",
 ]);
 
 /**
