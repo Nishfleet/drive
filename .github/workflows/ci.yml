@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+  # The main ruleset's merge queue runs `verify` and `go` on the merge group
+  # (drive#499). Without this trigger the queue waits on checks that never come.
+  merge_group:
   push:
     branches: [main]
 

@@ -43,6 +43,9 @@ function dataFor(kind) {
   // read every sentence a customer can be sent.
   if (kind === "top-up-receipt") return { amountUsd: 25, balanceUsd: 31.5, auto: true };
   if (kind === "low-balance") return { balanceUsd: 1.8, autoTopUpUsd: null };
+  if (kind === "device-approve-notice") {
+    return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 

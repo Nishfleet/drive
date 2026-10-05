@@ -157,6 +157,10 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
+  // One provider revoke, retried: enough for a blip, small enough that a
+  // request is not held long when the vendor is down for real.
+  const PROVIDER_REVOKE_ATTEMPTS = 3;
+  const PROVIDER_REVOKE_PAUSE_MS = 100;
 
   /**
    * @param {Device} device
@@ -608,13 +612,29 @@ export function createD1DeviceStore(db, options = {}) {
    * paths revoke the api's row first; the account-wide revoke
    * (`revokeAccountCredentials`) stamps a vendor key's row only after this
    * succeeds, so a refused key is still live for the retry to find.
+   *
+   * A refused call is retried a short, bounded number of times first
+   * (drive#518 review): a vendor blip must not strand a live credential
+   * behind rows that already say revoked, and a stranded one is exactly the
+   * hole drive#497 and this issue close. The last refusal is re-thrown, so a
+   * persistent outage still surfaces on the route that asked for the revoke.
    * @param {string} accessKeyId
    */
   async function revokeCredentialAtProvider(accessKeyId) {
     if (inner === undefined || typeof inner.revoke !== "function") {
       return;
     }
-    await inner.revoke(accessKeyId);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await inner.revoke(accessKeyId);
+        return;
+      } catch (error) {
+        if (attempt >= PROVIDER_REVOKE_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PROVIDER_REVOKE_PAUSE_MS));
+      }
+    }
   }
 
   /**
@@ -864,6 +884,7 @@ export function createD1DeviceStore(db, options = {}) {
       }
       if (device.revokedAt === null) {
         await run(db, "UPDATE devices SET revoked_at = ?1 WHERE id = ?2", nowSeconds(now()), keyId);
+        await revokeCredentialAtProvider(device.accessKeyId);
       }
       return { revoked: true };
     },
@@ -924,13 +945,26 @@ export function createD1DeviceStore(db, options = {}) {
      * @returns {Promise<{revoked: number}>}
      */
     async revokeTeamKeys(accountId, teamId) {
+      const prefix = teamPrefix(teamId);
+      const live = await all(
+        db,
+        "SELECT b2_key_id FROM devices WHERE account_id = ?1 AND prefix = ?2 AND revoked_at IS NULL",
+        accountId,
+        prefix,
+      );
       const changed = await run(
         db,
         "UPDATE devices SET revoked_at = ?1 WHERE account_id = ?2 AND prefix = ?3 AND revoked_at IS NULL",
         nowSeconds(now()),
         accountId,
-        teamPrefix(teamId),
+        prefix,
       );
+      for (const row of live) {
+        const accessKeyId = /** @type {Record<string, unknown>} */ (row).b2_key_id;
+        if (typeof accessKeyId === "string" && accessKeyId !== "") {
+          await revokeCredentialAtProvider(accessKeyId);
+        }
+      }
       return {
         revoked: Number(/** @type {{meta?: {changes?: number}}} */ (changed)?.meta?.changes ?? 0),
       };

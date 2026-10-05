@@ -192,6 +192,15 @@ export function createMemoryStore(options = {}) {
     },
 
     /**
+     * The pending code the approval page names, or null.
+     * @param {string} userCode
+     * @returns {Promise<import("./device-signin.js").PendingDeviceApproval|null>}
+     */
+    async pendingDeviceApproval(userCode) {
+      return signin.pendingDeviceApproval(userCode);
+    },
+
+    /**
      * A signed-in person approved the code on the web page: attach their
      * account and mark the code ready. Approving twice is a no-op once the
      * account is attached.
@@ -317,9 +326,12 @@ export function createMemoryStore(options = {}) {
 
     /**
      * The account's keys, newest last, with no secret (there is no copy).
+     * Always a promise: the D1 store's `listPublic` is, and an un-awaited
+     * call serialises as `{}` in the export document (drive#518).
      * @param {{id: string}} account
+     * @returns {Promise<ReturnType<typeof publicDevice>[]>}
      */
-    listKeys(account) {
+    async listKeys(account) {
       if (deviceStore?.listPublic) {
         return deviceStore.listPublic(account);
       }

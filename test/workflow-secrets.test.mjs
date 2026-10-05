@@ -28,7 +28,14 @@ const workflows = readdirSync(dir)
   .map((name) => ({ name, text: readFileSync(new URL(name, dir), "utf8") }));
 
 // Deploy credentials: read only in a job whose environment is `production`.
-const DEPLOY_SECRETS = new Set(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]);
+const DEPLOY_SECRETS = new Set([
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_ACCOUNT_ID",
+  // The post-deploy health check gets past Cloudflare Access with this
+  // service token (drive#499, drive#520).
+  "CF_ACCESS_CLIENT_ID",
+  "CF_ACCESS_CLIENT_SECRET",
+]);
 // Every other secret a workflow may read, and why it is not environment-bound.
 const OTHER_SECRETS = new Set([
   // The worker App arms auto-merge on every PR, so it runs on PR branches.

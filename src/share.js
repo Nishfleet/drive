@@ -433,6 +433,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(accountId: string) => Promise<RequestRecord[]>} requests.list
  * @property {(token: string, accountId: string, at: number) => Promise<RequestRecord|null>} requests.revoke
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
+ * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  */
 
 // The columns both tables are read back through, named once so a row read and
@@ -658,6 +659,17 @@ export function createD1LinkStore(db) {
             "WHERE token = ?2 AND upload_bytes + ?3 <= max_bytes " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [size, token, size],
+        );
+        return row === null || row === undefined ? null : toRequestRecord(row);
+      },
+      async releaseUpload(token, bytes) {
+        const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+        const row = await one(
+          "UPDATE upload_requests SET upload_count = MAX(upload_count - 1, 0), " +
+            "upload_bytes = MAX(upload_bytes - ?1, 0) " +
+            "WHERE token = ?2 " +
+            `RETURNING ${REQUEST_COLUMNS}`,
+          [size, token],
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
@@ -1317,6 +1329,9 @@ export async function handleRequestUploadRequest(request, files, links, capState
   // The request row names the owner, so that is the prefix the write lands
   // under — the same scopeStore /api/files/upload writes through.
   const scoped = scopeStore(files, { id: record.accountId, name: "" });
+  if ((await scoped.stat(path)) !== null) {
+    return json({ error: failureMessage("upload-name-taken") }, 409);
+  }
   const reserved = await links.requests.addUpload(checked.token, sized.bytes);
   if (!reserved) {
     return json({ error: failureMessage("upload-link-full") }, 413);
@@ -1327,6 +1342,7 @@ export async function handleRequestUploadRequest(request, files, links, capState
     // and the S3 stand-in PUTs the same body fetch accepts.
     await scoped.write(path, sized.body, contentType);
   } catch (cause) {
+    await links.requests.releaseUpload(checked.token, sized.bytes);
     return serverFailure(`storing an uploaded file: ${String(cause)}`);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);
