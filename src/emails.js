@@ -10,6 +10,7 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
 export { DEFAULT_CAP_USD };
@@ -374,6 +375,62 @@ function finish({ subject, lines, html_lines, saved = null }) {
   return { subject, text, html: htmlLines.join("\n"), saved };
 }
 
+// ---------------------------------------------------------------------------
+// 8) Top-up receipt -- money moved onto the balance (drive#586). Sent only
+//    when the signed webhook credits a payment, never for usage.
+//    { amountUsd, balanceUsd, auto }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function topUpReceiptTemplate(data = {}) {
+  const amount = requireMoney(data.amountUsd, "amountUsd");
+  const balance = requireMoney(data.balanceUsd, "balanceUsd");
+  if (typeof data.auto !== "boolean") {
+    throw new TypeError(`auto must be true or false, got ${String(data.auto)}`);
+  }
+  const subject = `Your Drive receipt: ${usd(amount)} added`;
+  const first = data.auto
+    ? `Auto top-up added ${usd(amount)} to your Drive balance.`
+    : `You added ${usd(amount)} to your Drive balance.`;
+  const lines = [
+    first,
+    "",
+    `Your balance is now ${usd(balance)}. It never expires.`,
+    "",
+    "Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.",
+  ];
+  const html_lines = [
+    `<p>${first}</p>`,
+    `<p>Your balance is now ${usd(balance)}. It never expires.</p>`,
+    "<p>Storage is drawn from it at 2 cents per GB a month, and never more than $10 per TB.</p>",
+  ];
+  return finish({ subject, lines, html_lines });
+}
+
+// ---------------------------------------------------------------------------
+// 9) Low balance -- the balance is at $2 or less, sent once per crossing
+//    (drive#586). { balanceUsd, autoTopUpUsd }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+export function lowBalanceTemplate(data = {}) {
+  const balance = requireMoney(data.balanceUsd, "balanceUsd");
+  const auto =
+    data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
+      ? null
+      : requireMoney(data.autoTopUpUsd, "autoTopUpUsd");
+  const subject = `Your Drive balance is ${usd(balance)}`;
+  const next =
+    auto === null
+      ? `${TOP_UP_PROMPT} At $0 uploads pause. Downloads keep working, and nothing is deleted.`
+      : `Auto top-up is on, so ${usd(auto)} will be added from your saved card.`;
+  const lines = [`Your Drive balance is ${usd(balance)}.`, "", next];
+  const html_lines = [`<p>Your Drive balance is ${usd(balance)}.</p>`, `<p>${next}</p>`];
+  return finish({ subject, lines, html_lines });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -383,6 +440,8 @@ export const EMAIL_KINDS = Object.freeze([
   "monthly-receipt",
   "account-closed",
   "account-close-reminder",
+  "top-up-receipt",
+  "low-balance",
 ]);
 
 /**
@@ -396,6 +455,8 @@ const TEMPLATES = Object.freeze({
   "monthly-receipt": monthlyReceiptTemplate,
   "account-closed": accountClosedTemplate,
   "account-close-reminder": accountCloseReminderTemplate,
+  "top-up-receipt": topUpReceiptTemplate,
+  "low-balance": lowBalanceTemplate,
 });
 
 /**

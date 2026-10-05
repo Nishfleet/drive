@@ -56,10 +56,15 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   // delete stopped after. Nullable expand; getCloseState and listDuePurge
   // read it, so any test that opens a close state needs the column.
   "drive/0020_account_purge_cursor.sql",
+  // The prepaid balance (drive#586): the ledger the usage read sums for its
+  // balance line, and the low-balance and auto top-up columns.
+  "drive/0020_balance_ledger.sql",
   // The per-agent monthly cap's schema default, cleared (drive#534). Rebuilds
   // `agent_caps` so `monthly_cap_usd` is nullable with no default, then clears
   // the 0004 default (12.0) off the rows that never chose a cap.
   "drive/0021_agent_caps_nullable_cap.sql",
+  // The prepaid draws (drive#586): low-balance and auto top-up columns.
+  "drive/0021_prepaid_draws.sql",
 ]);
 
 /**
