@@ -106,9 +106,9 @@ test("the gate catches an unpinned download and passes a pinned one", () => {
     "          if ($got -ne $env:WINFSP_MSI_SHA256) { throw 'digest' }",
     "      - name: get winfsp, env expression",
     "        run: |",
-    '          Invoke-WebRequest -Uri "${{ env.URL }}" -OutFile winfsp.msi',
+    `          Invoke-WebRequest -Uri "\${{ env.URL }}" -OutFile winfsp.msi`,
     "          $got = (Get-FileHash -Path winfsp.msi -Algorithm SHA256).Hash.ToLower()",
-    '          if ($got -ne "${{ env.WINFSP_MSI_SHA256 }}") {',
+    `          if ($got -ne "\${{ env.WINFSP_MSI_SHA256 }}") {`,
     "      - name: probe",
     "        run: out=$(curl -s -o /dev/null -w '%{http_code}' https://example.com/)",
   ].join("\n");
