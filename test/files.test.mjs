@@ -274,6 +274,23 @@ test("a key that is not ours is not restored from", () => {
   assert.throws(() => trashName("/a", 0), TypeError);
 });
 
+test("a file parked in the old flat layout still parses", () => {
+  // Before drive#570 the key was `<ts>__<encoded path>` directly under
+  // `.trash`. Nothing writes it now, but a file already parked that way has
+  // to stay readable for the 30 days it is restorable, so the parse accepts
+  // both layouts and the deleted view never drops a key.
+  const legacy = `${now}__${encodeURIComponent("/Photos/holiday.jpg")}`;
+  assert.equal(legacy, `${now}__%2FPhotos%2Fholiday.jpg`);
+  const parsed = parseTrashName(legacy);
+  assert.ok(parsed);
+  assert.equal(parsed.path, "/Photos/holiday.jpg");
+  assert.equal(parsed.deletedAt, now);
+  // The nested layout is still the one that parses for a key written now.
+  assert.equal(parseTrashName(trashName("/Photos/holiday.jpg", now))?.path, "/Photos/holiday.jpg");
+  // A flat-looking key whose time segment is not all digits is still refused.
+  assert.equal(parseTrashName(`1e3__${encodeURIComponent("/a.txt")}`), null);
+});
+
 test("the newest parked copy of a path is the one restore finds", () => {
   const entries = /** @type {Array<{name: string, kind?: string}>} */ ([
     { name: trashName("/a.txt", now - 60_000) },
@@ -600,6 +617,35 @@ test("restore: one tap puts the bytes back where they were", async () => {
   assert.ok(back);
   assert.equal(await new Response(back.body).text(), "the-bytes");
   // It is gone from Recently deleted once it is back.
+  const trash = await (await call(new Request(api("?view=deleted")))).json();
+  assert.deepEqual(trash.rows, []);
+});
+
+test("restore: a file parked in the old flat layout is still restorable", async () => {
+  // A key the pre-drive#570 delete wrote sits directly under `.trash`, where
+  // the restore's one narrow LIST cannot reach it. Restore falls back to one
+  // deep walk only when the narrow LIST is empty, parses the flat name, and
+  // puts the bytes back — so no file a customer deleted before the upgrade
+  // becomes unreachable.
+  const { scoped, call } = drive();
+  await scoped.write(
+    `/.trash/${now}__${encodeURIComponent("/legacy.txt")}`,
+    "old-bytes",
+    "text/plain",
+  );
+  const response = await call(
+    new Request(api("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/legacy.txt" }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, path: "/legacy.txt" });
+  const back = await scoped.read("/legacy.txt");
+  assert.ok(back);
+  assert.equal(await new Response(back.body).text(), "old-bytes");
+  // The flat key is spent: neither layout still holds a copy.
   const trash = await (await call(new Request(api("?view=deleted")))).json();
   assert.deepEqual(trash.rows, []);
 });
