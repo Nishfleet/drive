@@ -21,7 +21,13 @@ import { getMigrations } from "better-auth/db/migration";
 import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
 import { createMemoryStore } from "../src/files.js";
 import worker, { TEST_FILES_STORE } from "../src/index.js";
-import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
+import {
+  createTestAuth,
+  createTestD1,
+  DRIVE_SCHEMA_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+} from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -262,7 +268,11 @@ test("no session is a session: unknown cookies, foreign databases and no auth al
 
 test("the Worker's gate reads Better Auth's session, not a cookie the browser chose", async () => {
   // The route of record: the same request through the Worker's own dispatch.
-  const made = createTestAuth();
+  // The full schema, because the gate test reads /api/usage and that route now
+  // reads the account's metered month (drive#496), a month living in
+  // 0005_meter's usage_minutes. On the short list the route 500s on a table
+  // production has.
+  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,
