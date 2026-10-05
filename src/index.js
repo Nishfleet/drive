@@ -167,10 +167,18 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 //     Standard Webhooks signature over the raw body is the gate
 //     (src/topup.js handleBillingWebhook), and with DODO_WEBHOOK_SECRET unset
 //     it answers 503, a closed door.
+// The auth family Better Auth is mounted under (basePath "api/auth",
+// src/auth.js). One value for the account gate's public list and the route
+// table, so the two cannot drift: the one place a caller with no session must
+// reach is the auth family, to enroll a passkey or turn a factor on before
+// there is a session at all. isPublic (below) strips the trailing "/*", so a
+// signed-out caller reaches every /api/auth/... path.
+const AUTH_FAMILY = "/api/auth/*";
+
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
-  "/api/auth/*",
+  AUTH_FAMILY,
   SEND_EMAIL_PATH,
   HEALTH_PATH,
   SIGNIN_ENDPOINT,
@@ -613,7 +621,7 @@ export function createApp() {
   // Method-limited to GET and POST, which is the whole stock surface, so a
   // request with any other method is a 405 rather than a page-less call into
   // the library.
-  app.on(["GET", "POST"], "/api/auth/*", authApiHandler);
+  app.on(["GET", "POST"], AUTH_FAMILY, authApiHandler);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base

@@ -314,7 +314,11 @@ async function readUserCode(request) {
  * armed it is not asked at all. No sign-in flow on this request means no
  * factor: the bearer-token approvals (a device token from `drive cap`) carry
  * no browser session, and that token is already a live credential for the
- * account it names.
+ * account it names. A read that errors instead of answering counts as
+ * armed: the account gate has already resolved a live session to reach this
+ * point, so "no session" and "cannot tell" are different answers, and the one
+ * that cannot tell asks for the factor rather than let a stolen cookie plus a
+ * transient library or database error approve a device.
  * @param {Request} request
  * @param {DeviceCtx} ctx
  * @returns {Promise<boolean>}
@@ -325,7 +329,9 @@ async function approveNeedsSecondFactor(request, ctx) {
     const found = await ctx.accounts.api.getSession({ headers: request.headers });
     return found?.user?.twoFactorEnabled === true;
   } catch {
-    return false;
+    // It could not be read. That reads as armed so the verify path runs and
+    // refuses: "cannot tell" must not approve past the gate this issue closes.
+    return true;
   }
 }
 
@@ -336,10 +342,13 @@ async function approveNeedsSecondFactor(request, ctx) {
  * code after enrollment rotates the session, and the browser should keep the
  * newer cookie even though an approval that reaches this function always
  * runs against a confirmed factor (the flag above is only true after the
- * rotate-on-confirm step). Both endpoints throw on a wrong value without
- * touching the account's sign-in lockout — a live session is not a sign-in —
- * so the edge limiter above is what bounds repeated guesses, on top of the
- * code's own 30-second rotation and the recovery code's single use.
+ * rotate-on-confirm step). Wrong inputs throw — the library answers
+ * INVALID_CODE — so "no throw" means the value matched. The library's account
+ * lockout (the failedVerificationCount/lockedUntil this migration ships) is
+ * guarded behind isSignIn, and a live session is not a sign-in, so a wrong code
+ * here neither locks the account nor is bounded by that lock: the IP edge
+ * limiter above is what bounds repeated guesses, on top of the code's own
+ * 30-second rotation and the recovery code's single use.
  * @param {Request} request
  * @param {DeviceCtx} ctx
  * @param {string} code the second-factor value the person typed
@@ -360,25 +369,40 @@ async function verifyApprovalSecondFactor(request, ctx, code) {
       setCookie.push(cookie);
     }
   };
+  // "No throw" is the library's contract, but a future version that answered a
+  // failure without throwing would open this gate, so success also requires the
+  // object the endpoint resolves back: a wrong code throws (INVALID_CODE), and
+  // a real success is that object, carrying the session and its headers.
+  /** @param {unknown} result */
+  const verified = (result) => typeof result === "object" && result !== null;
   try {
-    collect(
-      await api.verifyTOTP({ body: { code }, headers: request.headers, returnHeaders: true }),
-    );
-    return { ok: true, setCookie };
+    const totp = await api.verifyTOTP({
+      body: { code },
+      headers: request.headers,
+      returnHeaders: true,
+    });
+    collect(totp);
+    if (verified(totp)) {
+      return { ok: true, setCookie };
+    }
   } catch {
     try {
-      collect(
-        await api.verifyBackupCode({
-          body: { code },
-          headers: request.headers,
-          returnHeaders: true,
-        }),
-      );
-      return { ok: true, setCookie };
+      const backup = await api.verifyBackupCode({
+        body: { code },
+        headers: request.headers,
+        returnHeaders: true,
+      });
+      collect(backup);
+      if (verified(backup)) {
+        return { ok: true, setCookie };
+      }
     } catch {
       return { ok: false, setCookie };
     }
   }
+  // The value was not thrown out as wrong, but no endpoint resolved it as a
+  // success body either: neither factor confirmed it, so the caller refuses.
+  return { ok: false, setCookie };
 }
 
 /**
@@ -579,7 +603,12 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // the check hands back rides the connected page — the first correct code
   // after enrollment rotates the browser's session, and the newer cookie is
   // the one to keep.
-  const fields = pendingPageFields(await ctx.store.pendingDeviceApproval(userCode));
+  // One pending read serves both the error page's fields and the approval
+  // notice: the second-factor check between them can take a moment, but the
+  // device a code names does not change, so re-reading the row is a second D1
+  // call for a value already in hand.
+  const approval = await ctx.store.pendingDeviceApproval(userCode);
+  const fields = pendingPageFields(approval);
   const armed = await approveNeedsSecondFactor(request, ctx);
   /** @type {string[]} */
   let setCookie = [];
@@ -594,7 +623,6 @@ export async function approveDeviceCodeRoute(request, ctx) {
     }
     setCookie = checked.setCookie;
   }
-  const pending = await ctx.store.pendingDeviceApproval(userCode);
   const result = await ctx.store.approveDeviceCode(userCode, account);
   if ("error" in result) {
     const notice =
@@ -607,7 +635,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
     // the second-factor field on it: the person fixes the code, not the page.
     return approvePageError(notice, fields.deviceName, fields.requestedAt, armed);
   }
-  await sendApproveNotice(ctx, account, pending);
+  await sendApproveNotice(ctx, account, approval);
   const connected = connectedPage();
   for (const cookie of setCookie) {
     connected.headers.append("set-cookie", cookie);

@@ -404,3 +404,104 @@ test("arming two-factor does not change the email sign-in", async () => {
   });
   assert.equal(session?.user.email, "armed@example.com");
 });
+
+// The account gate classifies the auth family public by prefix: PUBLIC_ROUTES
+// (src/index.js) carries "/api/auth/*", and isPublic strips the trailing "/*".
+// The signed-in get-session is proven above; this proves the wildcard is not
+// silently an exact match, because the one place a caller with no session must
+// reach is the auth family, to register a passkey or turn a factor on before
+// there is a session at all. The anonymous answer is "no session" (a null
+// body), never a 401 from the account gate.
+test("an anonymous caller reaches the mounted auth family", async () => {
+  const made = createTestAuth();
+  const response = await workerFetch(
+    new Request(`${TEST_BASE_URL}/api/auth/get-session`, {
+      // No cookie: a signed-out browser.
+    }),
+    siteEnv(made),
+  );
+  assert.equal(response.status, 200, "the account gate let the anonymous request through");
+  const body = await response.json();
+  assert.ok(body === null || body?.session == null, "no session resolves for an anonymous caller");
+});
+
+// Drive#524 close: the second the route reads "does this account have a
+// factor" must not let its own failure read as "no, it does not". This wrapper
+// resolves the live session for the account gate (its one read), then throws
+// on the route's own second read, so armedness cannot be answered. The account
+// has a factor and none is supplied, so the approval is refused and the code
+// stays pending — where a fail-OPEN read would have approved it.
+test("a second-factor read that cannot be answered refuses the approval", async () => {
+  const made = apiMade();
+  const armed = await armTwoFactor(made, "unreadable@example.com");
+  const realGetSession = made.auth.api.getSession.bind(made.auth);
+  /** @type {number} */
+  let reads = 0;
+  const unreadable = {
+    api: {
+      async getSession(/** @type {{headers: Headers}} */ options) {
+        reads += 1;
+        // The account gate makes one read to resolve the session; every read
+        // after that is the route asking whether the account has a factor.
+        if (reads === 1) {
+          return realGetSession(options);
+        }
+        throw new Error("the armedness read failed in flight");
+      },
+    },
+  };
+  const send = (/** @type {Request} */ request) =>
+    dispatch(request, {
+      env: {
+        DEVICE_RATE_LIMITER: { limit: passLimiter },
+        DEVICE_GLOBAL_RATE_LIMITER: { limit: passLimiter },
+      },
+      db: made.db,
+      store: createMemoryStore({
+        signin: createD1DeviceSigninStore(made.db, { now: () => 0 }),
+      }),
+      accounts: unreadable,
+      account: null,
+      now: () => 0,
+    });
+  const start = await send(
+    new Request(`${TEST_BASE_URL}/v1/device/code`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: TEST_BASE_URL },
+      body: JSON.stringify({ name: "laptop" }),
+    }),
+  );
+  const { userCode, deviceCode } = await start.json();
+  // No second factor supplied, so the unreadable armed state is treated as
+  // armed: the page asks for the factor rather than connecting the device.
+  const approve = await send(
+    new Request(`${TEST_BASE_URL}/v1/device/approve`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: TEST_BASE_URL,
+        cookie: armed.cookie,
+      },
+      body: approveBody({ user_code: userCode }),
+    }),
+  );
+  const body = await approve.text();
+  assert.equal(approve.status, 200, "the page returns, not a server error");
+  assert.ok(
+    body.includes("Type the code from your authentication app"),
+    "the unreadable factor reads as armed, so a second factor is asked for",
+  );
+  assert.ok(!body.includes("is connected"), "nothing connects when the factor cannot be read");
+  const poll = await send(
+    new Request(`${TEST_BASE_URL}/v1/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: TEST_BASE_URL },
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  );
+  assert.equal(
+    (await poll.json()).status,
+    "pending",
+    "the code stays pending; nothing was approved",
+  );
+});

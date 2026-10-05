@@ -45,10 +45,10 @@ device — the "Approve `drive` on this Mac?" page — asks for that code after
 the code from the terminal. A code thief who has the terminal output but not
 your authentication app approves nothing.
 
-The recovery rule: when you turn the second factor on, the page shows ten
-one-time recovery codes once. They are never shown again, so store them
-somewhere safe before you close the tab. Each code works once, in place of
-the rotating code, and a used code is dead from then on.
+The recovery rule: when you turn the second factor on, the setup hands you
+ten one-time recovery codes once. They are never shown again, so store them
+somewhere safe right away. Each code works once, in place of the rotating
+code, and a used code is dead from then on.
 
 If you lose your authentication app, a recovery code approves a device and a
 signed-in session can turn the factor off or generate ten new codes. If you
@@ -57,8 +57,8 @@ devices are what you have left. We cannot reset a factor for you in version 1:
 there is no support path that overrides it, by design — a second factor that
 support can switch off is not a second factor.
 
-Passkeys can be registered over the account api; there is no settings page for
-them in version 1.
+Passkeys and the second factor are set up over the account api; there is no
+settings page for either in version 1.
 
 ## What we can and cannot reach
 

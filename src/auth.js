@@ -219,7 +219,7 @@ export function createAuth(options) {
       passkey({
         rpID: new URL(options.baseURL).hostname,
         rpName: "drive",
-        origin: options.baseURL.replace(/\/$/, ""),
+        origin: new URL(options.baseURL).origin,
       }),
     ],
   });
