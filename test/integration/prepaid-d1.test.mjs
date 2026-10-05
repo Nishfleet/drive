@@ -32,6 +32,9 @@ import {
   signWebhook,
   TOPUP_PURPOSE,
 } from "../../src/topup.js";
+import { createD1DeviceStore } from "../../workers/api/src/devices.js";
+import { storageWriteRoute } from "../../workers/api/src/key-routes.js";
+import { createMemoryStore as createKeyStore } from "../../workers/api/src/keystore.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;
@@ -552,4 +555,48 @@ test("auto top-up is turned on only after a first top-up, and off again", async 
   const off = await handleAutoTopUpRequest(post({ amount_usd: null }), me, db);
   assert.deepEqual(await off.json(), { auto_topup_usd: null });
   assert.equal((await balanceSummary(db, ACCOUNT)).auto_topup_usd, null);
+});
+
+test("an agent key at $0 cannot write, keeps its powers, and writes again after a top-up", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const now = () => Date.parse("2026-10-05T12:00:00Z");
+  /** @param {boolean} pauseOn */
+  const storeWith = (pauseOn) =>
+    createKeyStore({
+      now,
+      deviceStore: createD1DeviceStore(db, { now }),
+      writesPaused: pauseOn ? (accountId) => writesPaused(db, accountId) : undefined,
+    });
+  const store = storeWith(true);
+  const key = await store.mintKey({ id: ACCOUNT }, { kind: "agent", name: "bot" });
+  /** @param {ReturnType<typeof createKeyStore>} on @param {string} path */
+  const write = (on, path) => {
+    const url = new URL(
+      `https://api.drive.test/v1/storage/object?path=${encodeURIComponent(path)}`,
+    );
+    return storageWriteRoute(
+      new Request(url, {
+        method: "PUT",
+        headers: {
+          authorization: `Basic ${Buffer.from(`${key.accessKeyId}:${key.secret}`).toString("base64")}`,
+        },
+        body: "hello",
+      }),
+      { store: on, url },
+    );
+  };
+  const paused = await write(store, `/u/${ACCOUNT}/a.md`);
+  assert.equal(paused.status, 402);
+  assert.equal((await paused.json()).error, failureMessage("balance-empty"));
+  // With the pause switched off, the same $0 key writes.
+  assert.equal((await write(storeWith(false), `/u/${ACCOUNT}/b.md`)).status, 201);
+
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_key",
+    amountCents: 1000,
+    now: now(),
+  });
+  assert.equal((await write(store, `/u/${ACCOUNT}/c.md`)).status, 201, "the same key, no new mint");
 });
