@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -305,7 +305,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     createdAt: at("2026-09-30T20:30:00.000Z"),
   });
   const down = { on: false };
-  const env = { METER_DB: ledgerOutage(db, down) };
+  // DRIVE_DB is the sweep's own binding (drive#536): the hourly trip takes an
+  // over-limit unpaid account's keys read-only through the customer database,
+  // so the same one this test already drives the meter with has to be named
+  // here for the trip to run at all.
+  const env = { METER_DB: ledgerOutage(db, down), DRIVE_DB: db };
   /** @param {string} iso */
   const hourly = (iso) =>
     trigger.scheduled({ cron: METER_CRON, scheduledTime: at(iso) }, env, context);
@@ -327,10 +331,13 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
   /** @param {number} hour */
   const bill = async (hour) => {
     const usage = await monthUsageThrough(db, "acc1", hour);
+    // The bill is worked over the month the hour falls in (drive#531), so the
+    // divisor comes from the month, not a fixed average.
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
+      monthMinutes: minutesInMonth(hour),
     }).totalCents;
   };
   /** @param {number} from @param {number} to */
