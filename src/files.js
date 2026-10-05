@@ -1183,6 +1183,25 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * The S3 endpoint this deployment's storage vars name, or null when none is
+ * set — the condition under which the Files handlers answer from the
+ * in-memory store (storeFor in src/index.js), which holds only what this
+ * isolate uploaded and forgets on redeploy. The health check reads this
+ * instead of re-deriving the fallback from the env var names (drive issue
+ * #520: a deployment that lost its storage vars must fail /api/health, not
+ * serve a silently empty drive), and storeFor reads it so "memory fallback"
+ * is decided in exactly one place.
+ * @param {unknown} env the Worker env, whose storage vars are per-deployment
+ *   and never declared bindings
+ * @returns {string|null}
+ */
+export function storageEndpoint(env) {
+  const storage = /** @type {{IDRIVE_S3_ENDPOINT?: unknown, FILES_S3_ENDPOINT?: unknown}} */ (env);
+  const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+  return typeof endpoint === "string" && endpoint !== "" ? endpoint : null;
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs

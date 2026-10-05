@@ -29,6 +29,7 @@ import {
   folderAccount,
   gbMinutesInHour,
   HOUR_GB_MINUTES_SQL,
+  HOUR_MS,
   handleStorageEventRequest,
   hourStart,
   listMeteredAccounts,
@@ -36,6 +37,8 @@ import {
   MAX_CATCHUP_HOURS,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  METER_STALE_AFTER_HOURS,
+  meterFreshness,
   MINIMUM_MINUTES_PER_VERSION,
   MINUTE_MS,
   notificationRecord,
@@ -2170,13 +2173,21 @@ test("the entrypoint routes the intake and runs the trigger", async () => {
   // (the reindex half has always returned nothing). What the trigger did is
   // read back out of the tables it wrote: the mark moved to the hour it
   // rolled, and that hour holds the create's 1-hour minimum.
+  // The entrypoint is wrapped by withSentry (issue #520), which parks its own
+  // flush on the context, so the trigger gets a context the way the runtime
+  // hands one over. The waitUntil work is awaited so the asserts below read
+  // tables the trigger has finished writing.
+  /** @type {Promise<unknown>[]} */
+  const pending = [];
   assert.equal(
     await meterWorker.scheduled(
       { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
       { METER_DB: db },
+      { waitUntil: (p) => pending.push(p) },
     ),
     undefined,
   );
+  await Promise.all(pending);
   assert.equal(db.tables.meter_rollup_state.get(1).rolled_through, midnight());
   const rolled = db.tables.usage_minutes.get(`abc123|${midnight()}`);
   assert.equal(rolled.gb_minutes_live, 60);
@@ -2223,4 +2234,84 @@ test("the migration creates exactly the tables and indexes the meter writes", ()
     assert.ok(migration.includes(column), `migration is missing: ${column}`);
   }
   assert.equal(/DROP\s+(COLUMN|TABLE)/i.test(migration), false);
+});
+
+// --- The health check's freshness read (drive issue #520) -----------------
+
+test("the freshness read is the watermark beside the oldest version, in one statement", async () => {
+  // The health check polls the meter on every probe, so the read is one
+  // round trip carrying the two columns the staleness decision needs. The
+  // statement runs against the real schema here — the same SQL D1 answers.
+  const { db } = makeMeteredDB();
+  const readFreshness = async () =>
+    (
+      await db
+        .prepare(
+          "SELECT (SELECT rolled_through FROM meter_rollup_state WHERE id = 1) AS rolled_through, " +
+            "(SELECT MIN(created_at) FROM file_versions) AS earliest",
+        )
+        .first()
+    ) ?? {};
+  const row = await readFreshness();
+  assert.equal(row.rolled_through, null);
+  assert.equal(row.earliest, null);
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const afterEvent = await readFreshness();
+  assert.equal(afterEvent.earliest, midnight());
+  assert.equal(afterEvent.rolled_through, null);
+});
+
+test("meterFreshness: a fresh install is not stale", async () => {
+  const { db } = makeMeteredDB();
+  const answer = await meterFreshness(db, midnight() + 2 * MINUTE_MS);
+  assert.deepEqual(answer, { stale: false, detail: "nothing to bill yet" });
+});
+
+test("meterFreshness: a watermark inside the bound is not stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const rolled = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(rolled.through, midnight());
+  // Just under METER_STALE_AFTER_HOURS past the last closed hour: one missed
+  // trigger made up by the next run, not an outage.
+  const now = midnight() + METER_STALE_AFTER_HOURS * HOUR_MS - 30 * MINUTE_MS;
+  const answer = await meterFreshness(db, now);
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /inside the bound/);
+});
+
+test("meterFreshness: a watermark METER_STALE_AFTER_HOURS behind is stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const rolled = await runMeterCron(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(rolled.through, midnight());
+  // At the bound exactly it is stale: the closed hours past the mark are
+  // sitting unbilled, and no single missed run gets this far behind. The lag
+  // is measured to the last CLOSED hour (the one before now), so now must be
+  // one hour past the bound for the lag to reach it.
+  const now = midnight() + (METER_STALE_AFTER_HOURS + 1) * HOUR_MS;
+  const answer = await meterFreshness(db, now);
+  assert.equal(answer.stale, true);
+  assert.match(answer.detail, /3h behind/);
+});
+
+test("meterFreshness: versions with no watermark is stale", async () => {
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(answer.stale, true);
+  assert.match(answer.detail, /watermark is missing/);
+});
+
+test("meterFreshness: a watermark ahead of the last closed hour is not stale", async () => {
+  // A run in the future, or a clock moved backwards, can leave the mark ahead
+  // of what hourStart(now) says. runMeterCron self-corrects that (its from is
+  // min(from, lastClosed)), so the health check must not page anyone.
+  const { db } = makeMeteredDB();
+  await storeCreate(db, "abc", { eventId: "evt-1", createdAt: midnight() });
+  const future = await runMeterCron(db, at("2026-10-02T01:05:00.000Z"));
+  assert.ok(future.through > midnight());
+  const answer = await meterFreshness(db, at("2026-09-30T01:05:00.000Z"));
+  assert.equal(answer.stale, false);
+  assert.match(answer.detail, /self-corrects/);
 });

@@ -1,3 +1,4 @@
+import { withSentry } from "@sentry/cloudflare";
 import { Hono } from "hono";
 import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
@@ -36,6 +37,7 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
+  storageEndpoint,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -43,12 +45,14 @@ import { failureMessage } from "./messages.js";
 import {
   HOUR_MS,
   handleStorageEventRequest,
+  hourStart,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
   reconcileMeter,
   runMeterCron,
   toMillis,
 } from "./meter.js";
+import { captureError, reportBillingGap, withCronCheckIn } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import {
   AUTO_TOPUP_ENDPOINT,
@@ -293,7 +297,7 @@ function forwardToApi(c) {
 function storeFor(env) {
   if (!filesStore) {
     const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    const endpoint = storageEndpoint(storage);
     if (endpoint) {
       const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
       const secretAccessKey =
@@ -890,6 +894,11 @@ export function createApp() {
   });
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
+    // A 500 that only reached console.error was invisible: the Worker shipped
+    // with `observability: null` and no error pipeline (issue #520). Sentry
+    // sees it now; the console line stays for Workers Logs, which
+    // `observability` in cloudflare.config.ts turns on.
+    captureError(err, `${c.req.method} ${c.req.path}`);
     console.error("[pricing] request failed:", err.message, err.stack, err);
     return c.json({ error: failureMessage("unexpected") }, 500);
   });
@@ -904,9 +913,22 @@ export function createApp() {
 // through to the assets, so a stray path is a real 404 from the asset worker
 // rather than a hand-rolled page.
 /**
+ * The Sentry options, read off the environment per invocation: the DSN is a
+ * per-deployment var like the storage pair and EMAIL_SEND_TOKEN, never a
+ * declared binding (a declared one is required at deploy). With no DSN the
+ * SDK is disabled and every call in src/monitoring.js is a safe no-op, so a
+ * deployment that has not configured Sentry still runs every cron (issue
+ * #520).
+ * @param {Env} env
+ */
+const sentryOptions = (env) => ({
+  dsn: /** @type {{SENTRY_DSN?: string}} */ (env).SENTRY_DSN,
+});
+
+/**
  * @type {ExportedHandler<Env>}
  */
-export default {
+const handler = {
   async fetch(request, env) {
     return createApp().fetch(request, env);
   },
@@ -955,16 +977,28 @@ export default {
     // the meter's work and nothing else.
     if (event.cron === METER_CRON) {
       // Awaited, so a D1 failure is Cloudflare's to record and retry: a
-      // rollup that returned early would read as a quiet zero.
-      const rolled = await runMeterCron(env.METER_DB, event.scheduledTime);
-      // The trip's clock, once, as epoch milliseconds: runMeterCron reads
-      // scheduledTime through toMillis, and the draw and settle steps below
-      // take only a number, so they read the same normalised instant.
-      const now = toMillis(event.scheduledTime, "scheduledTime");
-      const hours = [];
-      for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
-        hours.push(hour);
-      }
+      // rollup that returned early would read as a quiet zero. The check-in
+      // marks the monitor `error` and rethrows, so both Sentry Crons and the
+      // platform's own trigger record see the failure (issue #520).
+      return withCronCheckIn(event, "meter-hourly-rollup", async () => {
+        // The trip's clock, once, as epoch milliseconds: runMeterCron reads
+        // scheduledTime through toMillis, and the draw and settle steps below
+        // take only a number, so they read the same normalised instant.
+        const now = toMillis(event.scheduledTime, "scheduledTime");
+        const rolled = await runMeterCron(env.METER_DB, now);
+        // The billing gap the catch-up cap can leave (issue #520): a run
+        // capped at MAX_CATCHUP_HOURS stops short of the last closed hour,
+        // and every hour between sits unbilled until later runs drain it.
+        // A healthy run always rolls through the last closed hour, so this
+        // fires only on real backlog.
+        const lastClosed = hourStart(now) - HOUR_MS;
+        if (rolled.through < lastClosed) {
+          reportBillingGap((lastClosed - rolled.through) / HOUR_MS, rolled.through, lastClosed);
+        }
+        const hours = [];
+        for (let hour = rolled.from; hour <= rolled.through; hour += HOUR_MS) {
+          hours.push(hour);
+        }
       // The prepaid draw (drive#586): each account's usage for the hours this
       // run rolled is drawn from its balance, at most once per account per
       // hour (src/prepaid.js). This replaces the old after-the-fact usage push
@@ -972,25 +1006,25 @@ export default {
       // migration 0021. Awaited and not caught: a failed D1 write fails the
       // trigger, Cloudflare retries it, and the idempotency key makes the
       // retry draw nothing twice.
-      const drawn = await drawUsageHours(env.METER_DB, hours, { now });
-      if (drawn.drawn > 0) {
-        console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
-      }
-      // The "$2 left" email and the auto top-up for the accounts just drawn.
-      // Each account's failure is logged inside and never fails the trigger:
-      // the draws above are written, and a retry must not wait on a mail
-      // outage.
-      const dodo = dodoEnv(env);
-      await settleBalances(env.METER_DB, drawn.accounts, {
-        email: env.EMAIL,
-        mailFrom: dodo.MAIL_FROM ?? "",
-        apiKey: dodo.DODO_PAYMENTS_API_KEY,
-        productId: dodo.DODO_TOPUP_PRODUCT_ID,
-        baseUrl: dodo.DODO_BASE_URL,
-        fetch: dodo.DODO_FETCH ?? globalThis.fetch,
-        now,
+        const drawn = await drawUsageHours(env.METER_DB, hours, { now });
+        if (drawn.drawn > 0) {
+          console.log("prepaid: drew usage", `draws=${drawn.drawn}`, `cents=${drawn.cents}`);
+        }
+        // The "$2 left" email and the auto top-up for the accounts just drawn.
+        // Each account's failure is logged inside and never fails the trigger:
+        // the draws above are written, and a retry must not wait on a mail
+        // outage.
+        const dodo = dodoEnv(env);
+        await settleBalances(env.METER_DB, drawn.accounts, {
+          email: env.EMAIL,
+          mailFrom: dodo.MAIL_FROM ?? "",
+          apiKey: dodo.DODO_PAYMENTS_API_KEY,
+          productId: dodo.DODO_TOPUP_PRODUCT_ID,
+          baseUrl: dodo.DODO_BASE_URL,
+          fetch: dodo.DODO_FETCH ?? globalThis.fetch,
+          now,
+        });
       });
-      return;
     }
     // The meter's nightly trip. Awaited for the same reason: a repair that
     // failed must be a failed trigger, not a run that reported success having
@@ -1005,23 +1039,30 @@ export default {
       // other. Its own per-account catches mean only a whole-cron failure
       // (D1 down) rejects here, and a failed trigger is the honest signal
       // for that: the next night retries everything it did not finish.
-      if (env.DRIVE_DB) {
-        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
-        context.waitUntil(
-          runAccountCloseCron({
-            db: env.DRIVE_DB,
-            devices: createD1DeviceStore(env.DRIVE_DB),
-            store,
-            email: env.EMAIL,
-            mailFrom: secrets.MAIL_FROM ?? "",
-            now: event.scheduledTime,
-          }).catch((error) => {
-            throw new Error(`the account close cron failed: ${error.message}`);
-          }),
-        );
-      }
-      await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
-      return;
+      // The whole branch shares one check-in (issue #520): a failure in any
+      // of its three trips marks the nightly monitor `error`.
+      return withCronCheckIn(event, "meter-nightly-reconcile", async () => {
+        if (env.DRIVE_DB) {
+          const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+          context.waitUntil(
+            runAccountCloseCron({
+              db: env.DRIVE_DB,
+              devices: createD1DeviceStore(env.DRIVE_DB),
+              store,
+              email: env.EMAIL,
+              mailFrom: secrets.MAIL_FROM ?? "",
+              now: event.scheduledTime,
+            }).catch((error) => {
+              // A waitUntil rejection never reaches the caller, so without
+              // this the close cron's failures were invisible outside the
+              // platform logs (issue #520).
+              captureError(new Error(`the account close cron failed: ${error.message}`), "account close cron");
+              throw new Error(`the account close cron failed: ${error.message}`);
+            }),
+          );
+        }
+        await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      });
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`
     // column is unread (#329/#338), and production D1 `drive-data` at
@@ -1030,7 +1071,7 @@ export default {
     // whose JSON the sweep could still move. Dropping the column is #339.
 
     context.waitUntil(
-      (async () => {
+      withCronCheckIn(event, "nightly-reindex", async () => {
         if (!env.DRIVE_DB) {
           throw new Error("the nightly reindex needs the file index database");
         }
@@ -1038,8 +1079,20 @@ export default {
           await reconcileIndex(env.DRIVE_DB, scopeStore(store, account), account);
         }
       })().catch((error) => {
+        // Same as the close cron: a waitUntil rejection is invisible to the
+        // caller, so the reindex reports its own failure (issue #520) before
+        // the rethrow that keeps the platform's record honest.
+        captureError(error, "nightly reindex");
         throw new Error(`the nightly reindex failed: ${error.message}`);
       }),
     );
   },
 };
+
+// withSentry wraps every entrypoint of the handler above in place: fetch
+// and scheduled each init a client from sentryOptions for their invocation,
+// capture errors and spans, and pass the original arguments through — so the
+// tests' injectable fourth `store` argument on scheduled reaches the real
+// method (issue #520). With SENTRY_DSN unset the client is disabled and the
+// wrap is overhead the size of a property read.
+export default withSentry(sentryOptions, handler);

@@ -1648,6 +1648,65 @@ const ROLLED_THROUGH_WRITE_SQL = `INSERT INTO meter_rollup_state (id, rolled_thr
 const EARLIEST_VERSION_SQL = "SELECT MIN(created_at) AS earliest FROM file_versions";
 const PURGE_EVENTS_SEEN_SQL = "DELETE FROM events_seen WHERE received_at < ?1";
 
+// One statement for the health check's freshness read (issue #520): the
+// watermark beside the oldest stored version, in one round trip. The two
+// scalar subqueries are the two reads runMeterCron itself starts from
+// (ROLLED_THROUGH_READ_SQL, EARLIEST_VERSION_SQL), asked together because
+// staleness is decided by the pair — a watermark means nothing without
+// knowing whether there are versions waiting behind it.
+const METER_FRESHNESS_SQL =
+  "SELECT (SELECT rolled_through FROM meter_rollup_state WHERE id = 1) AS rolled_through, " +
+  "(SELECT MIN(created_at) FROM file_versions) AS earliest";
+
+// How far behind the last closed hour the watermark may sit before /api/health
+// reports the meter stale (issue #520). The hourly trigger fires at :05 and
+// rolls the hour that closed before it, so between two healthy runs the
+// watermark is at most about one hour behind the last closed hour; three
+// hours means at least two runs were missed and never made up, or the
+// 12-hour catch-up cap is draining real backlog — either is worth a human's
+// attention.
+export const METER_STALE_AFTER_HOURS = 3;
+
+/**
+ * Whether the meter has fallen behind, read straight from its own tables so
+ * /api/health can report it (issue #520: the meter's cron answering every
+ * hour while billing nothing had no signal at all). One read, two columns:
+ *
+ *   - no watermark and no versions: a fresh deployment, nothing to bill;
+ *   - versions but no watermark: the mark was lost, so no one can say what
+ *     was billed — stale;
+ *   - a watermark ahead of the last closed hour: not staleness —
+ *     runMeterCron self-corrects it (from = min(from, lastClosed));
+ *   - a watermark METER_STALE_AFTER_HOURS or more behind: stale, because
+ *     every closed hour past it is sitting unbilled.
+ *
+ * @param {{prepare: (sql: string) => {first: () => Promise<{rolled_through?: unknown, earliest?: unknown}>}}} db
+ *   the METER_DB binding, in the shape the health check already verified
+ * @param {number} [now] the instant to judge from, epoch milliseconds
+ * @returns {Promise<{stale: boolean, detail: string}>}
+ */
+export async function meterFreshness(db, now = Date.now()) {
+  const lastClosed = hourStart(now) - HOUR_MS;
+  const row = await db.prepare(METER_FRESHNESS_SQL).first();
+  const rolledThrough = stampMillis(row?.rolled_through);
+  const earliest = stampMillis(row?.earliest);
+  if (rolledThrough === null) {
+    return earliest === null
+      ? { stale: false, detail: "nothing to bill yet" }
+      : { stale: true, detail: "versions exist but the rollup watermark is missing" };
+  }
+  if (rolledThrough > lastClosed) {
+    return {
+      stale: false,
+      detail: "the watermark is ahead of the last closed hour; the next run self-corrects",
+    };
+  }
+  const lagHours = Math.round((lastClosed - rolledThrough) / HOUR_MS);
+  return lagHours >= METER_STALE_AFTER_HOURS
+    ? { stale: true, detail: `the rollup watermark is ${lagHours}h behind` }
+    : { stale: false, detail: `the rollup watermark is ${lagHours}h behind, inside the bound` };
+}
+
 /**
  * A stored instant as a finite number of milliseconds, or null when the
  * column holds nothing usable. `rolled_through` and `MIN(created_at)` are both
