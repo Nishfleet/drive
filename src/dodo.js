@@ -170,21 +170,37 @@ export async function billingPushGap(db, options = {}) {
  * @returns {string}
  */
 export function resolveIngestUrl(baseUrl) {
+  return resolveDodoUrl(baseUrl, DODO_INGEST_PATH);
+}
+
+/**
+ * Any Dodo API path on the configured host (the checkout for a top-up,
+ * drive#586, as well as the ingest above), under the same https and
+ * dodopayments.com pin, because the same bearer key travels with it.
+ * @param {string|undefined} baseUrl
+ * @param {string} path starting with "/"
+ * @returns {string}
+ */
+export function resolveDodoUrl(baseUrl, path) {
+  if (typeof path !== "string" || !path.startsWith("/")) {
+    throw new TypeError(`a Dodo API path starts with "/", got ${String(path)}`);
+  }
   if (baseUrl === undefined || baseUrl === "") {
-    return DODO_TEST_INGEST_URL;
+    return `${DODO_TEST_BASE_URL}${path}`;
   }
   if (typeof baseUrl !== "string") {
     throw new TypeError(`DODO_BASE_URL must be a string, got ${String(baseUrl)}`);
   }
   const host = baseUrl.replace(/\/+$/, "");
-  const matched = host.match(/^https:\/\/(.+)$/);
+  const matched = host.match(/^https:\/\/([^/]+)$/);
   if (!matched) {
     throw new TypeError(`DODO_BASE_URL must use https, got ${host}`);
   }
-  if (!matched[1].endsWith("dodopayments.com")) {
-    throw new TypeError(`DODO_BASE_URL must be a dodopayments.com host, got ${matched[1]}`);
+  const name = matched[1];
+  if (name !== "dodopayments.com" && !name.endsWith(".dodopayments.com")) {
+    throw new TypeError(`DODO_BASE_URL must be a dodopayments.com host, got ${name}`);
   }
-  return `${host}${DODO_INGEST_PATH}`;
+  return `${host}${path}`;
 }
 
 /**

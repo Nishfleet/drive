@@ -286,6 +286,23 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "New accounts can store 1 TB until the first payment goes through.",
     next: "Ask support if you need more storage before then.",
   }),
+  // A top-up amount outside $10 to $1,000, or not a dollar amount at all
+  // (drive#586). Nothing reached the payment page.
+  "topup-amount": Object.freeze({
+    what: "Top-ups start at $10 and go up to $1,000.",
+    next: "Pick an amount from $10 to $1,000 and try again.",
+  }),
+  // The payment provider is not set up on this deployment yet, so no
+  // checkout can open (drive#586, the Dodo key waits on Nish, #325).
+  "topup-not-open": Object.freeze({
+    what: "Adding money is not open yet, and nothing was charged.",
+    next: "Try again later.",
+  }),
+  // The provider refused or did not answer the checkout request.
+  "topup-failed": Object.freeze({
+    what: "The payment page did not open, and nothing was charged.",
+    next: "Try again in a minute.",
+  }),
 });
 
 // The words a customer reads for one failure path: "what happened" then the
