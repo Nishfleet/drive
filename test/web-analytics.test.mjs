@@ -241,7 +241,11 @@ test("the Lighthouse budget leaves room for the beacon and nothing more", () => 
   // static.cloudflareinsights.com, so the request is recorded and moves no bytes.
   // Both numbers are asserted, so a third third-party resource or a loosened
   // transfer size fails here instead of passing unnoticed.
-  const budgets = JSON.parse(read("lighthouserc.json")).ci.assert.assertions;
+  // LHCI refuses `assertions` next to `assertMatrix`, so the site-wide budget is
+  // the matrix entry that matches every URL.
+  const budgets = JSON.parse(read("lighthouserc.json")).ci.assert.assertMatrix.find(
+    (entry) => entry.matchingUrlPattern === ".*",
+  ).assertions;
   assert.deepEqual(budgets["resource-summary.third-party:count"], [
     "error",
     { maxNumericValue: 1 },
@@ -256,8 +260,14 @@ test("the Lighthouse budget leaves room for the beacon and nothing more", () => 
 test("Lighthouse asserts SEO 1.0 on the pricing page, which is the one crawlers index", () => {
   // The other five collected URLs are noindex, so an SEO score of 1.0 on them
   // would fail the is-crawlable audit. The matrix pins the public page only.
-  const matrix = JSON.parse(read("lighthouserc.json")).ci.assert.assertMatrix;
-  assert.equal(matrix.length, 1);
-  assert.equal(matrix[0].matchingUrlPattern, "http://localhost/index\\.html$");
-  assert.deepEqual(matrix[0].assertions["categories:seo"], ["error", { minScore: 1 }]);
+  const config = JSON.parse(read("lighthouserc.json")).ci.assert;
+  // LHCI exits with "Cannot use assertMatrix with other options" when a
+  // top-level `assertions` sits next to the matrix, so the matrix is the only key.
+  assert.deepEqual(Object.keys(config), ["assertMatrix"]);
+  const matrix = config.assertMatrix;
+  assert.equal(matrix.length, 2);
+  assert.equal(matrix[0].matchingUrlPattern, ".*");
+  assert.equal(matrix[0].assertions["categories:seo"], undefined);
+  assert.equal(matrix[1].matchingUrlPattern, "http://localhost/index\\.html$");
+  assert.deepEqual(matrix[1].assertions["categories:seo"], ["error", { minScore: 1 }]);
 });

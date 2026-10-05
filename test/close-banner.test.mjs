@@ -339,7 +339,7 @@ test("the Lighthouse script-count budget is still one, so get-started cannot add
   // CI runs lhci before npm test. A second <script src> on get-started.html is
   // what failed verify on this branch: the page already loads its renderer.
   const budgets = JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"))
-    .ci.assert.assertions;
+    .ci.assert.assertMatrix.find((entry) => entry.matchingUrlPattern === ".*").assertions;
   assert.deepEqual(budgets["resource-summary.script:count"], ["error", { maxNumericValue: 1 }]);
   assert.match(
     JSON.stringify(

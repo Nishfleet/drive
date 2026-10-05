@@ -1,10 +1,18 @@
-# Static-asset response headers (drive issue #527).
+# Workers Static Assets header rules. This file is not served as a page;
+# Cloudflare applies it to static-asset responses (files, usage, sign-in,
+# upload, and the rest of public/). Worker-generated /api/* and /s/* answers
+# still take their headers from the Worker (Hono secureHeaders, src/index.js).
+# https://developers.cloudflare.com/workers/static-assets/headers/
 #
-# Cloudflare Workers Static Assets reads this file at upload and applies each
-# block to the matching paths; it is stock, so no Worker code and no custom
-# middleware decide a header. drive#506 adds the security headers (CSP,
-# frame-ancestors, nosniff, Referrer-Policy, HSTS) to this same file.
-#
+# Security headers (drive#506) apply to every path. The cache blocks below
+# (drive#527) add to them; Cloudflare merges every block whose path matches.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cloudflareinsights.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+
 # The cache blocks are the site's own speed budget made real. Every file whose
 # name carries a content hash — the VitePress chunks under /docs/assets/ and
 # the site's own Vite output under /assets/ — is safe to keep for a year in

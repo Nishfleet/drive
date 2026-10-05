@@ -599,6 +599,7 @@ dialog.viewer::backdrop {
 // endpoint or the 30-day window drifts from that module.
 const FILES_ENDPOINT = "/api/files";
 const PREVIEW_ENDPOINT = "/api/files/preview";
+const EMBED_ENDPOINT = "/api/files/embed";
 const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
@@ -1018,20 +1019,24 @@ function openViewer(row) {
     return;
   }
   const src = `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+  // The media elements read the embed URL, which always serves a picture
+  // inline. The direct-open preview URL sends an SVG as an attachment so a
+  // top-level open cannot render it as a document on our address (drive#657).
+  const mediaSrc = `${EMBED_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "image") {
     const img = document.createElement("img");
-    img.src = src;
+    img.src = mediaSrc;
     img.alt = row.name;
     showBody(img);
   } else if (row.kind === "video") {
     const video = document.createElement("video");
-    video.src = src;
+    video.src = mediaSrc;
     video.controls = true;
     video.playsInline = true;
     showBody(video);
   } else if (row.kind === "audio") {
     const audio = document.createElement("audio");
-    audio.src = src;
+    audio.src = mediaSrc;
     audio.controls = true;
     showBody(audio);
   } else if (row.kind === "pdf") {

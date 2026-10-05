@@ -225,6 +225,11 @@ function withLimits(options = {}) {
   };
 }
 
+/** Options a share-link GET/HEAD needs in tests: the edge limiter production binds. */
+function shareOpts(extra = {}) {
+  return { now, ipLimiter: allowLimiter(), ...extra };
+}
+
 // ---------------------------------------------------------------- tokens
 
 test("a link token is 22 base64url characters and only that shape is accepted", () => {
@@ -406,7 +411,7 @@ test("only the methods each route offers are allowed", async () => {
     new Request(`https://drive.test/s/${TOKEN}`, { method: "POST" }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(post.status, 405);
   const postInfo = await handleRequestInfoRequest(
@@ -686,6 +691,9 @@ test("a store failure is logged, and its message is never returned", async () =>
       write: async () => {
         throw new Error("s3 put failed for key u/acct-a/secret.txt");
       },
+      writeIfAbsent: async () => {
+        throw new Error("s3 put failed for key u/acct-a/secret.txt");
+      },
       remove: async () => {},
       removeBatch: async () => {
         throw new Error("the share upload path does not delete a batch");
@@ -741,7 +749,12 @@ test("done when: a real file opens from a share link, logged out", async () => {
 
   // No cookie, no account, no Authorization header: exactly what a logged-out
   // browser sends to a link someone pasted it.
-  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const opened = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(opened.status, 200);
   assert.equal(opened.headers.get("content-type"), "image/jpeg");
   assert.equal(opened.headers.get("content-disposition"), "inline");
@@ -775,7 +788,7 @@ test("done when: a real file opens from a share link, logged out", async () => {
     new Request(made.share.url, { method: "HEAD" }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
@@ -864,7 +877,7 @@ test("a share link downloads from the owner's bucket, and another account cannot
     new Request((await made.json()).share.url),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(opened.status, 200);
   assert.equal(await opened.text(), "the signed pages");
@@ -904,7 +917,12 @@ test("a shared file can never act as a page on our origin", async () => {
   for (const [name, token] of Object.entries(byName)) {
     const made = await (await share(`/${name}`, { token })).json();
     assert.equal(made.share.url, `https://drive.test${SHARE_LINK_PREFIX}/${token}`);
-    const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+    const opened = await handleShareFileRequest(
+      new Request(made.share.url),
+      files,
+      links,
+      shareOpts(),
+    );
     assert.equal(opened.status, 200, `share ${name}`);
     assert.equal(
       opened.headers.get("x-content-type-options"),
@@ -921,6 +939,14 @@ test("a shared file can never act as a page on our origin", async () => {
       /text\/html/,
       `${name} must not be served as a page`,
     );
+    // drive#657: an SVG renders as a document with navigable links, so the
+    // link hands it over as a download; a text page is served as text/plain,
+    // which no browser renders as a page, and keeps opening inline.
+    assert.equal(
+      opened.headers.get("content-disposition"),
+      name === "logo.svg" ? 'attachment; filename="logo.svg"' : "inline",
+      `${name} leaves with the disposition its served type earns`,
+    );
     assert.equal(
       await opened.text(),
       name === "report.html" ? "<script>alert(1)</script>" : "<svg onload=alert(1)></svg>",
@@ -934,11 +960,16 @@ test("done when: a revoked link returns 404", async () => {
   await upload("/", "secret.txt", "private");
   const made = await (await share("/secret.txt", { token: TOKEN })).json();
 
-  const live = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const live = await handleShareFileRequest(new Request(made.share.url), files, links, shareOpts());
   assert.equal(live.status, 200);
 
   await revoke(TOKEN);
-  const revoked = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const revoked = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(revoked.status, 404);
   assert.equal(await revoked.text(), failureMessage("link-not-found"));
   assert.equal(revoked.headers.get("cache-control"), "no-store");
@@ -947,20 +978,21 @@ test("done when: a revoked link returns 404", async () => {
   // route never tells a stranger which one it was.
   const expired = await handleShareFileRequest(new Request(made.share.url), files, links, {
     now: now + (DEFAULT_LINK_DAYS + 1) * DAY_MS,
+    ipLimiter: allowLimiter(),
   });
   assert.equal(expired.status, 404);
   const unknown = await handleShareFileRequest(
     new Request(`https://drive.test/s/CCCCCCCCCCCCCCCCCCCCCC`),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(unknown.status, 404);
   const junk = await handleShareFileRequest(
     new Request("https://drive.test/s/not-a-token"),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(junk.status, 404);
   // Nothing was read out of a revoked link.
@@ -1245,6 +1277,33 @@ test("an upload that declares a small size but sends more is refused before any 
   assert.deepEqual(await store.list("/"), []);
 });
 
+test("a share download without its rate-limit binding is refused before the file is read", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "holiday.jpg", "the real bytes", "image/jpeg");
+  const made = await (await share("/holiday.jpg", { token: TOKEN })).json();
+  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  assert.equal(opened.status, 503);
+  assert.equal((await opened.json()).error, failureMessage("unexpected"));
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 0, "a closed door must not count as an open");
+});
+
+test("a rate-limited share download is refused before the file is read", async () => {
+  const { upload, share, files, links } = drive();
+  await upload("/", "holiday.jpg", "the real bytes", "image/jpeg");
+  const made = await (await share("/holiday.jpg", { token: TOKEN })).json();
+  const opened = await handleShareFileRequest(new Request(made.share.url), files, links, {
+    now,
+    ipLimiter: denyLimiter(),
+  });
+  assert.equal(opened.status, 429);
+  assert.equal((await opened.json()).error, failureMessage("rate-limited"));
+  const record = await links.shares.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.downloadCount, 0, "a rate-limited open must not count as an open");
+});
+
 test("a public upload without its rate-limit bindings is refused before any bytes are stored", async () => {
   const store = createMemoryStore();
   const links = createD1LinkStore(createTestD1());
@@ -1458,9 +1517,109 @@ test("an upload-request drop does not overwrite an owner's file of the same name
   assert.equal(await new Response(readBack.body).text(), "mine");
 });
 
+test("two uploads racing one name have exactly one winner, every run, on the store the route uses", async () => {
+  // drive#644. The old check was a stat then a write — two round-trips, and a
+  // second upload could create the same key between them, so both landed and
+  // the second silently overwrote the first. The create-only write decides at
+  // the store, so of two racing drops exactly one is 201, one is 409, the
+  // file is one upload's bytes whole, and only the winner's bytes stay
+  // counted against the link. Deterministic on one event loop, which is why
+  // it holds on every run rather than most.
+  const { files, links, request } = drive();
+  const minted = await request("/", { token: TOKEN });
+  assert.equal(minted.status, 201);
+  /** @param {string} body */
+  const drop = (body) =>
+    handleRequestUploadRequest(
+      new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=race.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      files,
+      links,
+      () => "active",
+      withLimits(),
+    );
+  const [first, second] = await Promise.all([drop("first"), drop("second-drop-is-longer")]);
+  const statuses = [first.status, second.status].sort((left, right) => left - right);
+  assert.deepEqual(statuses, [201, 409]);
+  const loser = first.status === 201 ? second : first;
+  assert.equal((await loser.json()).error, failureMessage("upload-name-taken"));
+  // Different lengths, so the count proves the winner's size stayed and the
+  // loser's reservation came back — not merely that some bytes were counted.
+  const winnerBody = first.status === 201 ? "first" : "second-drop-is-longer";
+  const readBack = await scopeStore(files, account).read("/race.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the winner's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), winnerBody);
+  // The loser's reservation came back with the release, so the link counts
+  // one upload of the winner's size — not both.
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, winnerBody.length);
+  assert.equal(row?.uploadCount, 1);
+});
+
+test("a duplicate drop of a stored name is 409 even where storage cannot see a conditional write", async () => {
+  // drive#644, the reviewer's point, and the reason the route keeps its
+  // pre-check stat in front of the create-only write. On a backend that
+  // ignores If-None-Match (measured: `rclone serve s3` v1.75.1 answers 200 to
+  // both PUTs), the primitive alone would let a second drop of an already
+  // stored name overwrite the first with a 201. The pre-check keeps every
+  // ordinary duplicate a 409 on every backend; only a true mid-race pair is
+  // left to the store's own answer.
+  const files = createMemoryStore();
+  // This backend overwrites and always answers true — the measured
+  // If-None-Match-ignoring shape.
+  files.writeIfAbsent = async () => true;
+  const links = createD1LinkStore(createTestD1());
+  await links.requests.create(
+    newRequestRecord({ accountId: account.id, folder: "/", now, token: TOKEN }),
+  );
+  await scopeStore(files, account).write("/dup.txt", "first", "text/plain");
+  const second = await handleRequestUploadRequest(
+    new Request(`https://drive.test/api/request/upload?k=${TOKEN}&name=dup.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "second",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits(),
+  );
+  assert.equal(second.status, 409);
+  assert.equal((await second.json()).error, failureMessage("upload-name-taken"));
+  const readBack = await scopeStore(files, account).read("/dup.txt");
+  assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the first drop's file is gone");
+  }
+  assert.equal(await new Response(readBack.body).text(), "first");
+  // Nothing was reserved for a drop that never stored bytes.
+  const row = await links.requests.get(TOKEN);
+  assert.equal(row?.uploadBytes, 0);
+  assert.equal(row?.uploadCount, 0);
+});
+
+test("two racing creates on one key cannot both win at the store, scoped the way routes scope", async () => {
+  // The same guarantee one layer down, on the scoped store the upload route
+  // builds: exactly one true, and the loser's bytes are nowhere in the drive.
+  const scoped = scopeStore(createMemoryStore(), account);
+  const [first, second] = await Promise.all([
+    scoped.writeIfAbsent("/one-key.txt", "first", "text/plain"),
+    scoped.writeIfAbsent("/one-key.txt", "second", "text/plain"),
+  ]);
+  assert.deepEqual([first, second].sort(), [false, true]);
+  const names = (await scoped.list("/")).map((entry) => entry.name);
+  assert.deepEqual(names, ["one-key.txt"]);
+});
+
 test("a failed upload-request write releases the reserved bytes", async () => {
   const files = createMemoryStore();
-  files.write = async () => {
+  files.writeIfAbsent = async () => {
     throw new Error("storage refused the write");
   };
   const links = createD1LinkStore(createTestD1());
@@ -1623,7 +1782,7 @@ test("a share link answers a Range with 206 and counts only the bytes it sent", 
     new Request(made.share.url, { headers: { range: "bytes=2-4" } }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(opened.status, 206);
   assert.equal(await opened.text(), "234");
@@ -1642,7 +1801,12 @@ test("a share link answers a still-valid If-None-Match with 304 and no download"
   await upload("/", "song.mp3", "0123456789", "audio/mpeg");
   const made = await (await share("/song.mp3", { token: TOKEN })).json();
 
-  const first = await handleShareFileRequest(new Request(made.share.url), files, links, { now });
+  const first = await handleShareFileRequest(
+    new Request(made.share.url),
+    files,
+    links,
+    shareOpts(),
+  );
   assert.equal(first.status, 200);
   const etag = first.headers.get("etag");
   assert.ok(etag, "the share answers carries an etag to re-validate with");
@@ -1651,7 +1815,7 @@ test("a share link answers a still-valid If-None-Match with 304 and no download"
     new Request(made.share.url, { headers: { "if-none-match": etag } }),
     files,
     links,
-    { now },
+    shareOpts(),
   );
   assert.equal(again.status, 304);
   assert.equal(await again.text(), "");
