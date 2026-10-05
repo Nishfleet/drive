@@ -8,13 +8,47 @@
 // The migrations applied here are the drive database's own (migrations/drive/,
 // drive issue #170): file_versions, usage_minutes, events_seen and
 // meter_rollup_state are customer data, so they are created by the same
-// migration directory the file index, branches and caps come from. That
-// directory is read from disk by test/drive-migrations.mjs, the one list both
-// D1 stand-ins apply, so this adapter and the sign-in harness in test/harness.mjs
-// cannot build two different schemas out of the same folder (drive#579).
+// migration directory the file index, branches and caps come from. Every file
+// in it is applied, so a statement the meter sends is checked against the whole
+// schema the drive database will actually have.
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { BYTES_PER_GB } from "../src/meter.js";
-import { applyDriveMigrations } from "./drive-migrations.mjs";
+
+const migrationsDir = new URL("../migrations/drive/", import.meta.url);
+// The drive database's migration files in the order `wrangler d1 migrations
+// apply` uses — a full filename sort. A numeric-prefix sort (Number.parseInt)
+// is not portable here: several prefixes are shared by more than one file
+// (0005, 0006, 0012, 0017, 0020 and 0021 on main), both members of a pair
+// parse to the same number, so the comparison returns 0 and a stable sort keeps
+// them in
+// the readdirSync order — stable on one machine, not the same across machines.
+// The full sort is the deploy's own, so the test schema is built in the same
+// order production is. Exported once so every reader of migrations/drive/ reads it
+// the same way, instead of each test re-sorting and diverging (drive issue
+// #619).
+/**
+ * Order migration filenames the way `wrangler d1 migrations apply` does: a
+ * plain full-filename string sort. Exported as a named function so the test can
+ * drive it with a deliberately unordered list and prove the rule itself, not
+ * just that the produced list happens to look sorted — a numeric-prefix sort
+ * also produces a list that reads as sorted, and that is the regression.
+ *
+ * @param {string[]} names
+ * @returns {string[]}
+ */
+export const orderMigrationFiles = (names) => [...names].sort();
+
+export const MIGRATION_FILES = Object.freeze(
+  orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
+);
+
+/** @param {DatabaseSync} sqlite */
+export function applyMigrations(sqlite) {
+  for (const name of MIGRATION_FILES) {
+    sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
+  }
+}
 
 // D1 numbered placeholders (`?1`) are bound by index; node:sqlite's
 // StatementSync.run(...values) only binds anonymous `?` and throws
@@ -323,7 +357,7 @@ export function d1Over(sqlite, { onQuery } = {}) {
 /** @param {() => void} [onQuery] */
 function makeMeteredDB(onQuery) {
   const sqlite = new DatabaseSync(":memory:");
-  applyDriveMigrations(sqlite);
+  applyMigrations(sqlite);
   // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
   // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
   // expands them, and this wraps the raw handle the tests use directly. The

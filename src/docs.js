@@ -24,6 +24,7 @@ import {
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
 } from "./billing.js";
+import { INSTALL_LINES } from "./install-lines.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
@@ -179,8 +180,8 @@ export const FAQ = Object.freeze([
     answer: [
       "{{HEADLINE}}",
       "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
-      "{{NO_MINIMUM}} We need a card at sign-up because there is no free tier.",
-      "Files are billed for at least one hour. Bills under {{CHARGE_THRESHOLD}} roll into the next month; the card is charged when the balance reaches {{CHARGE_THRESHOLD}}.",
+      "{{NO_PLANS}} We need a card at sign-up because there is no free tier.",
+      "You add money first, and storage and downloads are drawn from your balance as they are metered. Files are counted for at least one hour.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
@@ -202,8 +203,8 @@ export const FAQ = Object.freeze([
     question: "Will this fill my disk?",
     scoreboard: ["disk use"],
     answer: [
-      "Your disk never fills up; the cache is capped at a size you choose.",
       "What is on disk is the parts of files you have already opened, held in a cache of at most {{CACHE_LIMIT}}, and the drive always keeps at least {{CACHE_FLOOR}} of your disk free.",
+      "The cap covers only what has already uploaded: a save that has not gone up yet stays on disk past the cap until it uploads, so uploads that are paused or behind can use more disk than the cap.",
       "`drive cache` shows the disk in use and the limit; `drive cache --max <size>` changes it; `drive cache --clear` empties it without touching a file still waiting to upload.",
       "`drive status` shows the same cache use.",
       "Files you keep offline with `drive offline` stay on this computer, are never evicted, and count toward that limit.",
@@ -275,11 +276,11 @@ export function markerValues(extra = {}) {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
     HEADLINE: PRICE.headline,
-    NO_MINIMUM: PRICE.noMinimumLine,
+    NO_PLANS: PRICE.noPlansLine,
     PRICE_RULE: PRICE.rule,
+    TRASH_BILLING: PRICE.trashLine,
     MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
-    CHARGE_THRESHOLD: dollars(BILLING_CONFIG.chargeThresholdUsd),
     CACHE_LIMIT,
     CACHE_FLOOR,
     CACHE_COMMANDS,
@@ -296,6 +297,9 @@ export function markerValues(extra = {}) {
     // Limits page rules out.
     VERSION_HISTORY: VERSION_HISTORY,
     NOT_OPEN: NOT_OPEN,
+    INSTALL_MACOS: INSTALL_LINES[0].line,
+    INSTALL_DEBIAN: INSTALL_LINES[1].line,
+    INSTALL_FEDORA: INSTALL_LINES[2].line,
     ...extra,
   };
 }

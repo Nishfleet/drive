@@ -47,7 +47,7 @@
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
-import { isSameOriginRequest } from "./email-send.js";
+import { sendEmail } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -416,6 +416,260 @@ export async function enforceCap(account, provider) {
   return applyCapSwap(plan, provider);
 }
 
+// The share of the cap at which the warning email goes out (drive#496). The
+// number the cap-warning template already names in its own words ("You've
+// used 80% of your spending cap", src/emails.js), so the walk below sends that
+// email at the share that email describes rather than at a second threshold
+// nobody can read off the page.
+export const CAP_WARNING_RATIO = 0.8;
+
+/**
+ * One metered account's cap decision, for the report the walk returns and for
+ * the state-change test that keeps the emails to one per change.
+ * @typedef {Readonly<{id: string, state: "active"|"read_only", previous: string, countedUsd: number, capUsd: number, warning: boolean, readOnly: boolean}>} CapEnforcement
+ */
+
+/**
+ * The cap enforcement the hourly rollup owes every metered account
+ * (drive#496). It runs after `runMeterCron` on the meter's schedule, because
+ * until then the cap was only ever enforced by a person posting /api/cap: the
+ * docs promise "at your cap the drive goes read-only" (README.md:19) and on
+ * main nothing made that happen by itself.
+ *
+ * For each metered account, in the account's own month:
+ *
+ *   1. the cap is decided by the same `usageSummary()` the usage page reads;
+ *   2. the keys are swapped the state implies, through the account's own key
+ *      provider, so the swap reaches the storage side (iDrive) and not just
+ *      the rows here;
+ *   3. the state is saved with the guarded write that cannot un-close a closed
+ *      account, so a closed drive is never made active again by its own cap;
+ *   4. the two emails go out ONCE per state change, not once per hour. The
+ *      record of that is the account row itself (`cap_warned_at` and
+ *      `read_only_sent_at`, migrations/drive/0024_cap_notices.sql), the same
+ *      way src/account-close.js records a sent close notice: a stamp is
+ *      written after the send, so a run that is retried mails nothing the
+ *      first run already sent, and a run whose send failed leaves the stamp
+ *      unset and the notice goes out on the next trip. A cap raise clears
+ *      both stamps, because a raise is the one event that can bring the
+ *      counted bill back under a threshold it has already crossed.
+ *
+ * An account with no email on file is reported, not mailed, and still gets
+ * its state saved and its keys swapped: the cap is the product's promise and
+ * the notice is a courtesy.
+ *
+ * The mount restart is the same `mount` report `drive cap` returns; the hourly
+ * run cannot restart a person's mount, so the swap itself is what stops writes
+ * (the revoked key refuses them at the storage provider, measured on iDrive
+ * e2: no key API, so the session expiry is the whole withdrawal there —
+ * workers/api/src/devices.js's header).
+ *
+ * @param {object} input
+ * @param {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} input.store
+ * @param {number} [input.now] the instant the walk reads the month at
+ * @param {{send: Function}} [input.email] the Email Sending binding; without
+ *   one the states are still saved and the keys still swapped, and the notices
+ *   are reported as unsent rather than silently dropped
+ * @param {string} [input.mailFrom] the deployment's MAIL_FROM
+ * @returns {Promise<CapEnforcementReport>}
+ */
+export async function runCapEnforcement(input) {
+  if (input === null || typeof input !== "object") {
+    throw new TypeError(`runCapEnforcement needs an input object, got ${String(input)}`);
+  }
+  const { store } = input;
+  if (typeof store !== "object" || store === null) {
+    throw new TypeError(`runCapEnforcement needs a device store, got ${String(store)}`);
+  }
+  const now = typeof input.now === "number" && Number.isFinite(input.now) ? input.now : Date.now();
+  const atSeconds = Math.floor(now / 1000);
+  const accounts = await store.listMeteredAccounts();
+  /** @type {Array<CapEnforcement>} */
+  const results = [];
+  let readOnly = 0;
+  let warned = 0;
+  let mailed = 0;
+  let skipped = 0;
+  /** @type {Array<{id: string, error: unknown}>} */
+  const failures = [];
+  for (const { id } of accounts) {
+    // One account's failure (a storage revoke that timed out, a send the
+    // provider refused) must not leave every later account unenforced, so
+    // each account is its own step and its error is kept for the report.
+    // The caller raises them after the rest of the hourly run, so a failed
+    // account is still a failed trigger and never a quiet skip.
+    try {
+      const decided = await enforceOneAccount(store, id, input, atSeconds);
+      if (decided === null) {
+        skipped += 1;
+        continue;
+      }
+      if (decided.state === "read_only") readOnly += 1;
+      if (decided.sent) {
+        mailed += 1;
+        if (decided.warning) warned += 1;
+      }
+      results.push(decided.result);
+    } catch (error) {
+      failures.push({ id, error });
+    }
+  }
+  return Object.freeze({
+    accounts: results.length,
+    readOnly,
+    warned,
+    mailed,
+    skipped,
+    failures: Object.freeze(failures),
+    results: Object.freeze(results),
+  });
+}
+
+/**
+ * One account's step of the hourly cap walk, for the meter's queue consumer
+ * (src/meter-jobs.js, drive#519): the same decision runCapEnforcement makes
+ * for each account in its loop, for the one account a message names. Throws
+ * on failure, so the message is retried.
+ * @param {{store: any, now?: number, email?: {send: Function}, mailFrom?: string}} input
+ * @param {string} id
+ */
+export async function enforceAccountCap(input, id) {
+  if (typeof input?.store !== "object" || input.store === null) {
+    throw new TypeError(`enforceAccountCap needs a device store, got ${String(input?.store)}`);
+  }
+  const now = typeof input.now === "number" && Number.isFinite(input.now) ? input.now : Date.now();
+  return enforceOneAccount(input.store, id, input, Math.floor(now / 1000));
+}
+
+/**
+ * The walk's decision for one account: the state, the key swap, the saved
+ * state and the notice. Null for a closed account, which the walk leaves alone.
+ * @param {any} store
+ * @param {string} id
+ * @param {{email?: {send: Function}, mailFrom?: string}} input
+ * @param {number} atSeconds
+ */
+async function enforceOneAccount(store, id, input, atSeconds) {
+  // A closed account is not a spend and must not be re-opened or mailed
+  // about. The guarded write below would not move its row, but skipping it
+  // here keeps the walk off its keys entirely.
+  const previous = await store.accountState(id);
+  if (previous === "closed") {
+    return null;
+  }
+  const capUsd = await store.getCapUsd(id);
+  const usage = await store.monthUsage(id, { capUsd });
+  const summary = usageSummary(usage);
+  const state = summary.cap.state;
+  const keys = await store.listCapKeys(id);
+  if (keys.length > 0) {
+    await applyCapSwap(capSwapPlan(keys, summary.cap), store.keyProviderFor(id));
+  }
+  // The guarded write: a closed row stays closed even if the walk decided
+  // otherwise above (drive#537).
+  await store.setAccountState(id, state);
+  const notices = await store.capNotices(id);
+  const overWarning =
+    summary.cap.capUsd > 0 && summary.cap.countedUsd >= summary.cap.capUsd * CAP_WARNING_RATIO;
+  // A notice re-arms when its state ends: a drive back under 80% (a new
+  // month, a cap raise) can cross it again, and a drive that is writable
+  // again can be stopped again, and each is a new state change that is
+  // mailed once more.
+  if (!overWarning && notices.warnedAt !== null) {
+    await store.clearCapNotice(id, "cap-warning");
+  }
+  if (state === "active" && notices.readOnlySentAt !== null) {
+    await store.clearCapNotice(id, "read-only");
+  }
+  // The 80% warning is a threshold crossing, not a state change: the state
+  // is `active` on both sides of it, so it is the stamp that says whether it
+  // has been sent for this crossing. A cap of $0 has no 80% of it.
+  const warning = state === "active" && overWarning && notices.warnedAt === null;
+  // The read-only notice is a state change: the account was not read-only
+  // and is now, or it was and the notice went out and was not reset.
+  const readOnlyMail = state === "read_only" && notices.readOnlySentAt === null;
+  const kind = readOnlyMail ? "read-only" : warning ? "cap-warning" : null;
+  const sent =
+    kind !== null &&
+    (await sendCapNotice({
+      store,
+      id,
+      kind,
+      capUsd: summary.cap.capUsd,
+      email: input.email,
+      from: input.mailFrom,
+      atSeconds,
+    }));
+  return {
+    state,
+    warning,
+    sent,
+    result: Object.freeze({
+      id,
+      state,
+      previous,
+      countedUsd: summary.cap.countedUsd,
+      capUsd: summary.cap.capUsd,
+      warning,
+      readOnly: readOnlyMail,
+    }),
+  };
+}
+
+/**
+ * Sends one cap notice and stamps it, in that order: the stamp is the record
+ * that it went, and a send that throws leaves it unset so the next hourly
+ * trip tries again. A send failure is raised, not swallowed, because a cap
+ * that was enforced and whose notice never reached the person is a state the
+ * operator has to see; the next run re-sends it rather than losing it.
+ *
+ * Delivery is at least once: two overlapping runs can both read the stamp as
+ * null and both send. The stamp is written with `markCapNoticeSent`, whose
+ * guard (the column is still null) keeps the first stamp, so the next hour
+ * sends nothing either way.
+ *
+ * @param {{store: {capNotices: Function, markCapNoticeSent: Function}, id: string, kind: "cap-warning"|"read-only", capUsd: number, email: {send: Function}|undefined, from: string|undefined, atSeconds: number}} input
+ * @returns {Promise<boolean>} whether the notice went out and was stamped
+ */
+async function sendCapNotice(input) {
+  const { store, id, kind, capUsd, atSeconds } = input;
+  const notices = await store.capNotices(id);
+  if (notices.email.trim().length === 0) {
+    // An account with no address on file cannot be mailed. The count on the
+    // cap_cents row is the thing the walk reports; the stamp stays unset, so
+    // the next trip still says so instead of treating the notice as sent.
+    console.error(`cap: account ${id} is due a ${kind} notice but has no email`);
+    return false;
+  }
+  if (input.email === undefined) {
+    // No EMAIL binding on this deployment. A cap with no email provider still
+    // enforces; the notice is not sent and not stamped, so a deployment that
+    // later binds EMAIL sends it on its next trip rather than having marked it
+    // as already gone out.
+    console.error(`cap: no email binding on this deployment, so no ${kind} notice went out`);
+    return false;
+  }
+  await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (input.email), {
+    to: notices.email,
+    from: input.from,
+    kind,
+    data: { capUsd },
+  });
+  await store.markCapNoticeSent(id, kind, atSeconds);
+  return true;
+}
+
+/**
+ * The report the hourly walk returns, so the cron log and its test both read
+ * one shape. `warned` and `mailed` are counts of notices this run sent (the
+ * read-only notice is both a `readOnly` account and a `mailed` one);
+ * `skipped` is metered accounts the walk did not decide — closed ones, and
+ * accounts due a notice with no address or no email binding on this
+ * deployment.
+ * `failures` is each account whose step threw, with its error.
+ * @typedef {Readonly<{accounts: number, readOnly: number, warned: number, mailed: number, skipped: number, failures: ReadonlyArray<{id: string, error: unknown}>, results: ReadonlyArray<CapEnforcement>}>} CapEnforcementReport
+ */
+
 // A cap in dollars as `drive cap <dollars>` takes it: a bare number, with or
 // without a $ in front, so a pasted "$20" works and so do ".50" and "12.5".
 // The accounts row prices in cents (cap_cents); this is the one place the two
@@ -494,6 +748,45 @@ export function dollarsToCapCents(usd) {
 export const CAP_ENDPOINT = "/api/cap";
 
 /**
+ * The cap state of one account, for a caller that holds an id and not a
+ * signed-in session: the public upload-request links and the hourly cap walk
+ * (drive#496). It is the account's own cap, read off the accounts row by the
+ * store, and the metered month the invoice reads (`monthUsageThrough`, through
+ * the store's `monthUsage`), so the state that refuses a public upload is the
+ * state the usage page and the invoice would report. The account row is the
+ * only source of the cap here, so an account that stored nothing is `active`
+ * at its own cap and the answer is a decision about that account alone.
+ *
+ * Before this, `capStateFor` in src/index.js answered `"active"` for every
+ * account because it had no way to read the row; a public upload link
+ * therefore never stopped at its owner's cap, which the docs promise it does.
+ *
+ * @param {{getCapUsd: (accountId: string) => Promise<number>, monthUsage: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>, accountState?: (accountId: string) => Promise<string>}} store
+ * @param {string} accountId
+ * @returns {Promise<"active"|"read_only">}
+ */
+export async function capStateForAccount(store, accountId) {
+  if (typeof store !== "object" || store === null) {
+    throw new TypeError(`capStateForAccount needs a cap store, got ${String(store)}`);
+  }
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`capStateForAccount needs an account id, got ${String(accountId)}`);
+  }
+  // The saved state first: a drive the hourly walk made read-only, or a
+  // closed one whose files are on their way out, takes no public upload
+  // either, whatever this hour's count says.
+  if (typeof store.accountState === "function") {
+    const saved = await store.accountState(accountId);
+    if (saved === "read_only" || saved === "closed") {
+      return "read_only";
+    }
+  }
+  const capUsd = await store.getCapUsd(accountId);
+  const usage = await store.monthUsage(accountId, { capUsd });
+  return usageSummary(usage).cap.state;
+}
+
+/**
  * Handles POST /api/cap: parse the amount, persist `accounts.cap_cents`, and
  * run enforceCap against the account's device rows. The CLI prints the
  * parseCapUsd() TypeError message when the amount is bad, so that sentence
@@ -521,20 +814,6 @@ export async function handleCapRequest(request, account, capStore) {
     return new Response("Method not allowed. POST this endpoint to set the spending cap.", {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
-  // no Origin header through, so the CLI ('drive cap 20', no browser
-  // evidence) still reaches this handler — the account gate is what
-  // identifies it, not the header.
-  if (!isSameOriginRequest(request)) {
-    // A specific line rather than the generic one: "try again in a moment"
-    // would be advice to retry a request that is always refused, and the one
-    // next step is to do it from the drive page. The words are the one message
-    // table's, the way every other user-facing failure sentence in this repo
-    // is (drive#421).
-    return jsonCapError(failureMessage("cap-from-page"), 403, {
-      "cache-control": "no-store",
     });
   }
   /** @type {unknown} */

@@ -768,6 +768,15 @@ test("the public device routes are rate limited before they reach the database",
   assert.equal(deniedPoll.status, 429);
   assert.equal(db.tokens.size, 0, "the refused poll minted nothing");
 
+  // The approve page's GET is limited in its own bucket too (drive#518
+  // review): it names a pending code's device and time, so an unlimited page
+  // is an existence oracle for codes a phishing page is cycling.
+  const deniedPage = await dispatch(
+    new Request("https://api.test/v1/device/approve?user_code=ABCD1234"),
+    ctxWith({ ...allowed, DEVICE_RATE_LIMITER: limiter(false) }),
+  );
+  assert.equal(deniedPage.status, 429);
+
   // With the bindings present the same calls run: the limit is on volume, not
   // on the flow.
   const started = await startCode();

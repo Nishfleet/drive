@@ -20,7 +20,13 @@ import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
 import worker from "../src/index.js";
-import { createTestAuth, createTestD1, signIn, TEST_BASE_URL } from "./harness.mjs";
+import {
+  createTestAuth,
+  createTestD1,
+  DRIVE_MIGRATIONS,
+  signIn,
+  TEST_BASE_URL,
+} from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -261,7 +267,11 @@ test("no session is a session: unknown cookies, foreign databases and no auth al
 
 test("the Worker's gate reads Better Auth's session, not a cookie the browser chose", async () => {
   // The route of record: the same request through the Worker's own dispatch.
-  const made = createTestAuth();
+  // Stated explicitly, so a future reader who shortens the harness's default
+  // list still runs this test against every migration in the folder: the gate
+  // test reads /api/usage, and that route reads the account's metered month
+  // (drive#496), a month living in 0005_meter's usage_minutes.
+  const made = createTestAuth({ migrations: DRIVE_MIGRATIONS });
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
     DRIVE_DB: made.db,

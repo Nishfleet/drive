@@ -19,19 +19,27 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
-import { applyDriveMigrations, DRIVE_MIGRATIONS } from "./drive-migrations.mjs";
+import { applyMigrations, MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 /**
  * Every migration in `migrations/drive/`, in the order the deploy applies them
  * — the whole schema, read from the folder rather than written out here, so a
- * test cannot pass against a schema production does not have (drive#579). It
- * is exported from test/drive-migrations.mjs and re-exported here because this
- * is where a test that wants "the customer database" has always imported it
- * from; test/d1-sqlite.mjs's adapter applies the same list, and the file that
- * proves the two agree is test/d1-sqlite.test.mjs.
+ * test cannot pass against a schema production does not have (drive#579).
+ *
+ * test/d1-sqlite.mjs owns the read and the order: `wrangler d1 migrations
+ * apply` applies by full filename, which is the only rule that does not leave a
+ * shared prefix's tie to whichever order the filesystem happened to hand back
+ * (drive#619). This is the same list that module applies, so both stand-ins
+ * build one schema and test/d1-sqlite.test.mjs proves it.
+ *
+ * The hand-written array that used to sit here was the bug, not the concept of
+ * a short list: seven files were in no list at all — the meter's tables, the
+ * device sign-in tables, the billing pushes, the cap rebuilds and the abuse
+ * guards — so a default-harness test could prove a thing true only of itself.
+ * A migration added today lands here with no edit, and the next run either
+ * reads the real column or fails.
  */
-export { DRIVE_MIGRATIONS };
-
+export const DRIVE_MIGRATIONS = Object.freeze(MIGRATION_FILES.map((name) => `drive/${name}`));
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
 /** The address every test's links are built on. */
@@ -176,8 +184,9 @@ function runOne(sqlite, sql, params) {
 export function createTestD1(options = {}) {
   const sqlite = new DatabaseSync(":memory:");
   if (options.migrations === undefined) {
-    // The whole folder, in the deploy's order (test/drive-migrations.mjs).
-    applyDriveMigrations(sqlite);
+    // Every file in the folder, in the deploy's order: the one list
+    // test/d1-sqlite.mjs applies.
+    applyMigrations(sqlite);
   } else {
     for (const name of options.migrations) {
       sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));

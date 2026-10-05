@@ -137,7 +137,7 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
   // The headline, the rule, no minimum and the cap, each
   // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine]) {
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.noPlansLine]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
@@ -244,13 +244,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+same\s+package\s+locally\s+with/i,
     "the limits page must give the install that works today",
   );
   assert.match(
     page,
-    /drive --help/,
-    "the limits page must point at the command's own words for the exact route",
+    /goreleaser release --snapshot --clean/,
+    "the limits page must name the snapshot command that produces the packages",
   );
   assert.match(
     page,
@@ -547,9 +547,9 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "brew install drive",
-    "sudo apt install drive",
-    "sudo dnf install drive",
+    "brew install nish3451/tap/drive",
+    "sudo apt install ./drive_*.deb",
+    "sudo dnf install ./drive_*.rpm",
     "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",

@@ -21,8 +21,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
-import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { DRIVE_MIGRATION_NAMES } from "./drive-migrations.mjs";
+import { MIGRATION_FILES, makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestD1, DRIVE_MIGRATIONS } from "./harness.mjs";
 
 /**
@@ -32,8 +31,8 @@ import { createTestD1, DRIVE_MIGRATIONS } from "./harness.mjs";
 test("the harness's migration list IS the folder, read from disk", () => {
   const folder = readdirSync(new URL("../migrations/drive/", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
-    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10) || a.localeCompare(b));
-  assert.deepEqual([...DRIVE_MIGRATION_NAMES], folder, "the applied list is not the folder");
+    .sort();
+  assert.deepEqual([...MIGRATION_FILES], folder, "the applied list is not the folder");
   assert.deepEqual(
     [...DRIVE_MIGRATIONS],
     folder.map((name) => `drive/${name}`),

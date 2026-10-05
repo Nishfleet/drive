@@ -8,7 +8,12 @@
         "http://localhost/files.html",
         "http://localhost/usage.html",
         "http://localhost/upload.html",
-        "http://localhost/get-started.html"
+        "http://localhost/get-started.html",
+        "http://localhost/terms.html",
+        "http://localhost/privacy.html",
+        "http://localhost/refunds.html",
+        "http://localhost/acceptable-use.html",
+        "http://localhost/support.html"
       ],
       "numberOfRuns": 1,
       "settings": {
