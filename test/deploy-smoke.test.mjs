@@ -81,7 +81,9 @@ test("a healthy Worker: the Access headers reach the route and the smoke exits 0
 });
 
 test("a failing Worker: a stubbed 500 exits non-zero even after the retries", async (t) => {
+  let hits = 0;
   const server = createServer((request, response) => {
+    hits += 1;
     request.resume();
     request.on("end", () => {
       response.writeHead(500, { "Content-Type": "text/html" });
@@ -98,6 +100,7 @@ test("a failing Worker: a stubbed 500 exits non-zero even after the retries", as
     DRIVE_SMOKE_RETRY_DELAY_MS: "10",
   });
   assert.equal(result.code, 1, `the smoke passed a 500: ${result.stdout}`);
+  assert.equal(hits, 2, "the smoke retried as many times as DRIVE_SMOKE_ATTEMPTS says");
   assert.match(result.stderr, /health route answered 500/);
   assert.match(
     result.stderr,

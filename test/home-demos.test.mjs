@@ -699,8 +699,11 @@ async function writeDemosDoc(record) {
     );
   }
   if (!reRecording) {
-    assertSameDemoRows(DEMOS_DOC, rows);
-    await rm(dir, { recursive: true, force: true });
+    try {
+      assertSameDemoRows(DEMOS_DOC, rows);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
   return target;
 }
