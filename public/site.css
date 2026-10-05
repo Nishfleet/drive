@@ -11,7 +11,14 @@
    z-index 30), the reading pages' type rules (h1, h2, section, .lede) and the
    pricing page's own sections.
 
-   System font stacks only: no web font files, so nothing blocks first paint. */
+   Two type and colour sets live here. The first (--paper, --ink, --accent,
+   --serif, --sans, --mono) is the one every page shipped with, on system font
+   stacks. The second (--drive-*, --font-*) is the loud price-first look the
+   home page moved to in drive#152: signal orange on warm paper and ink, with
+   three self-hosted faces (public/fonts/, each with its OFL licence). A page
+   adopts it by reading the --drive-* and --font-* tokens; until it does, the
+   @font-face rules below download nothing, because a browser fetches a face
+   only when a rendered element uses it. */
 
 :root {
   --paper: #faf6ee;
@@ -29,6 +36,137 @@
   --sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* drive#152 palette. One accent: signal orange. --drive-orange is a fill
+     (the hero field, bars, buttons); text on it is --drive-ink (5.4:1). Orange
+     text on paper needs a darker shade to pass AA: --drive-orange-ink for any
+     size (5.3:1 on --drive-paper), --drive-orange-deep only for display type
+     of 24px and up (3.7:1, the large-text bar). No pure black or white. */
+  --drive-orange: #ff4f12;
+  --drive-orange-deep: #e23f05;
+  --drive-orange-ink: #b83200;
+  --drive-orange-wash: #ffe3d6;
+  --drive-ink: #1b1712;
+  --drive-ink-soft: #4a433a;
+  --drive-paper: #f5efe4;
+  --drive-paper-deep: #ebe3d4;
+  --drive-card: #fbf7f0;
+  --drive-line: #d8cdb9;
+  --drive-term: #2a241d;
+  --drive-term-text: #efe7da;
+  --drive-term-dim: #a49a8b;
+  --drive-term-ok: #cfe8b0;
+  --font-display:
+    "Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif;
+  --font-body: "Instrument Sans", "Instrument Sans Fallback", "Helvetica Neue", Arial, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* The three faces, latin subset, only the weights the home page sets. swap
+   shows the fallback at once and swaps when the file lands, so text is never
+   invisible; the home page preloads the 900 display face its price uses. */
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-800-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/big-shoulders-display-latin-900-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/instrument-sans-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* Metric-matched fallbacks (drive#152). swap paints the fallback first, and
+   a fallback of a different width rewraps the text when the real face lands:
+   Lighthouse measured a 0.30 layout shift on the home page, against a 0.01
+   budget. These faces are the local Arial (Liberation Sans on Linux, the same
+   metrics), resized so a line takes the same width and height as it will in
+   the real face. They download nothing. size-adjust is the measured width
+   ratio of each real face to the fallback at the weight the page uses; the
+   ascent and descent are the real face's own (Big Shoulders 1971/429 of
+   2000 units, Instrument Sans 970/250 of 1000) divided by that ratio. JetBrains
+   Mono needs none: a monospace fallback is within 0.4% of its width. */
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 800;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 66.3%;
+  ascent-override: 148.6%;
+  descent-override: 32.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Big Shoulders Display Fallback";
+  font-weight: 900;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 70.8%;
+  ascent-override: 139.2%;
+  descent-override: 30.3%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 400;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans");
+  size-adjust: 100.6%;
+  ascent-override: 96.5%;
+  descent-override: 24.9%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  font-weight: 600;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold");
+  size-adjust: 95.7%;
+  ascent-override: 101.4%;
+  descent-override: 26.1%;
+  line-gap-override: 0%;
 }
 
 *,

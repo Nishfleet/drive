@@ -55,6 +55,27 @@ const TOKENS = {
     'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   "--mono":
     'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+  // The home page redesign (drive #152, design/dir-b): the loud orange palette
+  // and the three self-hosted faces, shared here so later pages can adopt it.
+  "--drive-orange": "#ff4f12",
+  "--drive-orange-deep": "#e23f05",
+  "--drive-orange-ink": "#b83200",
+  "--drive-orange-wash": "#ffe3d6",
+  "--drive-ink": "#1b1712",
+  "--drive-ink-soft": "#4a433a",
+  "--drive-paper": "#f5efe4",
+  "--drive-paper-deep": "#ebe3d4",
+  "--drive-card": "#fbf7f0",
+  "--drive-line": "#d8cdb9",
+  "--drive-term": "#2a241d",
+  "--drive-term-text": "#efe7da",
+  "--drive-term-dim": "#a49a8b",
+  "--drive-term-ok": "#cfe8b0",
+  "--font-display":
+    '"Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif',
+  "--font-body":
+    '"Instrument Sans", "Instrument Sans Fallback", "Helvetica Neue", Arial, sans-serif',
+  "--font-code": '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
 };
 
 // The one custom property a page owns: the Web Files page's 44px tap target.
@@ -79,6 +100,18 @@ const CHROME_OVERRIDES = new Map([
   ],
   ["public/starter.html", new Map([[".wordmark", new Set(["font-size"])]])],
   ["public/signin.html", new Map([[".masthead", new Set(["padding"])]])],
+  // The home page (drive#152) lays its header over the orange hero in the
+  // display face, so it restates these on purpose. Every other header
+  // property still comes from the shared file.
+  [
+    "public/index.html",
+    new Map([
+      [".masthead", new Set(["display", "margin", "padding"])],
+      [".masthead a", new Set(["color"])],
+      [".tagline", new Set(["font-size"])],
+      [".wordmark", new Set(["font-family", "font-weight", "letter-spacing"])],
+    ]),
+  ],
 ]);
 
 // The shared file's own header rules. Pages may restate only the

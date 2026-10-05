@@ -483,15 +483,21 @@ test("a signed-out person cannot describe or create the starter", async () => {
 
 test("the pricing page links to the first-run page", () => {
   // The first-run page is what a person sees after sign-up; without a link it
-  // is a page nothing reaches. The nav sits outside the waitlist form so it
-  // never gets submitted with it.
+  // is a page nothing reaches. Every such link sits outside the waitlist form
+  // so it never gets submitted with it. (drive#152 moved the link from the old
+  // footer nav into the masthead, so this checks the form's bounds, not a
+  // class name.)
   const link = pricingPage.indexOf('href="/get-started"');
   assert.ok(link > 0, "the pricing page must link to /get-started");
-  const formEnd = pricingPage.indexOf("</form>");
-  assert.ok(
-    pricingPage.indexOf('<nav class="footer-nav"') > formEnd,
-    "the get-started link must sit outside the waitlist form",
-  );
+  const formStart = pricingPage.indexOf('id="waitlist"');
+  const formEnd = pricingPage.indexOf("</form>", formStart);
+  assert.ok(formStart > 0 && formEnd > formStart, "the page has a waitlist form");
+  for (const match of pricingPage.matchAll(/href="\/get-started"/g)) {
+    assert.ok(
+      match.index < formStart || match.index > formEnd,
+      "the get-started link must sit outside the waitlist form",
+    );
+  }
 });
 
 test("the page's state cell shows the module's own sync state and words", () => {
