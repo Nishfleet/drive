@@ -79,56 +79,49 @@ jobs:
             # every heavy step rather than none of them.
             echo "unknown-merge-base" > changed.txt
           fi
-          # What each heavy step tests. A file the table does not classify is
-          # a file every heavy step tests: a new input cannot stop being
-          # tested by being forgotten here, which is the failure mode of a
-          # blocklist. `.github/` is left unclassified on purpose - a change
-          # to how CI runs changes how the suite runs, so it runs the suite.
-          node=true
-          site=true
-          golang=true
+          # What each heavy step tests. Each output starts false and any one
+          # file that is its input turns it true, so a pull request that
+          # touches both a page and the Go code runs both. A file the table
+          # does not classify is a file every heavy step tests: a new input
+          # cannot stop being tested by being forgotten here, which is the
+          # failure mode of a blocklist. `.github/` is left unclassified on
+          # purpose - a change to how CI runs changes how the suite runs, so
+          # it runs the suite.
+          #
+          # A few Node tests read Go files (test/own-words.test.mjs walks
+          # cmd/, test/packaging.test.mjs reads .goreleaser.yaml). A Go-only
+          # pull request skips them here, and the merge group, which runs
+          # everything, is where they still gate the merge.
+          node=false
+          site=false
           while IFS= read -r file; do
             case "$file" in
-              # The Go CLI, its module pins and its release config: nothing on
-              # the Node side reads them and no page is built from them.
-              cmd/* | go.mod | go.sum | .goreleaser.yaml)
-                node=false
-                site=false
-                ;;
+              # The Go CLI, its module pins and its release config: the `go`
+              # job tests them, and no page is built from them.
+              cmd/* | go.mod | go.sum | .goreleaser.yaml) ;;
               # src/render-docs.js opens exactly two files under docs/ at
               # build time, so those two stay Node inputs. Neither is a page
               # the Lighthouse run measures.
-              docs/scoreboard.md | docs/benchmarks.md)
-                site=false
-                ;;
-              # The rest of the authored docs: read by a person, opened by
-              # nothing in the build or the tests.
-              docs/*)
-                node=false
-                site=false
-                ;;
+              docs/scoreboard.md | docs/benchmarks.md) node=true ;;
               # The docs project: a VitePress source the build reads and
               # test/docs.test.mjs asserts, but Lighthouse measures the six
               # pages in public/ and the built get-started.html, never a docs
-              # page, so a docs edit changes nothing it asserts.
-              docs-site/*)
-                site=false
+              # page. The repo's own Markdown is read by
+              # test/pr-gate.test.mjs and test/docs.test.mjs and is not a
+              # built page.
+              docs-site/* | AGENTS.md | README.md) node=true ;;
+              # The rest of the authored docs: read by a person, opened by
+              # nothing in the build or the tests.
+              docs/*) ;;
+              *)
+                node=true
+                site=true
                 ;;
-              # The repo's own Markdown, which test/pr-gate.test.mjs and
-              # test/docs.test.mjs read, and which is not a built page.
-              AGENTS.md | README.md)
-                site=false
-                ;;
-            esac
-            case "$file" in
-              cmd/* | go.mod | go.sum | .goreleaser.yaml) ;;
-              *) golang=false ;;
             esac
           done < changed.txt
           {
             echo "node=$node"
             echo "site=$site"
-            echo "go=$golang"
           } >> "$GITHUB_OUTPUT"
           cat changed.txt
       # rclone serves the S3 stand-in the two search and mount proofs need, so
@@ -213,19 +206,16 @@ jobs:
           else
             echo "unknown-merge-base" > changed.txt
           fi
-          golang=true
+          # Starts false, and any one Go input, CI change or unknown base turns it true,
+          # so a pull request that touches only a page, a Worker or a doc
+          # stops this job after gofmt.
+          golang=false
           while IFS= read -r file; do
             case "$file" in
-              # The Go CLI, its module pins and its release config: what this
-              # job tests. Anything else - a page, a Worker, a doc, a
-              # workflow - leaves it false, and this job stops after gofmt.
-              cmd/* | go.mod | go.sum | .goreleaser.yaml) ;;
-              *) golang=false ;;
+              cmd/* | go.mod | go.sum | .goreleaser.yaml | .github/* | unknown-merge-base) golang=true ;;
             esac
           done < changed.txt
-          {
-            echo "go=$golang"
-          } >> "$GITHUB_OUTPUT"
+          echo "go=$golang" >> "$GITHUB_OUTPUT"
           cat changed.txt
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry

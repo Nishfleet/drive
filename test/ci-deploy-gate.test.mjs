@@ -8,7 +8,10 @@
 // CI, or removes the rollback fails here rather than shipping.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { HEALTH_PATH } from "../src/health.js";
 
@@ -154,27 +157,10 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
     assert.match(step, /git diff --name-only "\$BASE_SHA" HEAD > changed\.txt/);
   }
 
-  // A file the table does not classify is a file every heavy step tests, so a
-  // new input cannot stop being tested by being forgotten here. `.github/` is
-  // left out of the table on purpose: it is the one directory where a change
-  // is a change to how the suite runs.
-  const verify = stepWith(CI, 'echo "node=$node"');
-  assert.match(verify, /\n {10}node=true\n {10}site=true\n {10}golang=true\n/);
-  assert.match(verify, /cmd\/\* \| go\.mod \| go\.sum \| \.goreleaser\.yaml\)/);
-  // src/render-docs.js opens exactly two files under docs/ at build time, so
-  // those two stay Node inputs while the rest of the docs do not.
-  assert.match(verify, /docs\/scoreboard\.md \| docs\/benchmarks\.md\)/);
-  // The docs project is a VitePress source the build reads and the docs test
-  // asserts, but Lighthouse measures the six pages in public/ and the built
-  // get-started.html, never a docs page.
-  assert.match(verify, /docs-site\/\*\)/);
-  assert.match(verify, /AGENTS\.md \| README\.md\)/);
-
-  // The Go job answers one question and nothing else.
+  // The Go job's diff step answers one question and nothing else.
   const goJob = CI.slice(CI.indexOf("\n  go:\n"));
   const goChanged = stepWith(goJob, 'echo "go=$golang"');
-  assert.match(goChanged, /golang=true/);
-  assert.doesNotMatch(goChanged, /node|site/, "the go job classifies only Go");
+  assert.doesNotMatch(goChanged, /node=|site=/, "the go job classifies only Go");
 
   // Every heavy step carries the gate, and reads an unset output as "run".
   const heavy = [
@@ -204,4 +190,84 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
   assert.doesNotMatch(stepWith(CI, "No helper scripts"), /if: steps\.changed/);
   assert.doesNotMatch(stepWith(CI, "Secret scan"), /if: steps\.changed/);
   assert.doesNotMatch(stepWith(CI, "Go code is gofmt-formatted"), /if: steps\.changed/);
+});
+
+/**
+ * Run a changed-files step's classifier on a list of changed paths and return
+ * its outputs. The step's own text runs, from after its diff to its end, so
+ * this proves the shell, not a copy of it.
+ *
+ * @param {string} step
+ * @param {string[]} files
+ *
+ * @returns {Record<string, string>}
+ */
+const classify = (step, files) => {
+  const body = step.slice(step.indexOf("run: |\n") + "run: |\n".length).split("\n");
+  // The block ends at the first line indented less than its body: the
+  // comments that open the next step.
+  const end = body.findIndex((line) => line.trim() !== "" && !line.startsWith(" ".repeat(10)));
+  const text = (end === -1 ? body : body.slice(0, end)).map((line) => line.slice(10)).join("\n");
+  const script = `set -euo pipefail\n${text.slice(text.indexOf("\nfi\n") + 4)}`;
+  const dir = mkdtempSync(join(tmpdir(), "ci-changed-"));
+  try {
+    writeFileSync(join(dir, "changed.txt"), files.map((f) => `${f}\n`).join(""));
+    writeFileSync(join(dir, "out"), "");
+    execFileSync("bash", ["-c", script], {
+      cwd: dir,
+      env: { ...process.env, GITHUB_OUTPUT: join(dir, "out") },
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    return Object.fromEntries(
+      readFileSync(join(dir, "out"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("each heavy step runs when any file it tests changed, mixed changes included (drive#660)", () => {
+  const verify = stepWith(CI, 'echo "node=$node"');
+  const goJob = CI.slice(CI.indexOf("\n  go:\n"));
+  const go = stepWith(goJob, 'echo "go=$golang"');
+  /** @param {string[]} files */
+  const run = (files) => ({ ...classify(verify, files), ...classify(go, files) });
+
+  // The two proofs the issue asks for: a docs-only change runs no heavy step,
+  // and a Go-only change skips Lighthouse and npm test.
+  assert.deepEqual(run(["docs/spec.md"]), { node: "false", site: "false", go: "false" });
+  assert.deepEqual(run(["cmd/drive/main.go", "go.sum"]), {
+    node: "false",
+    site: "false",
+    go: "true",
+  });
+  // A change that touches both sides runs both: one file that is an input is
+  // enough, whatever else is in the list.
+  assert.deepEqual(run(["cmd/drive/main.go", "src/index.js"]), {
+    node: "true",
+    site: "true",
+    go: "true",
+  });
+  assert.deepEqual(run(["src/index.js", "docs/spec.md"]), {
+    node: "true",
+    site: "true",
+    go: "false",
+  });
+  // src/render-docs.js opens these two docs at build time, so they are Node
+  // inputs, but no page Lighthouse measures.
+  assert.deepEqual(run(["docs/scoreboard.md"]), { node: "true", site: "false", go: "false" });
+  assert.deepEqual(run(["docs-site/index.md", "AGENTS.md"]), {
+    node: "true",
+    site: "false",
+    go: "false",
+  });
+  // A file the table does not classify runs every Node step, so a new input
+  // cannot stop being tested by being forgotten here.
+  assert.deepEqual(run(["workers/api/src/index.js"]), { node: "true", site: "true", go: "false" });
+  // A CI change, and a base the checkout does not hold, run everything.
+  assert.deepEqual(run([".github/workflows/ci.yml"]), { node: "true", site: "true", go: "true" });
+  assert.deepEqual(run(["unknown-merge-base"]), { node: "true", site: "true", go: "true" });
 });
