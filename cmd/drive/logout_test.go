@@ -157,6 +157,14 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	}
 }
 
+// With no api Worker address anywhere -- no --api, no DRIVE_API_URL and no
+// sign-in that saved one -- logout cannot reach the server to turn the key off.
+// The next step it names is `drive login`, not `--api`: signing in is what
+// writes the address into the credentials file (drive#557), and every later
+// logout reads it from there, so it is the one instruction that leaves the
+// device able to sign itself out again. Before this, the sentence asked for
+// `--api` or DRIVE_API_URL, which is advice a person who signs in normally
+// does not have a way to act on.
 func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	home := configOnlyHome(t)
 
@@ -167,8 +175,11 @@ func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	if !strings.Contains(err.Error(), "signed out here; the key is still live, run drive logout again when online") {
 		t.Errorf("error %q must carry the plain sentence", err)
 	}
-	if !strings.Contains(err.Error(), "DRIVE_API_URL") {
-		t.Errorf("error %q must name what to configure", err)
+	if !strings.Contains(err.Error(), "drive login") {
+		t.Errorf("error %q must name the sign-in command that supplies the api address", err)
+	}
+	if strings.Contains(err.Error(), "drive init") {
+		t.Errorf("error %q must not send the person to a command that cannot sign in", err)
 	}
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Error("the local key must be deleted so nothing secret stays on disk")

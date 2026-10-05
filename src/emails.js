@@ -10,6 +10,8 @@
 // src/pricing.js and src/status.js.
 
 import { DEFAULT_CAP_USD } from "./cap-default.js";
+import { SIGN_IN_COMMAND } from "./messages.js";
+import { INSTALL_COMMAND } from "./status.js";
 
 export { DEFAULT_CAP_USD };
 
@@ -116,25 +118,32 @@ function requireMoney(value, name) {
  */
 export function welcomeTemplate(_data) {
   const subject = "Your drive is ready";
+  // Each command is named exactly once, in the list, and the prose below says
+  // what the pair does rather than repeating them (drive#557): the sign-in is
+  // the constant SIGN_IN_COMMAND and the setup is INSTALL_COMMAND, so this
+  // email cannot drift from the first-run page, the home page or the failure
+  // table into telling someone that one command signs them in when it does not.
+  const steps = `  ${SIGN_IN_COMMAND}\n  ${INSTALL_COMMAND}`;
+  const explanation = `Signing in opens the browser and mints this machine's key; the setup that follows makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Both are safe to run again.`;
   const lines = [
     "Welcome to Drive.",
     "",
     "Your drive is a plain folder that streams from object storage, so big files open without downloading first.",
     "",
-    "One command sets it up:",
+    "Sign in, then set it up:",
     "",
-    "  drive init",
+    steps,
     "",
-    "It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.",
+    explanation,
     "",
     "Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.",
   ];
   const html_lines = [
     "<p>Welcome to Drive.</p>",
     "<p>Your drive is a plain folder that streams from object storage, so big files open without downloading first.</p>",
-    "<p>One command sets it up:</p>",
-    "<ul><li>drive init</li></ul>",
-    "<p>It signs you in, makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Safe to run again.</p>",
+    "<p>Sign in, then set it up:</p>",
+    `<ul><li>${SIGN_IN_COMMAND}</li><li>${INSTALL_COMMAND}</li></ul>`,
+    `<p>${explanation}</p>`,
     "<p>Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.</p>",
   ];
   return finish({ subject, lines, html_lines });

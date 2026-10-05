@@ -11,7 +11,7 @@
 // which node --test provides.
 
 import { sessionAccount } from "./auth.js";
-import { failureMessage } from "./messages.js";
+import { failureMessage, SIGN_IN_COMMAND } from "./messages.js";
 
 // The one command a new person runs after sign-up. build-spec.md "One-command
 // setup": `drive init` signs you in, mounts the drive and connects every agent
@@ -21,8 +21,11 @@ export const INSTALL_COMMAND = "drive init";
 
 // The command that connects this machine to the account before `drive init`
 // runs: it opens the browser, mints the machine's key and writes the storage
-// settings, so init needs no pasted keys (drive issue #415).
-export const LOGIN_COMMAND = "drive login";
+// settings, so init needs no pasted keys (drive issue #415). The string is the
+// message table's SIGN_IN_COMMAND (drive#557), so the first-run page, the
+// emails, the home page and every failure sentence name the same one command
+// and none of them can point at `drive init`, which does not sign in.
+export const LOGIN_COMMAND = SIGN_IN_COMMAND;
 
 // The two lines the Get started box shows, in the order they run: log in,
 // then set up. The install line for each system sits above the box

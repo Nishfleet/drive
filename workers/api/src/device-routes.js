@@ -32,7 +32,7 @@
 
 import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../src/auth.js";
 import { isSameOriginRequest } from "../../../src/email-send.js";
-import { failureMessage } from "../../../src/messages.js";
+import { failureMessage, SIGN_IN_COMMAND } from "../../../src/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../../../src/rate-limit.js";
 import { signedInAccount } from "../../../src/status.js";
 import { bearerToken, errorResponse, json } from "./http.js";
@@ -324,6 +324,11 @@ export async function pollDeviceTokenRoute(request, ctx) {
     return json({
       status: "approved",
       deviceToken: result.deviceToken,
+      // When the window ends, as an epoch second. The CLI keeps it (drive#557)
+      // so a device knows its own token has a shelf life and can sign in again
+      // before a command ever sees a 401, and so the sliding rule the store
+      // applies on each use has a date the person could be told.
+      expiresAt: result.expiresAt,
       account: {
         id: result.account.id,
         name: result.account.name,
@@ -331,7 +336,10 @@ export async function pollDeviceTokenRoute(request, ctx) {
       },
     });
   }
-  return errorResponse(400, "That device code has expired. Run `drive init` again for a new one.");
+  return errorResponse(
+    400,
+    `That device code has expired. Run ${SIGN_IN_COMMAND} again for a new one.`,
+  );
 }
 
 /**
@@ -408,7 +416,7 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if ("error" in result) {
     const notice =
       result.error === "expired-code"
-        ? "That code has expired. Run `drive init` again for a new one."
+        ? `That code has expired. Run ${SIGN_IN_COMMAND} again for a new one.`
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";

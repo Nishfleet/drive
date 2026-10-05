@@ -13,6 +13,18 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+//
+// SIGN_IN_COMMAND is the one place a sign-in command is written down. `drive
+// login` opens the browser, mints this machine's key and writes the storage
+// settings; `drive init` does not sign anyone in — it mounts the drive and
+// connects the agent tools, and on a machine with no credentials it fails its
+// own config check before it reaches a sign-in (drive#557). The api Worker's
+// pages, the emails, the home page and the CLI's table all read this one
+// string, so no surface can tell a person to run a command that cannot sign
+// them in. It lives in this module because it is the one with no imports of
+// its own, so everything here can read it without a cycle.
+export const SIGN_IN_COMMAND = "drive login";
+
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
   offline: Object.freeze({
@@ -26,9 +38,13 @@ export const FAILURE_MESSAGES = Object.freeze({
     next: "Raise the cap on the usage page to start writing again.",
   }),
   // The key this device (or agent, or branch) was using no longer works.
+  // `drive init` never signed anyone in — it mounts a drive and connects agent
+  // tools, and on a machine with no credentials it fails in its own config
+  // check before it reaches a sign-in (drive#557) — so the one command that
+  // signs this device back in is the constant above.
   "key-revoked": Object.freeze({
     what: "This device's key was revoked, so it can't reach the drive.",
-    next: "Sign in again to get a new key; your files are untouched.",
+    next: `Run ${SIGN_IN_COMMAND} to get a new key; your files are untouched.`,
   }),
   // One agent key reached its own cap (drive issue #171), so the drive took its
   // write powers away and the tool keeps reading. Nothing was deleted, and the

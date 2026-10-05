@@ -63,15 +63,7 @@ func runCap(args []string) error {
 		return fmt.Errorf("a spending cap is a dollar amount like 20 or 12.50. Run: drive cap 20")
 	}
 	home := common.home
-	creds, err := LoadCredentials(home)
-	if err != nil {
-		return err
-	}
-	base, err := resolveAPIBase(home, *api)
-	if err != nil {
-		return err
-	}
-	client, err := NewAPIClient(base, creds.DeviceToken)
+	client, err := signedInClient(home, *api, os.Stdout)
 	if err != nil {
 		return err
 	}

@@ -48,11 +48,11 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	token, account, err := SignIn(client, deviceName(), out)
+	token, err := SignIn(client, deviceName(), out)
 	if err != nil {
 		return err
 	}
-	client.Token = token
+	client.Token = token.Token
 	key, err := client.MintKey("device", deviceName())
 	if err != nil {
 		return err
@@ -83,17 +83,23 @@ func Login(home, apiBase string, out io.Writer) error {
 		return failf("login-no-storage", strings.Join(missing, ", "))
 	}
 	creds := Credentials{
-		APIBase:      client.Base,
-		DeviceToken:  token,
-		AccountID:    account.ID,
-		AccountName:  account.Name,
-		AccountEmail: account.Email,
-		Endpoint:     cfg.Endpoint,
-		Bucket:       cfg.Bucket,
-		Prefix:       cfg.Prefix,
-		Region:       cfg.Region,
-		AccessKeyID:  cfg.AccessKey,
-		KeyID:        key.KeyID,
+		APIBase:     client.Base,
+		DeviceToken: token.Token,
+		// The expiry the sign-in answered is written down here, where the
+		// device token is written down (drive#557), so there is one place that
+		// knows how long this sign-in lasts and no path that stores a token
+		// without its date. A Worker that answered no expiry leaves it 0 and
+		// the token is still the one that works.
+		TokenExpiresAt: token.ExpiresAt,
+		AccountID:      token.Account.ID,
+		AccountName:    token.Account.Name,
+		AccountEmail:   token.Account.Email,
+		Endpoint:       cfg.Endpoint,
+		Bucket:         cfg.Bucket,
+		Prefix:         cfg.Prefix,
+		Region:         cfg.Region,
+		AccessKeyID:    cfg.AccessKey,
+		KeyID:          key.KeyID,
 	}
 	if err := SaveCredentials(home, creds); err != nil {
 		return err
@@ -101,7 +107,7 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(cfg)), 0o600); err != nil {
 		return err
 	}
-	who := accountLabel(account)
+	who := accountLabel(token.Account)
 	if who == "" {
 		fmt.Fprintln(out, "Signed in. Storage settings written. Run `drive init` to mount.")
 		return nil

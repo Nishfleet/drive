@@ -182,15 +182,15 @@ func TestSignInShowsTheCodeThenPollsUntilApproved(t *testing.T) {
 		api.approved["dev_secret"] = true
 	}()
 	var out strings.Builder
-	token, account, err := SignIn(client, "Nish's MacBook", &out)
+	signed, err := SignIn(client, "Nish's MacBook", &out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "dtok_for_this_device" {
-		t.Fatalf("got token %q, want the one the Worker minted", token)
+	if signed.Token != "dtok_for_this_device" {
+		t.Fatalf("got token %q, want the one the Worker minted", signed.Token)
 	}
-	if account.ID != "acct_1" || account.Name != "Nish's MacBook" {
-		t.Fatalf("got account %+v, want the one the Worker sent", account)
+	if signed.Account.ID != "acct_1" || signed.Account.Name != "Nish's MacBook" {
+		t.Fatalf("got account %+v, want the one the Worker sent", signed.Account)
 	}
 	printed := out.String()
 	if !strings.Contains(printed, "BCDF-GHJK") {
@@ -219,7 +219,7 @@ func TestSignInFailsWithTheWorkersSentenceWhenACodeExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if _, _, err := SignIn(client, "laptop", &out); err == nil {
+	if _, err := SignIn(client, "laptop", &out); err == nil {
 		t.Fatal("expected the expired code to fail")
 	} else if !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("the Worker's own sentence was lost: %v", err)

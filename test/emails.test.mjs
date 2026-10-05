@@ -30,6 +30,8 @@ import {
   savedLine,
   welcomeTemplate,
 } from "../src/emails.js";
+import { SIGN_IN_COMMAND } from "../src/messages.js";
+import { INSTALL_COMMAND } from "../src/status.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).
@@ -130,13 +132,23 @@ test("every email carries one sign-off, in both parts", () => {
 // 1) welcome
 // ---------------------------------------------------------------------------
 
-test("welcome names the one install command and what it does", () => {
-  const { subject, text } = welcomeTemplate();
+// Two commands, in this order, and each named once: `drive login` signs the
+// machine in and writes the storage settings, and `drive init` then mounts and
+// connects the agent tools (drive#557). The old copy had a single `drive init`
+// doing both jobs, which sent people to a command that cannot sign them in.
+test("welcome names the sign-in and the setup, once each, in that order", () => {
+  const { subject, text, html } = welcomeTemplate();
   assert.equal(subject, "Your drive is ready");
-  assert.match(text, /drive init/);
-  // The one command, not a second install path: the CLI ships with build
-  // step 2 (drive#3) and there is no app to download.
-  assert.equal(text.split("drive init").length - 1, 1);
+  assert.equal(text.split(SIGN_IN_COMMAND).length - 1, 1, "the sign-in is named once");
+  assert.equal(text.split(INSTALL_COMMAND).length - 1, 1, "the setup is named once");
+  assert.ok(
+    text.indexOf(SIGN_IN_COMMAND) < text.indexOf(INSTALL_COMMAND),
+    "the sign-in comes first: init needs the settings login writes",
+  );
+  // One install path, not two: the CLI ships with build step 2 (drive#3) and
+  // there is no app to download.
+  assert.equal(html.split(INSTALL_COMMAND).length - 1, 1, "the html names the setup once");
+  assert.equal(html.split(SIGN_IN_COMMAND).length - 1, 1, "the html names the sign-in once");
   assert.match(text, /read-only/);
   // The cap is the one thing a new person is told they control.
   assert.match(text, /spending cap/i);

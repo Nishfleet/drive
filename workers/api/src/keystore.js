@@ -27,7 +27,9 @@ import {
   createMemoryDeviceSigninStore,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_REFRESH_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  renewDeviceTokenWindow,
 } from "./device-signin.js";
 import {
   AGENT_KEY_TTL_SECONDS,
@@ -51,7 +53,9 @@ export {
   AGENT_KEY_TTL_SECONDS,
   DEVICE_CODE_INTERVAL_SECONDS,
   DEVICE_CODE_TTL_SECONDS,
+  DEVICE_TOKEN_REFRESH_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
+  renewDeviceTokenWindow,
 };
 
 /**
