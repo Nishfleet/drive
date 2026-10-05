@@ -374,6 +374,11 @@ function finish({ subject, lines, html_lines, saved = null }) {
   return { subject, text, html: htmlLines.join("\n"), saved };
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
 function requireText(value, name) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new TypeError(`${name} must be a non-empty string, got ${String(value)}`);

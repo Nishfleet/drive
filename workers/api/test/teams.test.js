@@ -498,12 +498,22 @@ test("a team key is never delete-capable, whatever its kind label says", async (
   // label, and no team role grants delete at all. `canDelete` prefers the
   // row's own capabilities for exactly this case.
   const t = await team();
-  const reader = await t.store.mintTeamKey(t.readerMember.accountId, t.team.id, "read_only", {
-    name: "reader",
-  });
-  const writer = await t.store.mintTeamKey(t.writerMember.accountId, t.team.id, "read_write", {
-    name: "writer",
-  });
+  const reader = await t.store.mintTeamKey(
+    { id: t.readerMember.accountId },
+    t.team.id,
+    "read_only",
+    {
+      name: "reader",
+    },
+  );
+  const writer = await t.store.mintTeamKey(
+    { id: t.writerMember.accountId },
+    t.team.id,
+    "read_write",
+    {
+      name: "writer",
+    },
+  );
   for (const key of [reader, writer]) {
     assert.ok(!key.capabilities.includes("delete"), "no team key carries delete");
   }
@@ -554,7 +564,9 @@ test("the member list shows emails to the owner only", async () => {
   const asOwner = await t.as(t.ownerToken, "GET", `/v1/teams/${t.team.id}/members`);
   assert.equal(asOwner.status, 200);
   const ownerView = (await asOwner.json()).members;
-  assert.ok(ownerView.every((/** @type {{email?: string}} */ row) => typeof row.email === "string"));
+  assert.ok(
+    ownerView.every((/** @type {{email?: string}} */ row) => typeof row.email === "string"),
+  );
   const asMember = await t.as(t.readerToken, "GET", `/v1/teams/${t.team.id}/members`);
   assert.equal(asMember.status, 200);
   const memberView = (await asMember.json()).members;
@@ -636,7 +648,7 @@ test("removing a member or changing their role revokes the key at the storage pr
         expiresIn: 3600,
       };
     },
-    async revoke(accessKeyId) {
+    async revoke(/** @type {string} */ accessKeyId) {
       withdrawn.push(accessKeyId);
     },
     async swapToReadOnly() {

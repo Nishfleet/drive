@@ -100,8 +100,9 @@ test("two real accounts share one team drive, and the removal survives a fresh s
   assert.equal(invitedMember.accountId, "", "the invite does not name an account");
   const accepted = await teams.acceptInvite(team.id, member.account.id);
   assert.notEqual(accepted, null, "accept binds the pending invite");
-  const invitedAccepted =
-    /** @type {import("../../workers/api/src/teams.js").TeamMember} */ (accepted);
+  const invitedAccepted = /** @type {import("../../workers/api/src/teams.js").TeamMember} */ (
+    accepted
+  );
   assert.equal(invitedAccepted.state, "active");
   assert.equal(invitedAccepted.accountId, member.account.id);
   const memberRow = rowIn(sqlite, "SELECT * FROM team_members WHERE id = ?", invitedAccepted.id);
@@ -255,8 +256,9 @@ test("the key store's team keys are revoked by account and team prefix", async (
   );
   const accepted = await teams.acceptInvite(team.id, member.account.id);
   assert.notEqual(accepted, null, "accept binds the pending invite before mint");
-  const memberMember =
-    /** @type {import("../../workers/api/src/teams.js").TeamMember} */ (accepted);
+  const memberMember = /** @type {import("../../workers/api/src/teams.js").TeamMember} */ (
+    accepted
+  );
   assert.equal(memberMember.id, pending.id);
   assert.equal(memberMember.state, "active");
 

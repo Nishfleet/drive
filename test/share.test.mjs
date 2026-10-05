@@ -1452,6 +1452,9 @@ test("an upload-request drop does not overwrite an owner's file of the same name
   assert.deepEqual(names, ["notes.txt"]);
   const readBack = await scopeStore(files, account).read("/notes.txt");
   assert.notEqual(readBack, null);
+  if (readBack === null) {
+    throw new Error("the owner's file is gone");
+  }
   assert.equal(await new Response(readBack.body).text(), "mine");
 });
 

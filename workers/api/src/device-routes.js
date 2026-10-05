@@ -424,8 +424,7 @@ export async function approvePageRoute(request, ctx) {
       },
     });
   }
-  const pending =
-    userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
+  const pending = userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
   return approvePage(pendingPageFields(pending));
 }
 

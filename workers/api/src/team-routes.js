@@ -80,7 +80,8 @@ export async function inviteMemberRoute(request, ctx) {
     );
   }
   const previous = (await ctx.store.teams.listMembers(ctx.account, ctx.params.teamId)).find(
-    (row) => row.email.toLowerCase() === email.toLowerCase(),
+    (/** @type {import("./teams.js").TeamMember} */ row) =>
+      row.email.toLowerCase() === email.toLowerCase(),
   );
   const member = await ctx.store.teams.inviteMember(ctx.account, ctx.params.teamId, email, role);
   if ("error" in member) {
@@ -115,7 +116,11 @@ export async function listMembersRoute(request, ctx) {
   }
   const members = await ctx.store.teams.listMembers(ctx.account, team.id);
   const includeEmail = team.ownerAccountId === ctx.account.id;
-  return json({ members: members.map((member) => publicMember(member, { includeEmail })) });
+  return json({
+    members: members.map((/** @type {import("./teams.js").TeamMember} */ member) =>
+      publicMember(member, { includeEmail }),
+    ),
+  });
 }
 
 /**
