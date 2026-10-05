@@ -505,6 +505,14 @@ test("preview: an uploaded page is never a page on our origin", async () => {
     "application/octet-stream",
   );
   assert.equal(previewContentType("form.mht", "multipart/related"), "application/octet-stream");
+  // The XML family named as text or its own extension stays text/plain, which
+  // is on the allowlist and cannot render as a document.
+  assert.equal(previewContentType("page.xml", "application/xml"), "text/plain; charset=utf-8");
+  assert.equal(previewContentType("page.xml", "text/xml"), "text/plain; charset=utf-8");
+  // An image claim on an image kind stays inline: image/* is the allowlist's
+  // own entry, and the sandboxed preview is what keeps it from acting as a
+  // full page (the residual risk is tracked in a follow-up issue).
+  assert.equal(previewContentType("art.svgz", "image/svg+xml"), "image/svg+xml");
   assert.equal(previewContentType("archive.zip", "application/zip"), "application/octet-stream");
   assert.throws(
     () => previewContentType(/** @type {string} */ (/** @type {unknown} */ (null)), "text/plain"),

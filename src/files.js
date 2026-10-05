@@ -192,7 +192,16 @@ const PREVIEW_CONTENT_TYPES = Object.freeze({
 });
 
 /** The one served type that is not an inline type, so it never opens in a tab. */
-export const PREVIEW_OCTET_STREAM = "application/octet-stream";
+const PREVIEW_OCTET_STREAM = "application/octet-stream";
+
+/**
+ * The disposition an attachment leaves with, with the name's quotes stripped.
+ * @param {string} name
+ * @returns {string}
+ */
+function attachmentDisposition(name) {
+  return `attachment; filename="${String(name || "").replace(/"/g, "")}"`;
+}
 
 /**
  * The content type an inline preview is served as, never a document type.
@@ -239,7 +248,7 @@ export function previewDisposition(name, storedContentType = "") {
   if (previewContentType(name, storedContentType) !== PREVIEW_OCTET_STREAM) {
     return "inline";
   }
-  return `attachment; filename="${String(name || "").replace(/"/g, "")}"`;
+  return attachmentDisposition(name);
 }
 
 // ---------------------------------------------------------------- the words
@@ -1884,7 +1893,7 @@ async function readRequest(request, url, store, download) {
       ? object.contentType || "application/octet-stream"
       : previewContentType(name || "", object.contentType),
     "content-disposition": download
-      ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
+      ? attachmentDisposition(name)
       : previewDisposition(name, object.contentType),
     "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
