@@ -13,6 +13,7 @@ import { createMemoryStore } from "./keystore.js";
 import { createD1QueueStore } from "./queues.js";
 import { routes } from "./routes.js";
 import { createD1TeamStore } from "./teams.js";
+import { cliTooOld } from "./versiongate.js";
 
 // Kept as a named export of this entry: it was one before the provider choice
 // moved to keyprovider-env.js, and an importer of this Worker's entry should
@@ -176,6 +177,19 @@ function callHandler(route, c) {
 export function createApp(table = routes) {
   /** @type {Hono<{Bindings: Ctx, Variables: ApiVariables}>} */
   const app = new Hono({ strict: false });
+
+  // The version gate (drive#560), first so an old CLI is told to update
+  // before it is asked for credentials it can already produce: it reads the
+  // version out of the request's own User-Agent and answers 426 with the
+  // message table's cli-too-old words when the version is below this
+  // deployment's floor. Requests that name no drive version — a health
+  // probe, a browser on a device approval page — pass through untouched.
+  app.use("*", async (c, next) => {
+    if (cliTooOld(c.req.header("user-agent"), c.env.env)) {
+      return errorResponse(426, failureMessage("cli-too-old"));
+    }
+    await next();
+  });
 
   // The account is resolved once per request from the request's own
   // credentials (drive#55, drive#136), never trusted from the context: a CLI

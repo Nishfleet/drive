@@ -116,6 +116,19 @@ var messageTable = map[string][2]string{
 		"The drive's api refused the request.",
 		"Run `drive init` again; if it repeats, run `drive status` and keep its output.",
 	},
+	// The api Worker answered 426: this build is older than the minimum
+	// version the deployment still serves (drive#560). The fix is one exact
+	// command, so it is a CLI-shaped entry.
+	"cli-too-old": {
+		"This drive is too old for the server it talks to.",
+		"Run `drive update` to get the current version, then run the command again.",
+	},
+	// `drive update` landed but the mount did not come back (drive#560), so
+	// the drive is still running the old build and the state is mixed.
+	"update-restart": {
+		"Drive updated, but its mount did not restart, so it is still running the old drive.",
+		"Run `drive status` to see the mount, then `drive mount` to start it.",
+	},
 	"api-down": {
 		"The drive's api is not answering right now.",
 		"Wait a few minutes and run the command again.",
@@ -344,6 +357,12 @@ func apiFailureKind(err error) string {
 	if errors.As(err, &apiErr) {
 		if strings.Contains(apiErr.Status, "401") || strings.Contains(apiErr.Status, "403") {
 			return "key-revoked"
+		}
+		// 426 Upgrade Required is the api Worker's version gate (drive#560):
+		// this build is below the deployment's minimum, and the fix is one
+		// command, so it gets its own words instead of api-refused's.
+		if strings.Contains(apiErr.Status, "426") {
+			return "cli-too-old"
 		}
 		return "api-refused"
 	}

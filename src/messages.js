@@ -281,6 +281,12 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "That did not work.",
     next: "Try again in a moment.",
   }),
+  // The api Worker answered 426: this CLI is older than the minimum version
+  // the deployment still serves (drive#560). The fix is one exact command.
+  "cli-too-old": Object.freeze({
+    what: "This drive is too old for the server it talks to.",
+    next: "Run drive update to get the current version, then run the command again.",
+  }),
   // Close account (drive#235): the person confirms by typing their email.
   "close-confirm-email": Object.freeze({
     what: "Closing your account needs you to type your email.",

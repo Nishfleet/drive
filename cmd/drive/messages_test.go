@@ -77,7 +77,7 @@ func TestSharedKindsMatchThePageTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(page)
-	for _, kind := range []string{"offline", "key-revoked", "storage-down", "cap-reached", "unexpected", "disk-cache-full"} {
+	for _, kind := range []string{"offline", "key-revoked", "storage-down", "cap-reached", "unexpected", "disk-cache-full", "cli-too-old"} {
 		entry, ok := messageTable[kind]
 		if !ok {
 			t.Errorf("CLI table missing shared kind %s", kind)

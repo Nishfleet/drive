@@ -89,11 +89,23 @@ type updateOptions struct {
 	// own output, so a slow upgrade is never a silent one.
 	out io.Writer
 	err io.Writer
+	// home and rclone are where the mount lives and how it is found, read
+	// after a successful install: `drive update` restarts a mount that is
+	// still running the old binary (drive#560).
+	home   string
+	rclone string
+	// restartMount is what lets the install restart a running mount. It is
+	// deliberately not part of the zero-value production path: the unit
+	// tests call updateDrive against a temp home and a local proxy, and
+	// restarting the machine's real mount is not something a test may do.
+	// runUpdate sets it; drive update is the one caller of that path.
+	restartMount bool
 }
 
-// runUpdate is `drive update [--check]`.
+// runUpdate is `drive update [--check] [--home <dir>] [--rclone <path>]`.
 func runUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	common := addCommonFlags(fs)
 	checkOnly := fs.Bool("check", false, "say whether a newer release exists, install nothing")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -102,9 +114,12 @@ func runUpdate(args []string) error {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	return updateDrive(updateOptions{
-		checkOnly: *checkOnly,
-		out:       os.Stdout,
-		err:       os.Stderr,
+		checkOnly:    *checkOnly,
+		out:          os.Stdout,
+		err:          os.Stderr,
+		home:         common.home,
+		rclone:       common.rclone,
+		restartMount: true,
 	})
 }
 
@@ -196,6 +211,61 @@ func updateDrive(o updateOptions) error {
 	}
 	to := installedVersion(o.exe, from)
 	fmt.Fprintf(out, "updated drive %s -> %s via %s\n", from, to, kind)
+	home := o.home
+	if home == "" {
+		home = os.Getenv("HOME")
+	}
+	// The installed binary changed while the mount was running, and a mount
+	// serves the code it started with, so the update does not take effect on
+	// a running mount until it is restarted (drive#560). This runs only after
+	// the package manager's own upgrade, and it restarts nothing when this
+	// machine has no mount up.
+	if o.restartMount {
+		if on, mErr := Mounted(CurrentGOOS(), home); mErr == nil && on {
+			if err := restartMountAfterUpdate(o.rclone, home); err != nil {
+				return failDetail("update-restart", err)
+			}
+			fmt.Fprintln(out, "drive: mount restarted on the new drive")
+		}
+	}
+	// rclone below the floor makes the mount's flags fail (drive#105). The
+	// update is the one moment a person is likely to act, so this says so;
+	// an old rclone never fails an update that already succeeded.
+	if rcloneBin, rErr := ResolveRclone(o.rclone); rErr == nil {
+		if err := CheckRclone(CurrentGOOS(), rcloneBin); err != nil {
+			fmt.Fprintln(out, err)
+		}
+	} else {
+		fmt.Fprintln(out, RcloneInstallHint(CurrentGOOS(), true))
+	}
+	return nil
+}
+
+// restartMountAfterUpdate restarts this machine's drive mount after the
+// binary changed under it, because a mount keeps running the code it started
+// with. It is the same restart `drive cap` runs: rclone from the flag or
+// PATH, the secret from the environment or this CLI's own 0600 config in
+// that order and never a fourth, then the one RestartMount call that unmounts
+// without touching the VFS cache its queued uploads live in. It is written
+// out here rather than shared with cap.go's swap restart, because cap's
+// restart is money-touching (the spending cap) and this change does not
+// modify that path.
+func restartMountAfterUpdate(rcloneFlag, home string) error {
+	rcloneBin, err := ResolveRclone(rcloneFlag)
+	if err != nil {
+		return err
+	}
+	secretKey, err := ReadSecretKey(RcloneConfigPath(home), false, os.Stdin)
+	if err != nil {
+		return fmt.Errorf("restart the mount: %w", err)
+	}
+	cfg, err := LoadStorageConfig("", "", "", "", "", secretKey, storageFromDisk(home))
+	if err != nil {
+		return fmt.Errorf("restart the mount: %w", err)
+	}
+	if err := RestartMount(CurrentGOOS(), home, rcloneBin, cfg); err != nil {
+		return fmt.Errorf("restart the mount: %w", err)
+	}
 	return nil
 }
 
