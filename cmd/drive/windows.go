@@ -541,6 +541,11 @@ func mountWindows(p MountPlan, home string, c StorageConfig, foreground, dryRun 
 		fmt.Printf("--- would run ---\n%s\n", windowsSchtasksQuoted(schtasksCreateXMLArgs(WindowsTaskName, taskXMLPath)...))
 		return nil
 	}
+	// The cache holds transient bytes by design (issue #561): mark it so a
+	// backup tool that walks the profile skips it, on every platform.
+	if err := writeCacheTag(p.CacheDir); err != nil {
+		return err
+	}
 	if err := WriteFileAtomic(p.ConfigPath, []byte(RcloneConfig(c)), 0o600); err != nil {
 		return err
 	}

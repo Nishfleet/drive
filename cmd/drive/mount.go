@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -494,27 +495,124 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 		return fmt.Errorf("device name is empty: set --device or DRIVE_DEVICE to a name " +
 			"this mount can carry in a conflict filename")
 	}
+	writes := []mountWrite{
+		{p.ConfigPath, []byte(RcloneConfig(c)), 0o600},
+		{itemPath, item, 0o644},
+		{prefetchPath, prefetchItem, 0o644},
+	}
 	if err := os.MkdirAll(p.MountDir, 0o755); err != nil {
 		return failDetail("drive-folder", err, p.MountDir)
 	}
-	config := []byte(RcloneConfig(c))
-	if err := WriteFileAtomic(p.ConfigPath, config, 0o600); err != nil {
+	// The cache holds transient bytes by design: chunks up to the cache
+	// cap, gone on the next sweep. Mark it from the first mount on so a
+	// backup tool that walks the home folder (Time Machine, a Linux home
+	// backup) skips it instead of burning the backup's quota on them
+	// (issue #561). The tag is the standard one, so the tools that read
+	// it recognize it, and it is rewritten identically on every mount.
+	if err := writeCacheTag(p.CacheDir); err != nil {
 		return err
 	}
-	if err := WriteFileAtomic(itemPath, item, 0o644); err != nil {
-		return err
+	// A re-run that would write exactly what is already on disk must not
+	// restart the login item: a restart stops the running rclone, so it
+	// unmounts a live drive under open files (issue #561). When nothing
+	// changed and the drive is up, the run says so and touches nothing.
+	// A stopped drive still starts: an unchanged plan is not a reason to
+	// leave a mount down.
+	if mountWritesUnchanged(writes) && driveIsMounted(goos, home) {
+		fmt.Printf("Mount already running at %s\n", p.MountDir)
+		excludeTransientFromBackup(goos, p)
+		return nil
 	}
-	if err := WriteFileAtomic(prefetchPath, prefetchItem, 0o644); err != nil {
-		return err
+	for _, w := range writes {
+		if err := WriteFileAtomic(w.path, w.data, w.mode); err != nil {
+			return err
+		}
 	}
 	if foreground {
 		return mountForeground(p, home)
 	}
+	if err := startLoginItem(goos, p, itemPath); err != nil {
+		return err
+	}
+	// Starting the login item is a request, not a promise: say the mount is up
+	// only once the kernel says so, so a first run that silently failed is not
+	// mistaken for a working drive.
+	if err := waitMounted(goos, home); err != nil {
+		return err
+	}
+	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
+		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
+	}
+	// The cache and the conflict-staging dir are the mount's transient bytes
+	// (issue #561); keep macOS's own backup tool off them. Everywhere else
+	// the CACHEDIR.TAG marker is the signal a backup tool reads, so there is
+	// nothing to call here.
+	excludeTransientFromBackup(goos, p)
+	printMountedLine(p.MountDir)
+	return nil
+}
+
+// mountWrite is one file a mount writes: where, what and with which
+// mode. The same list decides whether a re-run changed anything and
+// does the writing, so the two can never disagree about what a mount
+// owns on disk.
+type mountWrite struct {
+	path string
+	data []byte
+	mode os.FileMode
+}
+
+// mountWritesUnchanged reports whether every file in writes is already
+// on disk with exactly the bytes this run would write. A re-run of
+// `drive init` or `drive mount` with the same plan is the common case,
+// and it is the case where restarting the login item would break open
+// files (issue #561).
+func mountWritesUnchanged(writes []mountWrite) bool {
+	for _, w := range writes {
+		onDisk, err := os.ReadFile(w.path)
+		if err != nil || !bytes.Equal(onDisk, w.data) {
+			return false
+		}
+	}
+	return true
+}
+
+// driveIsMounted reports whether the drive is mounted at the plan's
+// mount dir. A probe that cannot answer is not an answer: the caller
+// treats it as "not up" and starts the login item, which is the
+// action that was always taken.
+func driveIsMounted(goos, home string) bool {
+	up, err := mountState(goos, home)
+	return err == nil && up
+}
+
+// mountState reports whether the drive is mounted at the mount dir
+// home holds. A var (the production value is Mounted) so a test can
+// answer without a kernel mount: it is the check a re-run makes
+// before it decides whether a restart is needed.
+var mountState = Mounted
+
+// waitProbe is the probe the wait for a just-started mount polls.
+// The production value is Mounted; a var so a test can answer
+// "up" without a kernel mount.
+var waitProbe = Mounted
+
+// startLoginItem starts the login item a mount just wrote: launchd
+// bootstraps the plist into the session, and systemd daemon-reloads,
+// enables and restarts the unit, falling back to a detached rclone
+// when there is no user session to talk to. A var so a test can
+// record the actions a mount takes instead of touching the machine's
+// user manager.
+var startLoginItem = startPlatformLoginItem
+
+func startPlatformLoginItem(goos string, p MountPlan, itemPath string) error {
 	if goos == "darwin" {
 		if err := bootstrapLaunchd(itemPath); err != nil {
 			return failDetail("login-item", err)
 		}
-	} else if err := startLinuxLoginItem(); err != nil {
+		return nil
+	}
+	if err := startLinuxLoginItem(); err != nil {
 		// A clean container and a first-run sandbox often have no systemd user
 		// bus (drive#105): systemctl is missing, or it cannot reach the user
 		// manager. Only that falls back to a detached rclone, because there is
@@ -530,17 +628,52 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 			return failDetail("mount-failed", err)
 		}
 	}
-	// Starting the login item is a request, not a promise: say the mount is up
-	// only once the kernel says so, so a first run that silently failed is not
-	// mistaken for a working drive.
-	if err := waitMounted(goos, home); err != nil {
-		return err
-	}
-	if err := startPrefetchLoginItem(goos, home, prefetchPath); err != nil {
-		fmt.Fprintf(os.Stderr, "note: prefetch login item not started (%v); it is written at %s\n", err, prefetchPath)
-	}
-	printMountedLine(p.MountDir)
 	return nil
+}
+
+// cacheDirTag is the standard cache-directory marker (the cache-dir
+// convention backup and index tools read): a fixed signature line,
+// then a comment naming what the directory is. The signature is the
+// spec's own constant, so a tool that looks for CACHEDIR.TAG files
+// finds this one.
+const cacheDirTag = "Signature: 8a477f597d28d172769f0698c07c4e93\n" +
+	"* This file is a cache directory tag. See https://bford.info/cachedir/ for information about cache directory systems that use it.\n"
+
+// writeCacheTag marks the mount's cache dir as a cache (issue #561),
+// on every platform, from the first mount on. It is idempotent: every
+// mount writes the same bytes, and a backup tool that already read the
+// tag reads the same answer again.
+func writeCacheTag(cacheDir string) error {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return failDetail("cache-tag", err, cacheDir)
+	}
+	if err := WriteFileAtomic(filepath.Join(cacheDir, "CACHEDIR.TAG"), []byte(cacheDirTag), 0o644); err != nil {
+		return failDetail("cache-tag", err)
+	}
+	return nil
+}
+
+// excludeTransientFromBackup keeps macOS's own backup tool (Time
+// Machine, which walks the home folder by default) off the mount's
+// transient bytes (issue #561): the cache dir, whose chunks can fill
+// the backup's quota, and the conflict-staging dir, whose bytes are
+// only ever in flight. Both are regenerable, so excluding them loses
+// nothing. A refusal is a note, not a mount failure: the drive works
+// without the exclusion, and the CACHEDIR.TAG marker still tells a
+// tool that reads it. Everywhere but macOS there is no command to
+// call, so the marker is the whole of it.
+func excludeTransientFromBackup(goos string, p MountPlan) {
+	if goos != "darwin" {
+		return
+	}
+	for _, dir := range []string{p.CacheDir, p.StagingDir} {
+		if dir == "" {
+			continue
+		}
+		if out, err := exec.Command("tmutil", "addexclusion", dir).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "note: could not exclude %s from Time Machine backups (%v): %s", dir, err, out)
+		}
+	}
 }
 
 // startLinuxLoginItem enables and restarts the systemd user unit this command
@@ -739,7 +872,7 @@ func waitMountedFor(goos, home string, wait, tick time.Duration, out io.Writer) 
 	deadline := time.Now().Add(wait)
 	shown := 0
 	for time.Now().Before(deadline) {
-		on, err := Mounted(goos, home)
+		on, err := waitProbe(goos, home)
 		if err != nil {
 			return err
 		}

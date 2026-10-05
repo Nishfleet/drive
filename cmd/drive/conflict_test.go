@@ -840,3 +840,78 @@ func md5Hex(s string) string {
 	f := md5.Sum([]byte(s))
 	return hex.EncodeToString(f[:])
 }
+
+// The stock-hostname fix (drive issue #561): macOS names a new
+// Mac after its model, so two Macs of one model answer to the
+// same "MacBook-Air" and are one device in the account, on the
+// approval page and in conflict copies. A stock name gets a
+// short machine suffix; a name a person chose is left alone.
+func TestStockHostnameGetsASuffix(t *testing.T) {
+	got := stockedHostname("MacBook-Air")
+	if !strings.HasPrefix(got, "MacBook-Air-") || len(got) != len("MacBook-Air-")+4 {
+		t.Fatalf("stocked hostname = %q, want MacBook-Air-<4 characters>", got)
+	}
+	// The suffix is stable for this machine, or it would
+	// rename the device on every run.
+	if again := stockedHostname("MacBook-Air"); again != got {
+		t.Fatalf("the suffix moved between two runs: %q then %q", got, again)
+	}
+}
+
+func TestChosenHostnameIsLeftAlone(t *testing.T) {
+	for _, host := range []string{
+		"Nish's MacBook",
+		"studio",
+		"MacBook-Air-2x", // not the number macOS adds: a name a person chose
+		"MacBook-Air-",
+		"MacBookAir",
+		"macbook-air",
+	} {
+		if got := stockedHostname(host); got != host {
+			t.Errorf("stockedHostname(%q) = %q, want it untouched", host, got)
+		}
+	}
+}
+
+func TestIsStockHostname(t *testing.T) {
+	stock := []string{
+		"MacBook", "MacBook-Air", "MacBook-Pro", "iMac", "Mac-mini",
+		"Mac-Studio", "Mac-Pro",
+		"MacBook-Air-2", "iMac-7", "Mac-mini-10", // macOS's own numbering
+	}
+	for _, host := range stock {
+		if !isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"Nish's MacBook", "studio", "MacBook-Air-2x", "MacBook-Air-", "MacBookAir"} {
+		if isStockHostname(host) {
+			t.Errorf("isStockHostname(%q) = true, want false", host)
+		}
+	}
+}
+
+func TestDeviceNameFlagWinsOverTheHostname(t *testing.T) {
+	if got := deviceName("studio", "MacBook-Air"); got != "studio" {
+		t.Errorf("deviceName with a flag = %q, want the flag's name", got)
+	}
+	if got := deviceName("  ", "MacBook-Air"); !strings.HasPrefix(got, "MacBook-Air-") {
+		t.Errorf("deviceName with a blank flag = %q, want the stock hostname suffixed", got)
+	}
+	if got := deviceName("", "Nish's MacBook"); got != "Nish's MacBook" {
+		t.Errorf("deviceName with a chosen hostname = %q, want it untouched", got)
+	}
+	if got := deviceName("", ""); got != "this device" {
+		t.Errorf("deviceName with no hostname = %q, want \"this device\"", got)
+	}
+}
+
+func TestMachineIDIsPresent(t *testing.T) {
+	// Whatever the OS gave this machine (a platform UUID, a
+	// machine id, a hostname), it must answer with something:
+	// an empty id would make every stock-named Mac share one
+	// suffix, which is the bug the suffix exists to fix.
+	if id := machineID(); strings.TrimSpace(id) == "" {
+		t.Fatal("machineID() = \"\", want this machine's identifier")
+	}
+}

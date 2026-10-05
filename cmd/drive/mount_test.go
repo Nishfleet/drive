@@ -897,3 +897,101 @@ func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 		}
 	}
 }
+
+// The re-run fix (drive issue #561): a second `drive init` (or
+// `drive mount`) whose files are already exactly on disk must not
+// restart the login item, because a restart stops the running
+// rclone and unmounts a live drive under open files. The start
+// action and both mounted probes are seams here: the test records
+// the action a real host's user manager would take, and answers
+// the probes without a kernel mount.
+func mountTestSeams(t *testing.T, gate bool) (*int, *bool) {
+	t.Helper()
+	starts := 0
+	up := gate
+	origStart, origState, origProbe := startLoginItem, mountState, waitProbe
+	startLoginItem = func(string, MountPlan, string) error {
+		starts++
+		return nil
+	}
+	mountState = func(string, string) (bool, error) { return up, nil }
+	waitProbe = func(string, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { startLoginItem, mountState, waitProbe = origStart, origState, origProbe })
+	return &starts, &up
+}
+
+func TestMountSkipsRestartWhenNothingChanged(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 1 {
+		t.Fatalf("the first mount started the login item %d times, want 1", *starts)
+	}
+	// The cache is marked from the first mount on, on every
+	// platform, so a backup tool that walks the home folder skips
+	// the mount's transient bytes (issue #561).
+	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil {
+		t.Fatalf("CACHEDIR.TAG missing after the first mount: %v", err)
+	}
+
+	printed := captureStdout(t, func() {
+		if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if *starts != 1 {
+		t.Fatalf("a re-run that changed nothing took %d start actions, want 0 more: a restart unmounts the drive under open files", *starts-1)
+	}
+	if !strings.Contains(printed, "already running") {
+		t.Fatalf("re-run printed %q, want it to say the mount is already running", printed)
+	}
+	// The tag is rewritten identically, so the mark survives every
+	// re-run, not just the first one.
+	if got, err := os.ReadFile(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil || string(got) != cacheDirTag {
+		t.Fatalf("CACHEDIR.TAG after the re-run = (%q, %v), want the shipped tag", got, err)
+	}
+}
+
+func TestMountRestartsWhenThePlanChanged(t *testing.T) {
+	home := t.TempDir()
+	starts, _ := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// A rotated storage key rewrites the config, so this run is a
+	// real change: the login item restarts and rclone picks the
+	// key up, exactly as before the fix.
+	rotated := testStorage()
+	rotated.SecretKey = "rotatedsecretkey"
+	if err := Mount("linux", home, "/fake/rclone", rotated, false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a changed plan took %d start actions in total, want 2: a changed unit must still restart", *starts)
+	}
+}
+
+func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
+	home := t.TempDir()
+	starts, gate := mountTestSeams(t, true)
+
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The drive is down (a reboot, a `drive unmount`): the files
+	// are unchanged, but "unchanged" is not a reason to leave a
+	// mount down, so this run still starts it. The wait then
+	// sees the mount up, which is what a start that worked
+	// looks like.
+	*gate = false
+	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if *starts != 2 {
+		t.Fatalf("a stopped drive with unchanged files took %d start actions in total, want 2", *starts)
+	}
+}

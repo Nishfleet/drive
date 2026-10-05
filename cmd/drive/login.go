@@ -30,17 +30,45 @@ func openBrowser(raw string) error {
 	}
 }
 
-func deviceName() string {
-	name, err := os.Hostname()
-	if err != nil || strings.TrimSpace(name) == "" {
+// deviceName is the name this device answers by at sign-in: the name
+// the person gave (--device), else the hostname — and a hostname that
+// is a stock model name (a new Mac's "MacBook-Air", which every Mac
+// of that model shares) carries a short machine suffix, so two such
+// Macs are two devices in the account, not one (issue #561).
+func deviceName(flag, hostname string) string {
+	if set := strings.TrimSpace(flag); set != "" {
+		return set
+	}
+	if strings.TrimSpace(hostname) == "" {
 		return "this device"
+	}
+	return stockedHostname(hostname)
+}
+
+// osHostname is the machine's own hostname, or "" when the OS gives
+// this machine none.
+func osHostname() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
 	}
 	return name
 }
 
+// envDeviceName is the device name this process carries: --device, which
+// `drive init` and `drive mount` put into DRIVE_DEVICE, else the
+// hostname with a stock-name suffix. Sign-in answers to the same name
+// the mount's conflict copies carry, so one device is one name.
+func envDeviceName() string {
+	return deviceName(os.Getenv(deviceEnvName), osHostname())
+}
+
 // Login is `drive login`: device sign-in, mint this device's key, write the
 // storage settings so `drive init` and `drive mount` need no pasted keys.
-func Login(home, apiBase string, out io.Writer) error {
+// `device` names this device at sign-in — --device when the person gave
+// one, else the hostname, with a short machine suffix when the hostname
+// is a stock model name two Macs would share (issue #561).
+func Login(home, apiBase, device string, out io.Writer) error {
 	if strings.TrimSpace(apiBase) == "" {
 		return fail("no-api")
 	}
@@ -48,12 +76,13 @@ func Login(home, apiBase string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	token, account, err := SignIn(client, deviceName(), out)
+	name := deviceName(device, osHostname())
+	token, account, err := SignIn(client, name, out)
 	if err != nil {
 		return err
 	}
 	client.Token = token
-	key, err := client.MintKey("device", deviceName())
+	key, err := client.MintKey("device", name)
 	if err != nil {
 		return err
 	}
@@ -113,6 +142,7 @@ func Login(home, apiBase string, out io.Writer) error {
 func runLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	api := fs.String("api", firstNonEmpty(os.Getenv("DRIVE_API_URL"), defaultAPIBase), "api Worker base URL")
+	device := fs.String("device", "", "name this device is called in the account (default: the hostname, with a suffix when it is a stock model name)")
 	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
@@ -120,5 +150,5 @@ func runLogin(args []string) error {
 	if fs.NArg() > 0 {
 		return usageFailure(usage, fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
-	return Login(common.home, *api, os.Stdout)
+	return Login(common.home, *api, *device, os.Stdout)
 }

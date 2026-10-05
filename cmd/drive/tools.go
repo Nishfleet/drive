@@ -334,6 +334,17 @@ func (t Tool) Installed(env Env) (bool, string) {
 // into its MCP entry; otherwise the server is registered exactly as before.
 func (t Tool) Connect(env Env) error {
 	env = env.withDefaults()
+	// Every tool's own entry runs the drive's MCP server through
+	// `npx -y @modelcontextprotocol/server-filesystem`, so a machine
+	// that has the tool installed but no Node has a tool that cannot
+	// run: the registration would succeed and the failure would only
+	// surface later, inside the editor, as a server that never starts
+	// (issue #561). The check runs before anything is written, so the
+	// failure is here, at the person's own command, with the install
+	// that fixes it.
+	if _, err := env.LookPath("npx"); err != nil {
+		return fail("no-node")
+	}
 	keyArg, err := t.connectKey(env)
 	if err != nil {
 		return err

@@ -136,6 +136,10 @@ var messageTable = map[string][2]string{
 		"rclone is not installed; the drive mounts with rclone.",
 		"Install it (macOS: `brew install rclone`; Linux: `sudo apt install rclone`) or point `--rclone` at the binary, then run `drive mount` again.",
 	},
+	"no-node": {
+		"Node.js is not installed; every drive agent tool runs its server through npx.",
+		"Install Node.js (which brings npx), then run the command again.",
+	},
 	"missing-config": {
 		"The drive is missing its storage settings: {1}.",
 		"Run `drive login` so this device gets its storage settings, then run the command again.",

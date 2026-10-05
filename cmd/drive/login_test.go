@@ -28,7 +28,7 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	api.approved["dev_secret"] = true
 
 	var out strings.Builder
-	if err := Login(home, server.URL, &out); err != nil {
+	if err := Login(home, server.URL, "", &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestLoginNamesMissingStorageInsteadOfLooping(t *testing.T) {
 	openURL = func(string) error { return nil }
 	t.Cleanup(func() { openURL = origOpen })
 
-	err := Login(t.TempDir(), server.URL, io.Discard)
+	err := Login(t.TempDir(), server.URL, "", io.Discard)
 	if err == nil {
 		t.Fatal("expected login to refuse a mint with no storage location")
 	}
@@ -164,5 +164,31 @@ func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 	}
 	if !strings.Contains(string(src), defaultAPIBase) {
 		t.Fatalf("defaultAPIBase %q is not the origin src/seo.js ships", defaultAPIBase)
+	}
+}
+
+// The device-name flag (drive issue #561): `drive login
+// --device studio` names this device at sign-in, both on the
+// approval page (the device-code request) and on the device
+// key, so the account and the drive agree on what the machine
+// is called.
+func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	api.approved["dev_secret"] = true
+	origOpen := openURL
+	openURL = func(string) error { return nil }
+	t.Cleanup(func() { openURL = origOpen })
+
+	var out strings.Builder
+	if err := Login(t.TempDir(), server.URL, "studio", &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deviceNames) != 1 || api.deviceNames[0] != "studio" {
+		t.Fatalf("the device-code request named the device %v, want [studio]", api.deviceNames)
+	}
+	if len(api.mintedNames) != 1 || api.mintedNames[0] != "studio" {
+		t.Fatalf("the device key was minted as %v, want [studio]", api.mintedNames)
 	}
 }
