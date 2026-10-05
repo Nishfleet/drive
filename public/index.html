@@ -2256,13 +2256,13 @@ details p {
         <div>
           <p class="eyebrow">No surprise bills</p>
           <h2 class="big" id="cap-heading">A cap that<br><span class="o">stops writes,</span><br>not files.</h2>
-          <p class="sub">Your spending cap starts at $20. When you reach it, new writes stop and nothing is deleted. Raise it when you want.</p>
+          <p class="sub">Your spending cap starts at $20. When the bill would pass it, new writes stop and nothing is deleted. Raise it when you want.</p>
         </div>
         <div>
           <div class="meter-card">
             <div class="meter-top"><span>This month</span><b>$10.00 <small>of $20 cap</small></b></div>
             <div class="meter" aria-hidden="true"><i></i></div>
-            <p class="meter-note">At $20, writes stop. Every file stays.</p>
+            <p class="meter-note">Past $20, writes stop. Every file stays.</p>
           </div>
           <article class="receipt" id="receipt" aria-labelledby="receipt-heading">
             <p class="r-head"><span class="r-shop" id="receipt-heading">drive</span><small>1 TB, kept all month</small></p>
@@ -2307,7 +2307,7 @@ details p {
           <div>
             <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No minimum. No plans.</p></details>
             <details><summary>Can my agents wreck my files?</summary><p>No. Agent keys can list, read and write. They can never delete.</p></details>
-            <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When you reach it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
+            <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When the bill would pass it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
             <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
           </div>
         </div>
@@ -2326,7 +2326,7 @@ details p {
                 <input type="hidden" name="source" value="pricing-page">
                 <button type="submit">Send</button>
               </div>
-              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email. We write once when the drive opens, or back about a company account.</p>
+              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email and we add it to the waitlist.</p>
             </form>
             <noscript><p class="form-note">The form sends without JavaScript too.</p></noscript>
           </div>
@@ -2429,7 +2429,7 @@ form.addEventListener("submit", async (event) => {
     }
     // One confirmation for every accepted address: the server answers the
     // same whether or not it was already on file (drive#28).
-    say("Thanks. We will write back to that address.", "done");
+    say("Thanks. That address is on the waitlist.", "done");
     form.reset();
     sourceInput.value = sentSource;
   } catch (error) {
@@ -2528,6 +2528,9 @@ range.addEventListener("input", () => {
   sizeOut.textContent = sizeLabel(gb);
   range.style.setProperty("--p", `${((gb - range.min) / (range.max - range.min)) * 100}%`);
   clearTimeout(timer);
+  // A reply still in flight is for the old size now, so retire its ticket
+  // before the debounce: it can no longer paint over the new size.
+  latest += 1;
   timer = setTimeout(() => fetchQuote(gb), 120);
 });
 

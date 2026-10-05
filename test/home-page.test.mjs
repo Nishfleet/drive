@@ -110,7 +110,7 @@ test("the founding block and the cap use the price source's numbers", () => {
   assert.ok(html.includes(`Your spending cap starts at $${DEFAULT_CAP_USD}.`));
   assert.ok(html.includes(`of $${DEFAULT_CAP_USD} cap`));
   assert.ok(html.includes(`The default cap is $${DEFAULT_CAP_USD}.`));
-  assert.ok(html.includes(`At $${DEFAULT_CAP_USD}, writes stop.`));
+  assert.ok(html.includes(`Past $${DEFAULT_CAP_USD}, writes stop.`));
 });
 
 test("fonts are self-hosted, swap, and only the hero face is preloaded", () => {
