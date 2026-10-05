@@ -67,6 +67,7 @@ export default defineConfig({
       { text: "Agents", link: "/agents" },
       { text: "Pricing and your bill", link: "/pricing" },
       { text: "FAQ", link: "/faq" },
+      { text: "When something goes wrong", link: "/troubleshooting" },
       { text: "Limits", link: "/limits" },
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "Security", link: "/security" },

@@ -8,6 +8,19 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-06
+
+- `drive doctor`: one block with the versions, the mount state, the log's last
+  lines and the api answer, to paste into a support message.
+- `drive --help` no longer names tracker rows, and names the page below
+  instead. Two failure lines fixed: the Linux unmount hint names the
+  `fusermount` fallback the code runs, and the key-still-live line no longer
+  repeats its own next step.
+- New docs page, [When something goes wrong](/troubleshooting): the three
+  commands to run, the log on each system, a new laptop, a lost laptop, your
+  email, and taking your files out. Linked from the 404 page and from
+  `drive status`.
+
 ## 2026-10-05
 
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
@@ -168,7 +181,8 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  Limits, Benchmarks, Security and this changelog, each also served as Markdown.
+  When something goes wrong, Limits, Benchmarks, Security and this changelog,
+  each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.
 

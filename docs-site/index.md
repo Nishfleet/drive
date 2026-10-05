@@ -19,6 +19,8 @@ minute, never more than {{MAX_PER_TB}} for each TB.
 - [Pricing and your bill](/pricing) — the rate, the maximum and four
   worked sizes.
 - [FAQ](/faq) — the questions we can answer with a measured number.
+- [When something goes wrong](/troubleshooting) — the three commands, the log
+  on each system, a new laptop, a lost laptop, your email, your files out.
 - [Limits](/limits) — what version 1 does not do, in plain words.
 - [Benchmarks](/benchmarks) — measured speed, including where we lose.
 - [Security](/security) — who can see your files, and what we cannot claim.
