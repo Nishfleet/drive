@@ -532,16 +532,44 @@ const NOT_TRASH_SQL = `NOT (
     (path LIKE '/u/%/.trash/%' AND path NOT LIKE '/u/%/%/.trash/%')
   )`;
 
-export const HOUR_STORED_BYTES_SQL = `SELECT account_id,
+// The rows an hour reads (drive#519): live versions created before the hour
+// ends, from the partial `file_versions_live` index, and versions hidden at or
+// after `hiddenFrom` and created before the hour ends, from the partial
+// `file_versions_hidden_at` index (migrations/drive/0025_meter_scale.sql and
+// 0023). The two halves cannot overlap (a row is either live or hidden), so
+// UNION ALL is the same row set the old `hidden_at IS NULL OR hidden_at >= ?1`
+// read, and neither half walks the hidden history. That OR left SQLite no
+// index to plan with: with no statistics it walked the whole table in
+// account order three times an hour. test/meter-scale.test.mjs pins the plan.
+//
+// `scoped` adds `account_id = ?3` to both halves: the one-account re-roll a
+// back-dated correction queues (rollupAccountHour).
+/**
+ * @param {string} hiddenFrom the comparison a hidden row's `hidden_at` must pass
+ * @param {boolean} scoped
+ */
+function hourRows(hiddenFrom, scoped) {
+  const account = scoped ? "account_id = ?3 AND " : "";
+  return `(SELECT account_id, b2_file_id, size_bytes, created_at, hidden_at FROM file_versions
+      WHERE ${account}hidden_at IS NULL AND created_at < ?2 AND ${NOT_TRASH_SQL}
+    UNION ALL
+    SELECT account_id, b2_file_id, size_bytes, created_at, hidden_at FROM file_versions
+      WHERE ${account}hidden_at ${hiddenFrom} AND created_at < ?2 AND ${NOT_TRASH_SQL})`;
+}
+
+/** @param {boolean} scoped */
+function hourStoredBytesSql(scoped) {
+  return `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
-  FROM file_versions
-  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at > ?1)
-    AND ${NOT_TRASH_SQL}
+  FROM ${hourRows("> ?1", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
+}
 
-export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
+/** @param {boolean} scoped */
+function hourGbMinutesSql(scoped) {
+  return `SELECT account_id,
     CAST(SUM(
       (
         (CASE
@@ -554,10 +582,10 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
             AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
             AND NOT EXISTS (
               SELECT 1 FROM file_versions s
-              WHERE s.account_id = file_versions.account_id
-                AND s.size_bytes = file_versions.size_bytes
-                AND s.created_at = file_versions.hidden_at
-                AND s.b2_file_id <> file_versions.b2_file_id
+              WHERE s.account_id = v.account_id
+                AND s.size_bytes = v.size_bytes
+                AND s.created_at = v.hidden_at
+                AND s.b2_file_id <> v.b2_file_id
             )
             THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
             ELSE 0
@@ -565,11 +593,14 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
       ) * size_bytes
     ) AS REAL) / 1e9 AS gb_minutes,
     COUNT(*) AS versions
-  FROM file_versions
-  WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?1)
-    AND ${NOT_TRASH_SQL}
+  FROM ${hourRows(">= ?1", scoped)} AS v
   GROUP BY account_id
   ORDER BY account_id`;
+}
+
+export const HOUR_STORED_BYTES_SQL = hourStoredBytesSql(false);
+
+export const HOUR_GB_MINUTES_SQL = hourGbMinutesSql(false);
 
 // One statement for both of an hour's numbers, so the two can never describe
 // different states of the database: a version written between two separate
@@ -585,28 +616,41 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
 // gets the row the bytes statement cannot give it, which is a 0-byte mark: the
 // drive really did hold nothing in that hour, and the month's peak is a MAX
 // over the marks that one zero does not disturb.
-export const HOUR_USAGE_SQL = `SELECT minutes.account_id,
+/** @param {boolean} scoped */
+function hourUsageSql(scoped) {
+  return `SELECT minutes.account_id,
     minutes.gb_minutes,
     COALESCE(bytes.stored_bytes, 0) AS stored_bytes,
     minutes.versions
   FROM (
-    ${HOUR_GB_MINUTES_SQL}
+    ${hourGbMinutesSql(scoped)}
   ) AS minutes
   LEFT JOIN (
-    ${HOUR_STORED_BYTES_SQL}
+    ${hourStoredBytesSql(scoped)}
   ) AS bytes ON bytes.account_id = minutes.account_id
   ORDER BY minutes.account_id`;
+}
+
+export const HOUR_USAGE_SQL = hourUsageSql(false);
+
+// The same hour for one account (?3), for the re-roll a back-dated correction
+// queues (drive#519): the same statement, so a one-account re-roll books the
+// number the all-accounts roll would.
+export const ACCOUNT_HOUR_USAGE_SQL = hourUsageSql(true);
 
 // An hour's rows for accounts nothing was live for in it: the rollup is the
 // authority on the hour, so a row an earlier run wrote (before the versions
 // were hidden by a late event, say) is removed rather than left saying the
 // account stored something it did not. One statement for the whole hour,
-// beside the upserts in the same batch.
-const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
+// beside the upserts in the same batch. The NOT IN reads the same two index
+// halves as the hour's rows (drive#519).
+export const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
   WHERE hour = ?1 AND account_id NOT IN (
     SELECT account_id FROM file_versions
-    WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?3)
-      AND ${NOT_TRASH_SQL}
+      WHERE hidden_at IS NULL AND created_at < ?2 AND ${NOT_TRASH_SQL}
+    UNION ALL
+    SELECT account_id FROM file_versions
+      WHERE hidden_at >= ?3 AND created_at < ?2 AND ${NOT_TRASH_SQL}
   )`;
 
 /**
@@ -677,6 +721,49 @@ export async function rollupHour(db, hourStartMs, nowMs) {
   statements.push(db.prepare(CLEAR_EMPTY_ACCOUNTS_SQL).bind(hour, hourEnd, hour));
   await db.batch(statements);
   return { hour, gbMinutes, accounts: result.results?.length ?? 0, versions };
+}
+
+/**
+ * One closed hour for ONE account (drive#519): the same statement as
+ * rollupHour scoped to `accountId`, written the same overwrite-not-add way.
+ * A back-dated correction re-rolls that account's hours with this, so one
+ * account's late fix never re-rolls every other account's hours. An account
+ * with nothing live in the hour has its row removed, as the all-accounts
+ * roll does.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} hourStartMs
+ * @param {number} nowMs
+ * @returns {Promise<{hour: number, gbMinutes: number}>}
+ */
+export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
+  if (typeof accountId !== "string" || accountId === "") {
+    throw new TypeError(`rollupAccountHour needs an account id, got ${String(accountId)}`);
+  }
+  const hour = hourStart(hourStartMs);
+  const hourEnd = hour + HOUR_MS;
+  const at = toMillis(nowMs, "nowMs");
+  if (hourEnd > at) {
+    throw new RangeError(`hour ${hour} is not closed yet`);
+  }
+  const row = await db.prepare(ACCOUNT_HOUR_USAGE_SQL).bind(hour, hourEnd, accountId).first();
+  if (!row) {
+    await db
+      .prepare("DELETE FROM usage_minutes WHERE account_id = ?1 AND hour = ?2")
+      .bind(accountId, hour)
+      .run();
+    return { hour, gbMinutes: 0 };
+  }
+  const total = Number(row.gb_minutes);
+  if (!Number.isFinite(total) || total < 0) {
+    throw new TypeError(`gbMinutes must be 0 or more, got ${total}`);
+  }
+  const storedBytes = Number(row.stored_bytes);
+  if (!Number.isSafeInteger(storedBytes) || storedBytes < 0) {
+    throw new TypeError(`stored_bytes must be 0 or more whole bytes, got ${row.stored_bytes}`);
+  }
+  await usageStatement(db, accountId, hour, total, storedBytes, at).run();
+  return { hour, gbMinutes: total };
 }
 
 /**
@@ -1738,7 +1825,7 @@ function stampMillis(value) {
  * killed mid-catch-up leaves the hours it finished marked, not lost.
  * @param {D1Database|undefined} db
  * @param {number|Date|string} now the trigger instant
- * @returns {Promise<{from: number, through: number, hours: number, accounts: number, gbMinutes: number}>}}
+ * @returns {Promise<{from: number, through: number, hours: number, accounts: number, gbMinutes: number, rerolledHours: number}>}
  */
 export async function runMeterCron(db, now = Date.now()) {
   if (!db) {
@@ -1797,7 +1884,68 @@ export async function runMeterCron(db, now = Date.now()) {
     .prepare(PURGE_EVENTS_SEEN_SQL)
     .bind(at - EVENTS_SEEN_RETENTION_MS)
     .run();
-  return { from, through, hours, accounts, gbMinutes };
+  // The one-account re-rolls the reconciler queued (drive#519), after the
+  // newest hours, so a backlog of corrections never delays this hour's bill.
+  const rerolledHours = await drainAccountRerolls(db, at);
+  return { from, through, hours, accounts, gbMinutes, rerolledHours };
+}
+
+// The most one-account hours one hourly run re-rolls (drive#519). Each hour is
+// two D1 calls (one read, one write), the same price as an hour of the global
+// catch-up, so this keeps a run's work bounded however old the correction:
+// a 180-day correction is re-rolled over the following days, oldest hour
+// first, and every other account's hours are never touched by it.
+export const MAX_REROLL_HOURS_PER_RUN = 12;
+
+const PENDING_REROLLS_SQL = `SELECT account_id, from_hour, through_hour
+  FROM meter_account_rerolls ORDER BY from_hour, account_id LIMIT ?1`;
+// Guarded on the range the run read: a reconcile that widened the range in
+// between keeps its row, and the next run re-rolls from the wider start.
+const REROLL_DONE_SQL = `DELETE FROM meter_account_rerolls
+  WHERE account_id = ?1 AND from_hour = ?2 AND through_hour = ?3`;
+const REROLL_ADVANCE_SQL = `UPDATE meter_account_rerolls SET from_hour = ?4, updated_at = ?5
+  WHERE account_id = ?1 AND from_hour = ?2 AND through_hour = ?3`;
+const REROLL_QUEUE_SQL = `INSERT INTO meter_account_rerolls (account_id, from_hour, through_hour, updated_at)
+  VALUES (?1, ?2, ?3, ?4)
+  ON CONFLICT(account_id) DO UPDATE SET
+    from_hour = MIN(from_hour, excluded.from_hour),
+    through_hour = MAX(through_hour, excluded.through_hour),
+    updated_at = excluded.updated_at`;
+
+/**
+ * Re-roll the queued one-account ranges, oldest first, at most
+ * MAX_REROLL_HOURS_PER_RUN hours. Answers how many hours it re-rolled.
+ * @param {D1Database} db
+ * @param {number} at the run instant, epoch ms
+ */
+export async function drainAccountRerolls(db, at) {
+  const lastClosed = hourStart(at) - HOUR_MS;
+  const pending = await db.prepare(PENDING_REROLLS_SQL).bind(MAX_REROLL_HOURS_PER_RUN).all();
+  let budget = MAX_REROLL_HOURS_PER_RUN;
+  let rerolled = 0;
+  for (const raw of pending.results ?? []) {
+    if (budget === 0) break;
+    const row = /** @type {{account_id: unknown, from_hour: unknown, through_hour: unknown}} */ (
+      raw
+    );
+    const accountId = String(row.account_id);
+    const fromHour = Number(row.from_hour);
+    const throughHour = Number(row.through_hour);
+    const last = Math.min(throughHour, lastClosed);
+    let hour = fromHour;
+    while (hour <= last && budget > 0) {
+      await rollupAccountHour(db, accountId, hour, at);
+      hour += HOUR_MS;
+      budget -= 1;
+      rerolled += 1;
+    }
+    if (hour > last) {
+      await db.prepare(REROLL_DONE_SQL).bind(accountId, fromHour, throughHour).run();
+    } else {
+      await db.prepare(REROLL_ADVANCE_SQL).bind(accountId, fromHour, throughHour, hour, at).run();
+    }
+  }
+  return rerolled;
 }
 
 // --- Retention: hidden versions leave the ledger (drive issue #564) -----
@@ -1824,6 +1972,8 @@ const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
 // (drive issue #564, in-run review). It is partial because the predicate's
 // other half is `hidden_at IS NOT NULL`, so the index holds only the rows a
 // prune can reach, and inserting a live row pays nothing for it.
+
+const OLDEST_REROLL_SQL = "SELECT MIN(from_hour) AS from_hour FROM meter_account_rerolls";
 
 /**
  * Delete the `file_versions` rows the ledger no longer needs, and only those:
@@ -1865,6 +2015,18 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
       pruned: 0,
       cutoff,
       skipped: "the rollup watermark has not covered the cutoff hour yet",
+    };
+  }
+  // The same guard for one account's re-roll (drive#519): a back-dated
+  // correction queues hours behind the global mark, and the re-roll reads
+  // the rows of those hours, so no row they still need may go first.
+  const reroll = await db.prepare(OLDEST_REROLL_SQL).first();
+  const oldestReroll = stampMillis(reroll?.from_hour);
+  if (oldestReroll !== null && oldestReroll <= hourStart(cutoff)) {
+    return {
+      pruned: 0,
+      cutoff,
+      skipped: "an account re-roll still reaches back past the cutoff hour",
     };
   }
   const result = await db.prepare(PRUNE_VERSIONS_SQL).bind(cutoff).run();
@@ -1985,25 +2147,19 @@ function providerMillis(value, field) {
  * version with no row gets one, a version whose hidden time never arrived gets
  * one, and a row for a version the provider no longer has is marked.
  *
- * The fix is the row set, not the money. A corrected row changes what an hour
- * was worth, and the hours already written are re-rolled from the rows by the
- * same overwrite-not-add rollup the hourly trigger runs (`rollupHour`): this
- * function rewinds `meter_rollup_state.rolled_through` to the earliest hour a
- * correction touches, so the next hourly run re-rolls from there, oldest
- * first, and books the corrected number. That is what the watermark's own rule
- * is for (`a wrong or missing mark costs a re-roll, never a bill`), and it is
- * why the correction is idempotent: a re-roll recomputes the same total.
- *
- * A D1 failure throws, like the hourly trigger: the platform records the run
- * as failed and retries it, so a run never reports success for a repair it did
- * not make. The counts it returns are what an operator watches.
+ * Each account is its own unit of work (reconcileAccount), which is also what
+ * one queue message carries when the meter's queue is bound (src/meter-jobs.js,
+ * drive#519). One account that fails is logged and the walk goes on; the run
+ * still fails at the end, naming how many accounts it could not finish, so a
+ * repair that did not happen is a failed trigger and never a quiet success.
  * @param {D1Database|undefined} db
  * @param {import("./files.js").FileStore|undefined} store the storage
  *   provider's own listing, walked one account prefix at a time, so the
  *   provider is a parameter and the reconciler stays provider-agnostic
  * @param {number|Date|string} now the run instant
  * @returns {Promise<{accounts: number, versions: number, inserted: number,
- *   hidden: number, marked: number, earliestAffectedHour: number|null}>}
+ *   hidden: number, marked: number, skipped: number,
+ *   earliestAffectedHour: number|null}>}
  */
 export async function reconcileMeter(db, store, now = Date.now()) {
   if (!db) {
@@ -2014,10 +2170,97 @@ export async function reconcileMeter(db, store, now = Date.now()) {
   }
   const at = toMillis(now, "now");
   const accounts = await listMeteredAccounts(db);
-  let versions = 0;
+  const result = {
+    accounts: accounts.length,
+    versions: 0,
+    inserted: 0,
+    hidden: 0,
+    marked: 0,
+    skipped: 0,
+    /** @type {number|null} */
+    earliestAffectedHour: null,
+  };
+  /** @type {Array<{account: string, error: unknown}>} */
+  const failures = [];
+  for (const account of accounts) {
+    try {
+      const one = await reconcileAccount(db, store, account, at);
+      result.versions += one.versions;
+      result.inserted += one.inserted;
+      result.hidden += one.hidden;
+      result.marked += one.marked;
+      result.skipped += one.skipped;
+      if (
+        one.earliestAffectedHour !== null &&
+        (result.earliestAffectedHour === null ||
+          one.earliestAffectedHour < result.earliestAffectedHour)
+      ) {
+        result.earliestAffectedHour = one.earliestAffectedHour;
+      }
+    } catch (error) {
+      failures.push({ account, error });
+      console.error(
+        "meter reconciler: account failed",
+        `account=${account}`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  if (result.inserted > 0 || result.hidden > 0 || result.marked > 0 || result.skipped > 0) {
+    // The counts are the operator's view of what the safety net caught: a run
+    // that fixes something says so, and a run that fixes nothing stays quiet.
+    console.log(
+      `meter reconciler: inserted=${result.inserted} hidden=${result.hidden} ` +
+        `marked=${result.marked} skipped=${result.skipped} ` +
+        `from=${result.earliestAffectedHour ?? "none"} accounts=${accounts.length}`,
+    );
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map((failure) => failure.error),
+      `meter reconciler: ${failures.length} of ${accounts.length} account(s) failed`,
+    );
+  }
+  return result;
+}
+
+/** @typedef {{b2_file_id: string, path: string, size_bytes: number, created_at: number, hidden_at: number|null, deleted_at: number|null}} VersionRow */
+
+/**
+ * One account's reconcile (drive#59, drive#519). The fix is the row set, not
+ * the money. A corrected row changes what an hour was worth:
+ *
+ *   - A row the provider no longer lists and that never got its hide is
+ *     hidden at the run instant. That books the hide in the current hour,
+ *     which no run has rolled yet, so no closed hour changes and nothing is
+ *     re-rolled. The hours it was live were billed as live, which is what the
+ *     ledger knew at the time.
+ *   - A back-dated correction (a version the events never stored, or a hide
+ *     with the provider's own earlier time) changes closed hours. Those hours
+ *     are queued for a re-roll of THIS account only (meter_account_rerolls),
+ *     which the hourly run drains a bounded number of hours at a time. The
+ *     global `rolled_through` mark is never moved here: one old file of one
+ *     account once rewound it and froze every account's billing for days.
+ *
+ * One bad row (a listed version with no usable time, size or path, a
+ * repeated id, a stored row with no id) is logged and skipped; the rest of the
+ * account's repairs still land, in one batch.
+ * @param {D1Database} db
+ * @param {import("./files.js").FileStore} store
+ * @param {string} account
+ * @param {number|Date|string} now
+ * @returns {Promise<{versions: number, inserted: number, hidden: number,
+ *   marked: number, skipped: number, earliestAffectedHour: number|null}>}
+ */
+export async function reconcileAccount(db, store, account, now) {
+  if (typeof account !== "string" || account === "") {
+    throw new TypeError(`reconcileAccount needs an account id, got ${String(account)}`);
+  }
+  const at = toMillis(now, "now");
   let inserted = 0;
   let hidden = 0;
   let marked = 0;
+  let skipped = 0;
   /** @type {number|null} */
   let earliestAffectedHour = null;
   /** @param {number} hour */
@@ -2026,104 +2269,86 @@ export async function reconcileMeter(db, store, now = Date.now()) {
       earliestAffectedHour = hour;
     }
   };
-  for (const account of accounts) {
-    // The account's own scoped store, the same one every other account-scoped
-    // walk uses: `scopeStore` applies the prefix and refuses a version that
-    // came back from outside it, so the reconciler never handles another
-    // account's key. The drive paths it hands back are turned into the storage
-    // key the event intake stores (`u/<id>/<path>`), so a row this run inserts
-    // and a row an event inserted are one shape.
-    const prefix = accountPrefix({ id: account });
-    const listed = await scopeStore(store, { id: account }).listVersions("/");
-    versions += listed.length;
-    const rows = await db.prepare(RECONCILE_ROWS_SQL).bind(account).all();
-    /** @type {Map<string, {b2_file_id: string, path: string, size_bytes: number, created_at: number, hidden_at: number|null, deleted_at: number|null}>} */
-    const byId = new Map();
-    for (const row of /** @type {Array<{b2_file_id: string, path: string, size_bytes: number, created_at: number, hidden_at: number|null, deleted_at: number|null}>} */ (
-      rows.results || []
-    )) {
-      if (typeof row.b2_file_id !== "string" || row.b2_file_id === "") {
-        throw new TypeError("file_versions has a row with no b2_file_id");
-      }
-      byId.set(row.b2_file_id, row);
+  /**
+   * @param {string} what
+   * @param {unknown} error
+   */
+  const skip = (what, error) => {
+    skipped += 1;
+    console.error(
+      "meter reconciler: skipped a bad row",
+      `account=${account}`,
+      what,
+      error instanceof Error ? error.message : String(error),
+    );
+  };
+  // The account's own scoped store, the same one every other account-scoped
+  // walk uses: `scopeStore` applies the prefix and refuses a version that
+  // came back from outside it, so the reconciler never handles another
+  // account's key. The drive paths it hands back are turned into the storage
+  // key the event intake stores (`u/<id>/<path>`), so a row this run inserts
+  // and a row an event inserted are one shape.
+  const prefix = accountPrefix({ id: account });
+  const listed = await scopeStore(store, { id: account }).listVersions("/");
+  const rows = await db.prepare(RECONCILE_ROWS_SQL).bind(account).all();
+  /** @type {Map<string, VersionRow>} */
+  const byId = new Map();
+  for (const row of /** @type {VersionRow[]} */ (rows.results || [])) {
+    if (typeof row.b2_file_id !== "string" || row.b2_file_id === "") {
+      skip("stored row with no b2_file_id", new TypeError("no id"));
+      continue;
     }
-    const statements = [];
-    const listedIds = new Set();
-    for (const raw of listed) {
-      const version = /** @type {ProviderVersion} */ (raw);
-      if (typeof version.b2FileId !== "string" || version.b2FileId === "") {
-        throw new TypeError("the provider listed a version with no id");
-      }
-      if (listedIds.has(version.b2FileId)) {
-        // Two live versions with one id cannot both be true; a repair from one
-        // of them would be a coin toss, so it is refused by name.
-        throw new Error(`the provider listed ${version.b2FileId} twice in one account`);
-      }
-      listedIds.add(version.b2FileId);
-      const createdAt = providerMillis(version.createdAt, "createdAt");
-      const hiddenAt =
-        version.hiddenAt === null || version.hiddenAt === undefined
-          ? null
-          : providerMillis(version.hiddenAt, "hiddenAt");
-      const sizeBytes = Number(version.sizeBytes);
-      if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {
-        throw new TypeError(`the provider listed a version of ${sizeBytes} bytes`);
-      }
-      const row = byId.get(version.b2FileId);
-      // The key the event stream stores: the account prefix then the drive
-      // path. A drive path that is not a usable key is refused rather than
-      // stored.
-      const key =
-        typeof version.path === "string" && version.path.startsWith("/")
-          ? `${prefix}${version.path}`
-          : null;
-      if (key === null) {
-        throw new TypeError(`the provider listed a version at ${String(version.path)}`);
-      }
-      if (!row) {
-        // A version the event stream never stored: insert it whole, so the
-        // hours it was live bill on the next roll.
-        statements.push(
-          db
-            .prepare(
-              `INSERT INTO file_versions
-                 (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-            )
-            .bind(account, version.b2FileId, key, sizeBytes, createdAt, hiddenAt),
-        );
-        inserted += 1;
-        touch(hourStart(createdAt));
-        if (hiddenAt !== null) {
-          touch(hourStart(hiddenAt));
-        }
+    byId.set(row.b2_file_id, row);
+  }
+  const statements = [];
+  const listedIds = new Set();
+  // A listed version with no id cannot be matched to its row, so this run
+  // cannot tell which stored rows are really gone: it marks none of them.
+  let listingComplete = true;
+  for (const raw of listed) {
+    const version = /** @type {ProviderVersion} */ (raw);
+    if (typeof version.b2FileId !== "string" || version.b2FileId === "") {
+      listingComplete = false;
+      skip("listed version with no id", new TypeError("the provider listed a version with no id"));
+      continue;
+    }
+    if (listedIds.has(version.b2FileId)) {
+      // Two live versions with one id cannot both be true; a repair from one
+      // of them would be a coin toss, so the second is skipped by name.
+      skip(`id=${version.b2FileId}`, new Error("listed twice in one account"));
+      continue;
+    }
+    // Listed, so its stored row is not gone, even when this version is
+    // skipped below for a bad field.
+    listedIds.add(version.b2FileId);
+    try {
+      const statement = repairStatement(db, account, prefix, version, byId.get(version.b2FileId));
+      if (statement === null) {
         continue;
       }
-      if (hiddenAt !== null && row.hidden_at === null) {
-        // The hide never reached the api Worker: the row bills as if the
-        // version were still live, and the hour the version stopped is the one
-        // the rollup must recompute (the minimum's shortfall lives there too).
-        statements.push(
-          db
-            .prepare(
-              "UPDATE file_versions SET hidden_at = ?1 WHERE account_id = ?2 AND b2_file_id = ?3",
-            )
-            .bind(hiddenAt, account, version.b2FileId),
-        );
+      statements.push(statement.sql);
+      if (statement.kind === "insert") {
+        inserted += 1;
+      } else {
         hidden += 1;
-        touch(hourStart(hiddenAt));
       }
+      for (const hour of statement.hours) {
+        touch(hour);
+      }
+    } catch (error) {
+      skip(`id=${version.b2FileId}`, error);
     }
+  }
+  if (listingComplete) {
     for (const row of byId.values()) {
       if (listedIds.has(row.b2_file_id)) {
         continue;
       }
       // The provider no longer has this version. Billing runs created_at ->
       // hidden_at and a hard delete comes after the hide, so a gone row must
-      // already be hidden; if its hidden time never arrived either, the hide is
-      // booked at the run instant (the safest known time) beside the mark, and
-      // the hours from its creation are re-rolled. `deleted_at` records the
-      // disappearance for the operator either way.
+      // already be hidden; if its hidden time never arrived either, the hide
+      // is booked at the run instant, in the hour no run has rolled yet
+      // (drive#519). `deleted_at` records the disappearance either way.
       if (row.hidden_at === null) {
         statements.push(
           db
@@ -2134,7 +2359,6 @@ export async function reconcileMeter(db, store, now = Date.now()) {
             .bind(at, account, row.b2_file_id),
         );
         hidden += 1;
-        touch(hourStart(row.created_at));
       } else if (row.deleted_at === null) {
         statements.push(
           db
@@ -2146,39 +2370,92 @@ export async function reconcileMeter(db, store, now = Date.now()) {
       }
       marked += 1;
     }
-    if (statements.length > 0) {
-      // One batch per account: the account's repairs land together or not at
-      // all, so a half-fixed ledger cannot exist. savepoint=false builds the
-      // batch's own transaction.
-      await db.batch(statements);
-    }
   }
   if (earliestAffectedHour !== null) {
-    // Rewind the watermark so the next hourly roll re-rolls the corrected
-    // hours, oldest first. Only a mark that exists and sits ahead of the
-    // correction is moved: a deployment that has never rolled has billed
-    // nothing, and the next roll already reads the rows from its own floor.
+    // Queue this account's corrected closed hours for a re-roll, in the same
+    // batch as the repairs. Only hours the global roll already wrote need it:
+    // a deployment that has never rolled, or a correction newer than the
+    // mark, is billed by the global roll when it gets there.
     const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
     const rolledThrough = stampMillis(mark?.rolled_through);
-    if (rolledThrough !== null && earliestAffectedHour < rolledThrough) {
-      await db.prepare(ROLLED_THROUGH_WRITE_SQL).bind(earliestAffectedHour).run();
+    if (rolledThrough !== null && earliestAffectedHour <= rolledThrough) {
+      statements.push(
+        db.prepare(REROLL_QUEUE_SQL).bind(account, earliestAffectedHour, rolledThrough, at),
+      );
     }
   }
-  const result = {
-    accounts: accounts.length,
-    versions,
+  if (statements.length > 0) {
+    // One batch per account: the account's repairs land together or not at
+    // all, so a half-fixed ledger cannot exist.
+    await db.batch(statements);
+  }
+  return {
+    versions: listed.length,
     inserted,
     hidden,
     marked,
+    skipped,
     earliestAffectedHour,
   };
-  if (inserted > 0 || hidden > 0 || marked > 0) {
-    // The counts are the operator's view of what the safety net caught: a run
-    // that fixes something says so, and a run that fixes nothing stays quiet.
-    console.log(
-      `meter reconciler: inserted=${inserted} hidden=${hidden} marked=${marked} ` +
-        `from=${earliestAffectedHour ?? "none"} accounts=${accounts.length}`,
-    );
+}
+
+/**
+ * The one statement a listed version needs, or null when its row already
+ * agrees. Throws on a field that will not parse, which the caller logs and
+ * skips.
+ * @param {D1Database} db
+ * @param {string} account
+ * @param {string} prefix
+ * @param {ProviderVersion} version
+ * @param {VersionRow|undefined} row
+ * @returns {{kind: "insert"|"hide", sql: D1PreparedStatement, hours: number[]}|null}
+ */
+function repairStatement(db, account, prefix, version, row) {
+  const createdAt = providerMillis(version.createdAt, "createdAt");
+  const hiddenAt =
+    version.hiddenAt === null || version.hiddenAt === undefined
+      ? null
+      : providerMillis(version.hiddenAt, "hiddenAt");
+  const sizeBytes = Number(version.sizeBytes);
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {
+    throw new TypeError(`the provider listed a version of ${sizeBytes} bytes`);
   }
-  return result;
+  // The key the event stream stores: the account prefix then the drive
+  // path. A drive path that is not a usable key is refused rather than
+  // stored.
+  if (typeof version.path !== "string" || !version.path.startsWith("/")) {
+    throw new TypeError(`the provider listed a version at ${String(version.path)}`);
+  }
+  const key = `${prefix}${version.path}`;
+  if (!row) {
+    // A version the event stream never stored: insert it whole, so the
+    // hours it was live bill on the re-roll.
+    return {
+      kind: "insert",
+      sql: db
+        .prepare(
+          `INSERT INTO file_versions
+             (account_id, b2_file_id, path, size_bytes, created_at, hidden_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+        )
+        .bind(account, version.b2FileId, key, sizeBytes, createdAt, hiddenAt),
+      hours:
+        hiddenAt === null ? [hourStart(createdAt)] : [hourStart(createdAt), hourStart(hiddenAt)],
+    };
+  }
+  if (hiddenAt !== null && row.hidden_at === null) {
+    // The hide never reached the api Worker: the row bills as if the
+    // version were still live, and the hour the version stopped is the one
+    // the re-roll must recompute (the minimum's shortfall lives there too).
+    return {
+      kind: "hide",
+      sql: db
+        .prepare(
+          "UPDATE file_versions SET hidden_at = ?1 WHERE account_id = ?2 AND b2_file_id = ?3",
+        )
+        .bind(hiddenAt, account, version.b2FileId),
+      hours: [hourStart(hiddenAt)],
+    };
+  }
+  return null;
 }
