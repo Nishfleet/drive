@@ -385,12 +385,19 @@ test("a body that is not JSON, or not an object, is a 400 and never a 202", asyn
 });
 
 test("the three methods the spec's screen names are the three it accepts", () => {
-  // docs/build-spec.md, "Screens": "Sign in | Email one-time link, or Google
-  // or GitHub. A card is needed at sign-up". This is the spec's own sentence,
-  // kept here as the line a change to the method list has to argue with.
+  // docs/build-spec.md, "Screens": the sign-in row, corrected in drive#524.
+  // SIGNIN_METHODS is the endpoint's list (all three are read and answered,
+  // two of them with the closed door); SIGNIN_OFFERED_METHODS is the screen's
+  // list, which carries email alone because no client id exists to redirect to
+  // (drive#180). The spec sentence says that, and this is the line a change to
+  // either list has to argue with.
   assert.ok(
-    spec.includes("Email one-time link, or Google or GitHub. A card is needed at sign-up"),
+    spec.includes("Email one-time link only"),
     "the spec's sign-in screen sentence has changed; update this test and the copy",
+  );
+  assert.ok(
+    spec.includes("A card is needed at sign-up"),
+    "the card sentence has changed; update this test and the copy",
   );
   assert.deepEqual([...SIGNIN_METHODS], ["email", "google", "github"]);
   for (const method of SIGNIN_METHODS) {

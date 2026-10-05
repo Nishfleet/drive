@@ -29,6 +29,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.7.7",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.7",
     "hono": "^4.13.12",

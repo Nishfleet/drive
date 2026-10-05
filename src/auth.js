@@ -24,8 +24,9 @@
 // builds every link it mails from `baseURL`, so a deployment with neither set
 // is a deployment that is not signed in — not one with a weak session or a
 // link that points at the wrong host.
+import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
-import { magicLink } from "better-auth/plugins";
+import { magicLink, twoFactor } from "better-auth/plugins";
 import { sendEmail } from "./email-send.js";
 
 /** @typedef {import("./email-send.js").EmailBinding} EmailBinding */
@@ -192,6 +193,33 @@ export function createAuth(options) {
         sendMagicLink: async ({ email, token }) => {
           await options.sendLink({ to: email, url: signinLink(token, options.baseURL) });
         },
+      }),
+      // The second factor (drive#524): a TOTP code in an authentication app,
+      // with one-time recovery codes the library encrypts at rest and hands
+      // back exactly once, at the moment they are generated. Enrollment is
+      // passwordless because no drive account carries a password to check —
+      // the sign-in flow is the emailed link — so `allowPasswordless` drops
+      // the body schema's password requirement; the account gate is unchanged
+      // (the factor arms an already-signed-in browser session, it does not
+      // gate the email link, and the device-approval route is where the
+      // library's verify endpoints are enforced, workers/api/src/device-routes.js).
+      // The tables this needs are migration 0026 (migrations/drive/), and the
+      // pin in test/auth.test.mjs fails when the shipped files and the
+      // library's expected schema drift apart.
+      twoFactor({
+        allowPasswordless: true,
+      }),
+      // Passkeys on the same account, over the library's stock WebAuthn
+      // plugin: registration and authentication options, the credential rows
+      // (table `passkey`, same migration) and the verify endpoints. The
+      // relying-party id is the deployment's own host, derived from the same
+      // configured base URL the sign-in links are built on, so a passkey is
+      // bound to the one address the deployment is served on — never to a
+      // Host header a caller chose.
+      passkey({
+        rpID: new URL(options.baseURL).hostname,
+        rpName: "drive",
+        origin: options.baseURL.replace(/\/$/, ""),
       }),
     ],
   });

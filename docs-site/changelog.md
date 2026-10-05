@@ -10,6 +10,10 @@ the live site.
 
 ## 2026-10-05
 
+- Your account can carry a second factor: a rotating six-digit code from an
+  authentication app, or a passkey. Approving a new device asks for that code
+  after the code from the terminal, and ten one-time recovery codes are shown
+  once when you turn it on. The security page has the recovery rule.
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
   balance never expires. Nothing is charged to your card after use. The

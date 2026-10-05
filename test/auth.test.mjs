@@ -4,7 +4,7 @@
 // migrations applied — D1 is SQLite, so the SQL these tests run is the SQL the
 // Worker runs:
 //
-//   1. The migration file is what Better Auth's own planner generates.
+//   1. The shipped migrations are the schema Better Auth's own planner expects.
 //   2. A link works once.
 //   3. A link expires.
 //   4. A session survives a Worker restart (a new isolate, a new instance of
@@ -14,10 +14,11 @@
 //      deployment with no auth at all all read as signed out.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { passkey } from "@better-auth/passkey";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
+import { magicLink, twoFactor } from "better-auth/plugins";
 import { authFor, createAuth, SIGNIN_LINK_PATH, sessionAccount } from "../src/auth.js";
 import worker from "../src/index.js";
 import {
@@ -46,59 +47,58 @@ const headers = () => new Headers({ origin: TEST_BASE_URL });
 
 // --------------------------------------------------------------- the schema
 
-test("the migration file is what Better Auth's own planner generates", async () => {
-  // Better Auth's Kysely adapter compiles the tables its session query runs
-  // against — including the rateLimit table when storage is "database"
-  // (drive issue #200). This pin makes a library upgrade that changes the
-  // schema fail here, at the migration, instead of at the first sign-in or
-  // rate-limited send.
+test("the shipped migrations are the schema Better Auth's own planner expects", async () => {
+  // Better Auth resolves the schema its plugins demand against the database's
+  // own tables — a Kysely introspection of the real SQLite file the shim holds
+  // — and the library refuses to answer at all (SCHEMA_MISMATCH) when a table
+  // or column it needs is missing. That reflection is the pin: the shipped
+  // migration files, applied the way `wrangler d1 migrations apply` applies
+  // them, must leave the planner with nothing to do. A library upgrade that
+  // changes the schema fails here, at the migration, rather than at the first
+  // sign-in or the first rate-limited send (drive#200: the rateLimit table
+  // when storage is "database"; drive#524: `twoFactor` and `passkey`, and the
+  // user.twoFactorEnabled column).
   const instance = betterAuth({
-    database: createTestD1({ migrations: [] }),
+    database: createTestD1({
+      // The two files that hold the sign-in flow's schema, plus the
+      // second-factor file, are the set the library's model covers: 0005 has
+      // the core tables (already applied by every deployment, so the
+      // two-factor columns land as an ALTER in 0026 instead), 0011 the
+      // rateLimit table, and 0026 what the second-factor and passkey plugins
+      // read.
+      migrations: [
+        "drive/0005_better_auth.sql",
+        "drive/0011_rate_limit.sql",
+        "drive/0026_two_factor_passkey.sql",
+      ],
+    }),
     secret: SECRET,
     baseURL: TEST_BASE_URL,
     emailAndPassword: { enabled: false },
+    appName: "drive",
     // Mirrors the option in src/auth.js: the rate-limit counters are stored
-    // in D1, so the planner now emits the rateLimit table too.
+    // in D1, so the planner expects the rateLimit table too.
     rateLimit: { storage: "database" },
+    // The whole plugin set src/auth.js mounts, in the same order: a drift in
+    // this list makes the planner expect a schema the migration files do not
+    // carry, which is exactly what this test exists to catch.
     plugins: [
-      (await import("better-auth/plugins")).magicLink({
-        sendMagicLink: async () => {},
-      }),
+      magicLink({ sendMagicLink: async () => {} }),
+      twoFactor({ allowPasswordless: true }),
+      passkey({ rpID: "drive.test", rpName: "drive", origin: TEST_BASE_URL }),
     ],
   });
   const plan = await getMigrations(
     /** @type {Parameters<typeof getMigrations>[0]} */ (/** @type {unknown} */ (instance.options)),
   );
-  const generated = await plan.compileMigrations();
-  // The shipped migration is split across two files: 0005 holds the four
-  // core tables and 0011 holds the rateLimit table, because a deployed D1
-  // has already applied 0005 through 0010 and cannot re-run them.
-  // Concatenate them so the comparison is against the full set the
-  // planner emits.
-  const shipped = ["0005_better_auth.sql", "0011_rate_limit.sql"]
-    .map((name) => readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"))
-    .join("\n");
-  assert.ok(plan.toBeCreated.length > 0, "the planner must have tables to create");
-  // The planner returns statements separated by two newlines; the file carries
-  // one statement per line. Compare statement sets rather than whitespace.
-  /** @param {string} text */
-  const statements = (text) =>
-    text
-      .split(";")
-      .map(/** @param {string} statement */ (statement) => statement.trim())
-      .filter(Boolean)
-      .map(
-        /** @param {string} statement */ (statement) =>
-          statement
-            .split("\n")
-            .filter(/** @param {string} line */ (line) => !line.trim().startsWith("--"))
-            .join(" ")
-            .replace(/\s+/g, " "),
-      );
   assert.deepEqual(
-    statements(generated).sort(),
-    statements(shipped).sort(),
-    `the migration drifted from what the planner generates:\n${generated}`,
+    {
+      created: plan.toBeCreated,
+      added: plan.toBeAdded,
+      addedIndexes: plan.toBeAddedIndexes,
+    },
+    { created: [], added: [], addedIndexes: [] },
+    "a shipped migration file drifted from what the plugin set expects",
   );
 });
 

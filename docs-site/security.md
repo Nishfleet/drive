@@ -36,6 +36,29 @@ uploads that waited in the cache go up.
 that no longer exists cannot be used, and the next mount asks for a new one.
 Each agent tool is revoked on its own with `drive agents revoke <tool>`.
 
+## The second factor
+
+You can turn on a second factor for your account: a rotating six-digit code
+from an authentication app, or a passkey. While it is on, approving a new
+device — the "Approve `drive` on this Mac?" page — asks for that code after
+the code from the terminal. A code thief who has the terminal output but not
+your authentication app approves nothing.
+
+The recovery rule: when you turn the second factor on, the page shows ten
+one-time recovery codes once. They are never shown again, so store them
+somewhere safe before you close the tab. Each code works once, in place of
+the rotating code, and a used code is dead from then on.
+
+If you lose your authentication app, a recovery code approves a device and a
+signed-in session can turn the factor off or generate ten new codes. If you
+lose both the app and the codes, the sessions already signed in on your
+devices are what you have left. We cannot reset a factor for you in version 1:
+there is no support path that overrides it, by design — a second factor that
+support can switch off is not a second factor.
+
+Passkeys can be registered over the account api; there is no settings page for
+them in version 1.
+
 ## What we can and cannot reach
 
 Stated plainly, because a security page that lists only the good news is not

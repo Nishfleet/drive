@@ -87,7 +87,12 @@ import {
   SHARE_ENDPOINT,
   SHARE_LINK_PREFIX,
 } from "./share.js";
-import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
+import {
+  handleSigninLinkVerify,
+  handleSigninRequest,
+  SIGNIN_ENDPOINT,
+  signinClosedBody,
+} from "./signin.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
 import {
   handleFirstRunStatusRequest,
@@ -164,6 +169,7 @@ const SEND_EMAIL_PATH = "/api/emails/send";
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
+  "/api/auth/*",
   SEND_EMAIL_PATH,
   HEALTH_PATH,
   SIGNIN_ENDPOINT,
@@ -507,6 +513,28 @@ const csrfWhenBrowser = async (c, next) => {
   return next();
 };
 
+// ------------------------------------------------- the sign-in family (Better Auth)
+// Better Auth's own routes, mounted as one public family under its basePath
+// (src/auth.js). The site's own /api/signin forward reaches the same library
+// internally (src/signin.js), and this mount is the second factor's surface:
+// two-factor enrollment and verification, recovery-code generation and
+// passkey registration (drive#524) are the stock endpoints an already
+// signed-in browser session calls from the account pages. The prefix is in
+// PUBLIC_ROUTES so the account gate passes it: a session cookie is the whole
+// credential here, exactly as it is for the site's own pages, and the POSTs
+// behind it are writes on an existing session, so this app's same-origin
+// check above still runs first and a cross-site form post is refused before
+// the library sees one. Better Auth applies its own trusted-origin rule on
+// top of that. With no sign-in configuration the family answers the same
+// closed door the /api/signin forward answers (src/signin.js).
+const authApiHandler = async (/** @type {DriveContext} */ c) => {
+  const auth = authFor(c.env);
+  if (!auth) {
+    return c.json(signinClosedBody(), 503);
+  }
+  return auth.handler(c.req.raw);
+};
+
 /** @param {DriveContext} c */
 const filesHandler = async (c) => {
   const account = c.get("account");
@@ -576,6 +604,14 @@ export function createApp() {
   // Go CLI) is not a browser, so it passes this check and the account gate
   // is what holds it.
   app.use("/api/*", csrfWhenBrowser);
+
+  // The sign-in family (Better Auth) under its basePath (src/auth.js),
+  // mounted after both checks above: PUBLIC_ROUTES passes it through the
+  // account gate, and a cross-site browser post is refused here first.
+  // Method-limited to GET and POST, which is the whole stock surface, so a
+  // request with any other method is a 405 rather than a page-less call into
+  // the library.
+  app.on(["GET", "POST"], "/api/auth/*", authApiHandler);
 
   // --------------------------------------------------- the second family (/v1/*)
   // The api Worker's family on the one host that answers the CLI's one base

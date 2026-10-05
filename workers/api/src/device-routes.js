@@ -17,6 +17,17 @@
 // the code row by the store; approving no longer makes an account, it attaches
 // the person who already signed in.
 //
+// Since drive#524 the approval itself is where the second factor bites. An
+// account that has armed two-factor authentication (the TOTP secret confirmed
+// with one correct code, `user.twoFactorEnabled`) must re-prove it here: the
+// approve page shows a second field, and the approve POST checks the code —
+// a TOTP value or a one-time recovery code — through the library's own
+// endpoints before the store approves anything. A stolen sign-in cookie (an
+// inbox the attacker read) is therefore not enough to attach a new device;
+// the attacker needs the rotating code from the person's authentication app
+// too. The field appears only for accounts with the factor on, so an account
+// that never armed it sees the page it always did.
+//
 // All three POSTs are rate limited, one bucket each: the two public ones write
 // or read a row for a caller that holds no credential, so an unlimited
 // version of them is a way to fill the table or burn reads from anywhere. The
@@ -51,7 +62,7 @@ import { bearerToken, errorResponse, json } from "./http.js";
  * route in this module. Declared structurally rather than as the dispatcher's
  * full `Ctx` so a handler names exactly what it uses, the same shape the key
  * routes use.
- * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}}|null}} DeviceCtx
+ * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string, twoFactorEnabled?: unknown}} | null>, verifyTOTP?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>, verifyBackupCode?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>}}|null}} DeviceCtx
  */
 
 // The two edge-limit bindings the device flow answers behind (drive issue #147,
@@ -115,6 +126,11 @@ const APPROVE_TITLE = "Approve drive on this device";
 const APPROVE_INTRO =
   "Type the code shown in the drive terminal, then approve. You are signed in, " +
   "so approving signs this device in to your drive.";
+const SECOND_FACTOR_LABEL = "Code from your authentication app";
+const SECOND_FACTOR_HINT = "A one-time recovery code works here too.";
+const SECOND_FACTOR_MISSING = "Type the code from your authentication app, or a recovery code.";
+const SECOND_FACTOR_WRONG =
+  "That code did not match. Check your authentication app and try again, or use a recovery code.";
 const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
 
 // The characters an HTML text or attribute value must not contain, and what
@@ -126,10 +142,17 @@ const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
  * The approval page. A static shell; the code from the query string is never
  * copied into the form (a pre-filled code is the phishing help drive#518
  * closes). The pending device's name and time are shown when the store has
- * them, escaped.
- * @param {{notice?: string, deviceName?: string, requestedAt?: string}} [options]
+ * them, escaped. `secondFactor` adds the second-factor field for an account
+ * with two-factor authentication on (drive#524); an account without it gets
+ * the one-field page it always did.
+ * @param {{notice?: string, deviceName?: string, requestedAt?: string, secondFactor?: boolean}} [options]
  */
-function approvePage({ notice = "", deviceName = "", requestedAt = "" } = {}) {
+function approvePage({
+  notice = "",
+  deviceName = "",
+  requestedAt = "",
+  secondFactor = false,
+} = {}) {
   const deviceLine =
     deviceName === ""
       ? ""
@@ -150,6 +173,12 @@ function approvePage({ notice = "", deviceName = "", requestedAt = "" } = {}) {
     `<label for="user_code">Code from the terminal</label>\n` +
     `<input id="user_code" name="user_code" value="" ` +
     `autocomplete="one-time-code" autocapitalize="characters" required>\n` +
+    (secondFactor
+      ? `<label for="second_factor">${SECOND_FACTOR_LABEL}</label>\n` +
+        `<input id="second_factor" name="second_factor" value="" ` +
+        `autocomplete="one-time-code" required>\n` +
+        `<p>${SECOND_FACTOR_HINT}</p>\n`
+      : "") +
     `<button type="submit">Approve</button>\n</form>\n</main>\n</body>\n</html>\n`;
   return new Response(body, {
     status: 200,
@@ -180,9 +209,10 @@ function connectedPage() {
  * @param {string} notice
  * @param {string} [deviceName]
  * @param {string} [requestedAt]
+ * @param {boolean} [secondFactor]
  */
-function approvePageError(notice, deviceName = "", requestedAt = "") {
-  return approvePage({ notice, deviceName, requestedAt });
+function approvePageError(notice, deviceName = "", requestedAt = "", secondFactor = false) {
+  return approvePage({ notice, deviceName, requestedAt, secondFactor });
 }
 
 /**
@@ -240,10 +270,11 @@ async function sendApproveNotice(ctx, account, pending) {
   });
 }
 /**
- * Reads the user code from a form post or a JSON body. The page posts a form,
- * a script may post JSON; both are accepted without adding a parser.
+ * Reads the user code (and the second factor when the page asked for one) from
+ * a form post or a JSON body. The page posts a form, a script may post JSON;
+ * both are accepted without adding a parser.
  * @param {Request} request
- * @returns {Promise<{userCode: string}|{error: string}>}
+ * @returns {Promise<{userCode: string, secondFactor: string}|{error: string}>}
  */
 async function readUserCode(request) {
   const type = (request.headers.get("content-type") ?? "").split(";")[0].trim();
@@ -257,7 +288,10 @@ async function readUserCode(request) {
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return { error: "Send a JSON object." };
     }
-    return { userCode: typeof body.user_code === "string" ? body.user_code : "" };
+    return {
+      userCode: typeof body.user_code === "string" ? body.user_code : "",
+      secondFactor: typeof body.second_factor === "string" ? body.second_factor : "",
+    };
   }
   let text;
   try {
@@ -266,7 +300,85 @@ async function readUserCode(request) {
     return { error: "The request body could not be read." };
   }
   const params = new URLSearchParams(text);
-  return { userCode: params.get("user_code") ?? "" };
+  return {
+    userCode: params.get("user_code") ?? "",
+    secondFactor: params.get("second_factor") ?? "",
+  };
+}
+
+/**
+ * Whether the approving session carries the second factor (drive#524). The
+ * flag is the library's `twoFactorEnabled` on the user row, set the moment
+ * the first correct code confirms enrollment — so an account that armed the
+ * factor and never confirmed is not asked here, and an account that never
+ * armed it is not asked at all. No sign-in flow on this request means no
+ * factor: the bearer-token approvals (a device token from `drive cap`) carry
+ * no browser session, and that token is already a live credential for the
+ * account it names.
+ * @param {Request} request
+ * @param {DeviceCtx} ctx
+ * @returns {Promise<boolean>}
+ */
+async function approveNeedsSecondFactor(request, ctx) {
+  if (!ctx.accounts) return false;
+  try {
+    const found = await ctx.accounts.api.getSession({ headers: request.headers });
+    return found?.user?.twoFactorEnabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks the second factor through the library's own endpoints: the value is
+ * tried as a TOTP code, then as a one-time recovery code, and any `set-cookie`
+ * the check hands back is carried onto the page response — the first correct
+ * code after enrollment rotates the session, and the browser should keep the
+ * newer cookie even though an approval that reaches this function always
+ * runs against a confirmed factor (the flag above is only true after the
+ * rotate-on-confirm step). Both endpoints throw on a wrong value without
+ * touching the account's sign-in lockout — a live session is not a sign-in —
+ * so the edge limiter above is what bounds repeated guesses, on top of the
+ * code's own 30-second rotation and the recovery code's single use.
+ * @param {Request} request
+ * @param {DeviceCtx} ctx
+ * @param {string} code the second-factor value the person typed
+ * @returns {Promise<{ok: boolean, setCookie: string[]}>}
+ */
+async function verifyApprovalSecondFactor(request, ctx, code) {
+  const api = ctx.accounts?.api;
+  // A surface without the verify endpoints cannot check the factor, so it
+  // cannot approve past it: fail closed, never open.
+  if (typeof api?.verifyTOTP !== "function" || typeof api?.verifyBackupCode !== "function") {
+    return { ok: false, setCookie: [] };
+  }
+  /** @type {string[]} */
+  const setCookie = [];
+  /** @param {{headers?: Headers}|undefined} result */
+  const collect = (result) => {
+    for (const cookie of result?.headers?.getSetCookie() ?? []) {
+      setCookie.push(cookie);
+    }
+  };
+  try {
+    collect(
+      await api.verifyTOTP({ body: { code }, headers: request.headers, returnHeaders: true }),
+    );
+    return { ok: true, setCookie };
+  } catch {
+    try {
+      collect(
+        await api.verifyBackupCode({
+          body: { code },
+          headers: request.headers,
+          returnHeaders: true,
+        }),
+      );
+      return { ok: true, setCookie };
+    } catch {
+      return { ok: false, setCookie };
+    }
+  }
 }
 
 /**
@@ -421,7 +533,8 @@ export async function approvePageRoute(request, ctx) {
     });
   }
   const pending = userCode === "" ? null : await ctx.store.pendingDeviceApproval(userCode);
-  return approvePage(pendingPageFields(pending));
+  const secondFactor = await approveNeedsSecondFactor(request, ctx);
+  return approvePage({ ...pendingPageFields(pending), secondFactor });
 }
 
 /**
@@ -459,6 +572,28 @@ export async function approveDeviceCodeRoute(request, ctx) {
   // This is an account route, so ctx.account is guaranteed non-null by the dispatcher.
   /** @type {{id: string, name?: string, email?: string}} */
   const account = /** @type {{id: string, name?: string, email?: string}} */ (ctx.account);
+  // The second factor is checked before the store is touched, so a request
+  // that fails it approves nothing and consumes nothing: the pending code
+  // stays pending, and the person can retype. The page is re-rendered with
+  // the field still on it, so the next try is one edit away. The `set-cookie`
+  // the check hands back rides the connected page — the first correct code
+  // after enrollment rotates the browser's session, and the newer cookie is
+  // the one to keep.
+  const fields = pendingPageFields(await ctx.store.pendingDeviceApproval(userCode));
+  const armed = await approveNeedsSecondFactor(request, ctx);
+  /** @type {string[]} */
+  let setCookie = [];
+  if (armed) {
+    const code = read.secondFactor.trim();
+    if (code === "") {
+      return approvePageError(SECOND_FACTOR_MISSING, fields.deviceName, fields.requestedAt, true);
+    }
+    const checked = await verifyApprovalSecondFactor(request, ctx, code);
+    if (!checked.ok) {
+      return approvePageError(SECOND_FACTOR_WRONG, fields.deviceName, fields.requestedAt, true);
+    }
+    setCookie = checked.setCookie;
+  }
   const pending = await ctx.store.pendingDeviceApproval(userCode);
   const result = await ctx.store.approveDeviceCode(userCode, account);
   if ("error" in result) {
@@ -468,11 +603,16 @@ export async function approveDeviceCodeRoute(request, ctx) {
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";
-    const fields = pendingPageFields(pending);
-    return approvePageError(notice, fields.deviceName, fields.requestedAt);
+    // The account is armed (the check above passed), so the retry page keeps
+    // the second-factor field on it: the person fixes the code, not the page.
+    return approvePageError(notice, fields.deviceName, fields.requestedAt, armed);
   }
   await sendApproveNotice(ctx, account, pending);
-  return connectedPage();
+  const connected = connectedPage();
+  for (const cookie of setCookie) {
+    connected.headers.append("set-cookie", cookie);
+  }
+  return connected;
 }
 
 /**

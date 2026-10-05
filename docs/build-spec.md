@@ -79,8 +79,8 @@ Web pages are served by the api Worker. There is no Mac app in v1; Finder is the
 
 | Screen | What's on it |
 |---|---|
-| Sign in | Email one-time link, or Google or GitHub. A card is needed at sign-up |
-| Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal |
+| Sign in | Email one-time link only. The page hides the Google and GitHub offers on purpose (issue #180): they are a closed door, not a 202 for a redirect to nowhere. A card is needed at sign-up |
+| Device approval | "Approve `drive` on Nish's MacBook?" with the code from the terminal, and for an account with a second factor turned on (drive#524), that factor as well: the rotating code or a recovery code |
 | Usage | One "you saved" line, whose copy varies by month type (decided #39, 2026-09-30): a capped month (metered > ceiling) shows "Our price cap saved you $X" with X = metered − bill; an uncapped month shows "You paid $X less than a flat plan" with X = ceiling − bill. Hidden when the figure is ≤ 0, and on a month with no bill at all (an empty drive is not a saving against anything). Then stored GB (line chart, last 30 days), this month's cost, downloads out of the free 3x, cap slider |
 | Devices and agents | Every key: device or agent tool, last used, revoke button |
 | Billing | Dodo's hosted portal: card, invoices, the membership line |
