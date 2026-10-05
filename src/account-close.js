@@ -204,7 +204,9 @@ async function sendCloseMail(email, mailFrom, to, kind, data) {
     return true;
   } catch (error) {
     console.error(
-      `account close: the ${kind} email for ${to} failed and stays queued for the next pass`,
+      "account close: the %s email for %s failed and stays queued for the next pass",
+      kind,
+      to,
       error instanceof Error ? error.message : String(error),
     );
     return false;
@@ -311,7 +313,7 @@ export async function runAccountCloseCron(input) {
   const dueReceipt = await input.devices.listDueCloseMail();
   const dueReminder = await input.devices.listDueReminder(at - CLOSE_REMINDER_DAYS * DAY_SECONDS);
   const purgeBefore = at - CLOSE_GRACE_DAYS * DAY_SECONDS;
-  const duePurge = await input.devices.listDuePurge(purgeBefore);
+  let duePurge = [];
   let mailed = 0;
   let mailFailures = 0;
   for (const row of dueReceipt) {
@@ -344,7 +346,8 @@ export async function runAccountCloseCron(input) {
     } catch (error) {
       mailFailures += 1;
       console.error(
-        `account close: the close receipt for account ${row.id} failed and stays queued`,
+        "account close: the close receipt for account %s failed and stays queued",
+        row.id,
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -378,7 +381,8 @@ export async function runAccountCloseCron(input) {
       reminded += 1;
     } catch (error) {
       console.error(
-        `account close: the reminder for account ${row.id} failed and stays queued`,
+        "account close: the reminder for account %s failed and stays queued",
+        row.id,
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -389,10 +393,26 @@ export async function runAccountCloseCron(input) {
   // through when a mail outage turned into data that outlived its own notice
   // (drive#522). Listed after the receipt pass, not before it, so a receipt
   // that landed a moment ago clears the account from the report it caused.
+  // Read the purge list after the notice passes, not before them. A purge is
+  // only allowed once both notices are recorded, and on a first pass at day 30
+  // the reminder is sent by this very pass. Reading the list first would skip
+  // that account for a whole day on the strength of a notice it had not been
+  // sent yet, which is the delay the "purge only accounts whose notices were
+  // sent" rule is meant to prevent, not create.
+  duePurge = await input.devices.listDuePurge(purgeBefore);
   const blockedPurge = await input.devices.listBlockedPurge(purgeBefore);
   for (const row of blockedPurge) {
+    const missing = [
+      row.closeMailSentAt === null || row.closeMailSentAt === undefined ? "close receipt" : null,
+      row.reminderSentAt === null || row.reminderSentAt === undefined ? "reminder" : null,
+    ]
+      .filter((name) => name !== null)
+      .join(" and ");
     console.error(
-      `account close: account ${row.id} is past its ${CLOSE_GRACE_DAYS}-day window but its close receipt never landed, so its files were NOT deleted; the receipt retries on the next pass`,
+      "account close: account %s is past its %s-day window but its %s never landed, so its files were NOT deleted; the notice retries on the next pass",
+      row.id,
+      CLOSE_GRACE_DAYS,
+      missing,
     );
   }
   let purged = 0;

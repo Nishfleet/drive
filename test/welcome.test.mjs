@@ -257,13 +257,7 @@ test("the release only undoes the claim it was told about", async () => {
   // alone.
   const db = welcomeDB("acct_release");
   const devices = storeFor(db);
-  await db.apply(
-    "UPDATE accounts SET welcome_sent_at = ?1 WHERE id = ?2 AND welcome_sent_at IS NULL",
-    [999, "acct_release"],
-  );
-  await db.apply(
-    "UPDATE accounts SET welcome_sent_at = NULL WHERE id = ?1 AND welcome_sent_at = ?2",
-    ["acct_release", 1],
-  );
+  await devices.claim("acct_release", 999);
+  await devices.release("acct_release", 1);
   assert.equal(db.row.welcome_sent_at, 999, "a release of a different claim is a no-op");
 });

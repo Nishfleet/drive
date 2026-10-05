@@ -984,10 +984,10 @@ test("the close revokes the account's access before it tries to send anything", 
   const calls = [];
   const email = {
     /**
-     * @param {{to: string}} message
+     * @param {{to: string}} _message
      * @returns {Promise<{messageId: string}>}
      */
-    async send(message) {
+    async send(_message) {
       calls.push("mail");
       // By the time the mailer runs, the account is already closed.
       const state = await world.devices.getCloseState(account.id);
@@ -1039,8 +1039,8 @@ test("the purge waits for the close receipt, and a skipped purge is named", asyn
   assert.equal(first.purgeSkipped, 1, "the skipped account is reported, not passed over");
   assert.ok(await scoped.read("/gated.txt"), "the bytes are still there without the notice");
 
-  // The second night: the mailer is healthy, the receipt lands, and only
-  // then does the purge run.
+  // The second night: the mailer is healthy, the receipt and the reminder
+  // both land, and only then does the purge run.
   const second = await runAccountCloseCron({
     db: world.db,
     devices: world.devices,
@@ -1050,15 +1050,24 @@ test("the purge waits for the close receipt, and a skipped purge is named", asyn
     now: clock.now(),
   });
   assert.equal(second.mailed, 1, "the queued receipt goes out");
+  assert.equal(second.reminded, 1, "and the reminder this account was already due");
   assert.equal(second.purgeSkipped, 0, "and it is no longer reported as blocked");
-  // The purge listing is taken at the top of the pass, before this pass's
-  // receipt went out, so the bytes survive until the next night. The notice
-  // has landed by then either way, which is the property the gate exists for.
-  assert.equal(second.purged, 0);
-  assert.ok(await scoped.read("/gated.txt"), "the notice landed this pass, so nothing is hidden");
+  // The purge list is read after the notice passes, so an account whose
+  // notices land in this same pass is purged in this same pass rather than
+  // waiting a night it has already been given the notice for. The bytes
+  // survive only while a notice is genuinely missing, which is the property
+  // the gate exists for.
+  assert.equal(second.purged, 1, "both notices landed, so the purge runs this pass");
+  assert.equal(await scoped.read("/gated.txt"), null, "the notice landed, so the bytes go");
+  const subjects = world.email.sent.map((mail) => /** @type {{subject: string}} */ (mail).subject);
+  assert.deepEqual(subjects, [
+    "Your Drive account is closed",
+    "Your Drive files will be deleted in 5 days",
+    "Your Drive files have been deleted",
+  ]);
 
-  // Night three: the receipt is stamped, so the account is due and the purge
-  // runs with its own notice after it.
+  // Night three: nothing is left to do. The purge is stamped, so the account
+  // is not selected again and no second deletion notice goes out.
   clock.advanceDays(1);
   const third = await runAccountCloseCron({
     db: world.db,
@@ -1068,16 +1077,12 @@ test("the purge waits for the close receipt, and a skipped purge is named", asyn
     mailFrom: MAIL_FROM,
     now: clock.now(),
   });
-  assert.equal(third.purged, 1);
-  assert.equal(await scoped.read("/gated.txt"), null, "the bytes go once the notice landed");
-  const subjects = world.email.sent.map((mail) => /** @type {{subject: string}} */ (mail).subject);
-  // The day-25 reminder rode night two along with the receipt; the deletion
-  // notice is last, because it is the one that means the bytes are gone.
-  assert.deepEqual(subjects, [
-    "Your Drive account is closed",
-    "Your Drive files will be deleted in 5 days",
-    "Your Drive files have been deleted",
-  ]);
+  assert.equal(third.purged, 0, "a purged account is not purged twice");
+  assert.equal(
+    world.email.sent.length,
+    3,
+    "and no second deletion notice is sent for the same account",
+  );
 });
 
 test("the deletion notice is only sent for a purge that actually happened", async () => {

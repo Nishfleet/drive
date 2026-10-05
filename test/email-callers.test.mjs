@@ -53,16 +53,29 @@ const SENT_ELSEWHERE = new Set(["top-up-receipt", "low-balance", "device-approve
 // The kinds this gate cannot satisfy yet, and the issue that unblocks each one.
 // Deleting an entry here without a caller is the failure this file exists to
 // catch, so each one must be named with its blocker.
+//
+// The blockers are the issue's own words, checked against the repository on
+// 2026-10-05 rather than assumed: #522 names #496, #465 and #493 as the
+// threads that wire the cap, receipt and payment-failed sends. #465 and #493
+// are closed, and the sends they were supposed to leave wired still have no
+// caller in src/, so the template is still orphaned and this file says so.
+// #496 is open and carries the cap decision.
 const BLOCKED_ON_AN_ISSUE = new Map([
   // The spending cap is not enforced yet, so there is no moment to warn
   // anyone about. Building a cap here to get a caller would be inventing a
   // billing decision that is not ours to make (drive#496).
   ["cap-warning", "496"],
+  // #465 closed the $5 rollover and statements without leaving a caller for
+  // the monthly receipt template. The billing page renders its own history
+  // (src/portal.js), so the email has no place to be sent from until that
+  // work is reopened.
   ["read-only", "496"],
-  ["monthly-receipt", "496"],
-  // The payment-failed notice needs the Dodo webhook that reports a failed
-  // charge; there is no caller for it until that route exists (#496).
-  ["payment-failed", "496"],
+  ["monthly-receipt", "465"],
+  // #493 closed the card-failure ladder, but src/ has no Dodo webhook route
+  // that reports a failed charge, so nothing can send this today. The copy
+  // exists and points at the card-update path (drive#575); only the caller is
+  // missing.
+  ["payment-failed", "493"],
 ]);
 
 test("every customer email kind either has a caller in the shipped source or names its blocker", () => {

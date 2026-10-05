@@ -95,7 +95,7 @@ test("the purge cursor is written mid-purge, read by a fresh store, and cleared 
   assert.equal(row.purge_cursor, "/f-0999.txt");
 
   const reader = createD1DeviceStore(db, { now: clock.now });
-  // An account whose day-0 receipt never landed is not due for its purge
+  // A closed account whose notices never landed is not due for its purge
   // (drive#522). Deleting the files before the person was ever told the
   // account was closing is the one outcome the gate exists to prevent, so
   // this is proved against the real schema rather than the fake store.
@@ -112,12 +112,26 @@ test("the purge cursor is written mid-purge, read by a fresh store, and cleared 
     blocked.some((entry) => entry.id === silent.id),
     "the same account is reported as blocked, so the cron can name it",
   );
-  // Once the receipt lands, the same account becomes due.
+  // The receipt alone is not enough. "Notices" is plural: the day-25 reminder
+  // is the mail that says the files are about to be deleted, so a customer
+  // who got the receipt and not the reminder has had no chance to cancel.
   await writer.markCloseMailSent(silent.id, START_MS / 1000 + 5);
+  const receiptOnly = await reader.listDuePurge(cutoff);
+  assert.ok(
+    !receiptOnly.some((entry) => entry.id === silent.id),
+    "the receipt alone does not make the purge due; the reminder is required too",
+  );
+  const receiptOnlyBlocked = await reader.listBlockedPurge(cutoff);
+  assert.ok(
+    receiptOnlyBlocked.some((entry) => entry.id === silent.id),
+    "an account with only its receipt is still reported as blocked",
+  );
+  // Once the reminder lands as well, the same account becomes due.
+  await writer.markReminderSent(silent.id, START_MS / 1000 + 6);
   const nowDue = await reader.listDuePurge(cutoff);
   assert.ok(
     nowDue.some((entry) => entry.id === silent.id),
-    "sending the receipt makes the account due for its purge",
+    "sending both notices makes the account due for its purge",
   );
   const stillBlocked = await reader.listBlockedPurge(cutoff);
   assert.ok(!stillBlocked.some((entry) => entry.id === silent.id));
@@ -125,6 +139,7 @@ test("the purge cursor is written mid-purge, read by a fresh store, and cleared 
   // Night two's isolate reads the same boundary and resumes after it. The
   // account is due 30 days after its close, so the cutoff is close + 30d.
   await writer.markCloseMailSent(account.id, START_MS / 1000 + 5);
+  await writer.markReminderSent(account.id, START_MS / 1000 + 6);
   const due = await reader.listDuePurge(cutoff);
   const seen = due.find((entry) => entry.id === account.id);
   assert.ok(seen, "the closed account is due for its purge");

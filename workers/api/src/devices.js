@@ -438,6 +438,12 @@ export function createD1DeviceStore(db, options = {}) {
    * reminder is not required to purge, because a failed reminder is a
    * delivery problem the receipt pass already retries — blocking a purge on
    * it would keep data alive forever behind a mail outage.
+   *
+   * Both notices have to have gone out before the files go. The day-0 receipt
+   * says the account is closed, and the day-25 reminder says the files are
+   * about to be deleted; the reminder is the one somebody needs in order to
+   * have a chance to change their mind, so a missing reminder blocks the
+   * purge just like a missing receipt does.
    * @param {number} atSeconds
    */
   async function listDuePurge(atSeconds) {
@@ -448,6 +454,7 @@ export function createD1DeviceStore(db, options = {}) {
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
            AND close_mail_sent_at IS NOT NULL
+           AND reminder_sent_at IS NOT NULL
            AND closed_at <= ?1
          LIMIT ?2`,
       atSeconds,
@@ -457,11 +464,11 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
-   * Accounts past the grace window whose day-0 receipt never landed, so the
-   * close pass can skip them out loud rather than deleting the files in
-   * silence (drive#522). The receipt pass retries the same rows; this list is
-   * what the alert names, because "skipped" is the state a person needs to
-   * see.
+   * Accounts past the grace window whose notices never landed, so the close
+   * pass can skip them out loud rather than deleting the files in silence
+   * (drive#522). Both notices count as missing, matching listDuePurge: the
+   * receipt and reminder passes retry the same rows, and this list is what the
+   * alert names, because "skipped" is the state a person needs to see.
    * @param {number} atSeconds
    */
   async function listBlockedPurge(atSeconds) {
@@ -471,7 +478,7 @@ export function createD1DeviceStore(db, options = {}) {
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
-           AND close_mail_sent_at IS NULL
+           AND (close_mail_sent_at IS NULL OR reminder_sent_at IS NULL)
            AND closed_at <= ?1
          LIMIT ?2`,
       atSeconds,

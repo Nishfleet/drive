@@ -63,7 +63,8 @@ export async function sendWelcomeOnce(input) {
     // failed welcome as a sent one.
     await input.devices.release(account.id, claimedAt);
     console.error(
-      `welcome: the email to account ${account.id} failed and will be retried on the next sign-in`,
+      "welcome: the email to account %s failed and will be retried on the next sign-in",
+      account.id,
       error instanceof Error ? error.message : String(error),
     );
     return { sent: false, reason: "send-failed" };
