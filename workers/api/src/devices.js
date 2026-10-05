@@ -16,6 +16,7 @@ import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import {
   accountFounding,
+  accountFoundingFlag,
   releaseFoundingReservation as clearFoundingReservation,
   markAccountPaying,
   reserveFoundingSlot,
@@ -929,6 +930,12 @@ export function createD1DeviceStore(db, options = {}) {
       // The peak is the size the drive holds now (the page's "stored now"); the
       // bill itself reads only the GB-minutes (drive#463).
       const peakGb = storedGb(peak.peakBytes);
+      // The flag the cap bills on is the account's own (drive#488): without
+      // it enforceCap() counts the month at full price and stops a founding
+      // account at twice its real spend. accountFoundingFlag is the tolerant
+      // read the agent key cap uses (drive#482): a row that is gone reads as
+      // full price, the safe direction for a cap.
+      const foundingMember = await accountFoundingFlag(db, accountId);
       return {
         gbMinutes,
         storedGb: peakGb,
@@ -937,6 +944,7 @@ export function createD1DeviceStore(db, options = {}) {
         averageStoredGb: peakGb,
         capUsd: options.capUsd,
         cardAdded: true,
+        foundingMember,
       };
     },
 

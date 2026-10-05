@@ -36,6 +36,7 @@
 // would try to fix.
 
 import { monthBillCents } from "./billing.js";
+import { accountFoundingFlag } from "./founding.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
 // The test-mode host and ingest path are split so the host can be overridden
@@ -272,11 +273,19 @@ export async function pushBillingHours(db, hours, options = {}) {
       if (already.has(`${accountId}|${hour}`)) {
         continue;
       }
+      // The account's own founding flag, read from the accounts row (drive#488):
+      // the invoice is the number the usage page and the cap read, so all three
+      // must count the same half. accountFoundingFlag is the tolerant read the
+      // agent key cap uses (drive#482): a row that is gone reads as full price,
+      // which is the safe direction for a bill. A NULL flag (not yet decided)
+      // is full price too, never a discount nobody granted.
+      const foundingMember = await accountFoundingFlag(db, accountId);
       const usage = await monthUsageThrough(db, accountId, hour);
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
         downloadBytes: usage.downloadBytes,
         averageStoredGb: usage.averageStoredGb,
+        foundingMember,
       });
       const previously = running.get(accountId) ?? 0;
       // High-water: a reroll that lowered this month's bill (a late hide)
