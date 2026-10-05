@@ -46,7 +46,11 @@
 //     client key (a client IP) can never collide with the probe, and a
 //     stranger hammering this public endpoint cannot exhaust a shared probe
 //     key and push the endpoint into a false 503. The one name the result
-//     reports is the binding, never the key.
+//     reports is the binding, never the key. GET /s/<token> is the same
+//     argument for the same reason (drive issue #506): src/share.js answers
+//     503 without SHARE_DOWNLOAD_RATE_LIMITER rather than serve an unbounded
+//     public download, so a deploy that lost it is an outage this endpoint
+//     names.
 //
 //   - The branch snapshot namespace. A branch's snapshot moved out of the D1
 //     row into KV (drive issue #252), so every diff and every approve reads this
@@ -66,10 +70,6 @@
 //   - The email binding. Only the token-gated internal send route uses it
 //     (src/email-send.js); no customer request needs it, and its only
 //     operation would really send mail.
-//   - FOUNDING_OFFER_OPEN. It is a Worker var (inline text), not a reachable
-//     dependency: switching the founding offer is a config flip, and a string
-//     cannot be probed. A missing var is treated as open by src/founding.js,
-//     so it is not an outage.
 //
 // The check is bounded once, with one deadline shared by every dependency, so
 // a hung dependency cannot make the monitor's own poll hang (which would read
@@ -134,6 +134,7 @@ export const REQUIRED_BINDINGS = Object.freeze([
   "SIGNIN_GLOBAL_RATE_LIMITER",
   "REQUEST_UPLOAD_RATE_LIMITER",
   "REQUEST_UPLOAD_LINK_RATE_LIMITER",
+  "SHARE_DOWNLOAD_RATE_LIMITER",
   "BRANCH_SNAPSHOTS",
 ]);
 
@@ -415,6 +416,7 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     "SIGNIN_GLOBAL_RATE_LIMITER",
     "REQUEST_UPLOAD_RATE_LIMITER",
     "REQUEST_UPLOAD_LINK_RATE_LIMITER",
+    "SHARE_DOWNLOAD_RATE_LIMITER",
   ]) {
     const bound = env[name];
     if (

@@ -23,7 +23,6 @@ import { createS3Store } from "../src/files.js";
 import worker from "../src/index.js";
 import {
   BYTES_PER_GB,
-  bearerToken,
   EVENT_ACTIONS,
   EVENT_TOKEN_HEADER,
   EVENTS_PER_BATCH,
@@ -42,12 +41,13 @@ import {
   MINUTE_MS,
   notificationRecord,
   notificationRecords,
+  pruneHiddenVersions,
   reconcileMeter,
   recordEvent,
+  recordNightlySizes,
   recordUsage,
   rollupHour,
   runMeterCron,
-  tokensMatch,
   toMillis,
   toVersion,
   validateEvent,
@@ -95,6 +95,15 @@ async function storeCreate(db, accountId, overrides = {}) {
   const receivedAt = overrides.createdAt ?? midnight();
   const event = validateEvent(createEvent(accountId, overrides));
   assert.equal(event.error, undefined, event.error);
+  // The account row exists before any version of it can: sign-up makes the
+  // account, the drive serves it, and only then does an upload fire an event
+  // (drive issue #564 - the metered account list is read off `accounts`).
+  // OR IGNORE because a test that re-stores the same account's versions
+  // re-mints nothing.
+  await db
+    .prepare("INSERT OR IGNORE INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)")
+    .bind(accountId, `${accountId}@drive.test`, midnight())
+    .run();
   return recordEvent(db, event, receivedAt);
 }
 
@@ -874,12 +883,30 @@ test("one account's hour is summed from its own versions, and only that account'
   assert.equal(db.tables.usage_minutes.get(`other|${midnight()}`).gb_minutes_live, 100 * 60);
 });
 
-test("an account with nothing stored never gets a row", async () => {
+test("an account with nothing stored never gets a usage_minutes row", async () => {
   const { db } = makeMeteredDB();
   await storeCreate(db, "abc123");
+  // The account list is the accounts table (drive issue #564): the account
+  // exists, so it is listed with no version of it anywhere.
   assert.deepEqual(await listMeteredAccounts(db), ["abc123"]);
   const empty = makeMeteredDB();
   assert.deepEqual(await listMeteredAccounts(empty.db), []);
+});
+
+test("the metered account list is the accounts table, versions or not", async () => {
+  const { db } = makeMeteredDB();
+  // No accounts, no list - and no version scan to run to learn it.
+  assert.deepEqual(await listMeteredAccounts(db), []);
+  // An account that signed up and never uploaded is still the drive's to
+  // serve, and the reconciler walks it: one provider listing that comes
+  // back empty. The old DISTINCT-over-versions list could not see this
+  // account at all.
+  await db
+    .prepare("INSERT INTO accounts (id, email) VALUES (?1, ?2)")
+    .bind("quiet", "quiet@drive.test")
+    .run();
+  await storeCreate(db, "loud");
+  assert.deepEqual(await listMeteredAccounts(db), ["loud", "quiet"]);
 });
 
 test("an hour with nothing live in it clears its row rather than keeping a stale number", async () => {
@@ -1231,13 +1258,10 @@ function standinRecord() {
 }
 
 test("the bearer header a stock bucket can send is accepted, next to the route's own", async () => {
-  assert.equal(bearerToken("Bearer abc"), "abc");
-  assert.equal(bearerToken("bearer abc"), "abc", "the scheme case does not matter");
-  assert.equal(bearerToken("abc"), null, "a bare value is not a bearer token");
-  assert.equal(bearerToken("Basic abc"), null);
-  assert.equal(bearerToken(null), null);
-  assert.equal(bearerToken("Bearer"), null);
-
+  // The bearer read itself and the constant-time compare both moved into the
+  // one helper module (drive#618): worker.md's per-run invariants and
+  // workers/api/test/http.test.js cover them, and the meter keeps its route
+  // behaviour, so this test now proves the route accepts either header.
   const { db } = makeMeteredDB();
   const body = JSON.stringify(standinRecord());
   const refused = await handleStorageEventRequest(standinDelivery({ body }), db, TOKEN);
@@ -1382,15 +1406,9 @@ test("the record mapping is one mapping, and refuses a body with no event in it"
   assert.equal(validateEvent(nested).sizeBytes, 0);
 });
 
-test("the token compare is constant-shape and never a prefix match", async () => {
-  assert.equal(await tokensMatch(TOKEN, TOKEN), true);
-  assert.equal(await tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
-  assert.equal(await tokensMatch(TOKEN.slice(0, -1), TOKEN), false, "a prefix is not the token");
-  assert.equal(await tokensMatch("", TOKEN), false);
-  assert.equal(await tokensMatch(undefined, TOKEN), false);
-  assert.equal(await tokensMatch(TOKEN, undefined), false);
-  assert.equal(await tokensMatch(TOKEN, ""), false);
-});
+// The constant-time token compare moved here from test/meter.test.mjs when the
+// compare itself moved into this module (drive#618), so the test sits with the
+// one definition the way the readJsonObject tests above do.
 
 // --- The cron ------------------------------------------------------------
 
@@ -1923,17 +1941,35 @@ function providerStore(versionsByPrefix) {
     async list() {
       throw new Error("the reconciler never lists a folder");
     },
+    async listKeys() {
+      throw new Error("the reconciler never walks the key space");
+    },
     async read() {
       throw new Error("the reconciler never reads a file");
     },
     async write() {
       throw new Error("the reconciler never writes a file");
     },
+    async writeIfAbsent() {
+      throw new Error("the reconciler never writes a file");
+    },
     async remove() {
       throw new Error("the reconciler never removes a file");
     },
+    async removeBatch() {
+      throw new Error("the reconciler never deletes a batch");
+    },
     async copy() {
       throw new Error("the reconciler never copies a file");
+    },
+    async listPage() {
+      throw new Error("the reconciler never lists a page");
+    },
+    async listAll() {
+      throw new Error("the reconciler never lists a bucket");
+    },
+    async stat() {
+      throw new Error("the reconciler never stats a file");
     },
   };
 }
@@ -2171,6 +2207,188 @@ test("the reconciler fails loudly without a database or a version listing", asyn
   await assert.rejects(
     () => reconcileMeter(db, /** @type {import("../src/files.js").FileStore} */ ({})),
     /list versions/,
+  );
+});
+
+// --- Retention: hidden versions leave the ledger (drive issue #564) ------
+
+test("the prune deletes exactly the rows hidden past the window, and the booked minutes survive", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const day = 24 * 60 * MINUTE_MS;
+  // Four versions around the cutoff (now = midnight + 40 days, so the cutoff
+  // is midnight + 5 days): one hidden a month before it, one hidden an hour
+  // before it - both pruned - one hidden exactly at it, and one never hidden.
+  // The rule is strictly older, so the edge row stays, and a live row is
+  // never the prune's business.
+  /**
+   * @param {string} id
+   * @param {number} when
+   */
+  const created = (id, when) =>
+    recordEvent(
+      db,
+      validateEvent({
+        eventId: `evt-${id}`,
+        keyName: "/u/abc123/",
+        path: `/u/abc123/${id}.bin`,
+        b2FileId: id,
+        sizeBytes: GB,
+        createdAt: when,
+        action: "uploaded",
+      }),
+      when,
+    );
+  /**
+   * @param {string} id
+   * @param {number} when
+   */
+  const hidden = (id, when) =>
+    recordEvent(
+      db,
+      validateEvent({
+        eventId: `evt-${id}-hidden`,
+        keyName: "/u/abc123/",
+        path: `/u/abc123/${id}.bin`,
+        b2FileId: id,
+        action: "file hidden",
+        hiddenAt: when,
+        eventTimestamp: when,
+      }),
+      when,
+    );
+  await created("v-old", midnight() - day);
+  await hidden("v-old", midnight() - day + 12 * 60 * MINUTE_MS);
+  await created("v-pre", midnight());
+  await hidden("v-pre", midnight() + 5 * day - 60 * MINUTE_MS);
+  await created("v-edge", midnight());
+  await hidden("v-edge", midnight() + 5 * day);
+  await created("v-live", midnight());
+
+  // Book every hour the versions lived, the way the hourly trigger does, so
+  // the watermark ends ahead of the cutoff: the "after summarising them"
+  // half of the rule, proven rather than assumed.
+  for (let t = midnight(); t <= midnight() + 7 * day; t += MAX_CATCHUP_HOURS * 60 * MINUTE_MS) {
+    await runMeterCron(db, t);
+  }
+  const minutesBefore = sqlite
+    .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
+    .get().s;
+
+  const pruned = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(pruned.skipped, null, "a caught-up rollup lets the prune run");
+  assert.equal(pruned.pruned, 2, "the two rows hidden before the cutoff");
+  assert.deepEqual(
+    sqlite
+      .prepare("SELECT b2_file_id FROM file_versions ORDER BY b2_file_id")
+      .all()
+      .map((row) => row.b2_file_id),
+    ["v-edge", "v-live"],
+    "the row hidden at the cutoff and the live row stay",
+  );
+  const minutesAfter = sqlite
+    .prepare("SELECT COALESCE(SUM(gb_minutes_live), 0) AS s FROM usage_minutes")
+    .get().s;
+  assert.equal(minutesAfter, minutesBefore, "deleting rows does not touch booked minutes");
+});
+
+test("the prune skips while the rollup has not booked the cutoff's hours yet", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const day = 24 * 60 * MINUTE_MS;
+  const seen = () => sqlite.prepare("SELECT COUNT(*) AS n FROM file_versions").get().n;
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-old",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/old.bin",
+      b2FileId: "v-old",
+      sizeBytes: GB,
+      createdAt: midnight() - day,
+      action: "uploaded",
+    }),
+    midnight() - day,
+  );
+  await recordEvent(
+    db,
+    validateEvent({
+      eventId: "evt-old-hidden",
+      keyName: "/u/abc123/",
+      path: "/u/abc123/old.bin",
+      b2FileId: "v-old",
+      action: "file hidden",
+      hiddenAt: midnight(),
+      eventTimestamp: midnight(),
+    }),
+    midnight(),
+  );
+  // No rollup has ever run, so no watermark exists: no hour is provably
+  // booked, and nothing is deleted no matter how old the hidden row is.
+  const first = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(first.pruned, 0);
+  assert.notEqual(first.skipped, null);
+  assert.equal(seen(), 1);
+
+  // A watermark behind the cutoff hour skips the same way.
+  await db
+    .prepare(
+      "INSERT INTO meter_rollup_state (id, rolled_through) VALUES (1, ?1) " +
+        "ON CONFLICT(id) DO UPDATE SET rolled_through = ?1",
+    )
+    .bind(midnight() + day)
+    .run();
+  const second = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(second.pruned, 0);
+  assert.notEqual(second.skipped, null);
+  assert.equal(seen(), 1);
+
+  // The same watermark caught up to the cutoff hour lets the prune run.
+  await db
+    .prepare("UPDATE meter_rollup_state SET rolled_through = ?1 WHERE id = 1")
+    .bind(midnight() + 5 * day)
+    .run();
+  const third = await pruneHiddenVersions(db, midnight() + 40 * day);
+  assert.equal(third.skipped, null);
+  assert.equal(third.pruned, 1);
+  assert.equal(seen(), 0);
+});
+
+test("the nightly size row counts the tables once a day, and a retry rewrites the day", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  await storeCreate(db, "abc123");
+  await runMeterCron(db, midnight() + 60 * MINUTE_MS);
+  const sizes = await recordNightlySizes(db, midnight() + 90 * MINUTE_MS);
+  assert.equal(sizes.day, "2026-09-30");
+  assert.equal(sizes.fileVersionRows, 1);
+  assert.equal(sizes.fileVersionBytes, GB);
+  assert.equal(sizes.usageMinuteRows, 1);
+  assert.equal(sizes.fileIndexRows, 0);
+
+  // A retried run in the same UTC day rewrites the day's row - the size row
+  // is a reading of today, not an event that happened.
+  await recordNightlySizes(db, midnight() + 2 * 60 * MINUTE_MS);
+  let rows = sqlite
+    .prepare(
+      "SELECT day, file_version_rows, file_version_bytes, usage_minute_rows, file_index_rows " +
+        "FROM nightly_sizes ORDER BY day",
+    )
+    .all()
+    .map((row) => ({ ...row }));
+  assert.deepEqual(rows, [
+    {
+      day: "2026-09-30",
+      file_version_rows: 1,
+      file_version_bytes: GB,
+      usage_minute_rows: 1,
+      file_index_rows: 0,
+    },
+  ]);
+
+  // The next UTC day is its own row.
+  await recordNightlySizes(db, midnight() + 24 * 60 * MINUTE_MS);
+  rows = sqlite.prepare("SELECT day FROM nightly_sizes ORDER BY day").all();
+  assert.deepEqual(
+    rows.map((row) => row.day),
+    ["2026-09-30", "2026-10-01"],
   );
 });
 

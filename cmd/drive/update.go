@@ -1,102 +1,100 @@
-// `drive update` (drive issue #237, slice 4 of the account lifecycle in
-// drive#34): replace the installed drive binary with the latest released
-// version, and say which version is now installed.
+// `drive update` (drive issue #509): hand off to the package manager that
+// installed this binary. brew, apt, dnf and winget are the routes a release
+// actually publishes; `go install @latest` needs a public module and a Go
+// toolchain, and neither is how the packages ship.
 //
-// The install today is `go install github.com/Nishfleet/drive/cmd/drive@latest`
-// (docs-site/quickstart.md), so the update path is the same toolchain
-// invocation: it lands the binary exactly where `go install` puts it, needs no
-// download URL, no unpacking step and no checksum file of our own, and reuses
-// the Go toolchain's own verification of what it fetches. A released version is
-// a Git tag on this repository that the module proxy serves, so the version
-// check reads the proxy's `@latest` answer — the same answer `go install
-// @latest` resolves through, never a second source that could disagree with
-// what is about to be installed.
+// Detection asks the package manager, not the binary's path: Homebrew, dpkg,
+// rpm and winget each know whether they own the `drive` package. An unknown
+// install is a named error that prints the same three lines the docs lead
+// with, so the next step is the one-line install, not a second updater.
 //
-// `drive version` reports the module version the toolchain recorded in the
-// binary, which is the tag the binary was installed at. Without that, every
-// binary printed the source-tree fallback and an update was invisible: the one
-// thing this slice has to prove.
+// `drive version` still reports the module version the toolchain recorded in
+// this binary, which is the tag goreleaser stamped.
 
 package main
 
 import (
 	"debug/buildinfo"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"time"
 )
 
-// updateModule is the module this CLI is built from (go.mod: `module
-// github.com/Nishfleet/drive`). updateModulePath is derived from it so the
-// package path and the module path cannot drift apart.
-const updateModule = "github.com/Nishfleet/drive"
+// The install lines .goreleaser.yaml publishes. test/packaging.test.mjs
+// derives the same three from that YAML and fails when these constants drift.
+const (
+	brewInstallLine = "brew install nish3451/tap/drive"
+	aptInstallLine  = "sudo apt install ./drive_*.deb"
+	dnfInstallLine  = "sudo dnf install ./drive_*.rpm"
+	brewCask        = "nish3451/tap/drive"
+	wingetPackageID = "Nishfleet.Drive"
+)
 
-// updateModulePath is the package the docs install
-// (docs-site/quickstart.md). One path, named once, so the install this command
-// drives cannot drift from the one a person ran by hand.
-const updateModulePath = updateModule + "/cmd/drive"
+type installKind int
 
-// updateTimeout bounds the released-version read. An update command that
-// cannot reach the proxy must say so inside a command's worth of time, not
-// hold the terminal.
-const updateTimeout = 30 * time.Second
+const (
+	routeUnknown installKind = iota
+	routeBrew
+	routeApt
+	routeDnf
+	routeWinget
+)
 
-// noProxySentinel is the GOPROXY entry that means "no module proxy": the
-// toolchain resolves modules through VCS instead, so there is no proxy to ask
-// for the latest release and this command must say so rather than read a
-// version no install could produce.
-const noProxySentinel = "off"
+func (k installKind) String() string {
+	switch k {
+	case routeBrew:
+		return "brew"
+	case routeApt:
+		return "apt"
+	case routeDnf:
+		return "dnf"
+	case routeWinget:
+		return "winget"
+	default:
+		return "unknown"
+	}
+}
 
-// updateOptions is everything one `drive update` run needs. Every default
-// lives in updateDrive, so the zero value runs the production path: the
-// module proxy at moduleProxyBase, `go` from PATH in this process's
-// environment, this process's version, stdout and stderr. The fields a test
-// sets are the same values production reads; none of them changes which code
-// runs.
+// commandRunner starts one program with an argument vector, not a shell.
+type commandRunner func(name string, args []string, out, errw io.Writer) error
+
+// captureRunner is commandRunner for detection: stdout is returned, and a
+// non-zero exit is an error the detector treats as "not this route".
+type captureRunner func(name string, args []string) (string, error)
+
+// updateOptions is everything one `drive update` run needs. The zero value is
+// the production path: look up binaries on PATH, run them, write the console.
 type updateOptions struct {
-	// proxyBase is the module proxy the released version is read from.
-	// Empty means the toolchain's own effective GOPROXY (see
-	// effectiveProxyBase), so the version check and the install it gates
-	// resolve through the same proxy. A test pins it at a local server.
-	proxyBase string
-	// goBin is the Go toolchain to drive; empty means `go` from PATH
-	// (DRIVE_GO fills it, the way --rclone and DRIVE_RCLONE do).
-	goBin string
-	// goEnv is the environment the toolchain runs with; nil means this
-	// process's environment. A test pins GOPATH, GOBIN, GOPROXY and
-	// GOSUMDB to its own directories so an install touches nothing outside
-	// the test.
-	goEnv []string
-	// dir is the working directory the toolchain runs in; empty means the
-	// current directory. Running `go install <path>@latest` from inside a
-	// checkout of the module itself is a working-tree build, not an
-	// install at the released version, so a test points this at a plain
-	// directory.
-	dir string
 	// from is the version this binary reports. Empty means read it from
 	// this process's build information.
 	from string
-	// checkOnly is `--check`: report the released version, install nothing.
+	// checkOnly is `--check`: report whether an update exists, install nothing.
 	checkOnly bool
-	// out and err take the human lines; err also takes the toolchain's own
-	// output, so a slow install is never a silent one.
+	// exe is this binary's path, used to read the version after an upgrade.
+	// Empty means os.Executable().
+	exe string
+	// lookPath finds a binary on PATH; nil means exec.LookPath.
+	lookPath func(string) (string, error)
+	// run is the install/upgrade invocation; nil means exec.Command.
+	run commandRunner
+	// capture is the detection / --check invocation; nil means exec.Command
+	// with CombinedOutput.
+	capture captureRunner
+	// out and err take the human lines; err also takes the package manager's
+	// own output, so a slow upgrade is never a silent one.
 	out io.Writer
 	err io.Writer
 }
 
-// runUpdate is `drive update [--check] [--go <path>]`.
+// runUpdate is `drive update [--check]`.
 func runUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	checkOnly := fs.Bool("check", false, "say whether a newer release exists, install nothing")
-	goBin := fs.String("go", os.Getenv("DRIVE_GO"), "path to the go toolchain (env DRIVE_GO, default go from PATH)")
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
@@ -104,20 +102,57 @@ func runUpdate(args []string) error {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	return updateDrive(updateOptions{
-		goBin:     *goBin,
 		checkOnly: *checkOnly,
-		goEnv:     os.Environ(),
 		out:       os.Stdout,
 		err:       os.Stderr,
 	})
 }
 
-// updateDrive is the one `drive update` run: read the latest released
-// version, install it with the Go toolchain unless it is already installed or
-// --check was passed, then report the version the installed binary carries.
+func defaultLookPath(name string) (string, error) {
+	return exec.LookPath(name)
+}
+
+func defaultRun(name string, args []string, out, errw io.Writer) error {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is a resolved package manager, the arguments are fixed strings, and exec.Command takes an argument vector, not a shell.
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = out
+	cmd.Stderr = errw
+	return cmd.Run()
+}
+
+func defaultCapture(name string, args []string) (string, error) {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is a resolved package manager, the arguments are fixed strings, and exec.Command takes an argument vector, not a shell.
+	cmd := exec.Command(name, args...)
+	raw, err := cmd.CombinedOutput()
+	return string(raw), err
+}
+
+func lookPathOr(fn func(string) (string, error)) func(string) (string, error) {
+	if fn == nil {
+		return defaultLookPath
+	}
+	return fn
+}
+
+func runOr(fn commandRunner) commandRunner {
+	if fn == nil {
+		return defaultRun
+	}
+	return fn
+}
+
+func captureOr(fn captureRunner) captureRunner {
+	if fn == nil {
+		return defaultCapture
+	}
+	return fn
+}
+
+// updateDrive is the one `drive update` run: detect the install route, ask
+// that package manager whether a newer package exists, and either report or
+// hand off the upgrade to it. An up-to-date machine does not run sudo.
 func updateDrive(o updateOptions) error {
-	// A caller that leaves out and err unset gets the console, not a nil
-	// writer, so the zero value is the production path rather than a panic.
 	out, errw := o.out, o.err
 	if out == nil {
 		out = os.Stdout
@@ -125,27 +160,11 @@ func updateDrive(o updateOptions) error {
 	if errw == nil {
 		errw = os.Stderr
 	}
-	// The version check and the install it gates resolve through one proxy.
-	// `go install @latest` follows the toolchain's effective GOPROXY, so a
-	// hard-coded proxy.golang.org here could read a version from a feed the
-	// install never consults. The toolchain is asked, and only a test's own
-	// proxyBase overrides the answer.
-	//
-	// The toolchain is resolved first, because asking it is the way the
-	// proxy is read: a machine with no Go on PATH has no install to drive,
-	// so it fails with the missing-toolchain error rather than a proxy one.
-	goBin, err := resolveGo(o.goBin)
-	if err != nil {
-		return err
-	}
-	proxyBase := o.proxyBase
-	if proxyBase == "" {
-		proxyBase, err = effectiveProxyBase(goBin, o.goEnv)
-		if err != nil {
-			return err
-		}
-	}
-	latest, err := latestModuleVersion(proxyBase)
+	lookPath := lookPathOr(o.lookPath)
+	run := runOr(o.run)
+	capture := captureOr(o.capture)
+
+	kind, err := detectInstallRoute(lookPath, capture)
 	if err != nil {
 		return err
 	}
@@ -153,183 +172,162 @@ func updateDrive(o updateOptions) error {
 	if from == "" {
 		from = versionText()
 	}
-	if from == latest {
+
+	newer, err := packageHasUpdate(kind, capture)
+	if err != nil {
+		return err
+	}
+	if !newer {
 		fmt.Fprintf(out, "drive is up to date (%s)\n", from)
+		if !o.checkOnly && (kind == routeApt || kind == routeDnf) {
+			fmt.Fprintf(out, "if a newer package is on the GitHub release, download it and run:\n  %s\n", installLine(kind))
+		}
 		return nil
 	}
 	if o.checkOnly {
-		fmt.Fprintf(out, "a newer drive is available: %s (this machine runs %s)\n", latest, from)
+		fmt.Fprintf(out, "a newer drive is available via %s (this machine runs %s)\n", kind, from)
 		return nil
 	}
-	if err := installLatestRelease(goBin, o.goEnv, o.dir, out, errw); err != nil {
-		return err
+
+	name, args := upgradeCommand(kind)
+	fmt.Fprintf(out, "updating drive with %s %s\n", name, strings.Join(args, " "))
+	if err := run(name, args, out, errw); err != nil {
+		return fmt.Errorf("%s: %w", kind, err)
 	}
-	installed, err := installedDrivePath(goBin, o.goEnv)
-	if err != nil {
-		return err
-	}
-	to, err := binaryVersionAt(installed)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "updated drive %s -> %s (%s)\n", from, to, installed)
+	to := installedVersion(o.exe, from)
+	fmt.Fprintf(out, "updated drive %s -> %s via %s\n", from, to, kind)
 	return nil
 }
 
-// latestModuleVersion reads the module proxy's `@latest` answer, the version
-// `go install <updateModulePath>@latest` resolves to. A released version is a
-// tag on this module, so the question is asked of the module root — `@latest`
-// is a module version, not a package one. The proxy is the release feed for a
-// Go module: a version is on it once its tag is, so this is the
-// released-tags check, and it cannot name a version the install cannot then
-// produce.
-func latestModuleVersion(proxyBase string) (string, error) {
-	client := &http.Client{Timeout: updateTimeout}
-	url := strings.TrimSuffix(proxyBase, "/") + "/" + moduleProxyPath(updateModule) + "/@latest"
-	resp, err := client.Get(url)
+func installLine(kind installKind) string {
+	switch kind {
+	case routeBrew:
+		return brewInstallLine
+	case routeApt:
+		return aptInstallLine
+	case routeDnf:
+		return dnfInstallLine
+	default:
+		return ""
+	}
+}
+
+func installedVersion(exe, fallback string) string {
+	if exe == "" {
+		var err error
+		exe, err = os.Executable()
+		if err != nil {
+			return fallback
+		}
+	}
+	v, err := binaryVersionAt(exe)
 	if err != nil {
-		return "", fmt.Errorf("read the latest released version from %s: %w", proxyBase, err)
+		return fallback
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("read the latest released version from %s: the proxy answered %s",
-			proxyBase, resp.Status)
-	}
-	var release struct {
-		Version string `json:"Version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("read the latest released version from %s: %w", url, err)
-	}
-	if release.Version == "" {
-		return "", fmt.Errorf("read the latest released version from %s: the proxy named no version", url)
-	}
-	return release.Version, nil
+	return v
 }
 
-// moduleProxyPath escapes a module path the way the module proxy protocol
-// writes it in a URL: every uppercase letter becomes `!` plus its lowercase
-// (the module path is case-sensitive, and a URL path is not), so
-// `github.com/Nishfleet/drive` is `github.com/!nishfleet/drive`. Measured
-// against a local proxy on 2026-10-03: a request for the unescaped path
-// answered 404, the escaped path answered with the module's files.
-func moduleProxyPath(path string) string {
-	var b strings.Builder
-	for i := 0; i < len(path); i++ {
-		c := path[i]
-		if 'A' <= c && c <= 'Z' {
-			b.WriteByte('!')
-			c += 'a' - 'A'
+// detectInstallRoute asks brew, dpkg, rpm and winget, in that order, whether
+// they own the drive package. The first yes wins. None of them is an unknown
+// install: the error names the three lines a person pastes to put drive on a
+// supported route. brew is asked for the tap cask first so a core cask named
+// `drive` cannot steal the route. apt/dnf must be on PATH because they are
+// the commands the upgrade actually runs.
+func detectInstallRoute(lookPath func(string) (string, error), capture captureRunner) (installKind, error) {
+	if _, err := lookPath("brew"); err == nil {
+		if _, err := capture("brew", []string{"list", "--cask", brewCask}); err == nil {
+			return routeBrew, nil
 		}
-		b.WriteByte(c)
-	}
-	return b.String()
-}
-
-// installLatestRelease runs `go install <updateModulePath>@latest` and
-// streams its output, so a download the user can see is never mistaken for a
-// hang. exec.Command takes an argument vector and runs no shell; the binary is
-// the toolchain this command resolved, and the arguments are fixed strings.
-// dir applies to the install only, like a command someone runs with `cd`:
-// production leaves it empty, and a test pins it so the install cannot read
-// this checkout as the working tree.
-func installLatestRelease(goBin string, env []string, dir string, out, errw io.Writer) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is the resolved go toolchain, the arguments are the fixed module path and @latest, and exec.Command takes an argument vector, not a shell.
-	cmd := exec.Command(goBin, "install", updateModulePath+"@latest")
-	cmd.Dir = dir
-	cmd.Env = env
-	cmd.Stdout = out
-	cmd.Stderr = errw
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go install %s@latest: %w", updateModulePath, err)
-	}
-	return nil
-}
-
-// effectiveProxyBase is the module proxy the toolchain will resolve
-// `go install <updateModulePath>@latest` through: the first URL in the
-// effective GOPROXY. Asking the toolchain (`go env -json GOPROXY`) is what
-// makes this one source of truth with the install, instead of a second place
-// a proxy URL is written down.
-//
-// GOPROXY is a comma-separated list ending in `,direct` on a stock install,
-// and `direct` resolves through VCS with no module proxy in front of it, so
-// there is no `@latest` answer to read. A machine that has turned the proxy
-// off (`GOPROXY=off`) has the same problem and gets the same named error,
-// rather than this command quietly reading a version nothing could install.
-func effectiveProxyBase(goBin string, env []string) (string, error) {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is the resolved go toolchain, the argument is the fixed GOPROXY name, and exec.Command takes an argument vector, not a shell.
-	cmd := exec.Command(goBin, "env", "-json", "GOPROXY")
-	cmd.Env = env
-	raw, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("ask %s which module proxy it installs from: %w", goBin, err)
-	}
-	var cfg struct {
-		GOPROXY string
-	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return "", fmt.Errorf("ask %s which module proxy it installs from: %s", goBin, strings.TrimSpace(string(raw)))
-	}
-	for _, entry := range strings.Split(cfg.GOPROXY, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" || entry == noProxySentinel || entry == "direct" {
-			continue
-		}
-		return entry, nil
-	}
-	return "", fmt.Errorf("this machine resolves Go modules with GOPROXY=%s, which names no module proxy, so the latest release cannot be read; set GOPROXY to a proxy URL (for example https://proxy.golang.org) and run drive update again", cfg.GOPROXY)
-}
-
-// installedDrivePath is where `go install <updateModulePath>@latest` writes
-// the binary: $GOBIN, or $GOPATH/bin. GOEXE carries the platform suffix, which
-// is empty on macOS and Linux, the two platforms drive ships
-// (docs-site/limits.md). Reading it out of the toolchain rather than guessing
-// $HOME/go means an install this command just ran is never reported at a path
-// it did not write to.
-//
-// GOPATH is a list, and the toolchain installs into the first entry, so this
-// takes the first entry too. Joining the whole value would name a directory
-// (`/home/u/go:/opt/go`) that does not exist, and the command would then fail
-// to read back the binary it had just installed.
-func installedDrivePath(goBin string, env []string) (string, error) {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- the binary is the resolved go toolchain, the arguments are the fixed env names, and exec.Command takes an argument vector, not a shell.
-	cmd := exec.Command(goBin, "env", "-json", "GOBIN", "GOPATH", "GOEXE")
-	cmd.Env = env
-	raw, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("ask %s where it installs binaries: %w", goBin, err)
-	}
-	var paths struct {
-		GOBIN  string
-		GOPATH string
-		GOEXE  string
-	}
-	if err := json.Unmarshal(raw, &paths); err != nil {
-		return "", fmt.Errorf("ask %s where it installs binaries: %s", goBin, strings.TrimSpace(string(raw)))
-	}
-	bin := paths.GOBIN
-	if bin == "" {
-		first, ok := firstGOPATHEntry(paths.GOPATH)
-		if !ok {
-			return "", fmt.Errorf("%s installs to an empty GOBIN and reports no GOPATH", goBin)
-		}
-		bin = filepath.Join(first, "bin")
-	}
-	return filepath.Join(bin, "drive"+paths.GOEXE), nil
-}
-
-// firstGOPATHEntry is the first directory in a GOPATH value, which is the one
-// the toolchain installs binaries into. A GOPATH with several entries names
-// the same install directory whichever way the rest is used. An empty value,
-// or one that holds only separators, has no entry to install into.
-func firstGOPATHEntry(gopath string) (string, bool) {
-	for _, entry := range strings.Split(gopath, string(os.PathListSeparator)) {
-		if entry != "" {
-			return entry, true
+		if _, err := capture("brew", []string{"list", "--cask", "drive"}); err == nil {
+			return routeBrew, nil
 		}
 	}
-	return "", false
+	if _, err := lookPath("dpkg-query"); err == nil {
+		if _, err := lookPath("apt"); err == nil {
+			out, err := capture("dpkg-query", []string{"-W", "-f", "${Status}", "drive"})
+			if err == nil && strings.Contains(out, "installed") {
+				return routeApt, nil
+			}
+		}
+	}
+	if _, err := lookPath("rpm"); err == nil {
+		if _, err := lookPath("dnf"); err == nil {
+			if _, err := capture("rpm", []string{"-q", "drive"}); err == nil {
+				return routeDnf, nil
+			}
+		}
+	}
+	if _, err := lookPath("winget"); err == nil {
+		out, err := capture("winget", []string{"list", "--id", wingetPackageID, "--disable-interactivity"})
+		if err == nil && strings.Contains(out, wingetPackageID) {
+			return routeWinget, nil
+		}
+	}
+	return routeUnknown, fmt.Errorf("drive was not installed with brew, apt, dnf or winget; install it with one of:\n  %s\n  %s\n  %s\n  winget install %s", brewInstallLine, aptInstallLine, dnfInstallLine, wingetPackageID)
+}
+
+func upgradeCommand(kind installKind) (string, []string) {
+	switch kind {
+	case routeBrew:
+		return "brew", []string{"upgrade", "--cask", brewCask}
+	case routeApt:
+		return "sudo", []string{"apt", "install", "--only-upgrade", "drive"}
+	case routeDnf:
+		return "sudo", []string{"dnf", "upgrade", "drive"}
+	case routeWinget:
+		return "winget", []string{"upgrade", "--id", wingetPackageID, "--disable-interactivity"}
+	default:
+		return "", nil
+	}
+}
+
+// packageHasUpdate asks the same package manager the upgrade would drive.
+// Empty or "up to date" output means no update; any named newer package is yes.
+func packageHasUpdate(kind installKind, capture captureRunner) (bool, error) {
+	switch kind {
+	case routeBrew:
+		out, err := capture("brew", []string{"outdated", "--cask", brewCask})
+		if err != nil {
+			return false, fmt.Errorf("brew outdated: %w", err)
+		}
+		return strings.Contains(out, "drive"), nil
+	case routeApt:
+		out, err := capture("apt", []string{"list", "--upgradable", "drive"})
+		if err != nil {
+			return false, fmt.Errorf("apt list: %w", err)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "drive/") && strings.Contains(line, "upgradable") {
+				return true, nil
+			}
+		}
+		return false, nil
+	case routeDnf:
+		_, err := capture("dnf", []string{"check-update", "drive"})
+		if err == nil {
+			return false, nil
+		}
+		if exit, ok := exitCode(err); ok && exit == 100 {
+			return true, nil
+		}
+		return false, fmt.Errorf("dnf check-update: %w", err)
+	case routeWinget:
+		out, err := capture("winget", []string{"list", "--id", wingetPackageID, "--disable-interactivity", "--upgrade-available"})
+		if err != nil {
+			return false, fmt.Errorf("winget list: %w", err)
+		}
+		return strings.Contains(out, wingetPackageID), nil
+	default:
+		return false, fmt.Errorf("no package manager to ask")
+	}
+}
+
+func exitCode(err error) (int, bool) {
+	var x interface{ ExitCode() int }
+	if !errors.As(err, &x) {
+		return 0, false
+	}
+	return x.ExitCode(), true
 }
 
 // versionText is what `drive version` prints: the module version the toolchain
@@ -359,9 +357,8 @@ func moduleVersion(info *debug.BuildInfo) string {
 }
 
 // binaryVersionAt reads the version the drive binary at path reports, the way
-// `go version -m` does. `drive update` reads the binary it just installed
-// rather than assuming the install worked: the version on disk is the one this
-// command is answerable for, and it is the one `drive version` will print.
+// `go version -m` does. Tests use it to prove a checkout build falls back to
+// the source-tree version.
 func binaryVersionAt(path string) (string, error) {
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
@@ -371,25 +368,4 @@ func binaryVersionAt(path string) (string, error) {
 		return v, nil
 	}
 	return version, nil
-}
-
-// resolveGo resolves the Go toolchain `drive update` drives, the way
-// ResolveRclone resolves the rclone binary `drive mount` drives: a --go path
-// or DRIVE_GO first, then `go` from PATH.
-func resolveGo(goBin string) (string, error) {
-	if goBin == "" {
-		goBin = os.Getenv("DRIVE_GO")
-	}
-	if goBin == "" {
-		path, err := exec.LookPath("go")
-		if err != nil {
-			return "", fmt.Errorf("go not found on PATH: %w (install Go from https://go.dev, or install the new binary by hand: go install %s@latest)", err, updateModulePath)
-		}
-		return path, nil
-	}
-	path, err := exec.LookPath(goBin)
-	if err != nil {
-		return "", fmt.Errorf("go binary %q not found: %w", goBin, err)
-	}
-	return path, nil
 }

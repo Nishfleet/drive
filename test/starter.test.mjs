@@ -48,6 +48,9 @@ function emptyStore(written = {}) {
     async list() {
       return [];
     },
+    async listKeys() {
+      return [];
+    },
     async read(path) {
       const body = written[path];
       return body === undefined
@@ -64,10 +67,27 @@ function emptyStore(written = {}) {
       // shape, exactly as the real in-memory store does (src/files.js).
       written[path] = await new Response(body).text();
     },
+    async writeIfAbsent(path, body) {
+      // The starter seeds the drive with `write`, not this method —
+      // this fake keeps the FileStore contract honest while the
+      // starter's key is still free in this fake.
+      written[path] = await new Response(body).text();
+      return true;
+    },
     async remove() {},
+    async removeBatch() {},
     async copy() {},
     async listVersions() {
       return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
+      return [];
+    },
+    async stat() {
+      return null;
     },
   };
 }
@@ -88,13 +108,31 @@ function failingStore(reason = "the storage backend refused the key") {
     async list() {
       return [];
     },
+    async listKeys() {
+      return [];
+    },
     async read() {
       throw new Error(reason);
     },
+    async stat() {
+      throw new Error(reason);
+    },
     async write() {},
+    async writeIfAbsent() {
+      return true;
+    },
     async remove() {},
+    async removeBatch() {
+      throw new Error(reason);
+    },
     async copy() {},
     async listVersions() {
+      return [];
+    },
+    async listPage() {
+      return { entries: [], nextCursor: null };
+    },
+    async listAll() {
       return [];
     },
   };
