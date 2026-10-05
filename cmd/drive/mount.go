@@ -210,13 +210,9 @@ func BuildMountPlan(goos, home, rcloneBin string, c StorageConfig) MountPlan {
 // re-run of the same plan writes the same bytes (issue #561): the running
 // rclone keeps answering the CLI's own rc calls with the credentials in that
 // file, and a plain re-run can then skip the restart. Only a first mount, or
-// one after a login that cleared them, mints a new pair.
-// prepareMountAuth sets the remote-control credentials on the plan and
-// writes them to rclone.env. The credentials are minted at sign-in and
-// reused here, so a plain re-run writes the same bytes and the running
-// rclone's rc credentials keep working; a rotated storage secret arrives
-// through the config and makes the bytes differ, which the caller counts
-// as a changed plan (issue #561).
+// one after a login that cleared them, mints a new pair; a rotated storage
+// secret arrives through the config and makes the bytes differ, which the
+// caller counts as a changed plan.
 func prepareMountAuth(home string, p *MountPlan, c StorageConfig) error {
 	auth, err := ReadRCAuth(home)
 	if err != nil {
