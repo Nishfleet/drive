@@ -416,11 +416,20 @@ func (p MountPlan) CommandLine() string {
 // label and program arguments are exactly the rclone plan, so what launchd runs
 // is what `drive mount` would run in the foreground.
 func LaunchdPlist(p MountPlan) string {
+	return LaunchdPlistFor(p, LaunchdLabel)
+}
+
+// LaunchdPlistFor is LaunchdPlist for a login item whose label is not the
+// device mount's own: one label per agent path, because launchd runs one
+// ProcessArguments list per label and a tool's rclone must be its own
+// (drive#514). The credential fields are written only when the plan carries
+// them, so an agent path with no remote control writes no rc password.
+func LaunchdPlistFor(p MountPlan, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(LaunchdLabel))
+	fmt.Fprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n", html.EscapeString(label))
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, a := range append([]string{p.RcloneBin}, p.Args()...) {
 		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", html.EscapeString(a))

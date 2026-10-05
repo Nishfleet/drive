@@ -237,10 +237,13 @@ func TestNoteTellsTheAgentToStartInTheDrive(t *testing.T) {
 	// The MCP server serves the session's working directory, not the folder on
 	// its command line, so the note is the only place a session learns it.
 	env, _ := testEnv(t)
+	// The note is written into the tool's agent path (drive#514), the folder
+	// the MCP server is actually given.
+	env.AgentDir = filepath.Join(env.Home, "Drive-agents", "claude")
 	if err := writeNote(env, agentsNoteName); err != nil {
 		t.Fatal(err)
 	}
-	text := readFile(t, filepath.Join(env.DriveDir, agentsNoteName))
+	text := readFile(t, filepath.Join(env.AgentDir, agentsNoteName))
 	if !strings.Contains(text, "start the\nsession in this folder") {
 		t.Fatalf("the note does not tell the agent to start in the drive:\n%s", text)
 	}

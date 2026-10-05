@@ -85,10 +85,12 @@ func writeNote(env Env, name string) error {
 	if name != claudeNoteName && name != agentsNoteName {
 		return fmt.Errorf("unknown note name %q", name)
 	}
-	if err := os.MkdirAll(env.DriveDir, 0o755); err != nil {
-		return fmt.Errorf("create drive folder %s: %w", env.DriveDir, err)
+	// The note is written into the tool's agent path, the folder the
+	// filesystem server is actually given (drive#514).
+	if err := os.MkdirAll(env.AgentDir, 0o755); err != nil {
+		return fmt.Errorf("create agent path %s: %w", env.AgentDir, err)
 	}
-	path := filepath.Join(env.DriveDir, name)
+	path := filepath.Join(env.AgentDir, name)
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -102,7 +104,7 @@ func writeNote(env Env, name string) error {
 		if text != "" && !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		text += noteBody(env.DriveDir)
+		text += noteBody(env)
 	}
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
@@ -118,11 +120,14 @@ const noteMarker = "<!-- drive:agent-note -->"
 // and to branch before large edits. It names only subcommands the command
 // table runs (main.go commands; gate test TestNotesNameOnlyRealCommands,
 // drive#461) — it used to advertise `drive restore`, which no step ships.
-func noteBody(driveDir string) string {
+func noteBody(env Env) string {
 	return noteMarker + "\n" +
 		"# This is the drive\n\n" +
-		"The user's drive is `" + driveDir + "`, synced to every device and\n" +
-		"agent. The `drive` MCP server reads and writes this folder; start the\n" +
+		"The user's drive is `" + env.DriveDir + "`, synced to every device and\n" +
+		"agent. The `drive` MCP server reads and writes `" + env.AgentDir + "`, the\n" +
+		"folder the mount for this tool serves, so work here. The storage key\n" +
+		"behind this folder cannot delete, and a delete asked for any other way\n" +
+		"is refused by storage, and start the\n" +
 		"session in this folder so the server is allowed to serve it.\n\n" +
 		"- Use `drive branch <folder>` before large edits, and `drive approve` when\n" +
 		"  the changes are ready to copy back.\n"

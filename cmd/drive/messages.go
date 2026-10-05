@@ -260,6 +260,18 @@ var messageTable = map[string][2]string{
 		"The import did not start: the drive's cache could not be checked, so the copy could have filled the disk.",
 		"Run `drive status` to check the drive, then run `drive import` again; see {1} for the reason.",
 	},
+	"agent-key-missing": {
+		"{1}'s agent key is missing the settings its own mount needs.",
+		"Run `drive agents revoke {1}`, then `drive agents connect {1}`, to mint a full agent key.",
+	},
+	"agent-path-windows": {
+		"The agent path is not available on Windows yet, so {1} would work straight in your drive.",
+		"Use {1} inside your own drive folder for now, and watch the changelog for the agent path on Windows.",
+	},
+	"agent-path-timeout": {
+		"{1}'s agent path did not come up within {2} seconds.",
+		"Read {3}, then run `drive agents connect {1}` again.",
+	},
 }
 
 // fail builds a table failure with no call values and no underlying detail.

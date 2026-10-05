@@ -87,6 +87,12 @@ func environWithHome(environ []string, home string) []string {
 type Env struct {
 	Home     string
 	DriveDir string
+	// AgentDir is the tool's agent path (agentmount.go, drive#514): its own
+	// rclone mount, holding the tool's own key. The MCP server and the tool's
+	// allowed folders point here and not at DriveDir, because the kernel
+	// serves a mount whatever credential rclone holds, and only this mount
+	// holds the key that cannot delete.
+	AgentDir string
 	Runner   Runner
 	LookPath func(string) (string, error)
 	Minter   KeyMinter
@@ -124,7 +130,14 @@ func (e Env) withDefaults() Env {
 		e.LookPath = exec.LookPath
 	}
 	if e.DriveDir == "" {
-		e.DriveDir = filepath.Join(e.Home, "Drive")
+		e.DriveDir = DefaultMountDir(e.Home)
+	}
+	if e.AgentDir == "" {
+		// The agent path is per tool (agentmount.go), so a caller that has no
+		// tool to name gets the drive folder itself. Every real caller sets
+		// this: `drive init` and `drive agents connect` set it to the tool's
+		// own mount point before they register anything.
+		e.AgentDir = e.DriveDir
 	}
 	return e
 }
@@ -487,10 +500,17 @@ func serverTable(doc map[string]any, create bool) (map[string]any, error) {
 // when this tool has its own key, the two key env vars. Every JSON-config tool
 // in the registry reads this shape. The secret is an env value, never argv, so
 // a `ps` on this machine cannot read it (drive#75).
+//
+// The one path argument is the tool's agent path, not the person's drive
+// folder (drive#514). The server serves plain files through the kernel, so a
+// drive folder would hand a tool the delete-capable key whatever env vars the
+// entry carries; the agent folder is the mount that holds the tool's own
+// no-delete key, so the filesystem the server reads is the one storage
+// already bounds.
 func serverEntry(t Tool, env Env, keyArg string) (map[string]any, error) {
 	entry := map[string]any{
 		"command": "npx",
-		"args":    []string{"-y", mcpPackage, env.DriveDir},
+		"args":    []string{"-y", mcpPackage, env.AgentDir},
 	}
 	if t.KeyEnv == "" || keyArg == "" {
 		return entry, nil

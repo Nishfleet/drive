@@ -210,6 +210,14 @@ func initAgents(env Env, apiBase ...string) error {
 				continue
 			}
 		}
+		// The tool's own path, mounted before Connect: the MCP server the
+		// command registers points at it, so it has to exist first.
+		if err := mountAgentPath(env, t); err != nil {
+			printToolFailure(t.Name, err)
+			failed++
+			continue
+		}
+		env.AgentDir = AgentMountDir(env.Home, t.Name)
 		if err := t.Connect(env); err != nil {
 			printToolFailure(t.Name, err)
 			failed++
@@ -240,6 +248,37 @@ func initAgents(env Env, apiBase ...string) error {
 	}
 	printFirstRunNext(os.Stdout, CurrentGOOS(), env.Home, env.DriveDir)
 	return nil
+}
+
+// mountAgentPath starts the tool's agent path: its own rclone mount, holding
+// the tool's own key (agentmount.go, drive#514). It is called once the tool's
+// key is on disk and just before Connect, because Connect points the tool's
+// MCP server and its allowed folder at the path.
+//
+// A path that does not come up is a named failure printed for that tool alone,
+// never a fall back to the person's drive folder: the whole point of the path
+// is that the mount holds the key that cannot delete, and the person's folder
+// is mounted with the key that can.
+func mountAgentPath(env Env, t Tool) error {
+	key, err := agentKeyFor(env.Home, t.Name)
+	if err != nil {
+		return err
+	}
+	if key == nil {
+		return nil
+	}
+	device, err := LoadStorageConfig("", "", "", "", "", "", storageFromDisk(env.Home))
+	if err != nil {
+		return failDetail("missing-config", err)
+	}
+	if strings.TrimSpace(device.Endpoint) == "" || strings.TrimSpace(device.Bucket) == "" {
+		return fail("login-no-storage")
+	}
+	rclone, err := ResolveRclone("")
+	if err != nil {
+		return err
+	}
+	return mountAgentPaths(CurrentGOOS(), env.Home, rclone, t.Name, device, *key, false)
 }
 
 // printToolFailure prints one agent-tool failure the same way main prints
@@ -401,10 +440,14 @@ func agents(env Env, positional []string, apiBase ...string) error {
 				return err
 			}
 		}
+		if err := mountAgentPath(env, t); err != nil {
+			return err
+		}
+		env.AgentDir = AgentMountDir(env.Home, t.Name)
 		if err := t.Connect(env); err != nil {
 			return err
 		}
-		fmt.Printf("%s connected to %s (%s)\n", t.Name, env.DriveDir, where)
+		fmt.Printf("%s connected to %s (%s)\n", t.Name, AgentMountDir(env.Home, t.Name), where)
 		return nil
 	}
 	// Revoke the key server-side first: the local copy is only deleted once
