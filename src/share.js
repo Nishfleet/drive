@@ -775,8 +775,6 @@ async function capStateFor(resolver, accountId) {
   return state;
 }
 
-
-
 /** The request's own origin: the links are absolute so they can be copied.
  *
  * @param {Request} request

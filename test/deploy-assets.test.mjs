@@ -26,7 +26,6 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
-import { AUTO_TOPUP_ENDPOINT } from "../src/prepaid.js";
 import { DOC_PAGES } from "../src/render-docs.js";
 import { absoluteUrl, DOC_PAGES as SEO_DOC_PAGES, SITE } from "../src/seo.js";
 import apiWorker, { dispatch } from "../workers/api/src/index.js";
