@@ -204,3 +204,41 @@ test("the hourly meter trigger runs the cap walk after its rollup", async () => 
   await trigger.scheduled({ cron: METER_CRON, scheduledTime: Date.now() + HOUR_MS }, cronEnv);
   assert.equal(mail.length, 1, "the second hourly run mailed the same state again");
 });
+
+test("a new month opens a drive the last month left read-only", async () => {
+  // Last month's read-only drive has no usage row yet this month. The walk
+  // still finds it by its saved state, makes it writable, and re-arms the
+  // notice so a cap reached again this month is mailed again.
+  const { made, account, mail, walk, state } = await seeded(400);
+  await walk();
+  assert.equal(await state(), "read_only");
+  await made.db.prepare("DELETE FROM usage_minutes WHERE account_id = ?1").bind(account.id).run();
+  const report = await walk();
+  assert.deepEqual(report.failures, []);
+  assert.equal(
+    await state(),
+    "active",
+    "the drive stayed read-only into a month it spent nothing in",
+  );
+  const row = /** @type {{read_only_sent_at: unknown}} */ (
+    await made.db
+      .prepare("SELECT read_only_sent_at FROM accounts WHERE id = ?1")
+      .bind(account.id)
+      .first()
+  );
+  assert.equal(row.read_only_sent_at, null);
+  assert.equal(mail.length, 1);
+});
+
+test("a closed account's upload-request link takes no upload", async () => {
+  const drive = await seeded(10_000);
+  await drive.made.db
+    .prepare("UPDATE accounts SET state = 'closed', closed_at = 1 WHERE id = ?1")
+    .bind(drive.account.id)
+    .run();
+  await createD1LinkStore(drive.made.db).requests.create(
+    newRequestRecord({ accountId: drive.account.id, folder: "/", now: Date.now(), token: TOKEN }),
+  );
+  const requestUpload = await upload(drive, `/api/request/upload?k=${TOKEN}&name=a.txt`);
+  assert.equal(requestUpload.status, 403);
+});

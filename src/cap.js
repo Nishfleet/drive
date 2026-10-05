@@ -607,8 +607,10 @@ async function enforceOneAccount(store, id, input, atSeconds) {
  * that was enforced and whose notice never reached the person is a state the
  * operator has to see; the next run re-sends it rather than losing it.
  *
- * The stamp is written with `markCapNoticeSent`, whose own guard (the column
- * is still null) means two overlapping runs cannot both mail.
+ * Delivery is at least once: two overlapping runs can both read the stamp as
+ * null and both send. The stamp is written with `markCapNoticeSent`, whose
+ * guard (the column is still null) keeps the first stamp, so the next hour
+ * sends nothing either way.
  *
  * @param {{store: {capNotices: Function, markCapNoticeSent: Function}, id: string, kind: "cap-warning"|"read-only", capUsd: number, email: {send: Function}|undefined, from: string|undefined, atSeconds: number}} input
  * @returns {Promise<boolean>} whether the notice went out and was stamped
@@ -743,7 +745,7 @@ export const CAP_ENDPOINT = "/api/cap";
  * account because it had no way to read the row; a public upload link
  * therefore never stopped at its owner's cap, which the docs promise it does.
  *
- * @param {{getCapUsd: (accountId: string) => Promise<number>, monthUsage: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>}} store
+ * @param {{getCapUsd: (accountId: string) => Promise<number>, monthUsage: (accountId: string, options: {capUsd: number}) => Promise<Record<string, unknown>>, accountState?: (accountId: string) => Promise<string>}} store
  * @param {string} accountId
  * @returns {Promise<"active"|"read_only">}
  */
@@ -753,6 +755,15 @@ export async function capStateForAccount(store, accountId) {
   }
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`capStateForAccount needs an account id, got ${String(accountId)}`);
+  }
+  // The saved state first: a drive the hourly walk made read-only, or a
+  // closed one whose files are on their way out, takes no public upload
+  // either, whatever this hour's count says.
+  if (typeof store.accountState === "function") {
+    const saved = await store.accountState(accountId);
+    if (saved === "read_only" || saved === "closed") {
+      return "read_only";
+    }
   }
   const capUsd = await store.getCapUsd(accountId);
   const usage = await store.monthUsage(accountId, { capUsd });

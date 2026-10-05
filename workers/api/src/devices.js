@@ -14,7 +14,7 @@
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
-import { monthUsageThrough } from "../../../src/meter.js";
+import { monthStart, monthUsageThrough } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
@@ -229,8 +229,6 @@ export function createD1DeviceStore(db, options = {}) {
        VALUES (?1, ?2, ?3, ?4, 'active')
        ON CONFLICT(id) DO UPDATE SET
          cap_cents = excluded.cap_cents,
-         cap_warned_at = NULL,
-         read_only_sent_at = NULL,
          email = CASE WHEN excluded.email = '' THEN accounts.email ELSE excluded.email END`,
       accountId,
       email,
@@ -1093,17 +1091,24 @@ export function createD1DeviceStore(db, options = {}) {
     },
 
     /**
-     * Every metered account the cap walk has to decide this month: the ones
-     * with a row in `usage_minutes`, which is the meter's own list of who was
-     * measured (drive#496). An account that stored and downloaded nothing has
-     * no row, bills $0, and is below every cap including a $0 one, so the walk
-     * does not spend a query on it.
+     * Every account the cap walk has to decide this month (drive#496): the
+     * ones with a `usage_minutes` row in the month so far, plus any account
+     * still carrying a cap state or notice from before — a drive made
+     * read-only last month has no row yet this month, and without it here it
+     * would stay read-only into a month it has not spent anything in. An
+     * account with neither bills $0 and is below every cap, so the walk does
+     * not spend a query on it.
      * @returns {Promise<ReadonlyArray<{id: string}>>}
      */
     async listMeteredAccounts() {
       const result = await db
-        .prepare("SELECT DISTINCT account_id FROM usage_minutes WHERE account_id <> ?1")
-        .bind("")
+        .prepare(
+          `SELECT account_id FROM usage_minutes WHERE hour >= ?1 AND account_id <> ''
+           UNION
+           SELECT id FROM accounts
+            WHERE state = 'read_only' OR cap_warned_at IS NOT NULL OR read_only_sent_at IS NOT NULL`,
+        )
+        .bind(monthStart(now()))
         .all();
       return (result?.results ?? []).map(
         (row) =>

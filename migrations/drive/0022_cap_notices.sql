@@ -15,18 +15,13 @@
 -- code, never data").
 --
 --   cap_warned_at         unix seconds when the 80%-of-cap notice last went
---                         out. Reset to NULL by a cap raise
---                         (setCapCents), because a raise and a fall back
---                         through 80% is a new crossing, not the old one.
+--                         out. The hourly walk clears it once the month is
+--                         back under 80% (a new month, a cap raise), so the
+--                         next crossing is mailed again.
 --   read_only_sent_at     unix seconds when the read-only notice last went
---                         out. Cleared by the same cap raise, so a cap that
---                         is raised and reached again is mailed again.
---
--- The month is NOT the reset unit on purpose: the cap and the counted bill
--- are both month-scoped but the notice is a state change, and a drive that
--- crosses 80% in September and again in October has crossed it twice. The
--- cap raise is the one event that makes the previous notice stale, because
--- it is the one that can bring the counted bill back under the threshold.
+--                         out. Cleared by the walk once the drive is
+--                         writable again, so a cap reached again is mailed
+--                         again.
 --
 -- Numbered 0022 because 0021 is the agent caps rebuild (drive#534).
 
