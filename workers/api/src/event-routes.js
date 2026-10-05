@@ -21,26 +21,7 @@
 // that table drives, test/messages.test.mjs, covers the table and the shipped
 // page; a bucket reading an XML/`{"error"}` body is not a person.
 
-import { sha256Hex } from "./db.js";
-import { errorResponse, json } from "./http.js";
-
-/**
- * Constant-time comparison of two hex digests: a plain `===` on a shared
- * secret leaks its prefix through timing, and the two lengths are fixed by
- * SHA-256.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let difference = 0;
-  for (let index = 0; index < left.length; index++) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
-}
+import { errorResponse, json, tokensMatch } from "./http.js";
 
 /**
  * One event from an S3 notification envelope, and the bucket and key it names.
@@ -140,7 +121,9 @@ export async function storageEventsRoute(request, ctx) {
       "www-authenticate": 'Bearer realm="drive"',
     });
   }
-  if (!digestsEqual(await sha256Hex(presented), await sha256Hex(token))) {
+  // The one compare in http.js. Both sides are the raw strings this route has:
+  // the bucket's configured token and the bearer token presented with it.
+  if (!(await tokensMatch(presented, token))) {
     return errorResponse(401, "Storage events need the bucket's token.", {
       "www-authenticate": 'Bearer realm="drive"',
     });

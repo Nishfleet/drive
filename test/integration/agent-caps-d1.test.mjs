@@ -18,7 +18,7 @@
 // statement that tried fails at SQL, and the column checks in this file name
 // them gone.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentCaps } from "../../src/agentcaps.js";
@@ -29,7 +29,7 @@ import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import apiWorker, { TEST_KEY_STORE } from "../../workers/api/src/index.js";
 import { renewKeyRoute, storageWriteRoute } from "../../workers/api/src/key-routes.js";
 import { createMemoryStore } from "../../workers/api/src/keystore.js";
-import { makeMeteredDB } from "../d1-sqlite.mjs";
+import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 
 // Midday UTC, clear of either midnight, so a day boundary in these tests is a
 // fact of the file and not of the day it runs.
@@ -519,16 +519,13 @@ test("migration 0021 clears the old 0004 default and leaves a set cap alone", ()
   // default and clears exactly the rows still carrying the 0004 default. The
   // backfill is exact: no statement in this repo ever writes this column, so a
   // 12.0 here is 0004's default and nothing else, and a hand-set value is kept.
-  const migrationFiles = readdirSync(new URL("../../migrations/drive/", import.meta.url))
-    .filter((name) => name.endsWith(".sql"))
-    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-  const capIndex = migrationFiles.indexOf("0021_agent_caps_nullable_cap.sql");
+  const capIndex = MIGRATION_FILES.indexOf("0021_agent_caps_nullable_cap.sql");
   assert.ok(capIndex >= 0, "0021_agent_caps_nullable_cap.sql is missing");
   const read = (/** @type {string} */ name) =>
     readFileSync(new URL(`../../migrations/drive/${name}`, import.meta.url), "utf8");
 
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of migrationFiles.slice(0, capIndex)) {
+  for (const name of MIGRATION_FILES.slice(0, capIndex)) {
     sqlite.exec(read(name));
   }
   /** @param {string} sql */
