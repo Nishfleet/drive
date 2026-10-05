@@ -47,7 +47,6 @@
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
 import { capLine, usageSummary } from "./billing.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -521,20 +520,6 @@ export async function handleCapRequest(request, account, capStore) {
     return new Response("Method not allowed. POST this endpoint to set the spending cap.", {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  // isSameOriginRequest (src/email-send.js line 111) lets a caller with
-  // no Origin header through, so the CLI ('drive cap 20', no browser
-  // evidence) still reaches this handler — the account gate is what
-  // identifies it, not the header.
-  if (!isSameOriginRequest(request)) {
-    // A specific line rather than the generic one: "try again in a moment"
-    // would be advice to retry a request that is always refused, and the one
-    // next step is to do it from the drive page. The words are the one message
-    // table's, the way every other user-facing failure sentence in this repo
-    // is (drive#421).
-    return jsonCapError(failureMessage("cap-from-page"), 403, {
-      "cache-control": "no-store",
     });
   }
   /** @type {unknown} */
