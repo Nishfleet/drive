@@ -132,18 +132,12 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
   // rather than a claim.
   const downloads = mkdtempSync(join(tmpdir(), "drive-files-page-"));
 
-  // The drive repo pins every dependency in package.json, and puppeteer-core
-  // is not one of them: it rides in through @lhci/cli, which CI installs for
-  // its own Lighthouse run on this same runner. A checkout without it skips
-  // rather than fails, the way the rclone-backed tests do without rclone.
-  /** @type {import("puppeteer-core").PuppeteerNode | undefined} */
-  let puppeteer;
-  try {
-    ({ default: puppeteer } = await import("puppeteer-core"));
-  } catch {
-    t.skip("puppeteer-core is not installed (it rides in through @lhci/cli)");
-    return;
-  }
+  // The drive repo pins every dependency in package.json, so the browser
+  // driver is a declared devDependency rather than something @lhci/cli drags
+  // in for its own Lighthouse run. Without it this import fails and the proof
+  // fails with it: a skipped browser test is a main that goes red with no
+  // message that says why.
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
@@ -236,14 +230,40 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
     downloadPath: downloads,
     eventsEnabled: true,
   });
+  // The download completing is the browser's own event, not a directory poll:
+  // Chrome streams the bytes into `archive.tar.gz.crdownload` and only renames
+  // the file to its real name when the transfer is done. Polling the folder
+  // therefore stops on the part file, and the assertion below fails on a
+  // download that is merely in flight (drive#500, CI runs 37254363049 on main
+  // and 37256433675 on PR 495). `downloadWillBegin` names the transfer by its
+  // guid, and `downloadProgress` reports `completed` for that same guid.
+  /** @type {Map<string, string>} */
+  const begun = new Map();
+  const finished = new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("the browser never reported the download complete")),
+      10_000,
+    );
+    session.on("Browser.downloadWillBegin", (event) => {
+      begun.set(event.guid, event.suggestedFilename);
+    });
+    session.on("Browser.downloadProgress", (event) => {
+      if (event.state === "inProgress") return;
+      clearTimeout(timer);
+      if (event.state === "canceled") {
+        reject(new Error(`the browser canceled the download of ${event.guid}`));
+        return;
+      }
+      resolve(event.guid);
+    });
+  });
   await clickName("archive.tar.gz");
-  const deadline = Date.now() + 5_000;
+  const guid = await finished;
+  // The name the browser saved under is the one it announced at the start of
+  // the transfer, and the file is on disk under that name by now.
+  assert.equal(begun.get(guid), "archive.tar.gz", "the download is the clicked file");
   /** @type {string[]} */
-  let saved = [];
-  while (Date.now() < deadline && saved.length === 0) {
-    saved = readdirSync(downloads);
-    await wait(100);
-  }
+  const saved = readdirSync(downloads);
   assert.deepEqual(saved, ["archive.tar.gz"], "the click saves the file, with its own name");
   assert.equal(
     readFileSync(join(downloads, "archive.tar.gz"), "utf8"),
