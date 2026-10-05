@@ -99,7 +99,7 @@ export function parseQueueReport(body) {
 /**
  * POST /v1/queue — one device's live upload queue.
  * @param {Request} request
- * @param {{account?: {id: string, name?: string}|null, queues?: {record: (accountId: string, queue: QueueReportBody) => Promise<{stored: true, reportedAt: number}|{stored: false, retryAfter: number}>}|null}} ctx
+ * @param {{account?: {id: string, name?: string}|null, queues?: {record: (accountId: string, queue: QueueReportBody, deviceId?: string) => Promise<{stored: true, reportedAt: number}|{stored: false, retryAfter: number}>}|null}} ctx
  * @returns {Promise<Response>}
  */
 export async function reportUploadQueueRoute(request, ctx) {

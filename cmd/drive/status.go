@@ -526,7 +526,7 @@ func cacheState(home string, on bool) (capBytes, usedBytes int64, ok bool) {
 	if !on {
 		return 0, 0, false
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		return 0, 0, false
 	}

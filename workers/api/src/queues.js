@@ -221,11 +221,7 @@ export function createD1QueueStore(db, options = {}) {
      */
     async sweep(at = nowSeconds(now())) {
       const cutoff = at - QUEUE_FRESHNESS_SECONDS;
-      const next = await run(
-        db,
-        "DELETE FROM device_queue_reports WHERE reported_at < ?1",
-        cutoff,
-      );
+      const next = await run(db, "DELETE FROM device_queue_reports WHERE reported_at < ?1", cutoff);
       const prev = await run(db, "DELETE FROM device_queues WHERE reported_at < ?1", cutoff);
       return (
         Number(/** @type {{meta?: {changes?: number}}} */ (next)?.meta?.changes ?? 0) +

@@ -217,10 +217,15 @@ test("two devices on one account each store a report", async () => {
   const store = createD1QueueStore(createTestD1(), { now: clock.now });
   assert.equal((await store.record("acct_1", QUEUE, "device-a")).stored, true);
   assert.equal(
-    (await store.record("acct_1", { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true }, "device-b"))
-      .stored,
+    (
+      await store.record(
+        "acct_1",
+        { files: 1, uploadedBytes: 0, totalBytes: 4096, paused: true },
+        "device-b",
+      )
+    ).stored,
     true,
-    "the second device was refused against the first device's clock",
+    "the second device stores its own row rather than 429 against the first",
   );
   const latest = await store.latest("acct_1");
   assert.equal(latest?.files, 4);
