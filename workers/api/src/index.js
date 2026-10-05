@@ -8,6 +8,7 @@ import { bearerToken, errorResponse } from "../../../core/http.js";
 import { keyProviderFor, storageLocationFromEnv } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
+import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
 import { createD1QueueStore } from "../../../core/queues.js";
 import { signedInAccount } from "../../../core/status.js";
 import { createD1TeamStore } from "../../../core/teams.js";
@@ -464,6 +465,11 @@ function storeFor(env) {
       deviceStore: env.DRIVE_DB
         ? createD1DeviceStore(env.DRIVE_DB, { keyProvider: keyProviderFor(env) ?? undefined })
         : undefined,
+      // The prepaid pause (drive#586), only while PREPAID_PAUSE is "on".
+      writesPaused:
+        env.DRIVE_DB && prepaidPauseOn(env)
+          ? (accountId) => writesPaused(env.DRIVE_DB, accountId)
+          : undefined,
     });
     keyStoreDb = env.DRIVE_DB;
   }

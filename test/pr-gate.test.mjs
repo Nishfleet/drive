@@ -220,7 +220,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // cannot prove an account is a 401 rather than an empty month.
   assert.match(
     productFile("billing.js"),
-    /export function handleUsageRequest\(request, account, upload = null\)/,
+    /export function handleUsageRequest\(request, account, upload = null, balanceLine = null\)/,
   );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);
   assert.equal(usage.status, 401, "the usage read is behind the account gate");
@@ -807,6 +807,14 @@ test("gate 8: the two Worker trees cannot import each other, only core", () => {
       file: `workers/api/src/${probe}`,
       code: 'import { USAGE_ENDPOINT } from "../../../src/index.js";\n\nexport const p = USAGE_ENDPOINT;\n',
       why: "a Worker must not import the site Worker's src",
+    },
+    {
+      // drive#591 added this crossing and the core move closed it: prepaid.js
+      // is a shared money module, so it lives in core/ and the api Worker
+      // imports it from there. This row is the regression guard for it.
+      file: `workers/api/src/${probe}`,
+      code: 'import { writesPaused } from "../../../src/prepaid.js";\n\nexport const p = writesPaused;\n',
+      why: "a Worker must reach a shared money module through core/, not src/",
     },
   ];
   // The one crossing that must stay open: core is how the two meet.

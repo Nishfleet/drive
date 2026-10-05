@@ -13,13 +13,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { monthBillCents } from "../core/billing.js";
 import {
-  BYTES_PER_GB,
-  METER_CRON,
-  MINUTE_MS,
-  monthUsageThrough,
-  recordUsage,
-} from "../core/meter.js";
-import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
   billingPushGap,
@@ -30,7 +23,14 @@ import {
   pushBillingHours,
   resolveIngestUrl,
   unpushedBillingHours,
-} from "../src/dodo.js";
+} from "../core/dodo.js";
+import {
+  BYTES_PER_GB,
+  METER_CRON,
+  MINUTE_MS,
+  monthUsageThrough,
+  recordUsage,
+} from "../core/meter.js";
 import workerModule from "../src/index.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
@@ -498,91 +498,88 @@ test("a 5xx ingest is retried once (drive#570), and the retry's push is the one 
   );
 });
 
-test("the hourly cron pushes the hour it just rolled", async () => {
+// --- the hourly cron after the prepaid switch (drive#586) ------------------
+//
+// #586 replaced the after-the-fact usage push with a prepaid draw: the meter's
+// hourly trip now draws each account's usage from its balance
+// (src/prepaid.js drawUsageHours) and sends Dodo nothing. pushBillingHours and
+// billingPushGap above stay pinned as functions, but the cron must not call
+// them, or a customer who prepaid would also be billed in arrears. These
+// tests drive the real scheduled() wiring and pin that switch.
+
+/** The usage draws the ledger holds, oldest first. @param {import("./d1-sqlite.mjs").TestSqlite} sqlite */
+function usageDraws(sqlite) {
+  return sqlite
+    .prepare(
+      "SELECT account_id, amount_cents, window_start FROM balance_ledger WHERE kind = 'usage' ORDER BY id",
+    )
+    .all();
+}
+
+/** One account with 1 TB stored from midnight, so the hour's draw is whole cents. */
+async function storedTerabyte() {
   const { db, sqlite } = makeMeteredDB();
   await putCustomer(db, ACCOUNT, CUSTOMER);
   db.insertVersion({
     accountId: ACCOUNT,
     fileId: "file-1",
     path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
+    sizeBytes: 1000 * BYTES_PER_GB,
     createdAt: midnight(),
   });
+  return { db, sqlite };
+}
+
+test("the hourly cron draws the hour it just rolled from the balance, and pushes nothing to Dodo", async (t) => {
+  const { db, sqlite } = await storedTerabyte();
   const recorder = recordingFetch();
+  t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
     { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
   );
-  assert.equal(recorder.calls.length, 1);
-  assert.equal(recorder.calls[0].url, DODO_TEST_INGEST_URL);
-  assert.equal(recorder.calls[0].payload.events[0].event_id, billingEventId(ACCOUNT, midnight()));
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 1);
+  assert.equal(recorder.calls.length, 0, "no usage event reaches Dodo: the balance pays");
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
+  const draws = usageDraws(sqlite);
+  assert.equal(draws.length, 1, "one draw for the one account and hour");
+  assert.equal(draws[0].account_id, ACCOUNT);
+  assert.equal(draws[0].window_start, midnight());
+  assert.ok(Number(draws[0].amount_cents) < 0, "a draw takes from the balance");
 });
 
-test("the cron reports the skipped push in the log, and does not throw over it", async (t) => {
-  // A deployment whose key was never set: the meter's rollup still runs, the
-  // push still returns {pushed: 0}, and the detector beside it writes one
-  // operator-facing line. The scheduled() call must resolve, because a throw
-  // here would be Cloudflare retrying a rollup over a missing key — the exact
-  // outcome issue #334 says must not happen.
-  const { db } = makeMeteredDB();
-  await putCustomer(db, ACCOUNT, CUSTOMER);
-  db.insertVersion({
-    accountId: ACCOUNT,
-    fileId: "file-1",
-    path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
-    createdAt: midnight(),
-  });
-  // t.mock.method, not a global console.error swap: the mock restores itself
-  // when the test ends, so a concurrency change cannot leak the patch into a
-  // neighbouring test the way a hand-rolled finally can if a test is cut.
+test("with no Dodo key the cron still draws, does not throw, and logs no retired push gap", async (t) => {
+  // A deployment whose key was never set (#334's case). The draw needs no key,
+  // so the hour is still paid from the balance; the old "metered hours reached
+  // nobody" line would now be a false alarm, so it must not appear.
+  const { db, sqlite } = await storedTerabyte();
   const errorMock = t.mock.method(console, "error");
+  t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY: the missing-key case
+    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY
   );
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
-  const line = logged.find((args) => String(args[0]).includes("metered hours reached nobody"));
-  assert.ok(line, `the cron must log the skipped push, got ${JSON.stringify(logged)}`);
-  const text = line.map(String).join(" ");
-  assert.ok(text.includes("DODO_PAYMENTS_API_KEY"), "the line names the key that is missing");
-  assert.equal(text.includes(KEY), false, "and never any key value");
-  assert.ok(text.includes("hours="), "and counts the hours that reached nobody");
-  assert.ok(
-    !text.includes(ACCOUNT),
-    "and never an account id, so the log line carries no customer data",
+  assert.equal(usageDraws(sqlite).length, 1, "the hour is drawn without a provider key");
+  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
+  assert.equal(
+    logged.some((line) => line.includes("metered hours reached nobody")),
+    false,
+    `the retired push-gap line must not be logged, got ${JSON.stringify(logged)}`,
   );
 });
 
-test("a broken gap report is caught, so it never fails the rollup it reports on", async (t) => {
-  // The push above may throw on purpose - Cloudflare retries the rollup so an
-  // unpushed hour gets another try. The detector must not: a report that fails
-  // the work it is reporting on is worse than no report, because a transient
-  // D1 read error would then retry a rollup that already billed everyone
-  // correctly.
-  //
-  // So the whole scheduled() path runs, through the real wiring, over a db
-  // that answers every statement except the detector's. The stub matches the
-  // detector query's own first line (`SELECT DISTINCT u.hour AS hour`), not an
-  // alias like `FROM billing_pushes b` that the push's own statements could
-  // grow into: the match must fail exactly the detector and nothing else.
-  // The push still succeeds, the cron still resolves, and the failure is
-  // logged instead of thrown.
-  const { db, sqlite } = makeMeteredDB();
-  await putCustomer(db, ACCOUNT, CUSTOMER);
-  db.insertVersion({
-    accountId: ACCOUNT,
-    fileId: "file-1",
-    path: `/u/${ACCOUNT}/notes.md`,
-    sizeBytes: BYTES_PER_GB,
-    createdAt: midnight(),
-  });
+test("the cron never runs the retired push-gap report, so a failing one cannot touch the draw", async (t) => {
+  // The db answers every statement except the old detector's own first line
+  // (`SELECT DISTINCT u.hour AS hour`). If the cron still ran the report, this
+  // would throw or log; it must do neither, and the draw must be stored.
+  const { db, sqlite } = await storedTerabyte();
+  /** @type {string[]} */
+  const detectorCalls = [];
   const failingDetectorDb = /** @type {D1Database} */ (
     /** @type {unknown} */ ({
       /** @param {string} sql */
       prepare(sql) {
         if (String(sql).includes("SELECT DISTINCT u.hour AS hour")) {
+          detectorCalls.push(String(sql));
           throw new Error("D1 is unavailable");
         }
         return db.prepare(sql);
@@ -598,31 +595,16 @@ test("a broken gap report is caught, so it never fails the rollup it reports on"
     })
   );
   const recorder = recordingFetch();
-  // Both console channels are mocked, so the healthy "push working" line and
-  // the failure line are captured without a global swap (see the first test's
-  // note). t.mock.method restores both when the test ends.
   const errorMock = t.mock.method(console, "error");
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    {
-      METER_DB: failingDetectorDb,
-      DODO_PAYMENTS_API_KEY: KEY,
-      DODO_FETCH: recorder.fetch,
-    },
+    { METER_DB: failingDetectorDb, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
   );
-  const logged = errorMock.mock.calls.map((call) => call.arguments.map(String));
-  assert.equal(recorder.calls.length, 1, "the push itself still ran and reached Dodo");
-  assert.equal(
-    sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n,
-    1,
-    "and its row is stored: the report did not undo the work",
-  );
-  const line = logged.find((args) => String(args[0]).includes("the gap report failed"));
-  assert.ok(line, `a broken report must be logged, got ${JSON.stringify(logged)}`);
-  const text = line.map(String).join(" ");
-  assert.ok(text.includes("D1 is unavailable"), "naming why the report is silent");
-  assert.equal(text.includes(KEY), false, "and never the key value");
+  assert.deepEqual(detectorCalls, [], "the cron does not read the push-gap report");
+  assert.equal(errorMock.mock.calls.length, 0, "and logs no failure");
+  assert.equal(recorder.calls.length, 0, "and sends Dodo no usage event");
+  assert.equal(usageDraws(sqlite).length, 1, "the draw is stored");
 });
 
 test("a key that is set but wrong still names the gap, and says it is not the missing-key cause", async () => {

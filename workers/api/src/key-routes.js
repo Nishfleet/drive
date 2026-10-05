@@ -338,6 +338,12 @@ export async function storageWriteRoute(request, ctx) {
   if (!ctx.store.canWrite(device)) {
     return errorResponse(403, "This key cannot write to the drive.");
   }
+  // The prepaid pause (drive#586): at a $0 balance new writes stop, in the
+  // same words the web and `drive status` use. 402, because paying is what
+  // starts writes again. Reads on the same key are never asked.
+  if (await ctx.store.balancePaused(device)) {
+    return errorResponse(402, failureMessage("balance-empty"));
+  }
   const body = new Uint8Array(await request.arrayBuffer());
   ctx.store.putObject(authorized.path, body);
   return json(

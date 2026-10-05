@@ -30,7 +30,9 @@ import {
   scopeStore,
 } from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
+import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { HEALTH_PATH } from "../src/health.js";
@@ -40,7 +42,6 @@ import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
-import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
 
 /**
@@ -149,6 +150,7 @@ const ACCOUNT_ROUTES = [
   `${BALANCE_ENDPOINT}/`,
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
+  `${AUTO_TOPUP_ENDPOINT}`,
   // drive#575: the billing portal, where the account's card is updated. It
   // names the account's own customer and billing page, so it is behind the
   // account gate exactly like the balance read beside it, and the walk

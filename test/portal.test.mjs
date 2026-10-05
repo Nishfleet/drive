@@ -6,10 +6,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DODO_TEST_BASE_URL, isDodoUrl } from "../core/dodo.js";
 import { paymentFailedTemplate } from "../core/emails.js";
 import { failureMessage } from "../core/messages.js";
 import { absoluteUrl } from "../core/seo.js";
-import { DODO_TEST_BASE_URL, isDodoUrl } from "../src/dodo.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "../src/portal.js";
 import { USAGE_LABELS } from "../src/usage.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";

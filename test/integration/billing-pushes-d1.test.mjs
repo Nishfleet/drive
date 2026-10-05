@@ -15,8 +15,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { billingEventId, pushBillingHours } from "../../core/dodo.js";
 import { BYTES_PER_GB, MINUTE_MS, recordUsage } from "../../core/meter.js";
-import { billingEventId, pushBillingHours } from "../../src/dodo.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;

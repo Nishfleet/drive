@@ -4,16 +4,17 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DODO_TEST_BASE_URL } from "../core/dodo.js";
 import { failureMessage } from "../core/messages.js";
-import { DODO_TEST_BASE_URL } from "../src/dodo.js";
 import {
+  balanceLine,
   DODO_CHECKOUT_PATH,
   handleBalanceRequest,
   handleTopUpRequest,
   isDodoCheckoutUrl,
   TOPUP_ENDPOINT,
   TOPUP_PURPOSE,
-} from "../src/topup.js";
+} from "../core/topup.js";
 import { makeMeteredDB, midnight } from "./d1-sqlite.mjs";
 
 const ACCOUNT = { id: "acc-topup", email: "topup@example.com" };
@@ -210,4 +211,25 @@ test("the balance answers the signed-in account only", async () => {
   assert.equal(body.balance_cents, 0);
   assert.equal(body.paused, true);
   assert.deepEqual(body.top_up_presets_usd, [10, 25, 50]);
+});
+
+test("the balance line names the pause and the top-up prompt only when they are true", () => {
+  assert.equal(balanceLine(1234), "Balance $12.34.");
+  assert.equal(balanceLine(150), "Balance $1.50. Top up to keep adding files.");
+  assert.equal(balanceLine(0), failureMessage("balance-empty"));
+  assert.equal(balanceLine(-40), failureMessage("balance-empty"), "a debt reads as $0");
+  assert.match(balanceLine(0), /Top up to keep adding files\./);
+  // While the pause is switched off, the line asks for a top-up and claims no pause.
+  assert.equal(balanceLine(0, { pauseOn: false }), "Balance $0.00. Top up to keep adding files.");
+});
+
+test("the balance answer says paused only while the pause is switched on", async () => {
+  const db = await dbWithAccount();
+  const request = new Request(`${ORIGIN}/api/balance`);
+  const off = await (await handleBalanceRequest(request, ACCOUNT, db, { pauseOn: false })).json();
+  assert.equal(off.paused, false);
+  assert.equal(off.balance_line, "Balance $0.00. Top up to keep adding files.");
+  const on = await (await handleBalanceRequest(request, ACCOUNT, db)).json();
+  assert.equal(on.paused, true);
+  assert.equal(on.balance_line, failureMessage("balance-empty"));
 });
