@@ -1280,7 +1280,7 @@ test("the page carries every string from src/signin.js verbatim", () => {
   // The page is a static asset, so the price line it shows is the price
   // module's; the test reads the module, so the two cannot drift.
   assert.ok(
-    page.includes(PRICE.noMinimumLine),
+    page.includes(PRICE.noPlansLine),
     "the page must carry the price module's no-minimum line",
   );
 });
@@ -1430,7 +1430,7 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     .replace(/\s+/g, " ")
     .trim();
   assert.equal(labelText, SIGNIN_COPY.cardConsent, "the box is labelled in short");
-  assert.ok(page.includes(SIGNIN_COPY.noMinimumLine), "the page must quote the no-minimum line");
+  assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
   // Never a per-minute price, a credit unit, or "unlimited" (the build spec's
   // "Never do" row). This page is a step-9 surface, so the rule is pinned on
   // it too, not only on the pricing page.

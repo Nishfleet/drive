@@ -17,6 +17,7 @@ import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
+import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -106,23 +107,6 @@ function deviceFromRow(row) {
  */
 function changesOf(result) {
   return Number(/** @type {{meta?: {changes?: number}}} */ (result)?.meta?.changes ?? 0);
-}
-
-/**
- * Constant-time hex comparison, the same loop keystore.js uses, so a secret
- * hash cannot leak through timing just because the row moved to D1.
- * @param {string} left
- * @param {string} right
- */
-function digestsEqual(left, right) {
-  if (left.length !== right.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 /**
@@ -829,7 +813,10 @@ export function createD1DeviceStore(db, options = {}) {
       if (device === null || device.secretHash === "") {
         return null;
       }
-      if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+      // The one compare in http.js. A device is stored only as the hash of its
+      // secret, so both sides here are hashes: the stored one, and the hash of
+      // the secret this request presented.
+      if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
         return null;
       }
       const seen = nowSeconds(now());

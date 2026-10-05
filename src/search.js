@@ -21,6 +21,7 @@
 // a search answers only for the signed-in account (`handleSearchRequest`
 // takes the account, never a request), and the rebuild has no route at all —
 // `reconcileIndex` is reached from the nightly scheduled trigger.
+import { json } from "../workers/api/src/http.js";
 import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
 import { failureMessage } from "./messages.js";
 
@@ -507,24 +508,6 @@ export async function indexAccounts(db) {
 }
 
 // ---------------------------------------------------------------- the route
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} [status]
- * @param {Record<string, string>} [headers]
- * @returns {Response}
- */
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  });
-}
 
 /**
  * @param {string} message

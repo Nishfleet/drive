@@ -50,6 +50,7 @@
 
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import { json } from "../workers/api/src/http.js";
 import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import {
   attachPendingCardAccount,
@@ -147,7 +148,7 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
-  noMinimumLine: PRICE.noMinimumLine,
+  noPlansLine: PRICE.noPlansLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
   emailButton: "Email me a link",
@@ -776,23 +777,5 @@ function redirect(location, extraHeaders = {}) {
       "cache-control": "no-store",
       ...extraHeaders,
     },
-  });
-}
-
-const JSON_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * @param {unknown} body
- * @param {number} status
- * @param {Record<string, string|string[]>} [extraHeaders]
- * @returns {Response}
- */
-function json(body, status, extraHeaders = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...extraHeaders },
   });
 }
