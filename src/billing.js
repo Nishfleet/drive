@@ -78,11 +78,6 @@ export function billingConfigFor(price) {
     // customer's own guardrail, not the price maximum: the cap counts
     // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // A bill under this rolls into the next month, and the card is charged
-    // when the running balance reaches it. One number the FAQ's words and the
-    // future collection step both read, so the copy cannot name a threshold
-    // the ledger does not use.
-    chargeThresholdUsd: 5,
     // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
