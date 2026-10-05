@@ -1062,6 +1062,11 @@ test("gate 8: the two Worker trees cannot import each other, only core", () => {
       why: "a shared module must not import one Worker",
     },
     {
+      file: `core/${probe}`,
+      code: 'import { USAGE_ENDPOINT } from "../src/index.js";\n\nexport const p = USAGE_ENDPOINT;\n',
+      why: "a shared module must not import the site Worker's src",
+    },
+    {
       file: `workers/api/src/${probe}`,
       code: 'import { USAGE_ENDPOINT } from "../../../src/index.js";\n\nexport const p = USAGE_ENDPOINT;\n',
       why: "a Worker must not import the site Worker's src",

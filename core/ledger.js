@@ -17,7 +17,7 @@
 // provider's signature before it calls creditTopUp, so this module trusts its
 // caller about who paid and owns only the arithmetic and the rows.
 
-import { PREPAID } from "../core/pricing.js";
+import { PREPAID } from "./pricing.js";
 
 export const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
 
