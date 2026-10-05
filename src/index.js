@@ -1055,24 +1055,31 @@ export default {
       // held 1 TB free since drive#464, but a mount holds a storage key and
       // writes past any page, so the same hourly run reads the over-limit
       // unpaid accounts and takes their keys read-only, through the cap's
-      // own swap (src/abuse-guards.js). Awaited like the rollup: a run that
-      // capped nobody because a read failed has to be a failed trigger,
-      // Cloudflare's to retry, not a quiet zero.
-      if (env.DRIVE_DB) {
-        const capped = await runPreChargeLimitCron({
-          db: env.DRIVE_DB,
-          devices: createD1DeviceStore(env.DRIVE_DB, {
-            keyProvider: keyProviderFor(env) ?? undefined,
-          }),
-        });
-        if (capped.capped > 0) {
-          console.log(
-            "pre-charge limit: capped",
-            `accounts=${capped.capped}`,
-            `over=${capped.overLimit}`,
-            `failures=${capped.failures}`,
-          );
-        }
+      // own swap (src/abuse-guards.js). DRIVE_DB is a required binding on
+      // this trip - the sites Worker holds it - so a missing one fails the
+      // trigger the same way a failed read does: a run that capped nobody
+      // because the sweep never ran would be a quiet zero reporting the hour
+      // as guarded, and Cloudflare's retry is the honest answer to a
+      // misconfigured trip.
+      if (env.DRIVE_DB === undefined || env.DRIVE_DB === null) {
+        throw new Error(
+          "the pre-charge limit sweep needs the DRIVE_DB binding, so an over-limit " +
+            "unpaid account's keys can be taken read-only",
+        );
+      }
+      const capped = await runPreChargeLimitCron({
+        db: env.DRIVE_DB,
+        devices: createD1DeviceStore(env.DRIVE_DB, {
+          keyProvider: keyProviderFor(env) ?? undefined,
+        }),
+      });
+      if (capped.capped > 0) {
+        console.log(
+          "pre-charge limit: capped",
+          `accounts=${capped.capped}`,
+          `over=${capped.overLimit}`,
+          `failures=${capped.failures}`,
+        );
       }
       // A cap step that failed for some accounts is raised last, after every
       // other account was decided and the hours were drawn and settled, so Cloudflare

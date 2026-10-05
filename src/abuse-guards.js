@@ -35,6 +35,17 @@ const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
  */
 export const HOLD_TTL_SECONDS = 24 * 60 * 60;
 
+// What the 1 TB pre-charge limit counts (drive#536), written once and built
+// into both statements that read it: the live versions, which of those rows
+// count, and their bytes. The web save (accountStoredBytes, used by
+// preChargeUploadBlocked and preChargeLimitStream) and the hourly sweep
+// (preChargeOverLimitAccounts) cannot then count different rows. The sweep's
+// eligibility filter - which accounts the limit still applies to - stays out
+// of the shared part, because it is not part of how many bytes an account holds.
+const LIVE_VERSIONS = "file_versions v";
+const LIVE_VERSION_ROWS = "v.hidden_at IS NULL";
+const LIVE_STORED_BYTES = "COALESCE(SUM(v.size_bytes), 0)";
+
 /**
  * The accounts.id the card step writes before the magic-link is followed.
  * Better Auth only creates the user when the link is opened, so uniqueness
@@ -324,7 +335,8 @@ export class PreChargeLimitError extends Error {
  * that deleted a file today would be refused making room the index still
  * believes is taken. The limit is enforced per save elsewhere
  * (`preChargeUploadBlocked`, `preChargeLimitStream`) against the same live
- * rows, so one number decides it everywhere.
+ * rows, through the same LIVE_VERSIONS fragment, so one number decides it
+ * everywhere.
  * @param {D1Database} db
  * @param {string} accountId
  * @returns {Promise<number>}
@@ -335,9 +347,10 @@ export async function accountStoredBytes(db, accountId) {
   }
   const row = await db
     .prepare(
-      `SELECT COALESCE(SUM(size_bytes), 0) AS stored
-         FROM file_versions
-        WHERE account_id = ?1 AND hidden_at IS NULL`,
+      `SELECT ${LIVE_STORED_BYTES} AS stored
+         FROM ${LIVE_VERSIONS}
+        WHERE ${LIVE_VERSION_ROWS}
+          AND v.account_id = ?1`,
     )
     .bind(accountId)
     .first();
@@ -356,21 +369,25 @@ export async function accountStoredBytes(db, accountId) {
  *
  * Only accounts the limit still applies to are answered: no first charge yet,
  * and not closed. A closed account's keys were revoked when it closed
- * (src/account-close.js), so there is nothing left there to take.
+ * (src/account-close.js), so there is nothing left there to take. That filter
+ * rides the join: the sum and the live-versions rule come from the same
+ * fragments accountStoredBytes uses, so the sweep counts the bytes a web save
+ * would count.
  * @param {D1Database} db
  * @returns {Promise<Array<{accountId: string, storedBytes: number}>>}
  */
 export async function preChargeOverLimitAccounts(db) {
   const result = await db
     .prepare(
-      `SELECT v.account_id AS account_id, COALESCE(SUM(v.size_bytes), 0) AS stored
-         FROM file_versions v
-         JOIN accounts a ON a.id = v.account_id
-        WHERE v.hidden_at IS NULL
+      `SELECT v.account_id AS account_id, ${LIVE_STORED_BYTES} AS stored
+         FROM ${LIVE_VERSIONS}
+         JOIN accounts a
+           ON a.id = v.account_id
           AND a.first_charged_at IS NULL
           AND a.state <> 'closed'
+        WHERE ${LIVE_VERSION_ROWS}
         GROUP BY v.account_id
-       HAVING COALESCE(SUM(v.size_bytes), 0) > ?1`,
+       HAVING ${LIVE_STORED_BYTES} > ?1`,
     )
     .bind(PRE_CHARGE_STORAGE_LIMIT_BYTES)
     .all();
