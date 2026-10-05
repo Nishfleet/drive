@@ -13,7 +13,7 @@
 // is the whole of the withdrawal there.
 
 import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
-import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
+import { applyCapSwap, capSwapPlan, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import {
   accountFounding,
   releaseFoundingReservation as clearFoundingReservation,
@@ -967,6 +967,35 @@ export function createD1DeviceStore(db, options = {}) {
         atSeconds,
         accountId,
       );
+    },
+
+    /**
+     * A successful retry clears the ladder (drive#465).
+     * @param {string} accountId
+     */
+    async clearPaymentFailed(accountId) {
+      await run(
+        db,
+        "UPDATE accounts SET payment_failed_at = NULL, card_fail_purge_at = NULL WHERE id = ?1",
+        accountId,
+      );
+    },
+
+    /**
+     * Card-failure day 14: take write keys read-only. Nothing is deleted.
+     * A deployment with no key provider skips: there is no credential to swap.
+     * @param {string} accountId
+     */
+    async freezeWrites(accountId) {
+      if (inner === undefined) {
+        return;
+      }
+      const keys = await store.listCapKeys(accountId);
+      const plan = capSwapPlan(keys, { state: "read_only" });
+      if (plan.swaps.length === 0) {
+        return;
+      }
+      await applyCapSwap(plan, store.keyProviderFor(accountId));
     },
 
     /**

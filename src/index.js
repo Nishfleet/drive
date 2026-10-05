@@ -29,7 +29,7 @@ import {
 import { BRANCHES_ENDPOINT, createKvSnapshotStore, handleBranchesRequest } from "./branches.js";
 import { CAP_ENDPOINT, handleCapRequest } from "./cap.js";
 import { runCardFailureCron } from "./card-failure.js";
-import { billingPushGap, pushBillingHours } from "./dodo.js";
+import { billingPushGap, chargeAccountNow, pushBillingHours } from "./dodo.js";
 import { handleSendEmailRequest } from "./email-send.js";
 import {
   createMemoryStore,
@@ -196,13 +196,26 @@ function closeDepsFor(env) {
   if (!env.DRIVE_DB) {
     return null;
   }
-  const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+  const secrets =
+    /** @type {Env & {MAIL_FROM?: string, DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
+      env
+    );
   return {
     devices: createD1DeviceStore(env.DRIVE_DB),
     store: storeFor(env),
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
     now: () => Date.now(),
+    /**
+     * @param {{accountId: string, chargeCents: number, now: number}} charge
+     */
+    onCharge: (charge) =>
+      chargeAccountNow(env.DRIVE_DB, charge.accountId, charge.chargeCents, {
+        apiKey: secrets.DODO_PAYMENTS_API_KEY,
+        fetch: secrets.DODO_FETCH ?? globalThis.fetch,
+        baseUrl: secrets.DODO_BASE_URL,
+        now: charge.now,
+      }),
   };
 }
 
@@ -913,7 +926,10 @@ export default {
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
       if (env.DRIVE_DB) {
-        const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
+        const secrets =
+          /** @type {Env & {MAIL_FROM?: string, DODO_PAYMENTS_API_KEY?: string, DODO_FETCH?: typeof fetch, DODO_BASE_URL?: string}} */ (
+            env
+          );
         await runAccountCloseCron({
           db: env.DRIVE_DB,
           devices: createD1DeviceStore(env.DRIVE_DB),
@@ -927,6 +943,13 @@ export default {
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
           now: event.scheduledTime,
+          onRetry: (charge) =>
+            chargeAccountNow(env.DRIVE_DB, charge.accountId, charge.chargeCents, {
+              apiKey: secrets.DODO_PAYMENTS_API_KEY,
+              fetch: secrets.DODO_FETCH ?? globalThis.fetch,
+              baseUrl: secrets.DODO_BASE_URL,
+              now: charge.now,
+            }),
         });
       }
       return;

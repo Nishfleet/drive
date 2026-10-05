@@ -17,6 +17,7 @@ import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
   billingPushGap,
+  chargeAccountNow,
   DODO_EVENT_NAME,
   DODO_INGEST_PATH,
   DODO_TEST_INGEST_URL,
@@ -719,4 +720,21 @@ test("a $5 charge mails the receipt, and month-end mails a statement with no cha
   assert.equal(sent.length, 1, "the last hour of the month sends a statement even under $5");
   assert.match(/** @type {{subject: string}} */ (sent[0]).subject, /statement/i);
   assert.match(/** @type {{text: string}} */ (sent[0]).text, /running balance/i);
+});
+
+test("chargeAccountNow posts the unpaid cents and skips when there is no customer", async () => {
+  const { db } = makeMeteredDB();
+  await putCustomer(db, ACCOUNT, CUSTOMER);
+  const recorder = recordingFetch();
+  const charged = await chargeAccountNow(db, ACCOUNT, 40, {
+    apiKey: KEY,
+    fetch: recorder.fetch,
+    now: midnight(),
+  });
+  assert.equal(charged.charged, true);
+  assert.equal(recorder.calls.length, 1);
+  assert.equal(recorder.calls[0].payload.events[0].metadata.amount_units, 40);
+
+  const skipped = await chargeAccountNow(db, ACCOUNT, 40, { apiKey: "", fetch: recorder.fetch });
+  assert.equal(skipped.charged, false);
 });

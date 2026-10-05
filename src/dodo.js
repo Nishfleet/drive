@@ -304,12 +304,22 @@ export async function pushBillingHours(db, hours, options = {}) {
         unpaidCents: row.unpaidCents,
         unpaidSince: row.unpaidSince,
       };
-      const next = applyUnpaid({
-        unpaidCents: prior.unpaidCents,
-        unpaidSince: prior.unpaidSince,
-        incrementCents: amountUnits,
-        now: hour,
-      });
+      /** @type {{unpaidCents: number, unpaidSince: number|null, chargeCents: number, reason: string, addedCents: number}} */
+      let next;
+      try {
+        next = applyUnpaid({
+          unpaidCents: prior.unpaidCents,
+          unpaidSince: prior.unpaidSince,
+          incrementCents: amountUnits,
+          now: hour,
+        });
+      } catch (error) {
+        console.error(
+          "billing: unpaid decision failed for one account-hour",
+          error instanceof Error ? error.message : String(error),
+        );
+        continue;
+      }
       unpaidByAccount.set(accountId, {
         unpaidCents: next.unpaidCents,
         unpaidSince: next.unpaidSince,
@@ -360,13 +370,13 @@ export async function pushBillingHours(db, hours, options = {}) {
         apiKey,
         charges.map((item) => item.event),
       );
-      for (const item of charges) {
-        await markAccountPaying(db, item.accountId, { offerOpen, now: pushedAt });
-      }
     }
     // Record the hours we just decided, and the unpaid balance each left,
     // before the next POST. A later batch's failure cannot leave those hours
     // without a local row. Hours under $5 are stored and not sent to Dodo.
+    // billing_pushes.amount_units is this month's bill delta (the high-water
+    // so a reroll cannot uncharge). The Dodo event's amount_units is the
+    // running unpaid when we charge, which can include earlier months.
     await db.batch([
       ...batch.map((item) =>
         db
@@ -386,6 +396,9 @@ export async function pushBillingHours(db, hours, options = {}) {
           .bind(item.unpaidCents, item.unpaidSince, item.accountId),
       ),
     ]);
+    for (const item of charges) {
+      await markAccountPaying(db, item.accountId, { offerOpen, now: pushedAt });
+    }
     await sendBillingMail(batch, options);
   }
   return { pushed: pending.length };
@@ -625,4 +638,58 @@ async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
   if (!response.ok) {
     throw new Error(`Dodo test-mode ingest failed: ${response.status}`);
   }
+}
+
+/**
+ * Charge one account's unpaid balance now (account close, or a card-failure
+ * retry). Skips when this deploy has no Dodo key or the account has no
+ * customer, so a close still happens and a receipt is only sent when we
+ * actually posted the charge.
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {number} chargeCents
+ * @param {PushOptions} [options]
+ * @returns {Promise<{charged: boolean}>}
+ */
+export async function chargeAccountNow(db, accountId, chargeCents, options = {}) {
+  if (typeof accountId !== "string" || accountId.length === 0) {
+    throw new TypeError(`chargeAccountNow needs an account id, got ${String(accountId)}`);
+  }
+  if (!Number.isSafeInteger(chargeCents) || chargeCents <= 0) {
+    throw new TypeError(
+      `chargeAccountNow needs a positive whole number of cents, got ${String(chargeCents)}`,
+    );
+  }
+  const apiKey = typeof options.apiKey === "string" ? options.apiKey : "";
+  if (apiKey.length === 0) {
+    return { charged: false };
+  }
+  const ingestUrl = resolveIngestUrl(options.baseUrl);
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError("chargeAccountNow needs fetch");
+  }
+  const row = await db
+    .prepare("SELECT dodo_customer_id FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  const customerId =
+    row && typeof row === "object"
+      ? /** @type {{dodo_customer_id?: unknown}} */ (row).dodo_customer_id
+      : undefined;
+  if (typeof customerId !== "string" || customerId.length === 0) {
+    return { charged: false };
+  }
+  const now = options.now === undefined ? Date.now() : toPushedAt(options.now);
+  const eventId = `drive:${accountId}:charge:${now}`;
+  await ingestEvents(fetchImpl, ingestUrl, apiKey, [
+    {
+      event_id: eventId,
+      customer_id: customerId,
+      event_name: DODO_EVENT_NAME,
+      metadata: { amount_units: chargeCents },
+    },
+  ]);
+  await markAccountPaying(db, accountId, { offerOpen: options.offerOpen !== false, now });
+  return { charged: true };
 }

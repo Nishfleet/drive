@@ -255,6 +255,45 @@ test("closing with a matching email sets accounts.state to closed, revokes keys,
   assert.notEqual(stillThere, null, "files stay through the grace period");
 });
 
+test("closing with $0.40 owed charges the card before the close receipt", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_close_charge", email: "nish@example.com", name: "Nish" };
+  await world.keys.mintKey(account, { kind: "device", name: "mac" });
+  await world.db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, unpaid_cents, unpaid_since)
+       VALUES (?1, ?2, ?3, 40, ?3)
+       ON CONFLICT(id) DO UPDATE SET unpaid_cents = 40, unpaid_since = excluded.unpaid_since`,
+    )
+    .bind(account.id, account.email, clock.now())
+    .run();
+  assert.equal((await world.devices.getUnpaid(account.id)).unpaidCents, 40);
+  /** @type {Array<{accountId: string, chargeCents: number}>} */
+  const charges = [];
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "nish@example.com",
+    now: clock.now(),
+    onCharge: async (charge) => {
+      charges.push(charge);
+      return { charged: true };
+    },
+  });
+  assert.equal(charges.length, 1);
+  assert.equal(charges[0].chargeCents, 40);
+  assert.equal((await world.devices.getUnpaid(account.id)).unpaidCents, 0);
+  assert.equal(world.email.sent.length, 2);
+  assert.match(
+    /** @type {{subject: string}} */ (world.email.sent[0]).subject,
+    /charged your card/i,
+  );
+  assert.match(/** @type {{subject: string}} */ (world.email.sent[1]).subject, /closed/i);
+});
+
 test("closing refuses a typed email that is not the account's, and changes nothing", async () => {
   const clock = clockAt();
   const world = setup(clock);

@@ -97,3 +97,38 @@ test("the nightly walk warns at 30 days and stamps deletion at 60 without touchi
     "the 60-day step must not delete files",
   );
 });
+
+test("a successful retry on day 3 clears the failed-charge stamp", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const devices = createD1DeviceStore(db);
+  const failedAt = Math.floor(Date.parse("2026-01-01T00:00:00.000Z") / 1000);
+  await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at, unpaid_cents, payment_failed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`,
+    )
+    .bind("acct-retry", "retry@example.com", failedAt * 1000, 499, failedAt)
+    .run();
+  const email = {
+    /** @param {unknown} _message */
+    async send(_message) {
+      return { messageId: "<card-fail@drive.example>" };
+    },
+  };
+  const result = await runCardFailureCron({
+    devices,
+    email,
+    mailFrom: "notifications@drive.example",
+    now: Date.parse("2026-01-04T00:00:00.000Z"),
+    onRetry: async (charge) => {
+      assert.equal(charge.chargeCents, 499);
+      return { charged: true };
+    },
+  });
+  assert.equal(result.retry, 1);
+  const row = sqlite
+    .prepare("SELECT payment_failed_at, unpaid_cents FROM accounts WHERE id = ?")
+    .get("acct-retry");
+  assert.equal(row.payment_failed_at, null);
+  assert.equal(row.unpaid_cents, 0);
+});
