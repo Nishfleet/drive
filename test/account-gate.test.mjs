@@ -515,10 +515,10 @@ test("a signed-in account reaches its own files and usage; an anonymous one does
   //
   // The mailer is how this test reads the link that left by email: the token is
   // never in a reply, so the mail is the only place it can be seen, which is
-  // the whole point of the flow.
-  // The full schema, not the harness's default short list: /api/usage now
-  // reads the account's metered month (drive#496), and a month lives in
-  // 0005_meter's usage_minutes. On the short list the route 500s on a table
+  // the whole point of the flow. The whole schema, not the harness's short
+  // list: /api/usage reads the account's metered month (drive#496), and the
+  // month's read needs `usage_minutes.stored_bytes`, which a later migration
+  // than the short list carries. On the short list the route 500s on a column
   // production has, which is the gap the full list exists to close.
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   const emailed = made.sent;

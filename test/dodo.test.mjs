@@ -536,7 +536,15 @@ test("the hourly cron draws the hour it just rolled from the balance, and pushes
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    {
+      // The deploy binds the one database under both names
+      // (cloudflare.config.ts), and the same trip runs the pre-charge sweep
+      // off DRIVE_DB (drive#536), so the trip's env carries both.
+      METER_DB: db,
+      DRIVE_DB: db,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
   );
   assert.equal(recorder.calls.length, 0, "no usage event reaches Dodo: the balance pays");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM billing_pushes").get().n, 0);
@@ -556,7 +564,7 @@ test("with no Dodo key the cron still draws, does not throw, and logs no retired
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: db }, // no DODO_PAYMENTS_API_KEY
+    { METER_DB: db, DRIVE_DB: db }, // no DODO_PAYMENTS_API_KEY
   );
   assert.equal(usageDraws(sqlite).length, 1, "the hour is drawn without a provider key");
   const logged = errorMock.mock.calls.map((call) => call.arguments.map(String).join(" "));
@@ -599,7 +607,12 @@ test("the cron never runs the retired push-gap report, so a failing one cannot t
   t.mock.method(console, "log");
   await worker.scheduled(
     { scheduledTime: "2026-09-30T01:05:00.000Z", cron: METER_CRON },
-    { METER_DB: failingDetectorDb, DODO_PAYMENTS_API_KEY: KEY, DODO_FETCH: recorder.fetch },
+    {
+      METER_DB: failingDetectorDb,
+      DRIVE_DB: failingDetectorDb,
+      DODO_PAYMENTS_API_KEY: KEY,
+      DODO_FETCH: recorder.fetch,
+    },
   );
   assert.deepEqual(detectorCalls, [], "the cron does not read the push-gap report");
   assert.equal(errorMock.mock.calls.length, 0, "and logs no failure");
