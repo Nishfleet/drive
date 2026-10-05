@@ -33,6 +33,12 @@ jobs:
   goreleaser:
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
+    env:
+      # Map secrets to env so step `if:` can test them. actionlint forbids
+      # `secrets` in step if-expressions; empty means the import/notarize
+      # blocks stay off.
+      HAS_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+      HAS_NOTARY: ${{ secrets.MACOS_SIGN_P12 != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,7 +52,7 @@ jobs:
           cache: false
       - name: Import GPG key
         id: import_gpg
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: env.HAS_GPG == 'true'
         uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -63,7 +69,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          NOTARIZE: ${{ secrets.MACOS_SIGN_P12 != '' && 'true' || 'false' }}
+          NOTARIZE: ${{ env.HAS_NOTARY }}
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
