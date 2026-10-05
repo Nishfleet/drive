@@ -53,6 +53,7 @@ import { isSameOriginRequest } from "./email-send.js";
 import {
   joinPath,
   previewContentType,
+  previewDisposition,
   safeFileName,
   scopeStore,
   TRASH_PATH,
@@ -1017,12 +1018,19 @@ export async function handleShareFileRequest(request, files, links, options = {}
   // policy gives a document an opaque origin with no script of its own — which
   // is what keeps an uploaded .svg from acting as a page on our origin when
   // the link is opened directly. A picture or a PDF still opens in the tab,
-  // which is what "a link that opens the file" means.
+  // which is what "a link that opens the file" means. Everything else — the
+  // XML document family (XHTML, XSLT, RDF, MathML and multipart/related
+  // uploads, issue #548) leaves as an octet-stream attachment, so a link can
+  // never hand a stranger a rendered document on our domain to phish a
+  // password from.
   return new Response(request.method === "HEAD" ? null : object.body, {
     status: 200,
     headers: {
       "content-type": previewContentType(record.path, object.contentType),
-      "content-disposition": "inline",
+      "content-disposition": previewDisposition(
+        record.path.split("/").pop() || "",
+        object.contentType,
+      ),
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
       "content-security-policy": "sandbox",

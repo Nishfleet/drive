@@ -175,17 +175,24 @@ export function isPreviewable(kind) {
 }
 
 // What an inline preview may be served as. A file the customer uploaded is
-// never a page on our origin, so the served type follows the file's kind
-// rather than the type the upload claimed: text is text/plain, a PDF is a PDF,
-// and media keeps its own type only when it matches its kind. Anything else is
-// octet-stream, which a browser will not render as a document. The header pair
-// in readRequest() (nosniff, and a sandboxed preview) covers the rest: an
-// uploaded .svg is still an image in the page's <img>, but opening the preview
-// URL directly gets it a sandboxed document instead of our origin.
+// never a page on our origin, so the served type is an allowlist rather than a
+// decision: image/*, video/*, audio/*, application/pdf and text/plain are the
+// only types a preview may open with, and a type is one of those when the
+// file's kind says so, not when the upload claimed it. Every other type — the
+// XML family an XHTML, XSLT, RDF, MathML or multipart/related upload carries,
+// and every "file" kind that would otherwise pass its claimed type through —
+// is served as `application/octet-stream`, previewContentType()'s one value
+// that is not an inline type, which previewDisposition() turns into a
+// download. nosniff and the sandboxed preview cover the rest: an uploaded .svg
+// is still an image in the page's <img>, but opening the preview URL directly
+// gets it a sandboxed document instead of our origin (issue #548).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
 });
+
+/** The one served type that is not an inline type, so it never opens in a tab. */
+export const PREVIEW_OCTET_STREAM = "application/octet-stream";
 
 /**
  * The content type an inline preview is served as, never a document type.
@@ -203,16 +210,36 @@ export function previewContentType(name, storedContentType = "") {
   if (pinned) {
     return pinned;
   }
-  if (kind === "image" && !stored.startsWith("image/")) {
-    return "application/octet-stream";
+  if (kind === "image" && stored.startsWith("image/")) {
+    return stored;
   }
-  if (kind === "video" && !stored.startsWith("video/")) {
-    return "application/octet-stream";
+  if (kind === "video" && stored.startsWith("video/")) {
+    return stored;
   }
-  if (kind === "audio" && !stored.startsWith("audio/")) {
-    return "application/octet-stream";
+  if (kind === "audio" && stored.startsWith("audio/")) {
+    return stored;
   }
-  return stored || "application/octet-stream";
+  // An allowlist, not a pass-through: a type the file's kind did not claim as
+  // media, a PDF or text is octet-stream, and the disposition below makes it
+  // a download. This is what an XHTML, XSLT, RDF, MathML or multipart/related
+  // upload hits, because the kind is "file" and its claimed type is not in the
+  // allowlist (issue #548).
+  return PREVIEW_OCTET_STREAM;
+}
+
+/**
+ * How a preview response leaves: inline for an allowlisted type, and an
+ * attachment with the file's name for every other one, because a browser
+ * downloads an octet-stream attachment instead of rendering it as a page.
+ * @param {string} name the file's own name, as the attachment's filename
+ * @param {string} [storedContentType]
+ * @returns {string}
+ */
+export function previewDisposition(name, storedContentType = "") {
+  if (previewContentType(name, storedContentType) !== PREVIEW_OCTET_STREAM) {
+    return "inline";
+  }
+  return `attachment; filename="${String(name || "").replace(/"/g, "")}"`;
 }
 
 // ---------------------------------------------------------------- the words
@@ -1858,7 +1885,7 @@ async function readRequest(request, url, store, download) {
       : previewContentType(name || "", object.contentType),
     "content-disposition": download
       ? `attachment; filename="${(name || "").replace(/"/g, "")}"`
-      : "inline",
+      : previewDisposition(name, object.contentType),
     "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",
   });
