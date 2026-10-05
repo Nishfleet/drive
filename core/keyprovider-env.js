@@ -139,3 +139,24 @@ export function keyProviderFor(env) {
     ...(storageConfig === undefined ? {} : { provisionBuckets: true, storage: storageConfig }),
   });
 }
+
+/**
+ * The dl Worker's host and the grant secret (drive#517), or undefined unless
+ * both are set: `DL_BASE_URL` (e.g. `https://dl.example`) and
+ * `DL_SIGNING_SECRET`, the same secret the dl Worker checks grants with. They
+ * are per-deployment vars, not declared bindings, so a deployment without a
+ * dl Worker mints keys exactly as before, with no download URL.
+ * @param {{[key: string]: unknown}} env
+ * @returns {{baseUrl: string, secret: string}|undefined}
+ */
+export function downloadFromEnv(env) {
+  const baseUrl = env.DL_BASE_URL;
+  const secret = env.DL_SIGNING_SECRET;
+  if (typeof baseUrl !== "string" || !/^https?:\/\/[^/]/.test(baseUrl)) {
+    return undefined;
+  }
+  if (typeof secret !== "string" || secret === "") {
+    return undefined;
+  }
+  return { baseUrl, secret };
+}

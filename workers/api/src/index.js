@@ -5,7 +5,7 @@ import { authFor } from "../../../core/auth.js";
 import { createD1DeviceSigninStore } from "../../../core/device-signin.js";
 import { createD1DeviceStore } from "../../../core/devices.js";
 import { bearerToken, errorResponse } from "../../../core/http.js";
-import { keyProviderFor, storageLocationFromEnv } from "../../../core/keyprovider-env.js";
+import { downloadFromEnv, keyProviderFor, storageLocationFromEnv } from "../../../core/keyprovider-env.js";
 import { createMemoryStore } from "../../../core/keystore.js";
 import { failureMessage } from "../../../core/messages.js";
 import { prepaidPauseOn, writesPaused } from "../../../core/prepaid.js";
@@ -447,6 +447,9 @@ function storeFor(env) {
       signin: env.DRIVE_DB ? createD1DeviceSigninStore(env.DRIVE_DB) : undefined,
       keyProvider: keyProviderFor(env) ?? undefined,
       storage: storageLocationFromEnv(env),
+      // The dl Worker's download URL, minted beside each account-folder key
+      // when the deployment has a dl host and its grant secret (drive#517).
+      download: downloadFromEnv(env),
       // Teams are D1-backed for the same reason (drive#20): a team and its
       // members must survive the isolate that created them, because "the owner
       // removes a member and the key stops working" is a claim about the next

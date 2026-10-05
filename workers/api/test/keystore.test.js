@@ -12,6 +12,7 @@ import {
   DEVICE_TOKEN_TTL_SECONDS,
   renewKeyWindow,
 } from "../../../core/keystore.js";
+import { readGrant } from "../../../core/grant.js";
 
 // A clock the test owns, so a device code or token can be expired without sleeping.
 /**
@@ -483,4 +484,31 @@ test("the renewal rule never shortens a window the row already carries", () => {
     renewKeyWindow({ ...agent, expiresAt: null }, at).expiresAt,
     at + AGENT_KEY_TTL_SECONDS,
   );
+});
+
+test("a mint carries a download URL with a grant for that key when the dl host is set", async () => {
+  const store = createMemoryStore({
+    now: () => 0,
+    download: { baseUrl: "https://dl.example.test/", secret: "grant-secret" },
+  });
+  const { account } = await signedInAccount(store);
+  const minted = await store.mintKey(account, { kind: "device" });
+  const match = /^https:\/\/dl\.example\.test\/k\/([^/]+)\/$/.exec(String(minted.downloadUrl));
+  assert.ok(
+    match,
+    `the download URL is the dl host, a grant and a trailing slash: ${minted.downloadUrl}`,
+  );
+  assert.deepEqual(await readGrant("grant-secret", match[1]), {
+    accountId: account.id,
+    keyId: minted.keyId,
+  });
+  // The URL is not stored: the listing a person reads never carries it.
+  const [listed] = await store.listKeys(account);
+  assert.ok(!("downloadUrl" in listed));
+});
+test("a mint without a dl host carries no download URL", async () => {
+  const store = createMemoryStore({ now: () => 0 });
+  const { account } = await signedInAccount(store);
+  const minted = await store.mintKey(account, { kind: "device" });
+  assert.equal(minted.downloadUrl, null);
 });
