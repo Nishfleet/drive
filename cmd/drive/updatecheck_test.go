@@ -64,6 +64,57 @@ func TestTheCLINamesItselfOnEveryAPICall(t *testing.T) {
 	}
 }
 
+// TestTheDirectRequestBuildersNameThemselvesToo is the rest of the
+// drive#560 User-Agent duty: the CLI's api calls are not all the APIClient's
+// two builders. Revoke (revoke.go), doJSON (share.go) and readCostLine
+// (status.go) build their own requests, and the server's version gate reads
+// every request the same way, so each must carry the same
+// drive/<version> (<os>/<arch>) header.
+func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
+	seen := make(chan string, 3)
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("user-agent")
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"capLine": "$4.00 used this month"}`))
+	}
+	// Revoke answers 204 and never echoes the body.
+	revoked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("user-agent")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer revoked.Close()
+
+	// share.go: doJSON builds the links request.
+	shared := httptest.NewServer(http.HandlerFunc(handler))
+	defer shared.Close()
+	var out map[string]any
+	if err := doJSON(http.MethodGet, shared.URL+"/v1/links", "device-token", nil, &out); err != nil {
+		t.Fatalf("doJSON: %v", err)
+	}
+	if got := <-seen; got != userAgent() {
+		t.Errorf("doJSON sent User-Agent %q, want %q", got, userAgent())
+	}
+
+	// status.go: readCostLine builds the usage request.
+	usage := httptest.NewServer(http.HandlerFunc(handler))
+	defer usage.Close()
+	if reason := readCostLine(usage.URL, "device-token"); reason != "" {
+		t.Fatalf("readCostLine failed: %s", reason)
+	}
+	if got := <-seen; got != userAgent() {
+		t.Errorf("readCostLine sent User-Agent %q, want %q", got, userAgent())
+	}
+
+	// revoke.go: APIKeyRevoker builds the revoke request.
+	if err := (APIKeyRevoker{BaseURL: revoked.URL}).Revoke(KeyPair{AccessKeyID: "k", SecretKey: "t"}); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if got := <-seen; got != userAgent() {
+		t.Errorf("Revoke sent User-Agent %q, want %q", got, userAgent())
+	}
+}
+
 // TestAFourTwoSixPrintsTheUpdateSentence is the drive#560 end to end half on
 // the CLI side: the server refuses this client's versioned request with 426
 // and its own sentence, and the failure the person sees is the message

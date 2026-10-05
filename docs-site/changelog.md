@@ -10,6 +10,14 @@ the live site.
 
 ## 2026-10-05
 
+- Your drive never works on an old copy: the app says which build it is when
+  it talks to the server, and the server tells an old build to run
+  `drive update` instead of failing in some other way.
+- `drive status` says when a newer drive is available, once a day, so you
+  learn about the update without running `drive update` to find out.
+- `drive update` now puts the drive back on the new build for you, and tells
+  you when the tool it uses to talk to the drive is too old for the new
+  mount.
 - Prepaid balance: add $10 or more, and storage and downloads are drawn
   from your balance at {{RATE}}, never more than {{MAX_PER_TB}} per TB. The
   balance never expires. Nothing is charged to your card after use. The
