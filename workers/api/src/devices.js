@@ -1049,10 +1049,11 @@ export function createD1DeviceStore(db, options = {}) {
      * Better Auth's own (migrations/drive/0005_better_auth.sql) and `id` is
      * its primary key, so the upload link row's `account_id` is the id here;
      * the read matches src/auth.js's own columns rather than the `accounts`
-     * billing row. A missing name falls back to the address, the same shape
-     * accountByEmail (workers/api/src/index.js) returns, and a missing row or
-     * blank address reads null so the caller reports it instead of mailing
-     * nobody.
+     * billing row. `name` is the row's own value and may be blank: a caller
+     * that shows a name to a stranger must not fall back to the address, and
+     * the digest caller that may use the address already has `email`. A blank
+     * address (an account that cannot be mailed) reads null, so the caller
+     * reports it instead of mailing nobody.
      * @param {string} accountId
      * @returns {Promise<{id: string, name: string, email: string}|null>}
      */
@@ -1068,7 +1069,7 @@ export function createD1DeviceStore(db, options = {}) {
       }
       return {
         id: row.id,
-        name: typeof row.name === "string" && row.name !== "" ? row.name : row.email,
+        name: typeof row.name === "string" ? row.name : "",
         email: row.email,
       };
     },

@@ -499,7 +499,7 @@ export function uploadArrivalsTemplate(data = {}) {
   });
   const count = arrivals.length;
   const subject =
-    count === 1 ? "A file arrived in your Drive" : `${count} files arrived in your Drive`;
+    count === 1 ? "A file arrived in your drive" : `${count} files arrived in your drive`;
   const opener =
     count === 1 ? `1 file arrived in ${folder}.` : `${count} files arrived in ${folder}.`;
   const lines = [`${ownerName},`, "", opener, ""];

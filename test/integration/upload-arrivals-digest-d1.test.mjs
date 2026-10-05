@@ -303,6 +303,74 @@ test("one link's send failure does not stop the other link's digest", async () =
   assert.equal(fine.pendingUploads, "[]");
 });
 
+test("an arrival accepted during the send stays queued for the next digest", async () => {
+  // drive#684: the digest reads the queue, sends, then clears. A drop that
+  // lands in that window must survive — the clear removes only the arrivals
+  // the digest read, never a later one it did not list.
+  const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, 0)")
+    .bind("acct-digest", "digest@example.com")
+    .run();
+  const links = createD1LinkStore(db);
+  await links.requests.create(
+    newRequestRecord({ accountId: "acct-digest", folder: "/", now: NOW, token: REQUEST_TOKEN }),
+  );
+  await links.requests.recordArrival(REQUEST_TOKEN, "first.txt", 3);
+  await links.requests.recordArrival(REQUEST_TOKEN, "second.txt", 2);
+
+  const writer = createD1LinkStore(db);
+  /** @type {Array<{text: string}>} */
+  const sent = [];
+  const email = {
+    /** @param {unknown} message */
+    send: async (message) => {
+      sent.push(/** @type {any} */ (message));
+      if (sent.length === 1) {
+        await writer.requests.recordArrival(REQUEST_TOKEN, "raced.txt", 7);
+      }
+      return { messageId: `msg-${sent.length}` };
+    },
+  };
+  const owner = async (accountId) => ({
+    id: accountId,
+    name: "Nish",
+    email: "nish@example.com",
+  });
+
+  const first = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW,
+  });
+  assert.deepEqual(first, { sent: 1, skipped: 0 });
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0].text, /raced\.txt/, "the raced drop was not in this digest");
+
+  const reader = createD1LinkStore(db);
+  const row = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(row);
+  assert.equal(row.digestAt, NOW, "the sent digest is still stamped");
+  assert.deepEqual(
+    JSON.parse(row.pendingUploads).map((a) => a.name),
+    ["raced.txt"],
+    "the arrival accepted during the send survives for the next run",
+  );
+
+  const second = await sendArrivalDigests(db, {
+    email,
+    mailFrom: "drive@example.com",
+    owner,
+    now: NOW + 1000,
+  });
+  assert.deepEqual(second, { sent: 1, skipped: 0 });
+  assert.match(sent[1].text, /raced\.txt/, "the next run mails the raced drop");
+  const after = await reader.requests.get(REQUEST_TOKEN);
+  assert.ok(after);
+  assert.equal(after.pendingUploads, "[]");
+});
+
 test("accountById reads the display name off Better Auth's real user table", async () => {
   const db = createTestD1({ migrations: DRIVE_SCHEMA_MIGRATIONS });
   await db
@@ -320,4 +388,18 @@ test("accountById reads the display name off Better Auth's real user table", asy
   assert.equal(owner.email, "nish@example.com");
 
   assert.equal(await store.accountById("nobody"), null, "an unknown account has no owner");
+
+  // A blank name stays blank. The info route must never show the address to a
+  // stranger, so accountById does not substitute the email for the name.
+  await db
+    .prepare(
+      'INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") ' +
+        "VALUES (?1, ?2, ?3, 1, 0, 0)",
+    )
+    .bind("acct-nameless", "", "quiet@example.com")
+    .run();
+  const nameless = await store.accountById("acct-nameless");
+  assert.ok(nameless);
+  assert.equal(nameless.name, "", "a blank name is left blank");
+  assert.equal(nameless.email, "quiet@example.com", "the address is still there for the digest");
 });

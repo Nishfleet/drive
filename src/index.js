@@ -1216,7 +1216,10 @@ export default {
                 console.log(`upload digests: sent=${result.sent} skipped=${result.skipped}`);
               })
               .catch((error) => {
-                throw new Error(`the upload arrival digest failed: ${error.message}`);
+                // Log and resolve: a rejected waitUntil is reported by the
+                // runtime, but the reconcile trip's own work above has already
+                // finished and must not appear to have failed with it.
+                console.error(`upload arrival digest failed: ${String(error)}`);
               }),
           );
         }

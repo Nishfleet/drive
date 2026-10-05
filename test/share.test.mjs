@@ -561,6 +561,44 @@ test("the info response names the link's owner, so a stranger knows whose drive 
   assert.equal(closedBody.owner, "Nish Patel");
 });
 
+test("an account with no display name is left unseen, never its address", async () => {
+  // drive#684: only the row's own name reaches a stranger. An account that has
+  // no name must not have its email published to anyone holding the link.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  const owner = async (accountId) => ({ id: accountId, name: "", email: "name@example.com" });
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "", "a blank name hides the line rather than showing the address");
+});
+
+test("a failing owner read does not close the public upload page", async () => {
+  // drive#684: the name is a label. A read that throws degrades to no name and
+  // the stranger can still upload; it must not turn the info route into a 500.
+  const { links, request } = drive();
+  await request("/", { token: TOKEN });
+  const owner = async () => {
+    throw new Error("the owner store is down");
+  };
+  const response = await handleRequestInfoRequest(
+    new Request(`https://drive.test/api/request/info?k=${TOKEN}`),
+    links,
+    () => "active",
+    { now, owner },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.open, true);
+  assert.equal(body.owner, "");
+});
+
 test("an upload through a link queues an arrival for the nightly digest", async () => {
   // drive#684: after the write wins, the route records the arrival so the
   // digest can list it. The row keeps the file's name and size and no send

@@ -479,7 +479,7 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.addUpload
  * @property {(token: string, bytes: number) => Promise<RequestRecord|null>} requests.releaseUpload
  * @property {(token: string, name: string, bytes: number) => Promise<RequestRecord|null>} requests.recordArrival
- * @property {(token: string, at: number) => Promise<RequestRecord|null>} requests.markDigestSent
+ * @property {(token: string, at: number, count: number) => Promise<RequestRecord|null>} requests.markDigestSent
  * @property {() => Promise<RequestRecord[]>} requests.listPendingDigests
  */
 
@@ -770,12 +770,16 @@ export function createD1LinkStore(db) {
         );
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
-      async markDigestSent(token, at) {
-        // The stamp and the clear are one statement, so a digest that resolved
-        // cannot be re-sent while the arrivals linger, and a digest that
-        // failed never reaches here: the caller marks after sendEmail returns.
+      async markDigestSent(token, at, count) {
+        // The stamp and the clear are one statement. The clear removes only
+        // the arrivals the digest actually read, from the front of the array,
+        // so an upload accepted during the send window stays queued for the
+        // next run instead of being wiped unseen (drive issue #684). json_remove
+        // reads the column's old value, unlike a correlated subquery in SET.
+        const paths = Array.from({ length: Math.max(0, count) }, () => "'$[0]'").join(", ");
+        const clear = paths === "" ? "pending_uploads" : `json_remove(pending_uploads, ${paths})`;
         const row = await one(
-          "UPDATE upload_requests SET digest_at = ?1, pending_uploads = '[]' " +
+          `UPDATE upload_requests SET digest_at = ?1, pending_uploads = ${clear} ` +
             "WHERE token = ?2 " +
             `RETURNING ${REQUEST_COLUMNS}`,
           [at, token],
@@ -906,7 +910,9 @@ export async function sendArrivalDigests(db, input) {
     try {
       const owner = await input.owner(record.accountId);
       if (owner === null || typeof owner.email !== "string" || owner.email.trim().length === 0) {
-        console.error(`upload digest: link ${record.token} has arrivals but no owner address`);
+        console.error(
+          `upload digest: the link for account ${record.accountId} has arrivals but no owner address`,
+        );
         skipped += 1;
         continue;
       }
@@ -924,13 +930,17 @@ export async function sendArrivalDigests(db, input) {
           })),
         },
       });
-      await links.requests.markDigestSent(record.token, input.now);
+      // Only the arrivals this digest read are cleared, so a drop accepted
+      // during the send stays queued for the next run.
+      await links.requests.markDigestSent(record.token, input.now, arrivals.length);
       sent += 1;
     } catch (cause) {
       // One link's read or send must not hold every later link's mail. The
       // arrivals stay queued (markDigestSent only runs after the send), so a
       // transient failure is retried on the next nightly run.
-      console.error(`upload digest: link ${record.token} could not be mailed: ${String(cause)}`);
+      console.error(
+        `upload digest: the link for account ${record.accountId} could not be mailed: ${String(cause)}`,
+      );
       skipped += 1;
     }
   }
@@ -1063,9 +1073,11 @@ async function capStateFor(resolver, accountId) {
 /**
  * The display name of the account that minted a link, for the page a stranger
  * opens (drive issue #684). The resolver is the deployment's own account read
- * (the Better Auth `user` row); a caller that does not supply one gets an
- * empty name rather than an error, because the upload page still works
- * unnamed and only an owner read that threw would be a bug.
+ * (the Better Auth `user` row). Only the row's own `name` is used: the address
+ * is never shown to a stranger holding a link, so an account with no display
+ * name leaves the page's owner line hidden. A missing or non-function resolver
+ * and a resolver that throws both degrade to the empty string rather than
+ * failing the public info route.
  * @param {unknown} resolver
  * @param {string} accountId
  * @returns {Promise<string>}
@@ -1074,15 +1086,18 @@ async function ownerNameFor(resolver, accountId) {
   if (typeof resolver !== "function") {
     return "";
   }
-  const owner = await resolver(accountId);
+  let owner;
+  try {
+    owner = await resolver(accountId);
+  } catch (cause) {
+    console.error(`drive share: reading a link owner's name failed: ${String(cause)}`);
+    return "";
+  }
   if (owner === null || owner === undefined) {
     return "";
   }
-  const o = /** @type {{name?: unknown, email?: unknown}} */ (owner);
-  if (typeof o.name === "string" && o.name.trim().length > 0) {
-    return o.name;
-  }
-  return typeof o.email === "string" ? o.email : "";
+  const o = /** @type {{name?: unknown}} */ (owner);
+  return typeof o.name === "string" && o.name.trim().length > 0 ? o.name.trim() : "";
 }
 
 /** The request's own origin: the links are absolute so they can be copied.

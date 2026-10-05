@@ -8,9 +8,12 @@
 --
 -- pending_uploads: a JSON array of {bytes, name} for each file written through
 -- the link since the last digest. It is bounded by the link's own max_files
--- (100 by default, migrations/drive/0025_link_caps.sql), so it cannot grow
--- past the row it belongs to: once the link has taken max_files files, the
--- reservation UPDATE refuses the next one before it could be recorded here.
+-- (100 by default, migrations/drive/0025_link_caps.sql): a link accepts at
+-- most max_files files over its whole life, and every successful drop appends
+-- exactly one entry, so the array cannot grow past the row it belongs to.
+-- A link whose owner has no address (or a deployment with no MAIL_FROM) is
+-- skipped each night and keeps at most that same max_files entries; it is
+-- logged and retried, never re-mailed to nobody.
 --
 -- Expand only (drive issue #170). Both columns are additive, and
 -- pending_uploads carries a DEFAULT, so the previous version of the code keeps
