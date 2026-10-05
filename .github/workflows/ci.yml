@@ -114,9 +114,13 @@ jobs:
               # test/pr-gate.test.mjs and test/docs.test.mjs and is not a
               # built page.
               docs-site/* | AGENTS.md | README.md) node=true ;;
-              # The rest of the authored docs: read by a person, opened by
-              # nothing in the build or the tests.
+              # The rest of the authored docs: read by a person. The one test
+              # that touches them, test/pr-gate.test.mjs, only checks that the
+              # files AGENTS.md names exist, so a pull request that deletes
+              # one is caught by the merge group, which runs everything.
               docs/*) ;;
+              # The site build needs the installed packages, so whatever sets site sets
+              # node too.
               *)
                 node=true
                 site=true

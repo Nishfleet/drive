@@ -179,26 +179,30 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
   assert.doesNotMatch(goChanged, /node=|site=/, "the go job classifies only Go");
 
   // Every heavy step carries the gate, and reads an unset output as "run".
-  const heavy = [
-    "npm ci",
-    "npm run build",
-    "lhci autorun",
-    "npm test",
-    "Unit tests, with the race detector",
-    "go build -o",
-    "Stand-in mount proof",
-    "Two-device conflict proof",
-    "Windows code vets and its tests compile",
-    "goreleaser check",
-    "staticcheck",
-  ];
-  for (const marker of heavy) {
+  // Each heavy step reads the output that names what it tests, so a gate
+  // that drifts to the wrong output fails here.
+  /** @type {Record<string, string>} */
+  const heavy = {
+    "npm ci": "node",
+    "npm run build": "site",
+    "lhci autorun": "site",
+    "npm test": "node",
+    "Unit tests, with the race detector": "go",
+    "go build -o": "go",
+    "Stand-in mount proof": "go",
+    "Two-device conflict proof": "go",
+    "Windows code vets and its tests compile": "go",
+    "goreleaser check": "go",
+    staticcheck: "go",
+  };
+  for (const [marker, output] of Object.entries(heavy)) {
     const step = stepWith(CI, marker);
-    const gate = /if: (steps\.changed\.outputs\.\w+) != 'false'/.exec(step);
-    assert.ok(gate, `${marker} carries the changed-files gate`);
     // `!= 'false'`, not `== 'true'`: the empty output of a step that did not
     // run means "run", which is what makes a merge group and a push to main
     // test everything.
+    const gate = /if: steps\.changed\.outputs\.(\w+) != 'false'/.exec(step);
+    assert.ok(gate, `${marker} carries the changed-files gate`);
+    assert.equal(gate[1], output, `${marker} reads the ${output} output`);
   }
 
   // The cheap gates that answer "is this repository still sound" never skip,
@@ -224,7 +228,11 @@ const classify = (step, files) => {
   // comments that open the next step.
   const end = body.findIndex((line) => line.trim() !== "" && !line.startsWith(" ".repeat(10)));
   const text = (end === -1 ? body : body.slice(0, end)).map((line) => line.slice(10)).join("\n");
-  const script = `set -euo pipefail\nlist=changed.txt\n${text.slice(text.indexOf("\nfi\n") + 4)}`;
+  // The classifier starts after the diff's if/else, whose closing line is the
+  // step's first line that is exactly `fi`.
+  const fi = text.search(/^fi$/m);
+  assert.ok(fi > 0, "the step has its diff's closing fi");
+  const script = `set -euo pipefail\nlist=changed.txt\n${text.slice(fi + 3)}`;
   const dir = mkdtempSync(join(tmpdir(), "ci-changed-"));
   try {
     writeFileSync(join(dir, "changed.txt"), files.map((f) => `${f}\n`).join(""));
