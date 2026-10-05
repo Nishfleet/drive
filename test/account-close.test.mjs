@@ -883,3 +883,71 @@ test("a purge that stops midway resumes from the saved cursor", async () => {
   assert.ok(done && done.purgedAt !== null);
   assert.equal(done.purgeCursor, null);
 });
+
+test("a cancel after the purge began is refused and the account stays closed", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_halfgone", email: "half@example.com", name: "Half" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: account.email,
+    now: clock.now(),
+  });
+  const scoped = scopeStore(world.files, account);
+  for (let i = 0; i < 1_500; i += 1) {
+    await scoped.write(`/f-${String(i).padStart(4, "0")}.txt`, `file ${i}`, "text/plain");
+  }
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  const night = countingStore(world.files);
+  night.refuseAfter(1);
+  await runAccountCloseCron({
+    db: world.db,
+    devices: world.devices,
+    store: night,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    now: clock.now(),
+  });
+  const partial = await world.devices.getCloseState(account.id);
+  assert.ok(partial && partial.purgedAt === null && partial.purgeCursor !== null);
+
+  // Reopening now would hand back an active account with a thousand files
+  // missing, so the cancel is refused in the table's words.
+  await assert.rejects(
+    cancelClose({
+      devices: world.devices,
+      account,
+      typedEmail: account.email,
+      now: clock.now(),
+    }),
+    { name: "TypeError" },
+  );
+  const after = await world.devices.getCloseState(account.id);
+  assert.ok(after);
+  assert.equal(after.state, "closed");
+  assert.equal(after.purgeCursor, partial.purgeCursor, "the next night resumes from it");
+});
+
+test("a cancel at the purge cutoff is refused even before a cursor is saved", async () => {
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_due", email: "due@example.com", name: "Due" };
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: account.email,
+    now: clock.now(),
+  });
+  clock.set(START_MS + CLOSE_GRACE_DAYS * DAY_MS);
+  await assert.rejects(
+    cancelClose({ devices: world.devices, account, typedEmail: account.email, now: clock.now() }),
+    { name: "TypeError" },
+  );
+  const after = await world.devices.getCloseState(account.id);
+  assert.equal(after?.state, "closed");
+});

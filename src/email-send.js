@@ -174,7 +174,7 @@ export async function sendEmail(emailBinding, request) {
     message.messageId.trim().length === 0
   ) {
     throw new Error(
-      `Cloudflare Email Sending returned no message id for the ${kind} email to ${to}; a send with no id cannot be retried safely`,
+      `Cloudflare Email Sending returned no message id for the ${kind} email; a send with no id cannot be retried safely`,
     );
   }
   return { messageId: message.messageId, subject };

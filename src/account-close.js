@@ -158,7 +158,8 @@ export async function cancelClose(input) {
   const expected = input.account.email ?? "";
   requireMatchingEmail(expected, input.typedEmail);
   try {
-    return await input.devices.cancelClose(input.account.id);
+    const purgeDueAt = Math.floor(input.now / 1000) - CLOSE_GRACE_DAYS * DAY_SECONDS;
+    return await input.devices.cancelClose(input.account.id, purgeDueAt);
   } catch (error) {
     if (error instanceof TypeError && typeof error.message === "string") {
       const key = error.message;
