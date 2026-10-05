@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
-import { MIGRATION_FILES } from "./d1-sqlite.mjs";
+import { MIGRATION_FILES, orderMigrationFiles } from "./d1-sqlite.mjs";
 import { DRIVE_SCHEMA_MIGRATIONS } from "./harness.mjs";
 
 /**
@@ -42,13 +42,33 @@ const ALLOWED_DUPLICATES = new Map([
 ]);
 
 test("the migration directory is read in full-filename order, like wrangler", () => {
-  assert.deepEqual(
-    MIGRATION_FILES,
-    [...MIGRATION_FILES].sort(),
-    "MIGRATION_FILES must be sorted by full filename (the deploy's order)",
-  );
-  // The 0012 pair and the 0020 pair are the proof: a numeric sort ties them, so
-  // only a full-filename sort puts `a` before `b` deterministically.
+  // Proving the *rule*, not the result: readdirSync has no guaranteed order and
+  // a numeric-prefix sort also yields a list that reads as sorted, so asserting
+  // on MIGRATION_FILES alone would pass even if someone reverted the sort. This
+  // drives the exported rule with a deliberately unordered list of real
+  // colliding filenames and asserts a numeric sort gives a different answer.
+  const unordered = [
+    "0021_prepaid_draws.sql",
+    "0002_file_index.sql",
+    "0020_balance_ledger.sql",
+    "0012_branch_snapshot_kv.sql",
+    "0005_meter.sql",
+    "0012_agent_key_ttl.sql",
+    "0020_account_purge_cursor.sql",
+    "0005_better_auth.sql",
+  ];
+  const byFilename = orderMigrationFiles(unordered);
+  assert.deepEqual(byFilename, [...unordered].sort(), "must equal a full filename sort");
+
+  // The regression this guards: sorting by Number.parseInt alone. Each colliding
+  // pair ties on its number, so a stable sort keeps the input order — and with
+  // a list deliberately not in name order, that differs from the filename sort.
+  const byNumber = [...unordered].sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+  assert.notDeepEqual(byNumber, byFilename, "the numeric sort must give a different order here");
+
+  // And the specific pairs, on the real directory: a full-filename sort puts
+  // the `_a` file before the `_b` file, which a numeric sort only does by
+  // accident of the readdir order.
   assert.ok(
     MIGRATION_FILES.indexOf("0012_agent_key_ttl.sql") <
       MIGRATION_FILES.indexOf("0012_branch_snapshot_kv.sql"),

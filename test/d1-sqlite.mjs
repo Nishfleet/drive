@@ -19,17 +19,28 @@ const migrationsDir = new URL("../migrations/drive/", import.meta.url);
 // The drive database's migration files in the order `wrangler d1 migrations
 // apply` uses — a full filename sort. A numeric-prefix sort (Number.parseInt)
 // is not portable here: several prefixes are shared by more than one file
-// (0005, 0006, 0012, 0017 and 0020 on main), both members of a pair parse to
-// the same number, so the comparison returns 0 and a stable sort keeps them in
+// (0005, 0006, 0012, 0017, 0020 and 0021 on main), both members of a pair
+// parse to the same number, so the comparison returns 0 and a stable sort keeps
+// them in
 // the readdirSync order — stable on one machine, not the same across machines.
 // The full sort is the deploy's own, so the test schema is built in the same
 // order production is. Exported once so every reader of migrations/drive/ reads it
 // the same way, instead of each test re-sorting and diverging (drive issue
 // #619).
+/**
+ * Order migration filenames the way `wrangler d1 migrations apply` does: a
+ * plain full-filename string sort. Exported as a named function so the test can
+ * drive it with a deliberately unordered list and prove the rule itself, not
+ * just that the produced list happens to look sorted — a numeric-prefix sort
+ * also produces a list that reads as sorted, and that is the regression.
+ *
+ * @param {string[]} names
+ * @returns {string[]}
+ */
+export const orderMigrationFiles = (names) => [...names].sort();
+
 export const MIGRATION_FILES = Object.freeze(
-  readdirSync(migrationsDir)
-    .filter((name) => name.endsWith(".sql"))
-    .sort(),
+  orderMigrationFiles(readdirSync(migrationsDir).filter((name) => name.endsWith(".sql"))),
 );
 
 /** @param {DatabaseSync} sqlite */
