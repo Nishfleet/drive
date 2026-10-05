@@ -46,7 +46,7 @@
 // re-doing revoke-then-mint by hand.
 
 import { CAPABILITIES_BY_KIND } from "../workers/api/src/keyprovider.js";
-import { capLine, usageSummary } from "./billing.js";
+import { capLine, minutesInMonth, usageSummary } from "./billing.js";
 import { sendEmail } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
@@ -855,6 +855,7 @@ export async function handleCapRequest(request, account, capStore) {
       ? await capStore.monthUsage(account.id, { capUsd: usd })
       : {
           gbMinutes: 0,
+          monthMinutes: minutesInMonth(Date.now()),
           storedGb: 0,
           storedDaily: [],
           downloadBytes: 0,

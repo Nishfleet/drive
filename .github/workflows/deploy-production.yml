@@ -69,6 +69,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Ship only an agent score above the pass bar
+        # drive#526: agent-eval.yml records the held-out score on a schedule.
+        # A release ships only while the newest completed eval run on main is
+        # green; a red score stops the deploy here. The gate arms itself with
+        # the first completed run: until then it warns instead of failing, so
+        # merging the gate itself never wedges deploys. A run in progress is
+        # also a pass here — the next deploy after it completes reads its
+        # score. A run by hand (workflow_dispatch) records a fresh score for
+        # a release that cannot wait for Monday.
+        run: |
+          latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion,createdAt --jq '.[0] // empty | "\(.status) \(.createdAt) \(.conclusion // "none")"')
+          if [ -z "$latest" ]; then
+            echo "::warning::no agent eval run has completed yet; the score gate is not armed"
+          else
+            read -r status created conclusion <<<"$latest"
+            if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
+              echo "::error::the newest agent eval run on main concluded $conclusion (a score under the pass bar, or a run that could not score); its run summary says which, and the release stops here (drive#526)"
+              exit 1
+            fi
+            # A green score goes stale when the weekly clock stops (a runner
+            # offline, the schedule disabled): fail loud after two missed
+            # Mondays instead of shipping on an old score.
+            age_days=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
+            if [ "$age_days" -gt 14 ]; then
+              echo "::error::the newest agent eval run on main is $age_days days old; run agent-eval.yml by hand (workflow_dispatch) for a fresh score (drive#526)"
+              exit 1
+            fi
+            echo "agent eval gate: newest run on main is $status/$conclusion"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"

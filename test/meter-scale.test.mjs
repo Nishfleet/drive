@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { monthBillCents } from "../src/billing.js";
+import { minutesInMonth, monthBillCents } from "../src/billing.js";
 import worker from "../src/index.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -331,6 +331,7 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
     const usage = await monthUsageThrough(db, "acc1", hour);
     return monthBillCents({
       gbMinutes: usage.gbMinutes,
+      monthMinutes: minutesInMonth(hour),
       downloadBytes: usage.downloadBytes,
       averageStoredGb: usage.averageStoredGb,
     }).totalCents;
