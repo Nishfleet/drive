@@ -150,6 +150,20 @@ func TestReadLoadAverages(t *testing.T) {
 	}
 }
 
+// `sysctl -n vm.loadavg` is how a Mac reports load (it has no /proc).
+func TestParseDarwinLoadAverages(t *testing.T) {
+	one, five, err := parseDarwinLoadAverages("{ 2.06 1.88 1.75 }\n")
+	if err != nil || one != 2.06 || five != 1.88 {
+		t.Fatalf("parse = %v, %v, %v; want 2.06, 1.88, nil", one, five, err)
+	}
+	if _, _, err := parseDarwinLoadAverages("{ }"); err == nil {
+		t.Error("an empty vm.loadavg returned no error")
+	}
+	if _, _, err := parseDarwinLoadAverages("{ x y z }"); err == nil {
+		t.Error("a non-numeric vm.loadavg returned no error")
+	}
+}
+
 // A folder kept offline is filled by reading it through the mount, so the read
 // a pass does must land every byte in rclone's cache and must not follow a
 // symlink out of the drive.

@@ -10,10 +10,9 @@
 //
 // The numbers come from src/billing.js, which is the one place the money is
 // worked out (drive issues #7, #53, #76) and the one the invoice, the usage
-// page and the cap all read. src/pricing.js still holds the older per-TB caps
-// the pricing page's visible copy is built from; issue #23 owns the collapse
-// of the two, and test/docs.test.mjs fails while they disagree, so the docs
-// cannot ship a bill the invoice would not produce.
+// page and the cap all read; the sentences come from src/pricing.js, the one
+// price source those numbers are built from (drive#463), so the docs cannot
+// ship a bill the invoice would not produce.
 //
 // Plain data and pure functions only, so `node --test` runs this directly (the
 // same reason src/status.js, src/seo.js and src/billing.js are plain).
@@ -23,10 +22,11 @@ import {
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthlyBillForStoredTb,
-  monthlyCeilingUsd,
+  monthlyMaximumUsd,
 } from "./billing.js";
 import { AGENT_TOOLS, KEY_POWERS } from "./keys.js";
 import { PRICE } from "./pricing.js";
+import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 import { SITE } from "./seo.js";
 
 /**
@@ -36,7 +36,7 @@ import { SITE } from "./seo.js";
 export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
- * The metered cost of a month, in dollars, before the ceiling: the rate on the
+ * The metered cost of a month, in dollars, before the maximum: the rate on the
  * month's GB-months. This is the "meter" column of the worked example, and it
  * is the same function the usage page and `drive usage` read.
  * @param {number} gbMinutes
@@ -46,24 +46,22 @@ export function meteredUsdFor(gbMinutes) {
 }
 
 /**
- * The worked examples on the Pricing page: the four sizes the spec walks
- * through, each with the meter before the ceiling, the storage line under it,
- * and the total after the free credit. Every figure is a function call: the
- * total and the storage line come from monthlyBillForStoredTb(), the one
- * "kept all month" converter the pricing copy already uses, and the meter and
- * the ceiling from the two functions the usage page reads. A docs row is
- * therefore the same row, worked the same way, that the copy gate holds the
- * live page to.
+ * The worked examples on the Pricing page: four sizes, each with the meter
+ * before the maximum, the maximum, and the bill (drive#463). Every figure is a
+ * function call: the bill comes from monthlyBillForStoredTb(), the one "kept
+ * all month" converter the pricing copy already uses, and the meter and the
+ * maximum from the two functions the usage page reads. A docs row is therefore
+ * the same row, worked the same way, that the copy gate holds the live page to.
  */
 export const BILL_EXAMPLES = Object.freeze(
-  [0.8, 1.3, 2, 5].map((tb) => {
+  [0.2, 0.8, 1.5, 3].map((tb) => {
     const gb = tb * GB_PER_TB;
     const bill = monthlyBillForStoredTb(tb);
     return Object.freeze({
       tb,
       stored: `${tb} TB`,
       metered: dollars(meteredUsdFor(gb * MINUTES_PER_MONTH)),
-      ceiling: dollars(monthlyCeilingUsd(gb)),
+      maximum: dollars(monthlyMaximumUsd(gb)),
       bill: dollars(bill.billUsd),
     });
   }),
@@ -85,9 +83,9 @@ function dollars(amount) {
  */
 export const BILL_TABLE = Object.freeze(
   [
-    "| Stored, kept all month | The meter | The ceiling | Your bill |",
+    "| Stored, kept all month | The meter | The maximum | Your bill |",
     "| --- | --- | --- | --- |",
-    ...BILL_EXAMPLES.map((e) => `| ${e.stored} | ${e.metered} | ${e.ceiling} | ${e.bill} |`),
+    ...BILL_EXAMPLES.map((e) => `| ${e.stored} | ${e.metered} | ${e.maximum} | ${e.bill} |`),
   ].join("\n"),
 );
 
@@ -179,10 +177,9 @@ export const FAQ = Object.freeze([
     question: "What does it cost?",
     scoreboard: ["price at 1 TB"],
     answer: [
-      "{{RATE}} a month, billed by the minute, for what you actually store.",
-      "The bill is cut off at {{CEILING_FLOOR}} until your drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB after that.",
-      "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
-      "Join now and keep $5 a month for good. We need a card at sign-up because there is no free tier.",
+      "{{HEADLINE}}",
+      "{{RATE}} a month, billed by the minute, for what you actually store, and never more than {{MAX_PER_TB}} for each TB.",
+      "{{NO_MINIMUM}} {{FOUNDING}} We need a card at sign-up because there is no free tier.",
       "Downloads are free up to {{FREE_DOWNLOAD_MULTIPLE}} times what you store, then {{DOWNLOAD_RATE}}.",
       "There are no plans to pick, and nothing you are given expires.",
     ].join(" "),
@@ -276,10 +273,11 @@ export function markerValues(extra = {}) {
   return {
     SITE_ORIGIN: SITE.origin,
     RATE: RATE_LABEL,
-    MEMBERSHIP: PRICE.membershipLine,
+    HEADLINE: PRICE.headline,
+    NO_MINIMUM: PRICE.noMinimumLine,
     FOUNDING: PRICE.foundingLine,
-    CEILING_FLOOR: dollars(BILLING_CONFIG.floorUsd),
-    CEILING_PER_TB: dollars(BILLING_CONFIG.perTbUsd),
+    PRICE_RULE: PRICE.rule,
+    MAX_PER_TB: dollars(BILLING_CONFIG.maxUsdPerTb),
     DEFAULT_CAP: dollars(BILLING_CONFIG.defaultCapUsd),
     CACHE_LIMIT,
     CACHE_FLOOR,
@@ -290,6 +288,13 @@ export function markerValues(extra = {}) {
     AGENT_CANNOT_DELETE: agentCannotDeleteSentence(),
     KEY_TABLE: KEY_TABLE,
     BILL_TABLE: BILL_TABLE,
+    // The two claims every page states and no page may contradict
+    // (drive#418). The pages carry the markers, the static surfaces
+    // carry the same strings verbatim, and test/version-1-claims.test.mjs
+    // reads the built pages to prove no page promises a feature the
+    // Limits page rules out.
+    VERSION_HISTORY: VERSION_HISTORY,
+    NOT_OPEN: NOT_OPEN,
     ...extra,
   };
 }

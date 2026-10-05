@@ -9,6 +9,10 @@
 // node --test exercises every template without a runtime, the same shape as
 // src/pricing.js and src/status.js.
 
+import { DEFAULT_CAP_USD } from "./cap-default.js";
+
+export { DEFAULT_CAP_USD };
+
 // The sender name every drive email carries. The address itself is a
 // deployment setting (env.MAIL_FROM), because drive has no sending domain of
 // its own yet: a placeholder domain in this file would make every send fail
@@ -20,13 +24,6 @@ export const FROM_NAME = "Drive";
 // docs/build-spec.md ("How the money is worked out"). Kept here rather than
 // re-derived so the saved line cannot disagree with the bill it sits under.
 export const RATE_USD_PER_GB = 0.02;
-
-// The spending cap's default, from build-spec.md "Spending cap" (drive#39,
-// 2026-09-30: the default moved to $12, the ceiling floor). Exported so a
-// caller that really means the default can pass it; the templates require the
-// cap explicitly, because an account may have set its own and a default
-// silently used would mail the wrong number.
-export const DEFAULT_CAP_USD = 12;
 
 // The two "you saved" sentences, verbatim from drive#39 (orchestrator,
 // 2026-09-30). A capped month compares the meter against the bill; an

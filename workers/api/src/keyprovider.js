@@ -212,6 +212,11 @@ const BRANCH_NAME_SAFE = /^[A-Za-z0-9_.-]{1,64}$/;
 // `team_<hex>`), so it is checked with the same rule: it goes into the shared
 // prefix, and a `/` or `..` in it would point that prefix at another drive.
 const TEAM_ID_SAFE = /^[A-Za-z0-9_-]{1,64}$/;
+// The one team prefix shape, read back out of a key row's prefix. It is the
+// same shape `teamPrefix` writes (the same character class as TEAM_ID_SAFE,
+// between `t/` and the trailing slash), so the segment a match captures is an
+// id `checkedTeamId` already accepted when the prefix was built.
+const TEAM_PREFIX_PATTERN = /^t\/([A-Za-z0-9_-]{1,64})\/$/;
 
 /**
  * @param {unknown} accountId
@@ -240,6 +245,21 @@ function checkedTeamId(teamId) {
 }
 
 /**
+ * An id as it can sit in a bucket name. S3 bucket names are lowercase letters,
+ * digits and dashes (MinIO answers InvalidBucketName for anything else, and
+ * the real vendors refuse it too), while sign-in ids are mixed case and may
+ * carry an underscore. Only the bucket name is folded: the `u/<id>/` prefix
+ * keeps the id as it is, so two ids that fold to one bucket would still be two
+ * prefixes. A random 32-character id folding onto another's is not a case the
+ * 62^32 space produces.
+ * @param {string} id
+ * @returns {string}
+ */
+function bucketSafe(id) {
+  return id.toLowerCase().replaceAll("_", "-");
+}
+
+/**
  * The bucket one account's files live in: `drv-<accountId>`. The id is checked
  * with the same rule the prefix uses, so a bucket name cannot be built from an
  * id that would have been refused as a prefix, and the bucket and the prefix a
@@ -248,7 +268,7 @@ function checkedTeamId(teamId) {
  * @returns {string}
  */
 export function bucketForAccount(accountId) {
-  return `${ACCOUNT_BUCKET_PREFIX}${checkedAccountId(accountId)}`;
+  return `${ACCOUNT_BUCKET_PREFIX}${bucketSafe(checkedAccountId(accountId))}`;
 }
 
 /**
@@ -257,7 +277,30 @@ export function bucketForAccount(accountId) {
  * @returns {string}
  */
 export function bucketForTeam(teamId) {
-  return `${TEAM_BUCKET_PREFIX}${checkedTeamId(teamId)}`;
+  return `${TEAM_BUCKET_PREFIX}${bucketSafe(checkedTeamId(teamId))}`;
+}
+
+/**
+ * The bucket one key row's own prefix puts it in (drive#462).
+ *
+ * A prefix `teamPrefix` built is `t/<teamId>/` and names the team's shared
+ * drive, so the key belongs in the team's bucket: a cap swap that replaces
+ * such a key with one scoped to the account's own bucket would move the
+ * member out of the drive they share. Every other prefix is an account's
+ * own — `u/<id>/` and a branch's `u/<id>/.branches/<name>/` — which is the
+ * account's bucket.
+ *
+ * The team id is read back out of the prefix because a device row carries no
+ * team column of its own (migrations/drive/0008_teams.sql puts the team in
+ * the prefix, and the revokes match on that string), so the prefix is where
+ * a row's team identity lives.
+ * @param {unknown} accountId the row's account, for a prefix that is not a team's
+ * @param {string} prefix
+ * @returns {string}
+ */
+export function bucketForKeyPrefix(accountId, prefix) {
+  const team = TEAM_PREFIX_PATTERN.exec(prefix);
+  return team === null ? bucketForAccount(accountId) : bucketForTeam(team[1]);
 }
 
 /**

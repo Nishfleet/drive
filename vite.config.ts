@@ -9,7 +9,7 @@ import {
   beaconToken,
   withBeacon,
 } from "./src/analytics.js";
-import { FIRST_RUN_STEPS, INSTALL_COMMAND } from "./src/status.js";
+import { FIRST_RUN_COMMAND, FIRST_RUN_STEPS } from "./src/status.js";
 import apiWorker from "./workers/api/cloudflare.config.ts";
 
 export default defineConfig({
@@ -153,7 +153,7 @@ function staticFirstRunShell(): Plugin {
         );
         const withCommand = withSteps.replace(
           '<code id="install-command"></code>',
-          `<code id="install-command">${text(INSTALL_COMMAND)}</code>`,
+          `<code id="install-command">${text(FIRST_RUN_COMMAND)}</code>`,
         );
         if (withSteps === html || withCommand === withSteps) {
           throw new Error(

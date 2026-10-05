@@ -114,9 +114,9 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	base := strings.TrimSpace(*api)
-	if base == "" {
-		base = creds.APIBase
+	base, err := resolveAPIBase(home, *api)
+	if err != nil {
+		return err
 	}
 	if reason := readCostLine(base, creds.DeviceToken); reason != "" {
 		fmt.Printf("this month: unknown (%s)\n", reason)
@@ -474,7 +474,7 @@ func UploadLabel(q Pending) string {
 type UsageSummary struct {
 	MeteredUsd float64 `json:"meteredUsd"`
 	BillUsd    float64 `json:"billUsd"`
-	CeilingUsd float64 `json:"ceilingUsd"`
+	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
 	Cap        struct {
 		CapUsd       float64 `json:"capUsd"`

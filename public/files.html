@@ -27,38 +27,67 @@ body {
   z-index: 30;
 }
 
+/* The page bar: the site's own header and menu (public/site.css's .masthead,
+   the one the usage, first-run and sign-in pages carry) with this page's
+   folder path under it. Before drive#425 the page had a second top bar of its
+   own — a wordmark, a static "Your drive" and no menu at all — so a reader who
+   arrived here could not reach Pricing or Usage from here. The bar around the
+   header is still this page's own: it is what keeps the header on screen while
+   a long listing scrolls past. */
 .topbar {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 12px clamp(14px, 4vw, 40px);
   background: var(--paper);
   border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Below the desktop breakpoint the shared header wraps to several lines — the
+   wordmark, the tagline and five links — so the bar is not stuck to the top on
+   a phone. It scrolls away with the page and leaves the list the screen. */
+@media (max-width: 719px) {
+  .topbar {
+    position: static;
+  }
+}
+
+/* The bar and the tab strip line up with the 900px column main renders the
+   list in, so a header link sits over the first letter of the first row rather
+   than 40px to its left, and a row scrolling under them never shows past the
+   edge. The column is written once, here, so the header, the strip and the
+   list cannot drift apart. */
+.topbar,
+.tabs {
+  padding-left: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
+  padding-right: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
+}
+
+/* The shared header, at the height of a page you work in rather than one you
+   read: the site's own 28px/20px padding is a reading page's. This is the
+   page's own padding around the header and its own bottom rule; the header
+   itself — how it is laid out, its links, its tagline, how it marks the page
+   you are on and the size of the wordmark — is public/site.css's, so this page
+   cannot drift from it again the way it did before drive#425. */
+.masthead {
+  margin: 0;
+  padding: 14px 0 12px;
+  border-bottom: 0;
 }
 
 .wordmark {
   font-size: 24px;
 }
 
-.account {
-  color: var(--ink-soft);
-  font-size: 14px;
-}
-
-.spacer {
-  flex: 1 1 auto;
-}
-
+/* The folder path is this page's own row under the shared header: where you
+   are in the drive, which no other page's header carries. */
 .crumbs {
-  flex: 1 1 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
+  padding: 10px 0;
   font-size: 15px;
   color: var(--ink-soft);
   min-width: 0;
@@ -88,23 +117,27 @@ body {
   white-space: nowrap;
 }
 
+/* The view strip (drive#425), roomy on purpose: it sat 10px under the header
+   with a 4px gap between the tabs and 10px inside each one, so it read as the
+   bottom of the header rather than as the switch between Files and Recently
+   deleted. */
 .tabs {
   display: flex;
-  gap: 4px;
-  padding: 10px clamp(14px, 4vw, 40px) 0;
+  gap: 8px;
+  padding-top: 24px;
 }
 
 .tabs button {
   flex: 1 1 0;
   min-height: var(--tap);
-  padding: 10px 12px;
+  padding: 12px 16px;
   font: inherit;
   font-size: 15px;
   font-weight: 600;
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--rule);
-  border-radius: 6px 6px 0 0;
+  border-radius: 8px 8px 0 0;
   border-bottom-color: transparent;
   cursor: pointer;
 }
@@ -470,13 +503,46 @@ dialog.viewer::backdrop {
 </head>
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
-  <header class="topbar">
-    <span class="wordmark">Drive</span>
-    <span class="account" id="account">Your drive</span>
-    <span class="spacer"></span>
+  <div class="topbar">
+    <header class="masthead">
+      <span class="wordmark">Drive</span>
+      <span class="tagline">A Finder drive for people and their agents.</span>
+      <a href="/files" aria-current="page">Your files</a>
+      <a href="/">Pricing</a>
+      <a href="/get-started">Get started</a>
+      <a href="/usage">Usage</a>
+      <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- Not Django: POST /api/signin refuses a cross-site post
+             (isSameOriginRequest). A token in the markup would protect nothing. -->
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+    </header>
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
-  </header>
+  </div>
 
+  <!-- The pending-close banner (drive issue #424). Hidden until
+       GET /api/account/close says this account is closing, then
+       public/close-banner.js fills the two slots from that payload: the
+       sentence is the module's own words with the purge date in them, and the
+       link goes to the page where the close and the cancel both live. The
+       styles are the shared stylesheet's, so the four pages that carry this
+       aside are one banner. -->
+  <aside class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </aside>
   <nav class="tabs" aria-label="Views">
     <button type="button" id="tab-files" aria-pressed="true">Files</button>
     <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
@@ -627,6 +693,7 @@ function showSignedOut(message) {
   signedOutWhat.textContent = message;
   signedOut.hidden = false;
   uploadButton.disabled = true;
+  showSessionNav(false);
 }
 
 // The other half of the sign-in panel: a read that succeeds proves this
@@ -636,6 +703,7 @@ function showSignedOut(message) {
 function showSignedIn() {
   signedOut.hidden = true;
   uploadButton.disabled = false;
+  showSessionNav(true);
 }
 
 // One reporter for a caught failure, so a caller in the middle of an action
@@ -1075,7 +1143,65 @@ tabDeleted.addEventListener("click", () => {
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
 
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A successful files read flips it to Sign out
+// and Sign out everywhere; a 401 flips it back. The posts go to the same
+// /api/signin steps the route already serves.
+const SIGNIN_ENDPOINT = "/api/signin";
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    say("You look offline. Check your connection and try again.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      payload = {};
+    }
+    say(payload.error || "That did not work. Try again in a moment.", "error");
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+
 refresh();
   </script>
+  <!-- The one shared pending-close banner script (drive issue #424).
+       The static signed-in pages load this file as a module; get-started
+       imports the same file into its one bundle so it stays inside the
+       Lighthouse script-count budget. -->
+  <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

@@ -7,14 +7,16 @@ description: What Drive is, how to mount it, what your agents can do with it, an
 
 A Drive is a folder that holds more than your laptop can. Files stream on
 demand, your agents read and write the same files, and you pay {{RATE}} by the
-minute with the bill cut off at a ceiling.
+minute, never more than {{MAX_PER_TB}} for each TB.
+
+{{NOT_OPEN}}
 
 ## Start here
 
 - [Quickstart](/quickstart) — five steps from nothing to a mounted drive.
-- [How it works](/how-it-works) — plain files, versions, restore, the bill.
+- [How it works](/how-it-works) — plain files, the cache, restore, the bill.
 - [Agents](/agents) — `drive init`, and what an agent key cannot do.
-- [Pricing and your bill](/pricing) — the rate, the ceiling and four
+- [Pricing and your bill](/pricing) — the rate, the maximum and four
   worked sizes.
 - [FAQ](/faq) — the questions we can answer with a measured number.
 - [Limits](/limits) — what version 1 does not do, in plain words.

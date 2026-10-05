@@ -242,9 +242,9 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   const account = { id: "acct_month", name: "Month drive" };
   const key = await store.mintKey(account, { kind: "agent", name: "claude" });
 
-  // 2 TB held for a whole month bills $16 against the drive's own $12 cap, so
+  // 3 TB held for a whole month bills $30 against the drive's own $20 cap, so
   // the agent's key is over the moment the key is used.
-  meterAMonthOf(sqlite, account.id, 2000);
+  meterAMonthOf(sqlite, account.id, 3000);
   assert.equal((await writeAt(store, key, "/u/acct_month/over.md")).status, 403);
   assert.deepEqual(
     JSON.parse(
@@ -262,7 +262,7 @@ test("the monthly half reads the metered month, and no second ledger", async () 
   assert.equal(
     rowIn(sqlite, "SELECT gb_minutes_live FROM usage_minutes WHERE account_id = ?1", account.id)
       .gb_minutes_live,
-    2000 * MINUTES_PER_MONTH,
+    3000 * MINUTES_PER_MONTH,
   );
   assert.throws(
     () => sqlite.prepare("SELECT month_spend_cents FROM agent_caps WHERE key_id = ?1").all(),
@@ -279,6 +279,37 @@ test("the monthly half reads the metered month, and no second ledger", async () 
     0,
     "a device key is never counted",
   );
+});
+
+test("a founding account's agent key counts the account's half, at the real schema", async () => {
+  const { sqlite, db } = makeMeteredDB();
+  const clock = fixedClock();
+  const store = storeOver(db, clock);
+  const account = { id: "acct_founder", name: "Founder drive" };
+  const key = await store.mintKey(account, { kind: "agent", name: "claude" });
+
+  // The flag the cap reads is the account's own (#386), on the accounts
+  // row: the same 2 TB that 403s a regular account bills a founding one $10
+  // (drive#482), under the $12 cap, so the write goes through.
+  sqlite
+    .prepare("INSERT INTO accounts (id, email, created_at, founding) VALUES (?1, ?2, 0, 1)")
+    .run(account.id, "");
+  meterAMonthOf(sqlite, account.id, 2000);
+  assert.equal((await writeAt(store, key, "/u/acct_founder/under.md")).status, 201);
+  assert.deepEqual(
+    JSON.parse(
+      String(
+        rowIn(sqlite, "SELECT capabilities FROM devices WHERE id = ?1", key.keyId).capabilities,
+      ),
+    ),
+    ["list", "read", "write"],
+  );
+  // 3 TB is $15 on a founding account, past the $12 cap, so the cap still
+  // bites: the flag halves what the account pays, not what it is bounded by.
+  sqlite
+    .prepare("UPDATE usage_minutes SET gb_minutes_live = ?2 WHERE account_id = ?1")
+    .run(account.id, 3000 * MINUTES_PER_MONTH);
+  assert.equal((await writeAt(store, key, "/u/acct_founder/over.md")).status, 403);
 });
 
 test("the next UTC day is a fresh count, with nothing running between", async () => {

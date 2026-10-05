@@ -151,7 +151,7 @@ func TestReadCostLinePrintsTheCapLineFromTheWorker(t *testing.T) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("authorization")
 		var u UsageSummary
-		u.MeteredUsd, u.BillUsd, u.CeilingUsd = 1.25, 1.25, 12
+		u.MeteredUsd, u.BillUsd, u.MaximumUsd = 1.25, 1.25, 10
 		u.Cap.CapUsd, u.Cap.CountedUsd, u.Cap.RemainingUsd, u.Cap.State = 12, 1.25, 10.75, "active"
 		u.CapLine = capLine
 		_ = json.NewEncoder(w).Encode(u)

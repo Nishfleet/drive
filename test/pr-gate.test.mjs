@@ -22,6 +22,7 @@ import {
   createS3Store,
   FILES_ENDPOINT,
   handleFilesRequest,
+  storageBucketForKey,
 } from "../src/files.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
@@ -368,6 +369,94 @@ test("gate 2: account A's store can neither read nor list account B's bytes", as
   }
 });
 
+test("gate 2b: Files page and share reads use the account's own bucket", async () => {
+  // drive#460: the prefix isolation above still holds, and the bucket is now
+  // the boundary the key provider already uses. A file written the way Finder
+  // writes (into drv-<id>) must show on GET /api/files for that account and
+  // must be unreachable from the other account's bucket.
+  assert.match(srcFile("files.js"), /export function storageBucketForKey\(/);
+  assert.match(srcFile("index.js"), /bucketFor:\s*storageBucketForKey/);
+  assert.doesNotMatch(srcFile("index.js"), /bucket:\s*(dev|storage)\.FILES_S3_BUCKET/);
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const server = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const { pathname, search } = new URL(String(url));
+    const segments = decodeURIComponent(pathname)
+      .split("/")
+      .filter((segment) => segment !== "");
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} ${bucket}/${key}${search}`);
+    if (method === "PUT") {
+      objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    if (search.includes("list-type=2")) {
+      const inBucket = new Map(
+        [...objects.entries()]
+          .filter(([name]) => name.startsWith(`${bucket}/`))
+          .map(([name, body]) => [name.slice(bucket.length + 1), body]),
+      );
+      return rcloneListResponse(inBucket, search, { bucket });
+    }
+    const stored = objects.get(`${bucket}/${key}`);
+    return stored !== undefined
+      ? new Response(stored, { status: 200 })
+      : new Response("no key", { status: 404 });
+  };
+  const store = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl: server,
+  });
+  const a = { id: "acct-a", name: "A" };
+  const b = { id: "acct-b", name: "B" };
+  /**
+   * @param {{id: string, name: string}} account
+   * @param {string} body
+   */
+  const put = (account, body) =>
+    handleFilesRequest(
+      new Request(`https://drive.test${FILES_ENDPOINT}/upload?path=%2F&name=note.txt`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      store,
+      account,
+    );
+  /** @param {{id: string, name: string}} account */
+  const list = (account) =>
+    handleFilesRequest(new Request(`https://drive.test${FILES_ENDPOINT}?path=/`), store, account);
+  assert.equal((await put(a, "A's own bytes")).status, 201);
+  /** @type {{rows: Array<{name: string}>}} */
+  const aList = await (await list(a)).json();
+  assert.deepEqual(
+    aList.rows.map((row) => row.name),
+    ["note.txt"],
+  );
+  assert.deepEqual((await (await list(b)).json()).rows, []);
+  assert.ok(
+    seen.some((request) => request.includes("drv-acct-a/")),
+    `A's calls name drv-acct-a: ${JSON.stringify(seen)}`,
+  );
+  assert.ok(
+    seen.some((request) => request.includes("drv-acct-b/")),
+    `B's calls name drv-acct-b: ${JSON.stringify(seen)}`,
+  );
+  for (const request of seen) {
+    if (request.includes("drv-acct-a/")) {
+      assert.ok(!request.includes("drv-acct-b/"), `A must never name B's bucket: ${request}`);
+    }
+    if (request.includes("drv-acct-b/")) {
+      assert.ok(!request.includes("drv-acct-a/"), `B must never name A's bucket: ${request}`);
+    }
+  }
+});
+
 // ------------------------------------------- 3. the edge, and what it serves
 
 test("gate 3: input is validated at the edge and a file never answers as a page", async () => {
@@ -466,33 +555,33 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   assert.match(billing, /export function monthBillCents\(/, "the one billing function");
   // The storage bill is read out of it rather than worked out a second time.
   assert.match(billing, /function monthlyStorageBillUsd[\s\S]{0,400}return monthBillCents\(/);
-  // Three months worked out by hand from the spec's numbers (2¢/GB-month on
-  // 43,800 minutes, the $12 floor, $8/TB past it, the $10 membership, downloads
-  // free to 3x the average then 1¢/GB) and checked against the one function:
-  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, membership floor →
-  //   1000¢
+  // Three months worked out by hand from the spec's numbers (drive#463:
+  // 2¢/GB-month on 43,800 minutes, never more than $10 per TB of the month's
+  // average with at least one TB's worth, no minimum, downloads free to 3x the
+  // average then 1¢/GB) and checked against the one function:
+  //   400 GB all month: 400 × 43800 GB-min → 800¢ metered, under the 1000¢
+  //   maximum → 800¢
   //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
-  //   100 GB billable → +100¢ → $11.00
-  //   2 TB all month: 4000¢ metered, capped at 8 × $2 = $16 → 1600¢
+  //   100 GB billable → +100¢ → $9.00
+  //   2 TB all month: 4000¢ metered, held to $10 × 2 TB = $20 → 2000¢
   const MINUTES_PER_MONTH = 43800;
-  /** @type {Array<[{gbMinutes: number, peakGb: number, downloadBytes?: number, averageStoredGb?: number}, {storageCents: number, downloadCents: number, creditCents: number, totalCents: number}]>} */
+  /** @type {Array<[{gbMinutes: number, downloadBytes?: number, averageStoredGb?: number}, {storageCents: number, downloadCents: number, totalCents: number}]>} */
   const cases = [
     [
-      { gbMinutes: 400 * MINUTES_PER_MONTH, peakGb: 400 },
-      { storageCents: 800, downloadCents: 0, creditCents: 0, totalCents: 1000 },
+      { gbMinutes: 400 * MINUTES_PER_MONTH },
+      { storageCents: 800, downloadCents: 0, totalCents: 800 },
     ],
     [
       {
         gbMinutes: 400 * MINUTES_PER_MONTH,
-        peakGb: 400,
         downloadBytes: 400e9,
         averageStoredGb: 100,
       },
-      { storageCents: 800, downloadCents: 100, creditCents: 0, totalCents: 1100 },
+      { storageCents: 800, downloadCents: 100, totalCents: 900 },
     ],
     [
-      { gbMinutes: 2000 * MINUTES_PER_MONTH, peakGb: 2000 },
-      { storageCents: 1600, downloadCents: 0, creditCents: 0, totalCents: 1600 },
+      { gbMinutes: 2000 * MINUTES_PER_MONTH },
+      { storageCents: 2000, downloadCents: 0, totalCents: 2000 },
     ],
   ];
   for (const [input, expected] of cases) {

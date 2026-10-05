@@ -6,89 +6,177 @@
 // function, monthBillCents(), and fails CI when the shipped page drifts from
 // them. The meta/llms gate test/seo.test.mjs does the same.
 //
-// Source of truth: docs/build-spec.md ("Bill ceiling", Nish 2026-09-30,
-// issue #29) plus the membership (drive#352 / #387). The storage ceiling is
-// min(metered, max($12, $8 × TB stored)), TB measured to the GB. The bill is
-// then at least the membership. Plateau: flat $12 up to 1.5 TB, then $8/TB.
+// Source of truth: drive#463 (Nish, 2026-10-04): pay only for what you store.
+//
+//     charge = min(rate x avg GB, MAX_USD_PER_TB x max(1, avg TB))
+//
+// with avg the time-weighted stored size over the month. 2 cents per GB until
+// the bill reaches the maximum (at 500 GB), a flat maximum from there to 1 TB,
+// and above 1 TB the maximum grows with the storage, prorated to the GB. No
+// minimum, no plans, no membership. Founding members pay half of both numbers
+// for good.
+//
+// MAX_USD_PER_TB is the one number Nish may move (to 8 or 12). Every sentence
+// below is built from it, and test/pricing-copy.test.mjs proves the copy and
+// the bill both follow it when it moves.
 //
 // There is no bill arithmetic here: src/billing.js's monthBillCents() is the
 // one function that turns this config into dollars. This file holds the
 // numbers and the sentences, so the copy and that function cannot disagree
 // (drive issue #23, folded #86).
-const RATE_USD_PER_GB_MONTH = 0.02;
-const CAP_FLOOR_USD = 12;
-const CAP_USD_PER_TB = 8;
-const B2_FALLBACK_USD_PER_TB = 10;
-const FREE_MONTHLY_USD = 1;
-const CAP_PLATEAU_TB = CAP_FLOOR_USD / CAP_USD_PER_TB;
-// "2¢", from the rate above so the copy cannot state a rate the arithmetic
-// does not charge. A rate that is not a whole number of cents throws here
-// rather than rounding into a headline the meter does not charge.
-const RATE_CENTS = RATE_USD_PER_GB_MONTH * 100;
-if (!Number.isInteger(RATE_CENTS)) {
-  throw new Error(
-    `the rate must be a whole number of cents so its copy cannot drift from the arithmetic, got ${RATE_USD_PER_GB_MONTH}`,
-  );
-}
-const RATE_TEXT = `${RATE_CENTS}¢`;
 
-export const PRICE = Object.freeze({
-  // The metered rate, in US dollars per GB per month, billed by the minute.
-  rateUsdPerGbMonth: RATE_USD_PER_GB_MONTH,
-  // The ceiling is max(capFloorUsd, capUsdPerTb × peak TB): a flat floor
-  // until the stored size passes capFloorUsd / capUsdPerTb TB, then a per-TB
-  // slope. The names say plateau and slope so no reader takes them for per-TB
-  // caps.
-  capFloorUsd: CAP_FLOOR_USD,
-  capUsdPerTb: CAP_USD_PER_TB,
-  capPlateauTb: CAP_PLATEAU_TB,
-  // B2 costs about $6.95/TB against iDrive's $5, so the slope rises to $10/TB
-  // on the fallback. Same floor; the headline's "$8" is the iDrive figure.
-  b2FallbackUsdPerTb: B2_FALLBACK_USD_PER_TB,
-  // Kept for the card-less write cap leftover until every account has a card
-  // (#387). Not a public credit: copy never names this dollar.
-  freeMonthlyUsd: FREE_MONTHLY_USD,
-  // The page's headline, in the two lines it is set in: the rate as the big
-  // number (its own `rateUnit` under it) and the ceiling sentence as the sub
-  // line. Nish dropped the old "about $20 per TB a month" number (it was
-  // Space's price, not ours) in the issue #23 rework brief.
-  rateLine: `${RATE_TEXT} per GB, billed by the minute.`,
-  rateUnit: "per GB, billed by the minute",
-  headlineAmount: RATE_TEXT,
-  ceilingLine: `Never more than $${CAP_FLOOR_USD} a TB, and $${CAP_USD_PER_TB} a TB once you pass ${CAP_PLATEAU_TB} TB.`,
-  // The headline as one sentence, so the meta tags and llms.txt carry exactly
-  // what the page's two lines say between them.
-  ceiling: `${RATE_TEXT} per GB, billed by the minute. Never more than $${CAP_FLOOR_USD} a TB, and $${CAP_USD_PER_TB} a TB once you pass ${CAP_PLATEAU_TB} TB.`,
-  // The browser-tab and share-card title: the brand and the one-line price.
-  titleLine: `${RATE_TEXT} per GB, never more than $${CAP_FLOOR_USD} a TB`,
-  // drive#387: membership, never "minimum". Founding copy never names the cap.
-  membershipLine:
-    "$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.",
-  foundingLine: "Join now and keep $5 a month for good.",
-  needCard:
-    "We need a card at sign-up because there is no free tier. Storage use counts toward your membership.",
-  // The whole bill, for the offer description and llms.txt.
-  rule: `$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest, still capped at max($${CAP_FLOOR_USD}, $${CAP_USD_PER_TB} × TB stored): a flat $${CAP_FLOOR_USD} up to ${CAP_PLATEAU_TB} TB, then $${CAP_USD_PER_TB} for each TB after.`,
-  // Rival comparison on the worked-example rows. The source is
-  // docs/build-spec.md's "Bill ceiling" decision (Nish 2026-09-30): "2 TB =
-  // $16, against Space $27; 5 TB = $40, against Space $63", which is Space's
-  // $15 a month plus $12 for each TB after the first. Kept here so the
-  // comparison is one rule the page's copy is gated against, not a number
-  // typed beside each row.
-  rival: Object.freeze({ name: "Space", monthlyUsd: 15, extraTbUsd: 12 }),
+const RATE_USD_PER_GB_MONTH = 0.02;
+const MAX_USD_PER_TB = 10;
+// Founding members pay this share of both numbers, for good. Their rate and
+// maximum are derived from it below, never typed.
+const FOUNDING_SHARE = 0.5;
+// Kept for the card-less write cap leftover until every account has a card
+// (#387). Not a public credit: copy never names this dollar.
+const FREE_MONTHLY_USD = 1;
+const GB_PER_TB = 1000;
+
+// The usual 1 TB plan the "you saved" comparison is measured against: $15 a
+// month for 1 TB on an annual plan, then $6 for each extra 500 GB (drive#463).
+// Public copy names it only by this neutral label.
+const USUAL_PLAN = Object.freeze({
+  label: "a usual 1 TB plan",
+  monthlyUsd: 15,
+  includedTb: 1,
+  extraStepTb: 0.5,
+  extraStepUsd: 6,
 });
 
 /**
- * What the same size costs on the rival, in dollars, by the rival's own rule
- * (build-spec.md: Space is $15 a month plus $12 for each TB after the first).
- * Kept beside the config so the worked-example comparison is one rule, not a
- * number typed next to each row.
- * @param {unknown} tb the stored size in TB
- * @param {{monthlyUsd: number, extraTbUsd: number}} [rival]
+ * Whole cents from a dollar rate, or a throw: a rate that is not a whole
+ * number of cents would put a headline on the page the meter does not charge.
+ * @param {number} usd
+ * @param {string} name
  */
-export function rivalMonthlyUsd(tb, rival = PRICE.rival) {
-  if (typeof tb !== "number" || !Number.isFinite(tb) || tb < 0) {
-    throw new TypeError(`rivalMonthlyUsd needs a stored size in TB of 0 or more, got ${tb}`);
+function wholeCents(usd, name) {
+  const cents = Math.round(usd * 100);
+  if (Math.abs(cents - usd * 100) > 1e-9) {
+    throw new Error(`${name} must be a whole number of cents, got ${usd}`);
   }
-  return rival.monthlyUsd + rival.extraTbUsd * Math.max(tb - 1, 0);
+  return cents;
+}
+
+/**
+ * Whole dollars, or a throw, for the same reason as wholeCents().
+ * @param {number} usd
+ * @param {string} name
+ */
+function wholeDollars(usd, name) {
+  if (!Number.isInteger(usd)) {
+    throw new Error(`${name} must be a whole number of dollars, got ${usd}`);
+  }
+  return usd;
+}
+
+/** @param {number} cents */
+function centsWords(cents) {
+  return cents === 1 ? "1 cent" : `${cents} cents`;
+}
+
+/** @param {number} gb */
+function sizeWords(gb) {
+  return gb >= GB_PER_TB ? `${gb / GB_PER_TB} TB` : `${gb} GB`;
+}
+
+/**
+ * Builds the whole price, numbers and sentences, from the two numbers that set
+ * it. PRICE below is this with the shipped numbers; the copy test calls it with
+ * other maximums to prove every sentence follows the one config value.
+ * @param {{rateUsdPerGbMonth?: number, maxUsdPerTb?: number}} [numbers]
+ */
+export function buildPrice({
+  rateUsdPerGbMonth = RATE_USD_PER_GB_MONTH,
+  maxUsdPerTb = MAX_USD_PER_TB,
+} = {}) {
+  const rateCents = wholeCents(rateUsdPerGbMonth, "the rate");
+  const max = wholeDollars(maxUsdPerTb, "the maximum per TB");
+  const foundingRateUsd = rateUsdPerGbMonth * FOUNDING_SHARE;
+  const foundingRateCents = wholeCents(foundingRateUsd, "the founding rate");
+  const foundingMax = wholeDollars(max * FOUNDING_SHARE, "the founding maximum per TB");
+  // Where the rate reaches the maximum: 500 GB at 2 cents and $10.
+  const reachesMaxGb = Math.round((max * 100) / rateCents);
+  const rateText = `${rateCents}¢`;
+  const leadLine = "Pay only for what you store.";
+  const rateLine = `${centsWords(rateCents)} per GB.`;
+  const maxLine = `Never more than $${max} per TB.`;
+  return Object.freeze({
+    // The metered rate, in US dollars per GB per month, billed by the minute.
+    rateUsdPerGbMonth,
+    rateCents,
+    // The maximum, in dollars for each TB stored, never less than one TB's
+    // worth: max(1, avg TB) x maxUsdPerTb.
+    maxUsdPerTb: max,
+    // The stored size at which the rate reaches the maximum.
+    reachesMaxGb,
+    founding: Object.freeze({
+      share: FOUNDING_SHARE,
+      rateUsdPerGbMonth: foundingRateUsd,
+      rateCents: foundingRateCents,
+      maxUsdPerTb: foundingMax,
+    }),
+    freeMonthlyUsd: FREE_MONTHLY_USD,
+    // The page's headline: the one sentence the page, the meta tags, the
+    // JSON-LD and llms.txt all carry verbatim. The page and the share card set
+    // it as three lines (lead, rate, maximum); `headline` is the three joined.
+    leadLine,
+    rateLine,
+    maxLine,
+    headline: `${leadLine} ${rateLine} ${maxLine}`,
+    // The share card's big number and the unit under it.
+    headlineAmount: rateText,
+    rateUnit: "per GB a month",
+    // The browser-tab and share-card title: the brand and the one-line price.
+    titleLine: `${rateText} per GB, never more than $${max} per TB`,
+    noMinimumLine: "No minimum. No plans.",
+    // Founding copy never names the 1,000 or a count (drive#386).
+    foundingLine: `Founding member pricing: half price for good, ${centsWords(foundingRateCents)} per GB and never more than $${foundingMax} per TB.`,
+    // drive#417: until a card is really on file the usage page says no charge has
+    // been made and shows no bill as if charged. `monthBillCents()` still works
+    // the bill out (money, untouched); this is the word the page and the CLI
+    // print instead for a card-less month, so the two cannot disagree. A stored
+    // `card_added_at` (accounts.row) is the record a card is on file; real
+    // capture waits on the Dodo key (#325).
+    noChargeYet: "No charge has been made. There is no card on file yet.",
+    needCard: `We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about ${centsWords(20 * rateCents)} a month.`,
+    // The whole rule in words, for the examples note, the offer description
+    // and llms.txt.
+    rule: `You pay ${centsWords(rateCents)} per GB a month until the bill reaches $${max}, at ${sizeWords(reachesMaxGb)}. From ${sizeWords(reachesMaxGb)} to 1 TB the bill stays $${max}. Above 1 TB you never pay more than $${max} for each TB, counted to the GB.`,
+    // The worked examples, as sizes held all month. The dollars beside each
+    // are monthBillCents()'s, never typed here. `toGb` marks a range row.
+    examples: /** @type {ReadonlyArray<Readonly<{label: string, gb: number, toGb?: number}>>} */ (
+      Object.freeze([
+        Object.freeze({ label: "50 GB", gb: 50 }),
+        Object.freeze({ label: "200 GB", gb: 200 }),
+        Object.freeze({
+          label: `${sizeWords(reachesMaxGb)} to 1 TB`,
+          gb: reachesMaxGb,
+          toGb: GB_PER_TB,
+        }),
+        Object.freeze({ label: "3 TB", gb: 3 * GB_PER_TB }),
+      ])
+    ),
+    usualPlan: USUAL_PLAN,
+  });
+}
+
+export const PRICE = buildPrice();
+
+/**
+ * What the same size costs on the usual 1 TB plan, in dollars: $15 a month for
+ * the first TB, then $6 for each extra 500 GB or part of one.
+ * @param {unknown} tb the stored size in TB
+ * @param {typeof USUAL_PLAN} [plan]
+ */
+export function usualPlanMonthlyUsd(tb, plan = PRICE.usualPlan) {
+  if (typeof tb !== "number" || !Number.isFinite(tb) || tb < 0) {
+    throw new TypeError(`usualPlanMonthlyUsd needs a stored size in TB of 0 or more, got ${tb}`);
+  }
+  // Counted to the GB, so float noise (1.1 - 1) cannot add a step.
+  const extraGb = Math.max(0, Math.round((tb - plan.includedTb) * GB_PER_TB));
+  const steps = Math.ceil(extraGb / (plan.extraStepTb * GB_PER_TB));
+  return plan.monthlyUsd + steps * plan.extraStepUsd;
 }

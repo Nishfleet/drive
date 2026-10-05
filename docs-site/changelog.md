@@ -8,8 +8,43 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-05
+
+- Abuse guards: one active account per card, 1 TB storage until the first
+  charge, spending cap default $20, and a founding slot reserved at the card
+  step.
+- New pricing: pay only for what you store. {{RATE}}, never more than
+  {{MAX_PER_TB}} per TB, and no minimum. The $10 membership, the first
+  month at half price and the old ceiling are gone. Founding members pay half
+  of both numbers for good.
+
+- After `drive login`, every command reads the api address it saved, so
+  `drive init`, `drive cap` and `drive share` work without `DRIVE_API_URL`.
+  Login prints `Signed in as` plus the email. Opening the approve link while
+  signed out goes to sign-in and back; after Approve the tab says this Mac is
+  connected.
+
 ## 2026-10-04
 
+- `drive login` connects the app to your account: it opens the browser, mints
+  this machine's key, and writes the storage settings, so `drive init` needs
+  no pasted keys. Get started shows the real install and login lines.
+- The notes `drive init` writes for agents no longer advertise `drive restore`,
+  a command that does not exist. The CLI now keeps one command table, and a
+  test holds the notes' command lists and `drive --help` to it in both
+  directions: neither can name a command that does not run, and no shipped
+  command is left out of the help.
+- Every minted storage key is scoped to the bucket that is the account's own
+  rather than the deployment's one shared bucket, and a minted answer now names
+  the bucket it can reach. A key that named no bucket is refused at the mint
+  instead of being handed the shared one. The two-account refusal is measured
+  on the stand-in and by the recorded mint table; the same proof against the
+  real vendor ships as an opt-in test and runs when the account's reseller
+  token is in the environment.
+- The usage page's spending cap is now a control and not a readout: move the
+  slider, choose Save cap, and the new cap is written through the same api
+  route `drive cap` writes. The page's confirmation is the api's own cap line,
+  and an error names what to do next in plain words instead of a command.
 - The home page's worked examples read as sentences: "about $1 of storage, and
   you pay the $10 membership", instead of "$1 → $10" and "$12 of storage → $12".
 - Membership copy: $10 a month, storage use counts toward it, founding members
@@ -44,7 +79,8 @@ the live site.
 - One command installs the drive CLI and rclone together: the Linux `.deb` and
   `.rpm` declare `Depends: rclone`, the Homebrew formula depends on `rclone`,
   and `drive init` then checks rclone is 1.68.0 or newer, mounts, and starts
-  the mount at login (launchd, systemd, or Task Scheduler). `drive uninstall`
+  the mount at login (a login item on macOS, a user unit on Linux, or a
+  Task Scheduler task on Windows). `drive uninstall`
   removes that login item.
 
 - `drive cache`, `drive cache --max` and `drive cache --clear`: the cache on
@@ -103,9 +139,8 @@ the live site.
 ## 2026-09-30
 
 - The pricing page, with the rate, the ceiling and a waitlist sign-up.
-- The bill ceiling: the metered cost cut off at a flat {{CEILING_FLOOR}} until
-  the drive passes 1.5 TB, then {{CEILING_PER_TB}} a TB. This replaced the
-  older per-TB caps.
+- The bill ceiling: the metered cost cut off at a flat $12 until the drive
+  passes 1.5 TB, then $8 a TB. This replaced the older per-TB caps.
 - The membership: storage use counts toward it, and a card is needed at
   sign-up because there is no free tier. Downloads over
   {{FREE_DOWNLOAD_MULTIPLE}} times what you store are charged at

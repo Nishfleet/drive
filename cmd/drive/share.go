@@ -90,18 +90,22 @@ func addLinkFlags(fs *flag.FlagSet, action, argument string) *linkFlags {
 
 // endpoint resolves the --api value into the endpoint for one job, and refuses
 // the combinations that would make the command guess what it was asked to do.
-func (l *linkFlags) endpoint(path string) (string, error) {
+func (l *linkFlags) endpoint(path, home string) (string, error) {
 	if l.list && l.revoke != "" {
 		return "", fmt.Errorf("--list and --revoke are two different jobs; pick one")
 	}
-	if strings.TrimSpace(l.api) == "" {
-		return "", fmt.Errorf("no api Worker configured; set --api or DRIVE_API_URL")
-	}
-	base, err := parseAPIBase(l.api)
+	base, err := resolveAPIBase(home, l.api)
 	if err != nil {
 		return "", err
 	}
-	return base + path, nil
+	if strings.TrimSpace(base) == "" {
+		return "", fail("no-api")
+	}
+	parsed, err := parseAPIBase(base)
+	if err != nil {
+		return "", failDetail("api-url", err)
+	}
+	return parsed + path, nil
 }
 
 // runShare is `drive share`.
@@ -112,16 +116,21 @@ func runShare(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	endpoint, err := l.endpoint(SHARE_PATH)
+	endpoint, err := l.endpoint(SHARE_PATH, common.home)
 	if err != nil {
 		return err
 	}
+	creds, err := LoadCredentials(common.home)
+	if err != nil {
+		return err
+	}
+	auth := creds.DeviceToken
 	switch {
 	case l.list:
 		if fs.NArg() > 0 {
 			return fmt.Errorf("--list takes no file argument, got %q", fs.Arg(0))
 		}
-		links, err := ListShares(endpoint)
+		links, err := ListShares(endpoint, auth)
 		if err != nil {
 			return err
 		}
@@ -141,7 +150,7 @@ func runShare(args []string) error {
 		if err != nil {
 			return err
 		}
-		link, err := RevokeShare(endpoint, token)
+		link, err := RevokeShare(endpoint, auth, token)
 		if err != nil {
 			return err
 		}
@@ -155,7 +164,7 @@ func runShare(args []string) error {
 	if err != nil {
 		return err
 	}
-	link, err := MintShare(endpoint, path)
+	link, err := MintShare(endpoint, auth, path)
 	if err != nil {
 		return err
 	}
@@ -172,16 +181,21 @@ func runRequest(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return errFlagParse
 	}
-	endpoint, err := l.endpoint(REQUEST_PATH)
+	endpoint, err := l.endpoint(REQUEST_PATH, common.home)
 	if err != nil {
 		return err
 	}
+	creds, err := LoadCredentials(common.home)
+	if err != nil {
+		return err
+	}
+	auth := creds.DeviceToken
 	switch {
 	case l.list:
 		if fs.NArg() > 0 {
 			return fmt.Errorf("--list takes no folder argument, got %q", fs.Arg(0))
 		}
-		links, err := ListRequests(endpoint)
+		links, err := ListRequests(endpoint, auth)
 		if err != nil {
 			return err
 		}
@@ -201,7 +215,7 @@ func runRequest(args []string) error {
 		if err != nil {
 			return err
 		}
-		link, err := RevokeRequest(endpoint, token)
+		link, err := RevokeRequest(endpoint, auth, token)
 		if err != nil {
 			return err
 		}
@@ -215,7 +229,7 @@ func runRequest(args []string) error {
 	if err != nil {
 		return err
 	}
-	link, err := MintRequest(endpoint, folder)
+	link, err := MintRequest(endpoint, auth, folder)
 	if err != nil {
 		return err
 	}
@@ -280,11 +294,11 @@ func tokenFromArg(arg string) (string, error) {
 // MintShare mints a share link for one file: POST /api/share {path}. The
 // Worker answers 201 with the share row (src/share.js handleShareRequest), and
 // the row's URL is the link.
-func MintShare(endpoint, path string) (ShareLink, error) {
+func MintShare(endpoint, token, path string) (ShareLink, error) {
 	var out struct {
 		Share ShareLink `json:"share"`
 	}
-	if err := postJSON(endpoint, map[string]string{"path": path}, &out); err != nil {
+	if err := postJSON(endpoint, token, map[string]string{"path": path}, &out); err != nil {
 		return ShareLink{}, err
 	}
 	if out.Share.URL == "" {
@@ -294,11 +308,11 @@ func MintShare(endpoint, path string) (ShareLink, error) {
 }
 
 // MintRequest mints an upload page for one folder: POST /api/request {folder}.
-func MintRequest(endpoint, folder string) (RequestLink, error) {
+func MintRequest(endpoint, token, folder string) (RequestLink, error) {
 	var out struct {
 		Request RequestLink `json:"request"`
 	}
-	if err := postJSON(endpoint, map[string]string{"folder": folder}, &out); err != nil {
+	if err := postJSON(endpoint, token, map[string]string{"folder": folder}, &out); err != nil {
 		return RequestLink{}, err
 	}
 	if out.Request.URL == "" {
@@ -308,22 +322,22 @@ func MintRequest(endpoint, folder string) (RequestLink, error) {
 }
 
 // ListShares reads the account's links: GET /api/share.
-func ListShares(endpoint string) ([]ShareLink, error) {
+func ListShares(endpoint, token string) ([]ShareLink, error) {
 	var out struct {
 		Shares []ShareLink `json:"shares"`
 	}
-	if err := getJSON(endpoint, &out); err != nil {
+	if err := getJSON(endpoint, token, &out); err != nil {
 		return nil, err
 	}
 	return out.Shares, nil
 }
 
 // ListRequests reads the account's upload pages: GET /api/request.
-func ListRequests(endpoint string) ([]RequestLink, error) {
+func ListRequests(endpoint, token string) ([]RequestLink, error) {
 	var out struct {
 		Requests []RequestLink `json:"requests"`
 	}
-	if err := getJSON(endpoint, &out); err != nil {
+	if err := getJSON(endpoint, token, &out); err != nil {
 		return nil, err
 	}
 	return out.Requests, nil
@@ -332,22 +346,22 @@ func ListRequests(endpoint string) ([]RequestLink, error) {
 // RevokeShare turns a share off: DELETE /api/share {token}. The Worker's
 // answer is the row in its revoked state, so the printed state is the
 // Worker's, not this command's guess.
-func RevokeShare(endpoint, token string) (ShareLink, error) {
+func RevokeShare(endpoint, auth, token string) (ShareLink, error) {
 	var out struct {
 		Share ShareLink `json:"share"`
 	}
-	if err := deleteJSON(endpoint, map[string]string{"token": token}, &out); err != nil {
+	if err := deleteJSON(endpoint, auth, map[string]string{"token": token}, &out); err != nil {
 		return ShareLink{}, err
 	}
 	return out.Share, nil
 }
 
 // RevokeRequest turns an upload page off: DELETE /api/request {token}.
-func RevokeRequest(endpoint, token string) (RequestLink, error) {
+func RevokeRequest(endpoint, auth, token string) (RequestLink, error) {
 	var out struct {
 		Request RequestLink `json:"request"`
 	}
-	if err := deleteJSON(endpoint, map[string]string{"token": token}, &out); err != nil {
+	if err := deleteJSON(endpoint, auth, map[string]string{"token": token}, &out); err != nil {
 		return RequestLink{}, err
 	}
 	return out.Request, nil
@@ -357,7 +371,7 @@ func RevokeRequest(endpoint, token string) (RequestLink, error) {
 // non-2xx into the api Worker's own message (src/index.js answers failures as
 // {"error": "..."} with a status). The message is what a person should read,
 // so it is carried through instead of replaced by a generic "request failed".
-func doJSON(method, endpoint string, body any, out any) error {
+func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	var reader *bytes.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -374,6 +388,11 @@ func doJSON(method, endpoint string, body any, out any) error {
 	}
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
+	}
+	// The links routes are behind the account gate, which takes this device's
+	// token as a Bearer. Without it every call was the gate's 401.
+	if deviceToken != "" {
+		request.Header.Set("authorization", "Bearer "+deviceToken)
 	}
 	client := &http.Client{Timeout: linkTimeout}
 	response, err := client.Do(request)
@@ -411,16 +430,16 @@ func apiMessage(method, endpoint string, response *http.Response) error {
 	return fmt.Errorf("%s %s: %s", method, endpoint, response.Status)
 }
 
-func postJSON(endpoint string, body, out any) error {
-	return doJSON(http.MethodPost, endpoint, body, out)
+func postJSON(endpoint, token string, body, out any) error {
+	return doJSON(http.MethodPost, endpoint, token, body, out)
 }
 
-func getJSON(endpoint string, out any) error {
-	return doJSON(http.MethodGet, endpoint, nil, out)
+func getJSON(endpoint, token string, out any) error {
+	return doJSON(http.MethodGet, endpoint, token, nil, out)
 }
 
-func deleteJSON(endpoint string, body, out any) error {
-	return doJSON(http.MethodDelete, endpoint, body, out)
+func deleteJSON(endpoint, token string, body, out any) error {
+	return doJSON(http.MethodDelete, endpoint, token, body, out)
 }
 
 // drivePathArg turns what a person typed into the path the api Worker expects:

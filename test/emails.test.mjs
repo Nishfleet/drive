@@ -9,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BILLING_CONFIG } from "../src/billing.js";
 import {
   handleSendEmailRequest,
   isAuthorizedSend,
@@ -151,16 +152,17 @@ test("the cap warning fires at 80% and names the cap in dollars", () => {
   assert.match(text, /80% of your \$12\.00 spending cap/);
   // 80% of a $12 cap is $9.60: the reader can check the warning against the
   // cap without doing anything. Rounded money, not float bits.
-  assert.equal(DEFAULT_CAP_USD, 12, "the default cap is $12 (drive#39)");
-  assert.equal((0.8 * DEFAULT_CAP_USD).toFixed(2), "9.60");
+  assert.equal(DEFAULT_CAP_USD, BILLING_CONFIG.defaultCapUsd, "emails copy the one default");
+  assert.equal(DEFAULT_CAP_USD, 20, "the default cap is $20 (drive#464)");
+  assert.equal((0.8 * DEFAULT_CAP_USD).toFixed(2), "16.00");
 });
 
 test("the cap warning defaults to the decided cap and carries it in both parts", () => {
   // The template requires the cap, so a caller that means the default passes
   // it explicitly; both paths render the same message.
   const withDefault = capWarningTemplate({ capUsd: DEFAULT_CAP_USD });
-  assert.match(withDefault.html, /\$12\.00/);
-  assert.match(withDefault.text, /\$12\.00/);
+  assert.match(withDefault.html, /\$20\.00/);
+  assert.match(withDefault.text, /\$20\.00/);
 });
 
 test("a cap warning with no usable cap is a loud error, not a $0 email", () => {
@@ -690,6 +692,21 @@ test("the same-origin rule matches the waitlist API's", () => {
         headers: { origin: "https://drive.example.evil.example" },
       }),
     ),
+    false,
+  );
+});
+
+test("a same-origin form POST with Origin: null is accepted, a cross-site one is not", () => {
+  // Referrer-Policy: no-referrer makes Chromium send `Origin: null` on the
+  // device approve form; Sec-Fetch-Site says whether it was really ours.
+  const url = "https://drive.example/v1/device/approve";
+  const form = (/** @type {string} */ site) =>
+    new Request(url, { method: "POST", headers: { origin: "null", "sec-fetch-site": site } });
+  assert.equal(isSameOriginRequest(form("same-origin")), true);
+  assert.equal(isSameOriginRequest(form("cross-site")), false);
+  assert.equal(isSameOriginRequest(form("same-site")), false);
+  assert.equal(
+    isSameOriginRequest(new Request(url, { method: "POST", headers: { origin: "null" } })),
     false,
   );
 });

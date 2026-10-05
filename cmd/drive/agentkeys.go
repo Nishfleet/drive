@@ -32,6 +32,7 @@ type agentKey struct {
 	KeyID        string   `json:"keyId"`
 	AccessKeyID  string   `json:"accessKeyId"`
 	Secret       string   `json:"secret"`
+	SessionToken string   `json:"sessionToken,omitempty"`
 	Prefix       string   `json:"prefix"`
 	Capabilities []string `json:"capabilities"`
 	// ExpiresAt is the epoch second the api Worker stops accepting this
@@ -41,6 +42,9 @@ type agentKey struct {
 	// not kept in step with the server: it is what a person reads, never what
 	// the CLI decides against (issue #106).
 	ExpiresAt *int64 `json:"expiresAt"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Bucket    string `json:"bucket,omitempty"`
+	Region    string `json:"region,omitempty"`
 }
 
 // agentKeyRenewMargin is how close to its expiry a stored agent key is renewed

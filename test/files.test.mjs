@@ -16,6 +16,7 @@ import {
   CONTROL_OR_BACKSLASH,
   CONTROL_OR_SLASH,
   createMemoryStore,
+  createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
   FILES_ENDPOINT,
@@ -41,6 +42,7 @@ import {
   scopeStore,
   sortEntries,
   splitEntries,
+  storageBucketForKey,
   TRASH_PATH,
   trashName,
   trashRows,
@@ -50,6 +52,8 @@ import {
 } from "../src/files.js";
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
 // The first-run page is a Vite entry at the repo root (issue #70), not a
@@ -1008,6 +1012,167 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   assert.match(urls[2].url, /\/drive\/u\/acct-b\/holiday.jpg$/);
 });
 
+test("the Files page names the same bucket the key provider mints into", () => {
+  assert.equal(storageBucketForKey("u/acct_a1/note.txt"), bucketForAccount("acct_a1"));
+  assert.equal(storageBucketForKey("u/acct_a1/"), "drv-acct-a1");
+  assert.equal(storageBucketForKey("u/v7Bp7HwejiE6XHOT/photos/x.jpg"), "drv-v7bp7hwejie6xhot");
+  assert.throws(() => storageBucketForKey("note.txt"), /u\/<accountId>/);
+  assert.throws(() => storageBucketForKey("../x"), /u\/<accountId>/);
+});
+
+/**
+ * Fake S3 that namespaces objects by bucket, so a write into account A's
+ * bucket cannot appear in B's listing. Keys are `${bucket}/${objectKey}`.
+ * @param {Map<string, string>} objects
+ * @param {string[]} seen
+ * @returns {typeof fetch}
+ */
+function accountBucketFetch(objects, seen) {
+  return async (url, init = {}) => {
+    const method = init.method || "GET";
+    const parsed = new URL(String(url));
+    const segments = decodeURIComponent(parsed.pathname)
+      .split("/")
+      .filter((segment) => segment !== "");
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} ${bucket}/${key}${parsed.search}`);
+    if (method === "PUT") {
+      objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    if (method === "DELETE") {
+      objects.delete(`${bucket}/${key}`);
+      return new Response(null, { status: 204 });
+    }
+    if (parsed.search.includes("list-type=2")) {
+      const inBucket = new Map(
+        [...objects.entries()]
+          .filter(([name]) => name.startsWith(`${bucket}/`))
+          .map(([name, body]) => [name.slice(bucket.length + 1), body]),
+      );
+      return rcloneListResponse(inBucket, parsed.search, { bucket });
+    }
+    const stored = objects.get(`${bucket}/${key}`);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+}
+
+test("GET /api/files lists a file written into the account's own bucket, and the other account cannot see it", async () => {
+  // drive#460: Finder writes through a key limited to drv-<id>. The Files
+  // page used the old shared bucket, so those files never showed. This is
+  // the request path src/index.js uses: handleFilesRequest + scopeStore over
+  // one S3 store that picks the bucket from the key.
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  const store = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl: accountBucketFetch(objects, seen),
+  });
+  const a = { id: "acct-a", name: "A" };
+  const b = { id: "acct-b", name: "B" };
+  const bucketA = bucketForAccount(a.id);
+  const bucketB = bucketForAccount(b.id);
+  /** @param {string} suffix */
+  const filesUrl = (suffix) => `https://drive.test${FILES_ENDPOINT}${suffix}`;
+  const uploaded = await handleFilesRequest(
+    new Request(`${filesUrl("/upload")}?path=%2F&name=from-finder.txt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "saved in Finder",
+    }),
+    store,
+    a,
+  );
+  assert.equal(uploaded.status, 201);
+  assert.deepEqual([...objects.keys()], [`${bucketA}/u/acct-a/from-finder.txt`]);
+
+  const listed = await handleFilesRequest(new Request(`${filesUrl("?path=/")}`), store, a);
+  assert.equal(listed.status, 200);
+  /** @type {{rows: Array<{name: string}>}} */
+  const mine = await listed.json();
+  assert.deepEqual(
+    mine.rows.map((row) => row.name),
+    ["from-finder.txt"],
+  );
+
+  const downloaded = await handleFilesRequest(
+    new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+    store,
+    a,
+  );
+  assert.equal(downloaded.status, 200);
+  assert.equal(await downloaded.text(), "saved in Finder");
+
+  const otherList = await handleFilesRequest(new Request(`${filesUrl("?path=/")}`), store, b);
+  assert.equal(otherList.status, 200);
+  assert.deepEqual((await otherList.json()).rows, []);
+  const otherRead = await handleFilesRequest(
+    new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+    store,
+    b,
+  );
+  assert.equal(otherRead.status, 404);
+
+  const deleted = await handleFilesRequest(
+    new Request(filesUrl("/delete"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/from-finder.txt" }),
+    }),
+    store,
+    a,
+    now,
+  );
+  assert.equal(deleted.status, 200);
+  const restored = await handleFilesRequest(
+    new Request(filesUrl("/restore"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/from-finder.txt" }),
+    }),
+    store,
+    a,
+    now,
+  );
+  assert.equal(restored.status, 200);
+  assert.equal(
+    await (
+      await handleFilesRequest(
+        new Request(`${filesUrl("/download")}?path=${encodeURIComponent("/from-finder.txt")}`),
+        store,
+        a,
+      )
+    ).text(),
+    "saved in Finder",
+  );
+
+  for (const request of seen) {
+    if (request.includes(`${bucketA}/`)) {
+      assert.ok(!request.includes(`${bucketB}/`), `A must never name B's bucket: ${request}`);
+    }
+    if (request.includes(`${bucketB}/`)) {
+      assert.ok(!request.includes(`${bucketA}/`), `B must never name A's bucket: ${request}`);
+    }
+  }
+  assert.ok(
+    seen.some((request) => request.includes(`${bucketA}/`)),
+    `A's calls must name ${bucketA}: ${JSON.stringify(seen)}`,
+  );
+  assert.ok(
+    seen.some((request) => request.includes(`${bucketB}/`)),
+    `B's calls must name ${bucketB}: ${JSON.stringify(seen)}`,
+  );
+});
+
 test("the S3 stand-in follows the continuation token, so a folder is never truncated at 1,000", async () => {
   // S3 caps one ListObjectsV2 answer at 1,000 keys. A store that reads only
   // the first page silently truncates a big folder: the stand-in proof on a
@@ -1099,8 +1264,12 @@ test("the Worker routes the page's API to the files handler", async () => {
   });
 
   // A path that is not an API still comes from the asset layer.
-  const page = await workerFetch(new Request("https://drive.test/files"), { ASSETS: assets }, ctx);
-  assert.equal(await page.text(), "asset");
+  const filesAsset = await workerFetch(
+    new Request("https://drive.test/files"),
+    { ASSETS: assets },
+    ctx,
+  );
+  assert.equal(await filesAsset.text(), "asset");
 });
 
 // ---------------------------------------------------------------- the page
@@ -1117,6 +1286,86 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /<dialog class="viewer" id="viewer"/);
   // A keyboard user can reach the list without the mouse.
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
+});
+
+test("the page wears the site's header, with room for the view strip", () => {
+  // drive#425, from the new-customer walkthrough: the files page's top bar was
+  // its own — a wordmark and a static "Your drive" — so it was the one page
+  // with no way from it to Pricing or Usage. It now carries the shared
+  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
+  // one navigation across the pages that use it), with this page's folder path
+  // under it, and the view strip given room instead of sitting cramped against
+  // the header.
+  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
+  assert.ok(masthead, "the page carries the shared masthead header");
+  assert.match(
+    masthead[0],
+    /<span class="tagline">A Finder drive for people and their agents\.<\/span>/,
+  );
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+  assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
+  // The static label is gone, and no script is left reading it. The words are
+  // not lost either: the crumbs row's own root button says "Your drive"
+  // (crumbsForParts), which is where the walkthrough's reader saw them before.
+  assert.doesNotMatch(page, /id="account"/);
+  assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
+
+  // The rule each part of the header owns, and it owns nothing else: this
+  // page's own padding, background and sticky bar around the shared masthead
+  // (public/site.css owns the header's own metrics, its link colour and the
+  // tagline), this page's own wordmark size, and the crumbs row. A page that
+  // starts restyling a part it does not own fails here, which is what keeps the
+  // pages from drifting apart again. test/site-styles.test.mjs holds the same
+  // line for the other pages.
+  /** @param {string} selector */
+  const rules = (selector) =>
+    [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
+      (rule) => rule[1],
+    );
+  const mastheadRules = rules("masthead").join("");
+  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
+    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
+  }
+  assert.ok(
+    !mastheadRules.includes("display:"),
+    "the page does not lay the header out, which the shared chrome already does",
+  );
+  assert.deepEqual(
+    rules("wordmark"),
+    ["\n  font-size: 24px;\n"],
+    "the page sets its own wordmark size and nothing else",
+  );
+  assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
+
+  // The strip's rule is the one that lays it out as a strip; the page has a
+  // second .tabs rule that only lines it up with the page's 900px column.
+  const tabs = rules("tabs").find((rule) => rule.includes("display: flex"));
+  assert.ok(tabs, "the page lays the tab strip out as a strip");
+  const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
+  const above = Number.parseInt(tabs.match(/padding-top:\s*(\d+)px/)?.[1] ?? "0", 10);
+  assert.equal(
+    above,
+    24,
+    `the strip sits 24px under the header, not cramped against it, it sits ${above}px`,
+  );
+  assert.equal(gap, 8, `the tabs have 8px between them, they have ${gap}px`);
+  const tab = rules("tabs button").find((rule) => rule.includes("padding:"));
+  const pad = tab?.match(/padding:\s*(\d+)px\s+(\d+)px/);
+  assert.ok(pad, "each tab carries its own padding");
+  assert.deepEqual(
+    [Number.parseInt(pad[1], 10), Number.parseInt(pad[2], 10)],
+    [12, 16],
+    "each tab has room inside it: 12px over, 16px along",
+  );
+
+  // The acceptance for drive#425 is a page with no sideways scroll. No rule
+  // here can measure that, so what this holds is the two things a rule can
+  // prove about it: the page does not hide the symptom, and it does not hold
+  // the list in a box that could keep an overflowing row off the screen. The
+  // measurements themselves are in the PR body, taken in a browser at 1280,
+  // 1024, 768, 390, 360 and 320 pixels wide.
+  assert.doesNotMatch(page, /overflow-x:\s*hidden/);
+  assert.doesNotMatch(page, /\.list\s*\{[^}]*overflow/);
 });
 
 test("the page's copy is the module's copy", () => {

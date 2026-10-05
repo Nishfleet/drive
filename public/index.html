@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Drive — 2¢ per GB, never more than $12 a TB</title>
-  <meta name="description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <title>Drive — 2¢ per GB, never more than $10 per TB</title>
+  <meta name="description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
        AI-answer crawler reads. Every value mirrors src/seo.js, and every price
        in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
-       fails CI when the tags and that config drift apart. The ceiling stated
-       here is the current rule from docs/build-spec.md ("Bill ceiling", Nish
-       2026-09-30, issue #29): min(metered, max($12, $8 × TB stored)). Issue
+       fails CI when the tags and that config drift apart. The maximum stated
+       here is the current rule from drive#463 (Nish 2026-10-04): min(2¢ × GB,
+       $10 × max(1, TB stored)). Issue
        #23 made that config the single source the visible copy, these tags and
        llms.txt all render from, so the page can no longer contradict itself. -->
   <!-- rel="canonical" declares a URL for a crawler to read; the browser never
@@ -22,15 +22,15 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://drive-pricing.nishant345.workers.dev/">
   <meta property="og:site_name" content="Drive">
-  <meta property="og:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta property="og:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta property="og:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta property="og:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Drive — 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta property="og:image:alt" content="Drive — Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $12 a TB">
-  <meta name="twitter:description" content="A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.">
+  <meta name="twitter:title" content="Drive — 2¢ per GB, never more than $10 per TB">
+  <meta name="twitter:description" content="A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.">
   <meta name="twitter:image" content="https://drive-pricing.nishant345.workers.dev/og.png">
   <script type="application/ld+json">
 {
@@ -39,20 +39,20 @@
   "name": "Drive",
   "applicationCategory": "BusinessApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A Finder drive for people and their agents. 2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB.",
+  "description": "A Finder drive for people and their agents. Pay only for what you store. 2 cents per GB. Never more than $10 per TB.",
   "url": "https://drive-pricing.nishant345.workers.dev/",
   "image": "https://drive-pricing.nishant345.workers.dev/og.png",
   "offers": {
     "@type": "Offer",
-    "price": "12.00",
+    "price": "10.00",
     "priceCurrency": "USD",
     "priceSpecification": {
       "@type": "UnitPriceSpecification",
-      "price": "12.00",
+      "price": "10.00",
       "priceCurrency": "USD",
       "unitText": "TB-month"
     },
-    "description": "2¢ per GB, billed by the minute. Never more than $12 a TB, and $8 a TB once you pass 1.5 TB. $10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest, still capped at max($12, $8 × TB stored): a flat $12 up to 1.5 TB, then $8 for each TB after."
+    "description": "Pay only for what you store. 2 cents per GB. Never more than $10 per TB. You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB."
   }
 }
   </script>
@@ -281,32 +281,42 @@ a {
   margin: 22px 0 0;
   font-family: var(--font-display);
   font-weight: 900;
-  display: flex;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  gap: 0 18px;
+}
+
+.price-heading .lead {
+  display: block;
+  margin-bottom: 0.3em;
+  font-weight: 800;
+  font-size: clamp(26px, 2.5vw, 36px);
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .price-heading .amount {
-  font-size: clamp(150px, 16vw, 236px);
-  line-height: 0.78;
-  letter-spacing: -0.02em;
+  display: block;
+  font-size: clamp(88px, 8.6vw, 128px);
+  line-height: 0.84;
+  letter-spacing: -0.015em;
+  text-transform: uppercase;
 }
 
 .price-heading .unit {
+  display: inline-block;
+  margin-top: 0.35em;
+  padding: 0.06em 0.16em 0.02em;
   font-weight: 800;
-  font-size: clamp(26px, 2.5vw, 36px);
-  line-height: 0.95;
+  font-size: clamp(30px, 3vw, 44px);
+  line-height: 1;
   text-transform: uppercase;
-  max-width: 7.5em;
-  padding-bottom: 0.15em;
+  background: var(--drive-ink);
+  color: var(--drive-orange);
 }
 
 .slogan {
   margin: 26px 0 18px;
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: clamp(40px, 4.4vw, 64px);
+  font-size: clamp(30px, 3vw, 44px);
   line-height: 0.95;
   text-transform: uppercase;
 }
@@ -314,9 +324,6 @@ a {
 .slogan span {
   display: inline-block;
   margin-top: 0.06em;
-  padding: 0.02em 0.12em 0;
-  background: var(--drive-ink);
-  color: var(--drive-orange);
 }
 
 .lede {
@@ -339,6 +346,18 @@ a {
   font-weight: 600;
   line-height: 1.35;
   max-width: 22em;
+}
+
+.open-note {
+  margin: 16px 0 0;
+  max-width: 30em;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.open-note a {
+  font-weight: 600;
+  text-underline-offset: 3px;
 }
 
 /* the Finder window floating on the field */
@@ -1344,7 +1363,7 @@ a {
 .meter i {
   position: absolute;
   inset: 0 auto 0 0;
-  width: 78.3%;
+  width: 50%;
   border-radius: 999px;
   background: var(--drive-orange);
 }
@@ -1511,7 +1530,7 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- membership ----------------------------------------------------------- */
+/* ---- founding members ----------------------------------------------------------- */
 
 .member {
   background: var(--drive-orange);
@@ -1894,7 +1913,11 @@ details p {
   }
 
   .price-heading .amount {
-    font-size: min(44vw, 180px);
+    font-size: min(24vw, 112px);
+  }
+
+  .price-heading .unit {
+    font-size: min(7.6vw, 32px);
   }
 
   .f-body {
@@ -2017,7 +2040,7 @@ details p {
         <a class="hide-m" href="/docs/">Docs</a>
         <a class="hide-m" href="/get-started">Get started</a>
         <a href="/signin">Sign in</a>
-        <a class="btn" href="/signin">Start 7 days free</a>
+        <a class="btn" href="/signin">Get drive</a>
       </nav>
     </div>
   </header>
@@ -2028,15 +2051,17 @@ details p {
         <div>
           <p class="kicker">For Mac &amp; Linux &middot; big files &middot; AI agents</p>
           <h1 class="price-heading" id="price-heading">
-            <span class="amount">2¢</span>
-            <span class="unit">per GB, billed by the&nbsp;minute</span>
+            <span class="lead">Pay only for what you store.</span>
+            <span class="amount">2 cents per&nbsp;GB.</span>
+            <span class="unit">Never more than $10 per TB.</span>
           </h1>
-          <p class="slogan">Terabytes in Finder.<br><span>Never over $12&nbsp;a&nbsp;TB.</span></p>
+          <p class="slogan">Terabytes in Finder.<br><span>No minimum. No plans.</span></p>
           <p class="lede">A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
           <div class="cta-row">
-            <a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a>
-            <p class="cta-note">$0 for the first 7 days. Card at sign-up. Cancel in the trial and you pay $0.</p>
+            <a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a>
+            <p class="cta-note">Add a card, store 200&nbsp;GB, pay $4 a month.</p>
           </div>
+          <p class="open-note">The drive is not open yet. Sign-ups on the pricing page go to a waitlist. <a href="#waitlist" data-waitlist-source="pricing-page">Join the waitlist</a>.</p>
         </div>
 
         <div class="stage">
@@ -2074,8 +2099,8 @@ details p {
 
       <div class="ticker" aria-hidden="true">
         <div class="ticker-track">
-          <span>7 days free</span><span>2¢ a GB</span><span>billed by the minute</span><span>$12 a TB ceiling</span><span>$8 a TB past 1.5 TB</span><span>agents can never delete</span><span>macOS + Linux</span>
-          <span>7 days free</span><span>2¢ a GB</span><span>billed by the minute</span><span>$12 a TB ceiling</span><span>$8 a TB past 1.5 TB</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>founding members pay half</span><span>agents can never delete</span><span>macOS + Linux</span>
+          <span>2¢ a GB</span><span>no minimum</span><span>no plans</span><span>never more than $10 per TB</span><span>founding members pay half</span><span>agents can never delete</span><span>macOS + Linux</span>
         </div>
       </div>
     </section>
@@ -2157,7 +2182,7 @@ details p {
       <div class="wrap">
         <p class="eyebrow">Price</p>
         <h2 class="big" id="calculator-heading">Slide it. <span class="o">Watch it stay small.</span></h2>
-        <p class="sub">Never more than $12 a TB, and $8 a TB once you pass 1.5&nbsp;TB.</p>
+        <p class="sub">2 cents per GB until the bill reaches $10, at 500&nbsp;GB. Never more than $10 per TB.</p>
         <div class="calc">
           <form class="calc-l" id="quote" action="/api/quote" method="get">
             <div class="size-row">
@@ -2166,25 +2191,25 @@ details p {
             </div>
             <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note">
             <div class="ticks" aria-hidden="true"><span style="left:0">50 GB</span><span style="left:19.2%">1 TB</span><span style="left:39.4%">2 TB</span><span style="left:100%">5 TB</span></div>
-            <p class="price-big"><sup>$</sup><span id="quote-bill">12</span><small>a month</small></p>
-            <p class="why" id="quote-note" role="status" aria-live="polite">1 TB kept all month: $12.00 this month. Flat-plan ceiling: $12.00.</p>
+            <p class="price-big"><sup>$</sup><span id="quote-bill">10</span><small>a month</small></p>
+            <p class="why" id="quote-note" role="status" aria-live="polite">1 TB kept all month: $10.00 this month. Our maximum: $10.00. A usual 1 TB plan: $15.00.</p>
             <ul class="bands">
-              <li data-band="membership"><span>Up to 500 GB</span><span>the $10 membership covers it</span></li>
-              <li data-band="plateau" class="on"><span>500 GB to 1.5 TB</span><span>2¢ a GB, never over $12</span></li>
-              <li data-band="slope"><span>Past 1.5 TB</span><span>$8 a TB</span></li>
+              <li data-band="rate"><span>Up to 500 GB</span><span>2¢ a GB</span></li>
+              <li data-band="flat" class="on"><span>500 GB to 1 TB</span><span>$10, flat</span></li>
+              <li data-band="slope"><span>Past 1 TB</span><span>never more than $10 per TB</span></li>
             </ul>
             <noscript><p class="form-note">Without JavaScript, <button type="submit">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
           </form>
-          <div class="calc-r" id="usual-plans" data-usual-plans="1000:15,2000:27,5000:63">
+          <div class="calc-r" id="usual-plans">
             <div>
               <div class="bars" aria-hidden="true">
-                <div class="bar-col us"><span class="v" id="bar-us-v">$12</span><div class="b" id="bar-us" style="height:74%"></div></div>
+                <div class="bar-col us"><span class="v" id="bar-us-v">$10</span><div class="b" id="bar-us" style="height:61.7%"></div></div>
                 <div class="bar-col them"><span class="v" id="bar-them-v">$15</span><div class="b" id="bar-them" style="height:92.6%"></div></div>
               </div>
-              <div class="bar-lbl" aria-hidden="true"><span>drive</span><span id="bar-them-label">The usual 1 TB plan</span></div>
+              <div class="bar-lbl" aria-hidden="true"><span>drive</span><span id="bar-them-label">A usual 1 TB plan</span></div>
             </div>
-            <p class="save" id="quote-save">You keep <em>$3</em> a month.</p>
-            <p class="fine">The usual plan elsewhere is $15 a month for 1&nbsp;TB, even billed yearly. 2&nbsp;TB is $27, and 5&nbsp;TB is $63. Our figure is this month's bill for the size held all month, never above our own flat-plan ceiling.</p>
+            <p class="save" id="quote-save">You keep <em>$5</em> a month.</p>
+            <p class="fine">We compare against a usual 1 TB plan elsewhere: $15 a month, even billed yearly, then $6 for each extra 500&nbsp;GB. Our figure is this month's bill for the size held all month, never more than $10 per TB.</p>
           </div>
         </div>
       </div>
@@ -2195,33 +2220,33 @@ details p {
         <div>
           <h2 id="examples-heading">Worked examples</h2>
           <div class="strip-bar" role="img"
-               aria-label="A one terabyte drive kept sixty percent full bills twelve dollars a month; the empty forty percent bills nothing extra">
-            <span class="strip-full">60% full &middot; $12</span>
+               aria-label="A one terabyte drive kept sixty percent full bills ten dollars a month; the empty forty percent bills nothing extra">
+            <span class="strip-full">60% full &middot; $10</span>
             <span class="strip-empty">empty &middot; $0</span>
           </div>
-          <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $12 a month: $12 of storage. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes max($12, $8 × TB stored).</p>
+          <p class="strip-caption">A 1&nbsp;TB drive kept 60% full bills $10 a month. The empty 40% bills nothing extra, and there is no plan size to grow into. However full the drive gets, the bill never passes $10 per TB.</p>
         </div>
         <div>
           <dl class="examples-list">
             <div class="example">
-              <dt>500 GB for 3 days</dt>
-              <dd>about $1 of storage, and you pay the <strong>$10</strong> membership.</dd>
+              <dt>50 GB kept all month</dt>
+              <dd>you pay <strong>$1</strong>. A usual 1 TB plan costs $15, so you save $14.</dd>
             </div>
             <div class="example">
-              <dt>800 GB kept all month</dt>
-              <dd>$12 of storage, and you pay <strong>$12</strong>.</dd>
+              <dt>200 GB kept all month</dt>
+              <dd>you pay <strong>$4</strong>. A usual 1 TB plan costs $15, so you save $11.</dd>
             </div>
             <div class="example">
-              <dt>2 TB kept all month</dt>
-              <dd>$16 of storage, and you pay <strong>$16</strong>.</dd>
+              <dt>500 GB to 1 TB kept all month</dt>
+              <dd>you pay <strong>$10</strong>. A usual 1 TB plan costs $15, so you save $5.</dd>
             </div>
             <div class="example">
-              <dt>5 TB kept all month</dt>
-              <dd>$40 of storage, and you pay <strong>$40</strong>.</dd>
+              <dt>3 TB kept all month</dt>
+              <dd>you pay <strong>$30</strong>. A usual 1 TB plan costs $39, so you save $9.</dd>
             </div>
           </dl>
-          <p class="examples-note">Bills stop at the ceiling: the metered cost capped at max($12, $8 × TB stored) — a flat $12 up to 1.5 TB, then $8 for each TB after, so 2&nbsp;TB is $16.</p>
-          <p class="examples-note">Version history is not in version 1.</p>
+          <p class="examples-note">You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB.</p>
+          <p class="examples-note">Version history is not in version 1. <a href="/docs/limits">What version 1 does not do</a>.</p>
         </div>
       </div>
     </section>
@@ -2231,47 +2256,44 @@ details p {
         <div>
           <p class="eyebrow">No surprise bills</p>
           <h2 class="big" id="cap-heading">A cap that<br><span class="o">stops writes,</span><br>not files.</h2>
-          <p class="sub">Your spending cap starts at $12. When you reach it, new writes stop and nothing is deleted. Raise it when you want.</p>
+          <p class="sub">Your spending cap starts at $20. When you reach it, new writes stop and nothing is deleted. Raise it when you want.</p>
         </div>
         <div>
           <div class="meter-card">
-            <div class="meter-top"><span>This month</span><b>$9.40 <small>of $12 cap</small></b></div>
+            <div class="meter-top"><span>This month</span><b>$10.00 <small>of $20 cap</small></b></div>
             <div class="meter" aria-hidden="true"><i></i></div>
-            <p class="meter-note">At $12, writes stop. Every file stays.</p>
+            <p class="meter-note">At $20, writes stop. Every file stays.</p>
           </div>
           <article class="receipt" id="receipt" aria-labelledby="receipt-heading">
             <p class="r-head"><span class="r-shop" id="receipt-heading">drive</span><small>1 TB, kept all month</small></p>
-            <div class="r-line"><span class="d">Storage, 2¢ a GB</span><span class="v" data-receipt="ours">$12.00</span></div>
-            <div class="r-line sub"><span class="d">never more than $12 a TB</span></div>
-            <div class="r-line x"><span class="d">The usual 1 TB plan, billed yearly</span><span class="v" data-receipt="usual">$15.00</span></div>
-            <div class="r-total"><span>THIS MONTH</span><b>$12.00</b></div>
+            <div class="r-line x"><span class="d">1 TB at 2¢ a GB</span><span class="v" data-receipt="metered">$20.00</span></div>
+            <div class="r-line"><span class="d">Never more than $10 per TB</span><span class="v" data-receipt="ours">$10.00</span></div>
+            <div class="r-line x"><span class="d">A usual 1 TB plan, billed yearly</span><span class="v" data-receipt="usual">$15.00</span></div>
+            <div class="r-total"><span>THIS MONTH</span><b>$10.00</b></div>
             <div class="saved">
-              <p class="stamp">You saved<big data-receipt="saved">$3.00</big></p>
-              <p>This month you saved $3 against the usual 1&nbsp;TB plan.</p>
+              <p class="stamp">You saved<big data-receipt="saved">$5.00</big></p>
+              <p>This month you saved $5 against a usual 1&nbsp;TB plan.</p>
             </div>
-            <p class="r-foot">BILLED BY THE MINUTE &middot; MACOS + LINUX</p>
+            <p class="r-foot">NO MINIMUM &middot; NO PLANS &middot; MACOS + LINUX</p>
           </article>
         </div>
       </div>
     </section>
 
-    <section class="s member" id="membership" aria-labelledby="membership-heading">
+    <section class="s member" id="founding" aria-labelledby="founding-heading">
       <div class="wrap mem-grid">
         <div>
           <p class="eyebrow">Founding members</p>
-          <h2 class="big" id="membership-heading">Keep <span class="o">$5</span><br>for good.</h2>
-          <p class="sub">$10 a month membership, and your storage use counts toward it. Go past $10 and you pay by the minute for the rest.</p>
-          <p class="founding">Join now and keep $5 a month for good.</p>
+          <h2 class="big" id="founding-heading"><span class="o">Half</span> price<br>for good.</h2>
+          <p class="sub">Founding member pricing: half price for good, 1 cent per GB and never more than $5 per TB.</p>
           <ul class="mem-list">
-            <li><span>Membership</span><b>$10 a month</b></li>
-            <li><span>Storage use counts toward it</span><b>up to 500 GB</b></li>
-            <li><span>Regular members, first month</span><b>50% off</b></li>
-            <li><span>First 7 days</span><b>$0</b></li>
-            <li><span>Cancel during the trial</span><b>you pay $0</b></li>
+            <li><span>Storage</span><b>1¢ a GB</b></li>
+            <li><span>Never more than</span><b>$5 per TB</b></li>
+            <li><span>How long</span><b>for good</b></li>
           </ul>
-          <div class="cta-row"><a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a></div>
+          <div class="cta-row"><a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a></div>
         </div>
-        <p class="five"><sup>$</sup>5<small>a month, for good</small></p>
+        <p class="five">1¢<small>a GB, for good</small></p>
       </div>
     </section>
 
@@ -2283,9 +2305,9 @@ details p {
             <h2 class="big" id="faq-heading">Short<br>answers.</h2>
           </div>
           <div>
-            <details open><summary>What does "billed by the minute" mean?</summary><p>You pay 2¢ per GB a month, counted for the minutes you hold the data. The bill never goes above $12 a TB, and past 1.5 TB it is $8 a TB.</p></details>
+            <details open><summary>How is the bill worked out?</summary><p>You pay 2 cents per GB a month until the bill reaches $10, at 500 GB. From 500 GB to 1 TB the bill stays $10. Above 1 TB you never pay more than $10 for each TB, counted to the GB. No minimum. No plans.</p></details>
             <details><summary>Can my agents wreck my files?</summary><p>No. Agent keys can list, read and write. They can never delete.</p></details>
-            <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $12. When you reach it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
+            <details><summary>What happens when I hit my spending cap?</summary><p>The default cap is $20. When you reach it, writes stop and nothing is deleted. You can raise the cap at any time.</p></details>
             <details><summary>Does it work on Windows?</summary><p>Not yet. drive runs on macOS and Linux today.</p></details>
           </div>
         </div>
@@ -2297,14 +2319,14 @@ details p {
             <a class="talk" href="#waitlist" data-waitlist-source="business">Talk to us</a>
             <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
             <form class="waitlist" id="waitlist" action="/api/waitlist" method="post">
-              <label class="field-label" for="email">Work email</label>
+              <label class="field-label" for="email">Email</label>
               <div class="field-row">
                 <input id="email" name="email" type="email" required
                        placeholder="you@example.com" autocomplete="email" spellcheck="false">
-                <input type="hidden" name="source" value="business">
+                <input type="hidden" name="source" value="pricing-page">
                 <button type="submit">Send</button>
               </div>
-              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email and we write back about a company account.</p>
+              <p class="form-note" id="form-note" role="status" aria-live="polite">Leave your email. We write once when the drive opens, or back about a company account.</p>
             </form>
             <noscript><p class="form-note">The form sends without JavaScript too.</p></noscript>
           </div>
@@ -2317,7 +2339,7 @@ details p {
     <div class="wrap">
       <div class="foot-top">
         <p class="foot-big">Terabytes,<br><span>2¢ a GB.</span></p>
-        <a class="btn" href="/signin">Start 7 days free <span aria-hidden="true">&#8594;</span></a>
+        <a class="btn" href="/signin">Get drive <span aria-hidden="true">&#8594;</span></a>
       </div>
       <div class="foot-nav">
         <nav aria-label="Footer">
@@ -2326,7 +2348,7 @@ details p {
           <a href="/signin">Sign in</a>
           <a href="/get-started">Get started</a>
         </nav>
-        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier.</p>
+        <p>macOS and Linux. Windows is not ready yet. We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.</p>
       </div>
     </div>
   </footer>
@@ -2339,7 +2361,7 @@ details p {
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 
-// ---- Business contact form ------------------------------------------------
+// ---- Waitlist and Business contact form -----------------------------------
 // Without JavaScript the form still posts to /api/waitlist, so this only
 // upgrades the response from a page reload to an inline confirmation. It must
 // never fail silently: every path writes a line into the live region.
@@ -2355,9 +2377,10 @@ function say(message, kind) {
   note.classList.toggle("is-done", kind === "done");
 }
 
-// "Talk to us" is the same real action as the form, tagged so the row records
-// where the person came from. preventDefault is load-bearing: without it the
-// anchor's own fragment navigation moves focus away from the field.
+// "Join the waitlist" and "Talk to us" are the same real action as the form,
+// each tagged so the row records where the person came from. preventDefault
+// is load-bearing: without it the anchor's own fragment navigation moves
+// focus away from the field.
 for (const link of document.querySelectorAll("[data-waitlist-source]")) {
   link.addEventListener("click", (event) => {
     event.preventDefault();
@@ -2420,18 +2443,15 @@ form.addEventListener("submit", async (event) => {
 // ---- The slider -------------------------------------------------------------
 // Every figure comes from GET /api/quote, which is quoteForStoredTb() in
 // src/billing.js: monthBillCents(), the invoice's own function. The page does
-// no bill arithmetic. The usual-plan figures are the data attribute
-// test/home-page.test.mjs pins to rivalMonthlyUsd() in src/pricing.js.
+// no bill arithmetic: the bill, our maximum and a usual 1 TB plan's price for
+// the same size (usualPlanMonthlyUsd() in src/pricing.js) all come back in
+// the quote.
 const quoteForm = document.getElementById("quote");
 const range = document.getElementById("quote-gb");
 const sizeOut = document.getElementById("quote-size");
 const billOut = document.getElementById("quote-bill");
 const quoteNote = document.getElementById("quote-note");
 const saveOut = document.getElementById("quote-save");
-const usualPlans = document
-  .getElementById("usual-plans")
-  .dataset.usualPlans.split(",")
-  .map((pair) => pair.split(":").map(Number));
 const quotes = new Map();
 let latest = 0;
 let timer;
@@ -2445,14 +2465,14 @@ function sayQuote(message, kind) {
 }
 
 function show(gb, quote) {
-  const [planGb, planUsd] = usualPlans.find(([size]) => gb <= size) ?? usualPlans.at(-1);
+  const planUsd = quote.planUsd;
   billOut.textContent = dollars(quote.billUsd);
   sayQuote(
-    `${sizeLabel(gb)} kept all month: ${quote.labels.bill} this month. Flat-plan ceiling: ${quote.labels.ceiling}.`,
+    `${sizeLabel(gb)} kept all month: ${quote.labels.bill} this month. Our maximum: ${quote.labels.maximum}. A usual 1 TB plan: ${quote.labels.plan}.`,
   );
-  // Which line of the price table this size falls on. These are the band
-  // edges printed above, not a bill: the figures come from the quote.
-  const band = gb <= 500 ? "membership" : gb <= 1500 ? "plateau" : "slope";
+  // Which line of the price table this size falls on, read from the quote:
+  // under the maximum, at the flat maximum, or past 1 TB.
+  const band = quote.tb > 1 ? "slope" : quote.billUsd < quote.maximumUsd ? "rate" : "flat";
   for (const li of document.querySelectorAll(".bands li")) {
     li.classList.toggle("on", li.dataset.band === band);
   }
@@ -2460,11 +2480,10 @@ function show(gb, quote) {
   document.getElementById("bar-us").style.height = `${(quote.billUsd / top) * 100}%`;
   document.getElementById("bar-them").style.height = `${(planUsd / top) * 100}%`;
   document.getElementById("bar-us-v").textContent = `$${dollars(quote.billUsd)}`;
-  document.getElementById("bar-them-v").textContent = `$${planUsd}`;
-  document.getElementById("bar-them-label").textContent = `The usual ${planGb / 1000} TB plan`;
+  document.getElementById("bar-them-v").textContent = `$${dollars(planUsd)}`;
   const kept = Math.round((planUsd - quote.billUsd) * 100) / 100;
   saveOut.innerHTML =
-    kept > 0 ? `You keep <em>$${dollars(kept)}</em> a month.` : "Same price, billed by the minute.";
+    kept > 0 ? `You keep <em>$${dollars(kept)}</em> a month.` : "The same price, with no plan to outgrow.";
 }
 
 async function fetchQuote(gb) {

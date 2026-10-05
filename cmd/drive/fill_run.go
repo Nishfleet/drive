@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -281,7 +282,34 @@ func liveCacheBytes(path string, reported int64) (int64, error) {
 // load average as "idle" and start filling on a busy machine, so a missing
 // /proc is a named failure, not a zero.
 func readLoadAverages() (float64, float64, error) {
+	if runtime.GOOS == "darwin" {
+		// macOS has no /proc: the same numbers come from `sysctl vm.loadavg`,
+		// so the background fill (and `drive offline`) can run on a Mac.
+		out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
+		if err != nil {
+			return 0, 0, fmt.Errorf("read vm.loadavg: %w", err)
+		}
+		return parseDarwinLoadAverages(string(out))
+	}
 	return readLoadAveragesFrom("/proc/loadavg")
+}
+
+// parseDarwinLoadAverages reads `sysctl -n vm.loadavg`, which prints
+// "{ 1.23 1.45 1.67 }": the one-, five- and fifteen-minute averages in braces.
+func parseDarwinLoadAverages(out string) (float64, float64, error) {
+	fields := strings.Fields(strings.Trim(strings.TrimSpace(out), "{}"))
+	if len(fields) < 2 {
+		return 0, 0, fmt.Errorf("vm.loadavg %q has no one- and five-minute averages", strings.TrimSpace(out))
+	}
+	one, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("vm.loadavg one-minute average %q: %w", fields[0], err)
+	}
+	five, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("vm.loadavg five-minute average %q: %w", fields[1], err)
+	}
+	return one, five, nil
 }
 
 // readLoadAveragesFrom is the parse, with the path a parameter so a test can

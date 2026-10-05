@@ -5,15 +5,16 @@
 // monthBillCents() in src/billing.js - the one function that turns the month's
 // numbers into money. No fake D1 and no hand-rolled month: a case is set up by
 // storing file versions the way the storage provider reports them and letting
-// the hourly trigger roll the hours, so the GB-minutes and the peak the bill
-// reads are the ones the meter actually wrote.
+// the hourly trigger roll the hours, so the GB-minutes the bill reads are the
+// ones the meter actually wrote.
 //
-// The rule under test (docs/build-spec.md "Bill ceiling", Nish 2026-09-30):
+// The rule under test (drive#463, Nish 2026-10-04): pay only for what you store.
 //
-//     bill = min(metered at 2c/GB-month by the minute, max($12, $8 x peak TB))
-//            - the $1 free credit
+//     bill = min(2c x avg GB, $10 x max(1, avg TB))
 //
-// with the peak measured to the GB, so 1.6 TB caps at $12.80 and not $16.
+// with avg the time-weighted average over the month (GB-minutes / 43,800), so
+// the bill reads the average only. The meter still writes an hourly peak, and
+// the tests below keep it honest, but no bill reads it. No minimum, no credit.
 //
 // The half-open boundary is the same in the schema, the SQL and the month
 // reader: an hour starts a month, so a file spanning 00:00 UTC on the 1st is
@@ -30,7 +31,7 @@ import {
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyCeilingUsd,
+  monthlyMaximumUsd,
   storedGb,
 } from "../src/billing.js";
 import {
@@ -215,9 +216,10 @@ function monthGbMinutes(meteredDb, monthLabel) {
 }
 
 /**
- * The bill for a month, with the month's PEAK read out of the real database by
- * the meter's own reader and handed straight to the one billing function - the
- * seam issue #163 asks for, with nothing re-derived on the way in.
+ * The bill for a month, from the month's GB-minutes handed straight to the one
+ * billing function - the seam issue #163 asks for, with nothing re-derived on
+ * the way in. The bill reads the average only (drive#463), so the peak the
+ * meter's reader returns is checked by the tests but never billed.
  *
  * The GB-minutes come from the caller's own figure: monthUsageRollup reads the
  * peak only, because no SQL statement can sum a month's hours (SQLite has no
@@ -228,11 +230,16 @@ function monthGbMinutes(meteredDb, monthLabel) {
  * @param {{peak: {peakBytes: number}, gbMinutes: number}} month
  */
 function billThroughTheMeter(month) {
-  return monthBillCents({
-    gbMinutes: month.gbMinutes,
-    peakBytes: month.peak.peakBytes,
-  });
+  return monthBillCents({ gbMinutes: month.gbMinutes });
 }
+
+/**
+ * The maximum for a month, in cents, from the month's average stored GB:
+ * $10 x max(1, avg TB), read from the module's own function.
+ * @param {number} gbMinutes
+ */
+const maximumCents = (gbMinutes) =>
+  Math.round(monthlyMaximumUsd(gbMinutes / MINUTES_PER_MONTH) * 100);
 
 /**
  * A month of one size stored from its first instant: the database rolled, the
@@ -282,17 +289,18 @@ const meteredFromTheModule = (gbMinutes) => Math.round(meteredMonthlyBillUsd(gbM
 
 // --- The spec's five sizes, held all month --------------------------------
 
-test("the spec's sizes held all month bill the ceiling", async () => {
+test("sizes held all month bill the maximum on their average", async () => {
   // Each case is one calendar month of a drive holding one size from 00:00 UTC
-  // on the 1st: 720 hours rolled, the peak read out of usage_minutes, and the
-  // bill from monthBillCents(). The expected storage line is the spec's own
-  // (build-spec.md "Bill ceiling"): $12, $12, $12.80, $16, $40.
+  // on the 1st: 720 hours rolled and the bill from monthBillCents(). The bill
+  // reads the AVERAGE: a 30-day month is 43,200 of the 43,800 average-month
+  // minutes, so 2 TB held all of September averages 1,972.6 GB and its maximum
+  // is $19.73, not $20. At every size here the maximum is the smaller half.
   const cases = [
-    { gb: 800, storageCents: 1200 },
-    { gb: 1300, storageCents: 1200 },
-    { gb: 1600, storageCents: 1280 },
-    { gb: 2000, storageCents: 1600 },
-    { gb: 5000, storageCents: 4000 },
+    { gb: 800, storageCents: 1000 },
+    { gb: 1300, storageCents: 1282 },
+    { gb: 1600, storageCents: 1578 },
+    { gb: 2000, storageCents: 1973 },
+    { gb: 5000, storageCents: 4932 },
   ];
   for (const { gb, storageCents } of cases) {
     const month = await storedAllMonth(gb * GB);
@@ -303,44 +311,35 @@ test("the spec's sizes held all month bill the ceiling", async () => {
       `${gb} GB held all month books ${gb} GB x the month's minutes`,
     );
     const bill = billThroughTheMeter(month);
-    assert.equal(bill.storageCents, storageCents, `${gb} GB of storage before the credit`);
-    // And which half of the min() produced it: metered against the ceiling.
-    // At these sizes the ceiling IS the smaller number, which is the whole
-    // point of the cap.
+    assert.equal(bill.storageCents, storageCents, `${gb} GB of storage`);
     const metered = meteredCents(month.gbMinutes);
-    const ceiling = Math.round(
-      Math.max(BILLING_CONFIG.floorUsd, BILLING_CONFIG.perTbUsd * (gb / 1000)) * 100,
-    );
-    assert.ok(metered > ceiling, `${gb} GB: metered ${metered}c is over the ${ceiling}c ceiling`);
-    assert.equal(bill.storageCents, ceiling, `${gb} GB: the cap is what is billed`);
+    const maximum = maximumCents(month.gbMinutes);
+    assert.ok(metered > maximum, `${gb} GB: metered ${metered}c is over the ${maximum}c maximum`);
+    assert.equal(bill.storageCents, maximum, `${gb} GB: the maximum is what is billed`);
     assert.equal(bill.downloadCents, 0, "no downloads in these months");
+    assert.equal(bill.totalCents, storageCents, "no minimum and no credit on top");
   }
 });
 
-test("a light month pays the membership, and a capped month pays the cap", async () => {
-  // A capped month pays the ceiling. A light month pays the $10 membership.
-  const capped = await storedAllMonth(2 * TB);
-  const bill = billThroughTheMeter(capped);
-  assert.equal(bill.storageCents, 1600, "2 TB bills the $16 ceiling");
-  assert.equal(bill.creditCents, 0, "no first-month discount on a later month");
-  assert.equal(bill.totalCents, 1600, "2 TB for a month is $16.00");
-  // A light user: 40 GB held all month is 80c of storage against the $10
-  // membership. Here the METER is the smaller number (80c is under the $12
-  // plateau), so the min() picks the meter - the other side of the same rule.
+test("a light month pays its meter, and a heavy month pays the maximum", async () => {
+  const heavy = await storedAllMonth(2 * TB);
+  const bill = billThroughTheMeter(heavy);
+  assert.equal(bill.storageCents, maximumCents(heavy.gbMinutes), "2 TB bills the maximum");
+  assert.equal(bill.totalCents, 1973, "2 TB for a 30-day month is $19.73");
+  // A light user: 40 GB held all month. The METER is the smaller number, so
+  // the min() picks the meter, and there is no minimum to lift it.
   const light = await storedAllMonth(40 * GB);
   const lightBill = billThroughTheMeter(light);
   const metered = meteredCents(light.gbMinutes);
-  assert.ok(
-    metered < BILLING_CONFIG.floorUsd * 100,
-    `40 GB metered at ${metered}c is under the $12 plateau`,
-  );
-  assert.equal(lightBill.storageCents, metered, "a light month pays the meter, not the cap");
-  assert.equal(lightBill.totalCents, 1000, "the membership covers it: the bill is $10.00");
+  assert.ok(metered < 1000, `40 GB metered at ${metered}c is under the $10 maximum`);
+  assert.equal(lightBill.storageCents, metered, "a light month pays the meter");
+  assert.equal(lightBill.totalCents, 79, "no minimum: the bill is 79 cents");
   assert.equal(light.peak.peakBytes, 40 * GB);
-  const membershipLine = lightBill.lines[lightBill.lines.length - 1];
-  assert.equal(membershipLine.label, "Membership");
-  assert.equal(lightBill.membershipCents, 1000);
-  assert.equal(lightBill.totalCents, 1000);
+  assert.deepEqual(
+    lightBill.lines.map((line) => line.label),
+    ["Storage", "Downloads"],
+    "the bill has no membership line",
+  );
 });
 
 test("43,800 minutes is the divisor the metered half bills by", async () => {
@@ -375,19 +374,18 @@ test("43,800 minutes is the divisor the metered half bills by", async () => {
     "the divisor is divided into the month's GB-minutes as they are",
   );
   // The same month, read off the real rollup and billed end to end: 2c of
-  // storage, which the free $1 credit covers, so $0.00.
+  // storage, and with no minimum the bill is 2 cents.
   const bill = billThroughTheMeter(month);
   assert.equal(bill.storageCents, 2, "the metered half is gb-minutes / 43,800 x 2c");
-  assert.equal(bill.totalCents, 1000, "two cents of storage is under the $10 membership");
-  assert.equal(bill.creditCents, 0, "no first-month discount on a later month");
+  assert.equal(bill.totalCents, 2, "no minimum: two cents of storage bills two cents");
   // The size that shows the divisor mattering: 800 GB held all month. The
-  // metered half would be $15.78 for this 30-day month (over the $12
-  // plateau, so the cap is what is billed), and the peak ceiling is the same
-  // $12 either way - the cap is a cap ON the meter, not a replacement.
+  // metered half would be $15.78 for this 30-day month (over the $10
+  // maximum, so the maximum is what is billed) - the maximum is a cap ON the
+  // meter, not a replacement.
   const eightHundred = await storedAllMonth(800 * GB);
   assert.equal(eightHundred.gbMinutes, 800 * 43_200, "800 GB x the month's minutes");
   assert.equal(meteredFromTheModule(eightHundred.gbMinutes), 1578, "$15.78 metered");
-  assert.equal(billThroughTheMeter(eightHundred).storageCents, 1200, "the $12 plateau is billed");
+  assert.equal(billThroughTheMeter(eightHundred).storageCents, 1000, "the $10 maximum is billed");
 });
 
 // --- The month boundary ---------------------------------------------------
@@ -427,8 +425,8 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
   // September: the file is stored from 12:00 to 24:00, twelve hours, so
   // September bills 2 TB x 720 minutes = 1,440,000 GB-minutes - and its peak
   // is the whole 2 TB, because the drive really did hold it that month. The
-  // metered half of that is 66 cents, well under the $12 plateau, so the
-  // September bill is the meter and NOT the cap: a part-month bills for the
+  // metered half of that is 66 cents, well under the $10 maximum, so the
+  // September bill is the meter and NOT the maximum: a part-month bills for the
   // part it was held (docs/build-spec.md, "How the money is worked out").
   const septemberMinutes = monthGbMinutes(meteredDb, "2026-09");
   const octoberMinutes = monthGbMinutes(meteredDb, "2026-10");
@@ -449,8 +447,8 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
     "the same figure by the spec's arithmetic, on the one 43,800 divisor",
   );
   const septemberBill = billThroughTheMeter({ peak: september, gbMinutes: septemberMinutes });
-  assert.equal(septemberBill.storageCents, 66, "the part-month pays the meter, not the cap");
-  assert.equal(septemberBill.totalCents, 1000, "66 cents is under the $10 membership: $10.00");
+  assert.equal(septemberBill.storageCents, 66, "the part-month pays the meter, not the maximum");
+  assert.equal(septemberBill.totalCents, 66, "no minimum: 66 cents");
 
   // October: the same file, held for the whole of the month this time (the
   // 1st is a full 31-day month), so its peak is the same 2 TB and its
@@ -461,11 +459,16 @@ test("a file across 00:00 UTC on the 1st splits into the two months, each billed
     2 * GB_PER_TB * 31 * 24 * 60,
     "October bills its whole month: 2,000 GB x 44,640 minutes",
   );
-  // October held the file all month, so the metered half is over the plateau
-  // and the peak ceiling is what the bill carries: $16.
+  // October held the file all month, so the metered half is over the maximum
+  // and the maximum on the average is what the bill carries. A 31-day month is
+  // longer than the 43,800-minute average month, so 2 TB averages 2,038 GB.
   const octoberBill = billThroughTheMeter({ peak: october, gbMinutes: octoberMinutes });
-  assert.equal(octoberBill.storageCents, 1600, "a full month of 2 TB bills the $16 ceiling");
-  assert.equal(octoberBill.totalCents, 1600, "$16.00 at the ceiling");
+  assert.equal(
+    octoberBill.storageCents,
+    maximumCents(octoberMinutes),
+    "a full month of 2 TB bills the maximum",
+  );
+  assert.equal(octoberBill.totalCents, 2038, "$20.38 at the maximum on 2,038 GB");
 
   // The two months together are the file's own hours exactly - the boundary
   // was crossed once, and the hour starting 00:00 on the 1st is October's.
@@ -570,7 +573,7 @@ test("a version replaced inside an hour is an upper bound on the hour's bytes, n
   //
   // The statement cannot do better from hourly buckets - it would need a
   // minute-boundary snapshot, which is the nightly reconciler's job (#59) -
-  // and it errs in the safe direction: the ceiling is never lower than what the
+  // and it errs in the safe direction: the mark is never lower than what the
   // drive really held. What this test fixes is the NUMBER, so a later change to
   // the peak statement has to say which figure it now means.
   const meteredDb = metered();
@@ -604,10 +607,8 @@ test("a version replaced inside an hour is an upper bound on the hour's bytes, n
     800 * GB,
     "the mark is the pair: an upper bound on what was held at once",
   );
-  // The month's peak is that mark, and at this size the ceiling is the $12
-  // plateau either way - so the bound costs this customer nothing, and the
-  // sizes this issue names (800 GB, 1.3 TB, 1.6 TB, 2 TB, 5 TB held all month,
-  // where no hour contains a replacement) are unaffected by it.
+  // The month's peak is that mark. The bill reads the average only, so the
+  // bound costs this customer nothing: the bill is the hour's GB-minutes.
   const peak = await monthUsageRollup(
     meteredDb.db,
     ACCOUNT,
@@ -616,9 +617,14 @@ test("a version replaced inside an hour is an upper bound on the hour's bytes, n
   );
   assert.equal(peak.peakBytes, 800 * GB, "the month's peak is the mark, unchanged");
   assert.equal(
-    monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: peak.peakBytes }).storageCents,
-    monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: 400 * GB }).storageCents,
-    "and at 800 GB the bound costs nothing: both figures bill the same storage line",
+    monthBillCents({ gbMinutes: rolled.gbMinutes }).storageCents,
+    meteredCents(rolled.gbMinutes),
+    "the bill reads the GB-minutes, never the mark",
+  );
+  assert.throws(
+    () => monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: peak.peakBytes }),
+    /peakBytes/,
+    "a caller that still hands over the peak is refused by name",
   );
 });
 
@@ -657,8 +663,6 @@ test("two versions genuinely live at once are marked together, which is what a p
     800 * GB,
     "both were live in the hour, so the hour holds 800 GB",
   );
-  // The ceiling follows the mark, and at this size the two figures differ by
-  // exactly what the rule says: max($12, $8 x peak TB).
   const peak = await monthUsageRollup(
     meteredDb.db,
     ACCOUNT,
@@ -667,16 +671,13 @@ test("two versions genuinely live at once are marked together, which is what a p
   );
   assert.equal(peak.peakBytes, 800 * GB, "the month's peak carries both versions");
   // The rule's own min(): a month that metered nothing bills nothing, whatever
-  // the peak says - the ceiling is a cap on the meter, never a floor. With the
-  // hour's own minutes (two versions, 10 and 40 minutes) the meter is $9.15,
-  // under the $12 plateau, so the meter is what is billed.
-  const bill = monthBillCents({ gbMinutes: rolled.gbMinutes, peakBytes: peak.peakBytes });
+  // the peak says - the maximum is a cap on the meter, never a floor.
+  const bill = monthBillCents({ gbMinutes: rolled.gbMinutes });
   // The metered half, and this is where the 1-hour minimum shows: the hidden
   // version's ten minutes of overlap are topped up to a full hour (60), and
   // the live one bills its fifty, so the hour is 400 GB x 110 minutes =
   // 44,000 GB-minutes, which over the 43,800-minute divisor is 2 cents. Far
-  // under the $12 plateau, so this month's storage line is the meter and not
-  // the cap.
+  // under the $10 maximum, so this month's storage line is the meter.
   assert.equal(
     rolled.gbMinutes,
     44_000,
@@ -685,17 +686,17 @@ test("two versions genuinely live at once are marked together, which is what a p
   assert.equal(
     bill.storageCents,
     2,
-    "44,000 GB-minutes over 43,800 x 2c is 2 cents - under the $12 cap",
+    "44,000 GB-minutes over 43,800 x 2c is 2 cents - under the $10 maximum",
   );
   assert.equal(
-    monthlyCeilingUsd(storedGb(peak.peakBytes)),
-    12,
-    "and the ceiling on 800 GB of peak is the $12 plateau, read from the module's own function",
+    monthlyMaximumUsd(storedGb(peak.peakBytes)),
+    10,
+    "and even 800 GB held all month would stop at the $10 maximum",
   );
   assert.equal(
-    monthBillCents({ gbMinutes: 0, peakBytes: peak.peakBytes }).storageCents,
+    monthBillCents({ gbMinutes: 0 }).storageCents,
     0,
-    "a month that metered nothing bills nothing, whatever the peak",
+    "a month that metered nothing bills nothing",
   );
 });
 
@@ -791,23 +792,22 @@ test("the month's peak is the largest hour mark, in the meter's own bytes", asyn
   const rollupMinutes = monthGbMinutes(meteredDb, "2026-09");
   assert.equal(rollupMinutes, reference, "the month's minutes are the JS reference's sum");
 
-  // And the bill reads it: 500 GB of peak caps at the $12 plateau, and the
-  // month as a whole metered $6.05 (the small file was held all month and the
-  // big one only for half the month), so the metered half is UNDER the cap -
-  // this month pays its meter, and the cap is the ceiling it never passed.
+  // And the bill reads the average: the month as a whole metered $6.05 (the
+  // small file was held all month and the big one only for half the month),
+  // so the metered half is UNDER the $10 maximum and this month pays its meter.
   const bill = billThroughTheMeter({ peak: rollup, gbMinutes: rollupMinutes });
   assert.equal(meteredFromTheModule(rollupMinutes), 605, "the month metered $6.05");
   assert.ok(
-    meteredFromTheModule(rollupMinutes) < 1200,
-    "so this month's bill is its meter, not the $12 plateau",
+    meteredFromTheModule(rollupMinutes) < 1000,
+    "so this month's bill is its meter, not the $10 maximum",
   );
   assert.equal(bill.storageCents, 605, "500 GB peak, $6.05 metered: the meter is smaller");
-  assert.equal(bill.totalCents, 1000, "$6.05 of storage is under the $10 membership");
+  assert.equal(bill.totalCents, 605, "no minimum: $6.05");
 });
 
 test("a month with no hours is an empty month, not a missing one", async () => {
   // An account that stored nothing in September: the reads COALESCE to 0, and
-  // the bill is $0 - the free credit floors it at zero, never below.
+  // with no minimum the bill is $0.
   const meteredDb = metered();
   const empty = await monthUsageRollup(
     meteredDb.db,
@@ -817,7 +817,7 @@ test("a month with no hours is an empty month, not a missing one", async () => {
   );
   assert.equal(empty.peakBytes, 0, "an account with no rows holds nothing");
   assert.equal(empty.month, "2026-09", "the month a read answers for is the month's own label");
-  assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 1000);
+  assert.equal(billThroughTheMeter({ peak: empty, gbMinutes: 0 }).totalCents, 0);
 });
 
 test("a version hidden at the exact instant a month starts never held time in it", async () => {
@@ -1007,6 +1007,6 @@ test("the trigger rolls a whole month of hours and every one records the size", 
     "and the trigger's own month bills its whole size",
   );
   const bill = billThroughTheMeter({ peak: month, gbMinutes: triggerMinutes });
-  assert.equal(bill.storageCents, 1200, "the $12 plateau, from the real trigger");
-  assert.equal(bill.totalCents, 1200, "$12.00 of storage at the plateau");
+  assert.equal(bill.storageCents, 1000, "the $10 maximum, from the real trigger");
+  assert.equal(bill.totalCents, 1000, "$10.00 of storage at the maximum");
 });

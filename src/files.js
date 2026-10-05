@@ -16,6 +16,15 @@
 // test and no-configuration stand-in, and renders every state for a screenshot.
 
 import { AwsClient } from "aws4fetch";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import {
+  accountFirstChargedAt,
+  accountStoredBytes,
+  PRE_CHARGE_STORAGE_LIMIT_BYTES,
+  PreChargeLimitError,
+  preChargeLimitStream,
+  preChargeUploadBlocked,
+} from "./abuse-guards.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -922,6 +931,26 @@ async function signableBody(body) {
 }
 
 /**
+ * The bucket a storage key lives in: the same `drv-<accountId>` the key
+ * provider mints into (drive#371, drive#460). The object layout is still
+ * `u/<id>/...`; only the bucket name moved, so Finder writes and the Files
+ * page read the same place. A key that is not an account prefix is a wiring
+ * bug, not a fall-back onto the old shared store.
+ * @param {string} key a storage key, `u/<accountId>/...`
+ * @returns {string}
+ */
+export function storageBucketForKey(key) {
+  if (typeof key !== "string") {
+    throw new TypeError(`a storage key must be a string, got ${String(key)}`);
+  }
+  const match = /^u\/([^/]+)/.exec(key);
+  if (match === null) {
+    throw new TypeError(`a storage key must start with u/<accountId>/, got ${JSON.stringify(key)}`);
+  }
+  return bucketForAccount(match[1]);
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
@@ -931,16 +960,22 @@ async function signableBody(body) {
  * exactly the paths the store is given — the account prefix is applied by
  * scopeStore, which is the one place it is applied.
  *
+ * `bucket` is one shared namespace (the local stand-in, and tests that pin a
+ * name). `bucketFor` picks a bucket from the storage key, which is how the
+ * live Files page and share links follow drive#371: each account's objects
+ * live in `drv-<id>`, the same name the key provider mints.
+ *
  * Without a credential the requests are unsigned, which is what the local
  * stand-in answers; with one every request is signed, because a real endpoint
  * answers an unsigned call with a redirect to its website, not with a listing.
- * @param {{endpoint: string, bucket: string, fetchImpl?: typeof fetch, region?: string,
+ * @param {{endpoint: string, bucket?: string, bucketFor?: (key: string) => string,
+ *   fetchImpl?: typeof fetch, region?: string,
  *   credentials?: {accessKeyId: string, secretAccessKey: string, sessionToken?: string}}} config
  * @returns {FileStore}
  */
 export function createS3Store(config) {
-  const { endpoint, bucket, region, credentials, fetchImpl = fetch } = config;
-  if (!endpoint || !bucket) {
+  const { endpoint, bucket, bucketFor, region, credentials, fetchImpl = fetch } = config;
+  if (!endpoint || (!bucket && typeof bucketFor !== "function")) {
     throw new Error("createS3Store needs an endpoint and a bucket.");
   }
   // One signer for the store, so every method below signs the same way and a
@@ -965,9 +1000,13 @@ export function createS3Store(config) {
         retries: 0,
       })
     : null;
-  const base = `${String(endpoint).replace(/\/$/, "")}/${bucket}`;
   /** @param {string} path */
-  const urlFor = (path) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const bucketOf = (path) =>
+    typeof bucketFor === "function" ? bucketFor(path) : /** @type {string} */ (bucket);
+  /** @param {string} path */
+  const baseFor = (path) => `${String(endpoint).replace(/\/$/, "")}/${bucketOf(path)}`;
+  /** @param {string} path */
+  const urlFor = (path) => `${baseFor(path)}/${path.split("/").map(encodeURIComponent).join("/")}`;
   /**
    * The one request path every method below uses, so a store is either fully
    * signed or fully unsigned. A body is read into bytes first, because SigV4
@@ -1028,7 +1067,7 @@ export function createS3Store(config) {
         const query =
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
-        const response = await request(`${base}${query}`);
+        const response = await request(`${baseFor(prefix)}${query}`);
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1097,7 +1136,7 @@ export function createS3Store(config) {
      * @param {number} [size]
      */
     async copy(from, to, size) {
-      const source = `/${bucket}/${from.split("/").map(encodeURIComponent).join("/")}`;
+      const source = `/${bucketOf(from)}/${from.split("/").map(encodeURIComponent).join("/")}`;
       if (typeof size === "number" && size > SINGLE_COPY_LIMIT) {
         await multipartCopy(request, urlFor, source, to, size);
         return;
@@ -1171,7 +1210,7 @@ export function createS3Store(config) {
           `?versions&prefix=${encodeURIComponent(prefix)}` +
           (keyMarker === null ? "" : `&key-marker=${encodeURIComponent(keyMarker)}`) +
           (versionMarker === null ? "" : `&version-id-marker=${encodeURIComponent(versionMarker)}`);
-        const response = await request(`${base}${query}`);
+        const response = await request(`${baseFor(prefix)}${query}`);
         if (!response.ok) {
           throw new Error(`storage version list failed with ${response.status}`);
         }
@@ -1619,8 +1658,11 @@ function plain(message, status) {
  *   or null when the deployment is not configured for files
  * @param {{id: string, name: string}|null} account the signed-in account, or null when signed out
  * @param {number} now
+ * @param {{db?: D1Database}} [options] the customer database, so the 1 TB
+ *   pre-charge storage limit (drive#464) can read stored bytes. Tests that
+ *   do not pass a database skip that check.
  */
-export async function handleFilesRequest(request, store, account, now = Date.now()) {
+export async function handleFilesRequest(request, store, account, now = Date.now(), options = {}) {
   if (!account) {
     return unauthorizedResponse();
   }
@@ -1654,7 +1696,7 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return readRequest(request, url, scoped, route.endsWith("download"));
   }
   if (route === `${FILES_ENDPOINT}/upload`) {
-    return uploadRequest(request, url, scoped);
+    return uploadRequest(request, url, scoped, account, options);
   }
   if (route === `${FILES_ENDPOINT}/delete`) {
     return deleteRequest(request, scoped, now);
@@ -1837,9 +1879,11 @@ async function readRequest(request, url, store, download) {
  * @param {Request} request
  * @param {URL} url
  * @param {FileStore} store
+ * @param {{id: string}} account
+ * @param {{db?: D1Database}} [options]
  * @returns {Promise<Response>}
  */
-async function uploadRequest(request, url, store) {
+async function uploadRequest(request, url, store, account, options = {}) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file.", 405);
   }
@@ -1851,13 +1895,43 @@ async function uploadRequest(request, url, store) {
   if (!name) {
     return json({ error: failureMessage("upload-needs-name") }, 400);
   }
+  /** @type {number|null} bytes this upload may still add before the first charge */
+  let allowance = null;
+  if (options.db) {
+    const stored = await accountStoredBytes(options.db, account.id);
+    const header = Number(request.headers.get("content-length") ?? "");
+    // A missing length is 0 while under the limit. At or past 1 TB it is 1
+    // byte so an upload with no length cannot sneak past the exact-limit
+    // edge (stored + 0 is not greater than the limit).
+    const incomingBytes =
+      Number.isInteger(header) && header > 0
+        ? header
+        : stored >= PRE_CHARGE_STORAGE_LIMIT_BYTES
+          ? 1
+          : 0;
+    const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
+    const blocked = preChargeUploadBlocked({ firstChargedAt, storedBytes: stored, incomingBytes });
+    if (blocked !== null) {
+      return json({ error: blocked }, 403);
+    }
+    if (firstChargedAt === null) {
+      allowance = PRE_CHARGE_STORAGE_LIMIT_BYTES - stored;
+    }
+  }
   const path = joinPath(checked.path, name);
   const contentType = request.headers.get("content-type") || "application/octet-stream";
+  // A Worker request's body is a ReadableStream; a request with no body is
+  // an upload that never carried one, refused above. Before the first charge
+  // the bytes are counted as they pass, because the length header is the
+  // client's claim: a missing or short one cannot carry the drive past 1 TB.
+  const body = /** @type {ReadableStream} */ (request.body);
+  const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
-    // A Worker request's body is a ReadableStream; a request with no body is
-    // an upload that never carried one, refused above.
-    await store.write(path, /** @type {ReadableStream} */ (request.body), contentType);
+    await store.write(path, counted, contentType);
   } catch (error) {
+    if (error instanceof PreChargeLimitError) {
+      return json({ error: error.message }, 403);
+    }
     return json({ error: `The upload did not finish: ${String(error)}` }, 500);
   }
   return json({ ok: true, path, name: safeFileName(name) }, 201);

@@ -10,21 +10,22 @@ would rather you read it here than find out in week three.
 
 ## Not in version 1
 
-- **We are not open yet.** Sign-ups on the pricing page go to a waitlist, and
-  an account arrives by invitation.
+- **We are not open yet.** {{NOT_OPEN}} An account arrives by invitation.
 - **The packages are built but not published yet.** GoReleaser builds the
   `.deb`, the `.rpm` and the Homebrew formula from `.goreleaser.yaml`, and a
-  release on a `v*` tag publishes them. Until that release runs, install from
-  the source with `go install github.com/Nishfleet/drive/cmd/drive@latest`, or
+  release on a `v*` tag publishes them. Until that release runs, the install
+  that works today is to build the command from this repository's source with
+  the Go toolchain (`drive --help` prints the exact `go install` route); or
   build the same package locally with
   `goreleaser release --snapshot --clean` and install the file under `dist/`.
-  The [Quickstart](/quickstart) is written for the released commands.
+  The [Quickstart](/quickstart) leads with the released commands and
+  keeps the details in its Other ways section.
 - **macOS is read-only for us.** We can prove the drive on a Mac only on a
   GitHub macOS runner or by hand, so what we have measured end to end is
   Linux.
 - **No `restore` command yet.** A delete is still reversible through the
   storage provider's own versioning, but `drive restore` is not in the CLI.
-- **No version history.** Save a file again and the file is replaced; no command
+- **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Windows installs with an MSI, not a command.** Windows gets the
@@ -66,9 +67,8 @@ would rather you read it here than find out in week three.
 - **A cap you set.** Set a spending cap with `drive cap <dollars>` and the
   drive goes read-only at it: nothing is deleted, and the bill stops there.
   The default cap is {{DEFAULT_CAP}}.
-- **The bill ceiling.** The metered cost is cut off at a flat
-  {{CEILING_FLOOR}} until the drive passes 1.5 TB, then {{CEILING_PER_TB}} for
-  each TB after, so a full drive cannot surprise you.
+- **The maximum.** The bill is never more than {{MAX_PER_TB}} for each TB you
+  store, so a full drive cannot surprise you.
 - **Agents cannot delete.** An agent key cannot remove a file; only a person
   can, and a person's delete is restorable.
 - **A branch is a real copy.** `drive branch` copies every byte of the folder,
@@ -87,4 +87,4 @@ would rather you read it here than find out in week three.
 ## Next
 
 - [Security](/security) — who can see your files.
-- [Pricing and your bill](/pricing) — the rate and the ceiling.
+- [Pricing and your bill](/pricing) — the rate and the maximum.

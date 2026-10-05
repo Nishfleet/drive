@@ -17,8 +17,9 @@ import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
   EMPTY_STATES,
+  FIRST_RUN_COMMAND,
   FIRST_RUN_STEPS,
-  INSTALL_COMMAND,
+  INSTALL_LINES,
   POLL_INTERVAL_MS,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
@@ -26,13 +27,49 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "./status.js";
+// The pending-close banner is one shared file. The other signed-in pages load
+// it with <script type="module" src="/close-banner.js">. This page already
+// loads one module, and lighthouserc.json allows only one script resource, so
+// the banner ships inside this bundle instead of as a second request.
+import "../public/close-banner.js";
 
 /**
  * The one command a new person runs, as the page shows it.
  * @returns {string}
  */
 export function installCommand() {
-  return INSTALL_COMMAND;
+  return FIRST_RUN_COMMAND;
+}
+
+/**
+ * The install line for each system, in the module's order: one pasted line per
+ * OS, above the command, so the page answers "how do I get it" before it asks
+ * the reader to paste anything. Each row is checked here rather than trusted,
+ * because a row that is not a single line is a row the page cannot render as
+ * one pasted line. The rows are an argument with the module's own as the
+ * default, so a page reads its table and a test can hand the check a bad row.
+ * @param {ReadonlyArray<{os: string, line: string}>} [rows]
+ * @returns {{os: string, line: string}[]}
+ */
+export function installLines(rows = INSTALL_LINES) {
+  return rows.map((row, index) => {
+    if (typeof row.os !== "string" || row.os.trim() === "") {
+      throw new TypeError(
+        `install line ${index} needs a named system, got ${JSON.stringify(row.os)}`,
+      );
+    }
+    if (typeof row.line !== "string") {
+      throw new TypeError(
+        `install line ${index} needs an os and a line, got ${JSON.stringify(row)}`,
+      );
+    }
+    if (/\s/.test(row.line.trim()) === false || /[\r\n]/.test(row.line)) {
+      throw new TypeError(
+        `install line ${index} must be one pasted line with no line break, got ${JSON.stringify(row.line)}`,
+      );
+    }
+    return { os: row.os, line: row.line };
+  });
 }
 
 /**
@@ -343,6 +380,19 @@ function renderCommand() {
   required("install-command").textContent = installCommand();
 }
 
+// One row per system, each a system name and the single line to paste for it.
+// textContent throughout, like every other builder here: nothing from the
+// module is ever interpolated into innerHTML.
+function renderInstallLines() {
+  const rows = installLines().map((row) => {
+    const li = document.createElement("li");
+    li.appendChild(element("span", "os", row.os));
+    li.appendChild(element("code", null, row.line));
+    return li;
+  });
+  required("install-lines").replaceChildren(...rows);
+}
+
 // The live line: all three arms are rendered up front, so a `say()` is a
 // switch between text that is already on the page, never a lookup that can
 // come back empty and leave a blank line.
@@ -499,8 +549,12 @@ async function poll() {
   if (!response.ok) {
     // A 401 is the waiting state, not an unreachable service: the account
     // gate answered, so the service is up. connectionStateForStatus owns the
-    // mapping and both arms are states this page renders.
+    // mapping and both arms are states this page renders. A 401 is also the
+    // signed-out menu: this browser has no account, so Sign in stays.
     showConnection(connectionStateForStatus(response.status));
+    if (response.status === 401) {
+      showSessionNav(false);
+    }
     return;
   }
   let payload;
@@ -516,6 +570,7 @@ async function poll() {
   }
   try {
     render(payload);
+    showSessionNav(true);
   } catch {
     // Every fetch and every body read above is guarded, and so is the render:
     // this poll runs on a timer and on every tab that comes back, so a payload
@@ -562,12 +617,67 @@ function wireCopyButton() {
   });
 }
 
+// The signed-in menu (drive#423). Sign in is the default so a browser with
+// no script still has a way in. A 200 from the status poll flips it to Sign
+// out and Sign out everywhere; a 401 flips it back.
+const SIGNIN_ENDPOINT = "/api/signin";
+
+/**
+ * @param {boolean} signedIn
+ */
+function showSessionNav(signedIn) {
+  required("nav-signin").hidden = signedIn;
+  required("nav-signout").hidden = !signedIn;
+  required("nav-signout-all").hidden = !signedIn;
+}
+
+/**
+ * @param {"signout"|"signout-all"} step
+ */
+async function postSignout(step) {
+  const signout = required("nav-signout");
+  const everywhere = required("nav-signout-all");
+  if (signout instanceof HTMLButtonElement) signout.disabled = true;
+  if (everywhere instanceof HTMLButtonElement) everywhere.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    showConnection("unreachable");
+    if (signout instanceof HTMLButtonElement) signout.disabled = false;
+    if (everywhere instanceof HTMLButtonElement) everywhere.disabled = false;
+    return;
+  }
+  window.location.reload();
+}
+
+function wireSessionNav() {
+  required("nav-signout").addEventListener("click", () => {
+    void postSignout("signout");
+  });
+  required("nav-signout-all").addEventListener("click", () => {
+    void postSignout("signout-all");
+  });
+}
+
 function start() {
   renderSteps();
   renderEmptyStates();
+  renderInstallLines();
   renderCommand();
   renderConnection();
   wireCopyButton();
+  wireSessionNav();
 
   // poll() owns its own failures: every fetch and every body read is guarded
   // and renders the unreachable state, so it cannot reject. The `void` says

@@ -48,11 +48,28 @@
 // so the waitlist, this route and the api Worker's device routes cannot state
 // two different limits.
 
-import { AFTER_SIGNIN_PATH, authFor, SIGNIN_LINK_TTL_SECONDS } from "./auth.js";
+import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
+import { createD1DeviceStore } from "../workers/api/src/devices.js";
+import {
+  attachPendingCardAccount,
+  claimCardFingerprint,
+  pendingCardAccountId,
+  signupCardFingerprint,
+} from "./abuse-guards.js";
+import {
+  AFTER_SIGNIN_COOKIE,
+  AFTER_SIGNIN_PATH,
+  authFor,
+  SIGNIN_LINK_TTL_SECONDS,
+  safeAfterSigninPath,
+  sessionAccount,
+} from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
+import { foundingOfferIsOpen } from "./founding.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
 import { clientIpKey, enforceEdgeLimits } from "./rate-limit.js";
+import { NOT_OPEN } from "./release-state.js";
 
 /** @typedef {import("./auth.js").Auth} Auth */
 
@@ -130,7 +147,7 @@ export const SIGNIN_COPY = Object.freeze({
   // times and read as a legal box; the reason lives once above the box and the
   // label says only that the person understands it.
   cardConsent: "I understand a card is required",
-  membershipLine: PRICE.membershipLine,
+  noMinimumLine: PRICE.noMinimumLine,
   foundingLine: PRICE.foundingLine,
   emailLabel: "Email",
   emailPlaceholder: "you@example.com",
@@ -151,6 +168,18 @@ export const SIGNIN_COPY = Object.freeze({
   // email is a link a browser follows. The step names are data the routes
   // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
+  // drive#418: the screen used to read as an open door beside a pricing page
+  // that said the drive was not open. These are the canonical words from
+  // src/release-state.js, carried here because a static page cannot import the
+  // module: a person who has no invite now reads where to get one instead of
+  // mailing an address into a route that answers with the closed door.
+  notOpen: NOT_OPEN,
+  inviteNote:
+    "This screen is for an invited account. Without an invite, join the waitlist on the pricing page.",
+  // The signed-in menu (drive#423): the same words on every page that carries
+  // the site's header, so a person who is in sees how to leave, never Sign in.
+  signOut: "Sign out",
+  signOutEverywhere: "Sign out everywhere",
 });
 
 /**
@@ -176,18 +205,22 @@ export function signinEmailFailedBody() {
 }
 
 /**
- * The two steps a sign-in post can be. Anything else is refused, so a typo in
- * a field name cannot read as a request to start a sign-in.
+ * The three steps a sign-in post can be. Anything else is refused, so a typo in
+ * a field name cannot read as a request to start a sign-in. `signout-all` is
+ * the website's door to the same two store writes `DELETE /v1/keys` runs for
+ * `drive logout --all` (keys, then device tokens), then every browser session
+ * for this account, then this browser's cookies.
  */
-export const SIGNIN_STEPS = Object.freeze(["start", "signout"]);
+export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
 
 /**
- * A checked sign-in post: the start step, the sign-out step, or the one error
- * sentence the route returns as a 400. The two steps carry a `step` literal so
+ * A checked sign-in post: the start step, a sign-out step, or the one error
+ * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, card?: unknown}
+ * @typedef {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}
  *   | {step: "signout"}
+ *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
  */
 
@@ -212,6 +245,9 @@ export function readSigninRequest(body) {
     // is the whole request, and a person with no session is already signed
     // out.
     return { step: "signout" };
+  }
+  if (step === "signout-all") {
+    return { step: "signout-all" };
   }
   return readStart(fields);
 }
@@ -259,7 +295,7 @@ async function emailHasUser(env, email) {
 /**
  * The start step: the method and, for the email method, the address.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, card?: unknown}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, card?: unknown, cardFingerprint?: unknown}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -276,7 +312,13 @@ function readStart(body) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: BAD_ADDRESS_MESSAGE };
   }
-  return { step: "start", method, email, card: body.card };
+  return {
+    step: "start",
+    method,
+    email,
+    card: body.card,
+    cardFingerprint: body.cardFingerprint,
+  };
 }
 
 /**
@@ -284,7 +326,7 @@ function readStart(body) {
  * Better Auth settings (src/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit, FOUNDING_OFFER_OPEN?: string}} SigninEnv
  */
 
 /**
@@ -293,10 +335,13 @@ function readStart(body) {
  *   POST /api/signin  {"step":"start","method":"email","email":"you@example.com"}
  *   POST /api/signin  {"step":"start","method":"google"}   (and "github")
  *   POST /api/signin  {"step":"signout"}
+ *   POST /api/signin  {"step":"signout-all"}
  *
  * The start step answers 202 and never the link: the link leaves by email or
  * not at all. The sign-out step revokes the session and clears its cookies, so
- * a shared machine leaves nothing behind.
+ * a shared machine leaves nothing behind. `signout-all` does that after it
+ * revokes every live key, every live device token, and every browser session
+ * on the account, which is what the website's "Sign out everywhere" posts.
  *
  * @param {Request} request
  * @param {SigninEnv} env
@@ -344,7 +389,8 @@ export async function handleSigninRequest(request, env) {
   }
   let body;
   const contentType = request.headers.get("content-type") ?? "";
-  if (contentType.includes("application/x-www-form-urlencoded")) {
+  const fromForm = contentType.includes("application/x-www-form-urlencoded");
+  if (fromForm) {
     // The no-JavaScript path: a plain <form> posts form-encoded fields, not
     // JSON. The fields are the same ones the JSON path reads, so the route
     // accepts the form it documents rather than answering a 400 to a browser
@@ -369,22 +415,65 @@ export async function handleSigninRequest(request, env) {
   if (!auth) {
     return json(signinClosedBody(), 503);
   }
-  if (read.step === "signout") {
+  if (read.step === "signout" || read.step === "signout-all") {
+    // Sign out everywhere first, while the session still names the account:
+    // keys, device tokens, then every browser session row for this account,
+    // which is what the menu's words promise. A request with no session is
+    // already signed out everywhere it could name, so it skips the stores
+    // and still answers ok. A store that cannot finish does not report
+    // success: this browser is still signed out (below), and the body says
+    // the rest did not complete.
+    /** @type {string | null} */
+    let everywhereError = null;
+    if (read.step === "signout-all") {
+      const account = await sessionAccount(request, auth);
+      if (account !== null) {
+        const db = env.DRIVE_DB;
+        if (db === undefined || db === null || typeof db !== "object") {
+          everywhereError = failureMessage("drive-not-configured");
+        } else {
+          try {
+            await createD1DeviceStore(db).revokeAllKeys(account);
+            await createD1DeviceSigninStore(db).revokeAllDeviceTokens(account);
+            // Better Auth's own adapter, not a hand-written delete against
+            // its table. Its revoke-sessions endpoint would do the same, but
+            // it demands a fresh session, so a day-old sign-in could not
+            // sign out everywhere.
+            await (await auth.$context).internalAdapter.deleteUserSessions(account.id);
+          } catch (_error) {
+            everywhereError = failureMessage("storage-down");
+          }
+        }
+      }
+    }
     // Better Auth's own sign-out: the session row is deleted and the cookies
-    // are cleared, so a later request carrying the same cookie reads as
-    // signed out rather than trusting a token the database has forgotten. A
-    // library failure here is not a 500 for a person who only asked to leave:
-    // no cookie is set and the answer says signed out, which is what a browser
-    // with a dead session already is.
+    // are cleared. For a plain sign-out, a library failure is not a 500 for a
+    // person who only asked to leave. For sign-out everywhere the rows above
+    // are already gone, so a throw here still leaves every session dead.
+    /** @type {Record<string, string[]>} */
+    let cookies = {};
     try {
       const signedOut = await auth.api.signOut({
         headers: request.headers,
         asResponse: true,
       });
-      return json({ ok: true, step: "signout" }, 200, cookieHeaders(signedOut));
-    } catch {
-      return json({ ok: true, step: "signout" }, 200);
+      cookies = cookieHeaders(signedOut);
+    } catch (_error) {
+      if (read.step === "signout") {
+        return fromForm ? redirect(SIGNIN_PATH) : json({ ok: true, step: "signout" }, 200);
+      }
+      if (everywhereError === null) {
+        everywhereError = failureMessage("unexpected");
+      }
     }
+    if (everywhereError !== null) {
+      return fromForm
+        ? redirect(`${SIGNIN_PATH}?error=unexpected`, cookies)
+        : json({ error: everywhereError }, 503, cookies);
+    }
+    return fromForm
+      ? redirect(SIGNIN_PATH, cookies)
+      : json({ ok: true, step: read.step }, 200, cookies);
   }
   // Google and GitHub land on the closed door before the library is asked:
   // their client ids and secrets are Nish's credentials, so there is no client
@@ -398,11 +487,42 @@ export async function handleSigninRequest(request, env) {
   }
   // A first-time address is sign-up: refuse it without a card (drive#387). A
   // returning address is sign-in and already has an account. No Dodo call
-  // here, so an unset key still charges nobody (#325).
-  if (!(await emailHasUser(env, email))) {
+  // here, so an unset key still charges nobody (#325). The fingerprint is the
+  // test double (drive#464): a posted provider id, or `test:<email>` from the
+  // checkbox, the same stand-in PR 445 used for the card step itself.
+  const isNew = !(await emailHasUser(env, email));
+  /** @type {string|null} */
+  let fingerprint = null;
+  if (isNew) {
     const refused = refuseSignupWithoutCard(read.card);
     if (refused !== null) {
       return json({ error: refused }, 400);
+    }
+    fingerprint = signupCardFingerprint({
+      card: read.card,
+      cardFingerprint: read.cardFingerprint,
+      email,
+    });
+    const driveDb = env.DRIVE_DB;
+    if (
+      fingerprint !== null &&
+      driveDb !== undefined &&
+      driveDb !== null &&
+      typeof driveDb === "object" &&
+      "prepare" in driveDb
+    ) {
+      // The user row does not exist until the link is followed. The hold row
+      // (id `hold:<email>`) is the live account for uniqueness and the
+      // founding reservation until verify remaps it.
+      const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
+        accountId: pendingCardAccountId(email),
+        email,
+        fingerprint,
+        offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
+      });
+      if ("error" in claimed) {
+        return json({ error: claimed.error }, 400);
+      }
     }
   }
   try {
@@ -503,10 +623,41 @@ export async function handleSigninLinkVerify(request, env) {
   if (verified.status !== 200) {
     return redirect(`${SIGNIN_PATH}?error=invalid-link`);
   }
+  const driveDb = env.DRIVE_DB;
+  if (
+    driveDb !== undefined &&
+    driveDb !== null &&
+    typeof driveDb === "object" &&
+    "prepare" in driveDb
+  ) {
+    const cookies = verified.headers.getSetCookie();
+    const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
+    const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
+    if (account !== null) {
+      // The person is signed in by now: Better Auth set the cookie above. A
+      // hold that cannot move (a clash with a card already on the account)
+      // is logged loudly and the hold stays where it was, rather than
+      // turning a good sign-in into a 500.
+      try {
+        await attachPendingCardAccount(/** @type {D1Database} */ (driveDb), {
+          email: account.email,
+          accountId: account.id,
+          offerOpen: foundingOfferIsOpen(env.FOUNDING_OFFER_OPEN),
+        });
+      } catch (cause) {
+        console.error(`card-step hold for account ${account.id} did not move: ${String(cause)}`);
+      }
+    }
+  }
   // The one thing this route does is take the cookie Better Auth set onto a
   // same-origin redirect of its own, so a person lands on the drive rather
-  // than on a JSON body.
-  return redirect(AFTER_SIGNIN_PATH, cookieHeaders(verified));
+  // than on a JSON body. When they opened the device-approve link while signed
+  // out, that page left a return cookie so they come back to the code.
+  const extra = cookieHeaders(verified);
+  const cookies = extra["set-cookie"] ?? [];
+  const returnTo = safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
+  cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+  return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
 }
 
 /**
@@ -569,6 +720,31 @@ function signinLinkRequest(auth, email, request) {
 function cookieHeaders(response) {
   const cookies = response.headers.getSetCookie();
   return cookies.length === 0 ? {} : { "set-cookie": cookies };
+}
+
+/**
+ * One cookie value from the request, or empty. Used only to read the
+ * after-signin return path the approve page set.
+ * @param {Request} request
+ * @param {string} name
+ */
+function cookieValue(request, name) {
+  const header = request.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) {
+      continue;
+    }
+    if (part.slice(0, idx).trim() !== name) {
+      continue;
+    }
+    try {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 /**

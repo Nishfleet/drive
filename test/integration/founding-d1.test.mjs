@@ -13,7 +13,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { dollarsToCapCents } from "../../src/cap.js";
-import { accountFounding, FOUNDING_PAYING_CAP, markAccountPaying } from "../../src/founding.js";
+import {
+  accountFounding,
+  FOUNDING_PAYING_CAP,
+  markAccountPaying,
+  reserveFoundingSlot,
+} from "../../src/founding.js";
 import { createD1DeviceStore } from "../../workers/api/src/devices.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 
@@ -51,14 +56,19 @@ test("a paying write and read land on the real rows, and a retry does not change
   const store = createD1DeviceStore(db, { now: () => NOW });
   const account = { id: "acct-founding", email: "founding@example.com" };
   await store.setCapCents(account, dollarsToCapCents(12));
+  await reserveFoundingSlot(db, account.id, { offerOpen: true, now: NOW });
 
   const first = await store.markPaying(account.id, true);
   assert.deepEqual(first, { founding: true });
   const row = sqlite
-    .prepare("SELECT founding, card_added_at FROM accounts WHERE id = ?")
+    .prepare(
+      "SELECT founding, card_added_at, founding_reserved, first_charged_at FROM accounts WHERE id = ?",
+    )
     .get(account.id);
   assert.equal(row.founding, 1);
+  assert.equal(row.founding_reserved, 1);
   assert.equal(row.card_added_at, Math.floor(NOW / 1000));
+  assert.equal(row.first_charged_at, Math.floor(NOW / 1000));
   assert.deepEqual(await accountFounding(db, account.id), { founding: true });
   assert.equal(await store.isFounding(account.id), true);
 
@@ -89,6 +99,14 @@ test("account 1000 is founding on the real schema and 1001 is not", async () => 
     .bind("acct-1001", "thousand-one@example.com")
     .run();
 
+  assert.deepEqual(await reserveFoundingSlot(db, "acct-1000", { offerOpen: true, now: NOW }), {
+    founding: false,
+    reserved: true,
+  });
+  assert.deepEqual(await reserveFoundingSlot(db, "acct-1001", { offerOpen: true, now: NOW }), {
+    founding: false,
+    reserved: false,
+  });
   assert.deepEqual(await markAccountPaying(db, "acct-1000", { offerOpen: true, now: NOW }), {
     founding: true,
   });

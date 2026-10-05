@@ -10,10 +10,14 @@ import { handleUsageRequest } from "../src/billing.js";
 import { EMAIL_KINDS, renderEmail } from "../src/emails.js";
 import {
   accountFounding,
+  accountFoundingFlag,
+  confirmFounding,
   FOUNDING_OFFER_VAR,
   FOUNDING_PAYING_CAP,
   foundingOfferIsOpen,
   markAccountPaying,
+  releaseFoundingReservation,
+  reserveFoundingSlot,
 } from "../src/founding.js";
 import { FAILURE_MESSAGES } from "../src/messages.js";
 import { PRICE } from "../src/pricing.js";
@@ -68,60 +72,68 @@ test("the offer switch reads the Worker var, and a missing var stays open", () =
   assert.throws(() => foundingOfferIsOpen(1), /must be a string/);
 });
 
-test("account 1000 gets the flag and account 1001 does not", async () => {
+test("account 1000 gets the reserved slot and account 1001 does not", async () => {
   const { db, sqlite } = makeMeteredDB();
   seedPaying(sqlite, 999, 1);
   await insertAccount(db, "acct-1000");
   await insertAccount(db, "acct-1001");
 
-  const thousand = await markAccountPaying(db, "acct-1000", { offerOpen: true, now: NOW });
-  assert.deepEqual(thousand, { founding: true });
+  const thousand = await reserveFoundingSlot(db, "acct-1000", { offerOpen: true, now: NOW });
+  assert.deepEqual(thousand, { founding: false, reserved: true });
   assert.equal(
-    sqlite.prepare("SELECT founding FROM accounts WHERE id = ?").get("acct-1000").founding,
+    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("acct-1000")
+      .founding_reserved,
     1,
   );
 
-  const thousandOne = await markAccountPaying(db, "acct-1001", { offerOpen: true, now: NOW });
-  assert.deepEqual(thousandOne, { founding: false });
+  const thousandOne = await reserveFoundingSlot(db, "acct-1001", { offerOpen: true, now: NOW });
+  assert.deepEqual(thousandOne, { founding: false, reserved: false });
   assert.equal(
-    sqlite.prepare("SELECT founding FROM accounts WHERE id = ?").get("acct-1001").founding,
+    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("acct-1001")
+      .founding_reserved,
     0,
   );
+
+  assert.deepEqual(await confirmFounding(db, "acct-1000", { now: NOW }), { founding: true });
+  assert.deepEqual(await confirmFounding(db, "acct-1001", { now: NOW }), { founding: false });
 });
 
-test("switch-off stops new flags and keeps old ones", async () => {
+test("switch-off stops new reservations and keeps old ones", async () => {
   const { db, sqlite } = makeMeteredDB();
   await insertAccount(db, "founder");
-  assert.deepEqual(await markAccountPaying(db, "founder", { offerOpen: true, now: NOW }), {
-    founding: true,
+  assert.deepEqual(await reserveFoundingSlot(db, "founder", { offerOpen: true, now: NOW }), {
+    founding: false,
+    reserved: true,
   });
 
   await insertAccount(db, "late");
-  assert.deepEqual(await markAccountPaying(db, "late", { offerOpen: false, now: NOW }), {
+  assert.deepEqual(await reserveFoundingSlot(db, "late", { offerOpen: false, now: NOW }), {
     founding: false,
+    reserved: false,
   });
   assert.equal(
-    sqlite.prepare("SELECT founding FROM accounts WHERE id = ?").get("founder").founding,
+    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("founder")
+      .founding_reserved,
     1,
   );
   assert.equal(
-    sqlite.prepare("SELECT founding FROM accounts WHERE id = ?").get("late").founding,
+    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("late")
+      .founding_reserved,
     0,
   );
 
-  assert.deepEqual(await markAccountPaying(db, "founder", { offerOpen: false, now: NOW }), {
-    founding: true,
+  assert.deepEqual(await reserveFoundingSlot(db, "founder", { offerOpen: false, now: NOW }), {
+    founding: false,
+    reserved: true,
   });
-  assert.equal(
-    sqlite.prepare("SELECT founding FROM accounts WHERE id = ?").get("founder").founding,
-    1,
-  );
+  assert.deepEqual(await confirmFounding(db, "founder", { now: NOW }), { founding: true });
 });
 
 test("a decided non-founder stays 0 after the offer opens again", async () => {
   const { db, sqlite } = makeMeteredDB();
   await insertAccount(db, "closed-then-open");
-  await markAccountPaying(db, "closed-then-open", { offerOpen: false, now: NOW });
+  await reserveFoundingSlot(db, "closed-then-open", { offerOpen: false, now: NOW });
+  await markAccountPaying(db, "closed-then-open", { offerOpen: true, now: NOW });
   assert.deepEqual(await markAccountPaying(db, "closed-then-open", { offerOpen: true, now: NOW }), {
     founding: false,
   });
@@ -149,14 +161,51 @@ test("accountFounding reads the stored flag and treats unset as not founding", a
   const { db } = makeMeteredDB();
   await insertAccount(db, "unset");
   assert.deepEqual(await accountFounding(db, "unset"), { founding: false });
+  await reserveFoundingSlot(db, "unset", { offerOpen: true, now: NOW });
+  assert.deepEqual(await accountFounding(db, "unset"), { founding: false });
   await markAccountPaying(db, "unset", { offerOpen: true, now: NOW });
   assert.deepEqual(await accountFounding(db, "unset"), { founding: true });
   await assert.rejects(accountFounding(db, "nope"), /needs an accounts row/);
 });
 
+test("the cap's own read of the flag agrees with accountFounding, and survives a missing row", async () => {
+  // drive#482: the agent key cap reads the same column on every request. A row
+  // that is gone reads as not founding there rather than failing every request
+  // on the account, and the full price is the safe direction for a cap: the key
+  // stops at what the account would be billed at full price, never lower.
+  const { db } = makeMeteredDB();
+  await insertAccount(db, "unset");
+  await insertAccount(db, "founder", 1);
+  await insertAccount(db, "payer", 0);
+  for (const id of ["unset", "founder", "payer"]) {
+    const read = await accountFoundingFlag(db, id);
+    assert.equal(read, (await accountFounding(db, id)).founding, `one flag, one answer: ${id}`);
+  }
+  assert.deepEqual(
+    [await accountFoundingFlag(db, "unset"), await accountFoundingFlag(db, "payer")],
+    [false, false],
+  );
+  assert.equal(await accountFoundingFlag(db, "nope"), false);
+  // The two ids it still refuses are the ones a caller got wrong, not a row it
+  // could not find: an empty id names no account to read.
+  await assert.rejects(accountFoundingFlag(db, ""), /account id/);
+  await assert.rejects(
+    accountFoundingFlag(
+      /** @type {D1Database} */ (
+        /** @type {unknown} */ ({
+          prepare: () => ({ bind: () => ({ first: async () => ({ founding: 7 }) }) }),
+        })
+      ),
+      "acct",
+    ),
+    /accounts.founding must be 0, 1 or null/,
+  );
+});
+
 test("a public founding answer never carries the cap or a remaining-spots count", async () => {
   const { db } = makeMeteredDB();
   await insertAccount(db, "acct");
+  await reserveFoundingSlot(db, "acct", { offerOpen: true, now: NOW });
   const body = JSON.stringify(await markAccountPaying(db, "acct", { offerOpen: true, now: NOW }));
   assert.equal(body.includes("1000"), false, body);
   assert.equal(body.includes("1,000"), false, body);
@@ -201,6 +250,19 @@ test("pages, emails, messages and usage JSON do not leak the founding cap", asyn
   });
   const usageBody = await usage.text();
   assert.doesNotMatch(usageBody, LEAK);
+});
+
+test("closing before paying releases the reserved slot", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  await insertAccount(db, "acct");
+  await reserveFoundingSlot(db, "acct", { offerOpen: true, now: NOW });
+  await releaseFoundingReservation(db, "acct");
+  assert.equal(
+    sqlite.prepare("SELECT founding_reserved FROM accounts WHERE id = ?").get("acct")
+      .founding_reserved,
+    null,
+  );
+  assert.deepEqual(await confirmFounding(db, "acct", { now: NOW }), { founding: false });
 });
 
 test("both Worker configs declare FOUNDING_OFFER_OPEN as a text var defaulting to open", async () => {

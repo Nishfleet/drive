@@ -17,7 +17,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest, scopeStore } from "../src/files.js";
+import {
+  createMemoryStore,
+  createS3Store,
+  FILES_ENDPOINT,
+  handleFilesRequest,
+  scopeStore,
+  storageBucketForKey,
+} from "../src/files.js";
+import { createApp } from "../src/index.js";
 import { failureMessage } from "../src/messages.js";
 import {
   base64url,
@@ -54,7 +62,9 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
+import { bucketForAccount } from "../workers/api/src/keyprovider.js";
 import { createTestD1 } from "./harness.mjs";
+import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
 const now = Date.parse("2026-10-01T09:00:00.000Z");
@@ -766,6 +776,108 @@ test("done when: a real file opens from a share link, logged out", async () => {
   assert.equal(afterHead.downloadBytes, "the real bytes".length);
 });
 
+test("a share link downloads from the owner's bucket, and another account cannot see the file", async () => {
+  // drive#460: share-link creation and download must resolve the owner's
+  // bucket the same way the key provider does, not the old shared store.
+  const objects = new Map();
+  /** @type {string[]} */
+  const seen = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method || "GET";
+    const parsed = new URL(String(url));
+    const segments = decodeURIComponent(parsed.pathname)
+      .split("/")
+      .filter((segment) => segment !== "");
+    const bucket = segments[0] ?? "";
+    const key = segments.slice(1).join("/");
+    seen.push(`${method} ${bucket}/${key}${parsed.search}`);
+    if (method === "PUT") {
+      objects.set(`${bucket}/${key}`, await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    }
+    if (parsed.search.includes("list-type=2")) {
+      const inBucket = new Map(
+        [...objects.entries()]
+          .filter(([name]) => name.startsWith(`${bucket}/`))
+          .map(([name, body]) => [name.slice(bucket.length + 1), body]),
+      );
+      return rcloneListResponse(inBucket, parsed.search, { bucket });
+    }
+    const stored = objects.get(`${bucket}/${key}`);
+    if (stored === undefined) {
+      return new Response("no key", { status: 404 });
+    }
+    return new Response(stored, {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": String(stored.length) },
+    });
+  };
+  const files = createS3Store({
+    endpoint: "https://s3.test",
+    bucketFor: storageBucketForKey,
+    fetchImpl,
+  });
+  const links = createD1LinkStore(createTestD1());
+  const owner = account;
+  const other = { id: "acct-2", name: "Other" };
+  const ownerBucket = bucketForAccount(owner.id);
+  const otherBucket = bucketForAccount(other.id);
+
+  const uploaded = await handleFilesRequest(
+    new Request(`${api(FILES_ENDPOINT)}/upload?path=%2F&name=contract.pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: "the signed pages",
+    }),
+    files,
+    owner,
+    now,
+  );
+  assert.equal(uploaded.status, 201);
+  const made = await handleShareRequest(
+    new Request(api(SHARE_ENDPOINT), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "/contract.pdf" }),
+    }),
+    files,
+    links,
+    owner,
+    { now, token: TOKEN },
+  );
+  assert.equal(made.status, 201);
+  const opened = await handleShareFileRequest(
+    new Request((await made.json()).share.url),
+    files,
+    links,
+    { now },
+  );
+  assert.equal(opened.status, 200);
+  assert.equal(await opened.text(), "the signed pages");
+  assert.ok(
+    seen.some((request) => request.startsWith(`GET ${ownerBucket}/`)),
+    `the share download must read ${ownerBucket}: ${JSON.stringify(seen)}`,
+  );
+
+  const otherList = await handleFilesRequest(
+    new Request(`${api(FILES_ENDPOINT)}?path=/`),
+    files,
+    other,
+    now,
+  );
+  assert.equal(otherList.status, 200);
+  assert.deepEqual((await otherList.json()).rows, []);
+  for (const request of seen) {
+    if (request.includes(`${otherBucket}/`)) {
+      assert.ok(
+        !request.includes(`${ownerBucket}/`),
+        `the other account must never name the owner's bucket: ${request}`,
+      );
+    }
+  }
+});
+
 test("a shared file can never act as a page on our origin", async () => {
   const { upload, share, files, links } = drive();
   // The two types that render as a document when a URL is opened directly:
@@ -1410,4 +1522,12 @@ test("the shipped upload page carries the module's words and endpoints", () => {
   // No script files and no inline secrets: one inline script, nothing fetched
   // from another origin.
   assert.ok(!/<script src=/.test(page), "the page is one inline script");
+});
+
+// The handlers answer DELETE (revoke), but a route the app does not register is
+// a 405 before any handler runs, so `drive share --revoke` could never work.
+test("the app routes DELETE for share and request links, so a revoke reaches its handler", () => {
+  const routes = createApp().routes.map((r) => `${r.method} ${r.path}`);
+  assert.ok(routes.includes("DELETE /api/share"), "DELETE /api/share is not registered");
+  assert.ok(routes.includes("DELETE /api/request"), "DELETE /api/request is not registered");
 });

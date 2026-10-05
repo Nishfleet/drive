@@ -44,20 +44,23 @@ test("the card's body is exactly the current price, from the one price source", 
   // ride along under a subset check.
   assert.deepEqual(cardLines, [
     "Drive",
+    PRICE.leadLine,
     PRICE.headlineAmount,
     PRICE.rateUnit,
-    PRICE.ceilingLine,
-    PRICE.membershipLine,
+    PRICE.maxLine,
+    PRICE.noMinimumLine,
     PRICE.foundingLine,
   ]);
 });
 
 test("the card carries no superseded figure", () => {
-  // Issue #23 dropped "about $20 per TB a month" (it was Space's price, not
+  // Issue #23 dropped "about $20 per TB a month" (it was the rival's price, not
   // ours). A card that renders it again is the exact bug this issue fixes.
   // This runs on the whole file, so the string cannot hide in the head or a
   // comment either.
   assert.doesNotMatch(card, /about \$20/i);
+  assert.doesNotMatch(card, /\$20 (per|a) TB/i);
+  assert.doesNotMatch(card, /membership|ceiling|\bSpace(FS)?\b/i);
   assert.doesNotMatch(card, /\bunlimited\b/i);
 });
 

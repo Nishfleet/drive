@@ -37,6 +37,21 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "This agent reached its own limit, so it can read the drive but not change it.",
     next: "Connect the tool again to give it a new key; nothing was deleted.",
   }),
+  // A cap write from the usage page or `drive cap` reached a Worker with no
+  // account store behind it (drive#421). The cap was not changed, so the next
+  // step is not to wait and retry: this deployment has to be wired first.
+  "cap-store-missing": Object.freeze({
+    what: "The cap could not be saved, so the one in force is unchanged.",
+    next: "Ask whoever runs this deployment to set up the account store.",
+  }),
+  // A cap write that arrived from another origin (drive#421). A cap write
+  // swaps an account's storage keys, so a page on another origin that could
+  // forge the POST could revoke a real drive's keys: the write is refused
+  // rather than attempted, and the next step is where the write is allowed.
+  "cap-from-page": Object.freeze({
+    what: "You can only change a spending cap from the drive page.",
+    next: "Open drive on this account, then move the cap slider there.",
+  }),
   // rclone's local VFS cache filled the disk, so saves cannot queue.
   "disk-cache-full": Object.freeze({
     what: "The local cache is full, so new saves can't upload.",
@@ -258,6 +273,18 @@ export const FAILURE_MESSAGES = Object.freeze({
   "quote-size": Object.freeze({
     what: "That size is not a storage amount we can quote.",
     next: "Enter how many TB or GB you store, as a number of 0 or more.",
+  }),
+  // A second sign-up tried to use a card already on an active account
+  // (drive#464). Closed accounts do not hold the fingerprint.
+  "card-in-use": Object.freeze({
+    what: "That card is already on another account.",
+    next: "Sign in to the account that uses it, or use a different card.",
+  }),
+  // A new account has not been charged yet, so storage stops at 1 TB
+  // (drive#464). Downloads keep working. Support can lift the limit early.
+  "pre-charge-storage-limit": Object.freeze({
+    what: "New accounts can store 1 TB until the first payment goes through.",
+    next: "Ask support if you need more storage before then.",
   }),
 });
 

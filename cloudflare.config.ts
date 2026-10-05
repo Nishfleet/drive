@@ -1,7 +1,26 @@
 import { bindings, defineConfig, triggers } from "cf/config";
 import * as entrypoint from "./src/index.js" with { type: "cf-worker" };
-import { METER_CRON, METER_RECONCILE_SCHEDULE } from "./src/meter.js";
-import { REINDEX_SCHEDULE } from "./src/search.js";
+
+// The three cron trips this Worker runs, spelled out below in `triggers` and
+// read from src/meter.js (METER_CRON, METER_RECONCILE_SCHEDULE) and
+// src/search.js (REINDEX_SCHEDULE) by the `scheduled` handler in src/index.js.
+//
+// They are spelled in both places on purpose, and this import list is why it
+// must: an import here is a *config dependency*. @cloudflare/config executes
+// this file to read it, and every plain import it follows lands in the
+// dependency set the Cloudflare Vite plugin adds to Vite's `server.fs.deny`
+// list. Vite then refuses to read any of those files in `cf dev`, so a config
+// that imports src/meter.js or src/search.js for a cron string drags the whole
+// shared Worker graph behind it (src/files.js, src/messages.js, src/status.js,
+// src/auth.js, workers/api/src/db.js) and `npm run dev` dies with `Failed to
+// load url /src/auth.js ... Does the file exist?` before it prints a route
+// (drive#432). test/meter.test.mjs pins the two halves together string by
+// string, so the schedule here cannot drift from the one src/index.js
+// answers to.
+//
+// The `entrypoint` import above is the exception that proves the rule: it
+// carries `with { type: "cf-worker" }`, so @cloudflare/config records the
+// specifier without loading the module, and it never reaches the deny list.
 
 // drive issue #11: the pricing and landing page, served as Worker static
 // assets, with /api/* routed to the Worker for the waitlist form and the
@@ -49,13 +68,19 @@ export default defineConfig({
     // starts, so no web request can spend the walk (the safety review: reindex
     // is not a public route). 03:00 UTC is the spec's quiet hour, before the
     // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
-    // hour later, so the two nightly walks do not share a trip. All three
-    // schedules are the constants the modules that own them export, so a
-    // changed schedule cannot drift from the trigger that runs it.
+    // hour later, so the two nightly walks do not share a trip.
+    //
+    // Each schedule is the string the module that owns it exports:
+    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE, and
+    // src/search.js's REINDEX_SCHEDULE. test/meter.test.mjs reads these three
+    // out of this file and asserts they equal those exports, so a changed
+    // schedule cannot drift from the trigger that runs it. They are not
+    // imported from those modules - see the note at the top of this file for
+    // why an import here breaks `npm run dev` (drive#432).
     triggers: [
-      triggers.scheduled({ schedule: METER_CRON }),
-      triggers.scheduled({ schedule: METER_RECONCILE_SCHEDULE }),
-      triggers.scheduled({ schedule: REINDEX_SCHEDULE }),
+      triggers.scheduled({ schedule: "5 * * * *" }),
+      triggers.scheduled({ schedule: "0 4 * * *" }),
+      triggers.scheduled({ schedule: "0 3 * * *" }),
     ],
     env: {
       ASSETS: bindings.assets(),

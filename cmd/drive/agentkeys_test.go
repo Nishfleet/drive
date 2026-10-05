@@ -54,11 +54,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		code := DeviceCode{
-			DeviceCode:      "dev_secret",
-			UserCode:        "BCDF-GHJK",
-			VerificationURI: "https://api.test/v1/device/approve",
-			ExpiresIn:       600,
-			Interval:        1,
+			DeviceCode:              "dev_secret",
+			UserCode:                "BCDF-GHJK",
+			VerificationURI:         "https://api.test/v1/device/approve",
+			VerificationURIComplete: "https://api.test/v1/device/approve?user_code=BCDF-GHJK",
+			ExpiresIn:               600,
+			Interval:                1,
 		}
 		f.codes[code.UserCode] = code
 		writeTestJSON(w, 200, code)
@@ -74,7 +75,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, 200, map[string]any{
 			"status":      "approved",
 			"deviceToken": testDeviceToken,
-			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook"},
+			"account":     map[string]string{"id": "acct_1", "name": "Nish's MacBook", "email": "nish@example.com"},
 		})
 	case r.URL.Path == keysPath && r.Method == http.MethodPost:
 		if f.rejectMints {
@@ -103,6 +104,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Prefix:       "u/acct_1/",
 			Capabilities: []string{"list", "read", "write"},
 			ExpiresAt:    expiresAt,
+			Endpoint:     "http://127.0.0.1:39181",
+			Bucket:       "drive-standin",
+			Region:       "us-east-1",
 		}
 		f.keys[key.KeyID] = key
 		writeTestJSON(w, 201, key)

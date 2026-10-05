@@ -70,6 +70,38 @@ export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
  */
 export const AFTER_SIGNIN_PATH = "/files";
 
+/** Cookie that carries the device-approve page back after sign-in (drive#459). */
+export const AFTER_SIGNIN_COOKIE = "drive_after_signin";
+
+/**
+ * The only path sign-in is allowed to return to after the emailed link: the
+ * device-approve page, with at most a `user_code` query. Anything else —
+ * another origin, a protocol-relative URL, an extra query — is dropped so a
+ * cookie a stranger set cannot bounce the session elsewhere.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function safeAfterSigninPath(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return "";
+  }
+  let url;
+  try {
+    url = new URL(raw, "https://drive.invalid");
+  } catch {
+    return "";
+  }
+  if (url.origin !== "https://drive.invalid" || url.pathname !== "/v1/device/approve") {
+    return "";
+  }
+  for (const key of url.searchParams.keys()) {
+    if (key !== "user_code") {
+      return "";
+    }
+  }
+  return url.pathname + url.search;
+}
+
 /**
  * Builds a Better Auth instance over one D1 database.
  *

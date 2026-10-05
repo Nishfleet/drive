@@ -227,8 +227,8 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
   // the account had live at some point in the hour, read straight back out of
   // the real column migration 0006 added. acc-other's 10 GB is hidden at 00:45,
   // inside the hour, so it is in the mark; the peak is a MAX over these, and a
-  // column that were never written would read 0 and cap every bill at the $12
-  // floor however big the drive really was.
+  // column that were never written would read 0 for a drive that really held
+  // data.
   assert.deepEqual(rows, [
     {
       account_id: "acc-abc",

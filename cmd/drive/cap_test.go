@@ -53,10 +53,19 @@ func TestRunCapPostsTheAmountAndPrintsTheCapLine(t *testing.T) {
 }
 
 func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
+	var gotAmount string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Amount string `json:"amount"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotAmount = body.Amount
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error": "A spending cap is a dollar amount like 20 or 12.50, got \"abc\". Run: drive cap 20",
+			// The Worker's own parseCapUsd() sentence (src/cap.js
+			// `capShapeError`). It is the sentence both surfaces read, so it
+			// names no command and no page (drive#421).
+			"error": `A spending cap is a dollar amount like 20 or 12.50, got "abc". Type a number like that again.`,
 		})
 	}))
 	defer srv.Close()
@@ -65,11 +74,21 @@ func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
 	if err == nil {
 		t.Fatal("got no error for a bad amount, want parseCapUsd's reason")
 	}
+	// The amount goes to the Worker as typed: this CLI holds no second parser
+	// that could refuse one the Worker accepts. "$20" is such an amount — the
+	// dollar sign is stripped there — so a local fast-fail would break a write
+	// the api answers.
+	if gotAmount != "abc" {
+		t.Errorf("posted amount = %q, want the typed string so parseCapUsd sees it", gotAmount)
+	}
 	if !strings.Contains(err.Error(), "A spending cap is a dollar amount like 20 or 12.50") {
 		t.Errorf("got %q, want parseCapUsd's reason", err)
 	}
-	if !strings.Contains(err.Error(), "Run: drive cap 20") {
+	if !strings.Contains(err.Error(), "Type a number like that again") {
 		t.Errorf("got %q, want the next-step line parseCapUsd prints", err)
+	}
+	if strings.Contains(err.Error(), "drive cap") {
+		t.Errorf("got %q, want no surface-specific next step", err)
 	}
 }
 
@@ -365,5 +384,30 @@ func TestRunCapRestartRejectsASwappedCredentialThatWouldInjectAnOption(t *testin
 				t.Errorf("the restart wrote the injected rclone option:\n%s", raw)
 			}
 		})
+	}
+}
+
+// drive#459: after `drive login` and no DRIVE_API_URL, cap reaches the api
+// address login saved instead of failing with "That did not work".
+func TestRunCapReadsTheAPIBaseDriveLoginSaved(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."})
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	if err := SaveCredentials(home, Credentials{APIBase: srv.URL, DeviceToken: "dtok_test"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVE_API_URL", "")
+	line := captureStdout(t, func() {
+		if err := runCap([]string{"--home", home, "20"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if gotPath != CAP_PATH || !strings.Contains(line, "Cap $20.00") {
+		t.Errorf("cap did not reach the saved apiBase: path %q, output %q", gotPath, line)
 	}
 }

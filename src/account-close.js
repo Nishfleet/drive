@@ -35,6 +35,14 @@ export const CLOSE_COPY = Object.freeze({
   purgedNext: "Your files were deleted. This account stays closed.",
   cancelSubmit: "Cancel closing",
   reminder: "We email you now and again 5 days before the files go.",
+  // The banner every signed-in page carries while a close is pending
+  // (drive#424). `{purgeOn}` is the one placeholder in the set: the page
+  // renders what the endpoint sent, so the date on screen is the date the
+  // account will actually be purged, not a copy of a day count worked out in
+  // the browser. Two keys, because the banner is two slots — a sentence and
+  // a link — and a key nothing renders is a second thing to drift.
+  pendingWhat: "This account closes on {purgeOn}. Your files stay visible until then.",
+  pendingCancel: "Cancel closing",
 });
 
 const JSON_HEADERS = Object.freeze({
@@ -127,6 +135,7 @@ export async function closeAccount(input) {
   if (closed.closedAt === null) {
     throw new Error(`closeAccount left closed_at null for ${input.account.id}`);
   }
+  await input.devices.releaseFoundingReservation(input.account.id);
   if (closed.closeMailSentAt === null) {
     await sendEmail(input.email, {
       to: expected,

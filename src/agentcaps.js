@@ -35,18 +35,18 @@
 // Worker. The caller (workers/api/src/agent-caps.js) reads the row, counts the
 // request and hands the numbers here. That split is what lets the decision be
 // tested as plain data while the reading is tested against the real schema.
-import { capStatus } from "./billing.js";
+import { BILLING_CONFIG, capStatus } from "./billing.js";
 import { capSwapPlan } from "./cap.js";
 
 // The ceilings an agent key gets when its row says nothing about its own.
-// $12 is the account's own default cap (BILLING_CONFIG.defaultCapUsd), so an
+// The account's own default cap (BILLING_CONFIG.defaultCapUsd), so an
 // agent inherits the number a customer already reads on the usage page rather
 // than a second number to explain. 1,000 requests a day is far above what a
 // working editing session sends and far below what a runaway loop reaches; it
 // is a count of requests rather than of bytes, so it costs nothing to keep and
 // is not a second money rule.
 export const DEFAULT_AGENT_CAPS = Object.freeze({
-  monthlyCapUsd: 12,
+  monthlyCapUsd: BILLING_CONFIG.defaultCapUsd,
   dailyRequests: 1000,
 });
 
@@ -147,9 +147,16 @@ function checkedUsd(value, name) {
  * key over its daily request count is a loop even when the month is young and
  * cheap.
  *
+ * The monthly half counts the account's own bill: the same monthBillCents()
+ * call usageSummary() makes, on the account's founding flag. An account that
+ * pays half has a key that spends half in a month (drive#482) — the flag is
+ * read from the accounts row by the caller and passed in, because this module
+ * holds no database.
+ *
  * @param {{
- *   usage: {gbMinutes: number, peakGb: number},
+ *   usage: {gbMinutes: number},
  *   caps?: {monthly_cap_usd?: unknown, daily_requests?: unknown},
+ *   founding?: boolean,
  *   requestsToday?: number,
  *   day?: string,
  *   at: number,
@@ -166,10 +173,14 @@ export function agentCapStatus(agent) {
   }
   const usage = agent.usage;
   if (typeof usage !== "object" || usage === null) {
-    throw new TypeError(`agentCapStatus needs usage {gbMinutes, peakGb}, got ${String(usage)}`);
+    throw new TypeError(`agentCapStatus needs usage {gbMinutes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
-  const counted = capStatus(usage.gbMinutes, usage.peakGb, caps.monthlyCapUsd);
+  // No flag means the row has not been read that way rather than "not
+  // founding": a founding account keeps the half, a fresh key keeps the full
+  // price, and anything that is not a boolean is refused by capStatus().
+  const founding = agent.founding === undefined || agent.founding === null ? false : agent.founding;
+  const counted = capStatus(usage.gbMinutes, caps.monthlyCapUsd, BILLING_CONFIG, founding);
   const day = dayKey(agent.at);
   const used = agent.day === day ? checkedCount(agent.requestsToday ?? 0, "requestsToday") : 0;
   const monthly = Object.freeze({

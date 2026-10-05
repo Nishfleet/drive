@@ -56,12 +56,11 @@ const MINUTES_PER_MONTH = 43800;
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
 
 // The month's numbers as usageSummary() takes them, at a size whose invoice is
-// past the $12 default cap (2000 GB bills $40, capped to the $16 ceiling) and
-// under it (1200 GB bills $24, and the ceiling pins at the $12 floor).
+// past the $20 default cap (2600 GB meters $52, held to the $26 maximum) and
+// under it (1200 GB bills the $12 maximum).
 /** @param {number} gb */
 const monthUsage = (gb) => ({
   gbMinutes: fullMonthGbMinutes(gb),
-  peakGb: gb,
   storedGb: gb,
   storedDaily: [],
   downloadBytes: 0,
@@ -69,7 +68,7 @@ const monthUsage = (gb) => ({
   capUsd: BILLING_CONFIG.defaultCapUsd,
   cardAdded: true,
 });
-const capUsage = () => monthUsage(2000);
+const capUsage = () => monthUsage(2600);
 const underCapUsage = () => monthUsage(1200);
 
 // The four kinds of key the spec mints, in the shape the plan reads.
@@ -648,7 +647,6 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   /** @param {number} gb */
   const usage = (gb) => ({
     gbMinutes: fullMonthGbMinutes(gb),
-    peakGb: gb,
     storedGb: gb,
     storedDaily: [],
     downloadBytes: 0,
@@ -658,17 +656,17 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   });
   const keys = [deviceKey];
 
-  // 1.3 TB on the default $12 cap: the invoice is the $12 floor, so the cap is
-  // not passed and the drive keeps writing (the orchestrator decision on #39).
-  const active = await enforceCap({ usage: usage(1300), keys }, recordingProvider());
+  // 1 TB on the default $20 cap: the invoice is the $10 maximum, so the cap is
+  // not passed and the drive keeps writing (drive#464).
+  const active = await enforceCap({ usage: usage(1000), keys }, recordingProvider());
   assert.equal(active.state, "active");
   assert.equal(active.applied.length, 0);
   assert.equal(active.mount.restart, false);
 
-  // 2 TB: the ceiling rises to $16, past the $12 cap, so the one write key is
+  // 2.6 TB: the maximum is $26, past the $20 cap, so the one write key is
   // replaced by a read-only key and the mount is told to restart.
   const capProvider = recordingProvider();
-  const capped = await enforceCap({ usage: usage(2000), keys }, capProvider);
+  const capped = await enforceCap({ usage: usage(2600), keys }, capProvider);
   assert.equal(capped.state, "read_only");
   assert.equal(capped.applied.length, 1);
   assert.deepEqual(capProvider.calls, [
@@ -677,9 +675,10 @@ test("enforcement reads the month's numbers from src/billing.js capStatus()", as
   ]);
 
   // The same two conclusions the capStatus() tests pin, read through the
-  // summary rule too: 2 TB at the default cap is read_only, 1.3 TB is active.
-  assert.equal(capStatus(fullMonthGbMinutes(2000), 2000, 12).state, "read_only");
-  assert.equal(capStatus(fullMonthGbMinutes(1300), 1300, 12).state, "active");
+  // summary rule too: 2.6 TB at the default cap is read_only, 1 TB is active.
+  const cap = BILLING_CONFIG.defaultCapUsd;
+  assert.equal(capStatus(fullMonthGbMinutes(2600), cap).state, "read_only");
+  assert.equal(capStatus(fullMonthGbMinutes(1000), cap).state, "active");
 });
 
 test("a card-less account goes read-only at the free $1, the same rule the usage page shows", async () => {
@@ -688,7 +687,6 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   const account = {
     usage: {
       gbMinutes: fullMonthGbMinutes(60),
-      peakGb: 60,
       storedGb: 60,
       storedDaily: [],
       downloadBytes: 0,
@@ -700,7 +698,7 @@ test("a card-less account goes read-only at the free $1, the same rule the usage
   const report = await enforceCap(account, recordingProvider());
   assert.equal(report.state, "read_only", "60 GB is over the free $1 without a card");
   assert.equal(report.applied.length, 1);
-  // With the card on file the same drive is under the $12 cap and writing.
+  // With the card on file the same drive is under the $20 cap and writing.
   const withCard = await enforceCap(
     { ...account, usage: { ...account.usage, cardAdded: true } },
     recordingProvider(),
@@ -743,28 +741,40 @@ test("drive cap takes a dollar amount and nothing else", () => {
       `rejects ${String(bad)}`,
     );
   }
-  // The error tells the person what to type, not just that the input was bad.
-  assert.throws(() => parseCapUsd("abc"), /Run: drive cap 20/);
+  // The error tells the person what to type next, in words that hold on either
+  // surface: the usage page's slider sends the same request, so it cannot end
+  // in a command only the CLI can run, and it cannot name a page a terminal
+  // user cannot see (drive#421).
+  assert.throws(() => parseCapUsd("abc"), /Type a number like that again/);
+  // Zero is a cap, and the usage page's slider offers it (min="0"), so the
+  // api has to take it: a page that offered a number the Worker refused would
+  // answer the number the page itself put there (drive#421).
+  assert.equal(parseCapUsd("0"), 0);
+  assert.equal(parseCapUsd("0.00"), 0);
+  // The culprit stays delimited, so an empty amount and a stray word do not
+  // read as part of the sentence.
+  assert.throws(() => parseCapUsd(""), /got ""\./);
+  assert.throws(() => parseCapUsd("20 dollars"), /got "20 dollars"\./);
 });
 
 test("the cap line is one line while writing and two at the cap", () => {
-  const active = capLine(capStatus(fullMonthGbMinutes(300), 300, 12));
+  const active = capLine(capStatus(fullMonthGbMinutes(300), 12));
   assert.equal(active, "Cap $12.00: $6.00 counted this month, $6.00 left.");
 
-  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 2000, 12));
+  const capped = capLine(capStatus(fullMonthGbMinutes(2000), 12));
   const [what, numbers] = capped.split("\n");
   // The words for a read-only drive come from the one message table, so the
   // page, the CLI and the api cannot drift apart.
   assert.equal(what, tableMessage("cap-reached"));
   assert.equal(
     numbers,
-    "Cap $12.00 reached: $16.00 counted this month. " +
+    "Cap $12.00 reached: $20.00 counted this month. " +
       "Uploads waiting in the cache stay on this Mac and go up once the cap is raised.",
   );
   // Raised again: the line goes back to one line and says there is room.
   assert.equal(
-    capLine(capStatus(fullMonthGbMinutes(2000), 2000, 20)),
-    "Cap $20.00: $16.00 counted this month, $4.00 left.",
+    capLine(capStatus(fullMonthGbMinutes(2000), 25)),
+    "Cap $25.00: $20.00 counted this month, $5.00 left.",
   );
   for (const bad of [
     null,
@@ -788,7 +798,7 @@ test("the usage response carries the cap line, and the Worker routes it", async 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.cap.state, "active");
-  assert.equal(body.capLine, "Cap $12.00: $0.00 counted this month, $12.00 left.");
+  assert.equal(body.capLine, "Cap $20.00: $0.00 counted this month, $20.00 left.");
   // The Worker still routes the path to the handler, and the handler's gate
   // answers 401 to an anonymous request rather than the asset layer's 404.
   const anonymous = await workerFetch(new Request("https://drive.test/api/usage"), {
@@ -848,7 +858,7 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
   assert.equal(bad.status, 400);
   const err = await bad.json();
   assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
-  assert.match(err.error, /Run: drive cap 20/);
+  assert.match(err.error, /Type a number like that again/);
 
   const mangled = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -868,6 +878,22 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
     capStore,
   );
   assert.equal(anon.status, 401);
+
+  // A Worker with no account store behind it: the request is well-formed and
+  // the account is identified, so the 503 is the message table's own pair and
+  // not a sentence invented here. The cap did not move, and the next step is
+  // not to wait and retry (drive#421).
+  const unwired = await handleCapRequest(
+    new Request("https://drive.test/api/cap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: "20" }),
+    }),
+    { id: "acct-1", name: "You", email: "you@example.com" },
+    null,
+  );
+  assert.equal(unwired.status, 503);
+  assert.deepEqual(await unwired.json(), { error: tableMessage("cap-store-missing") });
 });
 
 test("the swap's own credential is in the answer, so the mount can sign with it", async () => {
@@ -884,7 +910,6 @@ test("the swap's own credential is in the answer, so the mount can sign with it"
   // without it `drive cap 0` on a live drive would swap nothing.
   const overCapMonth = {
     gbMinutes: fullMonthGbMinutes(2000),
-    peakGb: 2000,
     storedGb: 2000,
     storedDaily: [],
     downloadBytes: 0,

@@ -13,13 +13,13 @@ import {
   MINUTES_PER_MONTH,
   meteredMonthlyBillUsd,
   monthBillCents,
-  monthlyCeilingUsd,
+  monthlyMaximumUsd,
 } from "../src/billing.js";
 import { FAQ, faqMarkdown, markerValues, RIVAL_1TB_LINE, scoreboardVerdict } from "../src/docs.js";
 import { AGENT_TOOLS, KEY_POWERS } from "../src/keys.js";
+import { PRICE } from "../src/pricing.js";
 import { applyMarkers, DOC_PAGES, renderDocs } from "../src/render-docs.js";
 import { PAGES, SITE } from "../src/seo.js";
-import { INSTALL_COMMAND } from "../src/status.js";
 
 // The head-to-head table the FAQ is gated against (drive issue #114).
 // The tests below read it twice: once to prove every published answer
@@ -36,12 +36,12 @@ const siteDir = new URL("../public/docs/", import.meta.url);
 const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 
 // The price numbers, worked out the way the invoice works them out: a month
-// that stored `tb` terabytes all month is gb x 43,800 GB-minutes and a peak of
-// the same gb. Nothing in these tests types a dollar figure.
+// that stored `tb` terabytes all month is gb x 43,800 GB-minutes, whose
+// average is the same gb. Nothing in these tests types a dollar figure.
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH, peakGb: gb });
+  return monthBillCents({ gbMinutes: gb * MINUTES_PER_MONTH });
 }
 
 /** @param {number} amount */
@@ -135,18 +135,16 @@ test("the cache numbers on the pages are the ones the CLI mounts with", () => {
 
 test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
-  // The rate, both halves of the ceiling, the free credit and the cap, each
+  // The headline, the rule, no minimum, founding pricing and the cap, each
   // read from the one config the invoice reads.
-  assert.ok(page.includes("2¢ per GB"), "the pricing page must state the rate");
+  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine]) {
+    assert.ok(page.includes(line), `the pricing page must state "${line}"`);
+  }
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.floorUsd)),
-    "the pricing page must state the ceiling floor",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the pricing page must state the maximum per TB",
   );
-  assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the pricing page must state the per-TB ceiling",
-  );
-  assert.ok(page.includes("$10 a month membership"), "the pricing page must state the membership");
+  assert.doesNotMatch(page, /membership|ceiling/i, "the pricing page must not name the old rule");
   assert.ok(
     page.includes(dollars(BILLING_CONFIG.defaultCapUsd)),
     "the pricing page must state the default cap",
@@ -155,17 +153,17 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
 
 test("every worked example on the pricing page is the invoice's own arithmetic", () => {
   const page = shipped("pricing.md");
-  for (const tb of [0.8, 1.3, 2, 5]) {
+  for (const tb of [0.2, 0.8, 1.5, 3]) {
     const gb = tb * GB_PER_TB;
     const bill = billFor(tb);
-    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyCeilingUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
+    const row = `| ${tb} TB | ${dollars(meteredMonthlyBillUsd(gb * MINUTES_PER_MONTH))} | ${dollars(monthlyMaximumUsd(gb))} | ${dollars(bill.totalCents / 100)} |`;
     assert.ok(page.includes(row), `the pricing page must show the row: ${row}`);
   }
   // And the metered column is genuinely larger than the bill at the sizes the
-  // ceiling exists for, so the page cannot quietly drop the ceiling.
+  // maximum exists for, so the page cannot quietly drop the maximum.
   assert.ok(
     meteredMonthlyBillUsd(2 * GB_PER_TB * MINUTES_PER_MONTH) > billFor(2).totalCents / 100,
-    "2 TB metered must be more than 2 TB billed, or the ceiling is not being applied",
+    "2 TB metered must be more than 2 TB billed, or the maximum is not being applied",
   );
 });
 
@@ -197,10 +195,7 @@ test("the agents page names the tools the CLI connects and their real powers", (
     page.includes("An agent key cannot delete a file."),
     "the agents page must say an agent key cannot delete",
   );
-  assert.ok(
-    page.includes(INSTALL_COMMAND),
-    `the agents page must name the one command (${INSTALL_COMMAND})`,
-  );
+  assert.ok(page.includes("drive init"), "the agents page must name drive init");
 });
 
 test("the security page states the same key table, and what we cannot claim", () => {
@@ -249,8 +244,13 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   assert.match(page, /not open yet/i, "the limits page must say the drive is not open");
   assert.match(
     page,
-    /go install github\.com\/Nishfleet\/drive\/cmd\/drive/,
+    /the\s+install\s+that\s+works\s+today\s+is\s+to\s+build\s+the\s+command\s+from\s+this\s+repository's\s+source\s+with\s+the\s+Go\s+toolchain/i,
     "the limits page must give the install that works today",
+  );
+  assert.match(
+    page,
+    /drive --help/,
+    "the limits page must point at the command's own words for the exact route",
   );
   assert.match(
     page,
@@ -286,8 +286,8 @@ test("the changelog opens today and every entry is a real line", () => {
   const page = shipped("changelog.md");
   assert.match(page, /## \d{4}-\d{2}-\d{2}/, "the changelog must open with a date heading");
   assert.ok(
-    page.includes(dollars(BILLING_CONFIG.perTbUsd)),
-    "the changelog must state the ceiling it recorded",
+    page.includes(`$${BILLING_CONFIG.maxUsdPerTb} per TB`),
+    "the changelog must state the maximum it recorded",
   );
 });
 
@@ -530,12 +530,15 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // own docs plus mdBook's, on 2026-09-30). The samples here are shell commands
   // that mount storage and connect agent tools, which a CI runner cannot do, so
   // the mechanical substitute is this: every `drive ...` sample is checked
-  // against the subcommand switch in cmd/drive/main.go, and the one sample that
+  // against the command table in cmd/drive/main.go (the one place a
+  // subcommand exists: the dispatch reads it, and Go-side gates hold the
+  // agent notes and the help text to it), and the one sample that
   // is not a `drive` command is pinned by name. A renamed or removed
   // subcommand fails the build instead of shipping a sample that does nothing.
   const mainGo = readFileSync(new URL("../cmd/drive/main.go", import.meta.url), "utf8");
-  const switchBody = mainGo.slice(mainGo.indexOf("switch os.Args[1]"), mainGo.indexOf("default:"));
-  const subcommands = new Set([...switchBody.matchAll(/case "([a-z]+)"/g)].map((m) => m[1]));
+  const tableStart = mainGo.indexOf("var commands = map[string]func([]string) error{");
+  const tableBody = mainGo.slice(tableStart, mainGo.indexOf("}", tableStart));
+  const subcommands = new Set([...tableBody.matchAll(/"([a-z]+)":/g)].map((m) => m[1]));
   assert.ok(
     subcommands.has("mount") && subcommands.has("init"),
     "the subcommand list must have been parsed out of main.go",
@@ -544,10 +547,10 @@ test("every shell sample in the docs is a command the CLI actually has", () => {
   // The commands a page may show, outside `drive <sub>`. Each is a stock tool
   // invocation the page explains in prose; adding one is a deliberate edit.
   const nonDriveSamples = new Set([
-    "go install github.com/Nishfleet/drive/cmd/drive@latest",
-    "sudo apt install ./drive_1.0.0_linux_amd64.deb",
-    "sudo dnf install ./drive_1.0.0_linux_amd64.rpm",
-    "brew install nishfleet/tap/drive",
+    "brew install drive",
+    "sudo apt install drive",
+    "sudo dnf install drive",
+    "goreleaser release --snapshot --clean",
     "export DRIVE_S3_ENDPOINT=https://your-endpoint",
     "export DRIVE_S3_BUCKET=your-bucket",
     "export DRIVE_S3_PREFIX=your-folder",
@@ -631,7 +634,7 @@ test("the README describes the drive and points at the docs", () => {
     "the README must not still be the template stub",
   );
   assert.match(readme, /^# Drive$/m, "the README must name the product");
-  assert.match(readme, /2¢ per GB a month/, "the README must state the rate");
+  assert.ok(readme.includes(PRICE.headline), "the README must state the price");
   for (const page of DOC_PAGES) {
     assert.ok(readme.includes(`${SITE.origin}${page.url}`), `the README must point at ${page.url}`);
   }

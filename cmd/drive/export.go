@@ -145,10 +145,14 @@ func runExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	if creds.DeviceToken == "" || creds.APIBase == "" {
-		return fmt.Errorf("this machine is not signed in; run `drive init` first")
+	base, err := resolveAPIBase(common.home, "")
+	if err != nil {
+		return err
 	}
-	document, err := fetchExport(creds.APIBase, creds.DeviceToken)
+	if creds.DeviceToken == "" || base == "" {
+		return fail("not-signed-in")
+	}
+	document, err := fetchExport(base, creds.DeviceToken)
 	if err != nil {
 		return err
 	}

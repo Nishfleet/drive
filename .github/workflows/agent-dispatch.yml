@@ -3,15 +3,22 @@
 name: agent-dispatch
 on:
   issues:
-    types: [labeled, closed]
+    types: [labeled, closed, reopened]
+  # A park: comment starts a miss review (fleet-ops#9211).
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         required: false
         type: string
+      task:
+        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        required: false
+        type: string
   pull_request_target:
-    types: [dequeued, auto_merge_disabled]
+    types: [dequeued, auto_merge_disabled, closed]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -33,4 +40,5 @@ jobs:
     with:
       issue: ${{ inputs.issue }}
       agent_mode: ${{ vars.AGENT_MODE }}
+      task: ${{ inputs.task }}
       runner: '["self-hosted","Linux","X64"]' # hosted minutes ran out 2026-10-03; sweep was refused for billing

@@ -24,6 +24,7 @@
 // counted: the counter answers "how many requests did this key make today",
 // and a tool still looping after its first refusal is exactly what the number
 // should show.
+
 import {
   agentCapPlan,
   agentCapStatus,
@@ -31,7 +32,9 @@ import {
   dayKey,
   monthKey,
 } from "../../../src/agentcaps.js";
-import { BYTES_PER_GB, monthUsageThrough } from "../../../src/meter.js";
+import { accountFoundingFlag } from "../../../src/founding.js";
+import { monthUsageThrough } from "../../../src/meter.js";
+import { bucketForKeyPrefix } from "./keyprovider.js";
 
 // Only this kind is capped. A `device` key is the person's own mount, an `s3`
 // key is an integration and a `branch` key is the app's own undo credential:
@@ -130,6 +133,12 @@ export async function stampAgentRequest(db, accountId, keyId, at) {
  * indexed aggregate over `usage_minutes` (the same query the usage page runs),
  * and a cached month would mean a key stays uncapped for as long as the cache
  * lived, which is the failure these caps exist to stop.
+ *
+ * The account's founding flag is read from the accounts row, not from the caps
+ * row (drive#482): the caps row is not written until this request is stamped,
+ * so a brand-new key would otherwise always read as full price on the very
+ * request that creates it. `accountFoundingFlag` answers not founding when the
+ * row is gone, which is the safe direction for a cap.
  * @param {D1Database} db
  * @param {{accountId: string, id: string, kind?: string}} device
  * @param {number|Date} at the caller's clock, normalized once by `asMillis`
@@ -141,13 +150,17 @@ export async function agentCapGate(db, device, at) {
   }
   const time = asMillis(at);
   const caps = await readAgentCaps(db, device.accountId, device.id);
+  const founding = await accountFoundingFlag(db, device.accountId);
   const today = await stampAgentRequest(db, device.accountId, device.id, time);
   const usage = await monthUsageThrough(db, device.accountId, time);
   return agentCapStatus({
-    // The peak arrives as bytes from the meter and is divided here by the
-    // meter's own GB, so the gigabyte `capStatus` counts is the meter's.
-    usage: { gbMinutes: usage.gbMinutes, peakGb: usage.peakBytes / BYTES_PER_GB },
+    // The bill reads only the month's GB-minutes (drive#463), so that is
+    // all the cap counts.
+    usage: { gbMinutes: usage.gbMinutes },
     caps: caps ?? undefined,
+    // The account's founding flag (#386), so the key counts the bill a
+    // founding account is billed.
+    founding,
     requestsToday: today.requests,
     // The day the count belongs to, so the decision can tell this day's count
     // from one stamped on the row and left there overnight.
@@ -158,17 +171,20 @@ export async function agentCapGate(db, device, at) {
 
 /**
  * The key row the cap's own swap rule takes read-only, in the shape
- * `capSwapPlan` reads: `keyId`, `kind`, `prefix`, `capabilities` and
- * `cappedFrom`. One key, from one row, in the same shape the account cap hands
- * `capSwapPlan` (workers/api/src/devices.js `listCapKeys`) rather than a second
- * reading of what a key row is.
- * @param {{id: string, kind?: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}} device
+ * `capSwapPlan` reads: `keyId`, `kind`, `prefix`, `bucket`, `capabilities`
+ * and `cappedFrom`. One key, from one row, in the same shape the account cap
+ * hands `capSwapPlan` (workers/api/src/devices.js `listCapKeys`) rather than a
+ * second reading of what a key row is.
+ * @param {{id: string, accountId: string, kind?: string, prefix: string, capabilities: readonly string[], cappedFrom?: readonly string[]|null}} device
  */
 export function capKeyRow(device) {
   return {
     keyId: device.id,
     kind: device.kind ?? AGENT_KEY_KIND,
     prefix: device.prefix,
+    // The bucket the swap mints its replacement in: the account's own for an
+    // account key, the team's for a key on a team prefix (drive#462).
+    bucket: bucketForKeyPrefix(device.accountId, device.prefix),
     capabilities: device.capabilities,
     ...(device.cappedFrom ? { cappedFrom: device.cappedFrom } : {}),
   };
