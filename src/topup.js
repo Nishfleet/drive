@@ -25,7 +25,7 @@
 // No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
 // checkout route answers 503 with the message table's words.
 
-import { resolveDodoUrl } from "./dodo.js";
+import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
 import { isSameOriginRequest } from "./email-send.js";
 import {
   balanceCents,
@@ -442,7 +442,7 @@ export async function handleTopUpRequest(request, account, deps) {
   }
   const session = objectOrNull(await response.json().catch(() => null));
   const url = session?.checkout_url;
-  if (typeof url !== "string" || !isDodoCheckoutUrl(url)) {
+  if (typeof url !== "string" || !isDodoUrl(url)) {
     // Only a Dodo page is handed to the customer: a malformed or tampered
     // answer must never become a redirect to somewhere else.
     return json({ error: failureMessage("topup-failed") }, 502);
@@ -451,23 +451,14 @@ export async function handleTopUpRequest(request, account, deps) {
 }
 
 /**
- * Whether a checkout URL is an https page on Dodo's own domain.
+ * Whether a checkout URL is an https page on Dodo's own domain. The host pin
+ * itself lives in src/dodo.js next to resolveDodoUrl(), which sends the bearer
+ * key to the same host; this name is the checkout's, and it is kept because
+ * the checkout's own tests read it.
  * @param {string} value
  */
 export function isDodoCheckoutUrl(value) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return false;
-  }
-  const host = parsed.hostname;
-  return (
-    parsed.protocol === "https:" &&
-    parsed.username === "" &&
-    parsed.password === "" &&
-    (host === "dodopayments.com" || host.endsWith(".dodopayments.com"))
-  );
+  return isDodoUrl(value);
 }
 
 /**
