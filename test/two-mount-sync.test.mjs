@@ -31,7 +31,8 @@
 //   DRIVE_STANDIN_PREFIX    optional key prefix, e.g. u/<id>
 //   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  S3 keys
 //   DRIVE_STANDIN_RCLONE    explicit path to the rclone binary
-//   DRIVE_STANDIN_FETCH_RCLONE=0  refuse to download rclone when it is absent
+//   DRIVE_STANDIN_FETCH_RCLONE=1  download the pinned rclone when it is absent
+//                                 (without it, a host with no rclone skips)
 //   DRIVE_STANDIN_PROPAGATION_SECONDS  seconds a save may take to cross
 //
 // Both machines in this proof are the same platform, which is what a Mac
@@ -109,17 +110,29 @@ function runs(bin) {
 // The release ci.yml pins (test/installer.test.mjs keeps the two equal).
 const RCLONE_RELEASE = "v1.75.1";
 const RCLONE_RELEASE_URL = `https://downloads.rclone.org/${RCLONE_RELEASE}`;
-// The pinned rclone release ships one zip per OS+arch pair. This picks the
-// right one for this host; null means the host's platform is not supported, in
-// which case the caller skips instead of downloading.
-function rcloneDownloadUrl() {
-  if (platform() === "linux" && arch() === "x64")
-    return `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-linux-amd64.zip`;
-  if (platform() === "darwin" && arch() === "x64")
-    return `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-osx-amd64.zip`;
-  if (platform() === "darwin" && arch() === "arm64")
-    return `${RCLONE_RELEASE_URL}/rclone-${RCLONE_RELEASE}-osx-arm64.zip`;
-  return null;
+// The pinned rclone release ships one zip per OS+arch pair. Each digest is
+// copied from that release's SHA256SUMS, the same way ci.yml pins the Linux
+// zip, so a download is checked against a value in this repo rather than one
+// fetched over the same channel as the zip.
+const RCLONE_ZIPS = {
+  "linux-x64": {
+    name: `rclone-${RCLONE_RELEASE}-linux-amd64.zip`,
+    sha256: "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab",
+  },
+  "darwin-x64": {
+    name: `rclone-${RCLONE_RELEASE}-osx-amd64.zip`,
+    sha256: "29253d0288b8fbbac46baad6e5f6add6cb01d462c79f10805bbd4631c4cdf82c",
+  },
+  "darwin-arm64": {
+    name: `rclone-${RCLONE_RELEASE}-osx-arm64.zip`,
+    sha256: "c61d7a371c62bcbbe882c3423aa4b8bf63485c248dd0f692997b8f0c3f6d0c6f",
+  },
+};
+// The right zip for this host; null means the host's platform is not
+// supported, in which case the caller skips instead of downloading.
+function rcloneDownload() {
+  const zip = RCLONE_ZIPS[/** @type {keyof typeof RCLONE_ZIPS} */ (`${platform()}-${arch()}`)];
+  return zip ? { url: `${RCLONE_RELEASE_URL}/${zip.name}`, sha256: zip.sha256 } : null;
 }
 let rcloneBin = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
@@ -142,29 +155,20 @@ async function sha256OfFile(p) {
   return createHash("sha256").update(buf).digest("hex");
 }
 
-// The fetched binary is executed, so it is checked against the SHA256SUMS
-// rclone publishes beside the release. That catches a truncated or corrupted
-// download, not a compromised mirror (the sums come over the same channel).
-// Someone who points DRIVE_STANDIN_RCLONE_URL at their own copy owns that
-// copy's integrity, so only the default download is checked here.
+// The fetched binary is executed, so it is checked against the digest pinned
+// in RCLONE_ZIPS before it runs. Someone who points DRIVE_STANDIN_RCLONE_URL
+// at their own copy owns that copy's integrity, so only the default download
+// is checked here.
 /**
  * @param {import("node:test").TestContext} t
  * @param {string} zip
+ * @param {string} want
  */
-async function verifyReleaseChecksum(t, zip) {
+async function verifyReleaseChecksum(t, zip, want) {
   const name = path.basename(zip);
-  const sumsUrl = `${RCLONE_RELEASE_URL}/SHA256SUMS`;
-  const sums = spawnSync("curl", ["-f", "-sSL", "--proto", "=https", sumsUrl], {
-    encoding: "utf8",
-  });
-  if (sums.status !== 0) throw new Error(`could not fetch ${sumsUrl} (curl exited ${sums.status})`);
-  const entry = sums.stdout.split("\n").find((line) => line.trim().split(/\s+/)[1] === name);
-  if (!entry) throw new Error(`${sumsUrl} lists no ${name}`);
-  const want = entry.trim().split(/\s+/)[0];
   const got = await sha256OfFile(zip);
-  if (got !== want)
-    throw new Error(`${name} failed its checksum: got ${got}, ${sumsUrl} says ${want}`);
-  t.diagnostic(`verified ${name} against ${sumsUrl}: sha256 ${got.slice(0, 16)}`);
+  if (got !== want) throw new Error(`${name} failed its checksum: got ${got}, pinned ${want}`);
+  t.diagnostic(`verified ${name} against its pinned sha256 ${got.slice(0, 16)}`);
 }
 
 // A runnable rclone, or null when this host legitimately cannot have one (the
@@ -179,16 +183,17 @@ async function findStockRclone(t) {
   const explicit = process.env.DRIVE_STANDIN_RCLONE;
   if (explicit)
     throw new Error(`DRIVE_STANDIN_RCLONE=${explicit} does not run; fix it or unset it`);
-  const defaultUrl = rcloneDownloadUrl();
-  if (!defaultUrl) return null;
-  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") === "0") {
+  const pinned = rcloneDownload();
+  if (!pinned) return null;
+  // A test run downloads and executes a binary only when asked to (drive#581).
+  if ((process.env.DRIVE_STANDIN_FETCH_RCLONE ?? "") !== "1") {
     t.diagnostic(
-      "rclone is not installed and DRIVE_STANDIN_FETCH_RCLONE=0, so nothing was downloaded",
+      "rclone is not installed and DRIVE_STANDIN_FETCH_RCLONE is not 1, so nothing was downloaded",
     );
     return null;
   }
 
-  const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? defaultUrl;
+  const url = process.env.DRIVE_STANDIN_RCLONE_URL ?? pinned.url;
   const dir = await mkdtemp(path.join(tmpdir(), "drive-standin-rclone-"));
   t.after(() => rm(dir, { recursive: true, force: true }).catch(() => {}));
   const bin = path.join(dir, "rclone");
@@ -197,7 +202,7 @@ async function findStockRclone(t) {
     stdio: "inherit",
   });
   if (curl.status !== 0) throw new Error(`could not download ${url} (curl exited ${curl.status})`);
-  if (url === defaultUrl) await verifyReleaseChecksum(t, zip);
+  if (url === pinned.url) await verifyReleaseChecksum(t, zip, pinned.sha256);
   const unzip = spawnSync("unzip", ["-q", "-o", zip, "-d", dir], { stdio: "inherit" });
   if (unzip.status !== 0) throw new Error(`could not unpack ${zip} (unzip exited ${unzip.status})`);
   const found = (spawnSync("find", [dir, "-name", "rclone", "-type", "f"]).stdout ?? "")
