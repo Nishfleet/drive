@@ -68,6 +68,14 @@ const ROWS_PER_STATEMENT = 14;
  * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
 /**
+ * The most bound parameters one D1 statement may carry. D1 refuses a query
+ * with more, so any statement this module builds that binds one value per row
+ * (the trigram index's rowid lookup) is chunked to this. The account id and
+ * the two ranking values are bound alongside the row values, so a caller
+ * leaves one slot spare.
+ */
+const D1_MAX_BOUND_PARAMS = 100;
+/**
  * The shortest word the FTS5 trigram index can find. The trigram tokenizer
  * indexes every three-character window of a name, so a word of one or two
  * characters matches no window at all and a search for it would come back
@@ -181,12 +189,24 @@ export function searchSql(words, { accountId, limit }) {
     return {
       sql:
         `SELECT path, name, ` +
+        // The two facts the trigram table does not carry are read back from
+        // file_index by its (account_id, path) primary key, and the EXISTS
+        // in the WHERE is what keeps the two tables in step from the reader's
+        // side. A write upserts file_index and then the trigram table, so a
+        // failure between the two leaves a trigram row whose file_index row is
+        // gone (a file deleted mid-write, or the FTS write lost). Without this
+        // gate such a row would answer a search with NULL size and date for a
+        // file that no longer exists; with it the row is dropped at read time
+        // and the next reconciler run removes it. The EXISTS is a seek on the
+        // same primary key SQLite already uses for the two subqueries, so it
+        // adds no scan and reads no row the search did not already read.
         `(SELECT size_bytes FROM file_index ` +
         `WHERE account_id = ?1 AND path = file_index_fts.path) AS size_bytes, ` +
         `(SELECT modified_at FROM file_index ` +
         `WHERE account_id = ?1 AND path = file_index_fts.path) AS modified_at ` +
         `FROM file_index_fts ` +
-        `WHERE file_index_fts MATCH ?2 AND account_id = ?1 ` +
+        `WHERE file_index_fts MATCH ?2 AND account_id = ?1 AND EXISTS (SELECT 1 FROM file_index fi ` +
+        `WHERE fi.account_id = ?1 AND fi.path = file_index_fts.path) ` +
         `ORDER BY CASE WHEN name = ?${exact} THEN 0 ` +
         `WHEN name LIKE ?${prefix} ESCAPE '\\' THEN 1 ELSE 2 END, name ` +
         `LIMIT ?${prefix + 1}`,
@@ -337,6 +357,14 @@ function ftsReplaceStatements(db, row) {
  * The SELECT is a separate batch (it must see the upsert) and the pairs are
  * returned in the caller's order. A path with no row (never here: the caller
  * upserts first) is skipped rather than bound with a null rowid.
+ *
+ * The lookup is chunked. D1 caps a statement at 100 bound parameters, and one
+ * caller chunk is up to `STATEMENTS_PER_BATCH * ROWS_PER_STATEMENT` rows (896
+ * by default), so a single IN list of 896 paths plus the account id would be
+ * refused by the database on any real rebuild. Each lookup therefore carries
+ * at most `D1_MAX_BOUND_PARAMS - 1` paths — the account id is the other bound
+ * value — which is the same chunking shape `upsertStatements` already uses for
+ * the upsert itself.
  * @param {D1Database} db
  * @param {FileRow[]} rows
  * @returns {Promise<D1PreparedStatement[]>}
@@ -346,20 +374,21 @@ async function ftsReplaceForRows(db, rows) {
     return [];
   }
   const accountId = rows[0].account_id;
-  const paths = rows.map((row) => row.path);
-  const inList = paths.map(() => "?").join(", ");
-  const found = await db
-    .prepare(
-      `SELECT rowid, path, name FROM file_index WHERE account_id = ? AND path IN (${inList})`,
-    )
-    .bind(accountId, ...paths)
-    .all();
-  const byPath = new Map(
-    /** @type {Array<Record<string, unknown>>} */ (found?.results ?? []).map((row) => [
-      String(row.path),
-      row,
-    ]),
-  );
+  /** @type {Map<string, Record<string, unknown>>} */
+  const byPath = new Map();
+  for (let start = 0; start < rows.length; start += D1_MAX_BOUND_PARAMS - 1) {
+    const paths = rows.slice(start, start + D1_MAX_BOUND_PARAMS - 1).map((row) => row.path);
+    const inList = paths.map(() => "?").join(", ");
+    const found = await db
+      .prepare(
+        `SELECT rowid, path, name FROM file_index WHERE account_id = ? AND path IN (${inList})`,
+      )
+      .bind(accountId, ...paths)
+      .all();
+    for (const row of /** @type {Array<Record<string, unknown>>} */ (found?.results ?? [])) {
+      byPath.set(String(row.path), row);
+    }
+  }
   /** @type {D1PreparedStatement[]} */
   const statements = [];
   for (const row of rows) {

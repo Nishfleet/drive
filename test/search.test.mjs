@@ -641,6 +641,15 @@ test("a write counts every shape the store accepts, and a bodyless write is an e
 // most the limit, so no number of matching rows in the account can make it
 // read (or return) an unbounded set.
 const SEARCH_BUDGET_MS = 1000;
+/**
+ * The ceiling that keeps docs-site/limits.md honest. That page tells a person a
+ * search for one file's name on a million-file account answers in about 5
+ * milliseconds, so the number is gated rather than only logged. It carries
+ * headroom for a loaded runner and still sits an order of magnitude below the
+ * issue's one-second budget, and the per-account scan this replaces measured
+ * in the hundreds of milliseconds at this size.
+ */
+const NAMED_SEARCH_MS = 100;
 test("1,000,000 files: a search returns in under one second and reads only its matches", async () => {
   const db = makeD1();
   const TOTAL = 1_000_000;
@@ -738,11 +747,15 @@ test("1,000,000 files: a search returns in under one second and reads only its m
   assert.ok(fileIndexAccesses.length > 0, "the search reads size and date from file_index");
   for (const access of fileIndexAccesses) {
     assert.match(access, /CORRELATED SCALAR SUBQUERY|SEARCH/, `bounded access: ${access}`);
+    // Every one of them is a seek on the (account_id, path) primary key —
+    // either the correlated size/date subqueries or the EXISTS that drops a
+    // trigram row whose file_index row is gone. None of them scans.
     assert.match(
       access,
-      /SEARCH file_index USING INDEX sqlite_autoindex_file_index_1 \(account_id=\? AND path=\?\)/,
+      /SEARCH (fi|file_index) USING (COVERING )?INDEX sqlite_autoindex_file_index_1 \(account_id=\? AND path=\?\)/,
       `file_index is reached only by its primary key: ${access}`,
     );
+    assert.doesNotMatch(access, /SCAN/, `file_index is never scanned: ${access}`);
   }
 
   const timed = await searchDrive(db, ACCOUNT, "file-0999999", { now: () => performance.now() });
@@ -753,6 +766,19 @@ test("1,000,000 files: a search returns in under one second and reads only its m
   assert.ok(
     timed.tookMs < SEARCH_BUDGET_MS,
     `a specific-file search took ${timed.tookMs.toFixed(1)}ms, budget ${SEARCH_BUDGET_MS}ms`,
+  );
+  // docs-site/limits.md tells a person this search "answers in about 5
+  // milliseconds" on a million-file account. That sentence is only true if
+  // something holds it, so the figure is gated here with headroom for a loaded
+  // CI runner: a specific-file search must stay under 100ms, which is two
+  // orders of magnitude above the measured 4ms and one order below the
+  // one-second budget the issue sets. A regression back to the per-account
+  // scan would miss a million rows and land in the hundreds of ms, so this is
+  // the bar that catches it rather than merely reporting it.
+  assert.ok(
+    timed.tookMs < NAMED_SEARCH_MS,
+    `a specific-file search took ${timed.tookMs.toFixed(1)}ms, ` +
+      `docs-site/limits.md claims about 5ms so it must stay under ${NAMED_SEARCH_MS}ms`,
   );
   // A term every file matches is the degenerate worst case: the index must
   // rank all of the matches, so it legitimately reads all of them. It is

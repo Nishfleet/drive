@@ -8,12 +8,25 @@
 // the moment it lands rather than after the nightly rebuild.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createMemoryStore, scopeStore } from "../../src/files.js";
 import { reconcileIndex, searchDrive, withIndex } from "../../src/search.js";
-import { createTestD1 } from "../harness.mjs";
+import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-1", name: "Test drive" };
+
+/** Every migration up to but not including 0025, so a test can put one drive
+ * into the state production is in the moment 0025 lands and then run the real
+ * file over it.
+ * @returns {readonly string[]} */
+const migrationsBefore0025 = () => DRIVE_MIGRATIONS.slice(0, -1);
+
+/** The real migration file, read from disk rather than copied into the test.
+ * A test that re-typed its SQL would pass even if the file it ships had lost
+ * or broken the backfill, so the file itself is what runs here. */
+const migration0025 = () =>
+  readFileSync(new URL("../../migrations/drive/0025_file_index_fts.sql", import.meta.url), "utf8");
 
 /** The names the trigram table holds for one account.
  * @param {ReturnType<typeof createTestD1>} db
@@ -26,22 +39,23 @@ const ftsNames = (db, accountId) =>
     .map((row) => String(row.name));
 
 test("0025 backfills the trigram table from the rows the index already had", async () => {
-  const db = createTestD1();
-  // Rows written the way the pre-0025 code wrote them: into file_index alone,
-  // which is exactly the state production drive-data is in when 0025 lands.
+  // The drive as production is in the moment 0025 lands: every migration up to
+  // 0024 applied, rows written the way the pre-0025 code wrote them, into
+  // file_index alone.
+  const db = createTestD1({ migrations: migrationsBefore0025() });
   const insert = db.prepare(
     "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
       "VALUES ('acct-1', ?, ?, '/', 12, '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z')",
   );
   await db.batch([insert.bind("/Q4-report.pdf", "Q4-report.pdf")]);
-  // The migration's own backfill, run as the migration runs it.
-  await db.batch([
-    db.prepare(
-      "INSERT INTO file_index_fts (rowid, name, account_id, path) " +
-        "SELECT rowid, name, account_id, path FROM file_index",
-    ),
-  ]);
-  assert.deepEqual(ftsNames(db, ACCOUNT.id), ["Q4-report.pdf"]);
+
+  // Now the real migration file runs, exactly as D1 runs it.
+  db.sqlite.exec(migration0025());
+  assert.deepEqual(
+    ftsNames(db, ACCOUNT.id),
+    ["Q4-report.pdf"],
+    "the file's own backfill filled it",
+  );
 
   // The upgraded READ: the search answers from the trigram table and returns
   // the size and date the index row holds.
@@ -50,6 +64,35 @@ test("0025 backfills the trigram table from the rows the index already had", asy
   assert.equal(found.results[0].path, "/Q4-report.pdf");
   assert.equal(found.results[0].sizeBytes, 12);
   assert.equal(found.results[0].modifiedAt, "2026-09-30T00:00:00.000Z");
+});
+
+test("0025 is additive: it creates the trigram table without touching file_index", async () => {
+  const db = createTestD1({ migrations: migrationsBefore0025() });
+  await db.batch([
+    db
+      .prepare(
+        "INSERT INTO file_index (account_id, path, name, parent, size_bytes, modified_at, indexed_at) " +
+          "VALUES ('acct-1', '/keep.pdf', 'keep.pdf', '/', 3, '2026-09-30T00:00:00.000Z', '2026-09-30T00:00:00.000Z')",
+      )
+      .bind(),
+  ]);
+  // The columns file_index had before 0025, read after it: the migration must
+  // leave the previous version of the code able to run (the fleet D1
+  // expand/contract rule), so no column is dropped, renamed or made NOT NULL.
+  const columns = db.sqlite
+    .prepare("PRAGMA table_info(file_index)")
+    .all()
+    .map((row) => row.name);
+  db.sqlite.exec(migration0025());
+  assert.deepEqual(
+    db.sqlite
+      .prepare("PRAGMA table_info(file_index)")
+      .all()
+      .map((row) => row.name),
+    columns,
+    "0025 changed nothing about file_index",
+  );
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index").get()?.c, 1);
 });
 
 test("0025's search is driven by the trigram index and never scans the index table", async () => {
@@ -164,4 +207,88 @@ test("0025 still finds a two-character name, on the LIKE path trigram cannot hol
     ["abc.txt"],
     "a three-character query goes through the trigram index",
   );
+});
+
+test("0025's rowid lookup stays inside D1's 100 bound parameters", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  // D1 refuses a statement with more than 100 bound parameters, and the
+  // trigram table's rowid lookup binds one per path. A rebuild therefore has
+  // to chunk its lookup; this walks more rows than one statement can bind, so
+  // the chunking is exercised rather than assumed. 150 rows crosses 100 in the
+  // first chunk, and the reconciler's own default chunk is 896 rows, so this is
+  // the same shape a real account hits.
+  for (let i = 0; i < 150; i++) {
+    await store.write(
+      `/bulk/report-${String(i).padStart(3, "0")}.txt`,
+      new Blob(["x"]).stream(),
+      "text/plain",
+    );
+  }
+  const rebuilt = await reconcileIndex(db, store, ACCOUNT);
+  assert.equal(rebuilt.indexed, 150);
+
+  // Every row landed in the trigram table, so the chunked lookup found every
+  // path's rowid rather than stopping at the first statement's limit.
+  assert.equal(db.sqlite.prepare("SELECT count(*) c FROM file_index_fts").get()?.c, 150);
+  const found = await searchDrive(db, ACCOUNT, "report-149");
+  assert.equal(found.count, 1, "the last row of the last chunk is searchable");
+  assert.equal(found.results[0].name, "report-149.txt");
+});
+
+test("a search drops a trigram row whose file_index row is gone (drive#571)", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  await store.write("/kept.txt", new Blob(["x"]).stream(), "text/plain");
+  await store.write("/stale.txt", new Blob(["x"]).stream(), "text/plain");
+  await reconcileIndex(db, store, ACCOUNT);
+  assert.equal((await searchDrive(db, ACCOUNT, "txt")).count, 2);
+
+  // The state a failure between the file_index write and the trigram write
+  // leaves behind: the file is gone from file_index but its trigram row is
+  // still there. A search must not answer with a row whose size and date are
+  // NULL for a file that no longer exists.
+  await db.batch([db.prepare("DELETE FROM file_index WHERE path = ?").bind("/stale.txt")]);
+  const staleCount = db.sqlite
+    .prepare("SELECT count(*) c FROM file_index_fts WHERE path = ?")
+    .get("/stale.txt");
+  assert.equal(Number(staleCount?.c), 1, "the stale trigram row is still there");
+
+  const found = await searchDrive(db, ACCOUNT, "txt");
+  assert.deepEqual(
+    (found.results ?? []).map((row) => row.name),
+    ["kept.txt"],
+    "the stale row is dropped from the result",
+  );
+  assert.equal(found.results?.[0]?.sizeBytes, 1, "the surviving row still carries its size");
+});
+
+test("a name with a quote, a percent or an underscore is matched literally (drive#571)", async () => {
+  const db = createTestD1();
+  const store = scopeStore(createMemoryStore(), ACCOUNT);
+  // FTS5 reads a bare word as a query with its own operators, so the search
+  // wraps each word in double quotes and doubles an embedded one. These three
+  // names are the ones that break if it does not: a bare quote ends the term,
+  // a percent and an underscore are LIKE wildcards.
+  await store.write(`/odd/it's "quoted".txt`, new Blob(["x"]).stream(), "text/plain");
+  await store.write("/odd/100%_done.txt", new Blob(["y"]).stream(), "text/plain");
+  await store.write("/odd/plain.txt", new Blob(["z"]).stream(), "text/plain");
+  await reconcileIndex(db, store, ACCOUNT);
+
+  const quoted = await searchDrive(db, ACCOUNT, `it's "quoted"`);
+  assert.deepEqual(
+    (quoted.results ?? []).map((row) => row.name),
+    [`it's "quoted".txt`],
+    "a quote inside a word is a character, not an operator",
+  );
+  const wild = await searchDrive(db, ACCOUNT, "100%_done");
+  assert.deepEqual(
+    (wild.results ?? []).map((row) => row.name),
+    ["100%_done.txt"],
+    "a percent and an underscore match themselves",
+  );
+  // The word "plain" must not match a name that only has the characters in
+  // another order, and a query for a bare percent must not match every name.
+  const percentAlone = await searchDrive(db, ACCOUNT, "quoted");
+  assert.equal(percentAlone.count, 1, "only the name holding the word matches");
 });

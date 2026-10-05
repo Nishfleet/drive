@@ -33,6 +33,19 @@
 -- The table's implicit rowid mirrors `file_index`'s, so one file's row is
 -- found by rowid on a delete instead of a scan (FTS5 has no unique
 -- constraint, so a write is a delete-then-insert).
+--
+-- `account_id` is UNINDEXED, so the trigram tokenizer does not spend index
+-- space on it and a search filters the account on a bound parameter. The
+-- trade is that the FTS match is evaluated over the table before that filter,
+-- so a name many accounts share costs every account's matches to rank and then
+-- discards all but one account's. Correctness is unaffected - a search can
+-- only ever return rows the bound account id matches, and
+-- test/integration/search-fts-d1.test.mjs proves one account's search never
+-- returns another's name - and the cost is bounded by the trigram match rather
+-- than by the account size, which is the cost this migration exists to remove.
+-- A separate FTS table per account would scope the match exactly and is the
+-- shape to reach if shared names across many accounts ever show up in the
+-- timings.
 
 CREATE VIRTUAL TABLE IF NOT EXISTS file_index_fts USING fts5(
   name,
@@ -46,5 +59,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS file_index_fts USING fts5(
 -- the table the previous code already filled, carrying each row's rowid so
 -- the delete-then-insert the write path does finds the right row. On an empty
 -- table it is a no-op.
+--
+-- The reconciler is what makes this table complete, not this statement: it
+-- walks an account and rewrites every one of its rows nightly
+-- (src/search.js reconcileIndex), chunked, so it is not bound by the row
+-- ceiling one statement has. This backfill is the arrival window only - it
+-- makes a search correct between this migration and the first nightly run -
+-- and an account whose row count is past one statement's write ceiling is
+-- brought up to date by that first run instead. That is the same contract
+-- `file_index` itself has always had: the write path keeps it current and the
+-- reconciler is what repairs anything it missed.
 INSERT INTO file_index_fts (rowid, name, account_id, path)
   SELECT rowid, name, account_id, path FROM file_index;
