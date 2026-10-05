@@ -224,7 +224,10 @@ export function stateCellText(status) {
 
 // The module's words for a device that has never synced, resolved once, so the
 // Last-sync column and the State column cannot say two different things.
-const NO_SYNC_LABEL = syncStatus({}, 0).label;
+// Exported because the two columns are written in two different halves of this
+// file — one where `document` exists and one where it does not — so nothing
+// that runs in node can compare them. This export is what lets the test do it.
+export const NO_SYNC_LABEL = syncStatus({}, 0).label;
 
 /**
  * The age of a timestamp in milliseconds, or null when it cannot be read. A
@@ -309,6 +312,7 @@ export function syncInstantText(instant, options = {}) {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
     timeZone: options.timeZone,
   });
 }

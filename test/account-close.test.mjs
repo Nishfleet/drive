@@ -166,34 +166,67 @@ test("the purge date reads like 3 Nov (UTC): a day, a short month, and the zone 
   assert.equal(purgeOnDate(Date.parse("2026-11-03T23:30:00.000Z") / 1000), "3 Dec (UTC)");
 });
 
-test("every surface that shows the purge day states the zone with it", () => {
+test("every surface that shows the purge day states the zone with it", async () => {
   // drive#689 makes the zone part of the value rather than of each sentence,
-  // so this reads the four places the date reaches a person and requires the
-  // zone beside it. The two close emails and the close banner are asserted
-  // here; the usage page's own sentence is pinned in the box test below.
-  const closed = renderEmail("account-closed", {
-    graceDays: CLOSE_GRACE_DAYS,
-    reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000),
+  // so this reads the places the date reaches a person and requires the zone
+  // beside it. The zone is not typed into any of them, so this is a real run
+  // over the close path rather than a copy of the expected words: closing a
+  // real account writes the real row, the real mail goes out through the real
+  // sender, and purgeOnDate() is the only thing that put the date in it.
+  const clock = clockAt();
+  const world = setup(clock);
+  const account = { id: "acct_zone", email: "nish@example.com", name: "Nish" };
+  await world.keys.mintKey(account, { kind: "device", name: "mac" });
+  const closedAt = clock.now();
+  const closesOn = purgeOnDate(closedAt / 1000);
+
+  await closeAccount({
+    devices: world.devices,
+    email: world.email,
+    mailFrom: MAIL_FROM,
+    account,
+    typedEmail: "nish@example.com",
+    now: closedAt,
   });
-  const reminder = renderEmail("account-close-reminder", {
-    graceDays: CLOSE_GRACE_DAYS,
-    reminderDays: CLOSE_REMINDER_DAYS,
-    purgeOn: purgeOnDate(Date.parse("2026-10-04T12:00:00.000Z") / 1000),
-  });
-  for (const mail of [closed, reminder]) {
-    for (const line of mail.text.split("\n")) {
-      // The sentence that carries the date names the zone on the same line.
-      if (/3 Nov/.test(line)) {
-        assert.match(line, /3 Nov \(UTC\)/, `the close sentence states its zone: ${line}`);
-      }
+
+  assert.equal(world.email.sent.length, 1, "the day-0 mail went out through the real sender");
+  const mailed = /** @type {{subject: string, text: string}} */ (world.email.sent[0]);
+  assert.match(mailed.subject, /closed/i);
+  // The sentence that carries the date names the zone on the same line, and
+  // the zone came from purgeOnDate(), not from the copy.
+  for (const line of mailed.text.split("\n")) {
+    if (/purge|deleted|30 days/i.test(line)) {
+      assert.match(line, / \(UTC\)/, `the close sentence states its zone: ${line}`);
+      assert.doesNotMatch(line, /\d{4}-\d{2}-\d{2}/);
     }
+  }
+
+  // The five close kinds are asserted through the template the same way, so a
+  // kind whose sentence does not carry the zone fails here rather than only in
+  // the email a customer reads.
+  for (const kind of ["account-closed", "account-close-reminder"]) {
+    const mail = renderEmail(kind, {
+      graceDays: CLOSE_GRACE_DAYS,
+      reminderDays: CLOSE_REMINDER_DAYS,
+      purgeOn: closesOn,
+    });
+    assert.match(mail.text, / \(UTC\)/, `${kind} states the zone its day is in`);
     assert.doesNotMatch(mail.text, /2026-11-03/);
   }
+
   // The banner's sentence is one shared placeholder: the zone arrives inside
-  // the value it fills, so the page needs no second copy of the words.
+  // the value it fills, so the page needs no second copy of the words. Pinned
+  // as source for the same reason the banner test above pins it — the page's
+  // script is the only half of the close flow that has no node entry point.
   const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  // The sentence the value lands in, taken from the copy itself rather than
+  // typed out again, so the page's words and the banner's words cannot differ.
+  const sentence = `${CLOSE_COPY.pendingWhat.split(".")[0]}.`;
   assert.match(page, /Files are deleted on \$\{status\.purgeOn\}\./);
+  // The sentence itself holds no zone: if it ever grows one, the four places
+  // drift again and this fails.
+  assert.doesNotMatch(sentence, /\(UTC\)/);
+  assert.equal(sentence, "This account closes on {purgeOn}.");
 });
 
 test("the close emails carry the short date with its zone and refuse a bare one", () => {

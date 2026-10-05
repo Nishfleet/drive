@@ -75,8 +75,10 @@ export function normalizeEmail(value) {
  * west of Greenwich believe they had their files until the end of their own
  * 3 November. Naming the zone here rather than in each of the four sentences
  * that show the date (the two close emails, the close banner and the usage
- * page) means there is one place to change if the clock ever moves and no
- * sentence that can drift from it.
+ * page) means the four sentences hold no zone of their own, so there is no
+ * sentence that can drift from the day. The email guard's shape is pinned
+ * against this function by test/account-close.test.mjs, which is what catches
+ * the guard and the day moving apart.
  * @param {number} closedAtSeconds
  * @returns {string}
  */

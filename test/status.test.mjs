@@ -28,6 +28,7 @@ import {
   installLines,
   isConnected,
   lastSyncText,
+  NO_SYNC_LABEL,
   pollIntervalMs,
   stateCellText,
   statusEndpoint,
@@ -838,15 +839,31 @@ test("the Last-sync cell sends an instant, and the row writes it in the reader's
   assert.throws(() => syncInstantText(""), /ISO-8601 instant/);
 
   // The cell is never blank. The "no syncs yet" words now live where the row
-  // is built, beside the state column that says the same thing, and they are
-  // still the module's own words resolved once — so a rename of the label
+  // is built, beside the state column that says the same thing. The two
+  // columns are written in two different halves of the module, so this export
+  // is what lets a test that runs in node compare them: the label the row
+  // writes is still the module's own, resolved once, so a rename of the label
   // cannot leave the two columns saying two different things.
-  assert.equal(stateCellText(syncStatus({}, now)), "No syncs yet");
+  assert.equal(NO_SYNC_LABEL, syncStatus({}, now).label);
+  assert.equal(stateCellText(syncStatus({}, now)), NO_SYNC_LABEL);
+  assert.equal(NO_SYNC_LABEL, "No syncs yet");
+  // And the row really is the one place the instant is written, and the one
+  // place the label is written: a second call site that still expects the old
+  // always-string return would render a blank cell, and this fails first.
   const source = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.equal(
+    source.split("lastSyncText(").length - 1,
+    2,
+    "one definition and one call site: the module's row",
+  );
+  // The row's date cell, and the row's alone. Asserted on the line, not the
+  // file, so a failure names the cell rather than dumping 900 lines.
+  const callLine =
+    source.split("\n").find((line) => line.includes("syncInstantText(instant)")) ?? "";
   assert.match(
-    source,
-    /instant === null \? NO_SYNC_LABEL : syncInstantText\(instant\)/,
-    "the row writes the label when there is no instant and the words when there is",
+    callLine,
+    /^\s*element\("td", null, instant === null \? NO_SYNC_LABEL : syncInstantText\(instant\)\),$/,
+    `the row writes the label when there is no instant and the words when there is, in the browser's own zone: ${callLine.trim()}`,
   );
 });
 
