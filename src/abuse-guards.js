@@ -1,6 +1,12 @@
 // Abuse guards (drive#464): one active account per card fingerprint, and the
 // 1 TB storage limit until the first successful charge.
 //
+// The limit is enforced at two doors. The web upload path refuses a save that
+// would pass it (preChargeUploadBlocked / preChargeLimitStream below), and the
+// hourly meter cron takes an over-limit unpaid account's keys read-only
+// (runPreChargeLimitCron, drive#536), because a mount holds a storage key and
+// writes without any page in front of it.
+//
 // The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
 //
 // The real card capture still waits on the Dodo key (#417). The fingerprint
@@ -11,7 +17,10 @@
 // equalling another person's stand-in, so nobody can lock an address out.
 
 import { GB_PER_TB } from "./billing.js";
+import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { failureMessage } from "./messages.js";
+
+/** @typedef {ReturnType<typeof import("../workers/api/src/devices.js").createD1DeviceStore>} DeviceStore */
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
 export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;
@@ -304,7 +313,18 @@ export class PreChargeLimitError extends Error {
 }
 
 /**
- * Stored bytes this account's file index currently holds.
+ * Stored bytes this account's live file versions hold (drive#536): the rows the
+ * storage event intake writes as people save files, the same rows the meter
+ * bills from, with the hidden versions left out.
+ *
+ * `file_index` is not the bytes the account holds now: it is the search index,
+ * and only the nightly reindex rewrites it (src/search.js). An index read
+ * would answer both wrong ways — an account whose index row the reindex has
+ * not reached yet would pass the limit holding more than it, and an account
+ * that deleted a file today would be refused making room the index still
+ * believes is taken. The limit is enforced per save elsewhere
+ * (`preChargeUploadBlocked`, `preChargeLimitStream`) against the same live
+ * rows, so one number decides it everywhere.
  * @param {D1Database} db
  * @param {string} accountId
  * @returns {Promise<number>}
@@ -314,14 +334,128 @@ export async function accountStoredBytes(db, accountId) {
     throw new TypeError(`accountStoredBytes needs an account id, got ${String(accountId)}`);
   }
   const row = await db
-    .prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS stored FROM file_index WHERE account_id = ?1`)
+    .prepare(
+      `SELECT COALESCE(SUM(size_bytes), 0) AS stored
+         FROM file_versions
+        WHERE account_id = ?1 AND hidden_at IS NULL`,
+    )
     .bind(accountId)
     .first();
   const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
   if (!Number.isFinite(stored) || stored < 0) {
-    throw new TypeError(`file_index.size_bytes must be 0 or more, got ${stored}`);
+    throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
   }
   return stored;
+}
+
+/**
+ * The unpaid accounts whose live stored bytes pass the 1 TB pre-charge limit
+ * (drive#536): one grouped read over `file_versions` joined to the `accounts`
+ * rows, so however many accounts hold bytes this costs one statement and
+ * D1 can walk each account's own primary key (account_id, b2_file_id).
+ *
+ * Only accounts the limit still applies to are answered: no first charge yet,
+ * and not closed. A closed account's keys were revoked when it closed
+ * (src/account-close.js), so there is nothing left there to take.
+ * @param {D1Database} db
+ * @returns {Promise<Array<{accountId: string, storedBytes: number}>>}
+ */
+export async function preChargeOverLimitAccounts(db) {
+  const result = await db
+    .prepare(
+      `SELECT v.account_id AS account_id, COALESCE(SUM(v.size_bytes), 0) AS stored
+         FROM file_versions v
+         JOIN accounts a ON a.id = v.account_id
+        WHERE v.hidden_at IS NULL
+          AND a.first_charged_at IS NULL
+          AND a.state <> 'closed'
+        GROUP BY v.account_id
+       HAVING COALESCE(SUM(v.size_bytes), 0) > ?1`,
+    )
+    .bind(PRE_CHARGE_STORAGE_LIMIT_BYTES)
+    .all();
+  return (result.results ?? []).map((row) => {
+    const accountId = row.account_id;
+    const stored = Number(row.stored ?? 0);
+    if (typeof accountId !== "string" || accountId === "") {
+      throw new TypeError(
+        `preChargeOverLimitAccounts read a row with no account id: ${String(accountId)}`,
+      );
+    }
+    if (!Number.isFinite(stored) || stored < 0) {
+      throw new TypeError(`file_versions.size_bytes must be 0 or more, got ${stored}`);
+    }
+    return { accountId, storedBytes: stored };
+  });
+}
+
+/**
+ * The hourly pre-charge sweep (drive#536). The web upload path has held the
+ * 1 TB limit since drive#464, but a mount holds a storage key and writes
+ * straight past any page, so the run that rolls the meter also reads the
+ * over-limit unpaid accounts and takes every live key they hold read-only -
+ * through the plan and swap `POST /api/cap` uses (`capSwapPlan`,
+ * `applyCapSwap`), not a second swap of our own, so a mount is bounded by
+ * the same machinery the spending cap bounds it with.
+ *
+ * Only a key's powers change. The account row is not touched: `accounts.state`
+ * is the spending cap's word (setAccountState, src/cap.js), and this guard's
+ * answer is the key, so the api's write check - which reads the key's
+ * capabilities, not the account state - refuses the write at once. Nothing
+ * here gives a key back either: a first charge lifts the limit and the next
+ * mint (`drive init`) hands out a fresh write key, while a restore from this
+ * sweep could un-freeze an account the spending cap froze on purpose
+ * (src/cap.js enforceCap) or that the prepaid $0 balance paused
+ * (src/prepaid.js).
+ *
+ * One account's failure is logged and the sweep moves on, the shape
+ * runAccountCloseCron uses: the next account is still capped and the next
+ * hourly run retries this one. The grouped read is outside that net - a D1
+ * failure throws, the trigger fails, and Cloudflare retries it rather than
+ * a run that reported success having capped nobody.
+ * @param {{
+ *   db: D1Database,
+ *   devices: Pick<DeviceStore, "listCapKeys" | "keyProviderFor">,
+ * }} input
+ * @returns {Promise<{overLimit: number, capped: number, failures: number}>}
+ */
+export async function runPreChargeLimitCron(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new TypeError("runPreChargeLimitCron needs {db, devices}");
+  }
+  if (input.db === undefined || input.db === null) {
+    throw new Error("pre-charge limit cron needs the customer database");
+  }
+  const devices = input.devices;
+  if (typeof devices?.listCapKeys !== "function" || typeof devices?.keyProviderFor !== "function") {
+    throw new Error(
+      "pre-charge limit cron needs a device store with listCapKeys and keyProviderFor; " +
+        "a swap through anything else would report powers it did not take",
+    );
+  }
+  const overLimit = await preChargeOverLimitAccounts(input.db);
+  let capped = 0;
+  let failures = 0;
+  for (const row of overLimit) {
+    try {
+      const plan = capSwapPlan(await devices.listCapKeys(row.accountId), { state: "read_only" });
+      if (plan.swaps.length === 0) {
+        // Already where the sweep put it: a second hourly run plans no swap,
+        // so an account capped once is not churned every hour.
+        continue;
+      }
+      await applyCapSwap(plan, devices.keyProviderFor(row.accountId));
+      capped += 1;
+    } catch (error) {
+      failures += 1;
+      console.error(
+        `pre-charge limit: account ${row.accountId} holds ${row.storedBytes} live bytes, ` +
+          "past the 1 TB pre-charge limit, but its keys could not be taken read-only",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return { overLimit: overLimit.length, capped, failures };
 }
 
 /**
