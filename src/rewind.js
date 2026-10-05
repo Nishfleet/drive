@@ -32,8 +32,9 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
-import { DAY_MS } from "./auth.js";
+
 import { json } from "../workers/api/src/http.js";
+import { DAY_MS } from "./auth.js";
 import {
   diffBranch,
   discardBranch,

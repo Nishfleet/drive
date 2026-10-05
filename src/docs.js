@@ -44,7 +44,7 @@ const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per 
  * old fixed divisor over-billed (drive#531).
  * @param {number} gbMinutes
  */
-export function meteredUsdFor(gbMinutes) {
+function meteredUsdFor(gbMinutes) {
   return meteredMonthlyBillUsd(gbMinutes, QUOTE_MONTH_MINUTES);
 }
 
@@ -154,7 +154,7 @@ function deleteCell(storage) {
 }
 
 /** The keys a person meets, as a Markdown table. */
-const KEY_TABLE = Object.freeze(
+export const KEY_TABLE = Object.freeze(
   [
     "| Key | Belongs to | Can read | Can write | Can delete | Reaches |",
     "| --- | --- | --- | --- | --- | --- |",

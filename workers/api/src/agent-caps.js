@@ -97,7 +97,7 @@ export async function readAgentCaps(db, accountId, keyId) {
  * @param {number|Date} at the caller's clock, normalized once by `asMillis`
  * @returns {Promise<{day: string, requests: number}>}
  */
-async function stampAgentRequest(db, accountId, keyId, at) {
+export async function stampAgentRequest(db, accountId, keyId, at) {
   const time = asMillis(at);
   const day = dayKey(time);
   // The upsert writes the counter and nothing else. `monthly_cap_usd` and

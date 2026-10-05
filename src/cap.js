@@ -421,7 +421,7 @@ export async function enforceCap(account, provider) {
 // used 80% of your spending cap", src/emails.js), so the walk below sends that
 // email at the share that email describes rather than at a second threshold
 // nobody can read off the page.
-export const CAP_WARNING_RATIO = 0.8;
+const CAP_WARNING_RATIO = 0.8;
 
 /**
  * One metered account's cap decision, for the report the walk returns and for

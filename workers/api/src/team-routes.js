@@ -178,7 +178,7 @@ function publicTeam(team) {
  * @param {{id: string, teamId: string, accountId: string, email: string, role: string, state: string, invitedAt: number, joinedAt: number|null, revokedAt: number|null}} member
  * @param {{includeEmail?: boolean}} [options]
  */
-export function publicMember(member, options = {}) {
+function publicMember(member, options = {}) {
   const includeEmail = options.includeEmail === true;
   return {
     id: member.id,

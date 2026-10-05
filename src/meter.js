@@ -593,8 +593,6 @@ function hourGbMinutesSql(scoped) {
   ORDER BY account_id`;
 }
 
-export const HOUR_STORED_BYTES_SQL = hourStoredBytesSql(false);
-
 export const HOUR_GB_MINUTES_SQL = hourGbMinutesSql(false);
 
 // One statement for both of an hour's numbers, so the two can never describe
@@ -662,7 +660,7 @@ export const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
  * reference a differential test pins it against - so there is one rule, not
  * two, and no float drift between them.
  *
- * HOUR_STORED_BYTES_SQL is this statement's other half - the same window and
+ * hourStoredBytesSql is this statement's other half - the same window and
  * the same GROUP BY, bytes instead of minutes - and both halves are read
  * together as HOUR_USAGE_SQL, the minutes query LEFT JOINed to the bytes
  * query. One statement, so the hour's two figures are two columns of ONE
@@ -731,7 +729,7 @@ export async function rollupHour(db, hourStartMs, nowMs) {
  * @param {number} nowMs
  * @returns {Promise<{hour: number, gbMinutes: number}>}
  */
-export async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
+async function rollupAccountHour(db, accountId, hourStartMs, nowMs) {
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`rollupAccountHour needs an account id, got ${String(accountId)}`);
   }
@@ -1890,7 +1888,7 @@ export async function runMeterCron(db, now = Date.now()) {
 // catch-up, so this keeps a run's work bounded however old the correction:
 // a 180-day correction is re-rolled over the following days, oldest hour
 // first, and every other account's hours are never touched by it.
-export const MAX_REROLL_HOURS_PER_RUN = 12;
+const MAX_REROLL_HOURS_PER_RUN = 12;
 
 const PENDING_REROLLS_SQL = `SELECT account_id, from_hour, through_hour
   FROM meter_account_rerolls ORDER BY from_hour, account_id LIMIT ?1`;
@@ -1913,7 +1911,7 @@ const REROLL_QUEUE_SQL = `INSERT INTO meter_account_rerolls (account_id, from_ho
  * @param {D1Database} db
  * @param {number} at the run instant, epoch ms
  */
-export async function drainAccountRerolls(db, at) {
+async function drainAccountRerolls(db, at) {
   const lastClosed = hourStart(at) - HOUR_MS;
   const pending = await db.prepare(PENDING_REROLLS_SQL).bind(MAX_REROLL_HOURS_PER_RUN).all();
   let budget = MAX_REROLL_HOURS_PER_RUN;

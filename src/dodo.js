@@ -47,8 +47,8 @@ import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 // API on, so the one value the key's host comes from was a shape rather than
 // a name. Naming the live host here does not select it — the default below is
 // still the test server and only DODO_BASE_URL can move the push.
-export const DODO_TEST_HOST = "test.dodopayments.com";
-export const DODO_LIVE_HOST = "live.dodopayments.com";
+const DODO_TEST_HOST = "test.dodopayments.com";
+const DODO_LIVE_HOST = "live.dodopayments.com";
 export const DODO_API_HOSTS = Object.freeze([DODO_TEST_HOST, DODO_LIVE_HOST]);
 
 // The test-mode host and ingest path are split so the host can be overridden

@@ -65,7 +65,7 @@ export const KEY_POWERS = Object.freeze({
  * @param {"device"|"agent"|"s3"|"branch"} kind
  * @returns {StoragePowers}
  */
-export function storagePowersFor(kind) {
+function storagePowersFor(kind) {
   const switches = deleteSwitchesFor(powersFor(kind).capabilities);
   return {
     // The provider refuses a delete only when the mint sets this switch.

@@ -119,7 +119,7 @@ export function snapshotKey(account, name) {
  * under the cap, so a write that grows between measuring and landing still
  * fits, and a snapshot grows into more chunks instead of into a refusal.
  */
-export const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
+const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
 
 /**
  * The marker inside a chunked snapshot's manifest. A value at the snapshot

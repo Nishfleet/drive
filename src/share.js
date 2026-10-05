@@ -58,7 +58,6 @@ import { BYTES_PER_GB } from "./billing.js";
 // src/billing.js's own, beside GB_PER_TB; the day is src/auth.js's own, declared
 // there because src/auth.js depends on nothing but the email sender
 // (issue #583).
-import { isSameOriginRequest } from "./email-send.js";
 import {
   etagMatches,
   joinPath,
@@ -115,16 +114,15 @@ export const REQUEST_NAME_MAX_LENGTH = 255;
 // A per-link total above this is a number the owner cannot mean (drive issue
 // #549): 1 TB is the pre-charge storage ceiling, so a link promising more
 // could never be honoured anyway.
-export const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
+const REQUEST_TOTAL_MAX_CEILING_BYTES = 1_000_000_000_000;
 // How many times a shared file's own size a link may serve before it stops
 // (drive issue #549): a share is for showing a file, not for hosting it as a
 // seed, and 30x a file is far above the handful of opens a person makes.
-export const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
+const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
 // A link whose row is this old and no longer open can be pruned (drive issue
 // #549): expired and revoked rows are kept 90 days so the owner's list still
 // shows what they did, then removed.
 export const LINK_RETENTION_DAYS = 90;
->>>>>>> origin/main
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.

@@ -384,7 +384,7 @@ function finish({ subject, lines, html_lines, saved = null }) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function topUpReceiptTemplate(data = {}) {
+function topUpReceiptTemplate(data = {}) {
   const amount = requireMoney(data.amountUsd, "amountUsd");
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   if (typeof data.auto !== "boolean") {
@@ -416,7 +416,7 @@ export function topUpReceiptTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function lowBalanceTemplate(data = {}) {
+function lowBalanceTemplate(data = {}) {
   const balance = requireMoney(data.balanceUsd, "balanceUsd");
   const auto =
     data.autoTopUpUsd === null || data.autoTopUpUsd === undefined
@@ -451,7 +451,7 @@ function requireText(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function deviceApproveNoticeTemplate(data = {}) {
+function deviceApproveNoticeTemplate(data = {}) {
   const deviceName = requireText(data.deviceName, "deviceName");
   const requestedAt = requireText(data.requestedAt, "requestedAt");
   const subject = "A device asked to connect to your drive";

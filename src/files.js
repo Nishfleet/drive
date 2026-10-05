@@ -29,7 +29,7 @@ import {
 // The listing parser itself now lives in src/s3-listing.js, which the api
 // Worker reads too (drive issue #504: one parser, decoded, for both Workers).
 // These re-exports keep the names every caller already imports from here.
-export { decodeEntities, nextContinuationToken, parseListVersions } from "./s3-listing.js";
+export { nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
 import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
@@ -43,7 +43,6 @@ import {
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
 import { DAY_MS } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
@@ -574,7 +573,7 @@ function parseFlatTrashName(name) {
  * @param {string} name
  * @returns {string}
  */
-function trashStorePath(name) {
+export function trashStorePath(name) {
   return `${TRASH_PATH}/${name}`;
 }
 
@@ -905,7 +904,7 @@ export class ChangedUnderUsError extends Error {
  * not characters, because the two counts agree for ASCII and diverge as soon as
  * a name is not ASCII.
  */
-export const MAX_STORAGE_KEY_BYTES = 1024;
+const MAX_STORAGE_KEY_BYTES = 1024;
 
 /**
  * The storage key one drive path lives at under an account's own prefix, and
@@ -2444,7 +2443,7 @@ export function etagMatches(ifNoneMatch, etag) {
  * @param {number} total
  * @returns {{start: number, end: number}|null|"unsatisfiable"}
  */
-export function parseByteRange(header, total) {
+function parseByteRange(header, total) {
   const match = /^bytes=([0-9]+)?-([0-9]*)$/.exec(header.trim());
   if (!match) {
     return null;
@@ -2637,7 +2636,7 @@ export function joinPath(folder, name) {
 /** Rows the Files page asks for in one load, before the More button takes
  * over (drive#570). 200 rows render in one paint; a folder ten times that
  * size used to cost a full recursive LIST walk and every key in it. */
-export const FILE_PAGE_SIZE = 200;
+const FILE_PAGE_SIZE = 200;
 
 /**
  * @param {Request} request

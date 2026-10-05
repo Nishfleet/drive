@@ -34,13 +34,13 @@ import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
 
 /** The env value that turns the pause on. Anything else leaves it off. */
-export const PREPAID_PAUSE_ON = "on";
+const PREPAID_PAUSE_ON = "on";
 
 /** A started auto top-up is not started again for this long. */
 export const AUTO_TOPUP_RETRY_MS = 24 * HOUR_MS;
 
 /** The purpose tag an auto top-up's checkout carries, beside the manual one. */
-export const AUTO_TOPUP_SOURCE = "auto";
+const AUTO_TOPUP_SOURCE = "auto";
 
 /**
  * Whether the pause at $0 is switched on for this Worker. It is off until the
