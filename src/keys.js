@@ -25,7 +25,7 @@ export const AGENT_TOOLS = Object.freeze(["claude", "codex", "gemini", "cursor",
  * @param {"device"|"agent"|"s3"|"branch"} kind
  * @returns {Powers}
  */
-export function powersFor(kind) {
+function powersFor(kind) {
   const capabilities = CAPABILITIES_BY_KIND[kind];
   if (!capabilities) {
     throw new TypeError(`no such key kind: ${String(kind)}`);

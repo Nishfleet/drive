@@ -54,7 +54,7 @@ import { unauthorizedResponse } from "./status.js";
 // The capability that makes a key able to change storage. `delete` is a write
 // path too, so a key that has only delete is still a key the cap has to take
 // away.
-export const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
+const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 
 // What a capped key keeps: the same prefix, list and read. A capped account
 // still reads every file it paid for; it just cannot change them.

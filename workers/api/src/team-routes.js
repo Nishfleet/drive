@@ -141,7 +141,7 @@ export async function removeMemberRoute(request, ctx) {
  * A team row as it is stored, with nothing secret in it.
  * @param {{id: string, ownerAccountId: string, name: string, createdAt: number}} team
  */
-export function publicTeam(team) {
+function publicTeam(team) {
   return {
     id: team.id,
     name: team.name,
@@ -155,7 +155,7 @@ export function publicTeam(team) {
  * included: a key is minted for it, and the owner needs to see whose it is.
  * @param {{id: string, teamId: string, accountId: string, email: string, role: string, state: string, invitedAt: number, joinedAt: number|null, revokedAt: number|null}} member
  */
-export function publicMember(member) {
+function publicMember(member) {
   return {
     id: member.id,
     teamId: member.teamId,

@@ -23,6 +23,7 @@
 // (`{id, name, email}`, resolved by the src/status.js `signedInAccount` gate);
 // its fields are copied onto the code row, so a poll on another instance can
 // name the owner without this module holding an accounts table of its own.
+import { DAY_MS } from "../../../src/auth.js";
 import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 
 /**
@@ -93,11 +94,10 @@ export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 // days is the session TTL src/auth.js already chose, and for the same reason
 // ("the drive is reached on every visit, so signing in every week would be a
 // support ticket, not a security win"): a month bounds what a leak is worth
-// without asking a person to approve a code every few days. The number is
-// written here rather than imported so this module keeps no dependency on the
-// account store; keystore.test.js pins the two to each other, so they cannot
-// drift into two different months.
-export const DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+// without asking a person to approve a code every few days. The month is three
+// tens of src/auth.js's own day, and keystore.test.js pins the two to each
+// other, so they cannot drift into two different months.
+export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 // The user code a person types on the approval page. The alphabet leaves out
 // vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
@@ -111,7 +111,7 @@ const USER_CODE_LENGTH = 8;
  * rejected rather than biased toward the alphabet's low end.
  * @param {() => Uint8Array} randomBytes
  */
-export function newUserCode(randomBytes) {
+function newUserCode(randomBytes) {
   const bytes = randomBytes();
   const limit = Math.floor(256 / USER_CODE_ALPHABET.length) * USER_CODE_ALPHABET.length;
   let out = "";

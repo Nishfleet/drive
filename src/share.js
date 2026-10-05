@@ -49,6 +49,14 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
+import { DAY_MS } from "./auth.js";
+import { BYTES_PER_GB } from "./billing.js";
+// The decimal GB and the day are imported rather than restated: the storage
+// limit, the per-link upload total and the meter all divide by the same GB, and
+// every expiry in the repo is measured in the same day. The GB is
+// src/billing.js's own, beside GB_PER_TB; the day is src/auth.js's own, declared
+// there because src/auth.js depends on nothing but the email sender
+// (issue #583).
 import { isSameOriginRequest } from "./email-send.js";
 import {
   joinPath,
@@ -72,8 +80,9 @@ export const REQUEST_ENDPOINT = "/api/request";
 export const REQUEST_PAGE = "/upload.html";
 /** How long a link lasts, in days, when the caller does not choose. */
 export const DEFAULT_LINK_DAYS = 7;
-/** One day in milliseconds, the unit the expiry is measured in. */
-export const DAY_MS = 24 * 60 * 60 * 1000;
+/** One day in milliseconds, the unit the expiry is measured in. Re-exported
+ * from src/auth.js for the callers that import the day from here. */
+export { DAY_MS };
 // Per-file ceiling on a public upload request (drive issue #208, from the
 // 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even
 // while the stream is copied into one buffer to count it; the platform's
@@ -86,7 +95,7 @@ export const REQUEST_FILE_MAX_BYTES = 32_000_000;
 // while the owner sleeps: a stranger is bounded to 1 GB through the link,
 // on top of the owner's spending cap. The owner may set a different total
 // when they mint the page (POST /api/request {folder, maxBytes}).
-export const REQUEST_TOTAL_MAX_BYTES = 1_000_000_000;
+export const REQUEST_TOTAL_MAX_BYTES = BYTES_PER_GB;
 // 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
 // fixed, so a token in a URL either has exactly this shape or is not one of
 // ours; guessing one is a 2^128 search.
@@ -354,7 +363,7 @@ export function shareRow(record, now, base) {
  * @param {number} now
  * @param {string} base
  */
-export function requestRow(record, now, base) {
+function requestRow(record, now, base) {
   const state = linkState(record, now);
   const count = Number.isFinite(record.uploadCount) ? record.uploadCount : 0;
   const bytes = Number.isFinite(record.uploadBytes) ? record.uploadBytes : 0;
@@ -822,7 +831,7 @@ async function readJsonObject(request) {
  *
  * @param {Request} request
  */
-export function baseFromRequest(request) {
+function baseFromRequest(request) {
   return new URL(request.url).origin;
 }
 

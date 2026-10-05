@@ -293,7 +293,7 @@ function requireDay(value, name) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function accountClosedTemplate(data = {}) {
+function accountClosedTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
@@ -323,7 +323,7 @@ export function accountClosedTemplate(data = {}) {
 /**
  * @param {Record<string, unknown>} [data]
  */
-export function accountCloseReminderTemplate(data = {}) {
+function accountCloseReminderTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");

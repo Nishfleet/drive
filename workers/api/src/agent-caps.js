@@ -25,13 +25,7 @@
 // and a tool still looping after its first refusal is exactly what the number
 // should show.
 
-import {
-  agentCapPlan,
-  agentCapStatus,
-  asMillis,
-  dayKey,
-  monthKey,
-} from "../../../src/agentcaps.js";
+import { agentCapPlan, agentCapStatus, asMillis, dayKey } from "../../../src/agentcaps.js";
 import { monthUsageThrough } from "../../../src/meter.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
 
@@ -41,14 +35,14 @@ import { bucketForKeyPrefix } from "./keyprovider.js";
 // three is an agent. The account cap (src/cap.js, the nightly sweep) is what
 // bounds the person's own keys, so a daily request cap here would stop
 // somebody's own uploads, which is the failure these caps must not have.
-export const AGENT_KEY_KIND = "agent";
+const AGENT_KEY_KIND = "agent";
 
 /**
  * Whether this key is one the caps cover.
  * @param {{kind?: string}|null|undefined} device
  * @returns {boolean}
  */
-export function isAgentKey(device) {
+function isAgentKey(device) {
   return device?.kind === AGENT_KEY_KIND;
 }
 
@@ -95,7 +89,7 @@ export async function readAgentCaps(db, accountId, keyId) {
  * @param {number|Date} at the caller's clock, normalized once by `asMillis`
  * @returns {Promise<{day: string, requests: number}>}
  */
-export async function stampAgentRequest(db, accountId, keyId, at) {
+async function stampAgentRequest(db, accountId, keyId, at) {
   const time = asMillis(at);
   const row = await readAgentCaps(db, accountId, keyId);
   const day = dayKey(time);
@@ -180,4 +174,4 @@ export function capKeyRow(device) {
   };
 }
 
-export { agentCapPlan, asMillis, dayKey, monthKey };
+export { agentCapPlan };

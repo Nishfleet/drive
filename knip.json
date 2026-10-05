@@ -1,0 +1,20 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/index.js",
+    "workers/api/src/index.js",
+    "workers/dl/src/index.js",
+    "test/*.test.mjs",
+    "workers/*/test/*.test.js"
+  ],
+  "project": ["src/**/*.js", "workers/**/*.js"],
+  "ignoreBinaries": ["unshare", "ffmpeg", "ffprobe", "mount", "findmnt"],
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "unlisted": "error",
+    "exports": "error",
+    "types": "off",
+    "duplicates": "off"
+  }
+}

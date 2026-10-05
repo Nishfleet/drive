@@ -57,12 +57,21 @@ export const AUTH_COOKIE_PREFIX = "drive";
 export const SIGNIN_LINK_TTL_SECONDS = 600;
 
 /**
+ * One day in milliseconds. Declared here beside the session TTLs that are
+ * measured in it, and exported, because src/auth.js depends on nothing but the
+ * email sender: every module in the repo can import the day from here without
+ * closing an import cycle. src/share.js re-exports it for the callers that
+ * import it from there (issue #583).
+ */
+export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
  * How long a session lives, and how often it is refreshed. Thirty days is the
  * browser-session length a person expects from a web app, refreshed when it is
  * used, so signing in every week would be a support ticket rather than a
  * security win.
  */
-export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+export const SESSION_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
 /**
  * The page a signed-in person lands on after following their link.
@@ -163,7 +172,7 @@ export function createAuth(options) {
       expiresIn: SESSION_TTL_SECONDS,
       // Refresh a session that is still being used, so an active person is not
       // signed out mid-week, and so an abandoned one still expires.
-      updateAge: 24 * 60 * 60,
+      updateAge: DAY_MS / 1000,
     },
     advanced: {
       cookiePrefix: AUTH_COOKIE_PREFIX,
@@ -206,7 +215,7 @@ export function createAuth(options) {
  * @param {string} baseURL the deployment's public address
  * @returns {string}
  */
-export function signinLink(token, baseURL) {
+function signinLink(token, baseURL) {
   return `${baseURL.replace(/\/$/, "")}${SIGNIN_LINK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
@@ -305,7 +314,7 @@ async function sendSigninLink(env, link) {
  * @param {string} url the absolute link, already built by signinLink
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-export function signinLinkEmail(url) {
+function signinLinkEmail(url) {
   const minutes = Math.round(SIGNIN_LINK_TTL_SECONDS / 60);
   return {
     subject: "Your drive sign-in link",

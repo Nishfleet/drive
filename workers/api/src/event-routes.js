@@ -157,10 +157,12 @@ export async function storageEventsRoute(request, ctx) {
     return errorResponse(400, parsed.error);
   }
   for (const event of parsed.events) {
-    // The line the step 1 proof quotes: the event's own name, the object it
-    // names and the version the bucket created. No bytes and no secret.
+    // The line the step 1 proof quotes: the event's own name and the version
+    // the bucket created. No bytes, no secret, and no object path: the key
+    // names the customer's file, and a log line is not a place for it
+    // (issue #583). The count below is what the proof needs.
     console.log(
-      `[api] storage event ${event.eventName} ${event.bucket}/${event.key} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
+      `[api] storage event ${event.eventName} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
     );
   }
   return json({ received: parsed.events.length, events: parsed.events }, 202);

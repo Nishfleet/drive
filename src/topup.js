@@ -49,7 +49,7 @@ export const DODO_CHECKOUT_PATH = "/checkouts";
 export const TOPUP_PURPOSE = "drive-topup";
 
 /** How far a webhook's timestamp may be from now, in seconds. */
-export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
+const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",

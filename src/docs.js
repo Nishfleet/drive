@@ -33,7 +33,7 @@ import { SITE } from "./seo.js";
  * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
  * not retyped, so a re-rate moves the docs and the invoice together.
  */
-export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
+const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
  * The metered cost of a month, in dollars, before the maximum: the rate on the
@@ -41,7 +41,7 @@ export const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}
  * is the same function the usage page and `drive usage` read.
  * @param {number} gbMinutes
  */
-export function meteredUsdFor(gbMinutes) {
+function meteredUsdFor(gbMinutes) {
   return meteredMonthlyBillUsd(gbMinutes);
 }
 
@@ -53,7 +53,7 @@ export function meteredUsdFor(gbMinutes) {
  * maximum from the two functions the usage page reads. A docs row is therefore
  * the same row, worked the same way, that the copy gate holds the live page to.
  */
-export const BILL_EXAMPLES = Object.freeze(
+const BILL_EXAMPLES = Object.freeze(
   [0.2, 0.8, 1.5, 3].map((tb) => {
     const gb = tb * GB_PER_TB;
     const bill = monthlyBillForStoredTb(tb);
@@ -81,7 +81,7 @@ function dollars(amount) {
  * typed in the page so a re-price cannot leave a stale example on a page that
  * still reads as current.
  */
-export const BILL_TABLE = Object.freeze(
+const BILL_TABLE = Object.freeze(
   [
     "| Stored, kept all month | The meter | The maximum | Your bill |",
     "| --- | --- | --- | --- |",
@@ -126,7 +126,7 @@ function keyRow(kind, owner) {
 const yesNo = (value) => (value ? "yes" : "no");
 
 /** The keys a person meets, as a Markdown table. */
-export const KEY_TABLE = Object.freeze(
+const KEY_TABLE = Object.freeze(
   [
     "| Key | Belongs to | Can read | Can write | Can delete |",
     "| --- | --- | --- | --- | --- |",
@@ -156,7 +156,7 @@ export const KEY_TABLE = Object.freeze(
  * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
  * test/docs.test.mjs still fails if either number leaves that internal row.
  */
-export const RIVAL_1TB = Object.freeze({
+const RIVAL_1TB = Object.freeze({
   name: "Space",
   monthToMonthUsd: 20,
   yearlyUsd: 15,

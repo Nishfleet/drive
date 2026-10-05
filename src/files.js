@@ -26,6 +26,7 @@ import {
   preChargeLimitStream,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
+import { DAY_MS } from "./auth.js";
 import { isSameOriginRequest } from "./email-send.js";
 import { failureMessage } from "./messages.js";
 import { formatBytes, unauthorizedResponse } from "./status.js";
@@ -52,7 +53,7 @@ export const CONTROL_OR_SLASH = new RegExp(
 /** The listing, download, upload and restore API. */
 export const FILES_ENDPOINT = "/api/files";
 /** The folder a deleted file is parked in so Recently deleted can put it back. */
-export const TRASH_FOLDER = ".trash";
+const TRASH_FOLDER = ".trash";
 /** The drive path of that folder. */
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
 /**
@@ -114,17 +115,6 @@ const TEXT_EXTENSIONS = [
   "sql",
   "xml",
 ];
-
-/** The value neighbors read: what a file's extension or type says it is. */
-export const FILE_KINDS = Object.freeze([
-  "folder",
-  "image",
-  "video",
-  "audio",
-  "pdf",
-  "text",
-  "file",
-]);
 
 /**
  * The extension of a name, lowercased, without the dot; "" when there is none.
@@ -365,7 +355,7 @@ export function splitEntries(entries) {
 /** The folders the drive keeps for itself: hidden in the drive root, and
  * skipped by every walk that builds a copy of a person's files
  * (src/branches.js) or an index of them (src/search.js). */
-export const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
+const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
 
 /**
  * A drive listing without the folders the drive keeps for itself.
@@ -438,7 +428,7 @@ export function parseTrashName(name) {
  * @param {string} name
  * @returns {string}
  */
-export function trashStorePath(name) {
+function trashStorePath(name) {
   return `${TRASH_PATH}/${name}`;
 }
 
@@ -466,7 +456,7 @@ export function findTrashName(entries, path) {
  */
 export function isRestorable(deletedAt, now = Date.now()) {
   const age = now - deletedAt;
-  return age >= 0 && age <= RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
+  return age >= 0 && age <= RECENTLY_DELETED_DAYS * DAY_MS;
 }
 
 /**
@@ -508,7 +498,7 @@ export function formatWhen(value, now = Date.now()) {
  * @returns {string}
  */
 export function restorableUntil(deletedAt) {
-  const until = deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
+  const until = deletedAt + RECENTLY_DELETED_DAYS * DAY_MS;
   return `Restorable until ${new Date(until).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",

@@ -56,7 +56,16 @@ export const MINUTES_PER_MONTH = 43800;
 // Exported for the same reason: the docs page's worked table divides by it too,
 // so a docs example and an invoice example cannot disagree about what a TB is.
 export const GB_PER_TB = 1000;
-const BYTES_PER_GB = 1e9;
+// One GB in decimal bytes, the size unit the price is quoted in. Written once,
+// here beside GB_PER_TB, instead of being spelled out as 1e9 at each use
+// (issue #583). src/meter.js re-exports it, because src/meter.js published it
+// first and its callers import it from there.
+//
+// It lives here rather than in src/meter.js because src/meter.js imports
+// src/files.js, which imports src/abuse-guards.js, which imports this module:
+// taking the GB back from src/meter.js would close a cycle whose modules read
+// each other's constants while their bodies are still running.
+export const BYTES_PER_GB = 1e9;
 
 /**
  * The billing config for a price: the price's own numbers plus the

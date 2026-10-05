@@ -14,6 +14,7 @@
 // how a key that names an account stops naming one. It is a pure function of
 // a string, so it pulls no Worker-only code into this module.
 import { decodeNotificationKey } from "../workers/api/src/event-routes.js";
+import { BYTES_PER_GB } from "./billing.js";
 import { accountPrefix, scopeStore } from "./files.js";
 //
 // Three jobs, in the order the issue lists them:
@@ -128,14 +129,15 @@ export function toMillis(value, field) {
 export const MINIMUM_MINUTES_PER_VERSION = 60;
 
 export const MINUTE_MS = 60_000;
-
-// One GB in bytes, decimal (1e9), because the GB in this repo's prices is the
-// decimal one: docs/build-spec.md prices at 2 cents per GB-month and reads
-// the $1 free credit as "about 50 GB", src/billing.js stores
-// BYTES_PER_GB = 1e9 and GB_PER_TB = 1000, and the provider-usage-report
-// comparison the done-when makes is GB-months too. `size_bytes` itself is
-// always bytes; this constant is only the divisor of the GB-minutes math.
-export const BYTES_PER_GB = 1e9;
+// One GB in bytes is declared with the other size units in src/billing.js and
+// re-exported here, because this module published it first and its tests and
+// callers import it from here. The GB in this repo's prices is the decimal one:
+// docs/build-spec.md prices at 2 cents per GB-month and reads the $1 free
+// credit as "about 50 GB", src/billing.js stores BYTES_PER_GB = 1e9 and
+// GB_PER_TB = 1000, and the provider-usage-report comparison the done-when
+// makes is GB-months too. `size_bytes` itself is always bytes; this constant is
+// only the divisor of the GB-minutes math.
+export { BYTES_PER_GB };
 
 export const HOUR_MS = 60 * MINUTE_MS;
 
@@ -238,14 +240,6 @@ function versionOverlapMinutes(version, hour, now = Date.now()) {
  * @param {number|Date|string} now for a version still live, the instant its
  *   storage stops counting in this hour (the end of a closed hour)
  */
-export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
-  const size = wholeBytes(version.sizeBytes);
-  if (size === null) {
-    throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
-  }
-  return versionOverlapMinutes(version, hour, now) * (size / BYTES_PER_GB);
-}
-
 /**
  * The whole minutes one version books into one hour, minimum included. This
  * is the one function the rollup trusts: two calls with the same version and
@@ -268,7 +262,7 @@ export function versionOverlapGbMinutes(version, hour, now = Date.now()) {
  *   version in isolation.
  * @returns {number} whole booked minutes
  */
-export function versionBookedMinutes(version, hour, now = Date.now(), continued = false) {
+function versionBookedMinutes(version, hour, now = Date.now(), continued = false) {
   const start = hourStart(hour);
   const overlap = versionOverlapMinutes(version, start, now);
   if (version.hiddenAt === null || version.hiddenAt === undefined) {
@@ -317,7 +311,7 @@ export function versionBookedMinutes(version, hour, now = Date.now(), continued 
  * @param {boolean} [continued] see versionBookedMinutes (drive issue #104)
  * @returns {number} byte-minutes
  */
-export function versionBookedByteMinutes(version, hour, now = Date.now(), continued = false) {
+function versionBookedByteMinutes(version, hour, now = Date.now(), continued = false) {
   const size = wholeBytes(version.sizeBytes);
   if (size === null) {
     throw new TypeError(`version size must be 0 or more bytes, got ${version.sizeBytes}`);
@@ -480,7 +474,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // hour, per account - one statement, one row per account, however many
 // versions exist, which is the property the GB-minutes statement above was
 // built for.
-export const HOUR_STORED_BYTES_SQL = `SELECT account_id,
+const HOUR_STORED_BYTES_SQL = `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
   FROM file_versions
@@ -492,13 +486,13 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
     CAST(SUM(
       (
         (CASE
-          WHEN MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) < 60000
+          WHEN MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) < ${MINUTE_MS}
             THEN 0
-          ELSE CAST(MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) / 60000 AS INTEGER)
+          ELSE CAST(MAX(0, MIN(?2, COALESCE(hidden_at, ?2)) - MAX(?1, created_at)) / ${MINUTE_MS} AS INTEGER)
         END)
         + (CASE
           WHEN hidden_at IS NOT NULL AND hidden_at >= ?1 AND hidden_at < ?2 AND hidden_at >= created_at
-            AND CAST((hidden_at - created_at) / 60000 AS INTEGER) < 60
+            AND CAST((hidden_at - created_at) / ${MINUTE_MS} AS INTEGER) < 60
             AND NOT EXISTS (
               SELECT 1 FROM file_versions s
               WHERE s.account_id = file_versions.account_id
@@ -506,11 +500,11 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
                 AND s.created_at = file_versions.hidden_at
                 AND s.b2_file_id <> file_versions.b2_file_id
             )
-            THEN 60 - CAST((hidden_at - created_at) / 60000 AS INTEGER)
+            THEN 60 - CAST((hidden_at - created_at) / ${MINUTE_MS} AS INTEGER)
             ELSE 0
           END)
       ) * size_bytes
-    ) AS REAL) / 1e9 AS gb_minutes,
+    ) AS REAL) / ${BYTES_PER_GB} AS gb_minutes,
     COUNT(*) AS versions
   FROM file_versions
   WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?1)
@@ -531,7 +525,7 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
 // gets the row the bytes statement cannot give it, which is a 0-byte mark: the
 // drive really did hold nothing in that hour, and the month's peak is a MAX
 // over the marks that one zero does not disturb.
-export const HOUR_USAGE_SQL = `SELECT minutes.account_id,
+const HOUR_USAGE_SQL = `SELECT minutes.account_id,
     minutes.gb_minutes,
     COALESCE(bytes.stored_bytes, 0) AS stored_bytes,
     minutes.versions
@@ -675,7 +669,7 @@ export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, n
 // re-rolled by the reconciler #59. A MAX is not lowered by a 0, so the only
 // shape in which no hour measured anything is the all-zero one, and that is
 // the shape the reader refuses.)
-export const MONTH_PEAK_BYTES_SQL = `SELECT
+const MONTH_PEAK_BYTES_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(CASE WHEN stored_bytes > 0 THEN 1 ELSE 0 END), 0) AS marked_hours,
     COUNT(*) AS hours
@@ -794,7 +788,7 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
 // that already exist, through the closed hour being pushed. This is a SUM
 // over stored rows, not a generate_series over missing hours, so a gap the
 // meter has not rolled yet is not invented as a $0 hour.
-export const MONTH_USAGE_THROUGH_SQL = `SELECT
+const MONTH_USAGE_THROUGH_SQL = `SELECT
     COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(download_bytes), 0) AS download_bytes,
@@ -1453,7 +1447,7 @@ export const EVENTS_PER_BATCH = 50;
  * @param {ReturnType<typeof validateEvent>[]} events
  * @param {number|Date|string} now
  */
-export async function recordEvents(db, events, now = Date.now()) {
+async function recordEvents(db, events, now = Date.now()) {
   const receivedAt = toMillis(now, "now");
   let stored = 0;
   for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
@@ -1728,7 +1722,7 @@ export const METER_CRON = "5 * * * *";
 // trigger. A stored version row is the only input, so re-rolling recomputes
 // the same total and adds no row - the grace costs a re-roll, never a bill.
 // An event later than this window is the nightly reconciler's job (#59).
-export const REROLL_GRACE_HOURS = 1;
+const REROLL_GRACE_HOURS = 1;
 
 // The most hours one run rolls. A backlog (a Cron Trigger that did not fire,
 // a run that failed) is drained oldest hour first, this many hours per run,

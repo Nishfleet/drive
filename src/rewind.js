@@ -32,6 +32,8 @@
 // is scoped to the signed-in account's own rows and prefix, so one account can
 // never read or rewind another's branch — the same isolation the branches
 // module already has, and the gate test/account-gate.test.mjs walks.
+
+import { DAY_MS } from "./auth.js";
 import {
   diffBranch,
   discardBranch,
@@ -50,8 +52,6 @@ export const REWIND_ENDPOINT = "/api/rewind";
  * 30-day undo window (src/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
@@ -195,7 +195,7 @@ export async function rewindPreview(store, branch, now, snapshots) {
  * @param {{id: string}} account
  * @param {string} name
  */
-export async function rewindBranchRow(db, snapshots, store, account, name) {
+async function rewindBranchRow(db, snapshots, store, account, name) {
   const branch = (await listBranches(db, snapshots, store, account)).find(
     (row) => row.name === name,
   );

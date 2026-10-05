@@ -10,11 +10,12 @@
 // call, and no secret. The two prefixes keep a posted string from ever
 // equalling another person's stand-in, so nobody can lock an address out.
 
-import { GB_PER_TB } from "./billing.js";
+import { DAY_MS } from "./auth.js";
+import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
 import { failureMessage } from "./messages.js";
 
 /** 1 TB in decimal bytes, the same GB the bill uses. */
-export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * 1e9;
+export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * BYTES_PER_GB;
 
 /** Accounts row id used at the card step, before Better Auth mints a user. */
 const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
@@ -24,7 +25,7 @@ const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
  * is deleted at the next card step, so a sign-up nobody finished cannot keep a
  * card locked. A day is far past the sign-in link's own life.
  */
-export const HOLD_TTL_SECONDS = 24 * 60 * 60;
+export const HOLD_TTL_SECONDS = DAY_MS / 1000;
 
 /**
  * The accounts.id the card step writes before the magic-link is followed.

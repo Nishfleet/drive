@@ -19,7 +19,7 @@
 
 import { PREPAID } from "./pricing.js";
 
-export const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
+const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
 
 /** The smallest top-up, in cents. */
 export const MIN_TOP_UP_CENTS = PREPAID.minTopUpUsd * 100;

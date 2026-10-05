@@ -7,6 +7,7 @@
 // migrations/drive/0017_account_close.sql. `accounts.state` already carries
 // `closed`. Nothing here applies a migration to production D1.
 
+import { DAY_MS } from "./auth.js";
 import { sendEmail } from "./email-send.js";
 import { scopeStore } from "./files.js";
 import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
@@ -20,7 +21,9 @@ export const CLOSE_CANCEL_ENDPOINT = "/api/account/close/cancel";
 
 export const CLOSE_GRACE_DAYS = 30;
 export const CLOSE_REMINDER_DAYS = 25;
-const DAY_SECONDS = 24 * 60 * 60;
+// One day in seconds, from src/auth.js's own day, so the grace window and every
+// other expiry in the repo cannot disagree about what a day is (issue #583).
+const DAY_SECONDS = DAY_MS / 1000;
 
 export const CLOSE_COPY = Object.freeze({
   heading: "Close your account",
@@ -62,7 +65,7 @@ function json(body, status = 200) {
  * @param {unknown} value
  * @returns {string}
  */
-export function normalizeEmail(value) {
+function normalizeEmail(value) {
   if (typeof value !== "string") {
     return "";
   }
@@ -171,7 +174,7 @@ export async function cancelClose(input) {
 }
 
 /** How many keys one purge batch deletes: the provider's own per-call ceiling. */
-export const PURGE_BATCH = 1000;
+const PURGE_BATCH = 1000;
 
 /**
  * Delete every object under one account's storage prefix, in batches of
@@ -192,7 +195,7 @@ export const PURGE_BATCH = 1000;
  * @param {{startAfter?: string, saveProgress?: (cursor: string) => Promise<void>}} [options]
  * @returns {Promise<string|null>}
  */
-export async function purgeAccountFiles(store, account, options = {}) {
+async function purgeAccountFiles(store, account, options = {}) {
   const scoped = scopeStore(store, account);
   let cursor = options.startAfter;
   for (;;) {
@@ -214,7 +217,7 @@ export async function purgeAccountFiles(store, account, options = {}) {
  * @param {D1Database} db
  * @param {string} accountId
  */
-export async function purgeAccountRecords(db, accountId) {
+async function purgeAccountRecords(db, accountId) {
   await db.prepare("DELETE FROM file_index WHERE account_id = ?1").bind(accountId).run();
   await db.prepare("DELETE FROM file_versions WHERE account_id = ?1").bind(accountId).run();
 }
