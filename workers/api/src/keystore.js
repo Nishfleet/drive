@@ -92,7 +92,9 @@ function digestsEqual(left, right) {
  * `writesPaused` is the prepaid pause (drive#586): when set, it answers
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off.
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>}}} [options]
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
+||||||| 2f62b7a
+ * @param {{now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>}|{error: string}>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
@@ -249,6 +251,20 @@ export function createMemoryStore(options = {}) {
      */
     accountForDeviceToken(token) {
       return signin.accountForDeviceToken(token);
+    },
+
+    /**
+     * The account's close state, or null when no bound device store can answer
+     * for one. The api Worker's mint route reads it so a closed account cannot
+     * be handed a new storage key (drive#497); the in-memory stand-in has no
+     * close state, so it answers null and the mint is allowed.
+     * @param {string} accountId
+     */
+    async getCloseState(accountId) {
+      if (typeof deviceStore?.getCloseState !== "function") {
+        return null;
+      }
+      return deviceStore.getCloseState(accountId);
     },
 
     /**
@@ -416,6 +432,16 @@ export function createMemoryStore(options = {}) {
       const persisted = deviceStore?.revokeAllKeys
         ? await deviceStore.revokeAllKeys(account)
         : null;
+      // One call, both halves. The bound D1 device store revokes the account's
+      // keys (in D1 and at the provider), and its device tokens, share links
+      // and upload requests in the same statement set (devices.js
+      // revokeAccountCredentials). The sign-in store is called here as well, so
+      // the token half is revoked in every configuration — the in-memory
+      // stand-in has no bound store to do it — and the caller has one method
+      // to call rather than two that must stay in step (drive#497). A second
+      // write of an already-revoked token matches no row and keeps the first
+      // timestamp, so the extra call is idempotent, not a second revoke.
+      await signin.revokeAllDeviceTokens(account);
       let revoked = 0;
       for (const device of devices.values()) {
         if (device.accountId === account.id && device.revokedAt === null) {

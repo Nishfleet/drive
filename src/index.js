@@ -7,8 +7,8 @@ import { trimTrailingSlash } from "hono/trailing-slash";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { bearerToken, errorResponse } from "../workers/api/src/http.js";
+import { keyProviderFor } from "../workers/api/src/keyprovider-env.js";
 import { createD1QueueStore } from "../workers/api/src/queues.js";
-import { s3KeyProviderFromEnv } from "../workers/api/src/s3-keys.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
   CLOSE_ENDPOINT,
@@ -230,7 +230,9 @@ function closeDepsFor(env) {
   }
   const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
   return {
-    devices: createD1DeviceStore(env.DRIVE_DB),
+    devices: createD1DeviceStore(env.DRIVE_DB, {
+      keyProvider: keyProviderFor(env) ?? undefined,
+    }),
     store: storeFor(env),
     email: env.EMAIL,
     mailFrom: secrets.MAIL_FROM ?? "",
@@ -711,7 +713,7 @@ export function createApp() {
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
     const store = db
-      ? createD1DeviceStore(db, { keyProvider: s3KeyProviderFromEnv(c.env) ?? undefined })
+      ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
     return handleCapRequest(c.req.raw, c.get("account"), store);
   });

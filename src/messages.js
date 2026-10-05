@@ -129,6 +129,14 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "You are not signed in to your drive.",
     next: "Sign in, then this page updates on its own.",
   }),
+  // A mint, or any signed-in call that needs a live account, arrived for an
+  // account whose close has landed. Close revokes every key and token
+  // (drive#497), so a new one must not be handed out, and the one next step is
+  // to cancel the close while the account is still inside its 30-day window.
+  "account-closed": Object.freeze({
+    what: "This account is closed, so it cannot make a new key.",
+    next: "Cancel the close while the account is still in its 30-day window to use it again.",
+  }),
   // A share link or upload page that does not open: unknown, revoked or past
   // its 7-day window (issue #19). One entry for all three on purpose — the
   // public routes must not tell a stranger which of those it was, and the one

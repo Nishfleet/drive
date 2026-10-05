@@ -120,12 +120,11 @@ test("signing out every device revokes the account's keys and tokens, and no oth
     assert.equal(row.revoked_at, null, `${key.id} starts live`);
   }
 
-  // The sign-out. Keys first, tokens second: the same order the route uses, so
-  // a failure in the second half leaves the keys already dead.
+  // The sign-out: one call on the bound store revokes the account's keys AND
+  // its device tokens (drive#497 folded the token half into the same store
+  // call, so the route calls one function and the two halves cannot drift).
   const revokedKeys = await deviceStore.revokeAllKeys(mine.account);
-  const revokedTokens = await signin.revokeAllDeviceTokens(mine.account);
   assert.equal(revokedKeys.revoked, 2, "both of this account's keys went dead");
-  assert.equal(revokedTokens.revoked, 2, "both of this account's device tokens went dead");
 
   // The rows, read back off the database rather than off the store's answer.
   for (const key of myKeys) {
