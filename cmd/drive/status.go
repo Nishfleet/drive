@@ -525,7 +525,7 @@ func cacheState(home string, on bool) (capBytes, usedBytes int64, ok bool) {
 	if !on {
 		return 0, 0, false
 	}
-	c, err := mountRCClient()
+	c, err := mountRCClient(home)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -584,7 +584,11 @@ type UsageSummary struct {
 	BillUsd    float64 `json:"billUsd"`
 	MaximumUsd float64 `json:"maximumUsd"`
 	CapLine    string  `json:"capLine"`
-	Cap        struct {
+	// BalanceLine is the prepaid balance (drive#586), written by the Worker
+	// (src/topup.js balanceLine) with the top-up prompt when it is low or $0.
+	// Empty from a Worker that has no balance store yet.
+	BalanceLine string `json:"balanceLine"`
+	Cap         struct {
 		CapUsd       float64 `json:"capUsd"`
 		CountedUsd   float64 `json:"countedUsd"`
 		RemainingUsd float64 `json:"remainingUsd"`
@@ -634,6 +638,9 @@ func readCostLine(apiBase, token string) string {
 		return fail("api-answer").Error()
 	}
 	fmt.Println(line)
+	if balance := strings.TrimSpace(u.BalanceLine); balance != "" {
+		fmt.Println(balance)
+	}
 	return ""
 }
 
