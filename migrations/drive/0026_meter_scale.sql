@@ -2,6 +2,16 @@
 -- tables, nothing existing is changed and nothing here depends on data the
 -- code that ships after it writes. D1 has no down-migrations; the rollback is
 -- rolling the code back, and the old code reads none of these.
+--
+-- Numbered 0026, not the 0025 this file shipped as: #681 and #682 each added a
+-- 0025_ file in the same window, and two files under one prefix break the
+-- applied-set tracking that makes `wrangler d1 migrations apply` run each file
+-- exactly once (drive issue #703). Of the two, this one is the safe renumber:
+-- every statement below is `IF NOT EXISTS`, so a run under the new name that
+-- finds the objects already there is a no-op. The other 0025_ file adds columns
+-- with plain ADD COLUMN, so renaming it would re-run SQL that fails the second
+-- time. Renaming a file is still a re-run in D1, which is why the guard only
+-- worked here.
 
 -- The live rows the hourly rollup reads every hour. The hourly statements
 -- read live rows (`hidden_at IS NULL`) from this index and recently hidden
