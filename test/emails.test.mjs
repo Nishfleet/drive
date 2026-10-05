@@ -103,6 +103,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "monthly-receipt",
     "account-closed",
     "account-close-reminder",
+    "top-up-receipt",
+    "low-balance",
     "device-approve-notice",
   ]);
 });
@@ -266,6 +268,10 @@ function dataFor(kind) {
     case "account-closed":
     case "account-close-reminder":
       return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
+    case "top-up-receipt":
+      return { amountUsd: 25, balanceUsd: 31.5, auto: false };
+    case "low-balance":
+      return { balanceUsd: 1.8, autoTopUpUsd: null };
     case "device-approve-notice":
       return { deviceName: "office laptop", requestedAt: "2026-10-05T12:00:00.000Z" };
     default:
@@ -850,4 +856,28 @@ test("the route sends each of the five kinds through the one lane", async () => 
     assert.ok(message.text.includes("-- Drive"), `kind: ${kind} text sign-off`);
     assert.ok(message.html.includes("-- Drive"), `kind: ${kind} html sign-off`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 8) top-up receipt and 9) low balance (drive#586)
+// ---------------------------------------------------------------------------
+
+test("a top-up receipt names the money added and the balance it left", () => {
+  const manual = renderEmail("top-up-receipt", { amountUsd: 25, balanceUsd: 31.5, auto: false });
+  assert.equal(manual.subject, "Your Drive receipt: $25.00 added");
+  assert.match(manual.text, /You added \$25\.00/);
+  assert.match(manual.text, /balance is now \$31\.50\. It never expires\./);
+  const auto = renderEmail("top-up-receipt", { amountUsd: 10, balanceUsd: 11.2, auto: true });
+  assert.match(auto.text, /^Auto top-up added \$10\.00/);
+  assert.throws(() => renderEmail("top-up-receipt", { amountUsd: 10, balanceUsd: 1 }), /auto/);
+  assert.throws(() => renderEmail("top-up-receipt", { balanceUsd: 1, auto: false }), /amountUsd/);
+});
+
+test("the low-balance email says what happens at $0, or that auto top-up covers it", () => {
+  const off = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: null });
+  assert.equal(off.subject, "Your Drive balance is $1.80");
+  assert.match(off.text, /Top up to keep adding files\./);
+  assert.match(off.text, /nothing is deleted/);
+  const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25 });
+  assert.match(on.text, /Auto top-up is on, so \$25\.00 will be added/);
 });

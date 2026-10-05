@@ -13,9 +13,9 @@ write the same folder.
   [Limits page](https://drive-pricing.nishant345.workers.dev/docs/limits).
 - **Agents cannot delete.** An agent gets its own key, and that key cannot
   remove a file. Only you can.
-- **One price.** Pay only for what you store. 2 cents per GB. Never more than $10 per TB.
-  No minimum. No plans.
-- **A card at sign-up.** We need a card at sign-up because there is no free tier. There is no minimum: store 20 GB and pay about 40 cents a month.
+- **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $10 per TB.
+  No plans. Your balance never expires.
+- **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 

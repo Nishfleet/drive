@@ -13,6 +13,10 @@
 // secret, a key, another user's path, or raw error text. test/messages.test.mjs
 // enforces both shapes on every entry, so a new entry cannot ship a stack, a
 // token or a two-step fix-it list.
+// The one top-up prompt (drive#586): the $0 pause, the low balance line, the
+// "$2 left" email and the CLI all say it in these words.
+export const TOP_UP_PROMPT = "Top up to keep adding files.";
+
 export const FAILURE_MESSAGES = Object.freeze({
   // The browser or the CLI cannot reach the network at all.
   offline: Object.freeze({
@@ -316,6 +320,25 @@ export const FAILURE_MESSAGES = Object.freeze({
   "topup-failed": Object.freeze({
     what: "The payment page did not open, and nothing was charged.",
     next: "Try again in a minute.",
+  }),
+  // The prepaid balance is $0 or less, so uploads and new writes pause
+  // (drive#586). Reads, downloads and restore keep working, and nothing is
+  // deleted. The same words on the web, in the CLI and in an agent key error.
+  "balance-empty": Object.freeze({
+    what: "Your balance is $0, so uploads are paused while your files stay safe and downloads keep working.",
+    next: TOP_UP_PROMPT,
+  }),
+  // Auto top-up charges the card saved by a top-up, so it cannot be turned on
+  // before the first one (drive#586).
+  "auto-topup-needs-card": Object.freeze({
+    what: "Auto top-up uses the card from your first top-up, and there is none yet.",
+    next: "Top up once, then turn auto top-up on.",
+  }),
+  // The same pause seen by a stranger on a public upload page: they cannot top
+  // up someone else's drive, so they are told who can act.
+  "upload-paused-balance": Object.freeze({
+    what: "This drive is not taking uploads right now.",
+    next: "Tell the person who shared this page and try again later.",
   }),
   // The billing portal (drive#575) for an account with no Dodo customer yet:
   // there is no card to update and no invoice to read, so the next step is the
