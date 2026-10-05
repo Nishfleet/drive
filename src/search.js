@@ -449,7 +449,8 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     ...store,
     /** @param {string} key
      * @param {BodyInit|null|undefined} body
-     * @param {string} contentType */
+     * @param {string} contentType
+     * @param {{contentLength?: number}} [options] */
     async write(key, body, contentType, options) {
       // The row the search reads is written after the store has read the body,
       // and the body is counted on the way through (a stream carries no length
