@@ -132,6 +132,12 @@ export function buildPrice({
     // The browser-tab and share-card title: the brand and the one-line price.
     titleLine: `${rateText} per GB, never more than $${max} per TB`,
     noMinimumLine: "No minimum. No plans.",
+    // drive#521: the trash billing rule, the one sentence the pricing page
+    // and docs carry verbatim. "Stop paying for what you delete" is this:
+    // the meter stops counting the hour the file lands in Recently deleted,
+    // and the nightly purge removes it for good 30 days later.
+    trashLine:
+      "A deleted file stops counting as soon as it lands in Recently deleted. After 30 days it is removed for good.",
     // Founding copy never names the 1,000 or a count (drive#386).
     foundingLine: `Founding member pricing: half price for good, ${centsWords(foundingRateCents)} per GB and never more than $${foundingMax} per TB.`,
     // drive#417: until a card is really on file the usage page says no charge has

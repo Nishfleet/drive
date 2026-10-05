@@ -28,6 +28,7 @@ import {
   handleFilesRequest,
   isPreviewable,
   isRestorable,
+  isTrashExpired,
   PAGE_LINE,
   PREVIEW_COPY,
   parseListObjects,
@@ -35,6 +36,7 @@ import {
   parseTrashName,
   previewContentType,
   previewCopy,
+  purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   restorableUntil,
@@ -44,8 +46,10 @@ import {
   splitEntries,
   storageBucketForKey,
   TRASH_PATH,
+  TRASH_PURGE_SCHEDULE,
   trashName,
   trashRows,
+  trashStorePath,
   UPLOAD_COPY,
   validatePath,
   withoutTrash,
@@ -53,6 +57,7 @@ import {
 import worker from "../src/index.js";
 import { FAILURE_MESSAGES, failureMessage } from "../src/messages.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
+import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
@@ -1733,4 +1738,123 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
     "DELETE http://127.0.0.1:9000/drive/u/acct-a/.branches/work/archive.iso?uploadId=upload-3",
     "the upload is aborted after a failed part",
   );
+});
+
+// ------------------------------------------------- the nightly trash purge
+
+/**
+ * Park a file in one account's Recently deleted, the way the delete handler
+ * does: a scoped write under .trash with a trash-name key.
+ * @param {import("../src/files.js").FileStore} store
+ * @param {string} account
+ * @param {string} path
+ * @param {number} deletedAt
+ */
+async function park(store, account, path, deletedAt) {
+  const scoped = scopeStore(store, { id: account });
+  await scoped.write(trashStorePath(trashName(path, deletedAt)), "bytes", "text/plain");
+}
+
+test("a 31-day-old trash entry is gone after the purge; a fresh one stays", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-b', 'b@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  await park(store, "acct-a", "/expired.txt", now - 31 * day);
+  // One millisecond past the window is past the window: the Files page
+  // already shows this one as gone (isRestorable says no), so the purge
+  // removes it the same day.
+  await park(store, "acct-a", "/edge.txt", now - 30 * day - 1);
+  await park(store, "acct-a", "/fresh.txt", now - day);
+  await park(store, "acct-b", "/other-expired.txt", now - 40 * day);
+
+  const purged = await purgeExpiredTrash(db, store, now);
+
+  assert.equal(purged.accounts, 2);
+  assert.equal(purged.purged, 3);
+  const leftA = (await scopeStore(store, { id: "acct-a" }).list(TRASH_PATH)).map((e) => e.name);
+  const leftB = (await scopeStore(store, { id: "acct-b" }).list(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(leftA, [trashName("/fresh.txt", now - day)]);
+  assert.deepEqual(leftB, []);
+});
+
+test("the purge judges by the name, so a stray file under .trash is left alone", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  const scoped = scopeStore(store, { id: "acct-a" });
+  await scoped.write(`${TRASH_PATH}/not-a-trash-key`, "bytes", "text/plain");
+  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+
+  const purged = await purgeExpiredTrash(db, store, now);
+
+  assert.equal(purged.purged, 1);
+  const left = (await scoped.list(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(left, ["not-a-trash-key"]);
+});
+
+test("an account with no trash folder purges nothing and fails nothing", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('empty', 'e@x.test', ?1)")
+    .bind(now)
+    .run();
+  const purged = await purgeExpiredTrash(db, createMemoryStore(), now);
+  assert.deepEqual(purged, { accounts: 1, purged: 0 });
+});
+
+test("a purge needs its database and refuses to run without one", async () => {
+  await assert.rejects(
+    () => purgeExpiredTrash(/** @type {any} */ (null), createMemoryStore(), now),
+    TypeError,
+  );
+  await assert.rejects(
+    () => purgeExpiredTrash(/** @type {any} */ ({}), createMemoryStore(), now),
+    TypeError,
+  );
+});
+
+test("a parked file is expired past the window and never before it opens", () => {
+  const day = 24 * 60 * 60 * 1000;
+  assert.equal(isTrashExpired(now - 30 * day, now), false);
+  assert.equal(isTrashExpired(now - 30 * day - 1, now), true);
+  // A future-dated name waits for now to catch up rather than vanishing
+  // a day before its own window opens.
+  assert.equal(isTrashExpired(now + day, now), false);
+});
+
+test("the entrypoint's trash trip runs the purge on its own schedule", async () => {
+  const { db } = makeMeteredDB();
+  await db
+    .prepare("INSERT INTO accounts (id, email, created_at) VALUES ('acct-a', 'a@x.test', ?1)")
+    .bind(now)
+    .run();
+  const store = createMemoryStore();
+  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  const env = { DRIVE_DB: db };
+  // The same direct-drive wrapper the fetch calls use above: the handler type
+  // is optional on ExportedHandler and takes the injectable store as a fourth
+  // argument, so the call is typed as made.
+  const workerScheduled =
+    /** @type {(event: {scheduledTime: number, cron: string, noRetry?: boolean}, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void}, store?: unknown) => Promise<void>} */ (
+      /** @type {unknown} */ (worker.scheduled)
+    );
+  await workerScheduled(
+    { scheduledTime: now, cron: TRASH_PURGE_SCHEDULE, noRetry: true },
+    env,
+    { waitUntil() {} },
+    store,
+  );
+  const left = (await scopeStore(store, { id: "acct-a" }).list(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(left, []);
 });
