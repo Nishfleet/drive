@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,12 +11,13 @@
        source; test/signin.test.mjs reads this shipped file and fails CI when
        its copy, its endpoints, its method list or its vocabulary drifts from
        the module. This page is a static asset and cannot import the module. -->
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
 /* Sign-in page: the palette, the reset and the page chrome are in the shared
    site stylesheet (public/site.css, drive #71); what is left here is only this
-   page's overrides and its own components. System font stacks only: no web font
-   files, so nothing blocks first paint. */
+   page's overrides and its own components. class="drive" on <html> aliases
+   those tokens onto the home-page look (drive#458). */
 
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
@@ -52,8 +53,11 @@ main {
 
 h1 {
   font-family: var(--serif);
-  font-size: clamp(30px, 5vw, 40px);
-  line-height: 1.1;
+  font-size: clamp(40px, 8vw, 64px);
+  font-weight: 900;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
   margin: 32px 0 8px;
 }
 
@@ -70,8 +74,8 @@ h1 {
 
 .card {
   background: var(--paper-raised);
-  border: 1px solid var(--rule);
-  border-radius: 4px;
+  border: 1.5px solid var(--ink);
+  border-radius: 20px;
   padding: clamp(18px, 3vw, 26px);
 }
 
@@ -97,8 +101,8 @@ input[type="text"] {
   flex: 1 1 260px;
   min-width: 0;
   padding: 11px 12px;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
   background: var(--paper);
   color: var(--ink);
   font: inherit;
@@ -114,8 +118,8 @@ a:focus-visible {
 
 button {
   padding: 11px 18px;
-  border: 1px solid var(--ink);
-  border-radius: 3px;
+  border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -176,7 +180,7 @@ button:disabled {
 <body>
   <a class="skip-link" href="#signin-heading">Skip to sign in</a>
   <header class="masthead">
-    <span class="wordmark">Drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/">Pricing</a>
   </header>

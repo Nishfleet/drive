@@ -45,6 +45,8 @@ export default defineConfig({
     nav: [
       { text: "Pricing", link: `${SITE_ORIGIN}/` },
       { text: "Docs", link: "/" },
+      { text: "Get started", link: `${SITE_ORIGIN}/get-started` },
+      { text: "Sign in", link: `${SITE_ORIGIN}/signin` },
     ],
     sidebar: [
       { text: "Quickstart", link: "/quickstart" },

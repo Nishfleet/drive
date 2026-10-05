@@ -1,17 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drive — get started</title>
   <meta name="description" content="Run one command on the Mac you want the drive on. This page flips to connected the moment your Mac signs in.">
   <meta name="robots" content="noindex">
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
 /* First-run page: the shared site stylesheet (public/site.css) carries the
    palette, the reset and the chrome the pricing page also uses (drive #71);
    what is left here is the walk-through itself and this page's widths.
-   System font stacks only: no web font files, so nothing blocks first paint. */
+   class="drive" on <html> aliases those tokens onto the home-page look
+   (drive#458). Whole-funnel: a visitor reaches this page from the home nav. */
 
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
@@ -36,10 +38,11 @@ main {
 h1 {
   margin: 0;
   font-family: var(--serif);
-  font-size: clamp(34px, 5.4vw, 52px);
-  font-weight: 600;
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
   letter-spacing: -0.02em;
-  line-height: 1.05;
+  line-height: 0.9;
+  text-transform: uppercase;
 }
 
 .lede {
@@ -55,7 +58,7 @@ h2 {
   margin: 0 0 12px;
   font-family: var(--serif);
   font-size: 26px;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: -0.01em;
 }
 
@@ -267,7 +270,7 @@ th {
 <body>
   <a class="skip-link" href="#command-heading">Skip to the install command</a>
   <header class="masthead">
-    <span class="wordmark">Drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/files">Your files</a>
     <a href="/">Pricing</a>

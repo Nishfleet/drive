@@ -5,7 +5,8 @@
 // public/site.css now, and this is the gate the refactor did not have:
 //
 // 1. The shared file declares the palette and the font stacks with the values
-//    the product was reviewed at, exactly once each.
+//    the product was reviewed at. html.drive may alias the old names onto the
+//    home-page tokens (drive#458); that is the only second declaration allowed.
 // 2. Every page links the shared file before its own <style> block, so the
 //    page's per-page values can still override the base.
 // 3. No page declares a custom property it does not own. A token is the thing
@@ -109,7 +110,6 @@ const CHROME_OVERRIDES = new Map([
       [".masthead", new Set(["display", "margin", "padding"])],
       [".masthead a", new Set(["color"])],
       [".tagline", new Set(["font-size"])],
-      [".wordmark", new Set(["font-family", "font-weight", "letter-spacing"])],
     ]),
   ],
 ]);
@@ -207,9 +207,23 @@ function ruleBodies(css) {
 
 test("the shared stylesheet declares every token once, with the reviewed values", () => {
   const css = readFileSync(SITE_CSS, "utf8");
+  const declared = declaredTokens(css);
   for (const [token, value] of Object.entries(TOKENS)) {
-    const values = declaredTokens(css).get(token);
-    assert.deepEqual(values, [value], `${token} is declared once, as ${value}`);
+    const values = declared.get(token);
+    assert.ok(values, `${token} is declared`);
+    assert.equal(values[0], value, `${token} is declared on :root as ${value}`);
+    // drive#458: html.drive aliases the old names onto the home-page tokens
+    // so a page can switch looks without restating every colour. The alias is
+    // the only second declaration allowed, and it must point at a --drive-*
+    // or --font-* token.
+    if (values.length > 1) {
+      assert.equal(values.length, 2, `${token} is declared at most twice (:root and html.drive)`);
+      assert.match(
+        values[1],
+        /^var\(--(?:drive|font)-/,
+        `${token}'s second declaration is the html.drive alias onto a --drive-* or --font-* token`,
+      );
+    }
   }
 });
 
@@ -291,5 +305,27 @@ test("no page declares a custom property it does not own", () => {
         `${name} declares ${token}, which is a token the shared stylesheet owns`,
       );
     }
+  }
+});
+
+test("part-2 pages adopt the home-page look", () => {
+  // drive#458: every public page a visitor can reach from the home page, plus
+  // the signed-in pages, sets class="drive" and carries the wordmark mark.
+  // The home page already reads --drive-* directly and is the source, not an
+  // adopter.
+  const skip = new Set(["public/index.html"]);
+  for (const [name, url] of PAGES) {
+    if (skip.has(name)) continue;
+    const html = readFileSync(url, "utf8");
+    assert.match(
+      html,
+      /<html lang="en" class="drive">/,
+      `${name} sets class="drive" so public/site.css aliases the home-page tokens`,
+    );
+    assert.match(
+      html,
+      /class="wordmark"[^>]*>\s*<i aria-hidden="true"><\/i>/,
+      `${name} carries the orange-dash mark inside the wordmark`,
+    );
   }
 });

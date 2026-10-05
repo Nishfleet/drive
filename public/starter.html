@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -54,13 +54,14 @@
   }
 }
   </script>
+  <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
 /* Notes starter: the palette, the reset and the chrome the other pages use are
    in the shared site stylesheet (public/site.css, drive #71); what is left here
    is this page's own layout, with no custom property declared because every
-   token it needs belongs to the shared file. System font stacks only: no web
-   font files, so nothing blocks first paint. */
+   token it needs belongs to the shared file. class="drive" on <html> aliases
+   those tokens onto the home-page look (drive#458). */
 
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
@@ -85,10 +86,11 @@ main {
 h1 {
   margin: 0;
   font-family: var(--serif);
-  font-size: clamp(34px, 5.4vw, 52px);
-  font-weight: 600;
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
   letter-spacing: -0.02em;
-  line-height: 1.05;
+  line-height: 0.9;
+  text-transform: uppercase;
 }
 
 .lede {
@@ -104,7 +106,7 @@ h2 {
   margin: 0 0 12px;
   font-family: var(--serif);
   font-size: 26px;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: -0.01em;
 }
 
@@ -246,7 +248,7 @@ button:disabled {
 <body>
   <a class="skip-link" href="#starter-heading">Skip to the starter</a>
   <header class="masthead">
-    <span class="wordmark">Drive</span>
+    <span class="wordmark"><i aria-hidden="true"></i>drive</span>
     <span class="tagline">A Finder drive for people and their agents.</span>
     <a href="/">Pricing</a>
     <a href="/starter.html" aria-current="page">Notes starter</a>
