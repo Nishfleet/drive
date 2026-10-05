@@ -71,17 +71,17 @@
     - type: javascript
       value: "/drive status/.test(output)"
 
-- description: what an agent tool's key can do, and the one thing it cannot
+- description: what an agent tool's key can do, and how long its delete can be undone
   vars:
     task: >
-      I am about to connect an agent to my drive. What can its key do, and what
-      can it never do? I want the rule, not the reassurance.
+      I am about to connect an agent to my drive. What can its key do, and if
+      it deletes a file, can I get it back? I want the rule, not the reassurance.
     source: docs-site/agents.md, "What an agent key can do"
   assert:
     - type: javascript
       value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
-      value: "/cannot delete|cannot remove|can never (carry )?delete|never delete/i.test(output)"
+      value: "/(1|one) day/i.test(output) && /recently deleted|put it back|undo/i.test(output)"
 
 - description: take one agent tool off the drive and leave the others
   vars:
@@ -295,7 +295,7 @@
     source: docs/build-spec.md, "Keys and safety"
   assert:
     - type: javascript
-      value: "/cannot delete|cannot remove/i.test(output) && /branch/i.test(output)"
+      value: "/whole drive/i.test(output) && /branch/i.test(output)"
 
 - description: mount and save a file
   metadata:
