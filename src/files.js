@@ -18,7 +18,7 @@
 import { AwsClient } from "aws4fetch";
 import { json, readJsonObject } from "../workers/api/src/http.js";
 import { bucketForAccount } from "../workers/api/src/keyprovider.js";
-import { contentMd5 } from "../workers/api/src/s3.js";
+import { contentMd5, createS3Client, provisionBucket } from "../workers/api/src/s3.js";
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -1183,6 +1183,88 @@ export function storageBucketForKey(key) {
 }
 
 /**
+ * Storage config vars. They are set per deployment, never declared as bindings
+ * in cloudflare.config.ts: a declared secret is required at deploy, and the
+ * Files page already answers from the in-memory store when they are unset. The
+ * names match the api Worker's iDrive pair so the site Worker can read the
+ * buckets a minted key writes to, plus the older FILES_S3_* stand-in pair a
+ * local `rclone serve s3` still uses. The one definition lives here so the
+ * store and the sign-in verify step's provisioning read the same shape
+ * (src/index.js's devStorage casts to it).
+ * @typedef {Env & {
+ *   FILES_S3_ENDPOINT?: string,
+ *   FILES_S3_BUCKET?: string,
+ *   FILES_S3_REGION?: string,
+ *   FILES_S3_ACCESS_KEY_ID?: string,
+ *   FILES_S3_SECRET_ACCESS_KEY?: string,
+ *   IDRIVE_S3_ENDPOINT?: string,
+ *   IDRIVE_S3_REGION?: string,
+ *   IDRIVE_S3_ACCESS_KEY_ID?: string,
+ *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
+ * }} StorageEnv
+ */
+
+/**
+ * The storage settings a deployment carries, read in one place so the Files
+ * page's store (storeFor in src/index.js) and the sign-in verify step's bucket
+ * provisioning (provisionAccountBucket below) read the same four names in the
+ * same order. A second reader of these vars is a second thing to drift, the
+ * same reason keyprovider-env.js is the api Worker's one reader of its own.
+ * @param {StorageEnv} env
+ * @returns {{endpoint: string|undefined, accessKeyId: string|undefined,
+ *   secretAccessKey: string|undefined, region: string|undefined}}
+ */
+export function storageVarsFromEnv(env) {
+  /** @param {string|undefined} value */
+  const read = (value) => (value && value !== "" ? value : undefined);
+  return {
+    endpoint: read(env.IDRIVE_S3_ENDPOINT) || read(env.FILES_S3_ENDPOINT),
+    accessKeyId: read(env.IDRIVE_S3_ACCESS_KEY_ID) || read(env.FILES_S3_ACCESS_KEY_ID),
+    secretAccessKey: read(env.IDRIVE_S3_SECRET_ACCESS_KEY) || read(env.FILES_S3_SECRET_ACCESS_KEY),
+    region: read(env.IDRIVE_S3_REGION) || read(env.FILES_S3_REGION),
+  };
+}
+
+/**
+ * The account's own bucket, provisioned through the one `provisionBucket`
+ * call the api Worker's key mint also makes (workers/api/src/s3.js): versioning
+ * on and the hidden-version rule set, idempotent, so a returning sign-in's
+ * second call is a no-op and an account from before this call existed catches
+ * up at its next sign-in (drive#540). The store reads and writes this same
+ * bucket by name (storageBucketForKey), so a customer who never runs
+ * `drive login` has a bucket from the minute the account does.
+ *
+ * A deployment with no storage master credential provisions nothing and
+ * answers false — no credential means no provisioning call, never a call with
+ * half a credential (the rule keyprovider-env.js states for the mint). The key
+ * mint keeps its own provisioning as the safety net, and the Files page
+ * answers an empty folder for a bucket that is not there yet.
+ * @param {StorageEnv} env
+ * @param {string} accountId
+ * @param {{fetchImpl?: typeof fetch}} [options]
+ * @returns {Promise<boolean>} whether the provisioning call ran
+ */
+export async function provisionAccountBucket(env, accountId, options = {}) {
+  const vars = storageVarsFromEnv(env);
+  if (
+    vars.endpoint === undefined ||
+    vars.accessKeyId === undefined ||
+    vars.secretAccessKey === undefined ||
+    vars.region === undefined
+  ) {
+    return false;
+  }
+  const client = createS3Client({
+    endpoint: vars.endpoint,
+    region: vars.region,
+    credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  return true;
+}
+
+/**
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
@@ -1327,6 +1409,16 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}&delimiter=%2F` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // A bucket that is not there yet is an empty drive, not a failure
+          // (drive#540): a brand-new account's `drv-<id>` is created at its
+          // sign-in verify (provisionAccountBucket), and an account from before
+          // that existed — or on a deployment whose site Worker carries no
+          // storage master credential — has no bucket until a key mint creates
+          // one. S3 answers a missing bucket 404 and a missing folder 200 with
+          // no keys, so a 404 here is always the bucket.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }
@@ -1362,6 +1454,11 @@ export function createS3Store(config) {
         `&max-keys=${limit}` +
         (options.cursor ? `&continuation-token=${encodeURIComponent(options.cursor)}` : "");
       const response = await request(`${baseFor(prefix)}${query}`);
+      if (response.status === 404) {
+        // The missing bucket is an empty page, not a 500 (drive#540); the
+        // long form is in `list` above.
+        return { entries: [], nextCursor: null };
+      }
       if (!response.ok) {
         throw new Error(`storage list failed with ${response.status}`);
       }
@@ -1386,6 +1483,11 @@ export function createS3Store(config) {
           `?list-type=2&prefix=${encodeURIComponent(prefix)}` +
           (token === null ? "" : `&continuation-token=${encodeURIComponent(token)}`);
         const response = await request(`${baseFor(prefix)}${query}`);
+        if (response.status === 404) {
+          // The missing bucket is an empty walk, not a 500 (drive#540); the
+          // long form is in `list` above.
+          return [];
+        }
         if (!response.ok) {
           throw new Error(`storage list failed with ${response.status}`);
         }

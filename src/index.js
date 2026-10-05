@@ -36,6 +36,7 @@ import {
   handleFilesRequest,
   scopeStore,
   storageBucketForKey,
+  storageVarsFromEnv,
 } from "./files.js";
 import { HEALTH_PATH, handleHealthRequest } from "./health.js";
 import { balanceCents } from "./ledger.js";
@@ -201,18 +202,9 @@ let filesStore;
  * and the Files page already answers from the in-memory store when they are
  * unset. The names match the api Worker's iDrive pair so the site Worker can
  * read the buckets a minted key writes to, plus the older FILES_S3_* stand-in
- * pair a local `rclone serve s3` still uses.
- * @typedef {Env & {
- *   FILES_S3_ENDPOINT?: string,
- *   FILES_S3_BUCKET?: string,
- *   FILES_S3_REGION?: string,
- *   FILES_S3_ACCESS_KEY_ID?: string,
- *   FILES_S3_SECRET_ACCESS_KEY?: string,
- *   IDRIVE_S3_ENDPOINT?: string,
- *   IDRIVE_S3_REGION?: string,
- *   IDRIVE_S3_ACCESS_KEY_ID?: string,
- *   IDRIVE_S3_SECRET_ACCESS_KEY?: string,
- * }} StorageEnv
+ * pair a local `rclone serve s3` still uses. The typedef's one definition is
+ * src/files.js's, beside the one reader of the vars.
+ * @typedef {import("./files.js").StorageEnv} StorageEnv
  * @param {Env} env
  * @returns {StorageEnv}
  */
@@ -292,27 +284,23 @@ function forwardToApi(c) {
  */
 function storeFor(env) {
   if (!filesStore) {
-    const storage = devStorage(env);
-    const endpoint = storage.IDRIVE_S3_ENDPOINT || storage.FILES_S3_ENDPOINT;
+    // The four storage vars read through src/files.js's one reader, the same
+    // read provisionAccountBucket makes at the sign-in verify step, so the
+    // store and the provisioning cannot name two endpoints.
+    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
     if (endpoint) {
-      const accessKeyId = storage.IDRIVE_S3_ACCESS_KEY_ID || storage.FILES_S3_ACCESS_KEY_ID;
-      const secretAccessKey =
-        storage.IDRIVE_S3_SECRET_ACCESS_KEY || storage.FILES_S3_SECRET_ACCESS_KEY;
-      const region = storage.IDRIVE_S3_REGION || storage.FILES_S3_REGION;
       const signed =
-        typeof accessKeyId === "string" &&
-        accessKeyId !== "" &&
-        typeof secretAccessKey === "string" &&
-        secretAccessKey !== "" &&
-        typeof region === "string" &&
-        region !== "";
+        accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
       filesStore = createS3Store({
         endpoint,
         bucketFor: storageBucketForKey,
         ...(signed
           ? {
               region,
-              credentials: { accessKeyId, secretAccessKey },
+              credentials: {
+                accessKeyId: /** @type {string} */ (accessKeyId),
+                secretAccessKey: /** @type {string} */ (secretAccessKey),
+              },
             }
           : {}),
       });

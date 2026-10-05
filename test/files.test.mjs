@@ -986,6 +986,41 @@ test("an unsigned write sends the stream as it is, without buffering it", async 
   assert.equal(sent, stream);
 });
 
+test("a missing bucket answers an empty listing, not a 500 (drive#540)", async () => {
+  // The account's bucket is created at its sign-in verify (drive#540), and an
+  // account from before that existed has none until a key mint makes one. The
+  // Files page reads it as an empty folder: S3 answers a missing bucket 404
+  // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
+  // is always the bucket.
+  const { createS3Store } = await import("../src/files.js");
+  const notFound = `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
+  /** @type {typeof fetch} */
+  const fetchImpl = async () => new Response(notFound, { status: 404 });
+  const store = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl,
+  });
+  assert.deepEqual(await store.list("u/acct-1"), []);
+  assert.deepEqual(await store.listPage("u/acct-1"), { entries: [], nextCursor: null });
+  assert.deepEqual(await store.listAll("u/acct-1"), []);
+  // A non-404 refusal is still named, never read as empty.
+  const refused = createS3Store({
+    endpoint: "http://127.0.0.1:9000",
+    bucketFor: storageBucketForKey,
+    fetchImpl: async () =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`,
+        { status: 403 },
+      ),
+  });
+  await assert.rejects(refused.list("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listPage("u/acct-1"), /storage list failed with 403/);
+  await assert.rejects(refused.listAll("u/acct-1"), /storage list failed with 403/);
+});
+
 test("a signed write hands fetchImpl the hashed bytes, not the original stream", async () => {
   const { createS3Store } = await import("../src/files.js");
   const stream = new ReadableStream({
