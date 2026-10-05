@@ -206,6 +206,13 @@ export function createS3KeyProvider(config) {
   });
 
   return {
+    // The mint's credential is a session the vendor ends on its own (the
+    // `DurationSeconds` above), so a row that reads "never expires" is never
+    // a claim this provider can keep. The stores refuse a null-expiry device
+    // row on this signal (drive#713). Cast, because an unannotated literal
+    // widens `true` to `boolean` and the typedef pins the marker to `true`.
+    namesSession: /** @type {true} */ (true),
+
     /**
      * One scoped credential. The returned secret is the only copy the api
      * ever holds: the store keeps its hash, exactly as the stand-in did.
@@ -286,7 +293,7 @@ export function createS3KeyProvider(config) {
  * (`drive cap` on POST /api/cap): one function, so a deployment that can
  * mint a device key can also swap it.
  * @param {{[key: string]: unknown}} env
- * @returns {ReturnType<typeof createS3KeyProvider>|{mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
+ * @returns {ReturnType<typeof createS3KeyProvider>|{namesSession: true, mint: () => never, revoke: () => never, swapToReadOnly: () => never}|null}
  */
 export function s3KeyProviderFromEnv(env) {
   const names = [
@@ -307,6 +314,11 @@ export function s3KeyProviderFromEnv(env) {
       `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
     );
     return {
+      // The mint throws, so this deployment writes no new rows; a row it did
+      // mint before the config broke was an STS session (namesSession, above
+      // in createS3KeyProvider), and the stores read the same signal off the
+      // stub (drive#713).
+      namesSession: true,
       mint() {
         throw problem;
       },

@@ -80,6 +80,12 @@ export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
   const keyProvider = options.keyProvider;
   const deviceStore = options.deviceStore;
+  // Whether this deployment's provider mints credentials that die on their
+  // own (the STS path, s3-keys.js `namesSession`). The in-memory
+  // authenticate below refuses a null-expiry device row on that signal,
+  // exactly as the D1 store does, so a deployment without a database reads
+  // the same rule the D1 one enforces (drive#713).
+  const providerNamesSessions = keyProvider !== undefined && keyProvider.namesSession === true;
   const storage = options.storage;
   const randomBytes = options.randomBytes ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const signin = options.signin ?? createMemoryDeviceSigninStore({ now, randomBytes });
@@ -544,6 +550,19 @@ export function createMemoryStore(options = {}) {
         // Absent and null both mean "this kind never expires" (a person's own
         // device key), so both are checked rather than one being assumed.
         if (device.expiresAt !== undefined && device.expiresAt !== null && at >= device.expiresAt) {
+          return null;
+        }
+        // drive#713: the D1 store's refusal, mirrored here. On a provider
+        // that names a session, a device row with no expiry is a row minted
+        // over a session the vendor has since ended, not a permanent key;
+        // the api holds only the secret's hash, so there is no re-minting
+        // for the caller and the row is refused with no write. A provider
+        // that names no session keeps the row a permanent key.
+        if (
+          providerNamesSessions &&
+          device.kind === "device" &&
+          (device.expiresAt === undefined || device.expiresAt === null)
+        ) {
           return null;
         }
         device.lastSeenAt = at;

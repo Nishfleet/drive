@@ -149,6 +149,15 @@ export function renewKeyRow(db, device, expiresAt, lastSeenAt) {
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
+  // Whether this deployment's provider mints credentials that die on their
+  // own (the STS path, s3-keys.js `namesSession`). When it does, a device
+  // row whose `expires_at` is null is not a permanent key: it is a row the
+  // pre-#544 code wrote over a session that has since died, and the
+  // authenticate below refuses it instead of reading the null as forever
+  // (drive#713). A provider that names no session — iDrive's key pairs, the
+  // stand-in — leaves those rows exactly the permanent keys they say they
+  // are.
+  const providerNamesSessions = inner !== undefined && inner.namesSession === true;
   // One provider revoke, retried: enough for a blip, small enough that a
   // request is not held long when the vendor is down for real.
   const PROVIDER_REVOKE_ATTEMPTS = 3;
@@ -815,6 +824,25 @@ export function createD1DeviceStore(db, options = {}) {
       // secret, so both sides here are hashes: the stored one, and the hash of
       // the secret this request presented.
       if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
+        return null;
+      }
+      // drive#713: on a provider that names a session (the STS path), a
+      // `device` row with no expiry at all is not a permanent key — it is a
+      // row the pre-#544 code wrote over a session the vendor has since
+      // ended, read as "never expires". The api cannot re-mint for the
+      // caller here (it holds only the secret's hash), and a machine kind's
+      // null is a different claim — "no hour was minted", which renewal
+      // starts — so this is the device kind only. The row is refused with no
+      // write, the same answer a wrong secret or a dead hour gets, and it is
+      // left in the table: `drive login` again is the way forward, and the
+      // minted answer names the session it dies at (drive#544). A provider
+      // that names no session keeps these rows working as the permanent keys
+      // they say they are.
+      if (
+        providerNamesSessions &&
+        device.kind === "device" &&
+        (device.expiresAt === undefined || device.expiresAt === null)
+      ) {
         return null;
       }
       const seen = nowSeconds(now());
