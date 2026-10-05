@@ -49,6 +49,9 @@ const workerFetch =
 
 // Minutes in an average month, the spec's divisor. Held as a full month of a
 // given stored size so a test says "400 GB held all month" and means it.
+// The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 const MINUTES_PER_MONTH = 43800;
 /** @param {number} gb */
 const fullMonthGbMinutes = (gb) => gb * MINUTES_PER_MONTH;
@@ -326,7 +329,13 @@ test("the usage summary is the empty month before the meter lands", () => {
 
 test("the usage endpoint answers the empty month, and names its one method", async () => {
   const account = { id: "1", name: "Your drive" };
-  const response = handleUsageRequest(new Request("https://drive.test/api/usage"), account);
+  const response = handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    account,
+    null,
+    null,
+    MONTH_ISO,
+  );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
@@ -343,6 +352,9 @@ test("the usage endpoint answers the empty month, and names its one method", asy
   const posted = handleUsageRequest(
     new Request("https://drive.test/api/usage", { method: "POST" }),
     account,
+    null,
+    null,
+    MONTH_ISO,
   );
   assert.equal(posted.status, 405);
   assert.equal(posted.headers.get("allow"), "GET");

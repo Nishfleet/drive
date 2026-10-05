@@ -721,8 +721,9 @@ const USAGE_HEADERS = Object.freeze({
  *   `monthUsage` (drive#496); without it this answers the empty month.
  * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
  * @param {string|null} [balanceLine] the prepaid balance line (src/topup.js balanceLine, drive#586), or null when there is no balance store
+ * @param {string} monthIso the month's own first instant as the Worker sends it ("2026-10-01T00:00:00.000Z"), from the one boundary the meter, the cap walk and the invoice read (src/index.js, src/meter.js monthStart). The caller owns the month so this module carries no second answer to what month the numbers belong to.
  */
-export function handleUsageRequest(request, account, upload = null, balanceLine = null) {
+export function handleUsageRequest(request, account, upload = null, balanceLine = null, monthIso) {
   // The gate is first, before the method: an anonymous request learns nothing
   // about whether it could write, only that it is not signed in.
   if (!account) {
@@ -738,6 +739,16 @@ export function handleUsageRequest(request, account, upload = null, balanceLine 
     typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
       ? account.capUsd
       : BILLING_CONFIG.defaultCapUsd;
+  // The month these numbers belong to, named (drive#559): the first instant of
+  // the UTC month, sent by the caller (src/index.js) from the one boundary the
+  // meter, the cap walk and the invoice read. A month that is not one is a
+  // caller bug, so it fails the read rather than shipping a page with a
+  // heading nobody can check a statement against.
+  if (typeof monthIso !== "string" || Number.isNaN(new Date(monthIso).getTime())) {
+    throw new TypeError(
+      `handleUsageRequest needs the month's first instant, got ${String(monthIso)}`,
+    );
+  }
   // The month's own numbers, when the route read them (drive#496). The route
   // passes the account store's `monthUsage` result — `monthUsageThrough` behind
   // `usageSummary`'s shape, the same metered month the cap and the invoice
@@ -784,7 +795,10 @@ export function handleUsageRequest(request, account, upload = null, balanceLine 
   // throws on a value that is not a queue, so a broken report fails the read
   // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  const body = { ...empty, capLine: capLine(empty.cap), uploadLine, balanceLine };
+  // The month rides on the answer finished: the instant, not a name, because
+  // the page writes the month's name in the browser's own words and a date
+  // rendered on the server is a UTC date (drive#559).
+  const body = { ...empty, monthIso, capLine: capLine(empty.cap), uploadLine, balanceLine };
   return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
 }
 

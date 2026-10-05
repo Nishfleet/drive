@@ -593,49 +593,20 @@ export function isRestorable(deletedAt, now = Date.now()) {
 }
 
 /**
- * A time as a person reads it: today shows the clock, this year shows the day
- * and month, older shows the year too. `now` is injected so the tests pin one.
- * @param {string|number|Date} value
- * @param {number} now
+ * The instant a row stamps, as the browser reads it (drive#559). The Worker
+ * sends the instant and never words for it: a timestamp rendered here is a UTC
+ * timestamp, so a customer east of Greenwich reads the wrong clock and the
+ * wrong day, and a customer west of the line reads the wrong day too. The page
+ * formats it in the browser's own zone and locale instead.
+ * @param {number} at epoch milliseconds, from the entry or the storage listing
+ * @param {string} what names the entry in the failure, for the reader
+ * @returns {string} an ISO instant
  */
-export function formatWhen(value, now = Date.now()) {
-  // A Date's own epoch value; a number is already epoch milliseconds. Date.parse
-  // takes the string, so the union is narrowed to the form it can parse.
-  const time =
-    typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
-  if (!Number.isFinite(time)) {
-    throw new TypeError(`formatWhen needs a date, got ${String(value)}`);
+function isoStamp(at, what) {
+  if (typeof at !== "number" || !Number.isFinite(at)) {
+    throw new TypeError(`${what} needs a date, got ${String(at)}`);
   }
-  const date = new Date(time);
-  const today = new Date(now);
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  }
-  if (date.getFullYear() === today.getFullYear()) {
-    return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  }
-  return date.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-/**
- * The day a deleted file leaves Recently deleted, in words.
- * @param {number} deletedAt epoch milliseconds
- * @returns {string}
- */
-export function restorableUntil(deletedAt) {
-  const until = deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000;
-  return `Restorable until ${new Date(until).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-  })}.`;
+  return new Date(at).toISOString();
 }
 
 // ------------------------------------------------------- the daily purge
@@ -2371,27 +2342,37 @@ function escapeXmlText(text) {
 }
 
 /**
- * The rows the file list renders: folders first, then files, each with the
- * words already formatted so the static page never repeats the arithmetic.
+ * The rows the file list renders: folders first, then files. A row carries
+ * only the instant an entry was written and no clock of its own: the browser
+ * writes the words, because a UTC row follows every customer west of
+ * Greenwich around the map (drive#559).
  * @param {FileEntry[]} entries
- * @param {number} now
  */
-export function fileRows(entries, now = Date.now()) {
+export function fileRows(entries) {
   const { folders, files } = splitEntries(entries);
   /** @param {{name: string, path?: string, kind?: string, size?: number, modified?: number|null, contentType?: string}} entry */
-  const row = (entry) => ({
-    name: entry.name,
-    path: entry.path || "",
-    kind:
-      entry.kind === "folder" ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
-    sizeLabel: entry.kind === "folder" ? "" : formatBytes(entry.size || 0),
-    whenLabel: entry.modified ? formatWhen(entry.modified, now) : "",
-  });
+  const row = (entry) => {
+    const folder = entry.kind === "folder";
+    return {
+      name: entry.name,
+      path: entry.path || "",
+      kind: folder ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
+      sizeLabel: folder ? "" : formatBytes(entry.size || 0),
+      // A folder has no write time, so it has no instant either. A file's
+      // `modified` is optional in S3's own listing, so a server that reports
+      // none is answering the spec and the row keeps its empty stamp; a
+      // `modified` that is there but is not a date is a bug, and isoStamp
+      // says so rather than rendering "Invalid Date" (drive#559).
+      modifiedIso: entry.modified ? isoStamp(entry.modified, `the file ${entry.name}`) : "",
+    };
+  };
   return [...folders.map(row), ...files.map(row)];
 }
 
 /**
- * The rows Recently deleted renders, newest first.
+ * The rows Recently deleted renders, newest first. The two dates are instants
+ * for the browser to write in its own zone: the delete time and the day the
+ * window closes are both UTC words if this Worker writes them (drive#559).
  * @param {FileEntry[]} entries
  * @param {number} [now]
  */
@@ -2411,8 +2392,11 @@ export function trashRows(entries, now = Date.now()) {
         path: parsed.path,
         deletedAt: parsed.deletedAt,
         sizeLabel: formatBytes(entry.size || 0),
-        deletedLabel: `Deleted ${formatWhen(parsed.deletedAt, now)}`,
-        untilLabel: restorableUntil(parsed.deletedAt),
+        deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
+        untilIso: isoStamp(
+          parsed.deletedAt + RECENTLY_DELETED_DAYS * 24 * 60 * 60 * 1000,
+          `the file ${parsed.path}`,
+        ),
         restorable,
         // Past the window the button is gone, and the one line says why.
         restoreLabel: restorable ? "Restore" : "Past the 30 days",
@@ -2703,7 +2687,7 @@ async function listRequest(request, url, store, now) {
     return json({
       view: "folder",
       path: checked.path,
-      rows: fileRows(entries, now),
+      rows: fileRows(entries),
       folders: folders.length,
       files: files.length,
       // The page's More control. `cursor` on the way in, `nextCursor` on the

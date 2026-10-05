@@ -62,9 +62,11 @@ export function normalizeEmail(value) {
  * (drive#422). The ISO stamp the Worker used to send was correct but
  * unreadable to a person, and the walkthrough named it.
  *
- * `en-GB` with a numeric day and a short month is the same pair
- * src/files.js formatWhen uses for the same-year dates in the file list, so
- * every customer-facing day drive shows reads one way.
+ * The words are written here on the Worker because this day is fixed by the
+ * clock the account closed on and is stated inside an email and the close
+ * banner, not rendered by a page (drive#559 moved every page's date to the
+ * browser). `en-GB` with a numeric day and a short month, namespaced to UTC
+ * so the day is the same one for every reader.
  * @param {number} closedAtSeconds
  * @returns {string}
  */

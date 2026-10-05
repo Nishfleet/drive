@@ -29,12 +29,17 @@ const pages = readdirSync(publicDir)
   }));
 
 /** @param {string} kind */
+// The month every date-bearing email fixture states (drive#559).
+const MONTH_ISO = "2026-10-01T00:00:00.000Z";
+
 function dataFor(kind) {
   if (kind === "welcome") return {};
   if (kind === "cap-warning" || kind === "read-only") return { capUsd: 12 };
   if (kind === "payment-failed") return { amountUsd: 23.5 };
   if (kind === "monthly-receipt") {
-    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true };
+    // drive#559: the receipt names the month it bills, so the data carries the
+    // month's first instant.
+    return { billUsd: 12, meteredUsd: 16, ceilingUsd: 12, capped: true, monthIso: MONTH_ISO };
   }
   if (kind === "account-closed" || kind === "account-close-reminder") {
     return { graceDays: 30, reminderDays: 25, purgeOn: "3 Nov" };
