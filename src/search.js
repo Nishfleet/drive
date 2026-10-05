@@ -452,6 +452,7 @@ function countedBody(body) {
  * @param {D1Database | null | undefined} db
  * @param {{id: string}} account
  * @param {() => number} [now]
+ * @returns {FileStore | null | undefined}
  */
 export function withIndex(store, db, account, now = () => Date.now()) {
   if (!store || !db) {
