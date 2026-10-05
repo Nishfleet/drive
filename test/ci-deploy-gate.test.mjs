@@ -42,12 +42,23 @@ const stepBlocks = (text) => {
   const blocks = [];
   /** @type {string[]?} */
   let current = null;
+  // Comments at step depth between two steps open the next step, so they are
+  // held until it starts rather than attached to the one before.
+  /** @type {string[]} */
+  let pending = [];
   for (const line of text.split("\n")) {
     if (/^ {6}- /.test(line)) {
-      current = [line];
+      current = [...pending, line];
+      pending = [];
       blocks.push(current);
+    } else if (/^ {6}#/.test(line)) {
+      pending.push(line);
+    } else if (/^\S/.test(line) || /^ {2}\S/.test(line)) {
+      current = null;
+      pending = [];
     } else if (current) {
-      current.push(line);
+      current.push(...pending, line);
+      pending = [];
     }
   }
   return blocks.filter((block) => block.some((line) => line.trim() !== ""));
@@ -131,7 +142,7 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
   // check blocks the main merge queue, so both jobs always run and always
   // report. The gate is the diff inside them.
   assert.doesNotMatch(onBlock(CI), /^ {2}paths:/m, "the workflow has no paths filter");
-  assert.doesNotMatch(CI, /^ {2}paths:/m, "no job has a paths filter either");
+  assert.doesNotMatch(CI, /^\s+paths:/m, "no job has a paths filter either");
 
   const changedSteps = stepBlocks(CI).filter((block) => block.join("\n").includes("id: changed"));
   assert.equal(changedSteps.length, 2, "both jobs compute the changed files");
@@ -153,8 +164,13 @@ test("a heavy step runs only when the files it tests changed (drive#660)", () =>
     // everything rather than nothing.
     assert.match(step, /git cat-file -e "\$BASE_SHA\^\{commit\}"/);
     assert.match(step, /git merge-base --is-ancestor/);
-    assert.match(step, /echo "unknown-merge-base" > changed\.txt/);
-    assert.match(step, /git diff --name-only "\$BASE_SHA" HEAD > changed\.txt/);
+    assert.match(step, /echo "unknown-merge-base" > "\$list"/);
+    // Both sides of a rename are classified, so moving an input into docs/
+    // cannot hide it.
+    assert.match(step, /git diff --name-only --no-renames "\$BASE_SHA" HEAD > "\$list"/);
+    // The list is written outside the checkout, where a tracked symlink in the
+    // pull request cannot redirect it.
+    assert.match(step, /list="\$\(mktemp "\$RUNNER_TEMP\/changed\.XXXXXX"\)"/);
   }
 
   // The Go job's diff step answers one question and nothing else.
@@ -208,7 +224,7 @@ const classify = (step, files) => {
   // comments that open the next step.
   const end = body.findIndex((line) => line.trim() !== "" && !line.startsWith(" ".repeat(10)));
   const text = (end === -1 ? body : body.slice(0, end)).map((line) => line.slice(10)).join("\n");
-  const script = `set -euo pipefail\n${text.slice(text.indexOf("\nfi\n") + 4)}`;
+  const script = `set -euo pipefail\nlist=changed.txt\n${text.slice(text.indexOf("\nfi\n") + 4)}`;
   const dir = mkdtempSync(join(tmpdir(), "ci-changed-"));
   try {
     writeFileSync(join(dir, "changed.txt"), files.map((f) => `${f}\n`).join(""));

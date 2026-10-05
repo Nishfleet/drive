@@ -70,14 +70,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          # The list lives in the runner's temp directory, never in the
+          # checkout, so a pull request cannot point it somewhere else with a
+          # tracked symlink.
+          list="$(mktemp "$RUNNER_TEMP/changed.XXXXXX")"
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null &&
             git merge-base --is-ancestor "$BASE_SHA" HEAD; then
-            git diff --name-only "$BASE_SHA" HEAD > changed.txt
+            git diff --name-only --no-renames "$BASE_SHA" HEAD > "$list"
           else
             # The base commit is not in this checkout, so a diff of it proves
             # nothing. Write a name no pattern below classifies, which runs
             # every heavy step rather than none of them.
-            echo "unknown-merge-base" > changed.txt
+            echo "unknown-merge-base" > "$list"
           fi
           # What each heavy step tests. Each output starts false and any one
           # file that is its input turns it true, so a pull request that
@@ -118,12 +122,12 @@ jobs:
                 site=true
                 ;;
             esac
-          done < changed.txt
+          done < "$list"
           {
             echo "node=$node"
             echo "site=$site"
           } >> "$GITHUB_OUTPUT"
-          cat changed.txt
+          cat "$list"
       # rclone serves the S3 stand-in the two search and mount proofs need, so
       # it is installed only alongside the steps that run them.
       - if: steps.changed.outputs.node != 'false'
@@ -200,11 +204,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          # The list lives in the runner's temp directory, never in the
+          # checkout, so a pull request cannot point it somewhere else with a
+          # tracked symlink.
+          list="$(mktemp "$RUNNER_TEMP/changed.XXXXXX")"
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null &&
             git merge-base --is-ancestor "$BASE_SHA" HEAD; then
-            git diff --name-only "$BASE_SHA" HEAD > changed.txt
+            git diff --name-only --no-renames "$BASE_SHA" HEAD > "$list"
           else
-            echo "unknown-merge-base" > changed.txt
+            echo "unknown-merge-base" > "$list"
           fi
           # Starts false, and any one Go input, CI change or unknown base turns it true,
           # so a pull request that touches only a page, a Worker or a doc
@@ -214,9 +222,9 @@ jobs:
             case "$file" in
               cmd/* | go.mod | go.sum | .goreleaser.yaml | .github/* | unknown-merge-base) golang=true ;;
             esac
-          done < changed.txt
+          done < "$list"
           echo "go=$golang" >> "$GITHUB_OUTPUT"
-          cat changed.txt
+          cat "$list"
       # The cache holds only the release zip, and the next step checks it
       # against the pinned digest before anything runs, so a poisoned entry
       # fails the job rather than reaching it.
