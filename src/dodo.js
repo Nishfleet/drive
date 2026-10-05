@@ -35,7 +35,7 @@
 // Cloudflare retry of a rollup over a missing key is worse than the loss it
 // would try to fix.
 
-import { monthBillCents } from "./billing.js";
+import { gbMonths, monthBillCents } from "./billing.js";
 import { accountFoundingFlag } from "./founding.js";
 import { HOUR_MS, hourStart, monthStart, monthUsageThrough } from "./meter.js";
 
@@ -293,7 +293,13 @@ export async function pushBillingHours(db, hours, options = {}) {
       const bill = monthBillCents({
         gbMinutes: usage.gbMinutes,
         downloadBytes: usage.downloadBytes,
-        averageStoredGb: usage.averageStoredGb,
+        // The free download allowance follows the same average the storage
+        // price reads, derived here from the month's GB-minutes rather than
+        // from the hour's stored-bytes marks (drive#535): a file saved six
+        // times in one hour marks one size, and its average is one size too.
+        // gbMonths() is the one conversion, in billing.js, where the price's
+        // divisor lives.
+        averageStoredGb: gbMonths(usage.gbMinutes),
         foundingMember,
       });
       const previously = running.get(accountId) ?? 0;

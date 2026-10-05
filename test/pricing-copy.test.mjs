@@ -252,6 +252,36 @@ test("the retired price words are gone from every public surface", () => {
   }
 });
 
+test("the per-save hour the copy states is the meter's own floor", () => {
+  // drive#535, finish line 2. The pricing pages say billing is "counted by the
+  // minute", and a customer who reads that and saves a file five times inside
+  // one hour is billed five hours: every saved version is booked for at least
+  // the meter's MINIMUM_MINUTES_PER_VERSION. The sentence is the promise that
+  // makes the minute-counting copy honest, so its hour and the meter's floor
+  // are pinned together here - if the floor ever moves, this fails rather than
+  // shipping a page that promises an hour and bills two.
+  const meter = readFileSync(new URL("../src/meter.js", import.meta.url), "utf8");
+  const floor = meter.match(/MINIMUM_MINUTES_PER_VERSION\s*=\s*(\d+)/);
+  assert.ok(floor, "src/meter.js must state its per-version floor as a number");
+  assert.equal(Number(floor[1]), 60, "the meter's smallest booking is the hour the copy states");
+  assert.match(PRICE.versionMinimumLine, /at least one hour/);
+  assert.match(PRICE.versionMinimumLine, /billed for at least/);
+  // The pages that name the minute carry the marker, so the sentence renders
+  // with the rest of the price words; llms.txt is a hand-written surface and
+  // carries it verbatim. The remaining static pages (index, og-card, signin,
+  // starter) carry the headline and the rule, and this gate's other tests hold
+  // them to that. Read from the source: `publicTexts` strips {{MARKER}}s on
+  // purpose, because a marker's name is not copy.
+  for (const file of ["docs-site/pricing.md", "docs-site/how-it-works.md"]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    assert.ok(
+      source.includes("{{VERSION_MINIMUM}}"),
+      `${file} must carry the per-save hour marker`,
+    );
+  }
+  assert.ok(llms.includes(PRICE.versionMinimumLine), "llms.txt must state the per-save hour");
+});
+
 test("the bill's figures are exact cents, not a rounding near-miss", () => {
   /** @param {number} tb */
   const cents = (tb) => {

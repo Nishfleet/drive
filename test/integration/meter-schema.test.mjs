@@ -223,12 +223,18 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
       download_bytes: r.download_bytes,
       stored_bytes: r.stored_bytes,
     }));
-  // stored_bytes is the hour's mark for the month's PEAK (drive#163): the sizes
-  // the account had live at some point in the hour, read straight back out of
-  // the real column migration 0006 added. acc-other's 10 GB is hidden at 00:45,
-  // inside the hour, so it is in the mark; the peak is a MAX over these, and a
+  // stored_bytes is the hour's mark for the month's PEAK (drive#163): the size
+  // the account's drive held at the END of the hour, read straight back out of
+  // the real column migration 0006 added. drive#535 moved the mark from "live
+  // at some point in the hour" to "live at the hour's end", because the sizes
+  // a version set at some point in the hour are summed over every save the
+  // hour contained and one file overwritten six times marked 60 GB. acc-other's
+  // 10 GB was hidden at 00:45, so nothing of it was live at 01:00 and its mark
+  // is 0 - the drive did hold those bytes for three quarters of the hour, and
+  // the minutes below say so, but the mark is what was there at the end. A
   // column that were never written would read 0 for a drive that really held
-  // data.
+  // data; acc-other's row below reading 0 is the peak's truth, not a missing
+  // write.
   assert.deepEqual(rows, [
     {
       account_id: "acc-abc",
@@ -242,7 +248,7 @@ test("READ: the rollup sums only the hour's own versions, from the real schema",
       hour: midnight(),
       gb_minutes_live: 600,
       download_bytes: 0,
-      stored_bytes: 10 * GB,
+      stored_bytes: 0,
     },
   ]);
 });

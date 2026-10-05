@@ -132,6 +132,15 @@ export function buildPrice({
     // The browser-tab and share-card title: the brand and the one-line price.
     titleLine: `${rateText} per GB, never more than $${max} per TB`,
     noMinimumLine: "No minimum. No plans.",
+    // The meter's floor on a saved version (drive#535: src/meter.js's
+    // MINIMUM_MINUTES_PER_VERSION). "No minimum. No plans." is about what you
+    // must keep - there is no floor on storage - and this is what the meter
+    // bills at its smallest: every save is booked for a full hour however
+    // quickly it is overwritten. A file saved five times in one hour therefore
+    // bills more than that one hour, and that is what this sentence states so
+    // the copy cannot read as though saving were free.
+    versionMinimumLine:
+      "Each save is billed for at least one hour, so a file saved again and again inside one hour bills more than that hour.",
     // Founding copy never names the 1,000 or a count (drive#386).
     foundingLine: `Founding member pricing: half price for good, ${centsWords(foundingRateCents)} per GB and never more than $${foundingMax} per TB.`,
     // drive#417: until a card is really on file the usage page says no charge has

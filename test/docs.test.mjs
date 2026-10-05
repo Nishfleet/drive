@@ -137,7 +137,17 @@ test("the pricing page carries the invoice's numbers, not typed ones", () => {
   const page = shipped("pricing.md");
   // The headline, the rule, no minimum, founding pricing and the cap, each
   // read from the one config the invoice reads.
-  for (const line of [PRICE.headline, PRICE.rule, PRICE.noMinimumLine, PRICE.foundingLine]) {
+  for (const line of [
+    PRICE.headline,
+    PRICE.rule,
+    PRICE.noMinimumLine,
+    PRICE.foundingLine,
+    // The per-save hour, drive#535 finish line 2: the page that says billing
+    // is "counted by the minute" has to say the smallest unit that minute
+    // counting bills, or a file saved six times in an hour reads as an hour's
+    // worth of storage when the meter billed six.
+    PRICE.versionMinimumLine,
+  ]) {
     assert.ok(page.includes(line), `the pricing page must state "${line}"`);
   }
   assert.ok(
@@ -354,6 +364,21 @@ test("the render refuses an FAQ answer whose row is not yet measured", () => {
     /no-delete keys/,
     "the agents answer must come out when one of its rows is not yet measured",
   );
+});
+
+test("the FAQ states the one-hour minimum on a saved version", () => {
+  // drive#535, finish line 2 - the FAQ half. The cost answer used to say "Files
+  // are billed for at least one hour.", which is true of a FILE and reads as a
+  // floor on what you keep. The meter bills a full hour for every SAVED VERSION
+  // (src/meter.js's MINIMUM_MINUTES_PER_VERSION), and a customer who saves
+  // six times inside an hour is billed six hours, so the answer carries the
+  // pricing page's own sentence rather than a shorter one.
+  const faq = shipped("faq.md");
+  assert.ok(
+    faq.includes(PRICE.versionMinimumLine),
+    "the FAQ must state the per-save hour the meter bills",
+  );
+  assert.equal(faq.includes("Files are billed for at least one hour."), false);
 });
 
 test("the shipped FAQ is exactly the answers the data publishes", () => {

@@ -12,6 +12,8 @@ description: The rate, the maximum, founding member pricing, downloads, and the 
 {{RATE}}, kept a month, counted by the minute. You pay for what you store, and
 stop paying for what you delete. {{NO_MINIMUM}}
 
+{{VERSION_MINIMUM}}
+
 ## The maximum
 
 {{PRICE_RULE}} A drive that grows never bills less.

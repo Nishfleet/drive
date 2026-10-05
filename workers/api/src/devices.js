@@ -12,7 +12,7 @@
 // measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
 // is the whole of the withdrawal there.
 
-import { BILLING_CONFIG, storedGb } from "../../../src/billing.js";
+import { BILLING_CONFIG, gbMonths, storedGb } from "../../../src/billing.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import {
   accountFounding,
@@ -928,8 +928,14 @@ export function createD1DeviceStore(db, options = {}) {
         throw new TypeError(`usage_minutes.gb_minutes_live must be 0 or more, got ${gbMinutes}`);
       }
       // The peak is the size the drive holds now (the page's "stored now"); the
-      // bill itself reads only the GB-minutes (drive#463).
+      // bill itself reads only the GB-minutes (drive#463). The average the
+      // free download allowance follows is the GB-minutes' own average
+      // (`gbMonths`, billing.js), not the peak and not an average of the
+      // hour's marks: reading the peak as the average overstated the
+      // allowance, and averaging the marks counted a file saved six times in
+      // one hour six times (drive#535).
       const peakGb = storedGb(peak.peakBytes);
+      const averageGb = gbMonths(gbMinutes);
       // The flag the cap bills on is the account's own (drive#488): without
       // it enforceCap() counts the month at full price and stops a founding
       // account at twice its real spend. accountFoundingFlag is the tolerant
@@ -941,7 +947,7 @@ export function createD1DeviceStore(db, options = {}) {
         storedGb: peakGb,
         storedDaily: [],
         downloadBytes: 0,
-        averageStoredGb: peakGb,
+        averageStoredGb: averageGb,
         capUsd: options.capUsd,
         cardAdded: true,
         foundingMember,
