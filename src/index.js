@@ -46,7 +46,9 @@ import {
   handleStorageEventRequest,
   METER_CRON,
   METER_RECONCILE_SCHEDULE,
+  pruneHiddenVersions,
   reconcileMeter,
+  recordNightlySizes,
   runMeterCron,
 } from "./meter.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
@@ -920,6 +922,23 @@ export default {
     // crosses accounts.
     if (event.cron === METER_RECONCILE_SCHEDULE) {
       await reconcileMeter(env.METER_DB, storeFor(env), event.scheduledTime);
+      // Retention (drive issue #564): the reconciler has finished its
+      // repairs, so the prune sees the row set the provider listings have
+      // already agreed with, and a version the provider still lists is never
+      // deleted from under it. A skipped prune is reported, not thrown: the
+      // hours the cutoff needs are still being booked by the hourly rollup,
+      // and the next nightly run tries again. The rows the prune would have
+      // deleted keep being summed into usage_minutes meanwhile, so skipping
+      // loses nothing but the space.
+      const pruned = await pruneHiddenVersions(env.METER_DB, event.scheduledTime);
+      if (pruned.skipped !== null) {
+        console.log(`meter retention: skipped, ${pruned.skipped}`);
+      } else {
+        console.log(
+          `meter retention: pruned=${pruned.pruned} hidden rows before ` +
+            `${new Date(pruned.cutoff).toISOString()}`,
+        );
+      }
       if (env.DRIVE_DB) {
         const secrets = /** @type {Env & {MAIL_FROM?: string}} */ (env);
         await runAccountCloseCron({
@@ -931,6 +950,17 @@ export default {
           now: event.scheduledTime,
         });
       }
+      // The nightly size row (drive issue #564): the growth numbers the
+      // spec's decision watches, written to nightly_sizes and printed here,
+      // where an operator reading Worker logs sees one line a day. Awaited
+      // like everything else on this trip: a size row that failed must be a
+      // failed run, not a silent gap in the table.
+      const sizes = await recordNightlySizes(env.METER_DB, event.scheduledTime);
+      console.log(
+        `nightly sizes: day=${sizes.day} ` +
+          `file_versions=${sizes.fileVersionRows} rows / ${sizes.fileVersionBytes} bytes, ` +
+          `usage_minutes=${sizes.usageMinuteRows} rows, file_index=${sizes.fileIndexRows} rows`,
+      );
       return;
     }
     // No snapshot backfill trip (drive#399). The leftover `branches.snapshot`

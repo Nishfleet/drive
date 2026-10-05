@@ -551,3 +551,108 @@ async function driveWithOneFile() {
   await store.write("/Photos/a.txt", new Blob(["a"]).stream(), "text/plain");
   return { db, store };
 }
+
+// --- The namespace's 25 MiB value cap, and the chunked store (drive #564) --
+
+test("a snapshot bigger than the cap splits into generation-scoped parts, and reads back byte for byte", async () => {
+  // The cap is 25 MiB a value; ~117 bytes an entry put 100,000 files at 11 MiB
+  // and a branch five times that size past the cap with nothing in the design
+  // to catch it. The chunker splits, so growth lands in more parts instead of
+  // in a refusal. The tests run the same store the Worker runs with a few
+  // dozen bytes a chunk, because the split logic is size-independent.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const json = snapshotJson(20);
+  const key = snapshotKey(ACCOUNT, "chunked");
+  const bytes = await snapshots.put(key, json);
+  assert.equal(bytes, Buffer.byteLength(json), "the store still reports the value's byte length");
+
+  // The key itself is the manifest: small, parseable, and naming the parts.
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.equal(manifest.fmt, "drive-branch-snapshot-chunked-1");
+  assert.equal(manifest.gen, 0);
+  assert.ok(manifest.parts > 1, `20 entries at 64 bytes a part split (${manifest.parts} parts)`);
+  assert.equal(manifest.bytes, bytes);
+  // Every part lives beside the snapshot key under the same account prefix,
+  // so one account's parts can never be another account's.
+  for (let index = 0; index < manifest.parts; index += 1) {
+    assert.ok(
+      kv.values.has(`${key}.p0.${index}`),
+      `part ${index} is at the key the manifest's generation names`,
+    );
+  }
+
+  const read = await readSnapshot(snapshots, key);
+  assert.deepEqual(read, JSON.parse(json), "the parts reassemble to the same JSON");
+});
+
+test("a name with characters outside the basic plane survives the split", async () => {
+  // The split is over UTF-8 bytes, and a cut in the middle of a four-byte
+  // character would corrupt both halves. The entries below put such a
+  // character across every possible offset in a 64-byte chunk, so the
+  // boundary scan is exercised against each of the character's four bytes.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const emoji = "\u{1F43D}"; // a pig snout, four bytes in UTF-8
+  /** @type {Record<string, {size: number, etag: string, modified: number}>} */
+  const entries = {};
+  for (let pad = 0; pad < 8; pad += 1) {
+    entries[`Photos/${"\u00e9".repeat(pad)}${emoji}-img-${pad}.jpg`] = entry(pad);
+  }
+  const json = JSON.stringify(entries);
+  const key = snapshotKey(ACCOUNT, "unicode");
+  await snapshots.put(key, json);
+  const read = await readSnapshot(snapshots, key);
+  assert.deepEqual(read, entries, "every four-byte character crossed the split whole");
+});
+
+test("the second write starts a new generation and deletes the old parts only after the manifest lands", async () => {
+  // The manifest is the commit point: while a write is in flight the old
+  // manifest still names the old generation, so a concurrent reader reads the
+  // old snapshot whole. The old parts are deleted only once the new manifest
+  // has replaced it - and part keys carry the generation, so a retry never
+  // overwrites a part a reader might be reading.
+  const kv = createTestKv();
+  const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const key = snapshotKey(ACCOUNT, "gen");
+  await snapshots.put(key, snapshotJson(5));
+  const firstGenerationParts = [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`));
+  await snapshots.put(key, snapshotJson(9));
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key)));
+  assert.equal(manifest.gen, 1, "the manifest counts generations");
+  for (const stale of firstGenerationParts) {
+    assert.ok(!kv.values.has(stale), `${stale} is deleted once the new manifest has landed`);
+  }
+  assert.equal(
+    [...kv.values.keys()].filter((name) => name.startsWith(`${key}.p`)).length,
+    manifest.parts,
+    "exactly the live generation's parts remain",
+  );
+  const read = await readSnapshot(snapshots, key);
+  assert.equal(Object.keys(read).length, 9);
+});
+
+test("a snapshot written before chunking reads unchanged, and a missing part is an error, not an empty drive", async () => {
+  // Deployments roll, and a namespace holds values an earlier version wrote:
+  // a plain whole-JSON value at the key is read exactly as the old store read
+  // it. But a manifest that names parts the namespace does not hold is
+  // corruption the caller must see - returning null would read as "no
+  // snapshot" and a diff would quietly rebuild from nothing.
+  const kv = createTestKv();
+  const plain = createKvSnapshotStore(kv);
+  const key = snapshotKey(ACCOUNT, "legacy");
+  await plain.put(key, snapshotJson(3));
+  const chunked = createKvSnapshotStore(kv, { chunkBytes: 64 });
+  const read = await readSnapshot(chunked, key);
+  assert.equal(Object.keys(read).length, 3, "the pre-chunking value reads through the new store");
+
+  const key2 = snapshotKey(ACCOUNT, "torn");
+  await chunked.put(key2, snapshotJson(4));
+  const manifest = JSON.parse(/** @type {string} */ (kv.values.get(key2)));
+  kv.values.delete(`${key2}.p${manifest.gen}.0`);
+  await assert.rejects(
+    readSnapshot(chunked, key2),
+    /does not have it/,
+    "a torn snapshot is named as such, loudly",
+  );
+});

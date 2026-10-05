@@ -110,26 +110,168 @@ export function snapshotKey(account, name) {
 }
 
 /**
+ * The size cap one Workers KV namespace puts on one value: 25 MiB. One
+ * snapshot entry measured ~117 bytes (test/branches-snapshot.test.mjs), so
+ * the cap is a file count - about 215,000 entries in one string - and a
+ * branch past it was refused by the namespace with nothing in this design to
+ * catch it (drive issue #564). The chunker splits at an order of magnitude
+ * under the cap, so a write that grows between measuring and landing still
+ * fits, and a snapshot grows into more chunks instead of into a refusal.
+ */
+export const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The marker inside a chunked snapshot's manifest. A value at the snapshot
+ * key without it is a plain whole-JSON snapshot written by an earlier
+ * version of the store, and the reader serves it unchanged - a deployment
+ * that ships the chunker keeps reading every snapshot written before it.
+ */
+const CHUNKED_MANIFEST_FORMAT = "drive-branch-snapshot-chunked-1";
+
+/**
  * The KV-backed snapshot store. `kv` is the BRANCH_SNAPSHOTS namespace
  * (cloudflare.config.ts); it is a thin object over the binding, so there is
  * nothing to cache on the isolate and no stale copy to serve — the same shape
  * `linksFor` has for share links (src/index.js).
+ *
+ * Values at or over KV's 25 MiB cap are split (drive issue #564): the data
+ * lands in generation-scoped part keys next to the snapshot key, and the key
+ * itself holds a small manifest - format marker, generation, part count,
+ * byte length. The manifest is written last, after every part is in, so the
+ * one atomic write is the commit point: a run that dies mid-write leaves the
+ * previous generation's manifest live and readable, and its parts untouched
+ * - part keys carry the generation number, so a retry never overwrites the
+ * generation a reader might be reading. Stale parts are deleted only after
+ * the new manifest has landed. A plain pre-chunking value is read unchanged,
+ * and the first chunked write over it starts at generation 0 beside it.
  * @param {KVNamespace} kv
+ * @param {{chunkBytes?: number}} [options] `chunkBytes` overrides the split
+ *   size; the tests pass a few dozen bytes so a store call exercises many
+ *   parts without fixture megabytes.
  * @returns {SnapshotStore}
  */
-export function createKvSnapshotStore(kv) {
+export function createKvSnapshotStore(kv, options = {}) {
   if (!kv || typeof kv.get !== "function" || typeof kv.put !== "function") {
     throw new TypeError(`createKvSnapshotStore needs a KV namespace, got ${String(kv)}`);
   }
+  const chunkBytes = options.chunkBytes ?? KV_SNAPSHOT_CHUNK_BYTES;
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1) {
+    throw new TypeError(
+      `the snapshot chunk size must be a whole byte count, got ${String(chunkBytes)}`,
+    );
+  }
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
   return {
     async put(key, json) {
-      await kv.put(key, json);
+      // The split is over UTF-8 bytes, not code units: the cap KV applies is
+      // a byte cap, and JSON paths can hold characters that take three or
+      // four bytes. Each slice is cut between the UTF-8 sequences (the scan
+      // back never crosses a continuation byte), so decode gives back a
+      // valid string that re-encodes to exactly the bytes it came from, and
+      // joining the parts joins the bytes.
+      const bytes = encoder.encode(json);
+      const previous = await kv.get(key);
+      let previousGeneration = -1;
+      let previousParts = 0;
+      if (previous !== null) {
+        try {
+          const manifest = JSON.parse(previous);
+          if (
+            manifest !== null &&
+            typeof manifest === "object" &&
+            manifest.fmt === CHUNKED_MANIFEST_FORMAT
+          ) {
+            previousGeneration = Number(manifest.gen);
+            previousParts = Number(manifest.parts);
+          }
+        } catch {
+          // A value that does not parse is not a manifest; it carries no
+          // parts of ours to clean up, and the manifest write below replaces
+          // it.
+        }
+      }
+      const generation = previousGeneration + 1;
+      /**
+       * @param {number} index
+       */
+      const partKey = (index) => `${key}.p${generation}.${index}`;
+      let parts = 0;
+      let offset = 0;
+      while (offset < bytes.length) {
+        let end = Math.min(offset + chunkBytes, bytes.length);
+        if (end < bytes.length) {
+          while (end > offset && (bytes[end] & 0xc0) === 0x80) {
+            end -= 1;
+          }
+        }
+        await kv.put(partKey(parts), decoder.decode(bytes.subarray(offset, end)));
+        parts += 1;
+        offset = end;
+      }
+      await kv.put(
+        key,
+        JSON.stringify({
+          fmt: CHUNKED_MANIFEST_FORMAT,
+          gen: generation,
+          parts,
+          bytes: bytes.length,
+        }),
+      );
+      // The previous generation's parts are garbage only now: the manifest
+      // that named them is gone, so no reader can ask for them again.
+      if (previousGeneration >= 0) {
+        for (let index = 0; index < previousParts; index += 1) {
+          await kv.delete(`${key}.p${previousGeneration}.${index}`);
+        }
+      }
       // The byte length is what the row records so a caller can see a branch's
       // snapshot size without reading the value back.
-      return new TextEncoder().encode(json).length;
+      return bytes.length;
     },
     async get(key) {
-      return kv.get(key);
+      const raw = await kv.get(key);
+      if (raw === null) {
+        return null;
+      }
+      let manifest;
+      try {
+        manifest = JSON.parse(raw);
+      } catch {
+        // Not a manifest, therefore a plain snapshot as an earlier version
+        // wrote it (or a value a caller should see as the caller always
+        // did); the reader above this store parses it where it always did.
+        return raw;
+      }
+      if (
+        manifest === null ||
+        typeof manifest !== "object" ||
+        manifest.fmt !== CHUNKED_MANIFEST_FORMAT
+      ) {
+        return raw;
+      }
+      const generation = Number(manifest.gen);
+      const parts = Number(manifest.parts);
+      if (!Number.isSafeInteger(generation) || generation < 0) {
+        throw new Error(`the snapshot manifest at ${key} names generation ${String(manifest.gen)}`);
+      }
+      if (!Number.isSafeInteger(parts) || parts < 0) {
+        throw new Error(`the snapshot manifest at ${key} names ${String(manifest.parts)} parts`);
+      }
+      let json = "";
+      for (let index = 0; index < parts; index += 1) {
+        const part = await kv.get(`${key}.p${generation}.${index}`);
+        if (part === null) {
+          // A manifest that names a part the namespace does not have is
+          // corruption the caller must see: returning null would read as "no
+          // snapshot" and a diff would quietly rebuild from nothing.
+          throw new Error(
+            `the snapshot manifest at ${key} names part ${index}, and the namespace does not have it`,
+          );
+        }
+        json += part;
+      }
+      return json;
     },
   };
 }
