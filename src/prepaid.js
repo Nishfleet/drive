@@ -18,7 +18,7 @@
 
 import { monthBillCents } from "./billing.js";
 import { resolveDodoUrl } from "./dodo.js";
-import { isSameOriginRequest, sendEmail } from "./email-send.js";
+import { sendEmail } from "./email-send.js";
 import {
   appendLedgerEntry,
   balanceCents,
@@ -399,9 +399,9 @@ export async function handleAutoTopUpRequest(request, account, db) {
   if (request.method !== "POST") {
     return answer({ error: "Method not allowed." }, 405);
   }
-  if (!isSameOriginRequest(request)) {
-    return answer({ error: failureMessage("cross-site") }, 403);
-  }
+  // Cross-site writes are the Worker's one CSRF middleware (src/index.js
+  // csrfWhenBrowser on /api/*), not a copy here: the two public POSTs keep
+  // their own handler copies, and every other write is refused there.
   if (!db) {
     return answer({ error: failureMessage("drive-not-configured") }, 503);
   }

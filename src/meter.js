@@ -351,7 +351,9 @@ export function versionGbMinutesInHour(version, hour, now = Date.now(), continue
 /**
  * GB-minutes for a list of versions over one hour: the exact integer
  * byte-minute sum scaled once, the same total rollupHour's SQL stores.
- * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null}[]} versions
+ * @param {{sizeBytes?: number, createdAt: number, hiddenAt: number|null,
+ *   path?: unknown}[]} versions a version row carries its storage path, so
+ *   the trash billing rule (drive issue #521) can leave it out here too
  * @param {number|Date|string} hour
  * @param {number|Date|string} now
  */
@@ -378,7 +380,14 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
   // reference identity: a duplicated list entry cannot waive its own
   // minimum, and the set build is one seek per candidate, not one seek per
   // pair.
-  const entries = versions.map((version, versionIndex) => ({
+  // The trash billing rule (drive issue #521), on the JS side: a version
+  // parked in the account's trash folder is not billed, the same versions the
+  // SQL statements exclude with NOT_TRASH_SQL. Without the same filter here
+  // the reference and the statement would answer differently the moment a
+  // trash row joined the shapes below, and the differential test exists to
+  // catch exactly that drift.
+  const billed = versions.filter((version) => !isTrashPath(version?.path));
+  const entries = billed.map((version, versionIndex) => ({
     version,
     versionIndex,
     // Both sides are numbers by the time they get here: toVersion turns a
@@ -400,7 +409,7 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
       .map((entry) => entry.version),
   );
   let units = 0;
-  for (const version of versions) {
+  for (const version of billed) {
     units += versionBookedByteMinutes(version, hour, now, continued.has(version));
   }
   return units / BYTES_PER_GB;
@@ -488,11 +497,47 @@ export function gbMinutesInHour(versions, hour, now = Date.now()) {
 // hour, per account - one statement, one row per account, however many
 // versions exist, which is the property the GB-minutes statement above was
 // built for.
+// --- The trash billing rule (drive issue #521) -----------------------
+
+/**
+ * Whether a version path is inside the account-scoped trash folder a web
+ * delete parks a file in: `u/<account>/.trash/<timestamp>__<name>`.
+ *
+ * The segment test is exact on purpose: the trash folder is the SECOND path
+ * segment, immediately under the account. A person's own folder named
+ * `.trash` deeper in the tree — `u/acct/photos/.trash/...` — is an ordinary
+ * folder of theirs and keeps billing. A plain `LIKE '%/.trash/%'` would read
+ * that folder as trash too, because `%` crosses `/`.
+ * @param {unknown} path the version path as file_versions stores it
+ * @returns {path is string}
+ */
+export function isTrashPath(path) {
+  return typeof path === "string" && /^\/?u\/[^/]+\/\.trash\//.test(path);
+}
+
+// The same rule as SQL, for the statements that compute the money: a version
+// parked in the account's trash folder is not billed. The page's promise
+// ("stop paying for what you delete", DELETE_COPY in src/files.js) says the
+// deletion stops the charge, so the rule lives here, where every stored-byte
+// and GB-minute figure is computed, and nowhere else.
+//
+// The SQL needs the same one-exact-segment shape as isTrashPath, and GLOB
+// cannot express it: a bracket class matches one character, so
+// `[^/]*`-plus-`*` is still "any run", and `*` crosses `/`. The exact test is
+// a positive LIKE against the shape, cancelled by a negative LIKE that
+// requires TWO segments before `/.trash/`: only the account's own trash
+// folder survives both.
+const NOT_TRASH_SQL = `NOT (
+    (path LIKE 'u/%/.trash/%' AND path NOT LIKE 'u/%/%/.trash/%') OR
+    (path LIKE '/u/%/.trash/%' AND path NOT LIKE '/u/%/%/.trash/%')
+  )`;
+
 export const HOUR_STORED_BYTES_SQL = `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
   FROM file_versions
   WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at > ?1)
+    AND ${NOT_TRASH_SQL}
   GROUP BY account_id
   ORDER BY account_id`;
 
@@ -522,6 +567,7 @@ export const HOUR_GB_MINUTES_SQL = `SELECT account_id,
     COUNT(*) AS versions
   FROM file_versions
   WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?1)
+    AND ${NOT_TRASH_SQL}
   GROUP BY account_id
   ORDER BY account_id`;
 
@@ -560,6 +606,7 @@ const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
   WHERE hour = ?1 AND account_id NOT IN (
     SELECT account_id FROM file_versions
     WHERE created_at < ?2 AND (hidden_at IS NULL OR hidden_at >= ?3)
+      AND ${NOT_TRASH_SQL}
   )`;
 
 /**
@@ -706,6 +753,7 @@ const MONTH_HAS_VERSIONS_SQL = `SELECT EXISTS(
       AND created_at < strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000
       AND (hidden_at IS NULL
            OR hidden_at > strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000)
+      AND ${NOT_TRASH_SQL}
   ) AS has_versions`;
 
 /**

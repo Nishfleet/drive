@@ -19,12 +19,28 @@ import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
 import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
-/** Every migration that applies to the customer database, in order. */
+/**
+ * Every migration the short default list applies to the customer database, in
+ * the order `wrangler d1 migrations apply` applies them.
+ *
+ * Short, but never shorter than the schema a real request touches. A list that
+ * skips a table production has is how the pre-charge limit's read passed
+ * against a fixture and failed against a customer: `file_versions` (0005) was
+ * missing here, so `src/files.js uploadRequest` -> `accountStoredBytes`
+ * answered 500 on every upload a test drove (drive#536). When product code
+ * starts reading a table, the table lands in this list.
+ */
 export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0002_file_index.sql",
   "drive/0003_branches.sql",
   "drive/0004_agent_undo.sql",
   "drive/0005_better_auth.sql",
+  // The meter's own tables: `file_versions`, `usage_minutes`, `events_seen` and
+  // `meter_rollup_state`. `file_versions` is the 1 TB pre-charge limit's source
+  // of truth now (drive#536) - the live rows the storage event intake writes as
+  // people save - so the web upload path reads it on every save and a schema
+  // without it refuses every upload. Additive only, as its own header says.
+  "drive/0005_meter.sql",
   "drive/0006_share_links.sql",
   "drive/0008_teams.sql",
   "drive/0009_upload_request_caps.sql",
@@ -65,17 +81,21 @@ export const DRIVE_MIGRATIONS = Object.freeze([
   "drive/0021_agent_caps_nullable_cap.sql",
   // The prepaid draws (drive#586): low-balance and auto top-up columns.
   "drive/0021_prepaid_draws.sql",
+  // The cap notices the hourly walk sends (drive#496): cap_warned_at and
+  // read_only_sent_at. Expand only, two nullable columns.
+  "drive/0024_cap_notices.sql",
 ]);
 
 /**
  * Every `drive/` migration, in the order the production Worker applies them.
  *
- * `DRIVE_MIGRATIONS` above is the subset the cap-mount tests need, and it is
- * deliberately short. A request that reads the month's usage — which the cap
- * write does, because the answer carries `capLine` — needs `0005_meter` and
- * `0006_usage_stored_bytes` as well, and a test that only reads a row could
- * not see that. This list is the whole schema, so a test built on it cannot
- * discover a table that production has is missing here.
+ * `DRIVE_MIGRATIONS` above is the subset the sign-in and cap-mount tests need,
+ * and it is deliberately short — but it carries `0005_meter`, because a
+ * request that saves a file reads `file_versions`. A request that reads the
+ * month's usage — which the cap write does, because the answer carries
+ * `capLine` — needs `0006_usage_stored_bytes` as well, and a test that only
+ * reads a row could not see that. This list is the whole schema, so a test
+ * built on it cannot discover a table that production has is missing here.
  *
  * A test that asserts a cap really is stored reads the row back through this
  * list rather than through the harness's default one (drive issue #421).

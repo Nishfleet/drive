@@ -65,7 +65,6 @@ import {
   safeAfterSigninPath,
   sessionAccount,
 } from "./auth.js";
-import { isSameOriginRequest } from "./email-send.js";
 import { provisionAccountBucket } from "./files.js";
 import { failureMessage } from "./messages.js";
 import { PRICE } from "./pricing.js";
@@ -353,11 +352,6 @@ export async function handleSigninRequest(request, env) {
       status: 405,
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
-  }
-  // State-changing and cookie-changing, so it refuses a request another site
-  // made on the visitor's behalf, the same rule the send route uses.
-  if (!isSameOriginRequest(request)) {
-    return json({ error: failureMessage("cross-site") }, 403);
   }
   // The edge limits, in the same place the waitlist runs its own: after the
   // guards that refuse a request outright (a refused cross-site post spends no

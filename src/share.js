@@ -50,7 +50,6 @@ import {
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
   preChargeUploadBlocked,
 } from "./abuse-guards.js";
-import { isSameOriginRequest } from "./email-send.js";
 import {
   etagMatches,
   joinPath,
@@ -789,18 +788,6 @@ async function capStateFor(resolver, accountId) {
   return state;
 }
 
-// The one refusal for a state-changing link request that came from another
-// origin. A specific line rather than the table's generic fallback: "try
-// again in a moment" would be advice to retry a request that will always be
-// refused, and the one next step is to do it from the drive page — the same
-// shape src/files.js answers its cross-site upload, delete and restore with.
-function crossSiteRefused() {
-  return json(
-    { error: "Sharing and upload requests are only accepted from your drive page." },
-    403,
-  );
-}
-
 /** The request's own origin: the links are absolute so they can be copied.
  *
  * @param {Request} request
@@ -852,8 +839,9 @@ export function folderDisplayName(folder) {
  * the account prefix is applied, so a share can only ever name a path inside
  * the account that minted it.
  *
- * Reading is safe to repeat, so only the two that change the drive — minting
- * and revoking — carry the cross-site rule src/files.js already uses.
+ * Reading is safe to repeat. Cross-site writes are the Worker's CSRF
+ * middleware (src/index.js csrfWhenBrowser), not a second copy of the
+ * same-origin rule here.
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
@@ -868,9 +856,6 @@ export async function handleShareRequest(request, files, links, account, options
   const base = baseFromRequest(request);
   const store = links.shares;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)
@@ -957,12 +942,25 @@ export async function handleShareRequest(request, files, links, account, options
  * @param {Request} request
  * @param {import("./files.js").FileStore} files a FileStore
  * @param {LinkStore} links
- * @param {{now?: number}} [options]
+ * @param {{now?: number, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 export async function handleShareFileRequest(request, files, links, options = {}) {
   const now = options.now ?? Date.now();
   if (request.method !== "GET" && request.method !== "HEAD") {
     return methodNotAllowed("GET", "GET this link to open the file.");
+  }
+  const limited = await enforceEdgeLimits(
+    [
+      {
+        binding: options.ipLimiter,
+        key: clientIpKey(request, "share-download"),
+        name: "SHARE_DOWNLOAD_RATE_LIMITER",
+      },
+    ],
+    "share-download",
+  );
+  if (limited) {
+    return limited;
   }
   const token = new URL(request.url).pathname.slice(SHARE_LINK_PREFIX.length + 1);
   const checked = validateToken(token);
@@ -1052,7 +1050,10 @@ export async function handleShareFileRequest(request, files, links, options = {}
  * tab, which is what "a link that opens the file" means, while the one type
  * that can still act as a document — an .svg, whose links navigate — leaves as
  * an attachment, so a link can never hand a stranger a rendered document on
- * our address to phish a password from (drive#657).
+ * our address to phish a password from (drive#657). Every type the preview
+ * allowlist refuses — the XML document family (XHTML, XSLT, RDF, MathML and
+ * multipart/related uploads, issue #548) — is octet-stream, and leaves as an
+ * attachment for the same reason.
  * @param {string} path the shared file's drive path, for the type's kind
  * @param {string} contentType the type the store reported
  * @param {{length?: string, etag?: string|null|undefined, contentRange?: string,
@@ -1117,9 +1118,6 @@ export async function handleRequestRequest(request, files, links, account, optio
   const base = baseFromRequest(request);
   const store = links.requests;
   const scoped = scopeStore(files, account);
-  if ((request.method === "POST" || request.method === "DELETE") && !isSameOriginRequest(request)) {
-    return crossSiteRefused();
-  }
   if (request.method === "GET") {
     const rows = (await store.list(account.id))
       .sort((left, right) => right.createdAt - left.createdAt)

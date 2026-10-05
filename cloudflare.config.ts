@@ -60,19 +60,23 @@ export default defineConfig({
       runWorkerFirst: ["/api/*", "/s/*", "/v1/*"],
       notFoundHandling: "404-page",
     },
-    // Three Cron Triggers: the meter's hourly rollup (drive issue #6), the
-    // meter's nightly reconciler (drive issue #59), and the file index's
-    // nightly reconciler (drive issue #18). `scheduled` in src/index.js tells
+    // Four Cron Triggers: the meter's hourly rollup (drive issue #6), the
+    // meter's nightly reconciler (drive issue #59), the file index's
+    // nightly reconciler (drive issue #18), and the nightly trash purge
+    // (drive issue #521). `scheduled` in src/index.js tells
     // them apart by the cron string the platform hands it, so no trigger
     // spends another's work. The reindex schedule is the only way a rebuild
     // starts, so no web request can spend the walk (the safety review: reindex
     // is not a public route). 03:00 UTC is the spec's quiet hour, before the
     // meter's first hourly run; the meter's reconciler runs at 04:00 UTC, an
-    // hour later, so the two nightly walks do not share a trip.
+    // hour later, so the two nightly walks do not share a trip; the trash
+    // purge runs at 05:00 UTC, after the reconciler, so a parked file's last
+    // hour is re-rolled before its bytes leave the bucket.
     //
     // Each schedule is the string the module that owns it exports:
-    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE, and
-    // src/search.js's REINDEX_SCHEDULE. test/meter.test.mjs reads these three
+    // src/meter.js's METER_CRON and METER_RECONCILE_SCHEDULE,
+    // src/search.js's REINDEX_SCHEDULE, and src/files.js's
+    // TRASH_PURGE_SCHEDULE. test/meter.test.mjs reads these four
     // out of this file and asserts they equal those exports, so a changed
     // schedule cannot drift from the trigger that runs it. They are not
     // imported from those modules - see the note at the top of this file for
@@ -81,6 +85,7 @@ export default defineConfig({
       triggers.scheduled({ schedule: "5 * * * *" }),
       triggers.scheduled({ schedule: "0 4 * * *" }),
       triggers.scheduled({ schedule: "0 3 * * *" }),
+      triggers.scheduled({ schedule: "0 5 * * *" }),
     ],
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
@@ -215,6 +220,17 @@ export default defineConfig({
       REQUEST_UPLOAD_LINK_RATE_LIMITER: bindings.rateLimit({
         namespace: "1005",
         simple: { limit: 10, period: 60 },
+      }),
+      // GET /s/<token> (drive issue #506): a logged-out share download has no
+      // account gate, so the stock rate-limit binding is the bound. Per IP it
+      // sits at 60 a minute: far above a person opening a handful of links,
+      // far below a script walking tokens. One minute, the waitlist's period.
+      // Namespace 1008: 1001–1005 are this Worker, 1006/1007 are the api
+      // Worker's device pair. A namespace another binding already uses fails
+      // the deploy with 10021.
+      SHARE_DOWNLOAD_RATE_LIMITER: bindings.rateLimit({
+        namespace: "1008",
+        simple: { limit: 60, period: 60 },
       }),
       // Cloudflare Email Sending (drive#33): the stock provider every
       // drive email goes through, in src/email-send.js. No options: the

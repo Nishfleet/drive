@@ -34,6 +34,9 @@ on:
 jobs:
   dispatch:
     uses: Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main # same ref runner group 3 enforces for agent.yml; a SHA pin here drifts from agent.yml@main and strands jobs (0509#5231)
+    # contents: write is the ceiling for two fleet-ops jobs: hold-risky's
+    # merge-queue dequeue and the close job's branch delete. fleet-ops writers
+    # are drive writers; docs/security.md states that boundary (drive#581).
     permissions:
       issues: write
       pull-requests: write
