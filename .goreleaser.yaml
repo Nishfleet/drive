@@ -24,7 +24,7 @@
 # `Depends: rclone`, `rpm -qp --requires` on the .rpm shows `rclone`, and
 # `apt install ./drive_x.deb` / `dnf install ./drive_x.rpm` mounted the drive.
 # The Homebrew half is NOT run yet: the tap repository below does not exist, so
-# `brew install nishfleet/tap/drive` still fails until a release creates it.
+# `brew install nish3451/tap/drive` still fails until a release creates it.
 version: 2
 
 project_name: drive
@@ -76,28 +76,34 @@ nfpms:
       - src: README.md
         dst: /usr/share/doc/drive/README.md
 
-# The macOS formula. GoReleaser pushes it to the tap on each release, and
-# `brew install nishfleet/tap/drive` resolves the `rclone` dependency the same
-# way apt does on Linux. The tap repository does not exist yet: creating a
+# The macOS cask. GoReleaser pushes it to the tap on each release, and
+# `brew install nish3451/tap/drive` resolves the `rclone` dependency the same
+# way apt does on Linux. `homebrew_casks` replaced the deprecated `brews` block
+# (https://goreleaser.com/deprecations#brews), and `goreleaser check` in CI
+# fails on a deprecated key. The tap repository does not exist yet: creating a
 # public repo is Nish's, so a release before that publishes the .deb/.rpm and
 # archive and fails only this publish step.
-brews:
+homebrew_casks:
   - name: drive
     ids: [drive]
     repository:
-      owner: Nishfleet
+      owner: nish3451
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: https://drive-pricing.nishant345.workers.dev
     description: A Finder drive for people and their agents, mounted with stock rclone.
     license: Proprietary
     dependencies:
-      - name: rclone
-    install: |
-      bin.install "drive"
-    test: |
-      system "#{bin}/drive version"
+      - formula: rclone
+    # The binaries are unsigned (signing costs money; drive#154), so macOS
+    # quarantines a downloaded one. GoReleaser's documented hook lifts it.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drive"]
+          end
 
 changelog:
   use: git

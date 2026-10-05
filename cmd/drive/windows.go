@@ -101,7 +101,7 @@ func WindowsDriveLetter(override string, free func(string) bool) (string, error)
 			return letter, nil
 		}
 	}
-	return "", errors.New("no free drive letter between D: and Z:")
+	return "", errors.New("no free drive letter: D: to Z: are all taken")
 }
 
 // normalizeDriveLetter turns "z", "Z" or "z:" into "Z:" and refuses anything
@@ -109,7 +109,7 @@ func WindowsDriveLetter(override string, free func(string) bool) (string, error)
 func normalizeDriveLetter(s string) (string, error) {
 	letter := strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(s), ":"))
 	if len(letter) != 1 || letter[0] < 'A' || letter[0] > 'Z' {
-		return "", fmt.Errorf("%q is not a drive letter between A: and Z:", s)
+		return "", fmt.Errorf("%q is not a drive letter (A: to Z: only)", s)
 	}
 	return letter + ":", nil
 }

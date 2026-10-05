@@ -433,7 +433,6 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 // times each until the new size is in storage. Space publishes the 64 MiB case.
 func BenchmarkSmallEdit(b *testing.B) {
 	h := benchSetup(b)
-	const edit = "bench-edit.txt"
 	const size = 4096
 	for _, c := range []struct {
 		scenario, name string

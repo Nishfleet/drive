@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -133,7 +134,15 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 }
 
 func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
+	// mu guards the stand-in's state: it is written on the server's goroutine
+	// and read here once each call returns.
+	var mu sync.Mutex
 	var gotPath, gotBody string
+	seen := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotPath, gotBody
+	}
 	// rclone is stateful: setting a rate, then asking with no argument, answers
 	// the rate now in force. The stand-in keeps the same state, so the test
 	// walks the same path the CLI does.
@@ -141,6 +150,8 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	const rate1Ki = `{"bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1,"rate":"1Ki:off"}`
 	inForce := rateOff
 	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		gotPath = r.URL.Path
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("the client did not form-encode the rate: %v", err)
@@ -170,11 +181,8 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	if err := c.SetBwLimit(ctx, pausedRate); err != nil {
 		t.Fatalf("SetBwLimit: %v", err)
 	}
-	if gotPath != "/core/bwlimit" {
-		t.Errorf("posted to %s, want /core/bwlimit", gotPath)
-	}
-	if !strings.Contains(gotBody, "rate=") {
-		t.Errorf("body = %q, want the form-encoded rate rclone reads", gotBody)
+	if path, body := seen(); path != "/core/bwlimit" || !strings.Contains(body, "rate=") {
+		t.Errorf("posted %q to %s, want the form-encoded rate rclone reads at /core/bwlimit", body, path)
 	}
 	limit, err := c.BwLimit(ctx)
 	if err != nil {

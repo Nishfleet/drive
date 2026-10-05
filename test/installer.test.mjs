@@ -1,6 +1,6 @@
 // The Windows installer (drive issue #154), checked here rather than trusted.
 //
-// The MSI is built on windows-latest by installer/windows-msi.yml, so nothing
+// The MSI is built on windows-latest by .github/workflows/windows-msi.yml, so nothing
 // in this file proves the MSI runs: it proves the sources still say what the
 // issue asks for. Each line below is one of the issue's promises, and each is
 // matched against the file that carries it, so a later edit that drops the
@@ -22,7 +22,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const MSI = read("installer/drive.wxs");
 const BUNDLE = read("installer/bundle.wxs");
-const WORKFLOW = read("installer/windows-msi.yml");
+const WORKFLOW = read(".github/workflows/windows-msi.yml");
 
 /** @param {string} path @param {RegExp} what @param {string} why */
 const asserts = (path, what, why) => {
@@ -181,7 +181,7 @@ test("the bundle brings WinFsp from WinFsp's own release, never a vendored copy"
   assert.ok(bundleVersion, "the bundle names a WinFsp version");
   assert.equal(workflowVersion, bundleVersion, "the CI job downloads that same WinFsp version");
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     new RegExp(
       `WINFSP_MSI_URL:\\s*"?https://github\\.com/winfsp/winfsp/releases/download/[^"]+/winfsp-${bundleVersion}\\.msi`,
     ),
@@ -199,7 +199,7 @@ test("the bundle brings WinFsp from WinFsp's own release, never a vendored copy"
   const digest = WORKFLOW.match(/WINFSP_MSI_SHA256:\s*"?([0-9a-f]{64})"?/)?.[1];
   assert.ok(digest, "the CI job must pin the digest of the WinFsp MSI it downloads");
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /Get-FileHash -Path installer\\winfsp\.msi -Algorithm SHA256/,
     "and check the download against it",
   );
@@ -244,7 +244,7 @@ test("the winget manifest makes WinFsp a package dependency", () => {
   // job and the release process overwrite before any manifest is submitted.
   assert.match(installer, /InstallerSha256: 0{64}/, "no release hash is invented here");
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /winget validate/,
     "the CI job is what runs winget validate, the only thing that can prove this manifest",
   );
@@ -255,47 +255,47 @@ test("the job proves both routes: the MSI with msiexec /qn, and the bundle winge
   // writes its own verbose log (/l*v) so a red run's only evidence
   // is the exit code — and now the log itself (drive#369).
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*-ArgumentList @\('\/i',/,
     "the Drive MSI is installed silently with msiexec /qn, arguments as an array",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*-ArgumentList @\('\/x',/,
     "and uninstalled the same silent way",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*'\/l\*v'/,
     "every msiexec call writes its own verbose Windows Installer log (/l*v) (drive#369)",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\install\.log/,
     "the Drive install names its log, install.log, and uploads it on failure",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*-ArgumentList @\('\/i',[^\n]*installer\\winfsp-install\.log/,
     "the WinFsp install names its log",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /msiexec\.exe[^\n]*-ArgumentList @\('\/x',[^\n]*installer\\uninstall\.log/,
     "and the uninstall names its log",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7\.0\.1/,
     "the log is uploaded as an artifact, pinned to the pinned byte hash",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /if: failure\(\)/,
     "and the upload is gated on failure, so a green run uploads nothing",
   );
   asserts(
-    "installer/windows-msi.yml",
+    ".github/workflows/windows-msi.yml",
     /Start-Process installer\\drive-setup\.exe -Wait -PassThru -ArgumentList/,
     "the bundle route starts the stock drive-setup.exe",
   );
@@ -306,7 +306,11 @@ test("the job proves both routes: the MSI with msiexec /qn, and the bundle winge
 });
 
 test("the Windows job is written to run on windows-latest and calls the tools directly", () => {
-  asserts("installer/windows-msi.yml", /runs-on: windows-latest/, "runs on a Windows runner");
+  asserts(
+    ".github/workflows/windows-msi.yml",
+    /runs-on: windows-latest/,
+    "runs on a Windows runner",
+  );
   for (const tool of [
     "dotnet tool install --global wix",
     "go build -o installer\\drive.exe ./cmd/drive",
@@ -320,7 +324,7 @@ test("the Windows job is written to run on windows-latest and calls the tools di
       // The task is read with the Task Scheduler cmdlet the OS ships, not a
       // helper script of ours.
       asserts(
-        "installer/windows-msi.yml",
+        ".github/workflows/windows-msi.yml",
         /Get-ScheduledTask/,
         "reads the login task with Task Scheduler",
       );
@@ -349,38 +353,43 @@ test("the Windows job is written to run on windows-latest and calls the tools di
   }
 });
 
-test("the Windows job is not in .github/, and is byte-identical when it lands there", () => {
-  // The agent worker App has no Workflows write, so a push that touches
-  // .github/workflows/ is rejected by GitHub. The job therefore sits beside
-  // its sources, and the reason is in the file's own header, so whoever moves
-  // it does not have to read the history to find out why it moved.
-  const workflowDir = new URL("../.github/workflows/", import.meta.url);
-  const shippedPath = new URL("windows-msi.yml", workflowDir);
-  if (!existsSync(shippedPath)) {
-    // Not landed yet: the job is still dormant, and the file says why.
-    assert.match(
-      WORKFLOW,
-      /refusing to allow a GitHub App to create or/,
-      "the file must carry the exact rejection it works around",
-    );
-    assert.match(
-      WORKFLOW,
-      /without `workflows` permission/,
-      "and the reason GitHub gives: the App has no Workflows write",
-    );
-    asserts(
-      "installer/windows-msi.yml",
-      /\.github\/workflows\/windows-msi\.yml/,
-      "and name where it has to land",
-    );
-    return;
-  }
-  // Landed: the copy that runs must be the copy that was reviewed, so the two
-  // are compared byte for byte rather than left to drift.
-  assert.equal(
-    readFileSync(shippedPath, "utf8"),
+test("the Windows workflow has one copy, and it is the one GitHub runs (drive#508)", () => {
+  // installer/ once held a second copy, kept while the worker App could not
+  // push to .github/workflows/. Two copies drift, and a test that guards the
+  // one GitHub never runs proves nothing, so the dead copy is gone.
+  assert.ok(
+    !existsSync(new URL("../installer/windows-msi.yml", import.meta.url)),
+    "installer/windows-msi.yml is a dead copy; .github/workflows/windows-msi.yml is the workflow",
+  );
+  assert.doesNotMatch(
     WORKFLOW,
-    ".github/workflows/windows-msi.yml has drifted from installer/windows-msi.yml",
+    /NOT IN \.github\/workflows/,
+    "the header must not deny where it lives",
+  );
+});
+
+test("every workflow pins one rclone release, and the stand-in test fetches the same one", () => {
+  const ci = read(".github/workflows/ci.yml");
+  const ciVersion = ci.match(/RCLONE_VERSION:\s*"?(v[\d.]+)"?/)?.[1];
+  assert.ok(ciVersion, "ci.yml pins an rclone release");
+  assert.match(ci, /RCLONE_LINUX_AMD64_SHA256:\s*"?[0-9a-f]{64}"?/, "and its digest");
+  assert.match(ci, /sha256sum -c/, "and checks the download against that digest");
+  assert.doesNotMatch(ci, /rclone-current/, "no job downloads whatever rclone is newest");
+  // rclone reads every RCLONE_<FLAG> environment variable as a command-line
+  // flag, so a workflow env named RCLONE_VERSION becomes `--version=v1.75.1`
+  // and rclone exits with "strconv.ParseBool" (CI run 37261594626).
+  assert.doesNotMatch(ci, /^\s+RCLONE_\w+:/m, "no ci.yml env name starts with RCLONE_");
+  assert.equal(
+    WORKFLOW.match(/RCLONE_RELEASE:\s*"?(v[\d.]+)"?/)?.[1],
+    ciVersion,
+    "the Windows workflow pins the release ci.yml pins",
+  );
+  assert.match(WORKFLOW, /RCLONE_WINDOWS_AMD64_SHA256:\s*"?[0-9a-f]{64}"?/, "with its digest");
+  assert.doesNotMatch(WORKFLOW, /rclone-current/, "no Windows job downloads the newest rclone");
+  assert.equal(
+    read("test/two-mount-sync.test.mjs").match(/const RCLONE_RELEASE = "(v[\d.]+)"/)?.[1],
+    ciVersion,
+    "the stand-in test's fallback download is that same release",
   );
 });
 
