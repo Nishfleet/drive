@@ -28,7 +28,7 @@ import worker from "../src/index.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
 import { createMemoryStore as createKeyStore } from "../workers/api/src/keystore.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { createTestAuth, DRIVE_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 const MAIL_FROM = "notifications@drive.example";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -428,7 +428,13 @@ test("GET /api/account/close is account-gated, and a signed-in close writes the 
   );
   assert.equal(anonymous.status, 401);
 
-  const made = createTestAuth();
+  const made = createTestAuth({
+    // Close now revokes the account's device tokens in the same store call
+    // (drive#497), so the real schema this route runs against carries the
+    // device-token table too; the default harness subset stops at the cap and
+    // account tables and would fail `no such table: device_tokens`.
+    migrations: [...DRIVE_MIGRATIONS, "drive/0007_device_codes.sql"],
+  });
   const { cookie, account } = await signIn(made, "close@example.com");
   const email = makeFakeEmail();
   const env = {

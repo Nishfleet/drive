@@ -47,6 +47,16 @@ export async function mintKeyRoute(request, ctx) {
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
+  // A closed account is refused a new storage key. The account gate already
+  // refuses a closed account's bearer token, so the only way here is a browser
+  // session cookie, which outlives the close: without this check the closed
+  // account could mint a key a moment after close revoked them all (drive#497).
+  const closeState = ctx.store?.getCloseState
+    ? await ctx.store.getCloseState(ctx.account.id)
+    : null;
+  if (closeState?.state === "closed") {
+    return errorResponse(403, failureMessage("account-closed"));
+  }
   // A kind off the wire is not trusted to be one of the four: the store
   // refuses an unknown kind by name (keyprovider.js `keyTtlSeconds`), which is
   // the refusal the 400 below carries. The cast only says to the checker that
@@ -125,11 +135,14 @@ export async function revokeAllKeysRoute(request, ctx) {
   if (typeof ctx.account?.id !== "string" || ctx.account.id === "") {
     return errorResponse(401, "Sign in to sign out of every device.");
   }
-  // Keys first, tokens second: a key is the credential that opens the storage
-  // API, so if the second half fails for any reason the keys are already dead
-  // and nothing is left holding a way in.
+  // One call, one account, both halves: the bound D1 device store revokes
+  // the account's keys, device tokens, share links and upload requests in the
+  // same statement set (devices.js revokeAccountCredentials), and the
+  // in-memory stand-in's `revokeAllKeys` calls its own sign-in store for the
+  // token half (keystore.js). Keys first, tokens second: a key is the
+  // credential that opens the storage API, so if the call fails only partway
+  // the keys are already dead and nothing is left holding a way in.
   await ctx.store.revokeAllKeys(ctx.account);
-  await ctx.store.signin.revokeAllDeviceTokens(ctx.account);
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
 
