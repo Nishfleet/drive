@@ -419,6 +419,7 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
   const rcloneBin = findRclone();
   if (!rcloneBin) {
     reportResult("skipped", "no rclone");
+    reportSkip("cap-mount", "rclone is not installed");
     return t.skip("rclone is not installed; set DRIVE_STANDIN_RCLONE");
   }
   if (!CONFIGURED_ENDPOINT && ROOT_SECRET_KEY.length < 8) {
@@ -444,6 +445,7 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
 
   if (inNamespace) {
     reportResult("skipped", "the mount was refused even inside a user namespace");
+    reportSkip("cap-mount", "FUSE mount refused even inside a user namespace (drive#501)");
     return t.skip("this host refuses an unprivileged FUSE mount even inside a user namespace");
   }
   const canUserNs =
@@ -451,6 +453,7 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
       .status === 0;
   if (!canUserNs) {
     reportResult("skipped", "the mount was refused and no user namespace is available");
+    reportSkip("cap-mount", "FUSE mount refused and no user namespace (drive#501)");
     return t.skip(
       "this host refuses an unprivileged FUSE mount and no user namespace is available",
     );
