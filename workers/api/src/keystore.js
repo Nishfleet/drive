@@ -29,7 +29,7 @@ import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_TOKEN_TTL_SECONDS,
 } from "./device-signin.js";
-import { digestsEqual } from "./http.js";
+import { tokensMatch } from "./http.js";
 import {
   AGENT_KEY_TTL_SECONDS,
   CAPABILITIES_BY_KIND,
@@ -522,7 +522,10 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+        // The one compare in http.js, over the two digests this store has: a
+        // device is stored as its secret's hash and the request brings the
+        // secret, so the hash of that secret is the second side.
+        if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }
         const at = nowSeconds(now());

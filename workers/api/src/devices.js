@@ -17,7 +17,7 @@ import { applyCapSwap, READ_ONLY_CAPABILITIES } from "../../../src/cap.js";
 import { monthStart, monthUsageRollup } from "../../../src/meter.js";
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { all, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
-import { digestsEqual } from "./http.js";
+import { tokensMatch } from "./http.js";
 import { bucketForKeyPrefix, mintTtlSeconds, teamPrefix } from "./keyprovider.js";
 import { publicDevice, renewKeyWindow } from "./keystore.js";
 
@@ -749,7 +749,10 @@ export function createD1DeviceStore(db, options = {}) {
       if (device === null || device.secretHash === "") {
         return null;
       }
-      if (!digestsEqual(device.secretHash, await sha256Hex(secret))) {
+      // The one compare in http.js, over the two digests this row has: a device
+      // is stored as its secret's hash and the request brings the secret, so the
+      // hash of that secret is the second side.
+      if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
         return null;
       }
       const seen = nowSeconds(now());

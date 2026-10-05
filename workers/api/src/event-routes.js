@@ -21,8 +21,7 @@
 // that table drives, test/messages.test.mjs, covers the table and the shipped
 // page; a bucket reading an XML/`{"error"}` body is not a person.
 
-import { sha256Hex } from "./db.js";
-import { digestsEqual, errorResponse, json } from "./http.js";
+import { errorResponse, json, tokensMatch } from "./http.js";
 
 /**
  * One event from an S3 notification envelope, and the bucket and key it names.
@@ -122,7 +121,10 @@ export async function storageEventsRoute(request, ctx) {
       "www-authenticate": 'Bearer realm="drive"',
     });
   }
-  if (!digestsEqual(await sha256Hex(presented), await sha256Hex(token))) {
+  // The bucket's own token, compared through the one compare in http.js: the
+  // presented bearer token and the configured one are both raw here, so the
+  // constant-shape digest compare runs on exactly what they are.
+  if (!(await tokensMatch(presented, token))) {
     return errorResponse(401, "Storage events need the bucket's token.", {
       "www-authenticate": 'Bearer realm="drive"',
     });

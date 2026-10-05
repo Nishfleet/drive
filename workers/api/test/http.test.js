@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { digestsEqual, errorResponse, json, readJsonObject } from "../src/http.js";
-
-// A real hex SHA-256 digest, the shape every call site compares: the bucket's
-// notification token in event-routes.js and the device secret in keystore.js
-// and devices.js are both hashed through workers/api/src/db.js `sha256Hex`
-// before they reach the compare.
-const DIGEST = createHash("sha256").update("event-token-for-the-test").digest("hex");
+import {
+  BodyTooLargeError,
+  bearerToken,
+  errorResponse,
+  json,
+  readJsonObject,
+  readLimitedBody,
+  tokensMatch,
+} from "../src/http.js";
 
 // drive#77 finding 5: http.js had no test at all. These pin the error shape
 // every api route answers with, the no-store rule, and the three ways a body
@@ -62,65 +64,99 @@ test("readJsonObject refuses JSON that is not an object", async () => {
   }
 });
 
-// drive#636: the one digest compare (http.js `digestsEqual`), pinned directly
-// rather than only through a route. The shape the three call sites compare is
-// two hex SHA-256 digests, so these are digests too, and the matrix is the one
-// test/meter.test.mjs already runs against `tokensMatch` — a longer
-// presentation, a shorter one, a prefix and an empty secret all fail, and the
-// equal case is the only true one.
+const TOKEN = "s3cr3t-event-token";
 
-test("digestsEqual accepts the digest it is handed", () => {
-  assert.equal(digestsEqual(DIGEST, DIGEST), true);
+test("bearerToken reads a case-insensitive scheme and trims the value", () => {
+  /** @param {string|undefined} header */
+  const read = (header) =>
+    bearerToken(
+      new Request(
+        "https://x.test/",
+        header === undefined ? undefined : { headers: { authorization: header } },
+      ),
+    );
+  assert.equal(read("Bearer abc"), "abc");
+  assert.equal(read("bearer abc"), "abc", "the scheme case does not matter");
+  assert.equal(read("abc"), null, "a bare value is not a bearer token");
+  assert.equal(read("Basic abc"), null);
+  assert.equal(read(undefined), null, "no header at all is no token");
+  assert.equal(read("Bearer"), null);
+  assert.equal(read("Bearer   "), null, "a whitespace value is no token");
 });
 
-test("digestsEqual refuses a digest with extra characters", () => {
+test("readLimitedBody returns the bytes under the limit", async () => {
+  const req = new Request("https://x.test/", { method: "POST", body: "abcdef" });
+  const bytes = await readLimitedBody(req, 100);
+  assert.equal(new TextDecoder().decode(bytes), "abcdef");
+});
+
+test("readLimitedBody refuses a declared content-length over the limit", async () => {
+  const body = "x".repeat(5000);
+  const req = new Request("https://x.test/", {
+    method: "POST",
+    headers: { "content-length": String(new TextEncoder().encode(body).byteLength) },
+    body,
+  });
+  await assert.rejects(async () => readLimitedBody(req, 4096), BodyTooLargeError);
+});
+
+test("readLimitedBody refuses a streamed body over the limit with no content-length", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode("y".repeat(5000)));
+      controller.close();
+    },
+  });
+  const req = new Request("https://x.test/", {
+    method: "POST",
+    body: stream,
+    // `duplex` is the Node/undici RequestInit field a streamed body needs; the
+    // Workers RequestInit type does not carry it (the same spelling
+    // test/waitlist.test.mjs uses).
+    ...{ duplex: "half" },
+  });
+  assert.equal(req.headers.get("content-length"), null);
+  await assert.rejects(async () => readLimitedBody(req, 4096), BodyTooLargeError);
+});
+
+test("the token compare is constant-shape and never a prefix match", async () => {
+  assert.equal(await tokensMatch(TOKEN, TOKEN), true);
+  assert.equal(await tokensMatch(`${TOKEN}x`, TOKEN), false, "a longer token is not the token");
+  assert.equal(await tokensMatch(TOKEN.slice(0, -1), TOKEN), false, "a prefix is not the token");
   assert.equal(
-    digestsEqual(`${DIGEST}x`, DIGEST),
+    await tokensMatch(TOKEN.slice(0, 4), TOKEN),
     false,
-    "a longer presentation is not the digest",
+    "a shorter token is not the token",
   );
-  assert.equal(digestsEqual(DIGEST, `${DIGEST}x`), false, "the longer side is refused either way");
+  assert.equal(await tokensMatch("", TOKEN), false);
+  assert.equal(await tokensMatch(undefined, TOKEN), false);
+  assert.equal(await tokensMatch(TOKEN, undefined), false);
+  assert.equal(await tokensMatch(TOKEN, ""), false);
 });
 
-test("digestsEqual refuses a truncated digest", () => {
+// drive#636: the compare's home is the one place all three api token checks
+// read it from, so the shapes the three sites actually hand it are pinned here
+// rather than only through a route. The bucket's notification route passes two
+// raw strings. The other two (the device secret in `keystore.js` and
+// `devices.js`) pass digests, because a device is stored as its secret's hash:
+// the stored hash and the hash of the presented secret.
+test("the token compare answers the api's three call sites", async () => {
+  const storedDigest = createHash("sha256").update(TOKEN).digest("hex");
+  const presentedDigest = createHash("sha256").update(TOKEN).digest("hex");
   assert.equal(
-    digestsEqual(DIGEST.slice(0, -1), DIGEST),
-    false,
-    "a shorter presentation is not the digest",
+    await tokensMatch(storedDigest, presentedDigest),
+    true,
+    "the stored hash and the hash of the presented secret",
   );
   assert.equal(
-    digestsEqual(DIGEST, DIGEST.slice(0, -1)),
+    await tokensMatch(storedDigest, createHash("sha256").update(`${TOKEN}x`).digest("hex")),
     false,
-    "the shorter side is refused either way",
+    "another secret's hash does not match the stored hash",
   );
-});
-
-test("digestsEqual refuses a prefix of the digest", () => {
-  // A prefix is the shorter case with a source that reads as the real thing,
-  // so it is its own case: it shares every leading character and stops one
-  // short, which is exactly what a byte-count exit alone would catch.
-  const prefix = DIGEST.slice(0, DIGEST.length - 1);
-  assert.equal(digestsEqual(prefix, DIGEST), false, "a prefix is not the digest");
-  assert.equal(digestsEqual(DIGEST, prefix), false, "a prefix is not the digest either way");
-});
-
-test("digestsEqual refuses a digest that differs only in its last character", () => {
-  // A same-length near-miss, so the accumulator itself has to answer it.
-  const last = DIGEST.slice(-1);
-  const nearMiss = `${DIGEST.slice(0, -1)}${last === "0" ? "1" : "0"}`;
-  assert.equal(nearMiss.length, DIGEST.length);
-  assert.equal(digestsEqual(nearMiss, DIGEST), false, "a near miss is not the digest");
-});
-
-test("digestsEqual refuses an empty secret on either side", () => {
-  assert.equal(digestsEqual("", DIGEST), false, "a blank presentation is not the digest");
-  assert.equal(digestsEqual(DIGEST, ""), false, "a blank configured secret fails closed");
-  assert.equal(digestsEqual("", ""), false, "two blanks are not a match either");
-});
-
-test("digestsEqual refuses anything that is not a digest at all", () => {
-  for (const bad of [undefined, null, 0, {}, []]) {
-    assert.equal(digestsEqual(bad, DIGEST), false, `${String(bad)} is not a digest`);
-    assert.equal(digestsEqual(DIGEST, bad), false, `${String(bad)} is not a digest`);
-  }
+  assert.equal(
+    await tokensMatch(TOKEN, storedDigest),
+    false,
+    "a raw secret beside a digest is not the shape those two sites use",
+  );
 });
