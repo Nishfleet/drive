@@ -1,0 +1,28 @@
+-- Resumable file purge (drive issue #565).
+--
+-- The nightly purge used to delete one object per subrequest, so a large
+-- account blew the Worker's subrequest ceiling mid-loop: the exception
+-- skipped every account after it, `purged_at` never landed, and the same
+-- account blocked the queue every night. The purge now deletes in batches of
+-- 1,000 keys and records how far it got, so a run that stops (a ceiling, a
+-- provider error, a killed isolate) resumes where it left off on the next
+-- night instead of starting over.
+--
+--   purge_cursor  the last drive path whose objects the purge deleted, NULL
+--                 before the first batch and after the purge finished
+--                 (markPurged clears it). NULL `purged_at` with a non-NULL
+--                 cursor means "partially purged, resume".
+--
+-- Expand only: one nullable TEXT column, no DEFAULT, no NOT NULL, nothing
+-- dropped or renamed. The previous Worker version neither reads nor writes
+-- it, so a revert keeps serving the same rows.
+--
+-- The cursor is a drive path (`/a/b.txt`) inside the closing account's own
+-- prefix, and it is only ever written by that account's own purge loop and
+-- handed back to the same scoped store, so it never names another account's
+-- bytes.
+--
+-- Rollback of the code leaves the column in place (D1 has no down-migration).
+-- The fleet's auto-revert stays possible because an old Worker ignores it.
+
+ALTER TABLE accounts ADD COLUMN purge_cursor TEXT;

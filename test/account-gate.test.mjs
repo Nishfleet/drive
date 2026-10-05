@@ -720,6 +720,12 @@ test("scopeStore puts every drive path under the account's own prefix", async ()
     async remove(path) {
       seen.push(["remove", path]);
     },
+    /** @param {{startAfter?: string, limit?: number}} [_options] @returns {Promise<string[]>} */
+    async listKeys(_path, _options) {
+      return [];
+    },
+    /** @param {string[]} _paths @returns {Promise<void>} */
+    async removeBatch(_paths) {},
     /** @param {string} from @param {string} to @returns {Promise<void>} */
     async copy(from, to) {
       seen.push(["copy", from, to]);

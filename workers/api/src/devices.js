@@ -246,8 +246,12 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * `purgeCursor` is the drive path the purge of this account stopped after
+   * (drive#565): NULL before the first batch and once the purge finished, so
+   * NULL `purged_at` with a non-NULL cursor reads "partially purged, resume
+   * after this path".
    * @param {unknown} row
-   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null}|null}
+   * @returns {{id: string, email: string, state: string, closedAt: number|null, reminderSentAt: number|null, closeMailSentAt: number|null, purgedAt: number|null, purgeCursor: string|null}|null}
    */
   function closeStateFromRow(row) {
     if (!row || typeof row !== "object") {
@@ -271,6 +275,8 @@ export function createD1DeviceStore(db, options = {}) {
           ? null
           : Number(r.close_mail_sent_at),
       purgedAt: r.purged_at === null || r.purged_at === undefined ? null : Number(r.purged_at),
+      purgeCursor:
+        typeof r.purge_cursor === "string" && r.purge_cursor !== "" ? r.purge_cursor : null,
     };
   }
 
@@ -281,7 +287,7 @@ export function createD1DeviceStore(db, options = {}) {
     return closeStateFromRow(
       await first(
         db,
-        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts WHERE id = ?1",
+        "SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts WHERE id = ?1",
         accountId,
       ),
     );
@@ -405,7 +411,7 @@ export function createD1DeviceStore(db, options = {}) {
       db,
       `UPDATE accounts
          SET state = 'active', closed_at = NULL, reminder_sent_at = NULL,
-             close_mail_sent_at = NULL
+             close_mail_sent_at = NULL, purge_cursor = NULL
        WHERE id = ?1`,
       accountId,
     );
@@ -422,7 +428,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueReminder(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND reminder_sent_at IS NULL
@@ -441,7 +447,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDuePurge(atSeconds) {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND purged_at IS NULL
@@ -461,7 +467,7 @@ export function createD1DeviceStore(db, options = {}) {
   async function listDueCloseMail() {
     const rows = await all(
       db,
-      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at FROM accounts
+      `SELECT id, email, state, closed_at, reminder_sent_at, close_mail_sent_at, purged_at, purge_cursor FROM accounts
          WHERE state = 'closed'
            AND closed_at IS NOT NULL
            AND close_mail_sent_at IS NULL
@@ -499,13 +505,32 @@ export function createD1DeviceStore(db, options = {}) {
   }
 
   /**
+   * Records how far one account's purge got (drive#565): the last drive path
+   * whose objects the batch delete removed. The next nightly pass lists from
+   * after that path instead of starting over. Conditional on
+   * `purged_at IS NULL`, so a late write can never reopen a purged account.
+   * @param {string} accountId
+   * @param {string} cursor
+   */
+  async function markPurgeProgress(accountId, cursor) {
+    await run(
+      db,
+      "UPDATE accounts SET purge_cursor = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      cursor,
+      accountId,
+    );
+  }
+
+  /**
    * @param {string} accountId
    * @param {number} atSeconds
    */
   async function markPurged(accountId, atSeconds) {
+    // The cursor is cleared with the stamp: a purged account has no progress
+    // to resume, and a NULL cursor with `purged_at` set reads as finished.
     await run(
       db,
-      "UPDATE accounts SET purged_at = ?1 WHERE id = ?2 AND purged_at IS NULL",
+      "UPDATE accounts SET purged_at = ?1, purge_cursor = NULL WHERE id = ?2 AND purged_at IS NULL",
       atSeconds,
       accountId,
     );
@@ -990,6 +1015,7 @@ export function createD1DeviceStore(db, options = {}) {
     listDueCloseMail,
     markReminderSent,
     markCloseMailSent,
+    markPurgeProgress,
     markPurged,
 
     /**
