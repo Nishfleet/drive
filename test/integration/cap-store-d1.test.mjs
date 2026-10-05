@@ -196,6 +196,35 @@ test("the reason marker round-trips through put() and deviceFromRow(), and null 
   const [raised] = await store.listCapKeys(account.id);
   assert.equal(raised.cappedReason, undefined, "a raise leaves no reason, and no empty string");
   assert.equal(Object.hasOwn(raised, "cappedReason"), false);
+
+  // A person's own key: `mint(scope)` is called with one argument in
+  // production, so the row it writes names no `cappedReason` field at all —
+  // which is a different code path from the null above, and it has to land on
+  // the same NULL column rather than on a blank a caller must test for twice.
+  const own = await store.keyProviderFor(account.id).mint({
+    prefix: `u/${account.id}/`,
+    capabilities: ["list", "read", "write", "delete"],
+  });
+  const ownRow = rowIn(sqlite, "SELECT * FROM devices WHERE id = ?", own.keyId);
+  assert.equal(ownRow.capped_reason, null, "a person's own key records no reason");
+  const [ownKey] = (await store.listCapKeys(account.id)).filter((key) => key.keyId === own.keyId);
+  assert.equal(Object.hasOwn(ownKey, "cappedReason"), false, "and no empty string either");
+
+  // The same for a freeze that names no reason: `swapToReadOnly(keyId)` with
+  // one argument is a legal call, and it must not put a blank in the column
+  // where a give-back pass (drive#656) would later read "no reason recorded"
+  // as an empty word. The method is optional on the type because a raw storage
+  // provider has none, so it is narrowed the way src/cap.js narrows it.
+  const provider = store.keyProviderFor(account.id);
+  if (typeof provider.swapToReadOnly !== "function") {
+    throw new Error("unreachable: the api's own store always has swapToReadOnly");
+  }
+  const silent = await provider.swapToReadOnly(own.keyId);
+  assert.equal(
+    rowIn(sqlite, "SELECT capped_reason FROM devices WHERE id = ?", silent.keyId).capped_reason,
+    null,
+    "a freeze that names no reason records none, not a blank",
+  );
 });
 
 test("a device row written before the column existed still reads with no reason", async () => {
