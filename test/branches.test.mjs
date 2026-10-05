@@ -1145,6 +1145,67 @@ test("the account's open branches stop at the cap, and the next one is refused",
   });
   assert.equal(after.state, "open");
 });
+test("a concurrent create that loses the atomic claim copies nothing", async () => {
+  const { scoped, db, snapshots } = await driven();
+  // Two creates start together below the cap: "held" is already open, and the
+  // loser wants a different name, so nothing about the name refuses it. The
+  // earlier count check passes for both of them, so the only thing that
+  // separates the winner from the loser is the claim INSERT's WHERE clause:
+  // the loser inserts no row. That is the path the count check cannot cover,
+  // and the loser must hear the cap answer here rather than copy into a
+  // prefix another create is walking. This test answers the claim insert with
+  // no changed row, exactly what D1 reports the loser.
+  await createBranch(db, snapshots, scoped, ACCOUNT, { folder: "/Photos", name: "held" });
+  /** @type {Array<unknown>} */
+  const copies = [];
+  const copying = scoped.copy.bind(scoped);
+  /** @type {import("../src/files.js").FileStore} */
+  const store = {
+    ...scoped,
+    async copy(from, to, size) {
+      copies.push({ from, to, size });
+      return copying(from, to, size);
+    },
+  };
+  // Only the claim insert is stubbed: the guard's own reads still run, and the
+  // refusal lands after the copy was not asked for. The loser's store is never
+  // asked to walk the folder or copy a file.
+  const losingDb = {
+    ...db,
+    /** @param {string} sql */
+    prepare(sql) {
+      const statement = db.prepare(sql);
+      if (!sql.includes("COUNT(*) FROM branches WHERE account_id = ?1")) {
+        return statement;
+      }
+      return {
+        sql,
+        /** @param {...unknown} values */
+        bind(...values) {
+          const boundStatement = statement.bind(...values);
+          return {
+            ...boundStatement,
+            async run() {
+              return { results: [], success: true, meta: { changes: 0, last_row_id: 0 } };
+            },
+          };
+        },
+      };
+    },
+  };
+  const loser = await createBranch(losingDb, snapshots, store, ACCOUNT, {
+    folder: "/Photos",
+    name: "work",
+  });
+  assert.equal(loser.error, failureMessage("branch-limit"));
+  assert.equal(loser.status, 409);
+  assert.deepEqual(copies, []);
+  // The refused name is not a branch: no row claimed, and the prefix holds no
+  // files a later diff or a list would report.
+  assert.equal(await getBranch(db, snapshots, ACCOUNT, "work"), null);
+  const names = (await listBranches(db, snapshots, store, ACCOUNT)).map((branch) => branch.name);
+  assert.deepEqual(names, ["held"]);
+});
 
 // ------------------------------------------- the pre-charge guard (#553, #536)
 
