@@ -35,7 +35,7 @@ import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/shar
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { STATUS_ENDPOINT } from "../src/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../src/topup.js";
-import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
+import { createTestAuth, createTestD1, signIn } from "./harness.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -1000,7 +1000,7 @@ test("a signed-in browser's cap write passes; a forged cross-site one is refused
   //
   // The account store is a real one (the migration list the site Worker runs
   // in production), so the write that passes is a write that really lands.
-  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const made = createTestAuth();
   const { cookie, account } = await signIn(made, "capslider@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },
@@ -1069,7 +1069,7 @@ test("a cap write that fails says what to do next, in plain words", async () => 
   // The words a browser sees: a number the api cannot read, and a deployment
   // with no account store behind it. Neither ends in a command the page's
   // visitor cannot run (drive#421).
-  const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const made = createTestAuth();
   const { cookie } = await signIn(made, "capwords@example.com");
   const env = {
     ASSETS: { fetch: () => new Response("asset", { status: 200 }) },

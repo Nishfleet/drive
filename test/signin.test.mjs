@@ -43,13 +43,7 @@ import {
 } from "../src/signin.js";
 import { createD1DeviceSigninStore } from "../workers/api/src/device-signin.js";
 import { createD1DeviceStore } from "../workers/api/src/devices.js";
-import {
-  createTestAuth,
-  DRIVE_SCHEMA_MIGRATIONS,
-  signIn,
-  TEST_BASE_URL,
-  TEST_SECRET,
-} from "./harness.mjs";
+import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
  * three arguments. Tests drive the Worker directly, so one wrapper supplies
@@ -808,7 +802,7 @@ test("sign-out everywhere revokes keys, device tokens, and the browser session",
   // drive#423: the website's Sign out everywhere is the same two writes
   // DELETE /v1/keys runs, then this browser's session. A second account's
   // rows stay live.
-  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const made = dispatchEnv();
   const mine = await signIn(made, "mine@example.com");
   const theirs = await signIn(made, "theirs@example.com");
   const now = 1_800_000_000_000;
@@ -936,7 +930,7 @@ test("a no-JavaScript sign-out form posts and lands on the sign-in page", async 
 });
 
 test("sign-out everywhere still ends this session when the key store fails", async () => {
-  const made = dispatchEnv({ migrations: DRIVE_SCHEMA_MIGRATIONS });
+  const made = dispatchEnv();
   const { cookie } = await signIn(made, "partial@example.com");
   const db = made.db;
   const failing = new Proxy(db, {

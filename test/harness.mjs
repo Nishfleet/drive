@@ -9,96 +9,28 @@
 // deliberately the D1 interface, not node:sqlite's, so every query these tests
 // run is a query the Worker can run against the deployed database.
 //
-// The value coercion below is the part D1 does for us and node:sqlite does
-// not: D1 takes a JavaScript boolean and a Date as bind values, node:sqlite
-// takes neither. Turning them into the integers SQLite stores is what makes the
-// two the same engine rather than two similar ones.
+// The bind values below are the part D1 does for us and node:sqlite does not,
+// and it cuts both ways. D1 converts a JavaScript boolean to the INTEGER it
+// stores, so the adapter does too; and D1 refuses an `undefined` or a `Date`
+// with a D1_TYPE_ERROR rather than guessing, so the adapter refuses them in the
+// same words. A test that binds what production cannot bind fails here instead
+// of proving something true only of this harness (drive#579).
 
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createAuth } from "../src/auth.js";
-
-/** Every migration that applies to the customer database, in order. */
-export const DRIVE_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0006_share_links.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  // An agent key's hour: the `expires_at`/`ttl_seconds` columns
-  // `D1DeviceStore.put` writes on every mint (drive issue #106). Expand only,
-  // two nullable columns, so a mint with a device store bound is not refused
-  // on a schema that predates them.
-  "drive/0012_agent_key_ttl.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-  // The live upload-queue report a device posts over its device token
-  // (drive issue #318). A queue row is a customer row like any other, so a
-  // test that reads one reads it from the real schema.
-  "drive/0014_device_queues.sql",
-  // Each branch row's own id, so a name can be closed more than once
-  // (drive issue #165). Rebuilds `branches` after 0003's (account_id, name,
-  // state) primary key, and after 0012's snapshot pointer columns.
-  "drive/0015_branch_row_id.sql",
-  // Close-account grace stamps (drive issue #235). Nullable expand of
-  // accounts: closed_at, reminder_sent_at, close_mail_sent_at, purged_at.
-  // 0017 because 0016 is the founding-member flag.
-  "drive/0016_founding.sql",
-  "drive/0017_account_close.sql",
-  // Abuse guards (drive#464): card fingerprint, founding reservation, first
-  // charge stamp. Expand only, three nullable columns.
-  "drive/0019_abuse_guards.sql",
-  // The purge's resume cursor (drive#565): the drive path the nightly batch
-  // delete stopped after. Nullable expand; getCloseState and listDuePurge
-  // read it, so any test that opens a close state needs the column.
-  "drive/0020_account_purge_cursor.sql",
-]);
+import { applyDriveMigrations, DRIVE_MIGRATIONS } from "./drive-migrations.mjs";
 
 /**
- * Every `drive/` migration, in the order the production Worker applies them.
- *
- * `DRIVE_MIGRATIONS` above is the subset the cap-mount tests need, and it is
- * deliberately short. A request that reads the month's usage — which the cap
- * write does, because the answer carries `capLine` — needs `0005_meter` and
- * `0006_usage_stored_bytes` as well, and a test that only reads a row could
- * not see that. This list is the whole schema, so a test built on it cannot
- * discover a table that production has is missing here.
- *
- * A test that asserts a cap really is stored reads the row back through this
- * list rather than through the harness's default one (drive issue #421).
- *
- * The order is `wrangler d1 migrations apply`'s own, which is the order the
- * names sort in, so a test cannot pass on a schema production builds in
- * another order: `0012_agent_key_ttl.sql` lands before
- * `0012_branch_snapshot_kv.sql` here exactly as the filenames sort.
+ * Every migration in `migrations/drive/`, in the order the deploy applies them
+ * — the whole schema, read from the folder rather than written out here, so a
+ * test cannot pass against a schema production does not have (drive#579). It
+ * is exported from test/drive-migrations.mjs and re-exported here because this
+ * is where a test that wants "the customer database" has always imported it
+ * from; test/d1-sqlite.mjs's adapter applies the same list, and the file that
+ * proves the two agree is test/d1-sqlite.test.mjs.
  */
-export const DRIVE_SCHEMA_MIGRATIONS = Object.freeze([
-  "drive/0002_file_index.sql",
-  "drive/0003_branches.sql",
-  "drive/0004_agent_undo.sql",
-  "drive/0005_better_auth.sql",
-  "drive/0005_meter.sql",
-  "drive/0006_share_links.sql",
-  "drive/0006_usage_stored_bytes.sql",
-  "drive/0007_device_codes.sql",
-  "drive/0008_teams.sql",
-  "drive/0009_upload_request_caps.sql",
-  "drive/0010_accounts_devices.sql",
-  "drive/0011_rate_limit.sql",
-  "drive/0012_agent_key_ttl.sql",
-  "drive/0012_branch_snapshot_kv.sql",
-  "drive/0013_billing_pushes.sql",
-  "drive/0014_device_queues.sql",
-  "drive/0015_branch_row_id.sql",
-  "drive/0016_founding.sql",
-  "drive/0017_account_close.sql",
-  "drive/0017_agent_caps_drop_month_key.sql",
-  "drive/0017_drop_branches_snapshot.sql",
-  "drive/0018_agent_caps_drop_month_spend.sql",
-]);
+export { DRIVE_MIGRATIONS };
 
 /** A secret long enough for Better Auth to accept it, and not a real one. */
 export const TEST_SECRET = "drive-test-secret-not-used-outside-the-test-suite";
@@ -108,23 +40,45 @@ export const TEST_BASE_URL = "https://drive.test";
 /** @typedef {import("node:sqlite").SQLInputValue} SQLInputValue */
 
 /**
- * The bind values D1 accepts and node:sqlite does not, turned into what
- * SQLite stores. Anything else passes through untouched, so a test that binds
- * a string still binds that string.
+ * The bind values D1 accepts, turned into what it stores, and everything else
+ * refused the way D1 refuses it.
+ *
+ * D1's own conversion table (developers.cloudflare.com/d1/worker-api/, "Type
+ * conversion") is the whole contract, and this function is that table and
+ * nothing else: null, a number, a string and a blob pass through, a boolean
+ * becomes the INTEGER 1 or 0 it reads back as, and `undefined` and every other
+ * type raise the D1_TYPE_ERROR the real binding raises.
+ *
+ * The two this adapter used to accept silently are the ones that cost a test
+ * its meaning (drive#579). Coercing a `Date` to epoch millis let code that
+ * binds an instant run green here and throw D1_TYPE_ERROR on every request in
+ * production, and turning `undefined` into NULL let a statement write a NULL
+ * into a NOT NULL column here that production refuses to send at all. A
+ * harness that is stricter than the database it stands in for is safe; one
+ * that is laxer is the bug.
+ *
  * @param {unknown} value
  * @returns {SQLInputValue}
  */
 function sqliteValue(value) {
   if (typeof value === "boolean") {
+    // Footnote 3 of that table: a boolean is cast to an INTEGER, 1 for true.
     return value ? 1 : 0;
   }
-  if (value instanceof Date) {
-    return value.getTime();
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "string" ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  ) {
+    return /** @type {SQLInputValue} */ (value);
   }
-  if (value === undefined) {
-    return null;
-  }
-  return /** @type {SQLInputValue} */ (value);
+  // The name D1 uses, so a test that trips this reads like the production
+  // error rather than like a helper's own wording.
+  throw new TypeError(
+    `D1_TYPE_ERROR: Type '${value instanceof Date ? "Date" : typeof value}' not supported for value '${String(value)}'`,
+  );
 }
 
 /**
@@ -221,8 +175,13 @@ function runOne(sqlite, sql, params) {
  */
 export function createTestD1(options = {}) {
   const sqlite = new DatabaseSync(":memory:");
-  for (const name of options.migrations ?? DRIVE_MIGRATIONS) {
-    sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  if (options.migrations === undefined) {
+    // The whole folder, in the deploy's order (test/drive-migrations.mjs).
+    applyDriveMigrations(sqlite);
+  } else {
+    for (const name of options.migrations) {
+      sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+    }
   }
   /**
    * @param {string} sql
@@ -240,10 +199,21 @@ export function createTestD1(options = {}) {
     async all() {
       return runOne(sqlite, sql, params);
     },
-    async first() {
+    /**
+     * D1's `first()`: the row, or the row's one column when the caller names
+     * it, and null when the query matched nothing. The column argument used to
+     * be ignored here, so `first("id")` answered a whole row and a test that
+     * read it as the scalar it is in production read a property off an object
+     * (drive#579).
+     * @param {string} [column]
+     */
+    async first(column) {
       const bound = sqliteBoundValues(sql, params).map(sqliteValue);
       const row = sqlite.prepare(sqlitePlaceholders(sql)).get(...bound);
-      return row === undefined ? null : row;
+      if (row === undefined) {
+        return null;
+      }
+      return column === undefined ? row : (/** @type {Record<string, unknown>} */ (row)[column] ?? null);
     },
     async run() {
       return runOne(sqlite, sql, params);
@@ -269,10 +239,23 @@ export function createTestD1(options = {}) {
         return { count: 0, duration: 0 };
       },
       /**
+       * D1 sends a batch as ONE transaction: every statement commits together,
+       * and one that fails takes the whole batch with it. Running the
+       * statements as independent writes is what this did, so a batch whose
+       * second statement failed left the first one's row behind and a test
+       * read a half-written event as a whole one (drive#579).
        * @param {Array<{sql: string, params?: unknown[]}>} statements
        */
       async batch(statements) {
-        return statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+        sqlite.exec("BEGIN");
+        try {
+          const results = statements.map((entry) => runOne(sqlite, entry.sql, entry.params ?? []));
+          sqlite.exec("COMMIT");
+          return results;
+        } catch (error) {
+          sqlite.exec("ROLLBACK");
+          throw error;
+        }
       },
     })
   );

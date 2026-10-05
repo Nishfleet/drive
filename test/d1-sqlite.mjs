@@ -8,26 +8,13 @@
 // The migrations applied here are the drive database's own (migrations/drive/,
 // drive issue #170): file_versions, usage_minutes, events_seen and
 // meter_rollup_state are customer data, so they are created by the same
-// migration directory the file index, branches and caps come from. Every file
-// in it is applied, in numeric order, so a statement the meter sends is
-// checked against the whole schema the drive database will actually have.
-import { readdirSync, readFileSync } from "node:fs";
+// migration directory the file index, branches and caps come from. That
+// directory is read from disk by test/drive-migrations.mjs, the one list both
+// D1 stand-ins apply, so this adapter and the sign-in harness in test/harness.mjs
+// cannot build two different schemas out of the same folder (drive#579).
 import { DatabaseSync } from "node:sqlite";
 import { BYTES_PER_GB } from "../src/meter.js";
-
-// The drive database's migration files, in the numeric order the deploy
-// applies them in.
-const migrationsDir = new URL("../migrations/drive/", import.meta.url);
-const migrationFiles = readdirSync(migrationsDir)
-  .filter((name) => name.endsWith(".sql"))
-  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-
-/** @param {DatabaseSync} sqlite */
-export function applyMigrations(sqlite) {
-  for (const name of migrationFiles) {
-    sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
-  }
-}
+import { applyDriveMigrations } from "./drive-migrations.mjs";
 
 // D1 numbered placeholders (`?1`) are bound by index; node:sqlite's
 // StatementSync.run(...values) only binds anonymous `?` and throws
@@ -141,6 +128,11 @@ const BOUND_METHODS = ["get", "all", "run", "iterate"];
  */
 export function d1Over(sqlite, { onQuery } = {}) {
   const READ = /^\s*(SELECT|PRAGMA|WITH|EXPLAIN)\b/i;
+  // SQLite's own change counters, read the way test/harness.mjs reads them:
+  // node:sqlite hands neither back from `all()`, and a write that answered 0
+  // would tell a caller that trusts `meta.changes` that nothing landed.
+  const changesOf = sqlite.prepare("SELECT changes() AS n");
+  const rowIdOf = sqlite.prepare("SELECT last_insert_rowid() AS n");
 
   /**
    * @param {string} sql
@@ -149,19 +141,26 @@ export function d1Over(sqlite, { onQuery } = {}) {
   function run(sql, bound) {
     const translated = bindForNodeSqlite(sql, bound);
     const statement = sqlite.prepare(translated.sql);
+    // ONE path for every statement, and it is D1's: D1 runs a query and a
+    // write through the same call and answers both with `results`. Routing a
+    // write through `run()` here answered `results: []` for an
+    // `INSERT ... RETURNING`, so every statement that returns the row it just
+    // wrote read back as no row at all - the shape src/share.js and
+    // src/waitlist.js write, and the shape a test of either would have called
+    // a miss (drive#579).
+    const results = statement.all(...translated.bound);
     if (READ.test(sql)) {
       return {
-        results: statement.all(...translated.bound),
+        results,
         success: true,
         meta: { rows_written: 0, changes: 0, last_row_id: 0 },
       };
     }
-    const info = statement.run(...translated.bound);
-    const changes = Number(info.changes);
+    const changes = Number(changesOf.get().n);
     return {
-      results: [],
+      results,
       success: true,
-      meta: { changes, rows_written: changes, last_row_id: Number(info.lastInsertRowid ?? 0) },
+      meta: { changes, rows_written: changes, last_row_id: Number(rowIdOf.get().n) },
     };
   }
 
@@ -262,9 +261,19 @@ export function d1Over(sqlite, { onQuery } = {}) {
             onQuery?.();
             return prepared._exec();
           },
-          async first() {
+          /**
+           * D1's `first()`: the row, or the row's one column when the caller
+           * names it. The column was ignored here, so `first("id")` answered a
+           * whole row where D1 answers a scalar (drive#579).
+           * @param {string} [column]
+           */
+          async first(column) {
             onQuery?.();
-            return (await prepared._exec()).results[0] ?? null;
+            const row = (await prepared._exec()).results[0];
+            if (row === undefined || row === null) {
+              return null;
+            }
+            return column === undefined ? row : (/** @type {Row} */ (row)[column] ?? null);
           },
           async run() {
             onQuery?.();
@@ -307,7 +316,7 @@ export function d1Over(sqlite, { onQuery } = {}) {
 /** @param {() => void} [onQuery] */
 function makeMeteredDB(onQuery) {
   const sqlite = new DatabaseSync(":memory:");
-  applyMigrations(sqlite);
+  applyDriveMigrations(sqlite);
   // Tests read the real schema with sqlite.prepare("... ?1"). node:sqlite
   // rejects numbered placeholders (SQLITE_RANGE); the D1 adapter already
   // expands them, and this wraps the raw handle the tests use directly. The
